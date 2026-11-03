@@ -301,10 +301,12 @@ function managedPluginInstallation() {
     const release = releaseSha256 === undefined ? undefined
       : JSON.parse(verifiedPluginFile(root + "/ai.openclaw.oce/release.json", releaseSha256));
     const slot = release?.credentials?.[slotId];
-    if (!Array.isArray(toolNames) || (release ? !Array.isArray(slot?.mcp?.tools) ||
-        !toolNames.every((name) => typeof name === "string" && slot.mcp.tools.includes(name))
-      : toolNames.length > 0)) {
-      throw new Error("The selected MCP tools do not match the managed release.");
+    if (!Array.isArray(toolNames) || (release ? !slot?.mcp?.server : toolNames.length > 0) ||
+        !toolNames.every((name) => typeof name === "string" &&
+          /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
+          ("oce_mcp_" + slot?.mcp?.server + "_" + name).length <= 64) ||
+        new Set(toolNames.map((name) => name.toLowerCase())).size !== toolNames.length) {
+      throw new Error("The selected MCP tools must have distinct literal names and OpenClaw aliases within 64 characters.");
     }
     const mcp = slot && {
       delivery: slot.delivery,

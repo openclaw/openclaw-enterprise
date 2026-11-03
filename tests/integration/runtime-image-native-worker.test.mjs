@@ -268,7 +268,7 @@ process.exit(r.error ? 0 : r.status);`;
         credentials: {
           workspace: {
             delivery: { role: "harness", env: "DOCUMENTS_ACCESS_TOKEN", presentation: "bearer" },
-            mcp: { server: "documents", tools: ["ListItems", "UpdateItem"] },
+            mcp: { server: "documents" },
           },
         },
       });
@@ -303,8 +303,15 @@ process.exit(r.error ? 0 : r.status);`;
           toolFilter: { include: ["ListItems"] },
         },
       });
-      await assert.rejects(run(["UnreviewedTool"]), (error) =>
-        error.stderr.includes("The selected MCP tools do not match the managed release."),
+      const updated = await run(["UpdateItem", "ListItems"]);
+      assert.deepEqual(
+        JSON.parse(updated.stdout).nodeHost.mcp.servers.oce_mcp_documents.toolFilter,
+        {
+          include: ["UpdateItem", "ListItems"],
+        },
+      );
+      await assert.rejects(run(["List*"]), (error) =>
+        error.stderr.includes("The selected MCP tools must have distinct literal names"),
       );
     },
   );

@@ -209,16 +209,22 @@ test("dedicated OpenClaw admits one managed package and validates Slack's review
       }),
     /Slack release has changed/,
   );
-  assert.throws(
-    () =>
-      driver.validatePolicies({
-        [slack.id]: {
-          enabled: true,
-          driverPolicy: { ...slackPolicy, toolNames: ["slack_send_message"] },
-        },
-      }),
-    /Select Slack tools from the reviewed plugin release/,
-  );
+  driver.validatePolicies({
+    [slack.id]: {
+      enabled: true,
+      driverPolicy: { ...slackPolicy, toolNames: ["slack_search_public", "slack_send_message"] },
+    },
+  });
+  // Selections are literal upstream names. Globs and colliding aliases would broaden access.
+  for (const toolNames of [["slack_*"], ["Search", "search"], ["x".repeat(64)], null]) {
+    assert.throws(
+      () =>
+        driver.validatePolicies({
+          [slack.id]: { enabled: true, driverPolicy: { ...slackPolicy, toolNames } },
+        }),
+      /Select distinct literal Slack tool names/,
+    );
+  }
   const source = {
     id: "cs_slack",
     name: "Slack test account",

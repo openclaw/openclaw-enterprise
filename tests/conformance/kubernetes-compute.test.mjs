@@ -1727,10 +1727,13 @@ test("standalone Codex search requires an explicit model endpoint and a boolean 
   }
 });
 
-test("dedicated OpenClaw delivers managed releases and reviewed MCP tools without a Sandbox provider file", async () => {
+test("dedicated OpenClaw delivers managed releases and selected MCP tools without a Sandbox provider file", async () => {
   await verifyManagedRelease(managedGoogleInstall);
   for (const install of managedMcpInstalls) {
-    await verifyManagedRelease(install);
+    await verifyManagedRelease({
+      ...install,
+      toolNames: ["slack_search_public", "slack_send_message"],
+    });
   }
 });
 
