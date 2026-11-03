@@ -435,6 +435,33 @@ the manifest and workflow. Workers own Agents/cleanup; keep dependent steps
 sequential and installation-wide changes outside workers. Preserve failure,
 security and disposal assertions.
 
+### Local k3d quickstart on a fresh runner
+
+Dispatch the [k3d quickstart workflow](../../.github/workflows/k3d-quickstart-e2e.yml) on `main`:
+
+```sh
+gh workflow run k3d-quickstart-e2e.yml --ref main
+```
+
+The workflow creates a fresh local installation, onboards a model-only Agent in the
+Control UI, and reopens the original conversation. It adds Git to that Agent,
+pushes an empty commit to a unique test branch, checks the remote commit, and
+restores read-only access. It then enables the connected Linear account, checks
+a real team read, and verifies conversation recall after redeployment.
+
+Configure these inputs at the **repository** level:
+
+| Input                                    | Purpose                                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------------------- |
+| Secret `OCE_QUICKSTART_CODEX_PAT`        | Codex service account with the selected model and an authorized Linear connection |
+| Secret `OCE_TEST_GITHUB_APP_PRIVATE_KEY` | RSA key for the App installed on the test repository                              |
+| Variable `OCE_QUICKSTART_MODEL`          | Model available to the service account                                            |
+| Variable `OCC_TEST_LINEAR_TEAM_ID`       | ID of a team the connected account can read                                       |
+
+Use the workflow result and its sanitized receipt to check the push, read-only
+restoration, tool result and cleanup. If a run ends during a push, check the
+remote ref before retrying. Keep the private operator session on the runner.
+
 <a id="manual-full-integration-lanes"></a>
 
 ### Full Integration
