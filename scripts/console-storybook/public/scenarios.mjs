@@ -7737,7 +7737,7 @@ export const scenarios = {
       "The browser gets a 503 after submitting a deployment. It cannot tell whether the Controller accepted the request.",
     steps: [
       "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
-      "When “Outcome unknown” takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
+      "When the recovery message takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
     ],
   },
   deployRepositoryRequired: {
