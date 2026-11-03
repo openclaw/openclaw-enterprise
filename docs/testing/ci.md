@@ -38,6 +38,10 @@ Run [Staging Release Qualification](../../.github/workflows/staging-qualificatio
 with the trusted `main` workflow. Supply `installation`, the full `source_sha`,
 `publication_run_id`, and its exact `publication_attempt`. The publication must be
 a successful manual Enterprise Containers run for that source on `main`.
+The [Enterprise Containers publisher](../release/containers.md#source-visibility)
+issues receipts only for public GitHub Container Registry (GHCR) packages.
+Private and internal packages are ineligible even if the package names match or
+the qualification token has read access.
 Runs for the same installation share a concurrency group and do not cancel an
 active qualification.
 
@@ -47,9 +51,9 @@ The installation input must equal the configured ID. Use an ID of 1–63 lowerca
 letters, digits, or hyphens, starting with a letter. GHCR values are explicit
 `ghcr.io/openclaw/` repositories without tags or digests. The Node base value must
 match the publication receipt, including its digest. Restrict this environment
-to `main`. The qualification job requires `packages: read`, and both GHCR
-packages must grant this repository's workflow token read access. No provider
-credentials or cluster configuration are used.
+to `main`. The qualification job authenticates the two image pulls with its
+workflow token, which has `packages: read`. The job uses no provider credentials
+or cluster configuration.
 
 The [workflow command](../../scripts/ci/staging-qualification.ts) checks the
 trusted workflow context, source ancestry, producer workflow ID, successful run
