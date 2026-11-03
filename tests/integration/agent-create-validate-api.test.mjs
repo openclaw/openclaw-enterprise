@@ -302,9 +302,10 @@ test("Agent create preflight refuses a caller without Agent create before readin
   });
   assert.notEqual(refused, null, "the controller waited for the unread body");
   assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  // The same refusal as when the handler checks the grant.
   assert.deepEqual(refused.body.error, {
     code: "FORBIDDEN",
-    message: "The exact platform operation was not authorized.",
+    message: createDenied("Agent", f.namespace.id),
   });
   assertWriteAuthorizationDenial(
     f.auditSink.events.slice(auditStart),
