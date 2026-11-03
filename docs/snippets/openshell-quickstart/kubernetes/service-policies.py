@@ -1,13 +1,15 @@
-"""Render the strict-CNI service peers for the EKS OpenShell example as a Kubernetes List."""
+"""Render the strict-CNI service peers for the OpenShell quickstart as a Kubernetes List."""
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--tenant", required=True)
 parser.add_argument("--namespace-id", required=True)
 parser.add_argument("--agent-id")
+parser.add_argument("--repository-credentials", action="store_true")
 args = parser.parse_args()
 system = "oce-system"
 envoy = "envoy-gateway-system"
@@ -16,7 +18,7 @@ items = []
 
 def resource(namespace, kind, name):
     return json.loads(subprocess.check_output(
-        ["kubectl", "-n", namespace, "get", kind, name, "-o", "json"], text=True
+        ["kubectl", "--kubeconfig", os.environ["KUBECONFIG"], "--context", os.environ["CONTEXT"], "-n", namespace, "get", kind, name, "-o", "json"], text=True
     ))
 
 
@@ -49,13 +51,14 @@ if tenant["metadata"]["labels"].get("openclaw.dev/namespace") != args.namespace_
     raise ValueError("Namespace ownership does not match")
 management = resource(system, "service", "openshell-gateway")
 management_selector = {"matchLabels": management["spec"]["selector"]}
-hook = service_edges(system, resource(system, "service", "openclaw-enterprise-openshell-git"), 8445)
+hook = service_edges(system, resource(system, "service", "openclaw-enterprise-openshell-git"), 8445) if args.repository_credentials else []
 private = resource(envoy, "service", "occ-gateway-362888b35fce")
 proxy = {"matchLabels": private["spec"]["selector"]}
 controller = resource(envoy, "service", "envoy-gateway")
 api = resource(system, "service", "openclaw-enterprise-api")
 supervisor = {"matchLabels": {"openshell.ai/boundary-role": "supervisor", "openshell.ai/managed-by": "openshell"}}
-policy(system, "oce-hook-sender", management_selector, "egress", hook)
+if hook:
+    policy(system, "oce-hook-sender", management_selector, "egress", hook)
 policy(args.tenant, "oce-supervisor-services", supervisor, "egress",
        hook + service_edges(envoy, private, 443) + service_edges(system, management, 8080))
 policy(envoy, "oce-proxy-control", proxy, "egress", service_edges(envoy, controller, 18000))

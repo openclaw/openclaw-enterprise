@@ -3,14 +3,14 @@
 Install OpenClaw Enterprise on Kubernetes, verify access to the OpenClaw
 Control Plane (OCC), then deploy an Agent and check its model response. Use
 [Local Setup](quickstart.md) for a first installation on your machine. The
-production guides below are for operators using an existing cluster; [Kubernetes Setup](kubernetes-setup.md) gives a short introduction. Run
+production guides below are for operators using an existing cluster; [Kubernetes setup](deploy/kubernetes-setup.md) installs an OpenShell Codex Agent and finishes with the shared operator session. Run
 repository commands from the repository root. Starting OCC needs no model
 credential; an Agent needs one to send a model request.
 
 ## Development
 
 Use [Local Setup](quickstart.md) to start the platform with Kubernetes and
-verify authenticated access. Then [deploy your first Agent](first-agent.md).
+verify authenticated access. Then [prepare the local Agent session](quickstart.md#deploy-an-agent).
 The [local Kubernetes development guide](deploy/local-kubernetes-development.md)
 explains the profile for contributors working on the platform.
 
@@ -18,7 +18,7 @@ explains the profile for contributors working on the platform.
 
 Follow [Local Setup](quickstart.md) to verify the control plane. That check
 proves authenticated access; it does not prove an Agent can answer a model
-request. Complete [Deploy your first Agent](first-agent.md) for that result.
+request. Follow [model verification](operate/model-verification.md) for that result.
 For local Kubernetes images and cleanup, see
 [local operations](deploy/local-operations.md).
 
@@ -35,11 +35,12 @@ Choose the guide for your cluster:
 
 - [Standard Kubernetes](deploy/kubernetes.md): prepare an existing Kubernetes
   cluster, storage, networking, and PostgreSQL.
-- [Amazon EKS](deploy/eks.md): prepare AWS managed Kubernetes, node groups,
-  VPC networking, EBS storage, and optional RDS PostgreSQL.
+- [Amazon EKS quickstart](deploy/eks-openshell-setup.md): prepare AWS infrastructure,
+  install OCE, configure browser access, and onboard a dedicated OpenShell Agent.
 
-Both paths use the same Helm chart and shared installation procedure. Cluster
-hosting does not select the Agent model provider.
+The EKS quickstart includes installation and Agent deployment; do not repeat the
+sequence below after completing it. For a custom installation, use the shared
+procedure below. Cluster hosting does not select the Agent model provider.
 
 ### Production prerequisites
 

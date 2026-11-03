@@ -4,7 +4,7 @@ Manage Agent workspace files through OCC and Console using private routing.
 Use these steps during [production installation](production-installation.md#prepare-workspace-access),
 before installing the chart. Retain its protected Helm values, Installation YAML
 and Kubernetes context. EKS also needs
-[strict mode](eks.md#enable-console-workspace-files).
+[strict mode](eks-openshell-setup.md#enable-console-workspace-files).
 
 OCC API/worker Pods must share the private Envoy Service's cluster; OCC in
 Compose needs [hybrid routing](local-compose-kubernetes.md). Enabling a Helm

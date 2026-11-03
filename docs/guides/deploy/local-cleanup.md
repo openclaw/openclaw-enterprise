@@ -4,7 +4,7 @@ tags: [human_verified]
 
 # Clean up the local Installation
 
-Delete the Agent, then remove the disposable Installation when you finish the local quickstart. Use the saved operator session from Setup OCE. Removing the Installation deletes its k3d cluster, database and generated Kubernetes credentials.
+Delete the Agent, then remove the disposable Installation when you finish the local quickstart. Use the saved operator session from installation setup. Removing the Installation deletes its k3d cluster, database and generated Kubernetes credentials.
 
 Immediate teardown can leave previously issued GitHub tokens valid until they expire because the worker can no longer revoke them. Deleting the Installation does not revoke the service-account PAT.
 
@@ -12,20 +12,7 @@ Immediate teardown can leave previously issued GitHub tokens valid until they ex
 
 ## Delete the Agent
 
-Load the saved session and delete the same Agent through the API. Deletion stops its execution and removes its workspace and version history. You do not need to stop it separately or wait for repository credential cleanup.
-
-```bash
-source /path/to/private/run/session.sh
-request DELETE "$base/agents/$agent"
-```
-
-Expect HTTP `202` with the Agent in `deleting` status. Wait for deletion to finish by repeating this read:
-
-```bash
-request GET "$base/agents/$agent"
-```
-
-HTTP `404` means the Agent is gone. HTTP `200` with `status: deleting` means deletion is still in progress. Authentication or connection errors do not confirm deletion. If deletion fails, follow [Agent deletion recovery](../../reference/agents.md#deletion). If the DELETE request times out, read the Agent state before retrying it.
+Complete [Delete Agent](quickstart-delete-agent.md) first. It uses the saved session and waits for HTTP `404`; it does not require Git credential retirement.
 
 ## Remove the Installation
 
@@ -34,8 +21,9 @@ After Agent deletion finishes, remove the disposable Installation from the same 
 Use the launcher’s printed cleanup command. For the OpenShell profile, the equivalent below requires the saved state directory and the cluster name from its installation record. Run it from the matching release checkout, using the CLI that created the installation.
 
 ```bash
-CLEANUP_STATE=$state
-CLEANUP_CLUSTER=$(jq -er .cluster "$state/state.json")
+source /path/to/private/run/session.sh
+CLEANUP_STATE=${OCC_DEVELOPMENT_STATE_DIRECTORY:?}
+CLEANUP_CLUSTER=$(jq -er .cluster "$CLEANUP_STATE/state.json")
 : "${CLEANUP_STATE:?Set the saved state directory}" "${CLEANUP_CLUSTER:?Set the recorded cluster name}"
 (
   set -euo pipefail

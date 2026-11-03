@@ -120,7 +120,6 @@ to a private mirror. For local setup, export the resolved pair as
 ## Verify after installation
 
 The publication's startup checks do not establish a working Agent on your
-cluster. Finish [local first-Agent verification](../first-agent.md) or
-[production Agent verification](production-agents.md#verify-production-workloads).
+cluster. Complete [Agent model verification](../operate/model-verification.md).
 Keep the resolved image references with your deployment record so a later move
 of the selected alias does not change which images were selected for this installation.

@@ -307,7 +307,7 @@ credential at its issuer.
 - [SecretDriver implementation specification](../../specs/.archive/14-secret-driver.md)
 - [Secret access architecture](../design/safeguards.md#secret-access)
 - [Kubernetes deployment](../guides/deploy.md)
-- [Deploy your first Agent](../guides/first-agent.md)
+- [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md)
 - [Configuration](../reference/configuration.md)
 - [Kubernetes Secret Driver](../reference/drivers/kubernetes-secret.md)
 

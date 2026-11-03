@@ -403,7 +403,7 @@ the install as ready:
 ## Related
 
 - [Production installation](production-installation.md)
-- [Amazon EKS](eks.md)
+- [Amazon EKS](eks-openshell-setup.md)
 - [Codex sandbox setup](codex-sandbox.md)
 - [ChatGPT Backend](../integrations/chatgpt.md)
 - [Repository credential installation](../repository-credentials/installation.md)

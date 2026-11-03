@@ -4,7 +4,7 @@ tags: [nolimit]
 
 # Install the production control plane
 
-Prepare [Kubernetes](kubernetes.md) or [EKS](eks.md), the
+Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
 [prerequisites below](#before-you-start), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
 Private routing is enabled by default. The chart does not install Envoy Gateway,
@@ -51,7 +51,7 @@ or build these images for your registry:
 Select your registry, repository, and platform. Buildx uses the [runtime recipe's](../../../deploy/runtime/README.md) reviewed CI base.
 
 Authenticate the builder with `docker login <registry-host>` and approved
-credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
+credentials; for private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
 
 In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
 Stop on failure; retain metadata.
