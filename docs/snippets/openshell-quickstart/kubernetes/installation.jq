@@ -166,7 +166,7 @@
               "spec": {
                 "ingress": [
                   {
-                    "_from": [
+                    "from": [
                       {
                         "namespaceSelector": {
                           "matchLabels": {

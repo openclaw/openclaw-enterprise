@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -68,10 +68,58 @@ test("aggregate qualifies only the independently selected Skipper image set with
   const directory = await mkdtemp(join(tmpdir(), "skipper-release-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const control = join(directory, "release.json");
+  const imageEnvironment = {
+    OCC_DEVELOPMENT_CONTROLLER_IMAGE: `127.0.0.1:5000/oce-smoke/controller@${selection.images.controller}`,
+    OCC_KUBERNETES_RUNTIME_IMAGE: `127.0.0.1:5000/oce-smoke/runtime@${selection.images.runtime}`,
+    OCC_DEVELOPMENT_REPOSITORY_IMAGE: `127.0.0.1:5000/oce-smoke/repository@${selection.images.repository}`,
+  };
+  const summary = join(directory, "summary.md");
+  const exported = join(directory, "environment");
+  function produce(file: string, overrides: NodeJS.ProcessEnv = {}) {
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/ci/first-agent-smoke.mjs", "release-selection", file],
+      {
+        encoding: "utf8",
+        timeout: 30_000,
+        env: {
+          PATH: process.env.PATH,
+          GITHUB_SHA: "f".repeat(40), // The producer must use checked-out HEAD.
+          GITHUB_STEP_SUMMARY: summary,
+          GITHUB_ENV: exported,
+          ...imageEnvironment,
+          ...overrides,
+        },
+      },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.stdout, "");
+    return result;
+  }
+  for (const [name, value] of [
+    ["OCC_DEVELOPMENT_CONTROLLER_IMAGE", undefined],
+    ["OCC_KUBERNETES_RUNTIME_IMAGE", "127.0.0.1:5000/oce-smoke/runtime@sha256:short"],
+    ["OCC_DEVELOPMENT_REPOSITORY_IMAGE", imageEnvironment.OCC_DEVELOPMENT_CONTROLLER_IMAGE],
+  ] as const) {
+    const invalid = join(directory, "invalid.json");
+    const result = produce(invalid, { [name]: value });
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(`${name} must be a SHA-256 image digest reference`));
+    assert.ok(!result.stderr.includes("127.0.0.1"));
+    await assert.rejects(readFile(invalid), { code: "ENOENT" });
+  }
+  const produced = produce(control);
+  assert.equal(produced.status, 0, produced.stderr);
+  assert.equal(produced.stderr, "");
+  assert.deepEqual(JSON.parse(await readFile(control, "utf8")), selection);
+  await assert.rejects(readFile(summary), { code: "ENOENT" });
+  await assert.rejects(readFile(exported), { code: "ENOENT" });
   const args = ["scripts/ci/run-tests.mjs", "aggregate", lane, "--results-dir", directory];
   async function aggregate(evidence: unknown, expected: unknown = selection, mode = "qualify") {
     await writeFile(join(directory, lane + ".json"), JSON.stringify(evidence));
-    await writeFile(control, JSON.stringify(expected));
+    if (mode !== "produced") {
+      await writeFile(control, JSON.stringify(expected));
+    }
     const result = spawnSync(
       process.execPath,
       [
@@ -91,7 +139,7 @@ test("aggregate qualifies only the independently selected Skipper image set with
     assert.equal(result.status, output.status === "passed" ? 0 : 1, result.stderr);
     return output;
   }
-  const passed = await aggregate(receipt());
+  const passed = await aggregate(receipt(), selection, "produced");
   assert.equal(passed.status, "passed");
   assert.deepEqual(passed.releaseQualification, {
     ...selection,

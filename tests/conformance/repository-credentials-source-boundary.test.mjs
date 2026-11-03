@@ -12,7 +12,15 @@ const sharedFields = "composition/installation-fields.ts";
 const installation = "drivers/repo/github/installation.ts";
 const preparedConfiguration = "drivers/repo/github/credentials/prepared-configuration.ts";
 const preparedGit = "drivers/repo/github/credentials/prepared-repository-git.ts";
-const entrypoints = ["repository-credentials.ts", "repository-credentials.mjs", sharedFields];
+const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
+const custodySelection = "composition/repository-credentials/custody-selection.ts";
+const evidenceImport = "../../drivers/egress-proxy/openshell-repository-git-evidence.ts";
+const entrypoints = [
+  "repository-credentials.ts",
+  "repository-credentials.mjs",
+  sharedFields,
+  openShellEvidence,
+];
 
 async function appendSource(root, file, source, check) {
   const path = join(root, file);
@@ -50,6 +58,21 @@ test("credential source boundary rejects new raw capabilities in the real source
   assert.ok((await verify(root)) > 0);
 
   for (const [label, file, source] of [
+    [
+      "OpenShell evidence admits its exact contract symbol",
+      openShellEvidence,
+      'import { repositoryGitRecipientFields as fields } from "@openclaw-enterprise/contracts"; void fields;',
+    ],
+    [
+      "custody selection admits only its reviewed evidence symbols",
+      custodySelection,
+      `import { openShellGitRecipientEvidence as evidence, openShellPreviewEnded as ended } from "${evidenceImport}"; void evidence; void ended;`,
+    ],
+    [
+      "adjacent adapter source remains outside the credential scan",
+      "drivers/egress-proxy/boundary-unscanned.ts",
+      'import { request } from "node:https"; void request;',
+    ],
     [
       "shared fields admit their exact pure dependencies",
       sharedFields,
@@ -167,7 +190,132 @@ test("credential source boundary rejects new raw capabilities in the real source
     }
   });
 
+  for (const replacement of ["symlink", "directory"]) {
+    await t.test(`OpenShell evidence cannot be replaced with a ${replacement}`, async () => {
+      const path = join(root, openShellEvidence);
+      const saved = join(temporary, "openshell-evidence.ts");
+      await rename(path, saved);
+      try {
+        if (replacement === "symlink") {
+          await symlink(saved, path);
+        } else {
+          await mkdir(path);
+        }
+        await assert.rejects(verify(root), {
+          message: `Invalid credential entrypoint: ${openShellEvidence}`,
+        });
+      } finally {
+        await rm(path, { recursive: true });
+        await rename(saved, path);
+      }
+    });
+  }
+
   const cases = [
+    // These mutations must be rejected at the evidence file itself: merely
+    // exempting the selector's import or ignoring this file cannot pass.
+    ...[
+      ["file IO", 'import { readFile } from "node:fs/promises";'],
+      ["network IO", 'import { request } from "node:https";'],
+      ["ordinary builtin expansion", 'import { hostname } from "node:os";'],
+      [
+        "adjacent contract symbol",
+        'import { requireConfiguration } from "@openclaw-enterprise/contracts";',
+      ],
+      [
+        "credential material",
+        'import * as material from "../repo/github/credentials/material.ts";',
+      ],
+      [
+        "additional loader",
+        'import { loadPublicCa } from "../../composition/repository-credentials/public-ca.ts";',
+      ],
+      ["adapter source", 'import "./openshell.ts";'],
+      ["side-effect import", 'import "@openclaw-enterprise/contracts";'],
+      ["namespace import", 'import * as contracts from "@openclaw-enterprise/contracts";'],
+      ["inline type side effect", 'import { type Extra } from "@openclaw-enterprise/contracts";'],
+      ["dynamic import", 'void import("@openclaw-enterprise/contracts");'],
+      [
+        "dependency re-export",
+        'export { repositoryGitRecipientFields } from "@openclaw-enterprise/contracts";',
+      ],
+      [
+        "relative dependency expansion",
+        'import { extra } from "../repo/credentials/protected-repository-git-installation.ts";',
+      ],
+    ].map(([label, source]) => [
+      `OpenShell evidence rejects ${label}`,
+      source,
+      /unreviewed OpenShell evidence/,
+      openShellEvidence,
+    ]),
+    [
+      "OpenShell evidence rejects raw network globals",
+      'void fetch("https://example.invalid");',
+      /raw global fetch/,
+      openShellEvidence,
+    ],
+    [
+      "OpenShell evidence rejects process access",
+      "void process.env;",
+      /raw process capability env/,
+      openShellEvidence,
+    ],
+    [
+      "OpenShell evidence rejects CommonJS loading",
+      'require("node:fs");',
+      /raw global require/,
+      openShellEvidence,
+    ],
+    [
+      "OpenShell evidence cannot re-export a local dependency",
+      "export { repositoryGitRecipientFields };",
+      /raw I\/O binding cannot be re-exported/,
+      openShellEvidence,
+    ],
+    [
+      "OpenShell evidence cannot re-export a local relative dependency",
+      "export { recipient };",
+      /raw I\/O binding cannot be re-exported/,
+      openShellEvidence,
+    ],
+    [
+      "new non-selector importer cannot acquire OpenShell evidence",
+      `import { openShellGitRecipientEvidence, openShellPreviewEnded } from "${evidenceImport}";`,
+      /openshell-repository-git-evidence.ts is not reviewed for/,
+      "composition/repository-credentials/new-evidence-consumer.ts",
+    ],
+    ...[
+      [
+        "extra symbol",
+        `import { openShellGitRecipientEvidence as allowed, protectedRepositoryGitInstallationSql } from "${evidenceImport}";`,
+      ],
+      ["namespace import", `import * as evidence from "${evidenceImport}";`],
+      ["side-effect import", `import "${evidenceImport}";`],
+      ["dynamic import", `void import("${evidenceImport}");`],
+      ["direct re-export", `export { openShellGitRecipientEvidence } from "${evidenceImport}";`],
+      [
+        "emitted extra symbol",
+        `import { protectedRepositoryGitInstallationSql } from "${evidenceImport.replace(/\.ts$/, ".js")}";`,
+      ],
+    ].map(([label, source]) => [
+      `custody selection rejects evidence ${label}`,
+      source,
+      /openshell-repository-git-evidence.ts is not reviewed for/,
+      custodySelection,
+    ]),
+    [
+      "custody selection cannot re-export local evidence",
+      "export { openShellGitRecipientEvidence };",
+      /raw I\/O binding cannot be re-exported/,
+      custodySelection,
+    ],
+    [
+      "custody selection still cannot load adjacent adapter source",
+      'import "../../drivers/egress-proxy/openshell.ts";',
+      /runtime import has no scanned credential source/,
+      custodySelection,
+    ],
     [
       "issuer trust identity cannot import private keys",
       'import { createPrivateKey } from "node:crypto";',

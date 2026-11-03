@@ -5,10 +5,8 @@ import {
   PreparedGitHubAppKeyError,
   startPreparedGitHubGitOwner,
 } from "./backends/repository-credentials/prepared-git-owner.ts";
-import {
-  bindRepositoryGitTransport,
-  repositoryGitAuthority,
-} from "./composition/repository-credentials/transport.ts";
+import { bindRepositoryGitTransport } from "./composition/repository-credentials/transport.ts";
+import { repositoryGitAuthority } from "./composition/repository-credentials/custody-selection.ts";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,

@@ -6,10 +6,8 @@ import {
   githubRepositoryConfiguration,
   selectGitHubRepositoryDelivery,
 } from "../drivers/repo/github/installation.ts";
-import {
-  createOpenShellCapabilities,
-  type OpenShellRepositoryTransport,
-} from "../drivers/egress-proxy/openshell-registration.ts";
+import { createOpenShellCapabilities } from "../drivers/egress-proxy/openshell-registration.ts";
+import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
 import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
@@ -239,7 +237,7 @@ export interface InstallationRuntimeDrivers {
   readonly repositoryPolicy?: RepositoryPolicyDriver;
   readonly nativeRepositorySender?: NativeRepositorySender;
   readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration;
-  readonly repositoryTransport?: OpenShellRepositoryTransport;
+  readonly repositoryTransport?: RepositoryTransportBinding;
   readonly repositoryRegistry?: Awaited<
     ReturnType<typeof loadRepositoryPolicy>
   >["repositoryRegistry"];
@@ -1156,7 +1154,7 @@ export async function loadInstallationConfiguration(options: {
     configuration: repositoryTransportConfiguration,
     resolveDelivery: repositoryRuntime?.resolveRepositoryDelivery,
   };
-  let repositoryTransport: OpenShellRepositoryTransport | undefined;
+  let repositoryTransport: RepositoryTransportBinding | undefined;
   const credentialGatewayDriver =
     credentialGateway === undefined
       ? undefined
