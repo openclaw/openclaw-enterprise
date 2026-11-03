@@ -6,9 +6,9 @@ import {
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
 import {
-  googlePackage,
   managedCredentialBinding,
   managedGoogleInstall,
+  managedInstalls,
   managedPluginCredentials,
   requireManagedCredentialRuntime,
 } from "./managed-catalog.ts";
@@ -387,7 +387,9 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
-    policyScopeByPlugin: { [managedGoogleInstall.id]: managedGoogleInstall.policyScope },
+    policyScopeByPlugin: Object.fromEntries(
+      managedInstalls.map((pkg) => [pkg.id, pkg.policyScope]),
+    ),
     approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
@@ -395,23 +397,32 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   });
 
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
-    const { [managedGoogleInstall.id]: google, ...native } = selections;
-    if (google && Object.keys(native).length > 0) {
+    const managed = managedInstalls.find((pkg) => Object.hasOwn(selections, pkg.id));
+    if (!managed) {
+      this.validate("openclaw", selections, defaultApprovers);
+      return;
+    }
+    if (Object.keys(selections).length !== 1) {
       throw new ConfigurationHarnessError(
-        "Google Workspace must be the only plugin selected for this release.",
+        `${managed.entry.name} must be the only plugin selected for this release.`,
       );
     }
+    const policy = selections[managed.id]!;
+    const supportsCredentials = managed === managedGoogleInstall;
     if (
-      google &&
-      (typeof google.enabled !== "boolean" ||
-        Object.keys(google).some((key) => key !== "enabled" && key !== "driverPolicy"))
+      typeof policy.enabled !== "boolean" ||
+      Object.keys(policy).some(
+        (key) => key !== "enabled" && !(supportsCredentials && key === "driverPolicy"),
+      )
     ) {
       throw new ConfigurationHarnessError(
-        "The Google Workspace package supports enablement and an optional credential slot.",
+        supportsCredentials
+          ? "The Google Workspace package supports enablement and an optional credential slot."
+          : `${managed.entry.name} supports plugin enablement only.`,
       );
     }
     managedCredentialBinding(selections);
-    this.validate("openclaw", native, defaultApprovers);
+    this.validate("openclaw", {}, defaultApprovers);
   }
 
   static validateConfiguration(): readonly ErrorDetail[] {
@@ -424,11 +435,12 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   }
 
   async listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]> {
-    if (
-      context.harness.id === managedGoogleInstall.placement.harnessId &&
-      context.harness.mode === managedGoogleInstall.placement.mode
-    ) {
-      return this.catalog([googlePackage]);
+    const packages = managedInstalls.filter(
+      ({ placement }) =>
+        context.harness.id === placement.harnessId && context.harness.mode === placement.mode,
+    );
+    if (packages.length > 0) {
+      return this.catalog(packages.map((pkg) => pkg.entry));
     }
     ensureHarness(context, "embedded");
     return this.catalog(OCC_CATALOG);
@@ -439,19 +451,30 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     readonly cursor?: string;
   }): Promise<PluginCatalogPage> {
     const q = input.q?.toLowerCase() ?? "";
-    const matches =
-      !input.cursor &&
-      [googlePackage.id, googlePackage.name, googlePackage.description].some((value) =>
-        value.toLowerCase().includes(q),
-      );
-    return { plugins: matches ? this.catalog([googlePackage]) : [], nextCursor: null };
+    const plugins = input.cursor
+      ? []
+      : managedInstalls
+          .map((pkg) => pkg.entry)
+          .filter(({ id, name, description }) =>
+            [id, name, description].some((value) => value.toLowerCase().includes(q)),
+          );
+    return { plugins: this.catalog(plugins), nextCursor: null };
   }
 
   async getCatalogPlugin(input: { readonly pluginId: string }): Promise<PluginCatalogEntry> {
-    if (input.pluginId !== googlePackage.id) {
-      throw new PluginDiscoveryError("invalid_response");
+    const pkg = managedInstalls.find(({ id }) => id === input.pluginId);
+    if (!pkg) {
+      // An unknown ID is the caller's error (finding 2790); name the versioned package ID
+      // when the caller left out the version and exactly one package matches.
+      const versioned = managedInstalls.filter(({ id }) => id.startsWith(`${input.pluginId}@`));
+      throw new PluginPolicyValidationError(
+        "unknownPlugin",
+        this.id,
+        input.pluginId,
+        versioned.length === 1 ? versioned[0]!.id : undefined,
+      );
     }
-    return this.catalog([googlePackage])[0]!;
+    return this.catalog([pkg.entry])[0]!;
   }
 
   validatePlacement(
@@ -463,15 +486,16 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       readonly gateway: string | undefined;
     },
   ): void {
-    if (!Object.hasOwn(selections, managedGoogleInstall.id)) {
+    const pkg = managedInstalls.find(({ id }) => Object.hasOwn(selections, id));
+    if (!pkg) {
       return;
     }
-    const { placement } = managedGoogleInstall;
+    const { placement } = pkg;
     if (harness.id !== placement.harnessId || harness.mode !== placement.mode) {
-      throw new ConfigurationHarnessError("Google Workspace requires a dedicated OpenClaw Agent.");
+      throw new ConfigurationHarnessError(`${pkg.entry.name} requires a dedicated OpenClaw Agent.`);
     }
     if (!placement.computeImplementations.includes(computeImplementation)) {
-      throw new ConfigurationHarnessError("Google Workspace requires Kubernetes Compute.");
+      throw new ConfigurationHarnessError(`${pkg.entry.name} requires Kubernetes Compute.`);
     }
     requireManagedCredentialRuntime(
       selections,
@@ -603,7 +627,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     if (this.catalogSource === "openai-curated") {
       const entry = OPENAI_CURATED_CATALOG.find((plugin) => plugin.remoteId === input.pluginId);
       if (!entry) {
-        throw new PluginDiscoveryError("invalid_response");
+        throw new PluginPolicyValidationError("unknownPlugin", this.id, input.pluginId);
       }
       return this.catalog([entry])[0]!;
     }

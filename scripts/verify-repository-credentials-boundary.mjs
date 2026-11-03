@@ -58,15 +58,7 @@ const reviewedImports = {
     "../../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
   },
   "drivers/repo/github/installation.ts": {
-    "../../../composition/installation-fields.ts": [
-      "object",
-      "closed",
-      "nonempty",
-      "openShellRepositoryConfiguration",
-    ],
-    // Hash selected configuration without loading mounted key bytes.
-    "node:crypto": ["createHash"],
-    "@openclaw-enterprise/occ": ["SandboxRepositoryRecipientUnverifiedError"],
+    "../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
   },
   "drivers/repo/github/credentials/material.ts": {
     "node:crypto": ["KeyObject", "constants", "sign"],
@@ -87,8 +79,9 @@ const reviewedImports = {
     "node:util": ["parseArgs"],
   },
   "drivers/repo/github/credentials/client/commands.ts": { "node:child_process": ["spawnSync"] },
+  // chmod restores 0700/0600 after umask. It does not read credential material.
   "drivers/repo/github/credentials/client/config.ts": {
-    "node:fs/promises": ["lstat", "mkdir", "mkdtemp", "open", "rename", "rm"],
+    "node:fs/promises": ["chmod", "lstat", "mkdir", "mkdtemp", "open", "rename", "rm"],
   },
   "drivers/repo/github/credentials/client/launch.ts": {
     "node:child_process": ["spawn"],

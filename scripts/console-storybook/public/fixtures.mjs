@@ -2166,7 +2166,7 @@ export function installFixture(scenario, evidence) {
                     })),
                   ],
             cursor: "simulated-policy-cursor",
-            withheld: 0,
+            withheld: scenario.policyWithheld ?? 0,
             truncated: false,
           });
         }

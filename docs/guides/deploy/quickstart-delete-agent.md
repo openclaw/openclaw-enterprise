@@ -4,7 +4,7 @@ tags: [human_verified]
 
 # Delete the quickstart Agent
 
-Use the saved operator session from your installation setup. These steps are identical on local k3d, Kubernetes and Amazon EKS. They delete the selected Agent's execution, workspace and version history; the installation remains available.
+Use the saved operator session from [Deploy your first Agent](deploy-first-agent.md). These steps are identical on local k3d, Kubernetes and Amazon EKS. They delete the selected Agent's execution, workspace and version history; the installation remains available.
 
 ```bash
 source /path/to/private/run/session.sh

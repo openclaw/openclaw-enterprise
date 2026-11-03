@@ -10354,7 +10354,7 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested. The Stop row replaces its action description with the result and restart guidance; shutdown completion is not verified here.",
   },
   stopReadDiscoversDeletion: {
     group: "Components/Stop Agent",
@@ -10395,7 +10395,7 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row.",
+      "A failed readable deployment leaves the Agent requested to run with no selected version. Stop stays available because a newer queued deployment may be unreadable.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopFirstDeploymentQueued: {
@@ -10406,7 +10406,7 @@ export const scenarios = {
     firstDeploymentQueued: true,
     actions: [click("Stop Agent")],
     description:
-      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway.",
+      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway. Confirming reports cancellation requested, not completed; later lifecycle reads retire that local result.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopNeverDeployed: {
@@ -10552,6 +10552,12 @@ for (const [id, state, name] of [
     "Policy logs unavailable without runtime credentials",
   ],
   ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
+  ["policyDenialsWithheldOne", "withheldOne", "One policy record withheld since the last refresh"],
+  [
+    "policyDenialsWithheldMany",
+    "withheldMany",
+    "Multiple policy records withheld since the last refresh",
+  ],
 ]) {
   scenarios[id] = {
     group: "Pages/Agent detail",
@@ -10563,6 +10569,8 @@ for (const [id, state, name] of [
     ...(["many", "populated"].includes(state)
       ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
       : {}),
+    ...(state === "withheldOne" ? { policyWithheld: 1 } : {}),
+    ...(state === "withheldMany" ? { policyWithheld: 2 } : {}),
     ...(state === "discoveryLoading"
       ? { rules: [{ suffix: "/driver-configurations", hold: true }] }
       : {}),
@@ -10687,6 +10695,23 @@ for (const [id, state, name] of [
     ...(state === "loading" ? { rules: [{ suffix: "/runtime/logs", hold: true }] } : {}),
     ...(state === "noCredential"
       ? { rules: [{ suffix: "/runtime/logs", status: 503, code: "DEPENDENCY_UNAVAILABLE" }] }
+      : {}),
+    ...(state === "withheldOne"
+      ? {
+          description:
+            'The Denials tab shows a warning banner when sandbox records are withheld. One withheld record uses the singular "record".',
+          steps: [
+            'Check the warning banner above the denial list. It reads "1 record withheld since the last refresh." Confirm the singular form.',
+          ],
+        }
+      : {}),
+    ...(state === "withheldMany"
+      ? {
+          description: 'Two withheld records: the warning banner uses the plural "records".',
+          steps: [
+            'Check the warning banner above the denial list. It reads "2 records withheld since the last refresh." Confirm the plural form.',
+          ],
+        }
       : {}),
   };
 }

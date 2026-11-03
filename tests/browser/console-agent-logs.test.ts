@@ -29,6 +29,7 @@ import {
   RUNTIME_STATUS_DENIED,
   RUNTIME_STATUS_OPERATE_DENIED,
   RUNTIME_STATUS_VERSION_UNREADABLE,
+  STOP_REQUESTED_FIRST_DEPLOYMENT,
 } from "../helpers/refusal-text.mjs";
 import {
   createProviderSandboxDriver,
@@ -2026,7 +2027,8 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
     .getByRole("dialog", { name: "Stop this Agent?" })
     .getByRole("button", { name: "Stop Agent", exact: true })
     .click();
-  const requested = stopRow.getByText(/^Stop requested\./);
+  // v2 is still queued and no version is selected, so this Stop cancels a first deployment.
+  const requested = stopRow.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true });
   await requested.waitFor();
   assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "stopped");
 

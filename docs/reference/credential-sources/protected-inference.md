@@ -1,5 +1,15 @@
 # Protected static inference
 
+New local development launches of this profile are retired. The launcher rejects
+`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
+`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before effects, with no fallback.
+Unset, empty or `0` protected-egress selections retain ordinary authenticated
+OpenShell startup. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+
+The controller contracts below remain for existing installations, source owners
+and historical specifications. Launcher retirement does not remove their admission,
+withdrawal or cleanup responsibilities.
+
 Select the Credential Proxy Driver only with a Kubernetes Compute and OpenShell pair that
 enforces the whole-execution profile below. The security principal is one freshly
 admitted Agent execution. Its parent, a sibling and an ordinary client can use the
@@ -136,10 +146,11 @@ client transformations; they do not reinterpret function-call argument data.
 
 ## Installation configuration
 
-For retained installations, consult the
+For retained controller installations, consult the
 [OpenShell Backend and Sandbox configuration](../drivers/openshell-credential-gateway.md).
 These settings describe the existing installation and do not enable new bundled
 protected static inference admission.
+The retired local launcher cannot prepare this configuration.
 Select the same Driver ID in `backend[].drivers.credential_proxy` and the
 Installation's `drivers.credential_proxy` selection. Configuring only one is an
 error, not a request to disable protection. Startup also rejects the retired

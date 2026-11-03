@@ -162,10 +162,7 @@ function sessionQuery(proxy: Recipient): string {
     proxy
       ? `s.broker_protocol=2 AND s.session_id IS NOT NULL
     AND rev.admitted_spec #>> '{execution_admission,version}' =
-      CASE WHEN p.installation #>> '{plan,policyReductionVersion}' = '2' THEN '7'
-        WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5'
-        WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'request-hook-observed' THEN '6'
-        ELSE '4' END
+      ${proxy.policy.expectedExecutionAdmissionVersion}
     AND p.installation#>'{plan,driver}'=${selectedRepositoryGitDriver}
     AND p.installation->'plan'=rev.admitted_spec->'egress_plan'
     AND p.installation#>'{plan,repositoryGit}'=rev.admitted_spec->'repository_credentials'
@@ -213,14 +210,6 @@ export interface InstalledGitMaterial {
   readonly preparationAttemptId: string;
   readonly materialVersion: string;
   readonly route?: RepositoryGitInstallationFence;
-}
-
-/** Compatibility with the broker-backed OpenShell trial only. Never use at a protected sender. */
-function openShellOnlineGitDecision(result: RepositoryGitSendDecision) {
-  if (result.kind === "denied") {
-    return result.reason === "unavailable" ? false : result.reason;
-  }
-  return result.kind === "permit" && Date.now() < Date.parse(result.sendStartBy);
 }
 
 /**
@@ -832,20 +821,6 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     } finally {
       bytes?.fill(0);
     }
-  }
-
-  /** Only the protocol-1 broker trial may use a decision that omits the send-start deadline. */
-  async authorizeOpenShellRequest(
-    q: PreparedGitHubUseRequest,
-    installed: InstalledGitMaterial,
-    signal: AbortSignal,
-  ): Promise<boolean | "draft_already_opened" | "access_withdrawn"> {
-    if (this.proxy) {
-      return false;
-    }
-    return openShellOnlineGitDecision(
-      await this.authorizeProtectedRequest(q, installed, signal, null, sendPermit),
-    );
   }
 
   /** Only a confirmed commit can return an allow or send permit. The authenticated recipient already
