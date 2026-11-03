@@ -16,12 +16,16 @@ test(
     await prepare(f);
     const material = await f.owner.readOpenShellMaterial(f.revision.id, signal);
     assert.ok(material && !("absent" in material));
-    const identity = {
-      preparationAttemptId: material.preparationAttemptId,
-      materialVersion: material.materialVersion,
-    };
     const request = () => ({ ...f.request(), operation: "upload-pack" as const });
-    assert.equal(await f.owner.authorizeOpenShellRequest(request(), identity, signal), true);
+    const first = request();
+    const used = await f.owner.use(first, signal);
+    assert.ok("value" in used, "native use must return material, not just a receipt");
+    assert.equal(used.exchangeId, first.exchangeId);
+    assert.equal(used.preparationAttemptId, material.preparationAttemptId);
+    assert.equal(used.materialVersion, material.materialVersion);
+    assert.equal(used.value, material.value);
+    assert.ok(new Date(used.sendStartBy).getTime() <= Date.parse(material.expiresAt));
+    const refusal = { message: "Prepared GitHub custody transaction did not complete (guard)." };
     const snapshot = async () =>
       (
         await f.pool.query(`SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1`, [
@@ -41,10 +45,7 @@ test(
       "SELECT pg_sleep(greatest(0, $1::numeric/1000-extract(epoch FROM clock_timestamp())))",
       [f.deadlineWallMs],
     );
-    assert.equal(
-      await f.owner.authorizeOpenShellRequest(request(), identity, signal),
-      "access_withdrawn",
-    );
+    await assert.rejects(f.owner.use(request(), signal), refusal);
     await f.withdraw();
     // Closing the old session removes the active-binding uniqueness conflict. The
     // remaining refusal is specifically the admitted deadline, not a duplicate key.
@@ -73,9 +74,16 @@ test(
     assert.deepEqual(await owner.readOpenShellMaterial(f.revision.id, signal), {
       absent: "withdrawn",
     });
-    assert.equal(
-      await owner.authorizeOpenShellRequest(request(), identity, signal),
-      "access_withdrawn",
+    await assert.rejects(owner.use(request(), signal), refusal);
+    assert.deepEqual(
+      (
+        await f.pool.query(
+          "SELECT exchange_id FROM occ.prepared_repository_git_uses WHERE admission_id=$1",
+          [f.admissionId],
+        )
+      ).rows,
+      [{ exchange_id: first.exchangeId }],
+      "expired and replacement-owner requests must leave no extra receipt",
     );
     assert.equal(f.gh.issuesOfTokens.length, 1, "new owner must not remint an expired grant");
     assert.deepEqual(

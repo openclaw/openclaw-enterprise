@@ -42,13 +42,13 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
-import { ensureImage } from "./image-pull.mjs";
+import { ensureImage } from "./image-pull.ts";
 import {
   openclawBuildArguments,
   openclawBuildValues,
   readOpenclawSource,
 } from "../lib/openclaw-source.mjs";
-import { compareEvents, eventObservedTime } from "./kubernetes-event-time.mjs";
+import { compareEvents, eventObservedTime } from "./kubernetes-event-time.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");
@@ -352,7 +352,7 @@ async function recordedDigest(tag) {
 export const postgresImage =
   "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae";
 
-// The image-pull.mjs retry helper over `run`.
+// The image-pull.ts retry helper over `run`.
 async function pullExecFile(command, args, { timeoutMs }) {
   try {
     return await run(command, args, { timeout: timeoutMs });

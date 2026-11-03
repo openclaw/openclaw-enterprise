@@ -56,6 +56,7 @@
     "tests/integration/common-logging.test.mjs",
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.mjs",
+    "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
     "tests/conformance/temporary-directory.test.mjs",
@@ -395,6 +396,9 @@
     },
     {
       "path": "tests/integration/production-image-upgrade.test.mjs"
+    },
+    {
+      "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
     },
     {
       "path": "tests/integration/secret-api.test.mjs"

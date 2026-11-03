@@ -14,7 +14,7 @@ import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
-import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 import { listen } from "../helpers/listen.mjs";
@@ -1422,7 +1422,7 @@ await template.cleanup();
     const root = await fixture(t);
     const statePath = join(root, "state.json");
     const orderPath = join(root, "order");
-    const lock = new URL("../../scripts/ci/state-lock.mjs", import.meta.url).href;
+    const lock = new URL("../../scripts/ci/state-lock.ts", import.meta.url).href;
     // Each contender takes the lock `times` times in a row and records its name while
     // holding it for 50 ms.
     const contender = (name, times) =>

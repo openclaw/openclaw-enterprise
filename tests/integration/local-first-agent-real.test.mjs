@@ -1236,11 +1236,10 @@ test(
         ({ name: variable }) => variable === "APP_SERVER_URL",
       )?.value;
       // The k3d control plane serves OpenShell workload endpoints over TLS.
+      const appServerScheme = recorded.deploymentMode === "k3d" ? "wss" : "ws";
       assert.match(
         appServerUrl ?? "",
-        recorded.deploymentMode === "k3d"
-          ? /^wss:\/\/[a-z0-9-]+--[a-z0-9-]+\.openshell\.localhost:8080\/$/
-          : /^ws:\/\/[a-z0-9-]+--[a-z0-9-]+\.openshell\.localhost:8080\/$/,
+        new RegExp(`^${appServerScheme}://[a-z0-9-]+--[a-z0-9-]+\\.openshell\\.localhost:8080/$`),
       );
       const openShellNamespace =
         recorded.deploymentMode === "k3d" ? recorded.platformNamespace : "openshell-system";
