@@ -494,21 +494,8 @@ func openShellCodexBinaries() []string {
 // openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
 // Credential Gateway Drivers.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
-	if s.authenticatedOpenShell() {
-		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
-		if s.ProtectedEgress {
-			drivers["credential_proxy"] = developmentEgressDriver
-		}
-		return map[string]any{
-			"id": "openshell", "type": "openshell",
-			"configuration": map[string]any{
-				"endpoint":            fmt.Sprintf("https://%s.%s.svc.cluster.local:8080", openShellGatewayService, s.PlatformNamespace),
-				"rootCertificatePath": "/etc/openclaw/openshell/ca.crt", "requestTimeoutMs": 30000,
-				"auth": map[string]string{"mode": "mtls", "certificatePath": "/etc/openclaw/openshell/tls.crt", "privateKeyPath": "/etc/openclaw/openshell/tls.key"},
-			},
-			"drivers": drivers,
-		}
-	}
+	// An operator's external gateway replaces the in-cluster one entirely, including
+	// its authenticated Service connection, so it is selected before that branch.
 	if s.openShellExternal != nil {
 		// The optional CA bundle trusts the gateway's TLS for gRPC; the same mounted
 		// bundle is exported through NODE_EXTRA_CA_CERTS so the client-credentials
@@ -532,6 +519,21 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 			"type":          "openshell",
 			"configuration": configuration,
 			"drivers":       map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+		}
+	}
+	if s.authenticatedOpenShell() {
+		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
+		if s.ProtectedEgress {
+			drivers["credential_proxy"] = developmentEgressDriver
+		}
+		return map[string]any{
+			"id": "openshell", "type": "openshell",
+			"configuration": map[string]any{
+				"endpoint":            fmt.Sprintf("https://%s.%s.svc.cluster.local:8080", openShellGatewayService, s.PlatformNamespace),
+				"rootCertificatePath": "/etc/openclaw/openshell/ca.crt", "requestTimeoutMs": 30000,
+				"auth": map[string]string{"mode": "mtls", "certificatePath": "/etc/openclaw/openshell/tls.crt", "privateKeyPath": "/etc/openclaw/openshell/tls.key"},
+			},
+			"drivers": drivers,
 		}
 	}
 	endpoint := fmt.Sprintf("http://k3d-%s-server-0:%d", s.Cluster, openShellNodePort)
