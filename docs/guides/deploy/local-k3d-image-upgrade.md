@@ -354,3 +354,34 @@ already created a version. Check compatibility before selecting an older image
 or restoring state, and follow [partial-failure recovery](production-upgrade-recovery.md).
 Do not delete the cluster, database volume, Namespaces, Agents, versions,
 Secrets, bootstrap volume, or Agent PVCs to force an upgrade or recovery.
+
+## Rehearse a compatible controller return
+
+Use an owned disposable loopback k3d cluster, Docker 29 or newer, Go, kubectl,
+Helm, OpenSSL, jq, yq v4 and Python 3. Stage two distinct
+[verified controller publications](published-images.md#check-publication-and-source)
+by digest in Docker and k3d. Set these variables in `TEST_ENV_FILE`, a private
+file without model or Git credentials:
+
+- `OCC_TEST_REHEARSAL_PREVIOUS_SOURCE` and `OCC_TEST_REHEARSAL_CANDIDATE_SOURCE`:
+  absolute paths to clean release checkouts.
+- `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE` and
+  `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE`: previous and candidate digest-pinned references.
+- `OCC_TEST_KUBERNETES_RUNTIME_IMAGE`, `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`,
+  and `OCC_TEST_PRODUCTION_NODE_IMAGE`: unchanged runtime and digest-pinned fixture references.
+- `OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`: the
+  absolute path to an owner-only kubeconfig and dedicated `k3d-*` context.
+
+From the test checkout with dependencies installed, run:
+
+```bash
+OCC_TEST_PRODUCTION_TUI_REHEARSAL=1 \
+  node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
+```
+
+The previous image must accept the restored candidate migration history as
+complete. The test verifies that a stale restore loses the acknowledged Agent
+draft and that the returned OCC serves both drafts from the candidate restore.
+Read private `proof.json` for phase durations. These durations do not measure
+client downtime. Inspect retained resources before cleaning up a failed rehearsal.
+Set `OCC_TEST_PRODUCTION_TUI_KEEP=1` to retain a successful disposable installation.

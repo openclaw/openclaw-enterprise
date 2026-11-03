@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
@@ -126,6 +127,15 @@
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    {
+      "path": "tests/integration/staging-upgrade-return.test.ts",
+      "expectedTests": [
+        "return rehearsal rejects different manifest references that contain the same controller",
+        "return rehearsal refuses image selection in the credentialed TUI lane",
+        "return readback rejects a stale restore and a recreated Agent with the same name",
+        "return readback requires both serving Pods to use the restored database"
+      ]
+    },
     { "path": "tests/integration/controlled-tls-origin.test.ts" },
     {
       "path": "tests/integration/tls-peer-certificate.test.mjs"
