@@ -1743,6 +1743,12 @@ test("the dedicated Gateway exposes reviewed MCP tools subject to its admitted a
   assert.deepEqual(tools.alsoAllow, ["diffs", "oce_mcp_docs_listitems"]);
   assert.ok(tools.gatewayPolicy.allow.includes("oce_mcp_docs_listitems"));
 
+  const explicit = { tools: { allow: ["exec"], deny: ["oce_mcp_docs_listitems"] } };
+  const configured = managedGatewayConfiguration(explicit, explicit, false, undefined, [tool]);
+  assert.deepEqual(configured.tools.allow, ["exec", "oce_mcp_docs_listitems"]);
+  assert.equal(configured.tools.alsoAllow, undefined);
+  assert.deepEqual(configured.tools.deny, explicit.tools.deny);
+
   const restricted = { tools: { gatewayPolicy: { allow: ["exec"] } } };
   const denied = managedGatewayConfiguration(restricted, restricted, false, undefined, [tool]);
   assert.deepEqual(denied.tools.gatewayPolicy.allow, ["exec"]);
