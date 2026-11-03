@@ -1439,6 +1439,9 @@ export function createOpenShellKubernetesFixture({
       let nextId = 1;
       let assistant = "";
       let finished = false;
+      let phase = "connect";
+      let receivedMessages = 0;
+      let completedCommands = 0;
       let failedCommands = 0;
       let approvalRequests = 0;
       // Whether the turn began anything that can act: a command, file change, tool call or
@@ -1499,6 +1502,9 @@ export function createOpenShellKubernetesFixture({
             : (error?.stack || String(error)));
         process.stderr.write("\nNative execution summary: " + JSON.stringify({
           failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
+          // These method names come only from this client, never server payloads or prompts.
+          phase, pendingRequests: [...pending.values()].map(({ method }) => method),
+          receivedMessages, completedCommands, actionSeen,
           commandGraceMs: ${codexCommandGraceMs},
           sinceTurnEndMs: turnCompletedAt === undefined ? null : Math.floor(performance.now() - turnCompletedAt),
           retrySafe,
@@ -1547,6 +1553,7 @@ export function createOpenShellKubernetesFixture({
 
       function request(method, params = {}) {
         const id = nextId++;
+        phase = method;
         return new Promise((resolve, reject) => {
           pending.set(id, { method, resolve, reject });
           socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
@@ -1601,6 +1608,7 @@ export function createOpenShellKubernetesFixture({
 
       socket.addEventListener("message", ({ data }) => {
         if (finished) return;
+        receivedMessages += 1;
         const message = JSON.parse(String(data));
         if (${JSON.stringify(readThreadId)} !== undefined && message.id === undefined) return;
         const { method, params } = message;
@@ -1646,6 +1654,7 @@ export function createOpenShellKubernetesFixture({
           commandTimes.set(item.id, { startedAt: performance.now(), deltas: 0, bytes: 0 });
         }
         if (ending) {
+          completedCommands += 1;
           pendingCommands.delete(item.id);
           if (commandDeadline && !pendingCommands.size) finish();
           return;
@@ -1665,6 +1674,7 @@ export function createOpenShellKubernetesFixture({
               const id = message.result?.turn?.id;
               if (typeof id !== "string" || !id) return fail(new Error("Codex turn/start returned no turn ID"));
               turnId = id;
+              phase = "turn";
             }
             entry.resolve(message.result);
           }
