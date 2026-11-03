@@ -332,7 +332,8 @@ until tenant deployment/TUI procedures run.
   Kubernetes to 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
   `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
-  `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
+  `host` and `port`. Check `cluster.cidrs` and `cluster.port`; restarted
+  clusters can move it.
 - Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
 - `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
   `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
