@@ -359,7 +359,7 @@ async function assertPreflightBlocked(form, expected) {
   assert.equal(await alert.evaluate((node) => globalThis.document.activeElement === node), true);
   assert.equal(await configuration.isDisabled(), false);
   assert.equal(await pluginJson.isDisabled(), false);
-  const sent = writes.slice(since.writes);
+  const sent = writes().slice(since.writes);
   assert.ok(sent.length > 0);
   assert.deepEqual(
     sent.filter((write) => write !== `POST /namespaces/${namespace.id}/agents/validate`),
