@@ -1,4 +1,9 @@
-import type { AdmittedRepositoryBinding, AgentRevision } from "@openclaw-enterprise/contracts";
+import type {
+  AdmittedRepositoryBinding,
+  AgentRevision,
+  RepositoryApprovalScope,
+  RepositoryExecutionIdentity,
+} from "@openclaw-enterprise/contracts";
 
 export interface RepositoryRevisionOwner {
   readonly namespaceId: string;
@@ -21,8 +26,10 @@ export interface RepositorySessionAttempt extends RepositoryRevisionOwner {
   readonly durationSeconds: number;
   readonly deadlineWallMs: number;
   readonly phase: RepositorySessionPhase;
-  /** Zero denotes an attempt created before durable broker admission. */
-  readonly brokerProtocol: 0 | 1;
+  /** 0, 1: historical brokers; 2: OCC session; 3: prepared-only native broker. */
+  readonly brokerProtocol: 0 | 1 | 2 | 3;
+  readonly predecessorAdmissionId?: string;
+  readonly executionFingerprint?: string;
   readonly sessionId?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -39,7 +46,32 @@ export interface RepositoryBrokerReceipt {
   readonly expired?: number;
 }
 
+export interface RepositoryStandingApproval {
+  readonly generation: number;
+  readonly scope: RepositoryApprovalScope;
+  readonly scopeFingerprint: string;
+  readonly id: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly binding: AdmittedRepositoryBinding;
+  readonly approvedBy: string;
+  readonly createdAt: string;
+  readonly revokedAt?: string;
+}
+
 export interface RepositorySessionReadRepository {
+  findStandingExecution(
+    owner: RepositoryRevisionOwner,
+  ): Promise<(RepositoryExecutionIdentity & { readonly closed: boolean }) | undefined>;
+  listStandingApprovals(
+    namespaceId: string,
+    agentId: string,
+  ): Promise<readonly Readonly<RepositoryStandingApproval>[]>;
+  findStandingApproval(
+    namespaceId: string,
+    agentId: string,
+    repositoryRef: string,
+  ): Promise<Readonly<RepositoryStandingApproval> | undefined>;
   findAttempt(admissionId: string): Promise<Readonly<RepositorySessionAttempt> | undefined>;
   findBrokerReceipt(admissionId: string): Promise<Readonly<RepositoryBrokerReceipt> | undefined>;
   findBrokerReceiptBySession(
@@ -54,6 +86,18 @@ export interface RepositorySessionReadRepository {
 }
 
 export interface RepositorySessionRepository extends RepositorySessionReadRepository {
+  recordStandingExecution(
+    owner: RepositoryRevisionOwner,
+    execution: RepositoryExecutionIdentity,
+  ): Promise<void>;
+  approveStanding(
+    input: Omit<RepositoryStandingApproval, "generation" | "revokedAt">,
+  ): Promise<Readonly<RepositoryStandingApproval>>;
+  /** Withdraw this active approval generation or report a conflict; never remove its successor. */
+  revokeStanding(
+    approval: Pick<RepositoryStandingApproval, "namespaceId" | "agentId" | "id" | "generation">,
+    at: string,
+  ): Promise<void>;
   /** Serialize receipt changes with the exact attempt and its owner. */
   lockAttempt(admissionId: string): Promise<Readonly<RepositorySessionAttempt> | undefined>;
   createBrokerReceipt(input: {
@@ -84,7 +128,9 @@ export interface RepositorySessionRepository extends RepositorySessionReadReposi
       readonly durationSeconds: number;
       readonly deadlineWallMs: number;
       readonly createdAt: string;
-      readonly brokerProtocol?: 1;
+      readonly brokerProtocol?: 1 | 2 | 3;
+      readonly predecessorAdmissionId?: string;
+      readonly executionFingerprint?: string;
     },
   ): Promise<Readonly<RepositorySessionAttempt>>;
   /** Compare-and-set phase changes preserve ownership, request fields, and any known session ID. */

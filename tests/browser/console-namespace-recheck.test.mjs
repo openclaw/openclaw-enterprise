@@ -3,16 +3,21 @@ import test from "node:test";
 
 import {
   fileBrowser,
+  fulfillPatchedJson,
   login,
   newPage,
   settledFetches,
   settledView,
   trackSettledFetches,
+  waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { refocus } from "./console-refocus-helpers.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 
 // Create Agent open on a provisioning Namespace rechecks it every 10 s while a Dedicated plan
 // waits for it (finding 2012). These cases pin when that recheck runs and stops: a failed read
@@ -28,7 +33,7 @@ const NOT_READY = /This Namespace is not ready yet\. Check its status on the Nam
 const READY_NOTE = "Namespace status: Ready. Agents created here can be deployed now.";
 const REFUSES = "This Namespace cannot hold new Agents, so Create Agent is unavailable.";
 const ADOPTED_WAITS = "Create Agent is unavailable until this Namespace is ready.";
-const MISSING = "This Namespace is missing or you no longer have access. Choose another Namespace.";
+const MISSING = `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`;
 const MISSING_LINE = "Create Agent is unavailable until you choose another Namespace.";
 
 const browser = fileBrowser();
@@ -62,21 +67,18 @@ async function routeNamespace(page, namespaceId) {
       await state.held;
       if (state.fail > 0) {
         state.fail -= 1;
-        await route.fulfill({
-          status: 503,
-          json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Try again." } },
-        });
+        await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
         return;
       }
-      const response = await route.fetch();
-      const body = await response.json();
-      body.data = body.data.filter((item) => !(state.absent && item.id === namespaceId));
-      body.data = body.data.map((item) =>
-        item.id === namespaceId && state.status
-          ? { ...item, ...state.fields, status: state.status }
-          : item,
-      );
-      await route.fulfill({ response, json: body });
+      await fulfillPatchedJson(route, (body) => {
+        body.data = body.data.filter((item) => !(state.absent && item.id === namespaceId));
+        body.data = body.data.map((item) =>
+          item.id === namespaceId && state.status
+            ? { ...item, ...state.fields, status: state.status }
+            : item,
+        );
+        return body;
+      });
     },
   );
   return state;
@@ -195,7 +197,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     namespaces.status = null;
     await poll();
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
-    assert.equal(await create.isDisabled(), false);
+    await waitForEnabled(create);
     await assertDraftIntact(name);
   });
 
@@ -241,7 +243,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
       namespaces.status = null;
       await poll();
       await view.getByText(DRAFT_PLAN, { exact: true }).waitFor();
-      assert.equal(await create.isDisabled(), false);
+      await waitForEnabled(create);
     },
   );
 
@@ -278,10 +280,10 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await view.getByText(MISSING_LINE, { exact: true }).waitFor();
     namespaces.absent = false;
     namespaces.status = null;
-    await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+    await refocus(page);
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
     await view.getByRole("status").filter({ hasText: READY_NOTE }).waitFor();
-    assert.equal(await create.isDisabled(), false);
+    await waitForEnabled(create);
   });
 
   await t.test("the note changes in place, so the field being edited stays put", async (t) => {
@@ -294,7 +296,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     namespaces.status = null;
     await poll();
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
-    assert.equal(await create.isDisabled(), false);
+    await waitForEnabled(create);
     const note = view.getByRole("status").filter({ hasText: READY_NOTE });
     assert.equal(await note.textContent(), READY_NOTE);
     assert.equal(await note.getAttribute("data-tone"), "success");
@@ -328,7 +330,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await setHidden(page, false);
     await read;
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
-    assert.equal(await create.isDisabled(), false);
+    await waitForEnabled(create);
   });
 
   await t.test("the recheck runs only while Create Agent waits on the Namespace", async (t) => {
@@ -336,7 +338,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     // An Embedded draft saves on a provisioning Namespace: nothing waits, so nothing polls.
     await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
     await view.getByText(DRAFT_PLAN, { exact: true }).waitFor();
-    assert.equal(await create.isDisabled(), false);
+    await waitForEnabled(create);
     await idle();
     // Back to the Dedicated plan, the wait and its recheck resume.
     await view.getByLabel("Harness", { exact: true }).selectOption("codex");
@@ -349,9 +351,9 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     const release = namespaces.hold();
     const before = await started();
     await page.clock.runFor(10_000);
-    await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+    await refocus(page);
     await page.clock.runFor(10_000);
-    await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+    await refocus(page);
     assert.equal(await started(), before + 1);
     namespaces.status = null;
     const read = page.waitForResponse(
@@ -360,7 +362,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     release();
     await read;
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
-    assert.equal(await create.isDisabled(), false);
+    await waitForEnabled(create);
     assert.equal(await started(), before + 1);
   });
 
@@ -394,7 +396,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await setHidden(page, false);
     await read;
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
-    assert.equal(await create.isDisabled(), false);
+    await waitForEnabled(create);
     assert.equal(await name.inputValue(), "Probe Agent");
   });
 
@@ -426,9 +428,13 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     namespaces.status = null;
     release();
     await waitForSettledFetches(page, "/namespaces", answered + 1);
-    assert.deepEqual(await replaced.evaluate((node) => [node.isConnected, node.disabled]), [
-      false,
-      true,
-    ]);
+    // Still unavailable: natively, or aria-disabled while its wait shows (class of finding 2899).
+    assert.deepEqual(
+      await replaced.evaluate((node) => [
+        node.isConnected,
+        node.disabled || node.getAttribute("aria-disabled") === "true",
+      ]),
+      [false, true],
+    );
   });
 });

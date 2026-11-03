@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { createServer } from "node:net";
+import { startApi } from "../../apps/controller/src/api-startup.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { setEnvironment } from "../helpers/environment.mjs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { request as httpRequest } from "node:http";
@@ -13,22 +16,26 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { setTimeout as delay } from "node:timers/promises";
-import { composeProduction } from "../../apps/controller/src/composition/production.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.mjs";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   PostgresPlatformState,
+  InstalledDriver,
 } from "../../packages/occ/src/index.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { createDriver as createProtectedFixture } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 
 const databaseUrl = process.env.OCC_PRODUCTION_WIREUP_DATABASE_URL;
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -78,16 +85,7 @@ function memoryLog() {
     lines,
     logger: createOccLogger({
       component: "occ-api-production-wireup",
-      destination: {
-        write(chunk) {
-          for (const line of String(chunk).split("\n")) {
-            if (line.length > 0) {
-              lines.push(JSON.parse(line));
-            }
-          }
-          return true;
-        },
-      },
+      destination: jsonLineDestination(lines),
     }),
   };
 }
@@ -152,7 +150,7 @@ test(
       OCC_AUTH_BASE_URL: authBaseURL,
       OCC_BOOTSTRAP_ADMIN_EMAIL: adminEmail,
       OCC_BOOTSTRAP_PASSWORD_FILE: join(
-        await mkdtemp(join(tmpdir(), "openclaw-enterprise-bootstrap-password-")),
+        await temporaryDirectory(t, "openclaw-enterprise-bootstrap-password-"),
         "admin-password",
       ),
       OCC_BOOTSTRAP_SERVICE_KEY_FILE: "",
@@ -383,6 +381,200 @@ test(
       );
       assert.equal(privileges.rows[0].can_create_schema, false);
 
+      // Exercise both API builders against PostgreSQL while failures at owned Driver seams
+      // verify that shutdown and failed startup still release later owners.
+      for (const [mode, failure] of [
+        ["production", "shutdown"],
+        ["development", "shutdown"],
+        ["production", "bind"],
+        ["development", "bind"],
+        ["production", "routes"],
+      ]) {
+        await t.test(`${mode} cleanup after ${failure} failure`, async () => {
+          const events = [];
+          const first = mode === "production" ? 0 : new Error("first cleanup failure");
+          const startup = new Error("original startup failure");
+          const runtime = await productionDrivers();
+          const registration = createProtectedFixture({
+            id: "cleanup-fixture",
+            implementation: "cleanup-fixture",
+            configuration: { endpoint: "https://127.0.0.1:1", ca: "unused" },
+          });
+          delete registration.computeLifecycleHooks;
+          registration.capabilities.credential_proxy.bindExchange = async (connect) => {
+            events.push("bind");
+            if (failure === "bind") {
+              throw startup;
+            }
+            connect({ verify: async () => undefined, capture: () => undefined, owns: () => false });
+            return {
+              async close() {
+                events.push("exchange");
+                throw first;
+              },
+            };
+          };
+          registration.close = async () => {
+            events.push("driver");
+            throw new Error("later cleanup failure");
+          };
+          runtime.protectedDriver = new InstalledDriver(
+            { id: "cleanup-fixture", implementation: "cleanup-fixture", configuration: {} },
+            registration,
+          );
+          let endPool;
+          let poolClosed = false;
+          runtime.preparedGitHub = {
+            async connect(pool) {
+              endPool = pool.end.bind(pool);
+              pool.end = async () => {
+                events.push("pool");
+                await endPool();
+                poolClosed = true;
+              };
+            },
+            async close() {
+              events.push("prepared");
+            },
+          };
+          const config = { mode, host: "127.0.0.1", databaseUrl, authSecret, authBaseURL };
+          const build = () =>
+            mode === "production"
+              ? composeProduction({
+                  ...config,
+                  drivers: runtime,
+                  onStartupPhase(phase) {
+                    if (failure === "routes" && phase === "routes") {
+                      throw startup;
+                    }
+                  },
+                })
+              : composePostgresDevelopment(config, runtime);
+          try {
+            if (failure === "shutdown") {
+              const instance = await build();
+              await assert.rejects(
+                () => instance.close(),
+                (error) =>
+                  first === 0
+                    ? error instanceof Error &&
+                      error.message === "Resource cleanup failed." &&
+                      error.cause === first
+                    : error === first,
+              );
+            } else {
+              await assert.rejects(build, (error) => error === startup);
+            }
+            assert.deepEqual(
+              events,
+              failure === "bind"
+                ? ["bind", "driver", "prepared", "pool"]
+                : ["bind", "exchange", "driver", "prepared", "pool"],
+            );
+            assert.equal(poolClosed, true);
+          } finally {
+            // Release only this case's pool if a regression strands it.
+            if (endPool && !poolClosed) {
+              await endPool();
+            }
+          }
+        });
+      }
+
+      // The worker owns the same protected Driver and its own pool. A Driver that fails to close
+      // must not strand the worker's PostgreSQL connections at shutdown.
+      await t.test(
+        "worker stop closes its pool after a protected Driver close failure",
+        async () => {
+          const driverFailure = new Error("protected Driver cleanup failure");
+          const runtime = await productionDrivers();
+          const registration = createProtectedFixture({
+            id: "worker-cleanup-fixture",
+            implementation: "worker-cleanup-fixture",
+            configuration: { endpoint: "https://127.0.0.1:1", ca: "unused" },
+          });
+          delete registration.computeLifecycleHooks;
+          registration.close = async () => {
+            throw driverFailure;
+          };
+          runtime.protectedDriver = new InstalledDriver(
+            {
+              id: "worker-cleanup-fixture",
+              implementation: "worker-cleanup-fixture",
+              configuration: {},
+            },
+            registration,
+          );
+          const workerPool = new pg.Pool({ connectionString: databaseUrl });
+          const worker = createControllerWorker({
+            pool: workerPool,
+            mode: "production",
+            drivers: runtime,
+            pollIntervalMs: 20,
+            emit: () => {},
+          });
+          try {
+            await worker.start();
+            await assert.rejects(worker.stop(), (error) => error === driverFailure);
+            assert.equal(
+              workerPool.ended,
+              true,
+              "the worker pool must close after the Driver fails",
+            );
+          } finally {
+            if (!workerPool.ended) {
+              await workerPool.end();
+            }
+          }
+        },
+      );
+
+      await t.test("API listen failure survives completed PostgreSQL cleanup", async (t) => {
+        const port = await listen(t, createServer());
+        // These constructors need settings; no Docker operation runs during this startup.
+        setEnvironment(t, {
+          OCC_DOCKER_RUNTIME_IMAGE: "unused-startup-fixture",
+          OCC_DEVELOPMENT_CONFIGURATION_ROOT: passwordDirectory,
+        });
+        const signals = ["SIGINT", "SIGTERM"];
+        const previous = new Set(signals.flatMap((signal) => process.listeners(signal)));
+        t.after(() => {
+          for (const signal of signals) {
+            for (const listener of process.listeners(signal)) {
+              if (!previous.has(listener)) {
+                process.removeListener(signal, listener);
+              }
+            }
+          }
+        });
+        const close = PostgresPlatformState.prototype.close;
+        const cleanupError = new Error("unrelated PostgreSQL cleanup error");
+        let completed = false;
+        const mockedClose = t.mock.method(
+          PostgresPlatformState.prototype,
+          "close",
+          async function () {
+            await delay(0);
+            await close.call(this);
+            completed = true;
+            throw cleanupError;
+          },
+        );
+        await assert.rejects(
+          startApi({
+            NODE_ENV: "development",
+            OCC_DATABASE_URL: databaseUrl,
+            OCC_HOST: "127.0.0.1",
+            OCC_PORT: String(port),
+            OCC_AUTH_SECRET: authSecret,
+            OCC_AUTH_BASE_URL: authBaseURL,
+          }),
+          (error) => error !== cleanupError && error.code === "EADDRINUSE",
+        );
+        assert.equal(mockedClose.mock.callCount(), 1);
+        assert.equal(completed, true, "startup must await the real pool close");
+      });
+
       const apiLog = memoryLog();
       const startupPhases = [];
       app = await composeProduction({
@@ -526,17 +718,10 @@ test(
       });
       try {
         await worker.start();
-        const deadline = Date.now() + 10000;
-        while (Date.now() < deadline) {
-          const current = await request("GET", `/namespaces/${defaultNamespace[0].id}`);
-          if (current.data.status === "ready") {
-            break;
-          }
-          await delay(20);
-        }
-        assert.equal(
-          (await request("GET", `/namespaces/${defaultNamespace[0].id}`)).data.status,
-          "ready",
+        await waitUntil(
+          "the default Namespace to become ready",
+          async () =>
+            (await request("GET", `/namespaces/${defaultNamespace[0].id}`)).data.status === "ready",
         );
       } finally {
         await worker.stop();
@@ -1190,15 +1375,10 @@ test(
                   namespaceId,
                 ]);
                 pendingGrant = request("POST", `${policyPath}/access-bindings`, grant, assigning);
-                const protectedPid = await waitFor(
+                const protectedPid = await waitForLockWaiter(
+                  pool,
+                  pid,
                   "the protected sharing write waiting for the Namespace",
-                  async () => {
-                    const waiting = await pool.query(
-                      "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-                      [pid],
-                    );
-                    return waiting.rowCount > 0 ? waiting.rows[0].pid : undefined;
-                  },
                 );
                 // Another API instance has no shared JavaScript lock. PostgreSQL must
                 // keep logout from deleting the assigning session before this commit.
@@ -1206,13 +1386,11 @@ test(
                   method: "POST",
                   headers: authenticatedHeaders(assigning, { origin: authBaseURL }),
                 });
-                await waitFor("cross-replica logout waiting on the held session", async () => {
-                  const waiting = await pool.query(
-                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-                    [protectedPid],
-                  );
-                  return waiting.rowCount > 0 ? true : undefined;
-                });
+                await waitForLockWaiter(
+                  pool,
+                  protectedPid,
+                  "cross-replica logout waiting on the held session",
+                );
                 await blocker.query("COMMIT");
                 released = true;
                 const committed = await pendingGrant;
@@ -1324,13 +1502,11 @@ test(
                 });
                 // Arm only after the IAM unit holds the session and waits for its
                 // Namespace, so authentication's earlier transactions are unaffected.
-                await waitFor("the policy transaction waiting for its Namespace", async () => {
-                  const waiting = await pool.query(
-                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-                    [pid],
-                  );
-                  return waiting.rowCount > 0 ? true : undefined;
-                });
+                await waitForLockWaiter(
+                  pool,
+                  pid,
+                  "the policy transaction waiting for its Namespace",
+                );
                 proxy.arm({ pauseCommit: true });
                 await blocker.query("COMMIT");
                 released = true;
@@ -1431,13 +1607,11 @@ test(
                   namespaceId,
                 ]);
                 pending = request("POST", `${policyPath}/access-bindings`, grant, assigning);
-                await waitFor("the expiring sharing write waiting for the Namespace", async () => {
-                  const waiting = await pool.query(
-                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-                    [pid],
-                  );
-                  return waiting.rowCount > 0 ? true : undefined;
-                });
+                await waitForLockWaiter(
+                  pool,
+                  pid,
+                  "the expiring sharing write waiting for the Namespace",
+                );
                 await delay(3_100);
                 await blocker.query("COMMIT");
                 released = true;
@@ -1501,7 +1675,6 @@ test(
       if (pool !== undefined) {
         await pool.end();
       }
-      await rm(passwordDirectory, { recursive: true, force: true });
     }
   },
 );

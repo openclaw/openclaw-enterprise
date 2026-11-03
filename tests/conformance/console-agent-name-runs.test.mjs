@@ -5,7 +5,7 @@ import {
   UNBROKEN_ALTERNATIVES,
   UNBROKEN_RUN,
   hasUnbrokenRun,
-} from "../../apps/controller/src/console/agents/list.mjs";
+} from "../../apps/controller/src/console/agents/list.mts";
 
 // The Agents list tests every name for a run the browser cannot wrap, on each render and each
 // search keystroke. A name of word-joiner (U+2060) or zero-width-joiner (U+200D) runs made that

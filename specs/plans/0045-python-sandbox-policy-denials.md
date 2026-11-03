@@ -184,7 +184,7 @@ live/redeploy path. Recommendation approval must use this same workflow.
 
 ### 5. Build the console workflow from validated sources
 
-Reuse the [Agent Logs lifecycle](../../apps/controller/src/console/agents/logs.mjs).
+Reuse the [Agent Logs lifecycle](../../apps/controller/src/console/agents/logs.mts).
 The Policy denials tab shows retained denial records with
 **Denials in the loaded window**; count records rather than unique requests or
 lifetime totals. Omit the allowed-decisions toggle. Keep gap/withheld-record notices visible. Show

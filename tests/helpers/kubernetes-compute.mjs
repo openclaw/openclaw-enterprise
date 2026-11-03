@@ -1,16 +1,34 @@
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 
-/** Construct the production Kubernetes Driver without starting clients or contacting a cluster. */
+/**
+ * Construct the production Kubernetes Driver without starting clients or contacting a cluster.
+ * @param {string} id
+ * @param {Pick<NonNullable<ConstructorParameters<typeof KubernetesComputeDriver>[1]>,
+ *   "sandboxDriver" | "credentialGatewayDriver" | "protectedDriver"> & {
+ *   authentication?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["authentication"],
+ *   repositoryCredentials?: boolean, gatewayRuntime?: boolean, channelRuntime?: boolean,
+ *   routed?: boolean, privateStatus?: boolean, gatewayTrustedProxyCidrs?: string[],
+ * }} [options]
+ */
 export function createTestKubernetesComputeDriver(
   id,
   {
     repositoryCredentials = false,
+    gatewayRuntime = false,
     // An Installation with runtime.channels: isolated channel credentials and a reviewed proxy.
     channelRuntime = false,
+    // false: runtime storage without gateway routing or node enrollment, which dedicated Agents
+    // cannot use (provisioning and deployment admission refuse them).
+    routed = true,
+    // With runtime and routing: network.pluginStatusProxySourceCidrs, as `occ dev up` sets it, so
+    // the controller reads Gateway private status and a Dedicated Codex Gateway applies its
+    // workspace node at runtime.
+    privateStatus = false,
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
     sandboxDriver,
     credentialGatewayDriver,
+    protectedDriver,
   } = {},
 ) {
   const resources = {
@@ -18,8 +36,22 @@ export function createTestKubernetesComputeDriver(
     limits: { cpu: "250m", memory: "128Mi" },
   };
 
+  // Runtime storage that dedicated Agents can use needs gateway routing, node enrollment and a
+  // Gateway node selector; deployment admission refuses dedicated Agents otherwise.
+  const runtime = repositoryCredentials || channelRuntime || gatewayRuntime;
+  const placed = runtime && routed;
   return new KubernetesComputeDriver(
     {
+      ...(placed
+        ? {
+            gatewayRouting: {
+              hostname: "agents.example.test",
+              gatewayName: "gateways",
+              gatewayNamespace: "controller",
+              envoyNamespace: "envoy",
+            },
+          }
+        : {}),
       authentication,
       images: { gateway: "gateway:local", agent: "agent:local", requireImmutableDigest: false },
       resources: {
@@ -31,7 +63,10 @@ export function createTestKubernetesComputeDriver(
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
         gatewayTrustedProxyCidrs,
-        gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
+        ...(placed
+          ? {}
+          : { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }),
+        ...(placed && privateStatus ? { pluginStatusProxySourceCidrs: ["10.42.0.1/32"] } : {}),
         ...(repositoryCredentials
           ? {
               repositoryCredentials: {
@@ -43,17 +78,24 @@ export function createTestKubernetesComputeDriver(
           : {}),
       },
       servicePrincipalCredentials: { mode: "disabled" },
-      ...(repositoryCredentials || channelRuntime
+      ...(runtime
         ? {
             runtime: {
               transportSecretPrefix: "transport",
               gatewayStorageClassName: "local-path",
+              ...(placed ? { gatewayNodeSelector: { "oce-role": "control" } } : {}),
               ...(channelRuntime ? { channels: { proxyUrl: "http://10.42.0.15:3128" } } : {}),
             },
           }
         : {}),
     },
-    { id, sandboxDriver, credentialGatewayDriver },
+    {
+      id,
+      sandboxDriver,
+      credentialGatewayDriver,
+      protectedDriver,
+      ...(placed ? { nodeEnrollment: {} } : {}),
+    },
   );
 }
 

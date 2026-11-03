@@ -1,0 +1,59 @@
+name: Download lane results
+description: Download and merge result artifacts, retrying after 60 s and then 240 s.
+# GitHub can refuse artifact downloads for minutes at a time ("Egress is over
+# the account limit"), and download-artifact gives up after about 25 s. Every
+# lane has already passed or failed by the time an aggregate job downloads, so
+# try again after a pause rather than report each lane's result as missing.
+# The last attempt's failure fails this step.
+inputs:
+  pattern:
+    description: Artifact name pattern, for example ci-results-*.
+    required: true
+  path:
+    description: Directory to merge the artifacts into.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Download results
+      id: download
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      continue-on-error: true
+      with:
+        pattern: ${{ inputs.pattern }}
+        path: ${{ inputs.path }}
+        merge-multiple: true
+    - name: Wait 60 s before retry 1
+      if: ${{ !cancelled() && steps.download.outcome == 'failure' }}
+      shell: bash
+      env:
+        RESULTS_PATH: ${{ inputs.path }}
+      run: |
+        echo "::notice::Results download failed; retrying in 60 s"
+        rm -rf "$RESULTS_PATH"
+        sleep 60
+    - name: Download results (retry 1)
+      id: retry-1
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      continue-on-error: true
+      if: ${{ !cancelled() && steps.download.outcome == 'failure' }}
+      with:
+        pattern: ${{ inputs.pattern }}
+        path: ${{ inputs.path }}
+        merge-multiple: true
+    - name: Wait 240 s before retry 2
+      if: ${{ !cancelled() && steps.retry-1.outcome == 'failure' }}
+      shell: bash
+      env:
+        RESULTS_PATH: ${{ inputs.path }}
+      run: |
+        echo "::notice::Results download failed; retrying in 240 s"
+        rm -rf "$RESULTS_PATH"
+        sleep 240
+    - name: Download results (retry 2)
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      if: ${{ !cancelled() && steps.retry-1.outcome == 'failure' }}
+      with:
+        pattern: ${{ inputs.pattern }}
+        path: ${{ inputs.path }}
+        merge-multiple: true

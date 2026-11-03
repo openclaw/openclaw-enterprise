@@ -6,10 +6,10 @@
   "sessionPolicy": {
     "maximumDurationSeconds": 86400,
     "defaultProfile": "git-write",
-    "allowedProfiles": ["git-read", "git-write", "git-full"]
+    "allowedProfiles": ["git-write"]
   },
   "backend": {
-    "kind": "github-app-registry",
+    "kind": "github-prepared-git-registry",
     "backendId": "repository-backend"
   }
 }

@@ -18,6 +18,10 @@ Supplying host or port while disabled fails startup. An invalid configuration or
 failed bind fails startup. Listener shutdown follows process shutdown. Metrics
 are independent of log level and the logging Collector's port 8888.
 
+When `repositoryCredentials.enabled` is `true`, the production chart also rejects
+`metrics.port=8443`: the repository service reserves that port in the worker Pod.
+The default metrics port 9464 remains available.
+
 The listener serves no sessions or resource operations and does not invoke IAM.
 Network isolation protects the aggregate operational data. Exposition uses
 Prometheus text, `Cache-Control: no-store`, and the client content type. Other

@@ -26,7 +26,8 @@ function parsePort(args) {
 function startGateway(args) {
   const port = parsePort(args);
   const server = createServer((request, response) => {
-    if (request.url !== "/readyz") {
+    // The Gateway runtime wrapper's readiness reads both probes.
+    if (request.url !== "/readyz" && request.url !== "/startupz") {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "Not found" }));
       return;

@@ -319,6 +319,7 @@ export function createLifecycle(options: {
     const controller = new AbortController();
     let deadline = Infinity;
     const owned = attempt("retire", controller, () => deadline);
+    custody.bindRetirement(owned.context, record);
     void queue
       .run(
         controller.signal,
@@ -544,6 +545,9 @@ export function createLifecycle(options: {
       ) {
         throw new Error("USE_CLOSED");
       }
+    },
+    withUseBytes<T>(record: CapturedCredential, consume: (bytes: Uint8Array) => Promise<T>) {
+      return custody.withUseBytes(record, consume);
     },
     release(record: CapturedCredential) {
       if (record.uses <= 0) {

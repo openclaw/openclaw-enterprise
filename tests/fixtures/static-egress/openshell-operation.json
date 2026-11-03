@@ -1,0 +1,16 @@
+{
+  "qualification": "decoded genuine TLS/gRPC fixture request, not installed evidence",
+  "request_context": {
+    "request_id": "01a13ac4-f74a-7240-af6c-fc30b2df8dcb",
+    "sandbox_id": "immutable-sandbox-1"
+  },
+  "verified_instance_id": "11111111-1111-4111-8111-111111111111",
+  "creation_ms": 1791987349322,
+  "deadline": {
+    "seconds": "1791987379",
+    "nanos": 322000000
+  },
+  "deadline_ms": 1791987379322,
+  "capture_delay_ms": 100,
+  "fixed_horizon_ms": 1791987379322
+}

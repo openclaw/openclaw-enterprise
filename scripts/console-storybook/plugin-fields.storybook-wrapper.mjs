@@ -1,6 +1,8 @@
 import { createPluginFields as createProductionPluginFields } from "./plugin-fields.production.mjs";
 import { scenarios } from "/storybook-fixtures/scenarios.mjs";
 
+export { isPluginSelections } from "./plugin-fields.production.mjs";
+
 function currentScenario() {
   return scenarios[globalThis.__consoleStory?.id];
 }

@@ -113,6 +113,15 @@ and set a reachable resolver for a fresh start. That recovery changes only the
 owned node's resolver. If startup rolls the cluster back, wait until that
 command exits before starting again.
 
+## Local Agent Sandbox controller image pull fails
+
+Inspect controller Pod events in `agent-sandbox-system` with the
+[startup kubeconfig and context](#local-startup-stalls-on-cert-manager).
+`ImagePullBackOff` with resets from `cdn.registry.k8s.io` indicates failed image
+delivery. Verify node access to registry and redirected blob hosts. Local manifest
+overrides do not preload images. Use a [verified image cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache),
+or restore registry connectivity. Preserve image versions and TLS verification.
+
 ## Local Codex sandbox check fails
 
 Kubernetes Compute startup with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` verifies the
@@ -186,11 +195,13 @@ installation generates a new CA and requires its own trust step.
 
 ## Open the console from another machine
 
-Kubernetes-only startup without OpenShell prints an HTTPS console URL such as
+With the browser port enabled, Kubernetes-only startup prints an HTTPS console
+URL and its public CA, including when using OpenShell. For example:
 `https://console.<cluster>.oce.localhost:8443/console/`. `<cluster>` is the k3d
-cluster name from startup. `8443` is the default `OCC_DEVELOPMENT_BROWSER_PORT`;
-use the printed port when it differs. Kubernetes-only startup with OpenShell
-prints `Console: <apiURL>/console/` and does not print this browser URL or CA.
+cluster name from startup. The local OpenShell quickstart explicitly sets
+`OCC_DEVELOPMENT_BROWSER_PORT=8443`; use the printed port when it differs.
+When the browser port is disabled, OpenShell startup prints only the HTTP API
+Console URL. Enable the browser port for the HTTPS workflow below.
 
 Open that URL on the machine that ran `occ dev up`. The hostname ends in
 `.localhost`, so the computer that looks it up resolves it to its own loopback
@@ -264,9 +275,10 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
   logs "$INITIALIZATION_JOB" -c bootstrap
 ```
 
-On an upgrade, `installation-check` first loads the Installation as API
-startup does and names a refused setting and file; the running API keeps
-serving. Migration runs before bootstrap; an unstarted container has no logs.
+On an upgrade, `installation-check` runs first. It loads any Console theme
+bundle and the Installation as API startup does. It names the refused setting or
+file. The running API keeps serving. Migration runs before bootstrap; an
+unstarted container has no logs.
 For image, scheduling, or volume errors, use the Pod events reported by
 `kubectl describe pod <pod-name>` with the same context and namespace. Fix the
 specific image, scheduling, or storage error. For a bootstrap failure, follow
@@ -294,6 +306,19 @@ worker logs and the [tenant RoleBindings](../deploy/production-agents.md#grant-t
 After fixing the cause, repeat `occ installation get` and confirm the Namespace
 reports `ready` before creating an Agent there. A healthy control plane does
 not prove an Agent has deployed or can run a model.
+
+## A deployment fails because Kubernetes refused a Secret
+
+`KUBERNETES_SECRET_WRITE_FORBIDDEN` means Kubernetes answered `403` to one of
+the version's private Secret writes or readbacks, so the worker failed the
+deployment without retrying. A preparation failure's
+`worker.compute-prepare-failed` log line names the `step`. Check that the worker's
+[tenant RoleBindings](../deploy/production-agents.md#grant-tenant-rolebindings)
+grant `get`, `create` and `update` on `secrets` in the Agent's Kubernetes
+namespaces (with an execution cluster, also the control cluster's Gateway
+namespace), and that no admission policy or ResourceQuota refuses Secrets
+there. Then deploy again. A running version's maintenance does not fail: it
+retries and recovers by itself once the grant is fixed.
 
 ## An Agent's Gateway or Harness Pod stays unready
 

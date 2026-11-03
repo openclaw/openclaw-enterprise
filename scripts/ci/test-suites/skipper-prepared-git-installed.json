@@ -1,0 +1,21 @@
+{
+  "env": {
+    "OCC_TEST_SKIPPER_PREPARED_GIT": "1"
+  },
+  "requiredEnv": [
+    "OCC_TEST_SKIPPER_PRIVATE_GIT_WITNESS",
+    "OCC_TEST_SKIPPER_TEAM_REVIEW",
+    "OCC_TEST_SKIPPER_COMPUTE_INPUTS",
+    "OCC_TEST_SKIPPER_COMPUTE_SERVICE_KEY",
+    "OCC_TEST_DATABASE_URL"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/skipper-prepared-git-installed.test.mjs",
+      "expectedTests": [
+        "same Compute-owned Skipper chats, authors private Git, loses Git during an authenticated fetch, and still chats"
+      ]
+    }
+  ]
+}

@@ -1,8 +1,5 @@
 # Worker, Compose, and PostgreSQL settings
 
-This reference owns worker, compose, and postgresql settings. Start with the
-[settings reference](../settings.md) for startup configuration and precedence.
-
 ## PostgreSQL connection authentication
 
 Both PostgreSQL API modes, the worker, shared Installation bootstrap, and
@@ -37,40 +34,35 @@ for deployment-owned identity inputs and chart limits, and
 [PostgreSQL testing](../../testing/postgresql.md#azure-workload-identity-connections)
 for the available connection proof and its limits.
 
+## PostgreSQL server compatibility
+
+PostgreSQL 18.6 is validated; migration, catalog, and restore checks also pass
+on 17.11. Other versions remain unqualified. Servers before 17 lack `MAINTAIN` and
+fail with `MIGRATION_SERVER_UNSUPPORTED` before catalog checks or writes.
+Preserve the database, use a compatible server, then rerun `--check`.
+Other database errors remain redacted as `MIGRATION_FAILED`.
+
 ## Migration history
 
-Set `OCC_MIGRATION_DATABASE_URL` privately to the intended database's dedicated
-`occ_migrator` login. The application login is `occ_app`; neither role may be a
-superuser, create roles or databases, replicate, or bypass row security. The
-migrator needs database `CREATE` and owns the `occ` and `drizzle` schemas. The
-application role must not inherit the migrator or have database/schema `CREATE`.
+Set `OCC_MIGRATION_DATABASE_URL` privately for `occ_migrator`. `occ_app` is the
+application login. Neither may be a superuser, create roles or databases,
+replicate, or bypass row security. The migrator needs database `CREATE` and owns
+`occ` and `drizzle`; `occ_app` must neither inherit it nor have database/schema `CREATE`.
 
-Classify a database without applying migrations:
+From the release checkout, inspect history without applying SQL:
 
 ```sh
 pnpm db:migrate --check
 ```
 
-An exit-0 `migration.checked` record reports one reviewed history shape:
-`empty`, `prePresetsMain`, `main`, `repositoryCredentials`,
-`repositoryRetention`, `workspaceSetup`, `agentProvisioning`,
-`backendCompleted`, `providerCompleted`, `backendTerminology`, `prePluginApprovers`,
-`preBrokerReceipts`, `preAgentDeletion`, `preDeploymentProgress`,
-`preHumanAuthentication`, `preAgentDeletionTakeover`,
-`preNamespaceDeletionTakeover`, `preRepositoryAccess`, `preRestrictionReadLogs`,
-`preOAuth`, `preCredentialWithdrawals`, `preBrokerReceiptFence`,
-`preModelProbeFailureCause`, `preProvisioningConfigurationRelease`, `preAdministratorCredentialSourceGrants`,
-`preCodexPatSources`, `preAgentCredentialSources`,
-`preCredentialWithdrawalRequester`, or `completed`.
-`prePresetsMain` means
-the exact canonical history through `0023_runtime_failure_timestamp_validation`;
+Exit 0 and `migration.checked` identify `empty`, a stage below, or `completed`.
+`prePresetsMain` ends at `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
 `0025_repository_credentials` and `0026_privileged_function_search_paths`.
 `repositoryRetention`, `workspaceSetup`, and `agentProvisioning` add migrations
-through `0029_agent_provisioning_work`. `backendCompleted` is the exact
-31-receipt Backend terminology history published before the compatibility
-migration. `providerCompleted` is the exact 31-receipt Provider terminology
-history published before the rename. `backendTerminology` has the 32 receipts
+through `0029_agent_provisioning_work`. `backendCompleted` and `providerCompleted`
+are the respective 31-receipt Backend and Provider histories before compatibility.
+`backendTerminology` has the 32 receipts
 through `0031_backend_terminology_compatibility`; `prePluginApprovers` adds
 `0032_credential_sources` for 33 receipts. `preBrokerReceipts` has 34 receipts
 through `0033_agent_plugin_approvers`; `preAgentDeletion` has 35 through
@@ -90,20 +82,26 @@ has 46 through `0046_model_probe_failure_cause`;
 `0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
-through `0050_agent_credential_sources`. `completed` is the current canonical
-history with all receipts, including `0051_credential_withdrawal_requester`.
-The source manifest is
-[`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
-Empty schemas may be absent or have only their owner's ordinary `CREATE` and
-`USAGE` privileges, with no objects or unexpected default privileges. An empty
-stock Drizzle ledger left by a rolled-back first migration is also supported.
+through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
+`preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
+`0062_credential_delivery_custody`). After `0063_prepared_attempt_settlement`,
+63 receipts mean `preGatewayManagedMode`; `0064_gateway_managed_mode` is pending.
+Rerun `--check` after migration and require `completed` from the same release.
+The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
+accepted source and catalog hashes. Never delete or relabel unsupported preview
+receipts. Empty schemas may be absent or owner-only, with no objects or
+unexpected default privileges. An empty Drizzle ledger after a rolled-back
+first migration is also supported.
 
-After a successful check, confirm the target and authorization. Run `pnpm db:migrate`
-for development or `pnpm db:migrate:production` for production. Both commands validate source hashes,
-receipts, catalog definitions, effective application privileges, and role
-separation under one PostgreSQL advisory lock. Drizzle applies the pending SQL
-and receipts in its normal transaction on that connection. Existing canonical
-receipts remain unchanged. The production command also accepts `--check`.
+For a [logical restore](../../guides/deploy/upgrade-baseline.md#record-the-database),
+the manifest pairs the PostgreSQL 18.6 restored catalog with its exact native
+digest. For the next schema, qualify both upgrading that restore and restoring
+the new schema. A match cannot establish backup completeness or provenance.
+
+Confirm the target and authorization before `pnpm db:migrate`
+(development) or `pnpm db:migrate:production`. Both check source, roles, receipts,
+definitions and effective privileges under one advisory lock; Drizzle applies SQL
+and receipts transactionally. Production also accepts `--check`.
 
 On first install, Helm adds `--expect-empty`. `MIGRATION_HISTORY_NOT_EMPTY`
 means migration stopped before changing recognized OCE history, not that the
@@ -225,22 +223,23 @@ access; qualify worker, Agent, repository, and provider behavior separately.
 
 ## Controller worker environment
 
-The [controller worker](../controller.md) runs separately from the HTTP API. It
-requires a bootstrapped Installation and the same migrated PostgreSQL database;
-it does not use the API's listener or authentication settings.
+The [controller worker](../controller.md) uses a bootstrapped Installation and
+the API's migrated PostgreSQL database, not its listener or authentication settings.
 
-| Variable                            | Requirement or default         | Behavior                                                                                                                                                      |
-| ----------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                          | `development` or `production`. | Both modes process Namespace and selected AgentRevision work through the selected Compute Driver.                                                             |
-| `OCC_DATABASE_URL`                  | Required application-role URL. | Must use a `postgresql:` or `postgres:` connection to the API's PostgreSQL database.                                                                          |
-| `OCC_CONFIG_PATH`                   | Required in production.        | Absolute startup YAML shared with the API; development omits it to use the Docker Compute default or sets it to explicitly select another trusted Driver set. |
-| `OCC_WORKER_POLL_INTERVAL_MS`       | `250`.                         | Positive safe integer controlling the delay between idle polling attempts.                                                                                    |
-| `OCC_WORKER_LEASE_DURATION_MS`      | `5000`.                        | Positive safe integer controlling the claim lease in milliseconds.                                                                                            |
-| `OCC_WORKER_MAX_ATTEMPTS`           | `5`.                           | Positive safe integer limiting attempts before permanent failure.                                                                                             |
-| `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` | `900000`.                      | Positive safe integer bounding Namespace convergence from operation creation, on PostgreSQL's clock.                                                          |
-| `OCC_WORKER_DATABASE_TIMEOUT_MS`    | `60000`.                       | Client-side bound on each worker query and connection; a silent connection is dropped and retried, and longer lock waits fail the pass as an attempt.         |
-| `OCC_WORKER_READINESS_PATH`         | Optional absolute path.        | Writes a private freshness marker after real queue-health observations; required by packaged worker probes.                                                   |
-| `OCC_WORKER_LIVENESS_PATH`          | Optional absolute path.        | Writes a private marker as the run loop makes progress, even through database outages; the packaged liveness probe restarts a worker whose marker is stale.   |
+| Variable                            | Requirement or default         | Behavior                                                                                                                                                                    |
+| ----------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                          | `development` or `production`. | Both modes process Namespace and selected AgentRevision work through the selected Compute Driver.                                                                           |
+| `OCC_DATABASE_URL`                  | Required application-role URL. | Must use a `postgresql:` or `postgres:` connection to the API's PostgreSQL database.                                                                                        |
+| `OCC_CONFIG_PATH`                   | Required in production.        | Absolute startup YAML shared with the API; development omits it to use the Docker Compute default or sets it to explicitly select another trusted Driver set.               |
+| `OCC_WORKER_POLL_INTERVAL_MS`       | `250`.                         | Positive integer controlling the delay between idle polling attempts; at most `2147483647`.                                                                                 |
+| `OCC_WORKER_LEASE_DURATION_MS`      | `5000`.                        | Positive integer controlling the claim lease in milliseconds; at most `2147483647`.                                                                                         |
+| `OCC_WORKER_MAX_ATTEMPTS`           | `5`.                           | Positive safe integer limiting attempts before permanent failure.                                                                                                           |
+| `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` | `900000`.                      | Positive safe integer bounding Namespace convergence from operation creation, on PostgreSQL's clock.                                                                        |
+| `OCC_WORKER_DATABASE_TIMEOUT_MS`    | `60000`.                       | Client-side bound on each worker query and connection; a silent connection is dropped and retried, and longer lock waits fail the pass as an attempt; at most `2147483647`. |
+| `OCC_WORKER_READINESS_PATH`         | Optional absolute path.        | Writes a private freshness marker after real queue-health observations; required by packaged worker probes.                                                                 |
+| `OCC_WORKER_LIVENESS_PATH`          | Optional absolute path.        | Writes a private marker as the run loop makes progress, even through database outages; the packaged liveness probe restarts a worker whose marker is stale.                 |
+
+Packaged worker probes require regular marker files and refuse directory paths.
 
 The run loop writes the liveness marker at startup, at the start of every pass
 and on every claim renewal. A database outage keeps it moving; the packaged
@@ -308,8 +307,7 @@ Development logging override variables:
 | `OTEL_COLLECTOR_METRICS_PORT`      | `8888`.                                        | Publishes Collector self-metrics on `127.0.0.1:<port>`.                                                          |
 | `OCC_DOCKER_LOGGING_ADDRESS`       | `127.0.0.1:24224` when the override is active. | Tells Docker Compute where the Engine should forward managed gateway and Codex container logs; keep it loopback. |
 
-Both Compose files bind the PostgreSQL host port to loopback only. The following
-value controls Compose port substitution:
+Both Compose files bind PostgreSQL to loopback:
 
 | Variable            | Default | Behavior                                                                                              |
 | ------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
@@ -345,7 +343,7 @@ dedicated role:
 docker compose -f compose.postgres.yaml up -d --wait
 
 export OCC_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_enterprise
-node_modules/.bin/drizzle-kit migrate
+pnpm db:migrate
 ```
 
 Add the application connection URL to the [required development controller environment](development.md#required-development-controller-environment), then initialize before starting the same server manually. Use an
@@ -364,8 +362,7 @@ NODE_ENV=development node apps/controller/src/server.mjs
 
 Installation, Namespace, Agent, native IAM, audit, and controller-work state
 survive restart in both Compose and database-only modes. The full Compose path
-also starts the worker and selects Docker Compute-backed Namespace and
-AgentRevision execution by default.
+also starts the worker and selects Docker Compute by default.
 
 Compose keeps relational OCC metadata in the `occ_postgres_data` named volume
 and native development Configuration documents in the `occ_configuration_data`

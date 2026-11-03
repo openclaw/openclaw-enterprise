@@ -87,8 +87,9 @@ explicit production runtime is enabled, it routes dedicated Codex or combined
 embedded OpenClaw Agents only after OCC selects their versions. Each
 production Harness receives only its own Agent's projected identity and
 operator-owned model key. See the
-[Kubernetes Compute Driver guide](../drivers/kubernetes-compute.md) for the exact options,
-installation prerequisites, and k3d verification.
+[Kubernetes Compute configuration](../drivers/kubernetes-compute/configuration.md)
+for exact options and the [Driver reference](../drivers/kubernetes-compute.md)
+for installation prerequisites and verification links.
 
 ### SSH Compute Driver
 
@@ -126,7 +127,7 @@ Each selected Driver exposes its closed configuration schema and validates its
 own startup settings before OCC constructs the implementation. API operations
 are authorized against their exact Namespace or Configuration, OCC validates
 native Configuration semantics, and deployment deeply snapshots the complete
-document into immutable AgentRevisions. See
+document into AgentRevisions. See
 [Namespace configuration](../configuration.md) for CRUD, exact permissions,
 minimal RBAC, startup validation, version safety, and troubleshooting.
 Configuration Driver Kubernetes access is checked lazily during the first exact

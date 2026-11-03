@@ -11,6 +11,9 @@ Repository discovery is independent of model authentication. Small catalogs offe
 Suggestions favor repositories you recently saved in this browser and Namespace,
 then sort alphabetically.
 
+If there are no approved repositories or a search has no matches, ask your
+Namespace operator about missing repositories.
+
 **Default repository access** starts at **Contributor** for code pushes, PRs,
 and issue management. Choose **Read-only**, or customize Contributor to turn off
 issue management. Added repositories inherit the default; expand a repository card
@@ -21,7 +24,7 @@ visible and must be repaired or removed before saving. Overrides never widen sil
 The server resolves selections against current Namespace policy on save and
 deployment. Push and PR permissions remain bundled; see
 [access levels](../repository-credentials/access-levels.md) for token permissions,
-merges, and the API contract. Edit saved drafts in **Create new version** >
+merges, and the API contract. Edit saved drafts in **Open draft** >
 **Repositories**; saved versions stay unchanged. Save or cancel edits before
 navigating away; returning to the tab can refresh the session and discard them.
 An interrupted save may complete; inspect the saved draft before retrying.
@@ -31,8 +34,10 @@ navigation in explicitly selected Preset forms.
 **Create Agent** stays blocked until discovery succeeds and filters choices against
 current policy.
 
-Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` with no selected repositories permits
-saving a draft; provisioning requires successful discovery.
+Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`, or an Installation without repository
+settings (`meta.notConfigured`), with no selected repositories permits saving a draft; provisioning requires successful discovery.
+Remove retained selections to continue there. The **Repositories** tab then offers
+**Save** only for an edit that removes every repository, which drops stale bindings.
 Other failures, including generic `503`, throttling and connection errors, block
 both writes and offer retry. Denial and Namespace lifecycle conflict remain
 distinct. Each subsequent write rechecks authorization.

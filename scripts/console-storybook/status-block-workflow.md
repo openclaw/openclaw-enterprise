@@ -51,3 +51,10 @@ at 390.
     full width and at least 44 px tall. Any status block's actions stack this
     way under 520 px. In **New version failed, viewer cannot edit**, Open v7
     Logs is the only action and the filled one.
+16. Open **Pages / Agent detail / New version failed, protected admission
+    changed** and **New version failed, stored records inconsistent**. Each
+    message ends with its own step and no logs advice after it. The first
+    offers Deploy again (filled); the second offers only Open v7 Logs.
+17. Open **Pages / Create Agent / A newer deployment took over** and click
+    **Create Agent**. The form explains why the first deployment ended. Check
+    that its feedback uses the informational stripe and offers no retry or link.

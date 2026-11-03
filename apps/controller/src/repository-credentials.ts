@@ -1,3 +1,4 @@
+import { RetiredGitHubAuthorityError } from "./composition/repository-credentials/config.ts";
 import { pathToFileURL } from "node:url";
 import { startCredentialService } from "./composition/repository-credentials/service.ts";
 
@@ -36,8 +37,12 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void main().catch(() => {
-    process.stderr.write("repository credential service failed\n");
+  void main().catch((error) => {
+    process.stderr.write(
+      error instanceof RetiredGitHubAuthorityError
+        ? `${error.message}\n`
+        : "repository credential service failed\n",
+    );
     process.exitCode = 1;
   });
 }

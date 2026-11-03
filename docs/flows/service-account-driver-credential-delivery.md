@@ -20,7 +20,7 @@ with the projected access token.
 - Trigger: `POST /namespaces/:namespaceId/service-accounts`, then
   `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials`,
   Agent association, and deployment.
-- Sources: `apps/controller/src/server.mjs:start`,
+- Sources: `apps/controller/src/api-startup.mjs:startApi`,
   `apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver`,
   `packages/occ/src/index.ts:OpenClawController`.
 - Requires PostgreSQL, a ready Namespace, exact OCC permissions, the selected
@@ -60,11 +60,11 @@ graph TD
 
 ### 1. Compose the Backend and its ServiceAccount Driver
 
-`apps/controller/src/server.mjs:start`
+`apps/controller/src/api-startup.mjs:startApi`
 
 `loadInstallationConfiguration` validates the singular `backend` array and
 requires each ChatGPT Backend to declare the selected `service_account` member
-Driver. `server.mjs:start` then reads the mounted `apiKeyPath`, constructs
+Driver. `api-startup.mjs:startApi` then reads the mounted `apiKeyPath`, constructs
 `Backend<ChatGPTClient>`, and injects it into the bundled
 `ChatGPTServiceAccountDriver` factory. That client and admin key stay on the API
 side. The worker receives only nonsecret Backend definitions so it can reject

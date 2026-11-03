@@ -1,18 +1,25 @@
 import assert from "node:assert/strict";
+import { scryptSync } from "node:crypto";
 import test from "node:test";
+import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
   consoleOrigin as origin,
+  createAccount,
   currentSession,
   defaultInstallSettings,
   installationRoles,
   passwordSignIn,
   postgresSignInState,
+  productionSignInConfiguration,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { testPasswordHasher } from "../helpers/password-hasher.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "password-default-admin@example.test";
@@ -74,31 +81,24 @@ test(
         { cookie: headers.cookie },
         { cookie: headers.cookie, origin: "https://attacker.example.test" },
       ]) {
-        const response = await app.inject({
-          method: "POST",
-          url: "/api/auth/accounts",
+        const response = await injectLocalhost(app, "POST", "/api/auth/accounts", {
           headers: refused,
-          payload,
+          body: payload,
         });
         assert.equal(response.statusCode, 403, response.body);
       }
-      const created = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers,
-        payload,
+      const created = await injectLocalhost(app, "POST", "/api/auth/accounts", {
+        session: headers,
+        body: payload,
       });
       assert.equal(created.statusCode, 201, created.body);
       member = created.json().data;
       assert.equal(member.email, memberEmail);
-      const withGitHub = await app.inject({
-        method: "POST",
-        url: "/api/auth/accounts",
-        headers,
-        payload: {
+      const withGitHub = await injectLocalhost(app, "POST", "/api/auth/accounts", {
+        session: headers,
+        body: {
+          ...payload,
           email: "password-default-github@example.test",
-          password: memberPassword,
-          roleId: role.id,
           github: { subject: "55555555" },
         },
       });
@@ -116,10 +116,8 @@ test(
         assert.equal(refused.headers["set-cookie"], undefined);
         assert.equal((await sessionOf(cookie)).user.id, member.id, "the session stays current");
       }
-      const signedOut = await app.inject({
-        method: "POST",
-        url: "/api/auth/sign-out",
-        headers: { cookie, origin },
+      const signedOut = await injectLocalhost(app, "POST", "/api/auth/sign-out", {
+        session: { cookie, origin },
       });
       assert.equal(signedOut.statusCode, 200, signedOut.body);
       assert.equal(await sessionOf(cookie), null);
@@ -207,8 +205,7 @@ test(
         ];
         for (const request of requests) {
           const response = await app.inject({ ...request, headers });
-          assert.equal(response.statusCode, 409, `${request.url}: ${response.body}`);
-          assert.equal(response.json().error.code, "RESOURCE_CONFLICT");
+          assertApiError(response, 409, "RESOURCE_CONFLICT", request.url);
           assert.match(response.json().error.message, /password-only/);
           const untrusted = await app.inject({ ...request, headers: { cookie: headers.cookie } });
           assert.equal(untrusted.statusCode, 403, "the Origin check still precedes the profile");
@@ -226,9 +223,7 @@ test(
       });
       const { cookie } = await adminHeaders();
       for (const provider of ["github", "google"]) {
-        const start = await app.inject({
-          method: "POST",
-          url: `/api/auth/providers/${provider}/start`,
+        const start = await injectLocalhost(app, "POST", `/api/auth/providers/${provider}/start`, {
           headers: { origin },
         });
         assert.equal(start.statusCode, 403, start.body);
@@ -288,14 +283,10 @@ test(
         // Reproduce a previously accepted account's encoding with the real PostgreSQL
         // parameter path; the API now rejects malformed input before it reaches State.
         const headers = await adminHeaders();
-        const created = await app.inject({
-          method: "POST",
-          url: "/api/auth/accounts",
-          headers,
-          payload: { email: "supported-legacy-default@example.test", password: legacyPassword },
+        const { id: userId } = await createAccount(app, headers, {
+          email: "supported-legacy-default@example.test",
+          password: legacyPassword,
         });
-        assert.equal(created.statusCode, 201, created.body);
-        const userId = created.json().data.id;
         await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, userId]);
 
         const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
@@ -303,8 +294,7 @@ test(
         // Better Auth's existing password-only validator rejects this stored spelling.
         // The SQL assertion above proves encoding, not successful account access.
         const unsupported = await signIn(storedEmail, legacyPassword);
-        assert.equal(unsupported.statusCode, 400, unsupported.body);
-        assert.equal(unsupported.json().error.code, "FORBIDDEN");
+        assertApiError(unsupported, 400, "FORBIDDEN");
         assert.equal(unsupported.headers["set-cookie"], undefined);
         const sessions = await pool.query(
           "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
@@ -314,14 +304,10 @@ test(
 
         // The identical unusual password remains usable with a supported email address.
         const ordinaryEmail = "ordinary-unusual-default@example.test";
-        const ordinary = await app.inject({
-          method: "POST",
-          url: "/api/auth/accounts",
-          headers,
-          payload: { email: ordinaryEmail, password: legacyPassword },
+        const { id: ordinaryId } = await createAccount(app, headers, {
+          email: ordinaryEmail,
+          password: legacyPassword,
         });
-        assert.equal(ordinary.statusCode, 201, ordinary.body);
-        const ordinaryId = ordinary.json().data.id;
 
         const accepted = await signIn(ordinaryEmail, legacyPassword);
         assert.equal(accepted.statusCode, 200, accepted.body);
@@ -335,17 +321,84 @@ test(
           );
         const before = (await denials()).length;
         for (const email of [legacyEmail, "legacy-nul\u0000@example.test"]) {
-          const refused = await app.inject({
-            method: "POST",
-            url: "/api/auth/sign-in/email",
-            headers: { origin, cookie },
-            payload: { email, password: legacyPassword },
+          const refused = await injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
+            session: { cookie, origin },
+            body: { email, password: legacyPassword },
           });
-          assert.equal(refused.statusCode, 400, refused.body);
-          assert.equal(refused.json().error.code, "INVALID_REQUEST");
+          assertApiError(refused, 400, "INVALID_REQUEST");
           assert.equal(refused.headers["set-cookie"], undefined);
         }
         assert.equal((await denials()).length, before + 2);
+      },
+    );
+
+    await t.test(
+      "production hashes with scrypt N=16384, r=16, p=1 and no configuration selects another hasher",
+      async (t) => {
+        // api-startup.mjs composes from its configuration alone. A hasher placed in that
+        // configuration, as a parsed setting would be, is ignored: only the code-only
+        // dependencies argument (which the server never passes) replaces scrypt.
+        const production = await composeProduction({
+          ...(await productionSignInConfiguration(t, {
+            databaseUrl,
+            settings: defaultInstallSettings,
+            secrets: { "occ-auth/secret": authSecret },
+          })),
+          passwordHasher: testPasswordHasher,
+        });
+        t.after(() => production.close());
+        const email = "password-default-scrypt@example.test";
+        const password = "password-default-scrypt-password";
+        const headers = await signedInHeaders(production, origin, {
+          email: adminEmail,
+          password: adminPassword,
+        });
+        const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
+        const { id: userId } = await createAccount(production, headers, {
+          email,
+          password,
+          roleId: role.id,
+        });
+        const adminId = (await currentSession(production, headers.cookie)).user.id;
+        // The initialization Job's administrator (scripts/bootstrap-installation.mjs) and an
+        // account the API created: both stored as Better Auth's `<salt>:<key>` scrypt hash.
+        for (const [id, secret] of [
+          [adminId, adminPassword],
+          [userId, password],
+        ]) {
+          const stored = await pool.query(
+            "SELECT password FROM occ.account WHERE user_id = $1 AND provider_id = 'credential'",
+            [id],
+          );
+          const [salt, key, ...rest] = stored.rows[0].password.split(":");
+          assert.match(salt, /^[0-9a-f]{32}$/);
+          assert.match(key, /^[0-9a-f]{128}$/);
+          assert.deepEqual(rest, []);
+          const expected = scryptSync(secret.normalize("NFKC"), salt, 64, {
+            N: 16384,
+            r: 16,
+            p: 1,
+            maxmem: 64 * 1024 * 1024,
+          });
+          assert.equal(expected.toString("hex"), key, "scrypt N=16384, r=16, p=1, 64-byte key");
+        }
+        assert.equal(
+          (await passwordSignIn(production, origin, { email, password })).statusCode,
+          200,
+        );
+        // A fixture hash in the database never authenticates against the production hasher.
+        await pool.query(
+          "UPDATE occ.account SET password = $1 WHERE user_id = $2 AND provider_id = 'credential'",
+          [await testPasswordHasher.hash(password), userId],
+        );
+        const refused = await passwordSignIn(production, origin, { email, password });
+        assert.equal(refused.statusCode, 401, refused.body);
+        // The fixtures' app above hashed with their cheap hasher (password-hasher.mjs).
+        const fixtureHash = await pool.query(
+          "SELECT password FROM occ.account WHERE user_id = $1 AND provider_id = 'credential'",
+          [member.id],
+        );
+        assert.match(fixtureHash.rows[0].password, /^test-sha256:/);
       },
     );
   },
