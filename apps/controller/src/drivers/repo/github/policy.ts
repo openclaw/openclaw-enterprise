@@ -131,6 +131,14 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
   }): RepositoryCredentialResolution {
+    return this.resolveBindings(input);
+  }
+
+  /** Provider policy shared by Installation admission and the legacy Driver adapter. */
+  resolveBindings(input: {
+    readonly namespaceId: string;
+    readonly bindings: readonly RepositoryBindingRequest[];
+  }): RepositoryCredentialResolution {
     try {
       if (
         !Array.isArray(input.bindings) ||
