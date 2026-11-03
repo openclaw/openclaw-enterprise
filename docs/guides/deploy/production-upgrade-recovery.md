@@ -4,7 +4,7 @@ Keep the original [upgrade evidence](production-upgrade.md) private. For runtime
 upgrades, the helper creates `<evidence-directory>.dispatch-state` beside it. Keep
 the current journal separate from backups of the evidence directory.
 
-Resume requires the original directory and journal. Aliases that reach the
+Resume requires the original checkout, directory and journal. Aliases that reach the
 original directory share its lock. A different directory identity or a missing
 or invalid journal stops resume before live access. If the journal may also have
 been restored, stop and reconcile from OCC history and audit records before
@@ -89,44 +89,40 @@ helper keeps or returns OCC to zero replicas before retrying the candidate Helm
 release. Prefer a reviewed forward fix; neither Helm rollback nor the helper
 reverses committed migrations.
 
-An unknown Agent dispatch stops further sends. Let in-flight requests finish,
-then inspect the exact Agent's revision history, deployment status, and audit
-records. A read that still shows the earlier revision cannot establish
-rejection. If you can identify the accepted revision, record its `id` in the
-private `dispatch/<namespace>--<agent>.json` file below. Preserve the intent and
-any error or partial response. If you cannot confirm the outcome, keep the run
-stopped and contact the release owner.
+After an unknown Agent dispatch, requests in the same batch may still finish.
+Before resuming, inspect the Agent's revision history, status and audit records.
+A read showing the earlier revision cannot establish rejection. If you cannot
+confirm an accepted revision, or the journal is incomplete, preserve all records
+and contact the release owner. The helper cannot resume those attempts.
 
-For a known failed revision, inspect its failure before an authorized
-replacement. Preserve the failed response and record the replacement response.
-Each deploy snapshots the current drafts.
-
-For an accepted version, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
-Agent IDs, `DISPATCH_PREFIX` to the matching evidence path without `.intent` or
-`.json`, and `REVISION_ID` to the independently confirmed version. Verify the exact Agent and deployment before recording it:
+If you can attribute a revision to the interrupted request, set
+`OCC_NAMESPACE`, `OCC_AGENT` and `REVISION_ID` to the confirmed IDs. Set
+`DISPATCH_PREFIX` to the private evidence path `dispatch/<namespace>--<agent>`.
+Keep the intent, errors and partial responses.
 
 ```bash
-if test -z "$REVISION_ID"; then
-  printf '%s\n' 'Set REVISION_ID to the confirmed revision; do not resume.' >&2
-elif test -e "$DISPATCH_PREFIX.json"; then
-  if jq -e --arg id "$REVISION_ID" '.id == $id' "$DISPATCH_PREFIX.json" > /dev/null; then
-    printf '%s\n' "Deployment $REVISION_ID is already recorded in $DISPATCH_PREFIX.json."
-  else
-    printf '%s\n' "$DISPATCH_PREFIX.json does not record $REVISION_ID; inspect it and do not resume." >&2
-  fi
-elif occ --output json --namespace "$OCC_NAMESPACE" agent deployment-status "$OCC_AGENT" "$REVISION_ID" > "$DISPATCH_PREFIX.confirmed-status.json" &&
+umask 077
+if test -n "$REVISION_ID" && test ! -e "$DISPATCH_PREFIX.json" && test ! -L "$DISPATCH_PREFIX.json" &&
+  occ --output json --namespace "$OCC_NAMESPACE" agent deployment-status "$OCC_AGENT" "$REVISION_ID" > "$DISPATCH_PREFIX.confirmed-status.json" &&
   jq -e --arg namespace "$OCC_NAMESPACE" --arg agent "$OCC_AGENT" --arg revision "$REVISION_ID" \
     '.namespaceId == $namespace and .agentId == $agent and .deploymentId == $revision' "$DISPATCH_PREFIX.confirmed-status.json" &&
-  jq -n --arg id "$REVISION_ID" '{id: $id}' > "$DISPATCH_PREFIX.json.tmp"; then
-  mv "$DISPATCH_PREFIX.json.tmp" "$DISPATCH_PREFIX.json"
+  response=$(mktemp "$DISPATCH_PREFIX.XXXXXXXX.tmp") &&
+  jq -n --arg id "$REVISION_ID" '{id: $id}' > "$response"; then
+  mv "$response" "$DISPATCH_PREFIX.json"
 else
-  printf '%s\n' 'Deployment could not be confirmed; do not resume.' >&2
+  printf '%s\n' 'No response recorded. Inspect the receipt and deployment status before resuming.' >&2
 fi
 ```
 
-Keep `umask 077`. The command records the response only after the status read
-identifies the confirmed deployment. A conflicting response stays in place for
-inspection. Resume also checks the deployment's identity.
+For a failed revision, inspect the failure and correct the drafts before an
+authorized manual deploy. Keep the earlier receipt and new response separately.
+Verify in revision history that the replacement follows the failed revision
+selected in the journal. Write
+`{"id":"<replacement ID>","replacesDeploymentId":"<current journaled ID>"}`
+to a private temporary file beside the receipt, then rename it to
+`$DISPATCH_PREFIX.json`. Resume checks both deployments before recording the
+replacement. A restored receipt for a superseded revision stays in place for
+inspection. Resume uses the journal's current revision.
 
 If the candidate API and worker refuse to start because of
 [split-layout Gateway storage](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations),

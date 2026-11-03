@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-03"
-last_updated_session: "authoring-run/1d065972-0bb5-4523-81d3-7d83a64ff8f3"
+last_updated_session: "authoring-run/a4cf6a1b-e333-44d4-8e78-138caa5c190a"
 ---
 
 # Production image upgrade flow
@@ -46,12 +46,13 @@ graph TD
     D -->|Yes| I
     I --> J{"Runtime release?"}
     J -->|No| K["Hand off application checks"]
-    J -->|Yes| L["Deploy recorded Agents"]
+    J -->|Yes| W["Reconcile journal and receipts"]
+    W --> L["Deploy Agents still eligible"]
     L --> M{"Dispatch response known?"}
     M -->|No| N["Inspect revision history and audit records"]
-    N -->|"Confirm accepted revision"| L
+    N -->|"Confirm accepted revision"| W
     M -->|Refused| U["Name refusals and stop for correction"]
-    U --> L
+    U --> W
     M -->|Yes| O["Check versions, Pods, and Doctor"]
     O --> K
 ```
@@ -225,14 +226,15 @@ remain stable across that check and before dispatch and completion.
 
 ### 5. Deploy and verify the recorded fleet
 
-`scripts/upgrade-production-images` and `scripts/upgrade-dispatch-state.py`
+`scripts/upgrade-production-images:confirmed_deployment_status` and
+`scripts/upgrade-dispatch-state.py:transition`
 
-The helper flushes a record to the journal before each deploy. It records an
-accepted revision or a definite OCC refusal after the request returns. Resume
-reuses accepted revisions and can retry a definite refusal. For an unknown
-outcome, it stops further sends until the operator confirms an accepted
-revision. Restored evidence or a read showing the earlier revision cannot
-authorize another send. If the journal may also be stale, use the
+The helper flushes intent before each deploy and starts the eligible batch
+before collecting replies. An unresolved intent blocks later sends on resume.
+The journal records accepted revisions and definite refusals. Resume can retry
+a refusal. It keeps superseded receipts and uses the journal's current revision.
+A new replacement receipt must name the current failed revision. If an outcome
+is unknown or the journal may be stale, use the
 [recovery guide](../guides/deploy/production-upgrade-recovery.md).
 
 The script polls authorized deployment status, confirms the selected version,
@@ -323,6 +325,8 @@ Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 02:34: Preserve journaled replacements when evidence is restored. (authoring-run/a4cf6a1b-e333-44d4-8e78-138caa5c190a - 19f63529413d4a530ac4eb65204980720d6d8ce9)
 
 - 2026-11-02 23:23: Bind directory identity; preserve evidence paths. (authoring-run/1d065972-0bb5-4523-81d3-7d83a64ff8f3 - cf67413c378cce3989d28fa8178ed29a405b9ce6)
 

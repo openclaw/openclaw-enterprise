@@ -10,6 +10,9 @@ import sys
 import uuid
 
 
+JOURNAL_FORMAT = "upgrade-dispatch-v2"
+
+
 def identity(info):
     return info.st_dev, info.st_ino
 
@@ -65,7 +68,7 @@ def create(path, operation):
         )
         try:
             token = uuid.uuid4().hex
-            append(fd, ["upgrade-dispatch-v1", operation, token])
+            append(fd, [JOURNAL_FORMAT, operation, token])
             os.fsync(parent)
             print(json.dumps([*identity(os.fstat(fd)), token]))
         finally:
@@ -110,8 +113,21 @@ def fleet(path):
         key = entry["namespaceId"], entry["agentId"]
         if key in targets or not all(isinstance(value, str) and value for value in key):
             raise ValueError("invalid dispatch targets")
-        targets[key] = {**entry, "state": "ready", "deploymentId": None}
+        targets[key] = {**entry, "state": "ready", "deploymentId": None, "acceptedDeploymentIds": []}
     return hashlib.sha256(data).hexdigest(), targets
+
+
+def accept_deployment(target, deployment_id):
+    history = target["acceptedDeploymentIds"]
+    if (
+        not isinstance(deployment_id, str)
+        or not deployment_id
+        or deployment_id == target["baselineRevisionId"]
+        or deployment_id in history
+    ):
+        raise ValueError("invalid or previously accepted deployment ID")
+    history.append(deployment_id)
+    target.update(state="accepted", deploymentId=deployment_id)
 
 
 def transition(targets, action, namespace, agent, *args):
@@ -122,14 +138,15 @@ def transition(targets, action, namespace, agent, *args):
         target["state"] = "pending"
     elif action == "refuse" and state == "pending" and not args:
         target["state"] = "refused"
+    elif action == "accept" and state == "pending" and len(args) == 1:
+        accept_deployment(target, args[0])
     elif (
-        ((action == "accept" and state == "pending") or (action == "replace" and state == "accepted"))
-        and len(args) == 1
-        and isinstance(args[0], str)
-        and args[0]
-        and args[0] != target["baselineRevisionId"]
+        action == "replace"
+        and state == "accepted"
+        and len(args) == 2
+        and args[0] == target["deploymentId"]
     ):
-        target.update(state="accepted", deploymentId=args[0])
+        accept_deployment(target, args[1])
     else:
         raise ValueError("invalid dispatch journal transition")
 
@@ -153,7 +170,7 @@ def main():
     fd = int(inherited_fd)
     records, file_identity = lock(path, fd)
     binding = json.loads(expected_binding)
-    if binding[:2] != list(file_identity) or records[0] != ["upgrade-dispatch-v1", operation, binding[2]]:
+    if binding[:2] != list(file_identity) or records[0] != [JOURNAL_FORMAT, operation, binding[2]]:
         raise ValueError("the dispatch journal belongs to a different upgrade")
     if action == "lock":
         return

@@ -4,6 +4,7 @@ import {
   cp,
   link,
   mkdir,
+  readFile,
   readdir,
   rename,
   rm,
@@ -20,6 +21,7 @@ type UpgradeFixture = {
   directory: string;
   evidence: string;
   commands: string[];
+  deploy(namespaceId: string, agentId: string): Promise<{ stdout: string }>;
   run(...args: string[]): Promise<unknown>;
   failNext(fault: string): Promise<void>;
   state(): Promise<{
@@ -52,6 +54,123 @@ export function registerDispatchRestoreTests(
   fixture: (t: TestContext, options: FixtureOptions) => Promise<UpgradeFixture>,
   injectedFault: { code: number },
 ): void {
+  for (const outcome of ["succeeded", "failed"] as const) {
+    test(`a stale receipt preserves the journaled replacement when it ${outcome}`, async (t) => {
+      const f = await fixture(t, { agent: true });
+      const namespaceId = "ns_test";
+      const agentId = "agt_test";
+      const revisionA = "rev_new";
+      const revisionB = "rev_replacement";
+      const revisionC = "rev_later";
+      const receipt = join(f.evidence, "dispatch", `${namespaceId}--${agentId}.json`);
+      const journal = f.evidence + ".dispatch-state";
+      const failure = /at least one Agent deployment failed/;
+      const scriptOutcome = async (status: "succeeded" | "failed") => {
+        if (status === "failed") {
+          await assert.rejects(f.run("--resume"), failure);
+        } else {
+          await f.run("--resume");
+        }
+      };
+      const selectNextDeployment = async (id: string, status: "succeeded" | "failed") => {
+        const state = await f.state();
+        await writeFile(
+          join(f.directory, "state.json"),
+          JSON.stringify({ ...state, nextDeployment: { id, status } }),
+        );
+      };
+      const operatorDeploy = async (id: string, status: "succeeded" | "failed") => {
+        await selectNextDeployment(id, status);
+        const response = await f.deploy(namespaceId, agentId);
+        assert.equal(JSON.parse(response.stdout).id, id);
+      };
+      const recordReplacement = async (id: string, replacesDeploymentId: string) => {
+        const temporary = receipt + ".replacement";
+        await writeFile(temporary, JSON.stringify({ id, replacesDeploymentId }), {
+          mode: 0o600,
+        });
+        await rename(temporary, receipt);
+      };
+      const projectedRevision = async () =>
+        JSON.parse(await readFile(join(f.evidence, "deployments.jsonl"), "utf8")).deploymentId;
+      const lastEntry = async () =>
+        JSON.parse((await readFile(journal, "utf8")).trimEnd().split("\n").at(-1)!);
+
+      await selectNextDeployment(revisionA, "failed");
+      await assert.rejects(f.run(), failure);
+      assert.equal(await projectedRevision(), revisionA);
+      const backup = join(f.directory, "evidence-before-replacement");
+      await cp(f.evidence, backup, { recursive: true });
+      const originalReceipt = await readFile(receipt);
+      const beforeReplacement = await readFile(journal);
+
+      // An unseen ID bound to the current revision still needs an exact OCC
+      // deployment status response before it can become authoritative.
+      if (outcome === "failed") {
+        await recordReplacement("rev_missing", revisionA);
+        await assert.rejects(f.run("--resume"), /cannot confirm the failed deployment/);
+        assert.deepEqual(await readFile(journal), beforeReplacement);
+        assert.equal((await f.state()).dispatches, 1);
+      }
+
+      // The operator submits a separate deploy and supplies the acknowledged ID
+      // with the failed revision it replaces. Resume should only observe it.
+      await operatorDeploy(revisionB, outcome);
+      await recordReplacement(revisionB, revisionA);
+      await scriptOutcome(outcome);
+      assert.equal(await projectedRevision(), revisionB);
+      const currentJournal = await readFile(journal);
+      const replacementReceipt = await readFile(receipt);
+
+      const originalDirectory = await stat(f.evidence);
+      await quarantineContents(f.evidence, join(f.directory, "evidence-with-replacement"));
+      await cp(backup, f.evidence, { recursive: true });
+      const restoredDirectory = await stat(f.evidence);
+      assert.deepEqual(
+        [restoredDirectory.dev, restoredDirectory.ino],
+        [originalDirectory.dev, originalDirectory.ino],
+      );
+      await scriptOutcome(outcome);
+      assert.equal(await projectedRevision(), revisionB);
+      assert.deepEqual(await readFile(journal), currentJournal, "resume must not append a rewind");
+      assert.deepEqual(await lastEntry(), ["replace", namespaceId, agentId, revisionA, revisionB]);
+      assert.deepEqual(await readFile(receipt), originalReceipt, "retain the earlier receipt");
+      assert.equal(
+        (await f.state()).dispatches,
+        2,
+        "only the original send and manual replacement",
+      );
+
+      if (outcome === "failed") {
+        await operatorDeploy(revisionC, "succeeded");
+        await recordReplacement(revisionC, revisionA);
+        await assert.rejects(f.run("--resume"), /name the current journaled revision/);
+        assert.deepEqual(await readFile(journal), currentJournal);
+        assert.equal(await projectedRevision(), revisionB);
+
+        await recordReplacement(revisionC, revisionB);
+        await f.run("--resume");
+        assert.equal(await projectedRevision(), revisionC);
+        assert.deepEqual(await lastEntry(), [
+          "replace",
+          namespaceId,
+          agentId,
+          revisionB,
+          revisionC,
+        ]);
+        const newestJournal = await readFile(journal);
+        // B's older receipt has an explicit parent, so this also distinguishes
+        // a historical receipt from a new replacement with a wrong parent.
+        await writeFile(receipt, replacementReceipt);
+        await f.run("--resume");
+        assert.equal(await projectedRevision(), revisionC);
+        assert.deepEqual(await readFile(journal), newestJournal);
+        assert.deepEqual(await readFile(receipt), replacementReceipt);
+        assert.equal((await f.state()).dispatches, 3, "each manual replacement was sent once");
+      }
+    });
+  }
+
   for (const replacement of [false, true]) {
     const restored = replacement
       ? "a replacement with the original inode"
@@ -145,7 +264,33 @@ export function registerDispatchRestoreTests(
     );
   });
 
-  test("resume refuses a missing, linked, or substituted dispatch journal before live access", async (t) => {
+  test("a restored refusal cannot retry a later dispatch with an unknown outcome", async (t) => {
+    const f = await fixture(t, { agent: true });
+    const state = await f.state();
+    state.deployFailures = {
+      agt_test: "Error: OCC operation failed (HTTP 400): INVALID_REQUEST: Correct the draft.",
+    };
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    await assert.rejects(f.run(), /OCC refused to deploy/);
+    const backup = join(f.directory, "refused-evidence");
+    await cp(f.evidence, backup, { recursive: true });
+
+    await f.failNext("lost-agent-response");
+    await assert.rejects(f.run("--resume"), /deployment outcome is unknown/);
+    await quarantineContents(f.evidence, join(f.directory, "latest-evidence"));
+    await cp(backup, f.evidence, { recursive: true });
+
+    const calls = f.commands.length;
+    await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+    assert.equal(f.commands.length, calls, "resume stops before any external command");
+    assert.equal((await f.state()).dispatches, 2);
+    assert.deepEqual(
+      (await f.events()).filter((event) => event.startsWith("agent-deploy")),
+      ["agent-deploy-failed agt_test", "agent-deploy agt_test"],
+    );
+  });
+
+  test("resume refuses a missing, linked, substituted, or incomplete dispatch journal before live access", async (t) => {
     const f = await fixture(t, { agent: true });
     await f.failNext("fail-rollout-worker");
     await assert.rejects(f.run(), injectedFault);
@@ -173,6 +318,15 @@ export function registerDispatchRestoreTests(
     await rm(journal);
 
     await rename(original, journal);
+    // Simulate a torn final write on the same journal inode. Resume preserves
+    // the bytes and refuses before a new send can erase uncertainty.
+    const complete = await readFile(journal, "utf8");
+    const incomplete = complete + '["send",';
+    await writeFile(journal, incomplete);
+    await assert.rejects(f.run("--resume"), /incomplete record/);
+    assert.equal(f.commands.length, calls);
+    assert.equal(await readFile(journal, "utf8"), incomplete);
+    await writeFile(journal, complete);
     await f.run("--resume");
     assert.equal((await f.state()).dispatches, 1);
   });

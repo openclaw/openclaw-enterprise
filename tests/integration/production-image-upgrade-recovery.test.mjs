@@ -755,7 +755,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       });
     } else if (args.includes("get") && args.includes("pods")) {
       const initialization = args.some((a) => a.includes("component=initialization"));
-      const revision = args.some((a) => a.includes("openclaw.dev/revision=rev_new"));
+      const revision = args.some((a) => a === `openclaw.dev/revision=${state.activeRevision}`);
       const pairComponent = args.some((a) => a.includes("app.kubernetes.io/component=worker"))
         ? "worker"
         : args.some((a) => a.includes("app.kubernetes.io/component=api"))
@@ -991,16 +991,20 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         log(`agent-deploy-failed ${agentId}`);
         return fail(1, failure);
       }
-      state.activeRevision = "rev_new";
-      const deployment = [fileArg("--namespace"), agentId, "rev_new"].join("/");
-      state.deployments[deployment] = "succeeded";
+      const { id, status } = state.nextDeployment ?? { id: "rev_new", status: "succeeded" };
+      delete state.nextDeployment;
+      if (status === "succeeded") {
+        state.activeRevision = id;
+      }
+      const deployment = [fileArg("--namespace"), agentId, id].join("/");
+      state.deployments[deployment] = status;
       save();
       log(`agent-deploy ${agentId}`);
       await afterDeploy?.();
       if (take("lost-agent-response")) {
         return fail(9);
       }
-      out({ id: "rev_new" });
+      out({ id });
     } else if (args.includes("agent") && args.includes("get")) {
       out({
         id: "agt_test",
@@ -1488,6 +1492,15 @@ async function fixture(
     directory,
     evidence,
     commands,
+    deploy: (namespaceId, agentId) =>
+      execute(
+        join(bin, "occ"),
+        ["--output", "json", "--namespace", namespaceId, "agent", "deploy", agentId],
+        {
+          cwd: repository,
+          env,
+        },
+      ),
     kubernetesReads: api?.reads ?? [],
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],

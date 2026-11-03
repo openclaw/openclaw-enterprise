@@ -1141,8 +1141,8 @@ targets="$evidence_dir/targets.jsonl"
 dispatch_prefix() {
   printf '%s/dispatch/%s' "$evidence_dir" "$(json_file_name "$1--$2")"
 }
-dispatch_revision() {
-  jq -ser 'select(length == 1) | .[0].id | select(type == "string" and length > 0)' "$1"
+read_dispatch_response() {
+  jq -cser 'select(length == 1) | .[0] | select(.id | type == "string" and length > 0) | '"$2" "$1"
 }
 if [[ -n "$dispatch_journal" ]]; then
   dispatch_snapshot=$(dispatch_state snapshot "$targets")
@@ -1448,7 +1448,8 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
   confirmed_deployment_status() {
     local namespace_id=$1 agent_id=$2 revision=$3
     "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$revision" </dev/null |
-      jq -er --arg namespace "$namespace_id" --arg agent "$agent_id" --arg revision "$revision" '
+      jq -ser --arg namespace "$namespace_id" --arg agent "$agent_id" --arg revision "$revision" '
+        select(length == 1) | .[0] |
         select(.namespaceId == $namespace and .agentId == $agent and .deploymentId == $revision) |
         .status | select(. == "queued" or . == "running" or . == "succeeded" or . == "failed")'
   }
@@ -1460,18 +1461,30 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
     prefix=$(dispatch_prefix "$namespace_id" "$agent_id")
     if [[ -e "$prefix.json" || -L "$prefix.json" ]]; then
       require_private_file "$prefix.json"
-      revision=$(dispatch_revision "$prefix.json") ||
+      receipt=$(read_dispatch_response "$prefix.json" '.') ||
         die "invalid recorded deployment response for Agent $agent_id; inspect it before resuming."
+      revision=$(jq -er '.id' <<<"$receipt")
       if [[ "$dispatch_status" == pending ]]; then
         [[ "$revision" != "$baseline_revision" ]] &&
+          jq -e 'has("replacesDeploymentId") | not' <<<"$receipt" >/dev/null &&
           confirmed_deployment_status "$namespace_id" "$agent_id" "$revision" >/dev/null ||
           die "Agent $agent_id has an unknown deployment outcome. Confirm the exact recorded deployment before resuming."
         dispatch_state accept "$targets" "$namespace_id" "$agent_id" "$revision"
       elif [[ "$dispatch_status" == accepted && "$recorded_revision" != "$revision" ]]; then
+        if jq -e --arg revision "$revision" '.acceptedDeploymentIds | index($revision) != null' <<<"$target" >/dev/null; then
+          # Restored evidence can contain a superseded receipt. Keep its bytes
+          # for diagnosis and continue with the current journaled deployment.
+          warn "recorded response for Agent $agent_id is superseded; using journaled deployment $recorded_revision."
+          continue
+        fi
+        jq -e --arg current "$recorded_revision" '.replacesDeploymentId == $current' <<<"$receipt" >/dev/null ||
+          die "replacement for Agent $agent_id must name the current journaled revision $recorded_revision. Preserve the response and inspect revision history and audit records before recording a replacement."
+        [[ "$revision" != "$baseline_revision" ]] ||
+          die "the baseline revision cannot replace journaled deployment $recorded_revision for Agent $agent_id."
         [[ "$(confirmed_deployment_status "$namespace_id" "$agent_id" "$recorded_revision")" == failed ]] &&
           confirmed_deployment_status "$namespace_id" "$agent_id" "$revision" >/dev/null ||
-          die "cannot confirm the failed deployment and its recorded replacement for Agent $agent_id."
-        dispatch_state replace "$targets" "$namespace_id" "$agent_id" "$revision"
+          die "cannot confirm the failed deployment and its recorded replacement for Agent $agent_id. Preserve the response and inspect both deployment statuses before resuming."
+        dispatch_state replace "$targets" "$namespace_id" "$agent_id" "$recorded_revision" "$revision"
       elif [[ "$dispatch_status" != accepted ]]; then
         die "recorded deployment response for Agent $agent_id conflicts with the dispatch journal."
       fi
@@ -1512,7 +1525,7 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
     attempt=${attempts[index]}
     status=0
     wait "${pids[index]}" || status=$?
-    if ((status == 0)) && revision=$(dispatch_revision "$attempt/response"); then
+    if ((status == 0)) && revision=$(read_dispatch_response "$attempt/response" '.id'); then
       dispatch_state accept "$targets" "$namespace_id" "$agent_id" "$revision"
       mv "$attempt/error" "$prefix.error"
       mv "$attempt/response" "$prefix.json"
