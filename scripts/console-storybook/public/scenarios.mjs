@@ -156,6 +156,19 @@ const presetQuotedSettingRefused = [
   click("Create Agent"),
 ];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
+const repositorySearchOptions = [
+  "alpha/application-api",
+  "beta/my-application",
+  "omega/application",
+  "zeta/application",
+  "tools/cli",
+  "docs/handbook",
+  "ops/infrastructure",
+].map((displayName, index) => ({
+  repositoryRef: `catalog-${index}`,
+  displayName,
+  allowedProfiles: ["git-read", "git-write", "git-full"],
+}));
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
   'Configuration setting agents.entries.research_assistant.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
@@ -3613,21 +3626,18 @@ export const scenarios = {
     name: "Exact repository names before prefix matches",
     path: create,
     actions: [...repositoryForm, { selector: "#repository-search", value: "application" }],
-    repositoryOptions: [
-      "alpha/application-api",
-      "beta/my-application",
-      "omega/application",
-      "zeta/application",
-      "tools/cli",
-      "docs/handbook",
-      "ops/infrastructure",
-    ].map((displayName, index) => ({
-      repositoryRef: `catalog-${index}`,
-      displayName,
-      allowedProfiles: ["git-read", "git-write", "git-full"],
-    })),
+    repositoryOptions: repositorySearchOptions,
     description:
       "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
+  },
+  createRepositoriesNoMatches: {
+    group: "Pages/Create Agent",
+    name: "Repository search with no matches",
+    path: create,
+    actions: [...repositoryForm, { selector: "#repository-search", value: "unknown/repository" }],
+    repositoryOptions: repositorySearchOptions,
+    description:
+      "An approved catalog search with no matches directs users to their Namespace operator. Search for application to return to matching repositories.",
   },
   createRepositoriesLocaleSearch: {
     group: "Pages/Create Agent",
@@ -3691,7 +3701,8 @@ export const scenarios = {
     path: create,
     actions: repositoryForm,
     repositoryOptions: [],
-    description: "Successful empty discovery permits an ordinary Agent without repository access.",
+    description:
+      "An empty approved catalog directs users to their Namespace operator and permits a draft without repositories.",
   },
   createRepositoriesLoading: {
     group: "Pages/Create Agent",
