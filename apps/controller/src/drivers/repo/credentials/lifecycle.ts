@@ -45,7 +45,6 @@ export function createLifecycle(options: {
   providerActionMs: number;
   safetyMarginMs: number;
   admitted(): boolean;
-  authorizeStanding?: () => Promise<void>;
   changed(): void;
 }) {
   const { clock, custody, driver, queue } = options;
@@ -198,10 +197,6 @@ export function createLifecycle(options: {
             if (driver.replacement === "drain-before" && previous) {
               previous.accepted = false;
               await waitForDrain(previous, controller.signal, deadline);
-              ownedAttempt.context.assertAdmitted();
-            }
-            if (options.authorizeStanding) {
-              await options.authorizeStanding();
               ownedAttempt.context.assertAdmitted();
             }
             const minimumValidityMs =
