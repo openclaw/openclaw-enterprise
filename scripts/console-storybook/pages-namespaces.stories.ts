@@ -20,6 +20,17 @@ export const CreateUnknown = { ...story("namespaceCreateUnknown") };
 export const CreateSuccess = { ...story("namespaceCreateSuccess") };
 export const CreateUnreadable = { ...story("namespaceCreateUnreadable") };
 
+export const DeleteNamespace = { ...story("namespaceDelete") };
+export const DeleteConfirmation = { ...story("namespaceDeleteConfirmation") };
+export const DeleteMobile = { ...story("namespaceDeleteMobile") };
+export const DeleteBlocked = { ...story("namespaceDeleteBlocked") };
+export const DeleteDenied = { ...story("namespaceDeleteDenied") };
+export const DeleteRestricted = { ...story("namespaceDeleteRestricted") };
+export const DeleteRefused = { ...story("namespaceDeleteRefused") };
+export const DeletePending = { ...story("namespaceDeletePending") };
+export const DeleteUnknown = { ...story("namespaceDeleteUnknown") };
+export const DeleteRetry = { ...story("namespaceDeleteRetry") };
+
 export const NamespacesUnavailable = { ...story("namespacesUnavailable") };
 export const NamespacesUnavailableMobile = { ...story("namespacesUnavailableMobile") };
 export const NamespacesUnavailableEmpty = { ...story("namespacesUnavailableEmpty") };

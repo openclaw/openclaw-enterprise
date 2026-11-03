@@ -25,12 +25,14 @@ import {
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
 
 test(
   "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
@@ -186,9 +188,9 @@ test(
     reductionVersion = 2;
     const agentPath = `/namespaces/${baseFixture.namespace.id}/agents/${baseFixture.agent.id}`;
     const unsupported = await api("POST", `${agentPath}/deploy`);
-    // Scope violations are deliberately not exposed as resource details by the API.
-    assert.equal(unsupported.status, 404);
-    assert.equal(unsupported.body.error.code, "NOT_FOUND");
+    // The deployer may read both sources, so the Installation limit is named (finding 2536).
+    assertApiError(unsupported, 409, "RESOURCE_CONFLICT");
+    assert.equal(unsupported.body.error.message, CREDENTIAL_PROXY_ONE_SOURCE);
     assert.equal(
       (
         await api("PATCH", agentPath, {

@@ -42,6 +42,10 @@ spec links.
 Markdown links in full-line comments under `deploy/examples/` (`.yaml` and
 `.yml`) use the same validation.
 
+Use `<Snippet file="relative/path" lang="yaml" />` to render a source file inside
+`docs/` as a copyable code block. Paths are relative to the including page.
+Omit `lang` for a Markdown snippet. Link the file as well for readers using GitHub.
+
 Before parsing links or rendering, the build removes document `Changelog` sections
 and empty `Manual Notes` sections. It also removes the notes placeholder when real
 notes follow; those notes stay visible. This keeps internal records out of the
@@ -51,10 +55,12 @@ Each navigation tab declares `groups`. A group has a `group` name and `pages`;
 its entries can be Markdown slugs, `{ "page": "slug", "label": "Short label" }`,
 or nested `{ "group": "Name", "pages": [...] }` groups. A short label changes
 the sidebar and breadcrumb without changing the article or its search title.
-The first visible page is the tab landing page; give it an overview when the tab
+If a top-level group's landing page has a `Next steps` heading, the sidebar links
+to that section below the group's page list. The first visible page is the tab landing page; give it an overview when the tab
 covers multiple subjects. A tab can also declare `hidden`, an array of slugs or
 labeled pages. These pages keep their URLs and appear in search, but not in the
-sidebar. Mark a repository-only archive `published: false` in Markdown frontmatter
+sidebar. To keep a page at its URL but omit it from site search, set
+`searchable: false` in its frontmatter. Mark a repository-only archive `published: false` in Markdown frontmatter
 and omit it from navigation; it has no site route or search entry, and local links
 from published pages to it fail validation. A GitHub source link can cite the
 record. List every other Markdown page exactly once, visible or hidden. The local
@@ -70,10 +76,21 @@ examples, while excluding frontmatter, HTML comments, Markdown syntax, and link
 destinations. Symlinks resolve to one real file so aliases cannot duplicate
 counts or bypass the limit.
 
-`serve.mjs` serves only `dist/docs/` on `127.0.0.1`. MP4 walkthrough links open
+`serve.mjs` serves `dist/docs/` on `127.0.0.1` by default. MP4 walkthrough links open
 in the browser player with the `video/mp4` media type. It accepts an optional
-`--port` for parallel local previews and tests. These two small internal CLIs use
-built-in Node argument handling because each has one option and no subcommands.
+`--port` for parallel local previews. `docs:dev` adds `--watch` to enable the
+development workflow described in [Local preview](../../docs/local-preview.md).
+
+`preview-build.mjs` polls source metadata, combines rapid edits, and runs the
+renderer followed by Pagefind in a new directory. The renderer's internal
+`--output` option accepts only a fresh directory under `dist/.docs-preview-*/`;
+it never removes an existing preview directory. After both commands succeed,
+the server switches its output directory and tells `preview-client.mjs` to
+reload connected tabs. Requests still reading the previous build finish before
+its directory is removed. A failed build keeps that output and sends the error
+to the tabs. Shutdown stops the watcher and child processes and removes the
+temporary directories. The static server and standalone build do not load the
+refresh client.
 
 `site.mjs` owns mobile navigation, per-tab sidebar scroll restoration, local
 Pagefind search, theme switching, code copying, heading links, Mermaid rendering,
@@ -103,3 +120,29 @@ source for the generated [HTTP API reference](../../docs/reference/api.md) or
 The docs package is intentionally outside the active application workspace. Its
 independent lockfile lets docs-only contributors install the renderer without
 installing controller dependencies. Do not add it to the TypeScript solution.
+
+## Generated API documentation
+
+`pnpm openapi:generate` exports the registered Fastify routes and adds the
+explicit examples in `scripts/api-examples.ts` using `scripts/document-api-examples.ts`.
+That catalog reuses synthetic
+resource values and never imports test fixtures or live credentials. New
+operations, parameters and body-bearing responses must have examples; generation
+fails on missing coverage. Keep examples consistent with the owning route schemas
+and handlers. Empty collections are intentional empty states, not evidence that
+a provider integration ran.
+
+After generation, run `pnpm openapi:check` and `pnpm openapi:lint`. The first
+checks reproducibility; Redocly checks OpenAPI structure, operation descriptions,
+IDs, references and example schema validity. These checks do not prove lifecycle
+or provider behavior. CI runs both checks before publishing the docs.
+
+The API explorer ships a pinned Scalar browser bundle from the isolated docs
+package. The build copies it and the generated OpenAPI JSON into site assets;
+there is no CDN or request proxy. Credentials are not persisted. Scalar retains
+the generated human-readable IAM description beside each operation. The
+Markdown reference remains available for GitHub and the site search index.
+
+For UI changes, build the docs and inspect the explorer, examples, navigation,
+and mobile layout in a browser. No runtime flow changed when only this
+export/render pipeline changes.

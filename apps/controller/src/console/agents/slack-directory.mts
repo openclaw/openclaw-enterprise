@@ -4,7 +4,9 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { button, element, statusBlock } from "../dom.mjs";
-import { namespacePath } from "./list.mjs";
+import { createRequestTurns, type RequestInTurn } from "../request-turns.mjs";
+import { notIncluded } from "./access-reasons.mjs";
+import { namedRefusal, namespacePath } from "./list.mjs";
 
 const USER_ID = /^[UW][A-Z0-9]{1,31}$/;
 const CHANNEL_ID = /^[CG][A-Z0-9]{1,31}$/;
@@ -57,6 +59,46 @@ function lookup(
     body,
     ...(signal ? { signal } : {}),
   }) as Promise<ChannelDirectoryResult>;
+}
+
+// A view's name lookups. The lookup authorizes Secret operate on the bot token Secret, which an
+// Installation administrator may hold only through that administration; revoked before she
+// opened Edit Slack, its fields sent their lookups at once and each refusal was audited (finding
+// 2939). The first lookup goes alone, and once one succeeds the rest go at once. A refusal answers
+// the lookups waiting behind it for the same Secret unsent, so each field shows that refusal's
+// reason; once none are pending, a later lookup asks again. A lookup whose view is no longer
+// current is not sent.
+interface NameLookupTurns {
+  inTurn: RequestInTurn;
+  refusals: Map<string, unknown>;
+}
+const nameLookupTurns = new WeakMap<SlackDirectoryContext, NameLookupTurns>();
+function nameLookupInTurn(
+  context: SlackDirectoryContext,
+  scope: string,
+  send: () => Promise<ChannelDirectoryResult>,
+) {
+  let turns = nameLookupTurns.get(context);
+  if (!turns) {
+    const refusals = new Map<string, unknown>();
+    turns = { inTurn: createRequestTurns(() => refusals.clear()), refusals };
+    nameLookupTurns.set(context, turns);
+  }
+  const { refusals } = turns;
+  return turns.inTurn(() => {
+    if (refusals.has(scope)) {
+      return Promise.reject(refusals.get(scope));
+    }
+    if (!context.isCurrent()) {
+      return Promise.reject(new Error("The view is no longer shown."));
+    }
+    return send().catch((cause: unknown) => {
+      if (requestFailure(cause).status === 403) {
+        refusals.set(scope, cause);
+      }
+      throw cause;
+    });
+  });
 }
 
 export function isSlackId(value: string, kind: DirectoryKind) {
@@ -126,7 +168,15 @@ function lookupError(error: ReturnType<typeof requestFailure>, cause: unknown) {
   };
   const reason = error.code ? reasons[error.code] : undefined;
   if (error.status === 403) {
-    return "You need access to this Agent or Configuration and permission to use its selected Slack bot Secret.";
+    // The lookup checks Secret operate on the bot Secret, and Agent update (or Agent create on a
+    // new Agent), so the API's named grant wins; without one, the Secret's grant is named.
+    return (
+      namedRefusal("Slack lookup", cause) ??
+      notIncluded(
+        "looking up Slack people and channels with the selected Slack bot Secret",
+        "Secret operate on it",
+      )
+    );
   }
   if (error.status === 501) {
     return "Slack directory lookup is unavailable. Ask your operator to configure the API channel directory proxy, or enter exact IDs.";
@@ -178,13 +228,18 @@ export function createSlackNameResolver({
         if (cache.size >= 100) {
           cache.delete(cache.keys().next().value!);
         }
-        request = lookup(context, {
-          secretId,
-          kind,
-          ids: requestedIds,
-          ...(agentId ? { agentId } : {}),
-          ...(configurationId ? { configurationId } : {}),
-        });
+        request = nameLookupInTurn(
+          context,
+          JSON.stringify([secretId, agentId ?? null, configurationId ?? null]),
+          () =>
+            lookup(context, {
+              secretId,
+              kind,
+              ids: requestedIds,
+              ...(agentId ? { agentId } : {}),
+              ...(configurationId ? { configurationId } : {}),
+            }),
+        );
         cache.set(key, request);
         // Share simultaneous fields, then reread the Secret for later views of the same ID.
         const clear = () => {

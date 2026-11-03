@@ -19,7 +19,7 @@ export function plaintextGatewayComputeDrivers() {
           nodePath: "/usr/bin/node",
           openclawPath: "/opt/openclaw/openclaw.mjs",
           user: "openclaw",
-          root: "/tmp/owned-native-http",
+          root: "/var/lib/owned-native-http",
         },
         network: { gatewayPortRange: { start: 18800, end: 18899 } },
       }),

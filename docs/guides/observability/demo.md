@@ -171,11 +171,8 @@ Grafana, and Loki: their disposable data is lost, and a `kubectl port-forward` t
 Grafana stops working until you start it again.
 
 `cluster.port` and `occ.metricsPort` must be decimal integers from 1 through
-65535 with no leading zero. Defaults are 443 and 9464. A saved string such as
-`"010"` used to install, and Kubernetes applied port 8. Upgrade now rejects that
-spelling before it changes the policy. Set the field to the applied decimal,
-`8` in that example, and rerun the block; the NetworkPolicy port stays 8. See
-the [port notice](../deploy/breaking-changes-before-2026-10-13.md#2026-10-12-demo-networkpolicy-ports-must-be-canonical-decimals).
+65535 with no leading zero. Defaults are 443 and 9464. The block refuses
+another spelling, such as the string `"010"`, before it changes the policy.
 
 For a custom release, read its generated Service names with
 `helm get manifest RELEASE -n NAMESPACE` before adapting the port-forward command

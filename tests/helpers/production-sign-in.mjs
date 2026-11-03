@@ -14,6 +14,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { jsonLineDestination } from "./json-lines.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import {
   privateBootstrapDirectory,
@@ -59,16 +60,7 @@ export function memoryLogger() {
     events,
     logger: createOccLogger({
       component: "occ-api-sign-in-proof",
-      destination: {
-        write(chunk) {
-          for (const line of String(chunk).split("\n")) {
-            if (line.length > 0) {
-              events.push(JSON.parse(line));
-            }
-          }
-          return true;
-        },
-      },
+      destination: jsonLineDestination(events),
     }),
   };
 }
@@ -924,6 +916,16 @@ export async function authRowCounts(pool) {
   ).rows[0];
 }
 
+/** The IAM principal of a person's sign-in account, as audit records name the actor. */
+export async function accountPrincipalId(pool, userId) {
+  return (
+    await pool.query(
+      "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
+      [userId],
+    )
+  ).rows[0].principal_id;
+}
+
 /** The guarded account read an administrator uses for expectedVersion. */
 export async function readAccount(app, headers, userId) {
   const response = await app.inject({ url: `/api/auth/accounts/${userId}`, headers });
@@ -974,4 +976,20 @@ export async function assertReservedLane(app, { origin, holder, former, label })
     former: formerResponse.statusCode,
     holder: holderResponse.statusCode,
   };
+}
+
+/**
+ * Posts an account operation (`disable`, `enable`, `revoke` or `methods/<methodId>/detach`) as
+ * an administrator, at `expectedVersion` or else the account's current version; returns the
+ * response.
+ */
+export async function changeAccount(app, headers, userId, operation, expectedVersion) {
+  return app.inject({
+    method: "POST",
+    url: `/api/auth/accounts/${userId}/${operation}`,
+    headers,
+    payload: {
+      expectedVersion: expectedVersion ?? (await readAccount(app, headers, userId)).version,
+    },
+  });
 }

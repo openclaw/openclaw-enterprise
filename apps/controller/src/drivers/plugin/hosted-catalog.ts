@@ -176,11 +176,11 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
     switch (plugin.disabled_reason) {
       case "disabled_by_admin":
         unavailableReason =
-          "Disabled by a ChatGPT workspace administrator. Ask an administrator to enable access for the user or service account behind this token.";
+          "Disabled by a ChatGPT workspace administrator. Ask one to enable access for the user or service account behind this token.";
         break;
       case "plan_not_eligible":
         unavailableReason =
-          "This workspace's plan is not eligible for this plugin. Ask a workspace administrator to review plan availability.";
+          "This workspace's plan is not eligible for this plugin. Ask a ChatGPT workspace administrator to review plan availability.";
         break;
       case "required_app_unavailable":
         unavailableReason =
@@ -355,7 +355,7 @@ export async function getHostedPlugin(
           ...(!appAvailable
             ? { unavailableReason: "The app providing this tool is unavailable for this account." }
             : !enabled
-              ? { unavailableReason: "This tool is disabled by the administrator." }
+              ? { unavailableReason: "This tool is disabled by a ChatGPT workspace administrator." }
               : {}),
           writes: !readOnly,
         });

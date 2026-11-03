@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { PostgresCommitOutcomeUnknownError } from "../../packages/occ/src/index.ts";
@@ -11,13 +10,14 @@ import {
   expectDenied,
   expectProviderUnavailable,
   loginOrigin as origin,
+  providerInstanceId,
   redirectProviderFetch,
   startProviderServer,
   testOversizedProviderBodies,
   until,
 } from "../helpers/human-login-transport.mjs";
 
-const providerId = `github:${createHash("sha256").update("fixture-client").digest("hex")}`;
+const providerId = providerInstanceId("github", { clientId: "fixture-client" });
 // The production deadline is 10 s; the stalled-provider cases shorten it to keep the wait short.
 const providerDeadlineMs = 2_000;
 
@@ -322,18 +322,15 @@ test(
           response.end(JSON.stringify({ id: 12345678 }));
         };
         const before = requests.length;
-        const response = await login.callback();
-        assert.equal(response.status, 503);
-        assert.deepEqual(await response.json(), {
-          message: "Authentication dependency unavailable.",
-        });
+        // The handler throws the State error itself, unclassified, so no response (and no
+        // session cookie) leaves the endpoint; the controller answers it as an outage.
+        await assert.rejects(login.callback(), (error) => error === failure);
         // A lost COMMIT acknowledgement may follow a committed login. The callback
         // must preserve that uncertainty without retrying or recording identity denial.
         assert.deepEqual(login.errors, [failure]);
         assert.deepEqual(login.denials, []);
         assert.equal(issueAttempts, failurePoint === "issueSession" ? 1 : 0);
         assert.equal(requests.length - before, failurePoint === "consumeAttempt" ? 0 : 2);
-        assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token/);
       });
     }
 

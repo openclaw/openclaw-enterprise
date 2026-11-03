@@ -353,12 +353,4 @@ Account creation issues no session and infers no grants.
 
 - 2026-10-10 20:56: Reject unstorable email before State reads while preserving denial audits and admission. (authoring-run/6a102658-a68a-460f-bb67-be99a2490d8d - f6526eed518b689cc99e70f2c8ad349c500e936d)
 
-- 2026-10-07 10:10: Treat IPv4-mapped trusted proxies as IPv4; refuse catch-all proxy CIDRs. (fix-678 - bf67a4317)
-
-- 2026-10-06 07:30: Reject undeclared maintenance commands before configuration. (authoring-run/8f5b1566-4538-437c-8e8a-fd2049050c6e - 4bacc7925fcef75ea8715905a0c6c86abb7203d2)
-
-- 2026-10-04 21:00: Verify an existing Installation with SQL before loading Better Auth. (fix/bootstrap-fast-path)
-
-- 2026-10-01 14:36: Bind result receipts to provider instances. (authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
-
 [Bootstrap and human authentication documentation history](local-password-authentication/history.md) preserves the older dated entries.

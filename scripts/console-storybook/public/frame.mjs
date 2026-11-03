@@ -61,14 +61,26 @@ try {
     const deadline = Date.now() + 10000;
     let node;
     while (Date.now() < deadline) {
-      node = action.selector
-        ? document.querySelector(action.selector)
-        : [...document.querySelectorAll("button")].find(
-            (item) => item.textContent.trim() === action.click,
-          );
-      if (node && !node.disabled && !node.closest("[hidden]")) {
+      if (action.text) {
+        node = [...document.querySelectorAll("body *")].find(
+          (item) => item.childElementCount === 0 && item.textContent.includes(action.text),
+        );
+      } else if (action.selector) {
+        node = document.querySelector(action.selector);
+      } else {
+        node = [...document.querySelectorAll("button")].find(
+          (item) => item.textContent.trim() === action.click,
+        );
+      }
+      if (
+        node &&
+        !node.disabled &&
+        !node.closest("[hidden]") &&
+        (action.matches === undefined || node.value === action.matches)
+      ) {
         break;
       }
+      node = undefined;
       await new Promise((resolve) => setTimeout(resolve, 30));
     }
     if (!node || node.disabled || node.closest("[hidden]")) {

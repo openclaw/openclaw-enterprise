@@ -12,6 +12,21 @@ export const FormNamespaceBecomesReady = story("createFormNamespaceBecomesReady"
 export const FormNamespaceFailed = story("createFormNamespaceFailed");
 export const FormNamespaceMissing = story("createFormNamespaceMissing");
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
+export const CreateNativeAdmin = story("createNativeAdmin");
+export const CreateNativeAdminSelected = story("createNativeAdminSelected");
+export const CreateNativeAdminDisabled = story("createNativeAdminDisabled");
+export const CreateSecretCreateNotPermitted = {
+  ...story("createSecretCreateNotPermitted"),
+  name: "Secret creation not permitted",
+};
+export const CreateSecretOperateDenied = {
+  ...story("createSecretOperateDenied"),
+  name: "Secret operate not permitted",
+};
+export const CreateRepositoryNotConfigured = {
+  ...story("createRepositoryNotConfigured"),
+  name: "Repository access not set up",
+};
 export const CreateInvalidConfiguration = {
   ...story("createInvalidConfiguration"),
   name: "Invalid Configuration JSON",
@@ -55,6 +70,9 @@ export const CreateSecretRequiredFields = {
   name: "Create Secret required fields",
 };
 export const CreateSecretRefused = story("createSecretRefused");
+export const CreateSecretFieldsRefused = story("createSecretFieldsRefused");
+export const CreateAgentNameRefused = story("createAgentNameRefused");
+export const CreateWorkspaceFileRefused = story("createWorkspaceFileRefused");
 export const CreateModelSecretRequired = story("createModelSecretRequired");
 export const CreateSlackSecretStaged = {
   ...story("createSlackSecretStaged"),
@@ -77,6 +95,10 @@ export const CreatePending = story("createPending");
 export const CreateDeploymentNamedWait = story("createDeploymentNamedWait");
 export const CreateDeploymentPodQuotaFull = story("createDeploymentPodQuotaFull");
 export const CreateDeploymentImagePullFailed = story("createDeploymentImagePullFailed");
+export const CreateDeploymentSuperseded = {
+  ...story("createDeploymentSuperseded"),
+  name: "A newer deployment took over",
+};
 export const CreateDeploymentFailed = story("createDeploymentFailed");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
@@ -105,6 +127,14 @@ export const CreateOpenclawNoExecutionMode = {
   ...story("createOpenclawNoExecutionMode"),
   name: "OpenClaw with no usable execution mode",
 };
+export const CreateOpenclawSettingRefusal = {
+  ...story("createOpenclawSettingRefusal"),
+  name: "OpenClaw refused by Sandbox Driver settings",
+};
+export const CreateOpenclawSettingRefusalAnthropic = {
+  ...story("createOpenclawSettingRefusalAnthropic"),
+  name: "OpenClaw refused by Sandbox Driver settings, Anthropic",
+};
 export const CreateOpenclawSandboxDriverOutage = {
   ...story("createOpenclawSandboxDriverOutage"),
   name: "OpenClaw during a Sandbox Driver outage",
@@ -125,6 +155,7 @@ export const RepositoryDetails = story("createRepositoriesDetails");
 export const RepositoryDescriptionsPending = story("createRepositoriesDescriptionsPending");
 export const RepositoryHiddenCharacters = story("createRepositoriesHiddenCharacters");
 export const RepositoryLocaleSearch = story("createRepositoriesLocaleSearch");
+export const RepositoryNoMatches = story("createRepositoriesNoMatches");
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
   name: "Contributor without issue management",
@@ -170,6 +201,10 @@ export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),
   name: "Permission check failed",
 };
+export const CreatePermissionRetryDenied = {
+  ...story("createPermissionRetryDenied"),
+  name: "Permission retry refuses Agent create",
+};
 export const CreateMember = {
   ...story("createMember"),
   name: "Member with Agent create",
@@ -187,6 +222,10 @@ export const CreateCapabilitiesError = {
   name: "Capability check failure",
 };
 export const CreateNoPresets = { ...story("createNoPresets"), name: "No Presets" };
+export const CreateNoDefaultPreset = {
+  ...story("createNoDefaultPreset"),
+  name: "Other Presets, no default",
+};
 export const CreateWithoutPreset = {
   ...story("createWithoutPreset"),
   name: "Start without Preset",
@@ -201,6 +240,7 @@ export const CreateOAuthPending = story("createOAuthPending");
 export const CreateOAuthReady = story("createOAuthReady");
 export const CreateOAuthDenied = story("createOAuthDenied");
 export const CreateOAuthUnavailable = story("createOAuthUnavailable");
+export const CreateOAuthNotOffered = story("createOAuthNotOffered");
 export const CreateOAuthStartUnconfirmed = story("createOAuthStartUnconfirmed");
 export const CreateOAuthError = story("createOAuthError");
 export const CreateOAuthExpired = story("createOAuthExpired");
@@ -228,6 +268,14 @@ export const CreateRefusalReason = {
   ...story("createRefusalReason"),
   name: "Provisioning refusal with a reason",
 };
+export const CreatePreflightTimeout = {
+  ...story("createPreflightTimeout"),
+  name: "Configuration check timed out",
+};
+export const CreateNameTaken = {
+  ...story("createNameTaken"),
+  name: "Agent name taken",
+};
 export const CreatePluginPreflightRefusal = {
   ...story("createPluginPreflightRefusal"),
   name: "Plugin refusal before anything is saved",
@@ -242,6 +290,10 @@ export const CreatePasswordPreset = {
   ...story("createPasswordPreset"),
   name: "Standard Codex password variable",
 };
+export const CreatePasswordPresetOperateSome = {
+  ...story("createPasswordPresetOperateSome"),
+  name: "Standard Codex, Secret operate on some Secrets",
+};
 export const CreatePasswordPresetMissingModel = {
   ...story("createPasswordPresetMissingModel"),
   name: "Standard Codex missing model",
@@ -254,6 +306,9 @@ export const CreatePasswordPresetDraft = {
   ...story("createPasswordPresetDraft"),
   name: "Standard Codex password draft",
 };
+export const CreatePresetVariableRefused = story("createPresetVariableRefused");
+export const CreatePresetVariableMarked = story("createPresetVariableMarked");
+export const CreatePresetQuotedSettingRefused = story("createPresetQuotedSettingRefused");
 export const CreatePasswordPresetDenied = {
   ...story("createPasswordPresetDenied"),
   name: "Password Secret creation denied",
@@ -302,3 +357,16 @@ export const ExistingFallbackPrimary = {
   ...story("createModelFallbackSelection"),
   name: "Choose an existing fallback as primary",
 };
+
+export const RosterModelPrimary = {
+  ...story("createRosterModelSelection"),
+  name: "Change a roster's shared primary model",
+};
+
+export const PasswordSecretConflict = story("createPasswordSecretConflict");
+
+export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat");
+
+export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
+
+export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");

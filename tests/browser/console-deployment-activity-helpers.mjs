@@ -20,8 +20,17 @@ export const deploymentDetailsOpen = (page) =>
 export const deploymentRecordUrl = (fixture, namespaceId, agentId, revisionId) =>
   `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/deployments/${revisionId}`;
 
+export async function showDeploymentTab(page) {
+  const tab = page.getByRole("tab", { name: "Deployment", exact: true });
+  await tab.waitFor();
+  if ((await tab.getAttribute("aria-selected")) !== "true") {
+    await tab.click();
+  }
+}
+
 // Opens the folded details, as a reader does, for the record's evidence.
 export async function openDeploymentActivity(page) {
+  await showDeploymentTab(page);
   if (!(await deploymentDetailsOpen(page))) {
     await deploymentDetails(page).locator(":scope > summary").click();
   }
@@ -42,7 +51,12 @@ export async function openFailureDetails(page) {
 // - unset, for the page's first record: they may be folded, because that record can land after
 //   the page showed; the summary must then show the same outcome, and the details are opened
 //   for the record's evidence.
-export async function expectDeploymentOutcome(page, label, { folded } = {}) {
+/** @param {{folded?: boolean, reveal?: boolean}} [options] */
+export async function expectDeploymentOutcome(page, label, options = {}) {
+  const { folded, reveal = true } = options;
+  if (reveal) {
+    await showDeploymentTab(page);
+  }
   const activity = deploymentActivity(page);
   await (
     label === "Unavailable"
@@ -61,13 +75,16 @@ export async function expectDeploymentOutcome(page, label, { folded } = {}) {
       .getByRole("region", { name: "Agent state at a glance" })
       .getByText(new RegExp(` · ${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`))
       .waitFor();
-    await openDeploymentActivity(page);
+    if (reveal) {
+      await openDeploymentActivity(page);
+    }
   }
   return activity;
 }
 
 // Waits until the viewed version's own deployment record shows `label`.
 export async function expectVersionRecord(page, label) {
+  await showDeploymentTab(page);
   const record = page.locator(".version-deployment-record");
   await record.getByText(`Recorded outcome: ${label}`, { exact: true }).waitFor();
   return record;

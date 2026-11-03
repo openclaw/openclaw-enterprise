@@ -61,7 +61,7 @@ func (app *application) iamServicePrincipalCommand() *cobra.Command {
 	get := &cobra.Command{
 		Use:   "get ID",
 		Short: "Show a Namespace ServicePrincipal",
-		Args:  cobra.ExactArgs(1),
+		Args:  opaqueIDArgs("ServicePrincipal"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
@@ -197,7 +197,7 @@ func (app *application) serviceKeyCommand() *cobra.Command {
 	revoke := &cobra.Command{
 		Use:   "revoke ID",
 		Short: "Revoke a service key",
-		Args:  cobra.ExactArgs(1),
+		Args:  opaqueIDArgs("service key"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			client, err := app.client()
 			if err != nil {
@@ -262,7 +262,7 @@ func (app *application) iamRoleCommand() *cobra.Command {
 	get := &cobra.Command{
 		Use:   "get ID",
 		Short: "Show a Namespace IAM Role",
-		Args:  cobra.ExactArgs(1),
+		Args:  opaqueIDArgs("Role"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
@@ -279,7 +279,7 @@ func (app *application) iamRoleCommand() *cobra.Command {
 	deleteCommand := &cobra.Command{
 		Use:   "delete ID",
 		Short: "Delete an unreferenced Namespace IAM Role",
-		Args:  cobra.ExactArgs(1),
+		Args:  opaqueIDArgs("Role"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
@@ -340,7 +340,7 @@ func (app *application) iamAccessBindingCommand() *cobra.Command {
 	get := &cobra.Command{
 		Use:   "get ID",
 		Short: "Show a Namespace IAM AccessBinding",
-		Args:  cobra.ExactArgs(1),
+		Args:  opaqueIDArgs("AccessBinding"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
@@ -357,7 +357,7 @@ func (app *application) iamAccessBindingCommand() *cobra.Command {
 	deleteCommand := &cobra.Command{
 		Use:   "delete ID",
 		Short: "Delete a Namespace IAM AccessBinding",
-		Args:  cobra.ExactArgs(1),
+		Args:  opaqueIDArgs("AccessBinding"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {

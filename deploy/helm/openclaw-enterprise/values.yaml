@@ -205,7 +205,9 @@ publicGithubRead:
   upstreamCidrs: []
 
 gatewayRouting:
-  enabled: false
+  # Requires operator-installed routing controllers/CRDs, an existing GatewayClass,
+  # and the service-key Secret below. Helm does not install those prerequisites.
+  enabled: true
   # Empty derives the private Envoy Service DNS name:
   # occ-gateway-<route-hash>.<envoyNamespace>.svc.
   hostname: ""
@@ -337,6 +339,7 @@ resources:
 worker:
   # Set to 0 to install the API and run initialization before starting the worker.
   replicaCount: 1
+  # pollIntervalMs and leaseDurationMs are timer delays: at most 2147483647 ms.
   pollIntervalMs: 250
   leaseDurationMs: 5000
   maxAttempts: 5
