@@ -13349,6 +13349,7 @@ export class OpenClawController {
         namespace.id,
         planRecord.repositoryBindings as readonly RepositoryBindingRequest[] | undefined,
         "saved",
+        this.installationRepositoryAdmission,
       );
       const repositoryAccess = normalizedRepositoryAccess(
         planRecord.repositoryAccess,
