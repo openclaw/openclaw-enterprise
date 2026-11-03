@@ -253,7 +253,7 @@ test("dedicated OpenClaw admits one managed package and validates Slack's review
   driver.credentials.validate(selections, [source]);
   assert.throws(
     () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
-    /Select a ready Slack MCP account/,
+    /Select a ready Slack account/,
   );
   assert.throws(
     () =>

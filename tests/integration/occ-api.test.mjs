@@ -9451,9 +9451,9 @@ test("deploying Slack freezes the reviewed tool selection and keeps its credenti
         },
       },
     });
-  const refused = await save(["slack_send_message"]);
+  const refused = await save(["slack_*"]);
   assertApiError(refused, 400, "INVALID_REQUEST");
-  assert.match(refused.body.error.message, /reviewed plugin release/);
+  assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
   const saved = await save(["slack_search_public"]);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
