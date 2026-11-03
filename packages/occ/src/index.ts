@@ -8297,6 +8297,7 @@ export class OpenClawController {
         };
       },
       recheck,
+      signal,
     );
   }
 
@@ -8514,6 +8515,7 @@ export class OpenClawController {
         };
       },
       recheck,
+      signal,
     );
   }
 
@@ -8542,6 +8544,7 @@ export class OpenClawController {
     credential: PluginDiscoveryCredential,
     prepareDiscovery: () => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
     validateCurrent?: () => Promise<void>,
+    signal?: AbortSignal,
   ): Promise<T> {
     const source = credential.secretRef ?? credential.credentialSource;
     if (source !== undefined) {
@@ -8576,6 +8579,9 @@ export class OpenClawController {
         return { validationError: error };
       }
       try {
+        if (credential.credentialSource !== undefined) {
+          signal?.throwIfAborted();
+        }
         const value = await discover(authentication);
         const serialized = JSON.stringify(value);
         const encodedToken =
@@ -8616,9 +8622,13 @@ export class OpenClawController {
           "The Credential Gateway does not support plugin discovery.",
         );
       }
-      outcome = await this.credentialGatewayOperation(() =>
-        gateway.withSourceToken!(context, invoke),
-      );
+      if (signal !== undefined) {
+        context.signal = AbortSignal.any([context.signal, signal]);
+      }
+      outcome = await this.credentialGatewayOperation(() => {
+        context.signal.throwIfAborted();
+        return gateway.withSourceToken!(context, invoke);
+      });
     } else if (credential.accessToken !== undefined) {
       outcome = await invoke({ accessToken: credential.accessToken });
     } else if (credential.secretRef !== undefined) {
@@ -8735,6 +8745,7 @@ export class OpenClawController {
           );
       },
       input.credentialSource,
+      signal,
     );
     if (page.plugins.length === 0) {
       return page;
@@ -8779,6 +8790,7 @@ export class OpenClawController {
           driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
       },
       input.credentialSource,
+      signal,
     );
     (await this.savedAgentPluginPlacement(namespaceId, agentId))(entry.id);
     return entry;
@@ -8827,6 +8839,7 @@ export class OpenClawController {
     agentId: string,
     prepareDiscovery: () => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
     credentialSource?: CredentialSourceReference,
+    signal?: AbortSignal,
   ): Promise<T> {
     if (credentialSource !== undefined) {
       await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
@@ -8836,6 +8849,7 @@ export class OpenClawController {
         { credentialSource },
         prepareDiscovery,
         () => this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId),
+        signal,
       );
     }
     const first = await this.boundAgentPluginSource(principalId, namespaceId, agentId);
@@ -8859,6 +8873,7 @@ export class OpenClawController {
           );
         }
       },
+      signal,
     );
   }
 
