@@ -2719,6 +2719,7 @@ for (const viewport of consoleViewports) {
         // Human is the first variable: at 390 px its field then returns across the fold, where
         // focus alone scrolls only the field into view and leaves its refusal below it.
         const { human, ...others } = template.variables;
+        assert.ok(human);
         template.variables = { human, ...others };
       },
       { modelSecretVariable: true },
