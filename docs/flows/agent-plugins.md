@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-02
-last_updated_session: authoring-run/84451153-a081-4e74-aa29-e1a4acecddad
+updated: 2026-11-03
+last_updated_session: authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7
 ---
 
 # Agent Plugin Deployment Flow
@@ -118,17 +118,13 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC revalidates Configuration and selections, snapshots Driver and policies, and queues the revision. Startup resolves native metadata.
+OCC snapshots the validated Configuration, Driver and plugin selections in the queued Agent revision.
 
-For Google Workspace, the Gateway loads the skill. The Sandbox Driver binds the selected Agent credential’s host, path and scopes to the pinned release. OpenShell injects a bearer after the cluster’s shared guard checks each `gog` request against the binding and release operation map. Withdrawal detaches the credential. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+- **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
+- **Hosted MCP packages.** Compute gives the worker the pinned server descriptor, credential placeholder and selected upstream tool names. The worker advertises that subset and the Gateway admits those tools. The Credential Gateway supplies the bearer. The Sandbox installs exact OpenShell rules for worker and script calls and rejects overlapping routes. An account and nonempty tool selection enable the server.
+- **Native runtime plugins.** Startup installs packages and verifies native tool policy.
 
-For a managed MCP release, Kubernetes Compute gives the worker the pinned
-server descriptor, account placeholder, and selected upstream tool names.
-The worker advertises that subset and the Gateway admits its OpenClaw names.
-The Credential Gateway projects the saved access token into the OpenShell
-provider. The Sandbox Driver installs the revision's native MCP rules. OpenShell
-checks tool names before injecting the bearer for worker and script calls.
-The worker enables the server when the selection has an account and tools.
+Credential withdrawal removes injection. Recovery preserves other attachments.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -169,8 +165,8 @@ container's private temporary home.
 Embedded OpenClaw validates selections against its bundled catalog and policy.
 Grants enter nonempty `tools.allow`, otherwise `tools.alsoAllow`; denies and profiles
 remain. Tool `enabled` overrides `toolDefaults.enabled`; disabled tools emit denies.
-Master disable and operator denies prevail. Diffs adds no review for
-`provider_default` or `none`. Version-private installs use `--pin --force --no-enable`,
+Master disable and operator denies prevail. The supported modes
+`provider_default` and `none` add no plugin review. Version-private installs use `--pin --force --no-enable`,
 preserving enablement and tool policy. Preparation refreshes the registry and verifies
 configuration, plugin/package identity, versions, integrity and source containment
 within the install path. Verification failures keep the Gateway unready. Confirmed
@@ -356,6 +352,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
 
 - 2026-11-02 22:29: Trace the Slack account and tool selection through dedicated Agent deployment. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
 
