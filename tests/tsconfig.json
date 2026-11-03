@@ -23,6 +23,7 @@
     "helpers/credential-source-owner-upgrade.ts",
     "helpers/populated-upgrade-return.ts",
     "helpers/deployed-repository-capability.ts",
+    "helpers/production-upgrade-dispatch-restore.ts",
     "helpers/compute-credential-catalog.ts",
     "helpers/provisioning-repository-status.ts",
     "helpers/provisioning-source-status.ts",
