@@ -557,6 +557,218 @@ test(
   },
 );
 
+test(
+  "only matching terminal OpenShell evidence retires selected custody while OCC admission stays live",
+  requiresPostgres,
+  async (t) => {
+    const f = await fixture(t);
+    await disposeNativeSession(f);
+    const entries = [{ repositoryRef: "A", repository: "fixture/repository", repositoryId: "73" }];
+    const peer = await standingGitOrigin(t, f.revision.namespaceId, 600_000, undefined, false, {
+      entries,
+      selectedRepositoryIds: ["73"],
+      permissions: { contents: "write", metadata: "read" },
+    });
+    const registry = { ...peer.registry, backendId: f.registry.backendId };
+    const binding = resolveGitHubRepositoryBinding(registry, {
+      namespaceId: f.revision.namespaceId,
+      repositoryRef: "A",
+      profile: "github-repository",
+    });
+    const driver = {
+      id: "openshell-terminal-custody",
+      implementation: "openshell",
+      configurationId: "c".repeat(64),
+    };
+    const start = (protectedGitDriver = driver) =>
+      f.startOwner({
+        controlSocket: undefined,
+        registry,
+        protectedGitDriver,
+        protectedGitEvidence: openShellGitRecipientEvidence,
+        privateKeyPath: peer.privateKeyPath,
+        custodyKeyPath: peer.custodyKeyPath,
+        apiOrigin: peer.gh.origin,
+        ca: peer.tls.ca,
+      });
+    const owner = await start();
+    const foreign = await start({ ...driver, configurationId: "a".repeat(64) });
+    const selected = owner.protectedGit!.online.githubRepository!;
+    const { installation, revisionId, admissionId, sessionId } = await admitProtectedSession(
+      f,
+      driver,
+      binding,
+    );
+    const routes = new PostgresOpenShellGitRouteStore(f.pool);
+    await routes.open(
+      {
+        revisionId,
+        namespaceId: f.revision.namespaceId,
+        agentId: f.revision.agentId,
+        bindingId: installation.plan.execution.executionId,
+        workspace: "team",
+        sandbox: "git",
+      },
+      randomUUID(),
+    );
+    const observed = {
+      providerId: installation.enforcement.repositoryGitRecipient.providerId,
+      attachmentEpoch: installation.enforcement.repositoryGitRecipient.attachmentEpoch,
+      processInstanceId: installation.enforcement.repositoryGitRecipient.processInstanceId,
+      networkInstanceId: installation.enforcement.repositoryGitRecipient.networkInstanceId,
+      workspace: "team",
+      sandbox: "git",
+      sandboxId: installation.sandboxId,
+      executionId: revisionId,
+      provider: "oce-github-installation-" + "a".repeat(32),
+      providerResourceVersion: "1",
+      profileVersion: "1",
+      credentialState: "bootstrap" as const,
+      providerEnvRevision: "1",
+      configRevision: "1",
+      policyHash: installation.enforcement.policyHash,
+      supervisorSessionId: "session",
+    };
+    const generation = {
+      providerId: observed.providerId,
+      resourceVersion: "1",
+      profileVersion: "1",
+      credentialState: "bootstrap" as const,
+      expiresAt: "",
+    };
+    assert.equal(
+      await routes.record(revisionId, 1, { generation, observed, material: undefined }),
+      true,
+    );
+    await owner.maintain();
+    const material = await selected.readMaterial({ revisionId, fence: 1, observed }, t.signal);
+    assert.ok(material && "value" in material);
+    const version = {
+      preparationAttemptId: material.preparationAttemptId,
+      materialVersion: material.materialVersion,
+    };
+    const fence = await routes.writing(revisionId, 1, "rotate", version);
+    assert.equal(fence, 2);
+    const active = {
+      ...observed,
+      credentialState: "active" as const,
+      providerResourceVersion: "2",
+    };
+    const snapshot = {
+      generation: {
+        ...generation,
+        credentialState: "active" as const,
+        resourceVersion: "2",
+        expiresAt: material.expiresAt,
+      },
+      observed: active,
+      material: version,
+    };
+    assert.equal(await routes.record(revisionId, fence, snapshot), true);
+    const route = { revisionId, fence, observed: active };
+    const installed = { route, ...version };
+    const request = () => ({
+      sessionId,
+      exchangeId: randomUUID(),
+      requestDigestSha256: "a".repeat(64),
+      deadlineAt: new Date(Date.now() + 5000).toISOString(),
+      providerInstanceId: binding.grant.providerInstanceId,
+      grantId: binding.grant.grantId,
+      scope: "github-repository" as const,
+      installationId: registry.githubInstallationId,
+      repositories: entries.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
+      operation: "receive-pack" as const,
+    });
+    assert.equal((await selected.authorize(request(), installed, t.signal)).kind, "allow");
+    const state = async () =>
+      (
+        await f.pool.query(
+          `SELECT f.source, f.enabled, a.id, a.custody, a.sealed IS NULL AS erased,
+            s.session_id, s.phase, s.live_revision_id,
+            s.deadline_wall_ms > extract(epoch FROM clock_timestamp())*1000 AS unexpired,
+            g.active_revision_id, g.desired_runtime_state, g.repository_bindings
+           FROM occ.prepared_github_families f
+           JOIN occ.prepared_github_attempts a USING (source_id)
+           JOIN occ.repository_session_attempts s ON s.admission_id=$2
+           JOIN occ.agents g ON (g.namespace_id,g.id)=(s.namespace_id,s.agent_id)
+           WHERE f.source_id=$1`,
+          ["repository-git:" + admissionId, admissionId],
+        )
+      ).rows;
+    const original = await state();
+    assert.equal(original.length, 1);
+    assert.deepEqual(original[0], {
+      source: original[0].source,
+      enabled: true,
+      id: material.preparationAttemptId,
+      custody: "current",
+      erased: false,
+      session_id: sessionId,
+      phase: "open",
+      live_revision_id: revisionId,
+      unexpired: true,
+      active_revision_id: revisionId,
+      desired_runtime_state: "running",
+      repository_bindings: [{ repositoryRef: "A", profile: "github-repository" }],
+    });
+    assert.deepEqual(original[0].source.session.memberSessions, [
+      { repositoryRef: "A", admissionId, sessionId },
+    ]);
+    const deletes = () => peer.gh.trace.filter((call) => call.method === "DELETE");
+    const denied = async () => {
+      assert.equal((await selected.authorize(request(), installed, t.signal)).kind, "denied");
+      assert.deepEqual(await selected.readMaterial(route, t.signal), { absent: "unprepared" });
+      const uses = await f.pool.query(
+        "SELECT attempt_id,material_version FROM occ.prepared_repository_git_uses WHERE admission_id=$1",
+        [admissionId],
+      );
+      assert.deepEqual(uses.rows, [
+        { attempt_id: material.preparationAttemptId, material_version: material.materialVersion },
+      ]);
+    };
+    // Neither an absent observation nor a different recipient proves an end.
+    for (const observation of [undefined, { ...active, sandboxId: "another-recipient" }]) {
+      assert.equal(
+        await routes.record(revisionId, fence, { ...snapshot, observed: observation }),
+        true,
+      );
+      const saved = await f.pool.query(
+        "SELECT observed FROM occ.credential_deliveries WHERE revision_id=$1 AND binding_id=$2",
+        [revisionId, installation.plan.execution.executionId],
+      );
+      assert.deepEqual(saved.rows, [{ observed: observation ?? null }]);
+      await denied();
+      await owner.maintain();
+      assert.deepEqual(await state(), original);
+      assert.equal(deletes().length, 0);
+    }
+    assert.equal(await routes.record(revisionId, fence, snapshot), true);
+    assert.ok("value" in (await selected.readMaterial(route, t.signal))!);
+    await owner.maintain();
+    assert.deepEqual(await state(), original, "a matching active route still owns its token");
+    assert.equal(deletes().length, 0);
+    assert.equal(await routes.block(revisionId, 1, "supervisor_replaced"), false);
+    assert.equal(await routes.owns(revisionId, fence), true);
+    assert.equal(await routes.block(revisionId, fence, "supervisor_replaced"), true);
+    assert.equal(await routes.owns(revisionId, fence), "supervisor_replaced");
+    await denied();
+    await foreign.maintain();
+    assert.deepEqual(await state(), original, "another registration cannot retire this token");
+    assert.equal(deletes().length, 0);
+    await owner.maintain();
+    assert.deepEqual(await state(), [
+      { ...original[0], enabled: false, custody: "revoked", erased: true },
+    ]);
+    assert.deepEqual(
+      deletes().map((call) => call.target),
+      ["/installation/token"],
+    );
+    await owner.maintain();
+    assert.equal(deletes().length, 1, "terminal custody is not revoked twice");
+    assert.equal(peer.gh.issuesOfTokens.length, 1, "terminal evidence cannot re-arm issuance");
+  },
+);
+
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 async function disposeNativeSession(f: Fixture) {
