@@ -66,6 +66,12 @@ function createTestCredentialGateway(options = {}) {
       }
     },
     validateSourceConfig() {},
+    describeSourceDestinations: () => ({
+      api_key: { endpoint: "https://api.openai.com/v1", isDefault: true },
+      access_token: { endpoint: "https://chatgpt.com/backend-api", isDefault: true },
+      client_secret: { endpoint: "https://issuer.example.test/token", isDefault: true },
+      refresh_token: { endpoint: "https://issuer.example.test/token", isDefault: true },
+    }),
     async listSourceTypes() {
       return [
         {

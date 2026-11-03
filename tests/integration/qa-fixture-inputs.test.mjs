@@ -198,6 +198,14 @@ test(
 
 test("QA selection keeps prerequisite credentials and reports omitted coverage", async () => {
   const { selectQaMatrix, validateQaInputs } = await import("../helpers/qa-selection.mjs");
+  const custom = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "custom-responses" });
+  assert.deepEqual(custom.requiredEnv, [
+    "OCC_TEST_QA_RESPONSES_KEY_FILE",
+    "OCC_TEST_QA_RESPONSES_BASE_URL",
+    "OCC_TEST_QA_RESPONSES_MODEL",
+  ]);
+  assert.ok(!selectQaMatrix({}).scenarios.includes("custom-responses"));
+  assert.throws(() => validateQaInputs(custom, {}), /RESPONSES_KEY_FILE is required/);
   const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,calendar" });
   assert.equal(selected.scope, "partial:selected");
   assert.deepEqual(
@@ -211,6 +219,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   assert.deepEqual(selected.cells[1].unselected, [
     "codex-search-config",
+    "custom-responses",
     "console-secrets",
     "git-write",
     "git-push-denied",

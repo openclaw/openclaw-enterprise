@@ -326,7 +326,8 @@
               "reference/agents",
               "reference/agents/workspace-files",
               "reference/agent-plugins",
-              "reference/presets"
+              "reference/presets",
+              "reference/console/custom-responses"
             ]
           },
           {
@@ -1030,12 +1031,30 @@
               {
                 "group": "Release",
                 "pages": [
-                  { "page": "release/README", "label": "Overview" },
-                  { "page": "release/configuration", "label": "Configuration" },
-                  { "page": "release/containers", "label": "Containers" },
-                  { "page": "release/chart-publication", "label": "Helm Chart" },
-                  { "page": "release/cli-publication", "label": "OCC CLI" },
-                  { "page": "release/container-promotion", "label": "Docker Hub Promotion" }
+                  {
+                    "page": "release/README",
+                    "label": "Overview"
+                  },
+                  {
+                    "page": "release/configuration",
+                    "label": "Configuration"
+                  },
+                  {
+                    "page": "release/containers",
+                    "label": "Containers"
+                  },
+                  {
+                    "page": "release/chart-publication",
+                    "label": "Helm Chart"
+                  },
+                  {
+                    "page": "release/cli-publication",
+                    "label": "OCC CLI"
+                  },
+                  {
+                    "page": "release/container-promotion",
+                    "label": "Docker Hub Promotion"
+                  }
                 ]
               },
               {

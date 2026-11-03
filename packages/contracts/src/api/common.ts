@@ -302,7 +302,11 @@ export const SecretReference = Type.Object(
 export const HarnessAuthBindingSchema = Type.Union([
   Type.Object({ method: Type.Literal("runtime") }, { additionalProperties: false }),
   Type.Object(
-    { method: Type.Literal("api_key"), source: SecretReference },
+    {
+      method: Type.Literal("api_key"),
+      source: SecretReference,
+      authorizedEndpoint: Type.Optional(Type.String({ format: "uri", maxLength: 2048 })),
+    },
     { additionalProperties: false },
   ),
   Type.Object(
@@ -444,7 +448,11 @@ export const SecretValue = Type.String({
 });
 
 export const CreateSecretBody = Type.Object(
-  { name: Name, value: SecretValue },
+  {
+    name: Name,
+    value: SecretValue,
+    authorizedEndpoint: Type.Optional(Type.String({ format: "uri", maxLength: 2048 })),
+  },
   { additionalProperties: false },
 );
 
@@ -820,7 +828,10 @@ export const ValidateAgentCreateBody = Type.Object(
         [
           HarnessAuthBindingSchema,
           Type.Object(
-            { method: Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]) },
+            {
+              method: Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
+              authorizedEndpoint: Type.Optional(Type.String({ format: "uri", maxLength: 2048 })),
+            },
             { additionalProperties: false },
           ),
           Type.Null(),

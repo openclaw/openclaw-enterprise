@@ -38,7 +38,13 @@ export function normalizeHarnessAuthBinding(input: unknown): HarnessAuthBinding 
 export function harnessAuthBindingFromSnapshot(snapshot: HarnessAuthSnapshot): HarnessAuthBinding {
   if (isSecretHarnessAuth(snapshot)) {
     return snapshot.method === "api_key"
-      ? { method: "api_key", source: snapshot.source }
+      ? {
+          method: "api_key",
+          source: snapshot.source,
+          ...(snapshot.authorizedEndpoint === undefined
+            ? {}
+            : { authorizedEndpoint: snapshot.authorizedEndpoint }),
+        }
       : { method: "codex_pat", source: snapshot.source };
   }
   if (isServiceAccountHarnessAuth(snapshot)) {

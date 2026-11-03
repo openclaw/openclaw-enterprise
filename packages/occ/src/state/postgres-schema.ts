@@ -421,6 +421,7 @@ export const workspaceSetups = occSchema.table(
 export const secrets = occSchema.table(
   "secrets",
   {
+    authorizedEndpoint: text("authorized_endpoint"),
     id: text("id").primaryKey(),
     namespaceId: text("namespace_id")
       .notNull()
@@ -434,6 +435,10 @@ export const secrets = occSchema.table(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
+    check(
+      "secrets_authorized_endpoint_length",
+      sql`${table.authorizedEndpoint} IS NULL OR char_length(${table.authorizedEndpoint}) BETWEEN 1 AND 2048`,
+    ),
     unique("secrets_namespace_id_id_unique").on(table.namespaceId, table.id),
     unique("secrets_namespace_id_name_unique").on(table.namespaceId, table.name),
     check("secrets_id_format", sql`${table.id} ~ ${identifierPatterns.secret}`),

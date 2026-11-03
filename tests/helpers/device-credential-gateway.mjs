@@ -30,6 +30,7 @@ export function createDeviceCredentialDrivers({
       assert.equal(type, "codex-device");
       assert.deepEqual(config, {});
     },
+    describeSourceDestinations: () => ({}),
     async listSourceTypes() {
       return [
         {

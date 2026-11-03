@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -178,7 +179,10 @@ async function ensureInstallation(store) {
 async function exerciseRepository(store) {
   await ensureInstallation(store);
   const { namespace, configuration, agent: initialAgent } = resources();
-  const storedSecret = secret(namespace.id);
+  const storedSecret = {
+    ...secret(namespace.id),
+    authorizedEndpoint: "https://models.example.test/v1",
+  };
   const siblingConfiguration = {
     ...configuration,
     id: identifier("cfg"),
@@ -644,5 +648,69 @@ test(
     );
     assert.ok(!columns.rows.some(({ column_name }) => column_name === "agent_id"));
     assert.ok(!columns.rows.some(({ column_name }) => /value|bytes|material/i.test(column_name)));
+  },
+);
+
+test(
+  "PostgreSQL API-key endpoint bindings persist on Agents and immutable revisions",
+  requiresPostgres,
+  async (context) => {
+    const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
+      import("pg"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const store = new PostgresPlatformState(pool);
+    await ensureInstallation(store);
+    const { namespace, configuration, agent } = resources();
+    const endpoint = "https://models.example.test/v1";
+    const source = { ...secret(namespace.id), authorizedEndpoint: endpoint };
+    const auth = {
+      method: "api_key",
+      source: bindingValue(source).source,
+      authorizedEndpoint: endpoint,
+    };
+    const snapshotAuth = { ...auth, secretDriverId: source.driverId };
+    const snapshot = await store.transact(async (state) => {
+      await state.namespaces.createNamespace(namespace);
+      await state.configurations.createConfiguration(configuration);
+      await state.secrets.createSecret(source);
+      const owner = await state.agents.createAgent({ ...agent, harnessAuth: auth });
+      return state.revisions.createRevision({
+        ...revisionFor(owner, configuration, source, 1),
+        configuration: createHarnessConfiguration("codex", "provider-model"),
+        harnessAuth: snapshotAuth,
+      });
+    });
+    await store.read(async (state) => {
+      assert.deepEqual((await state.agents.findAgent(namespace.id, agent.id)).harnessAuth, auth);
+      assert.deepEqual(
+        (await state.revisions.findRevision(namespace.id, agent.id, snapshot.id)).harnessAuth,
+        snapshotAuth,
+      );
+    });
+    // The real database accepts this API-key field, rejects it on PAT bindings, and keeps
+    // Secret authorization immutable to the application role, including after admission.
+    for (const invalid of [
+      { ...auth, method: "codex_pat" },
+      { ...auth, authorizedEndpoint: null },
+      { ...auth, authorizedEndpoint: 1 },
+    ]) {
+      await assert.rejects(
+        pool.query("UPDATE occ.agents SET harness_auth = $2::jsonb WHERE id = $1", [
+          agent.id,
+          JSON.stringify(invalid),
+        ]),
+        { code: "23514" },
+      );
+    }
+    await assert.rejects(
+      pool.query("UPDATE occ.secrets SET authorized_endpoint = $2 WHERE id = $1", [
+        source.id,
+        "https://other.example.test/v1",
+      ]),
+      { code: "42501" },
+    );
   },
 );

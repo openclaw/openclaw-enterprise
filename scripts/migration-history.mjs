@@ -244,6 +244,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 62) {
     return "prePreparedAttemptSettlement";
   }
+  if (count === 66) {
+    return "preEndpointAuthorization";
+  }
   if (count === 64) {
     return "preSelectedRepositorySet";
   }

@@ -426,12 +426,14 @@ export interface SecretBackendRef {
 }
 
 export interface Secret extends SecretIdentity {
+  readonly authorizedEndpoint?: string;
   readonly driverId: string;
   readonly backendRef: SecretBackendRef;
   readonly createdAt: string;
 }
 
 export interface SecretMetadata extends SecretIdentity {
+  readonly authorizedEndpoint?: string;
   readonly ref: SecretReference;
 }
 
@@ -619,7 +621,11 @@ export function revisionCredentialSourceSnapshot(
 }
 
 export type HarnessAuthBinding =
-  | { readonly method: "api_key"; readonly source: SecretReference }
+  | {
+      readonly method: "api_key";
+      readonly source: SecretReference;
+      readonly authorizedEndpoint?: string;
+    }
   | { readonly method: "codex_pat"; readonly source: SecretReference }
   | { readonly method: "codex_pat"; readonly source: ServiceAccountReference }
   | { readonly method: "credential_source"; readonly sourceId: string }
@@ -630,6 +636,7 @@ export type HarnessAuthSnapshot =
   | { readonly method: "runtime" }
   | {
       readonly method: "api_key";
+      readonly authorizedEndpoint?: string;
       readonly source: SecretReference;
       readonly secretDriverId: string;
     }
@@ -1369,6 +1376,7 @@ export type {
   CredentialGatewayContext,
   CredentialSourceContext,
   CredentialSourceInput,
+  CredentialSourceDestination,
   CredentialSourceStatus,
   CredentialRevisionContext,
   CredentialWithdrawalContext,

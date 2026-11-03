@@ -1165,6 +1165,13 @@ function dedicatedFirstDeployFixture({
     },
     ...revisionOverrides,
   });
+  if (modelEndpoint !== undefined && revision.harnessAuth.method === "api_key") {
+    const endpoint = new URL(modelEndpoint);
+    revision.harnessAuth = {
+      ...revision.harnessAuth,
+      authorizedEndpoint: endpoint.origin + endpoint.pathname.replace(/\/$/u, ""),
+    };
+  }
   const operatorSuppliedConfiguration = {
     ...revision.configuration,
     gateway: {
@@ -7168,6 +7175,11 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
       undefined,
       computeOptions,
     );
+    if (modelEndpoint !== undefined) {
+      // A valid custom-endpoint revision carries the same authorization in its delivery context.
+      revision.harnessAuth = { ...revision.harnessAuth, authorizedEndpoint: modelEndpoint };
+      context.harnessAuth = { ...context.harnessAuth, authorizedEndpoint: modelEndpoint };
+    }
     if (computeOptions.executionCluster !== undefined) {
       // One stand-in API serves both clusters.
       driver.executionApiClients = driver.apiClients;
@@ -23782,4 +23794,34 @@ test("an active embedded revision whose stored Gateway tool policy predates the 
     "a new deployment",
   );
   assert.throws(() => driver.validateConfiguration(revision.configuration), refused, "save");
+});
+
+test("custom Codex endpoint authorization is required before provisioning and overrides the Installation fallback", async () => {
+  const fallback = "https://installation.example.test/v1";
+  const missing = dedicatedFirstDeployFixture({ modelEndpoint: fallback });
+  delete missing.revision.harnessAuth.authorizedEndpoint;
+  await assert.rejects(
+    missing.prepare,
+    /must authorize the Installation's custom API-key endpoint/,
+  );
+  assert.equal(missing.state.setupCalls, 0);
+
+  const fixture = dedicatedFirstDeployFixture({
+    modelEndpoint: fallback,
+    standaloneWebSearch: true,
+  });
+  const selected = "https://agent.example.test/v1";
+  fixture.revision.harnessAuth = { ...fixture.revision.harnessAuth, authorizedEndpoint: selected };
+  await fixture.prepare();
+  const runtime = [...fixture.objects.values()].find(
+    (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
+  );
+  assert.deepEqual(JSON.parse(runtime.data["runtime.json"]).modelEndpoint, {
+    baseUrl: selected,
+    modelProvider: "openai-compatible",
+  });
+  assert.equal(
+    runtime.data["config.toml"].includes("supports_standalone_web_search = true"),
+    false,
+  );
 });

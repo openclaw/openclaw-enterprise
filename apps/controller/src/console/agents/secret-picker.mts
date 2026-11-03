@@ -151,7 +151,15 @@ export function secretMetadata(
   ) {
     return null;
   }
-  return { id: ref.id, name, namespaceId, ref };
+  return {
+    id: ref.id,
+    name,
+    namespaceId,
+    ref,
+    ...(typeof data.authorizedEndpoint === "string"
+      ? { authorizedEndpoint: data.authorizedEndpoint }
+      : {}),
+  };
 }
 
 // Secret names this page session resolved, per signed-in operator. A rebuilt summary shows the
@@ -398,6 +406,7 @@ export function createSecretReferenceField({
   getCurrentSource,
   onSecretSelected,
   createSecretName,
+  createAuthorizedEndpoint,
   createDialogTitle,
   createFixedKey,
   metadataLabel = `View ${label} Secret metadata`,
@@ -415,6 +424,7 @@ export function createSecretReferenceField({
   getCurrentSource(): unknown;
   onSecretSelected(secret: SecretMetadata): void | Promise<void>;
   createSecretName(): string;
+  createAuthorizedEndpoint?(): string | undefined;
   createDialogTitle?: string;
   createFixedKey?: { label: string; value: string; hint: string };
   metadataLabel?: string;
@@ -908,6 +918,7 @@ export function createSecretReferenceField({
     if (!namespaceId || !request || !isCurrent()) {
       return;
     }
+    const authorizedEndpoint = createAuthorizedEndpoint?.();
     const dialog = element("dialog", {
       className: "dialog credential-secret-dialog",
       "aria-label": createDialogTitle ?? `Create ${label} Secret`,
@@ -971,6 +982,13 @@ export function createSecretReferenceField({
         help: "Unique within this Namespace.",
         className: "form-field",
       }),
+      authorizedEndpoint === undefined
+        ? null
+        : element(
+            "p",
+            { className: "hint" },
+            `Authorized endpoint: ${authorizedEndpoint}. Supply a key for this destination.`,
+          ),
       valueField,
       feedback,
       element("div", { className: "dialog-actions" }, cancel, submit),
@@ -1020,7 +1038,11 @@ export function createSecretReferenceField({
       try {
         const result = await request(`${namespacePath(namespaceId)}/secrets`, {
           method: "POST",
-          body: { name: secretName, value: value.value },
+          body: {
+            name: secretName,
+            value: value.value,
+            ...(authorizedEndpoint === undefined ? {} : { authorizedEndpoint }),
+          },
           expectedStatus: 201,
         });
         created = true;

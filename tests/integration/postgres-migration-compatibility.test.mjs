@@ -1992,6 +1992,7 @@ test(
       [62, "prePreparedAttemptSettlement"],
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
+      [66, "preEndpointAuthorization"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

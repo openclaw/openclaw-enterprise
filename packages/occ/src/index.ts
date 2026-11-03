@@ -930,6 +930,7 @@ export interface ValidateAgentCreateInput {
 
 /** A Secret-backed Harness authentication method whose Secret is not saved yet. */
 export interface PlannedSecretHarnessAuth {
+  readonly authorizedEndpoint?: string;
   readonly method: "api_key" | "codex_pat";
 }
 
@@ -1002,6 +1003,7 @@ export interface UpdatePresetInput {
 }
 
 export interface CreateSecretInput {
+  readonly authorizedEndpoint?: string;
   readonly namespaceId: string;
   readonly name: string;
   readonly value: string;
@@ -5370,6 +5372,30 @@ export class OpenClawController {
     input: CreateSecretInput,
   ): Promise<Readonly<SecretMetadata>> {
     this.validateSecretValue(input.value);
+    if (input.authorizedEndpoint !== undefined) {
+      let endpoint: URL | undefined;
+      try {
+        endpoint = new URL(input.authorizedEndpoint);
+      } catch {
+        /* Report the same invalid metadata shape below. */
+      }
+      if (
+        endpoint === undefined ||
+        endpoint.protocol !== "https:" ||
+        endpoint.port === "0" ||
+        endpoint.username !== "" ||
+        endpoint.password !== "" ||
+        endpoint.search !== "" ||
+        endpoint.hash !== "" ||
+        endpoint.hostname.includes("*") ||
+        endpoint.pathname.includes("*") ||
+        input.authorizedEndpoint !== endpoint.origin + endpoint.pathname.replace(/\/$/u, "")
+      ) {
+        throw new SecretBindingValidationError(
+          "authorizedEndpoint must be a normalized HTTPS endpoint without credentials, query, fragment, wildcard, or port zero.",
+        );
+      }
+    }
     if (!isName(input.name)) {
       throw new ScopeViolationError("The Secret name is invalid.");
     }
@@ -5393,6 +5419,9 @@ export class OpenClawController {
       const backendRef = await this.secretOperation(() => driver.create(identity, input.value));
       const secret: Secret = {
         ...identity,
+        ...(input.authorizedEndpoint === undefined
+          ? {}
+          : { authorizedEndpoint: input.authorizedEndpoint }),
         driverId: driver.id,
         backendRef,
         createdAt: this.timestamp(),
@@ -6583,6 +6612,17 @@ export class OpenClawController {
                 1,
               )
             : undefined);
+      if (selected !== undefined) {
+        await this.authorizeCredentialDestinations(
+          state,
+          principalId,
+          locked.id,
+          secretRefs,
+          selected,
+          type.type,
+          config,
+        );
+      }
       const read =
         egress === undefined
           ? await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs)
@@ -6730,10 +6770,51 @@ export class OpenClawController {
     );
   }
 
-  /**
-   * Authorizes `operate` on each referenced same-Namespace Secret and reads its current value
-   * for a Credential Gateway call. Values stay in memory for that call only.
-   */
+  /** Compare Driver-owned destination descriptions before any credential values are read. */
+  private async authorizeCredentialDestinations(
+    state: PlatformReadView,
+    principalId: string,
+    namespaceId: string,
+    references: Readonly<Record<string, SecretReference>>,
+    gateway: CredentialGatewayDriver,
+    type: string,
+    config: Readonly<Record<string, string>>,
+    authorizeInputs = true,
+  ): Promise<void> {
+    if (Object.values(references).some((reference) => reference.namespaceId !== namespaceId)) {
+      throw new SecretBindingValidationError(CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES);
+    }
+    if (authorizeInputs) {
+      for (const reference of Object.values(references)) {
+        await this.authorize(principalId, "operate", reference);
+      }
+    }
+    const destinations = gateway.describeSourceDestinations({ type, config });
+    for (const [field, reference] of Object.entries(references)) {
+      const secret = await state.secrets.findSecret(namespaceId, reference.id);
+      const destination = destinations[field];
+      if (secret === undefined) {
+        throw new ScopeViolationError("The credential source Secret is unavailable.");
+      }
+      if (destination === undefined) {
+        throw new DependencyUnavailableError(
+          "The Credential Gateway did not describe a credential destination.",
+        );
+      }
+      if (
+        secret.authorizedEndpoint === undefined
+          ? destination.isDefault !== true
+          : [destination.endpoint, ...(destination.additionalEndpoints ?? [])].some(
+              (endpoint) => endpoint !== secret.authorizedEndpoint,
+            )
+      ) {
+        throw new SecretBindingValidationError(
+          "The credential source Secret does not authorize its destination. Supply an endpoint-specific key.",
+        );
+      }
+    }
+  }
+
   private async readCredentialSourceSecrets(
     state: PlatformUnitOfWork,
     principalId: string,
@@ -6878,6 +6959,15 @@ export class OpenClawController {
         }
         return this.credentialSourceMetadata(updated, { state: "ready" });
       }
+      await this.authorizeCredentialDestinations(
+        state,
+        principalId,
+        namespace.id,
+        secretRefs,
+        gateway,
+        source.type,
+        source.config,
+      );
       const values = await this.readCredentialSourceSecrets(
         state,
         principalId,
@@ -12048,6 +12138,14 @@ export class OpenClawController {
       if (source === undefined) {
         throw new ScopeViolationError("The Harness Secret does not belong to the exact Namespace.");
       }
+      if (
+        binding.method === "api_key" &&
+        binding.authorizedEndpoint !== source.authorizedEndpoint
+      ) {
+        throw new SecretBindingValidationError(
+          "The Harness Secret does not authorize this endpoint. Supply a separate endpoint-specific key.",
+        );
+      }
       this.ownedSecretDriver(source.driverId, () => new HarnessAuthSecretDriverError());
     } else if (binding.method === "credential_source") {
       await this.authorize(principalId, "operate", {
@@ -12290,6 +12388,16 @@ export class OpenClawController {
         }
         snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
       } else {
+        await this.authorizeCredentialDestinations(
+          state,
+          principalId,
+          agent.namespaceId,
+          source.secrets,
+          owner.driver,
+          source.type,
+          source.config,
+          false,
+        );
         await this.credentialSourceType(owner.driver, source.type);
         snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
       }
@@ -13724,6 +13832,16 @@ export class OpenClawController {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
     const gateway = this.ownedCredentialGatewayDriver(source);
+    await this.authorizeCredentialDestinations(
+      state,
+      "",
+      namespaceId,
+      source.secrets,
+      gateway,
+      source.type,
+      source.config,
+      false,
+    );
     const type = await this.credentialSourceType(gateway, source.type);
     if (type.harnessAuth === undefined) {
       throw new ResourceStateConflictError(
@@ -13869,6 +13987,9 @@ export class OpenClawController {
       id: secret.id,
       namespaceId: secret.namespaceId,
       name: secret.name,
+      ...(secret.authorizedEndpoint === undefined
+        ? {}
+        : { authorizedEndpoint: secret.authorizedEndpoint }),
       ref: { kind: "secret", namespaceId: secret.namespaceId, id: secret.id },
     });
   }
@@ -14808,10 +14929,21 @@ export class OpenClawController {
     const planned = asRecord(value);
     if (
       planned !== undefined &&
-      Object.keys(planned).length === 1 &&
+      Object.keys(planned).every(
+        (key) =>
+          key === "method" ||
+          (key === "authorizedEndpoint" &&
+            planned.method === "api_key" &&
+            typeof planned.authorizedEndpoint === "string"),
+      ) &&
       (planned.method === "api_key" || planned.method === "codex_pat")
     ) {
-      return Object.freeze({ method: planned.method });
+      return Object.freeze({
+        method: planned.method,
+        ...(typeof planned.authorizedEndpoint === "string"
+          ? { authorizedEndpoint: planned.authorizedEndpoint }
+          : {}),
+      });
     }
     return this.harnessAuthBinding(value);
   }
@@ -14841,7 +14973,13 @@ export class OpenClawController {
     };
     return this.secretHarnessAuthSnapshot(
       binding.method === "api_key"
-        ? { method: "api_key", source }
+        ? {
+            method: "api_key",
+            source,
+            ...(binding.authorizedEndpoint === undefined
+              ? {}
+              : { authorizedEndpoint: binding.authorizedEndpoint }),
+          }
         : { method: "codex_pat", source },
     );
   }

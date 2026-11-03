@@ -3633,9 +3633,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly supportsGatewayManagedMode?: true;
   readonly supportsWorkspaceSetup = true as const;
   readonly requiresAgentRuntimeCredentials?: true;
-  readonly agentProvisioning = Object.freeze({
-    executionModes: Object.freeze(["dedicated"] as const),
-  });
+  readonly agentProvisioning: {
+    readonly executionModes: readonly ["dedicated"];
+    readonly codexApiKeyBaseUrl?: string;
+  };
   private readonly options: KubernetesComputeDriverOptions;
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
@@ -4203,6 +4204,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     // Keep the Driver-owned configuration isolated from its constructor caller.
     this.options = structuredClone(options);
+    const endpoint = options.runtime?.codexModelBaseUrl;
+    this.agentProvisioning = Object.freeze({
+      executionModes: Object.freeze(["dedicated"] as const),
+      ...(endpoint === undefined ? {} : { codexApiKeyBaseUrl: normalizeOpenAiBaseUrl(endpoint)! }),
+    });
     if (options.runtime !== undefined) {
       this.requiresAgentRuntimeCredentials = true;
       this.supportsGatewayManagedMode = true;
@@ -4770,6 +4776,84 @@ export class KubernetesComputeDriver implements ComputeDriver {
         callerSettingError,
         native ? auth.method : undefined,
       );
+    }
+    if (auth.method === "api_key") {
+      const endpoint = auth.authorizedEndpoint;
+      if (
+        endpoint !== undefined &&
+        (normalizeOpenAiBaseUrl(endpoint) !== endpoint || openAiBaseUrlRewritesIpv4(endpoint))
+      ) {
+        throw callerSettingError(
+          "harnessAuth.authorizedEndpoint",
+          "must be a normalized HTTPS /v1 endpoint",
+        );
+      }
+      if (
+        codex &&
+        endpoint === undefined &&
+        this.options.runtime?.codexModelBaseUrl !== undefined &&
+        normalizeOpenAiBaseUrl(this.options.runtime.codexModelBaseUrl) !==
+          "https://api.openai.com/v1"
+      ) {
+        throw callerSettingError(
+          "harnessAuth.authorizedEndpoint",
+          "must authorize the Installation's custom API-key endpoint",
+        );
+      }
+      if (embedded) {
+        const provider = asRecord(
+          asRecord(asRecord(configuration.models)?.providers)?.[authentication.providerId],
+        );
+        const custom = !["openai", "anthropic"].includes(authentication.providerId);
+        if (
+          custom &&
+          (endpoint === undefined ||
+            provider?.baseUrl !== endpoint ||
+            (authentication.providerId === "custom" && provider?.api !== "openai-responses"))
+        ) {
+          throw callerSettingError(
+            "harnessAuth.authorizedEndpoint",
+            "must match the custom Responses provider endpoint",
+          );
+        }
+        if (!custom) {
+          const expected =
+            authentication.providerId === "openai"
+              ? "https://api.openai.com/v1"
+              : "https://api.anthropic.com";
+          const entries = Array.isArray(provider?.models) ? provider.models : [];
+          if (
+            (provider?.baseUrl !== undefined && provider.baseUrl !== expected) ||
+            entries.some(
+              (entry) =>
+                asRecord(entry)?.baseUrl !== undefined && asRecord(entry)?.baseUrl !== expected,
+            )
+          ) {
+            throw callerSettingError(
+              "harnessAuth.authorizedEndpoint",
+              "requires an endpoint-authorized custom provider for a different destination",
+            );
+          }
+        }
+        if (endpoint !== undefined && !custom) {
+          throw callerSettingError(
+            "harnessAuth.authorizedEndpoint",
+            "requires a custom provider for Embedded OpenClaw",
+          );
+        }
+        if (
+          custom &&
+          Array.isArray(provider?.models) &&
+          provider.models.some(
+            (entry) => asRecord(entry)?.baseUrl !== undefined || asRecord(entry)?.api !== undefined,
+          )
+        ) {
+          throw callerSettingError(
+            "models.providers.custom.models",
+            "must inherit the authorized endpoint and Responses API",
+          );
+        }
+      }
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
@@ -14304,6 +14388,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision.harness.id === "codex" &&
       revision.harness.mode === "dedicated" &&
       revision.harnessAuth?.method === "api_key" &&
+      (revision.harnessAuth.authorizedEndpoint === undefined ||
+        revision.harnessAuth.authorizedEndpoint ===
+          normalizeOpenAiBaseUrl(
+            this.options.runtime?.codexModelBaseUrl ?? "https://api.openai.com/v1",
+          )) &&
       this.options.runtime?.codexModelSupportsStandaloneWebSearch === true;
     if (
       openaiBaseUrl === undefined &&
@@ -14311,7 +14400,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       revision.harness.mode === "dedicated" &&
       revision.harnessAuth?.method === "api_key"
     ) {
-      openaiBaseUrl = this.options.runtime?.codexModelBaseUrl;
+      openaiBaseUrl =
+        revision.harnessAuth.authorizedEndpoint ?? this.options.runtime?.codexModelBaseUrl;
     }
     if (openaiBaseUrl !== undefined) {
       const normalized = normalizeOpenAiBaseUrl(openaiBaseUrl);

@@ -8,6 +8,8 @@ to deploy; while it provisions, drafts needing no new Secret or sign-in still sa
 Secret access; drafts also need Installation `administer` to grant Agent key access; members without it save drafts an administrator finishes. After deployment, [verify the same
 Agent and version](../../guides/deploy/production-agents.md#verify-production-workloads).
 
+For custom Responses endpoints, see [custom model credentials and endpoints](custom-responses.md).
+
 ## Create an Agent
 
 Starters enable native Control UI at `http://127.0.0.1:18789` and
