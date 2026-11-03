@@ -84,6 +84,11 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     this.#duration = options.sessionDurationSeconds;
   }
   async listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
+    return this.listCatalog(input);
+  }
+
+  /** Provider catalog shared by the Installation picker and the legacy Driver adapter. */
+  async listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
     const options: RepositoryOption[] = [];
     this.#registry.repositories.forEach((repository) => {
       const policy = repository.namespaces.find(

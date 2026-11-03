@@ -8,7 +8,7 @@ last_updated_session: authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7
 
 ## Overview
 
-The Console lists approved repositories. Deployment freezes grants.
+Deployment freezes repository grants.
 Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver. On the
 [OpenShell path](../reference/repository-credentials/protected-openshell-git.md), the sandbox gets a placeholder.
 The worker delivers the credential to the provider and checks signed requests against the live grant.
@@ -29,7 +29,7 @@ See [standing approval across session expiry](../guides/repository-credentials.m
 
 ```mermaid
 graph TD
-  Console["<b>Console form</b><br/>Load Namespace choices"] --> Options["<b>Repo Driver</b><br/>Refs, names, profiles"]
+  Console["<b>Console form</b><br/>Load Namespace choices"] --> Options["<b>Repository policy</b><br/>Refs, names, profiles"]
   Options --> API["<b>Agent API</b><br/>Recheck and save refs"]
   Options -->|Unverified authorization or discovery error| CreateBlocked["<b>Create blocked</b><br/>Retry before writes"]
   API -->|Known zero-binding rejection| OrdinaryRetry["<b>Ordinary retry</b><br/>Reuse Configuration"]
@@ -94,23 +94,21 @@ graph TD
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
-`OpenClawController.listRepositoryOptions` authorizes Namespace Agent creation or
-exact-Agent update, checks Compute availability, then calls
-`GitHubRepositoryPolicy.listOptions` for refs, names and profiles. Deploy validates
-the exact Harness. No approvals returns `[]`; missing `repository` returns `[]`
-with `meta.notConfigured`. Closed Namespaces conflict. Classified discovery
-failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
+`listRepositoryOptions` checks Namespace create or exact Agent update permission
+and Compute availability. Bundled listing uses the bound GitHub catalog;
+programmatic listing uses the registered Repo Driver. Stale owner results are
+rejected. Deploy checks the exact Harness. An empty Namespace catalog yields `[]`;
+absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
+Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 `createRepositoryFields` searches up to 1,000 choices with 16 attachments.
-`repositorySettings` resolves inheritance through RepositoryPolicyDriver; the
-database checks bindings. Only fresh, empty drafts allow the classified outage.
-The registry supplies choices; the native sender issues no metadata credentials
-and adds no provider descriptions.
+`repositorySettings` uses RepositoryPolicyDriver for inheritance; the database
+checks bindings. Only fresh, empty drafts tolerate a classified outage. The registry
+supplies choices without native sender metadata credentials or provider descriptions.
 
-The form saves Configuration first and reuses it after known Agent rejections.
+The form saves Configuration first, reusing it after known Agent rejections.
 Repository retries require reload and nonempty reselection. Failed reloads block
-creation; stale completions cannot change the view. For unknown outcomes, read
-the stored Agent and Configuration.
+creation; ignore stale results. For unknown outcomes, read stored Agent and Configuration.
 
 `packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
 resolves authorized selections. Save without a Repo Driver returns
