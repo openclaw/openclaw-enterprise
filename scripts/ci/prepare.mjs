@@ -22,7 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
-import { withStateLock } from "./state-lock.mjs";
+import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
 import {
   ANSI_COLOR,
@@ -32,10 +32,10 @@ import {
 } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
-import { ownedName, randomSuffix, slug } from "./resource-names.mjs";
-import { pullImage } from "./image-pull.mjs";
+import { ownedName, randomSuffix, slug } from "./resource-names.ts";
+import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
-import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
+import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -3119,7 +3119,7 @@ async function prepareLane({ lane, statePath, file }) {
     }
     case "qa-matrix":
       // On a hosted runner, record the starting images so cleanup can return the
-      // shared image store to them (lane-images.mjs, finding 1345). A workstation's
+      // shared image store to them (lane-images.ts, finding 1345). A workstation's
       // launcher tags are the developer's own and stay as the run leaves them. A
       // failed inventory only skips that: the QA run itself does not need it.
       if (process.env.GITHUB_ACTIONS === "true") {
