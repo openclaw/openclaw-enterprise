@@ -90,8 +90,10 @@ select_registry "$READ_REGISTRY" read
 rm -f -- "$RUN_DIR/requested-revision"
 read_recovery=null
 if ! deploy_and_wait; then
-  # A held Git route cannot reopen on the same revision. For the two documented
-  # terminal causes only, confirm cleanup before making one fresh read revision.
+  # A closed route cannot reopen on the same revision. Confirm retirement
+  # and the original failure before making one fresh read-only revision.
+  checking() { printf '%s\n' "$1" > "$RUN_DIR/git-read-recovery-guard"; }
+  checking deployment
   failed_read=$(cat "$RUN_DIR/requested-revision")
   [[ $failed_read =~ ^rev_[0-9a-f-]{36}$ && $failed_read != "$write_revision" ]]
   status_path="$base/agents/$agent/deployments/$failed_read"
@@ -100,23 +102,52 @@ if ! deploy_and_wait; then
     .status=="failed" and .error.code=="REPOSITORY_GIT_ROUTE_BLOCKED"' >/dev/null
   route_check() {
     kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
-      node --input-type=module - "$namespace" "$agent" "$failed_read" "$1" < "$dir/git-route-status.mjs"
+      node --input-type=module - "$namespace" "$agent" "$failed_read" "$@" < "$dir/git-route-status.mjs"
   }
-  reason=$(route_check recovery-reason)
-  [[ $reason == bootstrap_failed || $reason == worker_replaced ]]
+  checking route
+  route_check recovery-target > "$RUN_DIR/git-read-recovery-target.json"
+  reason=$(jq -er '.reason' "$RUN_DIR/git-read-recovery-target.json")
+  old_sandbox=$(jq -er --arg ns "$TENANT_NAMESPACE" 'select(.workspace==$ns)|.sandbox|
+    select(type=="string" and test("^[a-z0-9][a-z0-9-]{0,18}$"))' "$RUN_DIR/git-read-recovery-target.json")
+  [[ $reason == bootstrap_failed || $reason == worker_replaced || $reason == supervisor_replaced ]]
   read_recovery=$(jq -nc --arg revision "$failed_read" --arg reason "$reason" '{revision:$revision,reason:$reason}')
   printf '%s\n' "$read_recovery" > "$RUN_DIR/git-read-recovery.json"
+  checking ownership
   request GET "$base/agents/$agent" | jq -e --arg r "$failed_read" --arg ref "$ref" '
     .data | (.activeRevisionId==null or .activeRevisionId==$r) and
     .repositoryBindings==[{repositoryRef:$ref,profile:"github-repository"}]' >/dev/null
   request GET "$base/agents/$agent/repository-approvals" | jq -e '.data==[]' >/dev/null
+  checking stop
   request POST "$base/agents/$agent/stop" > "$RUN_DIR/git-stop.json"
+  checking retirement
   for ((i=0;i<100;i++)); do
     if stopped && request GET "$status_path" | jq -e '.data.cleanup.status=="succeeded"' >/dev/null; then break; fi
     sleep 3
   done
   test "$i" -lt 100
-  route_check retired
+  checking custody
+  route_check retired "$reason"
+  if [[ $reason == supervisor_replaced ]]; then
+    # This fresh CI tenant is exclusive. Confirm all paired Pods and any
+    # remaining old Agent containers are gone, including terminating Pods.
+    checking sandbox
+    for ((i=0;i<20;i++)); do
+      if route_check sandbox-deleted "$reason" "$TENANT_NAMESPACE" "$old_sandbox"; then break; fi
+      sleep 3
+    done
+    test "$i" -lt 20
+    checking pods
+    for ((i=0;i<40;i++)); do
+      if kube -n "$TENANT_NAMESPACE" get pods -o json |
+        jq -e --arg a "$agent" 'all(.items[]; .metadata.labels["openclaw.dev/agent"]!=$a and
+          (.metadata.labels | has("openshell.ai/boundary-pair") or has("openshell.ai/boundary-role") | not))' >/dev/null; then break; fi
+      sleep 3
+    done
+    test "$i" -lt 40
+    read_recovery=$(jq -c '. + {oldRuntimeDeleted:true}' <<< "$read_recovery")
+    printf '%s\n' "$read_recovery" > "$RUN_DIR/git-read-recovery.json"
+  fi
+  checking registry
   # Verify both live components still mount the validated immutable read map.
   kube -n "$PLATFORM_NS" get cm "$READ_REGISTRY" -o json | jq -e --slurpfile wanted "$RUN_DIR/registry-read.json" '
     .immutable==true and (.data["registry.json"]|fromjson)==$wanted[0]' >/dev/null
@@ -125,6 +156,7 @@ if ! deploy_and_wait; then
       jq -e --arg r "$READ_REGISTRY" '[.items[]|select(.metadata.deletionTimestamp==null)] |
         length==1 and all(.[]; any(.spec.volumes[]; .name=="repository-registry" and .configMap.name==$r))' >/dev/null
   done
+  checking successor
   deploy_and_wait
   test "$(cat "$RUN_DIR/requested-revision")" != "$failed_read"
 fi

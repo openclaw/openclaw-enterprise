@@ -68,7 +68,7 @@ else
         # runtime startup classifications while keeping all logs runner-private.
         kube -n "$PLATFORM_NS" logs deployment/openclaw-enterprise-worker -c worker --tail=1500 >> "$runtime_log" 2>/dev/null || true
         grep -F -- "$revision" "$runtime_log" | grep -F 'worker.openshell-git-' |
-          grep -Eo 'bootstrap_failed|execution_replaced|supervisor_replaced|worker_replaced|write_unknown|write_refused|gateway_unauthorized|provider_overlap|preview_install_unverified|preview_release_unconfirmed|grant_changed|material_mismatch|withdrawn' |
+          grep -Eo 'git-recipient|git-provider-generation|git-supervisor-process|git-supervisor-network|git-reconnected-installation|bootstrap_failed|execution_replaced|supervisor_replaced|worker_replaced|write_unknown|write_refused|gateway_unauthorized|provider_overlap|preview_install_unverified|preview_release_unconfirmed|grant_changed|material_mismatch|withdrawn' |
           sort -u | sed 's/^/Git worker reason: /' || true
         grep -Eo 'PLUGIN_(NOT_IN_CATALOG|DETAIL_MISSING|NOT_READY|AUTH_REQUIRED|INSTALL_FAILED)|MODEL_PROBE_FAILED|rate_limit_exceeded|insufficient_quota|no space left on device|permission denied|certificate verify failed|unknown authority|x509: certificate' "$runtime_log" | sort -u | sed 's/^/Runtime diagnostic: /' || true
         grep -Ei 'den(y|ied)|block(ed)?|reject|403|download|failed to fetch' "$runtime_log" |
@@ -76,6 +76,10 @@ else
           sed 's/^/Package host in diagnostic: /'
       ) 2>/dev/null || true
     fi
+  fi
+  if [[ $phase == git && -s "$RUN_DIR/git-read-recovery-guard" ]]; then
+    grep -Ex 'deployment|route|ownership|stop|retirement|custody|sandbox|pods|registry|successor' "$RUN_DIR/git-read-recovery-guard" |
+      sed 's/^/Read recovery check: /' || true
   fi
   # File presence distinguishes cluster bootstrap, model registration and Agent deployment.
   for milestone in k3d-state/state.json values.json model-source agent transport requested-revision session.sh; do
