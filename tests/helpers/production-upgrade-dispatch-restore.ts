@@ -143,19 +143,53 @@ export function registerDispatchRestoreTests(
 
       if (outcome === "failed") {
         await operatorDeploy(revisionC, "succeeded");
+        const rejectReplacement = async (expected: RegExp, scenario: string) => {
+          await assert.rejects(f.run("--resume"), expected, scenario);
+          assert.deepEqual(await readFile(journal), currentJournal, scenario);
+          assert.equal(await projectedRevision(), revisionB, scenario);
+          assert.equal((await f.state()).dispatches, 3, scenario);
+        };
         await recordReplacement(revisionC, revisionA);
-        await assert.rejects(f.run("--resume"), /name the current journaled revision/);
-        assert.deepEqual(await readFile(journal), currentJournal);
-        assert.equal(await projectedRevision(), revisionB);
+        await rejectReplacement(/name the current journaled revision/, "superseded parent");
 
         await recordReplacement(revisionC, revisionB);
+        const cannotConfirm = /cannot confirm the failed deployment and its recorded replacement/;
         // A status command that emits a body but fails cannot prove the
         // predecessor is failed. The next successful read can confirm it.
         await f.failNext("fail-deployment-status-after-output");
-        await assert.rejects(f.run("--resume"), /cannot confirm the failed deployment/);
-        assert.deepEqual(await readFile(journal), currentJournal);
-        assert.equal(await projectedRevision(), revisionB);
-        assert.equal((await f.state()).dispatches, 3);
+        await rejectReplacement(cannotConfirm, "predecessor status command failed");
+
+        // Both deployments exist. Change only the CLI response for the selected read.
+        const statusC = { namespaceId, agentId, deploymentId: revisionC, status: "succeeded" };
+        const validStatus = JSON.stringify(statusC);
+        const statusCases = [
+          ["wrong Namespace", revisionC, JSON.stringify({ ...statusC, namespaceId: "ns_other" })],
+          ["wrong Agent", revisionC, JSON.stringify({ ...statusC, agentId: "agt_other" })],
+          ["wrong deployment", revisionC, JSON.stringify({ ...statusC, deploymentId: revisionB })],
+          ["multiple status documents", revisionC, `${validStatus}\n${validStatus}`],
+          ["invalid status JSON", revisionC, '{"status":'],
+          ["unsupported status", revisionC, JSON.stringify({ ...statusC, status: "unknown" })],
+          [
+            "successful predecessor",
+            revisionB,
+            JSON.stringify({ ...statusC, deploymentId: revisionB }),
+          ],
+          ["replacement status command failed", revisionC, validStatus, 1],
+        ] as const;
+        const statePath = join(f.directory, "state.json");
+        const normalState = await f.state();
+        for (const [scenario, deploymentId, stdout, exitCode] of statusCases) {
+          await writeFile(
+            statePath,
+            JSON.stringify({
+              ...normalState,
+              deploymentStatusResponses: { [deploymentId]: { stdout, exitCode } },
+            }),
+          );
+          await rejectReplacement(cannotConfirm, scenario);
+        }
+        await writeFile(statePath, JSON.stringify(normalState));
+
         await f.run("--resume");
         assert.equal(await projectedRevision(), revisionC);
         assert.deepEqual(await lastEntry(), [

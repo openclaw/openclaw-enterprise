@@ -1,14 +1,16 @@
 # Recover a partial production upgrade
 
-Keep the original [upgrade evidence](production-upgrade.md) private. For runtime
-upgrades, the helper creates `<evidence-directory>.dispatch-state` beside it. Keep
-the current journal separate from backups of the evidence directory.
+Resume from the original checkout and keep the original
+[upgrade evidence directory](production-upgrade.md) private. Paths that resolve
+to the same directory share its lock. A different directory identity stops
+resume before live access.
 
-Resume requires the original checkout, directory and journal. Aliases that reach the
-original directory share its lock. A different directory identity or a missing
-or invalid journal stops resume before live access. If the journal may also have
-been restored, stop and reconcile from OCC history and audit records before
-starting another run.
+For a runtime upgrade, also keep the original private dispatch journal. The
+helper creates it at `<evidence-directory>.dispatch-state`, beside the evidence
+directory at its resolved path. Keep the current journal separate from evidence
+backups. A missing or invalid journal stops runtime resume before live access.
+If the journal may have been restored, stop and reconcile from OCC history and
+audit records before starting another run.
 
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
 reconcile its resources before deploying with fresh evidence and checks.

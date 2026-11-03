@@ -1020,6 +1020,11 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
       if (!status) {
         return fail(1, "deployment not found");
       }
+      const response = state.deploymentStatusResponses?.[deploymentId];
+      if (response) {
+        out(response.stdout);
+        return io.exit(response.exitCode ?? 0);
+      }
       out({ namespaceId, agentId, deploymentId, status });
       if (take("fail-deployment-status-after-output")) {
         return fail(9);
