@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0028-gitlab-repository-credentials.md
+rfc: ../rfcs/0027-gitlab-repository-credentials.md
 ---
 
 # Implementation plan: GitLab.com repository credentials
 
-- **ID:** RFC-0028
+- **ID:** RFC-0027
 - **Delivery status:** Planned
 - **Owner:** Repository credential and Repo Driver maintainers
-- **Authority:** [RFC-0028](../rfcs/0028-gitlab-repository-credentials.md)
+- **Authority:** [RFC-0027](../rfcs/0027-gitlab-repository-credentials.md)
 - **Source baseline:** 98785b43abf9c83ea4ad6c08dfc385e87bbbf836
 
 ## Outcome and scope
@@ -72,4 +72,4 @@ No implementation has started. This plan records the proposed work and verificat
 - 2026-10-21: Drafted from GitLab.com documentation research.
 - 2026-10-23: Rebased the proposal on the merged RFC-0023 implementation and updated current provider and runtime boundaries.
 - 2026-10-26: Added explicit single-provider scope, audit evidence, and no-retry/operator reconciliation requirements for uncertain merge-request creation from PR head `b6c6aa510e138fee7d8a1a0367faea0b9b4a1a29`.
-- 2026-11-02: Renumbered from RFC-0024 to RFC-0028 after `main` assigned 0024-0026 and RFC-0027 to other proposals.
+- 2026-11-02: Renumbered from RFC-0024 to RFC-0027 after `main` assigned 0024-0026.
