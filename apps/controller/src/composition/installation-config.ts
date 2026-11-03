@@ -802,13 +802,13 @@ export async function loadInstallationConfiguration(options: {
   );
   const repoSelection =
     repositoryConfiguration &&
-    selected(
+    (selected(
       repositoryConfiguration.selection,
       "repo",
       "github",
       GitHubRepositoryPolicy,
       "repository",
-    );
+    ) as SelectedDriverConfiguration<Readonly<{ sessionDurationSeconds: number }>>);
   const nativeRepositorySelection = repositoryConfiguration?.nativeSender;
   const preparedRepositoryGit = repositoryConfiguration?.prepared;
   let repositoryTransportConfiguration = repositoryConfiguration?.transport;
@@ -1222,10 +1222,6 @@ export async function loadInstallationConfiguration(options: {
       const policy = await loadRepositoryPolicy({
         backend: repositoryBackend,
         selection: repoSelection,
-        policyConfiguration: requireConfiguration<{ readonly sessionDurationSeconds: number }>(
-          GitHubRepositoryPolicy,
-          repoSelection.configuration,
-        ),
       });
       repositoryRuntime = Object.freeze({
         ...policy,

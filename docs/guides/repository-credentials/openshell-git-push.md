@@ -14,7 +14,7 @@ This walkthrough makes one empty commit on a new test branch and verifies it on 
 - **OCE and OpenShell:** Use a controller, runtime, CLI and Helm chart from the same release supporting the `github-repository` profile, with matching OpenShell 0.1.6 Gateway, supervisor and charts. Select compatible images before starting your selected installation setup. If your published channel lacks the feature, [build the matching image pair](../deploy/production-installation.md#build-and-publish-production-images). The [enrollment guide](openshell-enrollment.md) identifies the required release files. Verify the selected source and publication receipt; a channel name alone does not prove support.
 - **GitHub App:** [Install the App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app) on the test repository with **Contents write** and **Metadata read**. Obtain its App ID, installation ID, numeric repository ID and RSA signing key. The worker calls [GitHub's installation token endpoint](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app); the operator does not stage a token file.
 - **Operator:** Use an approved Kubernetes context, access to the Installation's Helm releases, and an authorized GitHub reader (`gh`).
-- **Agent:** Use the operator session saved by your installation setup, or source its private `session.sh`. The Agent needs a ready Gateway-owned `codex-pat` source and provisioned runtime credentials. On a fresh installation, register that model source **before** enabling the repository Credential Proxy. Plugins are not required. Preserve any existing plugin selections.
+- **Agent:** Use the operator session from [Deploy your first Agent](../deploy/deploy-first-agent.md), or source its private `session.sh`. The Agent needs a ready Gateway-owned `codex-pat` source and provisioned runtime credentials. On a fresh installation, register that model source **before** enabling the repository Credential Proxy. Plugins are not required. Preserve any existing plugin selections.
 
 ## 1. Enroll one repository in the Installation
 
@@ -175,7 +175,7 @@ request GET "$base/agents/$agent/repository-options" |
 
 For a persistent Agent, keep the read-only registry ConfigMap from enrollment. After the authorized push, [retire the write grant and leave the Agent running](openshell-read-only.md). Set `GIT_SESSION_MODE=disposable` only for a test Agent that should stop when the shell exits.
 
-Use the same dedicated Agent from installation setup, with no prior repository binding or static Git source. Fetch its current draft first. Keep its Configuration, Codex authentication and plugin selections. The API changes the repository binding when you deploy the updated draft.
+Use the same dedicated Agent from the deployment guide, with no prior repository binding or static Git source. Fetch its current draft first. Keep its Configuration, Codex authentication and plugin selections. The API changes the repository binding when you deploy the updated draft.
 
 ```bash
 # Run in a dedicated Bash shell with the private session.sh loaded.

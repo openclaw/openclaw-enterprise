@@ -13,7 +13,7 @@ Read [Concepts](concepts.md) for Namespaces, Agents, versions, and Secrets. Then
 - [Kubernetes](deploy/kubernetes-setup.md)
 - [Amazon EKS](deploy/eks-openshell-setup.md)
 
-All three paths install OpenShell and finish with an onboarded, running Codex Agent. Use the same saved session for [Add Git](repository-credentials/openshell-git-push.md), [Add Plugin](integrations/codex-plugins.md), and [Delete Agent](deploy/quickstart-delete-agent.md), then clean up the selected installation.
+After installing OpenShell, [deploy your first Agent](deploy/deploy-first-agent.md) and complete browser onboarding. Use the same saved session for [Add Git](repository-credentials/openshell-git-push.md), [Add Plugin](integrations/codex-plugins.md), and [Delete Agent](deploy/quickstart-delete-agent.md), then clean up the selected installation.
 
 ## Work with Agents
 
