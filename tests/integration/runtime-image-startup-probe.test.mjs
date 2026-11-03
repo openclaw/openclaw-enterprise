@@ -6,7 +6,7 @@
 // runtime-image-native-worker.test.mjs.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.mjs";
@@ -29,11 +29,25 @@ import {
   withStartupProbeEvidence,
 } from "../helpers/runtime-image-startup-probe.mjs";
 
+// The endpoint's events and the wrapper's output reach the test through
+// separate log followers, so the endpoint can report a state before the wrapper
+// lines written ahead of it arrive. Each wait below also waits for the last
+// wrapper line its assertions read.
+
 // The endpoint reads status and runs readiness in parallel, so readiness can
-// pass before the same poll's status read shows it: wait until both have.
-const readyOrFailed = ({ events }) =>
+// pass before the same poll's status read shows it: wait until both have. The
+// wrapper logs native-spawn before it starts the native process.
+const readyOrFailed = ({ events, phases }) =>
   events.some(isRuntimeFailure) ||
-  (events.some(observedValue("ready", true)) && events.some(observedValue("plugin", "ready")));
+  (events.some(observedValue("ready", true)) &&
+    events.some(observedValue("plugin", "ready")) &&
+    phaseAt(phases, "native-spawn") !== undefined);
+
+// A held failure's last wrapper line, written in the same synchronous step that
+// publishes the failure.
+const heldFailureLine = /Harness model authentication probe failed\./;
+const heldAuthenticationFailure = (snapshot) =>
+  heldFailure("AUTHENTICATION_FAILED")(snapshot) && heldFailureLine.test(snapshot.output);
 
 // CI keeps only a failed assertion's location, so each startup failure the
 // stand-in provider should not cause fails on its own line.
@@ -127,7 +141,7 @@ async function assertRejectedCredentialFailsFast(t, kind) {
   const run = await runStartupProbeScenario(t, {
     kind,
     mode: "reject",
-    until: heldFailure("AUTHENTICATION_FAILED"),
+    until: heldAuthenticationFailure,
   });
   await withStartupProbeEvidence(run, async () => {
     const { events, phases, output } = run.snapshot;
@@ -136,7 +150,6 @@ async function assertRejectedCredentialFailsFast(t, kind) {
     assert.equal(events.some(observedValue("native", true)), false);
     assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed");
     assert.equal(phaseAt(phases, "native-spawn"), undefined, "a failed probe starts nothing");
-    assert.match(output, /Harness model authentication probe failed\./);
     assert.doesNotMatch(output, new RegExp(startupProbeApiKey));
     const failure = run.first(events, observedValue("runtimeFailure", "AUTHENTICATION_FAILED"));
     // Far inside the 900-second convergence deadline #583 cuts short.
@@ -146,63 +159,69 @@ async function assertRejectedCredentialFailsFast(t, kind) {
   });
 }
 
-test(
-  "runtime image Codex Harness stays unready until its model probe passes",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    // A model turn slower than app-server startup, but far inside the probe's
-    // 30-second attempt cap, so it does not retry.
-    await assertProbeGatesStartup(t, "codex", 8_000);
-  },
-);
+// Each case starts its own wrapper and stand-in provider: random container
+// names, its own certificate directory and network namespace, no shared volume
+// or port. Two run at a time, so the CPU-limited probes keep most of the
+// headroom their recorded measurements report.
+describe("runtime image startup model probes", { concurrency: 2 }, () => {
+  test(
+    "runtime image Codex Harness stays unready until its model probe passes",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      // A model turn slower than app-server startup, but far inside the probe's
+      // 30-second attempt cap, so it does not retry.
+      await assertProbeGatesStartup(t, "codex", 8_000);
+    },
+  );
 
-test(
-  "runtime image Codex Harness fails fast when the provider rejects its credential",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    await assertRejectedCredentialFailsFast(t, "codex");
-  },
-);
+  test(
+    "runtime image Codex Harness fails fast when the provider rejects its credential",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      await assertRejectedCredentialFailsFast(t, "codex");
+    },
+  );
 
-test(
-  "runtime image embedded Gateway probes its model before it starts OpenClaw",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    // A short turn keeps the probe well inside its attempt cap.
-    await assertProbeGatesStartup(t, "gateway", 2_000);
-  },
-);
+  test(
+    "runtime image embedded Gateway probes its model before it starts OpenClaw",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      // A short turn keeps the probe well inside its attempt cap.
+      await assertProbeGatesStartup(t, "gateway", 2_000);
+    },
+  );
 
-test(
-  "runtime image embedded Gateway fails fast when the provider rejects its credential",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    await assertRejectedCredentialFailsFast(t, "gateway");
-  },
-);
+  test(
+    "runtime image embedded Gateway fails fast when the provider rejects its credential",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      await assertRejectedCredentialFailsFast(t, "gateway");
+    },
+  );
 
-test(
-  "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
-  imageTestOptions,
-  async (t) => {
-    // Pod restarts replay the enrollment Secret's setup code after its expiry.
-    const configurationPath = await temporaryGatewayConfiguration(t, "codex");
-    const { containerName } = await runGatewaySmoke(t, "codex", {
-      configurationPath: "/etc/openclaw/openclaw.json",
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
-    });
-    const source = await readFile(
-      new URL("../fixtures/runtime-native-worker-restart.mjs", import.meta.url),
-      "utf8",
-    );
-    const { stdout } = await runDocker(
-      ["exec", containerName, "node", "--input-type=module", "-e", source],
-      { timeout: 300_000 * imageSmokeTimeoutMultiplier },
-    );
-    const result = JSON.parse(stdout);
-    assert.equal(result.sameIdentityAfterExpiredReplay, true);
-    assert.equal(result.singleBootstrapCompletion, true);
-    assert.equal(result.unpairedExpiredRejected, true);
-  },
-);
+  test(
+    "runtime image reconnects an ephemeral native worker from an expired replayed setup code",
+    imageTestOptions,
+    async (t) => {
+      // Pod restarts replay the enrollment Secret's setup code after its expiry.
+      const configurationPath = await temporaryGatewayConfiguration(t, "codex");
+      const { containerName } = await runGatewaySmoke(t, "codex", {
+        configurationPath: "/etc/openclaw/openclaw.json",
+        entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+        volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
+      });
+      const source = await readFile(
+        new URL("../fixtures/runtime-native-worker-restart.mjs", import.meta.url),
+        "utf8",
+      );
+      const { stdout } = await runDocker(
+        ["exec", containerName, "node", "--input-type=module", "-e", source],
+        { timeout: 300_000 * imageSmokeTimeoutMultiplier },
+      );
+      const result = JSON.parse(stdout);
+      assert.equal(result.sameIdentityAfterExpiredReplay, true);
+      assert.equal(result.singleBootstrapCompletion, true);
+      assert.equal(result.unpairedExpiredRejected, true);
+    },
+  );
+});

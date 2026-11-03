@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { readKeycloakImage } from "../../scripts/ci/keycloak.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const executeFile = promisify(execFile);
 
@@ -189,8 +189,7 @@ export async function startKeycloak({
   const clientSecret = randomBytes(24).toString("base64url");
   const password = randomBytes(24).toString("base64url");
   const adminPassword = randomBytes(24).toString("base64url");
-  const directory = await mkdtemp(join(tmpdir(), "oce-keycloak-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(context, "oce-keycloak-");
   await kubectl("create", "namespace", namespace);
   context.after(() =>
     kubectl("delete", "namespace", namespace, "--ignore-not-found=true", "--wait=false"),

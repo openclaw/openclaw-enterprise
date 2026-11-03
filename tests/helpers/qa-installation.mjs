@@ -4,14 +4,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, copyFile, chmod, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
+import { availablePort } from "./available-port.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
-import { loadYaml, dumpYaml, unusedPort, waitFor } from "./qa-utils.mjs";
+import { grantQaRepositoryBranch } from "./qa-repository.mjs";
+import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
+  protectedModelApiKey,
   registerQaSecret,
   grantQaSecret,
   qaCommandFailureDetail,
@@ -371,16 +373,17 @@ export async function createQaInstallation(
   context,
   controlPlane,
   artifacts,
-  { repositoryInputs = true } = {},
+  { repositoryInputs = true, sandboxDriver = "none", sandboxNetworkPolicyFile = undefined } = {},
 ) {
   assert.ok(["compose", "kubernetes"].includes(controlPlane));
+  assert.ok(["none", "openshell"].includes(sandboxDriver));
   const suffix = randomUUID().slice(0, 8);
   const cluster = `occ-dev-qa-${controlPlane === "compose" ? "c" : "k"}-${suffix}`;
   const directory = await mkdtemp(join(tmpdir(), `${cluster}-`));
   const stateDirectory = join(directory, "state");
   const ports = new Set();
   while (ports.size < 4) {
-    ports.add(await unusedPort());
+    ports.add(await availablePort());
   }
   const [apiPort, kubePort, browserPort, postgresPort] = [...ports];
   const env = {
@@ -390,7 +393,7 @@ export async function createQaInstallation(
     OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
     OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
-    OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
+    OCC_DEVELOPMENT_SANDBOX_DRIVER: sandboxDriver,
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
     OCC_DEVELOPMENT_COMPOSE_PROJECT: cluster,
     OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
@@ -417,19 +420,7 @@ export async function createQaInstallation(
     const registry = JSON.parse(
       await protectedText(join(sourceInput, "registry.json"), "repository registry"),
     );
-    assert.equal(registry.repositories.length, 1, "select exactly one authorized repository");
-    const refs = ["openclaw-git-full", "codex-git-full", "codex-git-read"].map(
-      (name) => `refs/heads/oce-qa-${suffix}-${name}`,
-    );
-    for (const policy of registry.repositories[0].namespaces) {
-      if (policy.pushRefAllowlist) {
-        assert.ok(
-          refs.every((ref) => allowsPushRef(policy.pushRefAllowlist, ref)),
-          "selected registry must authorize the run-owned branch names",
-        );
-      }
-      policy.pushRefAllowlist = refs;
-    }
+    grantQaRepositoryBranch(registry, suffix);
     await writeFile(join(repositoryInput, "registry.json"), JSON.stringify(registry), {
       mode: 0o600,
     });
@@ -615,7 +606,7 @@ export async function createQaInstallation(
     },
     async gatewayUrl(agent) {
       const pod = await f.pod(agent, "gateway");
-      const port = await unusedPort();
+      const port = await availablePort();
       const child = spawn(
         "kubectl",
         [
@@ -764,14 +755,18 @@ export async function createQaInstallation(
     env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = subnet;
     await f.record("compose-network", { subnet });
   }
-  const started = await f.run(join(repository, "scripts/dev-up"), [], { timeout: 1_100_000 });
+  const started = await f.run(
+    join(repository, "scripts/dev-up"),
+    sandboxNetworkPolicyFile ? ["--sandbox-network-policy-file", sandboxNetworkPolicyFile] : [],
+    { timeout: 1_100_000 },
+  );
   assert.match(
     started,
     controlPlane === "compose" ? /Control plane: Compose/ : /Deployment: Kubernetes only/,
   );
   f.state = JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8"));
   assert.equal(f.state.cluster, cluster);
-  assert.equal(f.state.sandboxDriver, "none");
+  assert.equal(f.state.sandboxDriver, sandboxDriver);
   f.serviceKey = JSON.parse(
     await protectedText(join(stateDirectory, "initial-admin-service-key.json"), "bootstrap key"),
   ).data.key;
@@ -782,11 +777,13 @@ export async function createQaInstallation(
     return namespace?.status === "ready" && namespace;
   });
   f.presets = await f.api("GET", `/namespaces/${f.defaultNamespace.id}/presets`);
-  assert.deepEqual(f.presets.map((p) => p.name).sort(), [
-    "Standard Codex",
-    "Standard OpenClaw",
-    "default-codex",
-  ]);
+  if (sandboxDriver === "none") {
+    assert.deepEqual(f.presets.map((p) => p.name).sort(), [
+      "Standard Codex",
+      "Standard OpenClaw",
+      "default-codex",
+    ]);
+  }
   f.configuration = loadYaml(await readFile(join(stateDirectory, "installation.yaml"), "utf8"));
   f.namespace = f.defaultNamespace;
   if (controlPlane === "compose") {
@@ -808,7 +805,7 @@ export async function createQaInstallation(
     defaultNamespaceId: f.defaultNamespace.id,
     namespaceId: f.namespace.id,
     presets: f.presets.map(({ id, name }) => ({ id, name })),
-    sandboxDriver: "none",
+    sandboxDriver,
   });
   return f;
 }
@@ -892,14 +889,9 @@ export async function prepareQaPreset(f, presetName) {
   );
   const codex = presetName === "Codex";
   const desiredPlugin = codex ? "codex-plugin" : "occ-plugin";
-  const gatewayResources = f.configuration.drivers.compute.configuration.resources.gateway;
-  // The full native repository workload exceeded the launcher's 2 GiB default.
-  // Keep both installation variants on the same explicit acceptance-test budget.
-  if (
-    f.configuration.drivers.plugin?.id !== desiredPlugin ||
-    gatewayResources.limits.memory !== "4Gi"
-  ) {
-    gatewayResources.limits.memory = "4Gi";
+  // The launcher's Gateway resources match the production example, whose memory
+  // limit covers the full native repository workload; only the plugin varies.
+  if (f.configuration.drivers.plugin?.id !== desiredPlugin) {
     assert.ok(
       f.agents.every((agent) => agent.stopped),
       "stop the prior Agent before changing the installation runtime configuration",
@@ -912,7 +904,13 @@ export async function prepareQaPreset(f, presetName) {
   }
 }
 
-export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "") {
+export async function createQaAgent(
+  f,
+  presetName,
+  browserOrigin,
+  nameSuffix = "",
+  { apiKeyAuth = false } = {},
+) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
   const selected = f.presets.find((value) => value.name === `Standard ${presetName}`);
@@ -920,10 +918,15 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
   assert.equal(selected.namespaceId, f.namespace.id, "Preset must belong to the QA Namespace");
   const preset = await f.api("GET", `/namespaces/${selected.namespaceId}/presets/${selected.id}`);
   const codex = presetName === "Codex";
-  const credential = await protectedText(
-    process.env[codex ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"],
-    "model credential",
-  );
+  const codexAccountLogin = codex && !apiKeyAuth;
+  const credential = apiKeyAuth
+    ? await protectedModelApiKey()
+    : await protectedText(
+        process.env[
+          codexAccountLogin ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"
+        ],
+        "model credential",
+      );
   const model =
     process.env[codex ? "OCC_TEST_QA_CODEX_MODEL" : "OCC_TEST_QA_OPENAI_MODEL"] || "gpt-6-luna";
   const rendered = renderPresetTemplate(preset.template, {
@@ -943,29 +946,78 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
     ...(browserOrigin ? { allowedOrigins: [browserOrigin] } : {}),
   };
   values.agents.defaults.skipBootstrap = true;
-  const configuration = await f.api("POST", `/namespaces/${f.namespace.id}/configurations`, {
-    ...rendered.configuration,
-    kind: "agent",
-  });
+  const provisionNativeAdmin =
+    f.controlPlane === "kubernetes" &&
+    rendered.agent.executionMode === "dedicated" &&
+    nameSuffix === "-model-ui";
+  let configuration;
+  let agent;
   const secret = await f.api("POST", `/namespaces/${f.namespace.id}/secrets`, {
     name: `${rendered.agent.name}-model`,
     value: credential,
   });
   const auth = {
-    method: codex ? "codex_pat" : "api_key",
+    method: codexAccountLogin ? "codex_pat" : "api_key",
     source: { kind: "secret", namespaceId: f.namespace.id, id: secret.id },
   };
-  const agent = await f.api("POST", `/namespaces/${f.namespace.id}/agents`, {
-    ...rendered.agent,
-    configurationId: configuration.id,
-    harnessAuth: auth,
-  });
+  if (provisionNativeAdmin) {
+    // Exercise the Console's first-deployment request, without a later Configuration patch.
+    const result = await f.api("POST", `/namespaces/${f.namespace.id}/agents/provision`, {
+      ...rendered.agent,
+      requestId: `req_${randomUUID()}`,
+      nativeAdmin: true,
+      configuration: { ...rendered.configuration, kind: "agent" },
+      harnessAuth: auth,
+    });
+    const progress = await waitFor("native admin initial provisioning", async () => {
+      const current = await f.api("GET", result.provisioning.url);
+      if (current.agentId && !agent) {
+        agent = await f.api("GET", `/namespaces/${f.namespace.id}/agents/${current.agentId}`);
+        Object.assign(agent, { preset: presetName, qaScenario: nameSuffix, harnessAuth: auth });
+        f.agents.push(agent);
+      }
+      assert.notEqual(current.status, "failed", JSON.stringify(current.error));
+      return current.status === "succeeded" ? current : undefined;
+    });
+    Object.assign(
+      agent,
+      await f.api("GET", `/namespaces/${f.namespace.id}/agents/${progress.agentId}`),
+    );
+    configuration = await f.api(
+      "GET",
+      `/namespaces/${f.namespace.id}/configurations/${progress.configurationId}`,
+    );
+    assert.equal(
+      configuration.generation,
+      1,
+      "native admin must work from the first Configuration",
+    );
+    const versions = await f.api(
+      "GET",
+      `/namespaces/${f.namespace.id}/agents/${agent.id}/revisions`,
+    );
+    assert.equal(versions.length, 1, "native admin must not need a second deployment");
+    agent.revision = await f.api(
+      "GET",
+      `/namespaces/${f.namespace.id}/agents/${agent.id}/revisions/${progress.revisionId}`,
+    );
+  } else {
+    configuration = await f.api("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      ...rendered.configuration,
+      kind: "agent",
+    });
+    agent = await f.api("POST", `/namespaces/${f.namespace.id}/agents`, {
+      ...rendered.agent,
+      configurationId: configuration.id,
+      harnessAuth: auth,
+    });
+    f.agents.push(agent);
+  }
   agent.preset = presetName;
   agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
   agent.harnessAuth = auth;
-  f.agents.push(agent);
-  if (f.controlPlane === "kubernetes") {
+  if (f.controlPlane === "kubernetes" && !provisionNativeAdmin) {
     const target = nativeAdminTarget({
       publicOrigin: f.consoleUrl,
       installationId: f.installation.id,
@@ -994,9 +1046,11 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
       values,
     });
   }
-  await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
-  await f.api("POST", `/namespaces/${f.namespace.id}/agents/${agent.id}/runtime-credentials`, {});
-  await f.deployAndWait(agent);
+  if (!provisionNativeAdmin) {
+    await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
+    await f.api("POST", `/namespaces/${f.namespace.id}/agents/${agent.id}/runtime-credentials`, {});
+    await f.deployAndWait(agent);
+  }
   agent.native = createNativePluginAssertions({
     gatewayUrl: (a) => f.gatewayUrl(a),
     execGateway: (a, args) => f.execRole(a, "gateway", args),

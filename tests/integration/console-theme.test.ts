@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, mkdir, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
@@ -10,10 +9,10 @@ import {
 } from "../../apps/controller/src/composition/console-theme.ts";
 import { startApi, startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function bundle(t: TestContext, manifest: object = { schemaVersion: 1 }) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-theme-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-theme-");
   await writeFile(join(directory, "theme.json"), JSON.stringify(manifest));
   return directory;
 }
@@ -25,7 +24,13 @@ test("mounted console themes serve public branding without changing API failures
     displayName,
     logo: "logo.png",
     favicon: "icon.png",
-    colors: { accent: "#2457C5", surface2: "#EEEEEE", accentSubtle: "#2457C514" },
+    colors: {
+      bg: "#DDEEFF66",
+      accent: "#2457C5",
+      surface2: "#EEEEEE",
+      accentSubtle: "#2457C514",
+      overlay: "#24386066",
+    },
   });
   const image = await readFile(
     new URL("../../apps/controller/src/console/favicon-32.png", import.meta.url),
@@ -49,9 +54,12 @@ test("mounted console themes serve public branding without changing API failures
   assert.doesNotMatch(policy, /unsafe-inline/);
   const css = await fixture.rawRequest("GET", "/console/theme/colors.css");
   assert.equal(css.response.status, 200);
+  assert.match(css.text, /--color-bg: #DDEEFF66/);
+  assert.match(css.text, /--color-canvas: color-mix\(in srgb, #DDEEFF 40%, Canvas\)/);
   assert.match(css.text, /--color-accent: #2457C5/);
   assert.match(css.text, /--color-surface-2: #EEEEEE/);
   assert.match(css.text, /--color-accent-subtle: #2457C514/);
+  assert.match(css.text, /--color-overlay-mix: #243860 40%/);
   const logo = await fetch(`${fixture.origin}/console/theme/logo.png`);
   assert.equal(logo.headers.get("content-type"), "image/png");
   assert.deepEqual(Buffer.from(await logo.arrayBuffer()), image);

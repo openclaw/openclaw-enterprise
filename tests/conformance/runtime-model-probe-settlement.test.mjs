@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -19,6 +18,7 @@ import {
   providerErrorTypes as helperErrorTypes,
 } from "../helpers/local-first-agent-native.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const ready = {
@@ -107,8 +107,7 @@ test(
   "real Node reporter retains only closed probe failure observations",
   { timeout: 10_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "pr687-probe-report-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "pr687-probe-report-");
     const fixture = join(directory, "failure.test.mjs");
     await writeFile(
       fixture,
@@ -240,11 +239,12 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
   const end =
     GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
       "\n}\n",
-      GATEWAY_RUNTIME_ENTRYPOINT.indexOf("function runOpenClawAuthenticationProbe(fs, capMs) {"),
+      GATEWAY_RUNTIME_ENTRYPOINT.indexOf("\nfunction runOpenClawAuthenticationProbe("),
     ) + 2;
   const helper = GATEWAY_RUNTIME_ENTRYPOINT.slice(begin, end);
   assert.ok(begin >= 0 && end > begin);
   const events = [];
+  const cleanup = {};
   let removed = false;
   const fs = {
     mkdtempSync: () => "/owned",
@@ -254,8 +254,9 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
       removed = true;
     },
   };
-  const code = vm.runInNewContext(helper + "\nrunOpenClawAuthenticationProbe(fs,110000)", {
+  const code = vm.runInNewContext(helper + "\nrunOpenClawAuthenticationProbe(fs,110000,cleanup)", {
     fs,
+    cleanup,
     Date,
     JSON,
     require: () => ({ spawnSync: () => ({ error: { code: "ETIMEDOUT" } }) }),
@@ -278,6 +279,8 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
   });
   assert.equal(code, "CAP");
   assert.equal(removed, true);
+  // A removal that succeeds reports no cleanup error.
+  assert.deepEqual(cleanup, {});
   assert.deepEqual(
     events.map((event) => event.stage),
     ["prepare", "spawn", "returned", "cleanup", "complete"],

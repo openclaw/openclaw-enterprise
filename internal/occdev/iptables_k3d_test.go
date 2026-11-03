@@ -249,7 +249,7 @@ func TestCheckLegacyNATTable(t *testing.T) {
 func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
 	root := t.TempDir()
 	state := filepath.Join(root, "state")
-	for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE"} {
+	for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE", developmentImageRegistrySetting} {
 		t.Setenv(key, "")
 	}
 	for key, value := range map[string]string{

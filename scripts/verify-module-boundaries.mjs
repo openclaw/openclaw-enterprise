@@ -77,14 +77,13 @@ export async function verifyModuleBoundaries({
 
 const usage =
   "Usage: node scripts/verify-module-boundaries.mjs --policy file [--root directory] [--exceptions file] [--json]";
-async function main() {
-  const args = process.argv.slice(2);
+async function main(args, stdout, stderr) {
   const options = {};
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
     if (argument === "--help" && args.length === 1) {
-      process.stdout.write(`${usage}\n`);
-      return;
+      stdout.write(`${usage}\n`);
+      return 0;
     }
     if (argument === "--json" && !options.json) {
       options.json = true;
@@ -109,37 +108,51 @@ async function main() {
     : undefined;
   const result = await verifyModuleBoundaries({ root, policy, exceptions });
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } else {
     const limit = policy.diagnosticLimit ?? 50;
     for (const item of result.violations.slice(0, limit)) {
-      process.stderr.write(
+      stderr.write(
         `${item.from}:${item.line} [${item.rule}] ${item.message} ${item.to || item.specifier}\n`,
       );
     }
     if (result.violations.length > limit) {
-      process.stderr.write(
+      stderr.write(
         `${result.violations.length - limit} additional violations; use --json for the full report.\n`,
       );
     }
-    process.stdout.write(
+    stdout.write(
       `Module boundaries ${result.ok ? "verified" : "failed"}: ${result.files.length} sources, ${result.edges.length} local edges, ${result.baseline.length} explicit exceptions, ${result.runtimeCycles.length} runtime cycles, ${result.typeOnlyCycles.length} type-only cycle groups (${result.typeInvolvingCycles.length} type-involving groups), ${result.violations.length} violations.\n`,
     );
   }
-  process.exitCode = result.ok ? 0 : 1;
+  return result.ok ? 0 : 1;
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  await main().catch((error) => {
+/**
+ * The command line: `args` without the node and script paths. Writes the report to `stdout`
+ * and `stderr` (anything with a write(text) method) and resolves to the exit status: 0
+ * verified, 1 violations, 2 configuration failure.
+ */
+export async function runModuleBoundaryCli(
+  args,
+  { stdout = process.stdout, stderr = process.stderr } = {},
+) {
+  try {
+    return await main(args, stdout, stderr);
+  } catch (error) {
     const code =
       typeof error.code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)
         ? error.code
         : null;
-    process.stderr.write(
+    stderr.write(
       code
         ? `Module boundary configuration failed (${code}).\n`
         : `Module boundary configuration failed: ${error.message}\n`,
     );
-    process.exitCode = 2;
-  });
+    return 2;
+  }
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  process.exitCode = await runModuleBoundaryCli(process.argv.slice(2));
 }

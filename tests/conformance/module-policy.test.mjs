@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
 import { captureChild } from "../helpers/child-processes.mjs";
 import { verifyModuleBoundaries } from "../../scripts/verify-module-boundaries.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const checker = join(repositoryRoot, "scripts/verify-module-boundaries.mjs");
@@ -28,8 +28,7 @@ async function check(root) {
 // placeholder sources at the real paths `sources` names (each must exist in the repository).
 // Policy rules match paths and manifests, so probes need no copy of the whole source tree.
 async function policyTree(t, policy, sources) {
-  const root = await mkdtemp(join(tmpdir(), "occ-module-policy-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-module-policy-");
   await Promise.all([
     ...policy.sourceRoots.map((sourceRoot) => mkdir(join(root, sourceRoot), { recursive: true })),
     ...policy.packages.map(async (packageRoot) => {

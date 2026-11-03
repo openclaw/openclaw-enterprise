@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:https";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { chromium } from "playwright";
@@ -14,6 +11,8 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
@@ -21,7 +20,6 @@ test(
   requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
-    const certificateDirectory = await mkdtemp(join(tmpdir(), "oce-session-cookie-"));
     let app;
     let browser;
     let proxy;
@@ -34,8 +32,9 @@ test(
         await new Promise((resolve) => proxy.close(resolve));
       }
       await pool.end();
-      await rm(certificateDirectory, { recursive: true, force: true });
     });
+    // Registered after the hook above, so it is removed after the servers close.
+    const certificateDirectory = await temporaryDirectory(t, "oce-session-cookie-");
     const { key, cert } = await selfSigned(certificateDirectory, {
       commonName: "console.example.test",
       subjectAltName: "DNS:console.example.test,DNS:sibling.example.test",
@@ -117,12 +116,12 @@ test(
     });
     await app.listen({ host: "127.0.0.1", port: 0 });
     upstreamPort = app.server.address().port;
-    const signedIn = await app.inject({
-      method: "POST",
-      url: "/api/auth/sign-in/email",
-      headers: { origin },
-      payload: { email, password },
-    });
+    const signIn = () =>
+      injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
+        headers: { origin },
+        body: { email, password },
+      });
+    const signedIn = await signIn();
     assert.equal(signedIn.statusCode, 200);
     assert.equal(auth.sessionCookieName, "__Host-openclaw_occ.session_token");
     const cookies = [signedIn.headers["set-cookie"]].flat();
@@ -137,12 +136,7 @@ test(
     const ownKey = signedIn.json().data.sessionKey;
     assert.match(ownKey, /^[A-Za-z0-9_-]{43}$/);
     const ownCookie = sessionCookie.split(";")[0];
-    const otherLogin = await app.inject({
-      method: "POST",
-      url: "/api/auth/sign-in/email",
-      headers: { origin },
-      payload: { email, password },
-    });
+    const otherLogin = await signIn();
     const foreignKey = otherLogin.json().data.sessionKey;
     assert.notEqual(foreignKey, ownKey);
     const inspect = (url, headers) => app.inject({ url, headers: { origin, ...headers } });

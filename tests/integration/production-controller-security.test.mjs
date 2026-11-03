@@ -10,12 +10,14 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,
   signInWithEmailPassword,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
 import { listen } from "../helpers/listen.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
@@ -196,12 +198,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
   t.after(() => app.close());
   const session = await signInToControllerApp(app, authFixture);
   const read = () =>
-    app.inject({
-      method: "GET",
-      url: "/observability",
-      headers: { ...authenticatedHeaders(session), host: "127.0.0.1" },
-      remoteAddress: "127.0.0.1",
-    });
+    injectJson(app, "GET", "/observability", { session, remoteAddress: "127.0.0.1" });
 
   for (const [name, reason] of [
     ["omitted", undefined],
@@ -219,8 +216,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
       };
       const before = protectedReads;
       const response = await read();
-      assert.equal(response.statusCode, 503);
-      assert.equal(response.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
       assert.equal(
         protectedReads,
         before,
@@ -246,8 +242,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
       transform = invalid;
       const before = protectedReads;
       const response = await read();
-      assert.equal(response.statusCode, 503);
-      assert.equal(response.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
       assert.equal(protectedReads, before);
     }
   });
@@ -258,8 +253,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
     ];
     const before = protectedReads;
     const response = await read();
-    assert.equal(response.statusCode, 403);
-    assert.equal(response.json().error.code, "FORBIDDEN");
+    assertApiError(response, 403, "FORBIDDEN");
     assert.equal(protectedReads, before);
   });
 });

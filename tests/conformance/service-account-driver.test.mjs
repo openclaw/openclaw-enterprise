@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:https";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { ChatGPTClient } from "../../apps/controller/src/backends/chatgpt.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -20,7 +17,12 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 const administrator = "service-account-driver-administrator";
 const reader = "service-account-driver-reader";
@@ -132,15 +134,12 @@ async function fixture({
       externalAccounts.delete(account.id);
     },
   };
-  for (const selected of [
+  registerAndSelectDrivers(controller, [
     iam,
     compute,
     configuration,
     ...(selectServiceAccountDriver ? [driver] : []),
-  ]) {
-    controller.registerDriver(selected);
-    controller.selectDriver(selected.capability, selected.id);
-  }
+  ]);
   const namespace = await controller.createNamespace(administrator, {
     name: "ServiceAccount Driver conformance tenant",
   });
@@ -579,8 +578,7 @@ test("the ChatGPT account name is cut by whole characters, never half of a surro
 });
 
 test("ChatGPT Backend releases rejected HTTPS responses for subsequent account calls", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "chatgpt-backend-tls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "chatgpt-backend-tls-");
   const { key, cert } = await selfSigned(directory, {
     commonName: "api.chatgpt.com",
     subjectAltName: "DNS:api.chatgpt.com",
@@ -650,7 +648,6 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
           ),
       });
       let retry;
-      let timer;
       try {
         server.listen(0, "127.0.0.1");
         await once(server, "listening");
@@ -658,17 +655,12 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
         const client = new ChatGPTClient({ workspaceId, adminKey: "synthetic-test-key" });
         await assert.rejects(client.createServiceAccount({ name: "first" }), fault.reason);
         retry = client.createServiceAccount({ name: "retry" });
-        const account = await Promise.race([
+        // Shorter than the Backend's 30-second request timeout: cleanup must release capacity now.
+        const account = await within(
           retry,
-          new Promise((_, reject) => {
-            // Shorter than the Backend's 30-second request timeout: cleanup must release capacity now.
-            timer = setTimeout(
-              () =>
-                reject(new Error("The next account call stalled behind the rejected response.")),
-              5000,
-            );
-          }),
-        ]);
+          "the next account call stalled behind the rejected response",
+          5_000,
+        );
         assert.deepEqual(account, { id: "recovered-account" });
         assert.deepEqual(
           requests,
@@ -682,7 +674,6 @@ test("ChatGPT Backend releases rejected HTTPS responses for subsequent account c
           assert.ok(streamedBytes < 6 * 1024 * 1024, String(streamedBytes));
         }
       } finally {
-        clearTimeout(timer);
         clearInterval(streamTimer);
         setGlobalDispatcher(originalDispatcher);
         await agent.destroy();
@@ -744,11 +735,7 @@ function fakeChatGPT(workspaceId) {
   const requests = [];
   const faults = [];
   let next = 0;
-  const json = (status, body) =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
+  const json = (status, body) => Response.json(body, { status });
   const fetch = async (url, init) => {
     const path = new URL(url).pathname;
     const base = `/v1/manage/workspaces/${workspaceId}/service-accounts`;

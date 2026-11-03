@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { testPool } from "../helpers/postgres-database.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 const ciFixtureRequested = [
@@ -670,12 +671,11 @@ test(
 
     // One real State backend makes restoration and pool reuse observable; a
     // different connection must not hide a leaked setting or failed transaction.
-    const boundedPool = new Pool({
+    const boundedPool = testPool(context, {
       connectionString: appUrl,
       max: 1,
       connectionTimeoutMillis: 3000,
     });
-    context.after(() => boundedPool.end());
     const boundedState = new PostgresPlatformState(boundedPool);
     const contender = await app.connect();
     const settingsSQL = `SELECT pg_catalog.pg_backend_pid() AS pid, current_user AS role,

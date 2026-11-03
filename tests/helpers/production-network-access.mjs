@@ -282,6 +282,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
           },
         },
         compute: { id: driver.id, implementation: driver.implementation },
+        executionAdmission: { version: 2, mode: "unprotected" },
       };
       const old = { ...structuredClone(common), id: `rev_${randomUUID()}` };
       const selected = { ...structuredClone(common), id: `rev_${randomUUID()}` };

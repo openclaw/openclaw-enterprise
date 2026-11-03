@@ -19,7 +19,7 @@ func TestAgentLogsFollowReportsEachNoPodPeriodOnce(t *testing.T) {
 
 	// Count notices before the next poll: each absence is reported immediately,
 	// and a present stream with no records separates the two periods of absence.
-	const notice = "notice: revision rev_1 has no running Pod for source gateway\n"
+	const notice = "notice: revision rev_00000000-0000-4000-8000-000000000001 has no running Pod for source gateway\n"
 	want := []int{1, 1, 1, 2, 2}
 	var notices []int
 	var stdout, stderr strings.Builder
@@ -35,7 +35,7 @@ func TestAgentLogsFollowReportsEachNoPodPeriodOnce(t *testing.T) {
 		return ctx.Err()
 	}
 
-	err := runLogsCommandTo(t, ctx, stub, &stdout, &stderr, "agent", "logs", "agt_1", "--revision", "rev_1", "--source", "gateway", "--follow")
+	err := runLogsCommandTo(t, ctx, stub, &stdout, &stderr, "agent", "logs", "agt_00000000-0000-4000-8000-000000000001", "--revision", "rev_00000000-0000-4000-8000-000000000001", "--source", "gateway", "--follow")
 	if err != nil {
 		t.Fatal(err)
 	}

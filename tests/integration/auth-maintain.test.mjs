@@ -17,6 +17,7 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { authMaintain } from "../../scripts/auth-maintain.mjs";
 import {
+  AUTH_MAINTAIN_COMMANDS,
   AUTH_MAINTAIN_USAGE,
   parseAuthMaintainArguments,
 } from "../../scripts/lib/auth-maintain-arguments.mjs";
@@ -25,6 +26,7 @@ import {
   outputSink,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { jsonLines } from "../helpers/json-lines.mjs";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
@@ -184,6 +186,36 @@ test("auth:maintain rejects undeclared commands before configuration", async () 
   }
 });
 
+test("a failed auth:maintain run logs its command", async () => {
+  // Valid arguments for every command; the startup file then fails the run before the database.
+  const valid = {
+    status: ["status"],
+    activate: ["activate", "--recovery-user", "user-argument", "--writers-stopped"],
+    enrol: ["enrol", "user-argument", "--writers-stopped"],
+    "reset-recovery-password": [
+      "reset-recovery-password",
+      "--password-file",
+      "/run/secrets/path-argument",
+      "--writers-stopped",
+    ],
+    "purge-sessions": ["purge-sessions", "--writers-stopped"],
+    deactivate: ["deactivate", "--purge-disabled", "--writers-stopped"],
+  };
+  assert.deepEqual(Object.keys(valid), AUTH_MAINTAIN_COMMANDS);
+  for (const [command, args] of Object.entries(valid)) {
+    const result = await maintain(args, "", { OCC_CONFIG_PATH: "relative-startup.yaml" });
+    assert.equal(result.code, 1, `${command}: ${result.stderr}`);
+    const logged = jsonLines(result.stderr).filter(({ event }) => event === "auth-maintain.failed");
+    // The command is a fixed code; its arguments (a user ID, a file path) never reach the log.
+    assert.deepEqual(
+      logged.map(({ code, command: loggedCommand }) => ({ code, command: loggedCommand })),
+      [{ code: "AUTH_MAINTENANCE_FAILED", command }],
+      result.stderr,
+    );
+    assert.doesNotMatch(result.stderr, /user-argument|path-argument/);
+  }
+});
+
 function sessionRecord(userId) {
   return { id: randomUUID(), token: randomBytes(32).toString("hex"), userId };
 }
@@ -250,6 +282,13 @@ test(
         const status = await maintainScript(["status"]);
         assert.equal(status.code, 0, status.stderr);
         assert.equal(status.output.installationId, installationId);
+        // The log line names the Installation too (finding 2245).
+        assert.equal(
+          jsonLines(status.stderr).find(({ event }) => event === "auth-maintain.status")
+            ?.installationId,
+          installationId,
+          status.stderr,
+        );
         assert.equal(status.output.profile, "legacy");
         assert.equal(status.output.users, 2);
         const denied = await maintain(["status"], databaseUrl);

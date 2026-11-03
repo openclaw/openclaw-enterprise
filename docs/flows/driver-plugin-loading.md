@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-20
-last_updated_session: authoring-run/5095b5aa-1826-472c-a40d-c34550457c0e
+updated: 2026-10-29
+last_updated_session: 01a1891d-5b6b-7071-b482-793a9dd01044
 ---
 
 # Installation Driver Package Loading Flow
@@ -46,7 +46,9 @@ graph TD
     P -->|no| G["Construct IAM with platform state"]
     Q --> G
     G --> H["Select exact Drivers and attach lifecycle owners"]
-    H --> I["Authorize requests and reconcile Namespace lifecycle"]
+    H --> V["Freeze Driver-projected<br/>startup values"]
+    V --> I["Authorize requests and reconcile Namespace lifecycle"]
+    I -->|Installation administer| R["Return projected values<br/>or values unavailable"]
   end
 ```
 
@@ -74,7 +76,17 @@ cannot supply replacement data; malformed results and throws fail closed. Compos
 and named contributions in `packages/occ/src/configuration-registry.ts`, and
 rejects missing owner bindings, duplicate identities, or unsupported schemas before
 construction. Invalid package exports, identity, capability, or lifecycle wiring reject
-startup without fallback. The package root export resolver follows Node's
+startup without fallback.
+
+`apps/controller/src/composition/installation-config.ts:selected` captures inspection
+values immediately after validation, before any constructor or package factory.
+`packages/contracts/src/configuration-definition.ts:serializeStartupConfiguration`
+copies actual input values and masks schema `writeOnly` fields or blocks.
+It combines branch annotations conservatively through the existing resolver.
+The separate immutable result cannot change when a factory mutates its own input.
+Unsupported inspection reports unavailable without raw values or exception text.
+
+The package root export resolver follows Node's
 `import()` resolution: `"."` selects a subpath only at the top level (nested, it
 is an unmatched condition name), conditions are Node's defaults (`node`,
 `import`, `module-sync`, `node-addons`, `default`) in key order, and mixed
@@ -113,8 +125,8 @@ Local Setup also calls the shared admission path before provisioning:
 `scripts/validate-sandbox-network-policy.mjs`, which uses `requireConfiguration`
 for platform structural validation and Driver semantic checks. A failure stops before creating development state
 or invoking a container engine. API and worker startup log
-`DRIVER_CONFIGURATION_INVALID` with bounded field diagnostics; semantic messages
-identify the setting without echoing submitted values.
+`DRIVER_CONFIGURATION_INVALID` with field diagnostics that identify the setting
+without echoing submitted values.
 
 ### 2. Construct the single authoritative runtime bundle
 
@@ -130,8 +142,9 @@ Driver loads current policy for each identity lookup and authorization decision;
 packaged Drivers must do the same, which operator review verifies because the
 runtime cannot enforce package internals. Packaged factories must return their exact server-owned capability
 and identity. The Helm upgrade hook's `installation-check` also runs this loader
-with only `NODE_ENV`, `OCC_CONFIG_PATH` and the Installation and repository
-mounts, so factories must defer other environment and file reads past construction.
+with only `NODE_ENV`, `OCC_CONFIG_PATH`, the API's optional `OCC_CONSOLE_THEME_DIR`
+and the Installation, theme and repository mounts, so factories must defer other
+environment and file reads past construction.
 
 Kubernetes-specific image and projected-credential requirements apply only to
 bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
@@ -162,8 +175,18 @@ also registers its selected ServiceAccount Driver after composition. Worker
 startup checks persisted identities, including Secret and optional Sandbox,
 and attaches selected lifecycle owners once. Both processes pass the retained
 definitions into OCC; the worker also resolves the current policy contribution
-before live application. `discoverConfigurations` exposes only authorized schemas
-and resource-owned action URLs, never startup values or executable validators.
+before live application.
+
+`apps/controller/src/composition/installation-config.ts:installationDriverConfigurations`
+forwards each selected identity and its retained redacted snapshot to the registry.
+The registry keeps no raw startup input. Later startup-file edits do not change
+these values; there are no Driver projection callbacks.
+
+`packages/occ/src/index.ts:OpenClawController.discoverConfigurations` checks
+Installation `administer` before returning these projections as
+`startupConfiguration`. The Console renders them in expandable Driver sections.
+Agent discovery retains its resource-owned actions and does not return startup
+values. Neither path exposes executable validators.
 The bundled IAM Driver loads current policy for identity lookup and
 authorization; installed IAM Drivers must honor the same contract. Neither is
 rebuilt or replaced after account or policy changes.
@@ -176,8 +199,8 @@ their existing Harness-owned runtime topology.
 
 - Run `node --test tests/integration/driver-plugin-installation.test.mjs` for
   real installed IAM, Compute, and Configuration packages; production admission;
-  IAM allow/deny evidence; Configuration CRUD; and OCC provisioning of
-  `/tmp/local-test`.
+  IAM allow/deny evidence; Configuration CRUD; and OCC provisioning of an
+  evidence file in a per-run temporary directory.
 - Startup failures emit `startup-error` or `worker.startup-error`; inspect
   Driver identity, persisted policy, capability contracts, and lifecycle stages.
 - The integration uses `InMemoryPlatformState`; it does not prove a running
@@ -196,6 +219,14 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-29 17:21: Capture shared schema-redacted startup values before Driver construction. (01a1891d-5b6b-7071-b482-793a9dd01044 - 8585197fae261c7e45160b9420ffba7942d28e11)
+
+- 2026-10-29 12:37: Trace accepted startup projections and authorized Console inspection. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
+
+- 2026-10-22: Driver factories in `installation-check` can see `OCC_CONSOLE_THEME_DIR` and the theme mount. (fix-1022d)
+
+- 2026-10-22: The installed Compute fixture provisions into a per-run temporary directory instead of a fixed `/tmp/local-test`. (harden-1022c)
 
 - 2026-10-20 05:56: Assign structural validation and accepted input ownership to the platform; Driver semantic callbacks return only field errors. (authoring-run/5095b5aa-1826-472c-a40d-c34550457c0e - 01ee10b27e1de60faccccf2f386cff394c1afedc)
 

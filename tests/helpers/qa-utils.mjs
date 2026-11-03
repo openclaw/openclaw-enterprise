@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const { loadYaml, dumpYaml } = createRequire(
@@ -24,10 +23,14 @@ export async function waitFor(
   { describe, interval = 1000, now = () => Date.now() } = {},
 ) {
   const deadline = now() + timeout;
-  while (now() < deadline) {
+  // The deadline is checked after each observation, so the last one happens at or past it.
+  for (;;) {
     const result = await observe();
     if (result) {
       return result;
+    }
+    if (now() >= deadline) {
+      break;
     }
     await delay(interval);
   }
@@ -40,15 +43,4 @@ export async function waitFor(
     }
   }
   throw new Error(`Timed out: ${description}${detail}`);
-}
-
-export async function unusedPort() {
-  const server = createServer();
-  await new Promise((accept, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", accept);
-  });
-  const port = server.address().port;
-  await new Promise((accept) => server.close(accept));
-  return port;
 }

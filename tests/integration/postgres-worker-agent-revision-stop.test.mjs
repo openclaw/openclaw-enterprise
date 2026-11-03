@@ -12,12 +12,14 @@ import {
   currentComputeAbortSignal,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
   completedPasses,
   completion,
+  makeWorkDue,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
@@ -866,10 +868,7 @@ test(
     // A day-old stuck cleanup rechecks every 10 minutes, not every 30 s.
     const first = await deferred(1);
     assert.ok(Number(first.delay_ms) >= 590_000, `delay ${first.delay_ms} ms`);
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [cleanupKey],
-    );
+    await makeWorkDue(fixture.observerPool, cleanupKey);
     await deferred(2);
     // The cause is logged once, not on every recheck.
     assert.deepEqual(
@@ -891,10 +890,7 @@ test(
        WHERE admission_id = $1`,
       [sibling.admissionId],
     );
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [cleanupKey],
-    );
+    await makeWorkDue(fixture.observerPool, cleanupKey);
     const closing = await deferred(3);
     assert.ok(Number(closing.delay_ms) < 60_000, `delay ${closing.delay_ms} ms`);
     // Retain the unsettled obligation while keeping it out of later scheduling.
@@ -945,6 +941,7 @@ test(
        WHERE admission_id = $1`,
       [opened[0].admissionId],
     );
+    // A prepared admission without a broker receipt can be fenced as missing after deletion.
     const missingAdmissionId = `missing-${randomUUID()}`;
     await fixture.observerPool.query(
       `INSERT INTO occ.repository_session_attempts
@@ -952,7 +949,7 @@ test(
           duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at,
           broker_protocol)
        VALUES ($1, $2, $3, $4, $5, 60, $6, 'opening', NULL, clock_timestamp(),
-          clock_timestamp(), 0)`,
+          clock_timestamp(), 3)`,
       [
         fixture.namespace.id,
         pendingOwner.id,
@@ -1802,16 +1799,7 @@ test(
     const logger = createWorkerLogEmitter(
       createOccLogger({
         component: "occ-worker",
-        destination: {
-          write(chunk) {
-            for (const line of String(chunk).split("\n")) {
-              if (line.length > 0) {
-                output.push(JSON.parse(line));
-              }
-            }
-            return true;
-          },
-        },
+        destination: jsonLineDestination(output),
       }),
     );
     const log = (event) => {

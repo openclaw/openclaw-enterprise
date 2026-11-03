@@ -7,14 +7,11 @@ import { createControlledClock } from "./clock.mjs";
 import { createTlsMaterial } from "./process.mjs";
 import { startGitHubFixture } from "./github.mjs";
 import { startGitSmartHttpFixture } from "./git.mjs";
-import { createResourceScope } from "./resources.mjs";
+import { createResourceScope, createTestResourceScope } from "./resources.mjs";
 import { socketDirectory } from "../../helpers/socket-directory.mjs";
+import { waitFor } from "../../helpers/wait-for.mjs";
 import { serviceConfigurationData } from "./builders.mjs";
-import {
-  createGitHubServiceFactory,
-  startServiceListeners,
-  writeSessionClientConfiguration,
-} from "./service-resources.mjs";
+import { startStaticTokenService, writeSessionClientConfiguration } from "./service-resources.mjs";
 
 export {
   appModule,
@@ -26,7 +23,11 @@ export {
   repositoryRoot,
 } from "./runtime.mjs";
 
-export async function createServiceConfiguration(t, limits = {}) {
+export async function createServiceConfiguration(
+  t,
+  limits = {},
+  sessionPolicy = { maximumDurationSeconds: 172800 },
+) {
   const { validateServiceConfig } = await appModule("drivers/repo/credentials/configuration");
   const directory = await socketDirectory(t, "rcs-");
   await chmod(directory, 0o700);
@@ -37,7 +38,7 @@ export async function createServiceConfiguration(t, limits = {}) {
         listen: "0.0.0.0:443",
         controlSocket: join(directory, "control.sock"),
       },
-      sessionPolicy: { maximumDurationSeconds: 172800 },
+      sessionPolicy,
       limits,
     }),
   );
@@ -49,36 +50,52 @@ export async function createLoopbackServiceConfiguration(owner, limits) {
   return { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
 }
 
+/**
+ * The shared setup of the token service suites: a resource scope that closes after `t`, a
+ * clock (controlled, or `"system"`, or the caller's), TLS material, a loopback service
+ * configuration with `limits`, and the fake GitHub unless `github` is false. Each step
+ * registers its cleanup on the scope in this order, so teardown runs in reverse.
+ */
+export async function startTokenServiceScope(t, { clock, limits, github = true } = {}) {
+  const resources = createTestResourceScope(t);
+  const selectedClock =
+    clock === "system"
+      ? (await appModule("drivers/repo/credentials/clock")).createSystemClock()
+      : (clock ?? createControlledClock());
+  const tls = await createTlsMaterial(resources);
+  const config = await createLoopbackServiceConfiguration(resources, limits);
+  const fakeGitHub = github
+    ? await startGitHubFixture(resources, { clock: selectedClock, tls })
+    : undefined;
+  return { resources, clock: selectedClock, tls, config, github: fakeGitHub };
+}
+
 export async function startCredentialServiceFixture(t, options = {}) {
   const resources = createResourceScope();
   try {
     const clock = options.clock ?? createControlledClock();
-    const tls = await createTlsMaterial(resources);
-    const configured = await createServiceConfiguration(resources, options.limits);
+    const tls = options.tls ?? (await createTlsMaterial(resources));
+    const configured = await createServiceConfiguration(
+      resources,
+      { gitPushInputBytes: 64 * 1024 * 1024, ...options.limits },
+      { maximumDurationSeconds: 28_800 },
+    );
     const config =
       options.gateway === undefined
         ? configured
         : { ...configured, gateway: { ...configured.gateway, ...options.gateway } };
-    const github = await startGitHubFixture(resources, {
-      clock,
-      tls,
-      tokenLifetimeMs: options.tokenLifetimeMs,
-    });
+    const github = await startGitHubFixture(resources, { clock, tls });
     const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
-    const factory = await createGitHubServiceFactory(resources, {
+    const { factory, service, listeners } = await startStaticTokenService(resources, {
       config,
-      clock,
-      privateKey: github.privateKey,
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: git.origin, ca: tls.ca },
-    });
-    const { service, listeners } = await startServiceListeners(resources, {
-      config,
-      factory,
       clock,
       tls,
-      upstreamOrigins: [github.origin, git.origin],
+      github,
+      gitOrigin: git.origin,
+      token: `github_pat_${"t".repeat(36)}`,
+      configuration: { pushRefAllowlist: ["refs/heads/agent-feature"], ...options.configuration },
     });
-    const opened = service.open({ durationSeconds: 86400, profile: options.profile ?? "git-full" });
+    const opened = service.open({ durationSeconds: 3600, profile: options.profile ?? "git-full" });
     const clientDirectory = await writeSessionClientConfiguration(resources, {
       opened,
       ca: tls.ca,
@@ -179,17 +196,10 @@ export function controlRequest(socketPath, method, path, value, headers = {}) {
   });
 }
 
-export async function eventually(
+// Polls `check` every 10 ms until it returns a truthy value, and returns that value.
+export function eventually(
   check,
-  { timeoutMs = 3000, message = "expected fixture state was not observed" } = {},
+  { timeoutMs = 3000, description = "the expected fixture state" } = {},
 ) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = check();
-    if (value) {
-      return value;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(message);
+  return waitFor(description, () => check() || undefined, { timeoutMs, intervalMs: 10 });
 }

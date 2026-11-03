@@ -1,7 +1,7 @@
 import { request } from "node:http";
 import { dirname, join } from "node:path";
 import type { RepositoryCredentialBoundSessionInput, SessionStatus } from "./service-contracts.ts";
-import { sameBinding } from "./sessions.ts";
+import { sameBinding } from "./grant-identity.ts";
 
 /** The broker sends only admission identities and already-observed terminal evidence. */
 export class RepositoryReceiptClient {
@@ -23,8 +23,8 @@ export class RepositoryReceiptClient {
     if (result.kind === "missing") {
       return { kind: "missing" as const };
     }
-    if (result.kind === "reserved") {
-      return { kind: "reserved" as const };
+    if (result.kind === "reserved" || result.kind === "standing-reserved") {
+      return { kind: "reserved" as const, standing: result.kind === "standing-reserved" };
     }
     if (result.kind === "disposed") {
       const observed = this.terminal(result.status);
@@ -37,6 +37,23 @@ export class RepositoryReceiptClient {
       return { kind: "disposed" as const, status: observed };
     }
     throw new Error("RECEIPT_UNAVAILABLE");
+  }
+
+  async authorizeStanding(
+    id: string,
+    sessionId: string,
+    input: RepositoryCredentialBoundSessionInput,
+  ) {
+    const result = await this.call({
+      kind: "authorize-standing",
+      admissionId: id,
+      generation: this.generation,
+      input,
+      sessionId,
+    });
+    if (result.kind !== "authorized") {
+      throw new Error("STANDING_AUTHORITY_UNAVAILABLE");
+    }
   }
 
   async bind(

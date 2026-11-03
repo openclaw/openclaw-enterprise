@@ -51,6 +51,13 @@ export interface SandboxPolicySnapshot {
   readonly additions: readonly SandboxNetworkGrant[];
 }
 
+/** Explicit, nonsecret acknowledgement; only its validated snapshot is persisted. */
+export interface ProtectedCodexArtifactPolicyAdmission {
+  readonly purpose: "protected-codex-artifacts";
+  readonly declaredRuleNames: readonly string[];
+  readonly snapshot: SandboxPolicySnapshot;
+}
+
 export interface SandboxPolicyApplication {
   readonly id: string;
   readonly revisionId: string;
@@ -206,6 +213,10 @@ export function sandboxNetworkGrantsWithinCeiling(
   ceiling: readonly SandboxNetworkGrant[],
 ): boolean {
   return grants.every((grant) => {
+    // An empty or reversed range names no port, so it can never prove containment.
+    if (grant.ports.length === 0 || grant.ports.some(({ from, to }) => from > to)) {
+      return false;
+    }
     const ranges = ceiling
       .filter((limit) => limit.binary === grant.binary && hostCovered(grant.host, limit.host))
       .flatMap(({ ports }) => ports)

@@ -186,12 +186,16 @@ func TestUnixEndpointRejectsNonSocketTransports(t *testing.T) {
 
 // engineSelection supplies only inert version/info/Compose answers. Its PATH
 // never reaches a host engine, including when a requested executable is absent.
-func engineSelection(t *testing.T, server, requested, missing, failure string, compose bool) (*runner, error, string) {
+func engineSelection(t *testing.T, server, requested, missing, failure string, compose, dockerCompose, dockerComputeDown bool) (*runner, error, string) {
 	t.Helper()
 	directory := t.TempDir()
 	log := filepath.Join(directory, "calls")
 	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
-	for _, name := range []string{"docker", "podman", "podman-compose"} {
+	providers := []string{"podman-compose"}
+	if dockerCompose {
+		providers = append(providers, "docker-compose")
+	}
+	for _, name := range append([]string{"docker", "podman"}, providers...) {
 		if name == missing {
 			continue
 		}
@@ -203,9 +207,13 @@ func engineSelection(t *testing.T, server, requested, missing, failure string, c
 	t.Setenv("PATH", directory)
 	r := &runner{opts: Options{Repository: directory}, env: map[string]string{"PATH": directory}}
 	var err error
-	if compose {
+	switch {
+	case dockerComputeDown:
+		// occ dev down stops the Docker Compute stack scripts/dev-up started.
+		err = r.selectDockerComputeEngine(context.Background(), requested)
+	case compose:
 		err = r.selectEngine(context.Background(), requested)
-	} else {
+	default:
 		err = r.selectImageEngine(context.Background(), requested)
 	}
 	data, readErr := os.ReadFile(log)
@@ -232,7 +240,7 @@ func TestContainerEngineSelectionHonorsServerIdentity(t *testing.T) {
 	} {
 		for _, compose := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/compose=%t", tc.name, compose), func(t *testing.T) {
-				r, err, calls := engineSelection(t, tc.server, tc.requested, "", "", compose)
+				r, err, calls := engineSelection(t, tc.server, tc.requested, "", "", compose, false, false)
 				if (err != nil) != (tc.want == "") || r.engine != tc.want {
 					t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)
 				}
@@ -247,6 +255,35 @@ func TestContainerEngineSelectionHonorsServerIdentity(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPodmanComposeProviderPrefersDockerCompose(t *testing.T) {
+	// The Kubernetes-profile Compose command passes --project-directory, which
+	// standalone podman-compose does not support. With both providers installed,
+	// selection must pin docker-compose, which reaches Podman through the
+	// DOCKER_HOST endpoint startup pins, so a host that starts the Compose
+	// control plane can also stop it.
+	r, err, calls := engineSelection(t, `{"Platform":{"Name":"PoDmAn Engine"},"Components":[{"Name":"Engine"}]}`, "podman", "", "", true, true, false)
+	if err != nil || r.engine != "podman" {
+		t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)
+	}
+	if r.env["PODMAN_COMPOSE_PROVIDER"] != filepath.Join(r.env["PATH"], "docker-compose") {
+		t.Fatalf("Podman provider was not docker-compose: %q", r.env["PODMAN_COMPOSE_PROVIDER"])
+	}
+}
+
+func TestDockerComputeDownPinsStandalonePodmanCompose(t *testing.T) {
+	// scripts/dev-up starts the Docker Compute stack with standalone
+	// podman-compose. With both providers installed, occ dev down must pin the
+	// same provider: a docker-compose down against that stack exits 0 but
+	// removes nothing, leaving the started stack running.
+	r, err, calls := engineSelection(t, `{"Platform":{"Name":"PoDmAn Engine"},"Components":[{"Name":"Engine"}]}`, "podman", "", "", true, true, true)
+	if err != nil || r.engine != "podman" {
+		t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)
+	}
+	if r.env["PODMAN_COMPOSE_PROVIDER"] != filepath.Join(r.env["PATH"], "podman-compose") {
+		t.Fatalf("Docker Compute down provider was not podman-compose: %q", r.env["PODMAN_COMPOSE_PROVIDER"])
 	}
 }
 
@@ -267,7 +304,7 @@ func TestContainerEngineSelectionRetainsCapabilityGates(t *testing.T) {
 				if compose {
 					want = tc.composeWant
 				}
-				r, err, calls := engineSelection(t, docker, tc.requested, tc.missing, tc.failure, compose)
+				r, err, calls := engineSelection(t, docker, tc.requested, tc.missing, tc.failure, compose, false, false)
 				if (err != nil) != (want == "") || r.engine != want {
 					t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)
 				}

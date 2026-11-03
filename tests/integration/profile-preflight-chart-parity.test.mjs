@@ -81,6 +81,8 @@ function codexInput(codex = {}) {
 
 const repositoryInput = {
   enabled: true,
+  authority: "prepared-git",
+  preparedCustodySecretName: "occ-repository-custody",
   image: `registry.example.invalid/repository@sha256:${"c".repeat(64)}`,
   backendId: "github-primary",
   registryConfigMapName: "occ-repository-registry",
@@ -90,6 +92,21 @@ const repositoryInput = {
   publicCaSecretName: "occ-repository-ca",
   upstreamCidrs: ["192.0.2.30/32"],
 };
+
+test("profile renderer refuses the retired signing gateway without preparing outputs", async () => {
+  for (const authority of [undefined, "github-app", "github-app-registry"]) {
+    await withProfile(
+      { ...input({}), ...codexInput(), repository: { ...repositoryInput, authority } },
+      ({ directory, renderer }) => {
+        assert.equal(renderer.ok, false);
+        assert.match(renderer.output, /repository.authority must explicitly select prepared-git/);
+        assert.equal(existsSync(join(directory, "values.yaml")), false);
+        assert.equal(existsSync(join(directory, "installation.yaml")), false);
+      },
+      "codex",
+    );
+  }
+});
 
 const oidcEndpoints = {
   issuer: "https://sso.example.com/realm",
@@ -715,6 +732,39 @@ test("peer Pod selectors get Compute's verdict in preflight, and the chart rende
     });
   });
 });
+
+test(
+  "a DNS Pod selector without the chart's default label selects only the labelled DNS Pods",
+  { skip: helmSkip },
+  () => {
+    // OpenShift DNS Pods have no k8s-app label. Helm merges values over chart defaults, so the
+    // rendered values must drop that default or the DNS egress rule matches no Pod.
+    const podLabels = { "dns.operator.openshift.io/daemonset-dns": "default" };
+    return withProfile(
+      input({ dns: { namespace: "openshift-dns", podLabels } }),
+      async ({ directory, renderer }) => {
+        assert.equal(renderer.ok, true, renderer.output);
+        const chart = await helmTemplate([join(directory, "values.yaml")]);
+        assert.equal(chart.ok, true, chart.output);
+        const peers = chart.output
+          .split(/^---$/m)
+          .filter((document) => document.includes("kind: NetworkPolicy"))
+          .map((document) => loadYaml(document))
+          .flatMap((policy) => policy.spec.egress ?? [])
+          .flatMap((rule) => rule.to ?? [])
+          .filter(
+            (peer) =>
+              peer.namespaceSelector?.matchLabels?.["kubernetes.io/metadata.name"] ===
+              "openshift-dns",
+          );
+        assert.notEqual(peers.length, 0);
+        for (const peer of peers) {
+          assert.deepEqual(peer.podSelector.matchLabels, podLabels);
+        }
+      },
+    );
+  },
+);
 
 test(
   "external sign-in credential keys get the same verdict from preflight and the chart",

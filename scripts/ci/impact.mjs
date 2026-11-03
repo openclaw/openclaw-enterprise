@@ -89,6 +89,7 @@ const laneName = /^[a-z0-9-]+$/;
 // Test-only changes run the owning lanes. TypeScript tests also need part 2's
 // typecheck. Part 1 supplies the matrix lane when only the image fixture would run.
 const fallbackLane = "checks-baseline-1";
+const typecheckLane = "checks-baseline-2";
 const fixtureLane = "runtime-image-fixture";
 
 function isObject(value) {
@@ -293,7 +294,10 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
       selected.add(name);
     }
     if (path.endsWith(".ts")) {
-      selected.add("checks-baseline-2");
+      if (!index.ci.has(typecheckLane)) {
+        throw new InspectionError("typecheck lane is unavailable", "manifest_unavailable");
+      }
+      selected.add(typecheckLane);
     }
     // Other files may read, copy or run a test file; then its lanes are not enough.
     const name = path.slice(path.lastIndexOf("/") + 1);

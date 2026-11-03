@@ -7,9 +7,12 @@ import (
 	"crypto/x509"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,12 +38,15 @@ type Client struct {
 	ctx        context.Context
 	baseURL    *url.URL
 	serviceKey serviceKey
+	caBundle   string
 	http       *http.Client
 }
 
 type serviceKey struct {
 	key       string
 	namespace string
+	// file is the service-key file path, named when OCC rejects the key.
+	file string
 }
 
 type serviceKeyEnvelope struct {
@@ -76,6 +82,8 @@ type APIError struct {
 	// ServiceKeyNamespace is local metadata recorded with the key for this request.
 	// It is not an assertion by the server or a source of authorization.
 	ServiceKeyNamespace string
+	// serviceKeyFile is the local key file path, named when OCC answers 401.
+	serviceKeyFile string
 	// redirectOrigin is the Location's scheme://host when it differs from OCC_URL.
 	redirectOrigin string
 }
@@ -91,6 +99,14 @@ func (err *APIError) Error() string {
 		return fmt.Sprintf(
 			"OCC operation failed (HTTP %d): the server redirected to %s; occ does not follow redirects, so set OCC_URL (or --url) to %s if that is the OCC endpoint",
 			err.Status, err.Location, err.redirectOrigin,
+		)
+	}
+	if err.Status == http.StatusUnauthorized && err.serviceKeyFile != "" {
+		// occ always sends the key file's key, so OCC's cookie and header advice
+		// does not apply: the key itself was refused (finding D745).
+		return fmt.Sprintf(
+			"OCC rejected the service key in %s: it is invalid, expired or revoked. Ask an Installation administrator for a new key.",
+			err.serviceKeyFile,
 		)
 	}
 	message := fmt.Sprintf("OCC operation failed (HTTP %d)", err.Status)
@@ -166,6 +182,7 @@ func New(config Config) (*Client, error) {
 		ctx:        ctx,
 		baseURL:    baseURL,
 		serviceKey: serviceKey,
+		caBundle:   config.CABundle,
 		http: &http.Client{
 			Transport: transport,
 			Timeout:   config.Timeout,
@@ -188,7 +205,10 @@ func (client *Client) send(method string, segments []string, body any) (any, err
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
 		return nil, client.apiError(status, header, responseBody)
 	}
+	return decodeResponseData(status, responseBody)
+}
 
+func decodeResponseData(status int, responseBody []byte) (any, error) {
 	var envelope responseEnvelope
 	if err := json.Unmarshal(responseBody, &envelope); err != nil || len(envelope.Data) == 0 || len(envelope.Meta) == 0 {
 		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
@@ -252,7 +272,7 @@ func (client *Client) executeQuery(
 
 	response, err := client.http.Do(request)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("OCC operation failed: %w", err)
+		return 0, nil, nil, client.transportError(err)
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(response.Body)
@@ -273,8 +293,30 @@ func parseOrigin(value string) (*url.URL, error) {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return nil, fmt.Errorf("OCC URL must use http or https")
 	}
-	if parsed.Opaque != "" || parsed.User != nil || parsed.Hostname() == "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	if parsed.Opaque != "" || parsed.Hostname() == "" {
 		return nil, fmt.Errorf("OCC URL must be an origin without credentials, a path, a query, or a fragment")
+	}
+	// Name what to drop and the origin to use instead (finding D765). The
+	// credentials, query and fragment are never echoed: they may hold secrets.
+	var extra []string
+	if parsed.User != nil {
+		extra = append(extra, "credentials")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		extra = append(extra, fmt.Sprintf("the path %q", parsed.EscapedPath()))
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery {
+		extra = append(extra, "a query")
+	}
+	if parsed.Fragment != "" {
+		extra = append(extra, "a fragment")
+	}
+	if len(extra) > 0 {
+		origin := parsed.Scheme + "://" + parsed.Host
+		return nil, fmt.Errorf(
+			"OCC URL must be an origin without credentials, a path, a query, or a fragment; it has %s. Set OCC_URL (or --url) to %s if that origin serves the OCC API",
+			strings.Join(extra, " and "), origin,
+		)
 	}
 	parsed.Path = ""
 	parsed.RawPath = ""
@@ -297,8 +339,54 @@ func resourceURL(baseURL *url.URL, segments []string) (*url.URL, error) {
 	return resource, nil
 }
 
+// transportError explains a request that got no HTTP answer. TLS verification
+// failures are matched on their types and get a plain cause and next step
+// instead of the raw x509 text; everything else keeps the cause.
+func (client *Client) transportError(err error) error {
+	var unknownAuthority x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuthority) {
+		if client.caBundle != "" {
+			return fmt.Errorf("the OCC endpoint's certificate is not trusted by the CA bundle %s. Set OCC_CA_BUNDLE (or --ca-bundle) to your Installation's CA bundle.", client.caBundle)
+		}
+		return errors.New("the OCC endpoint's certificate is not trusted. Set OCC_CA_BUNDLE (or --ca-bundle) to your Installation's CA bundle.")
+	}
+	var hostname x509.HostnameError
+	if errors.As(err, &hostname) {
+		return fmt.Errorf("OCC operation failed: the OCC endpoint's certificate is not valid for %s; check OCC_URL: %w", client.baseURL.Hostname(), err)
+	}
+	var verification *tls.CertificateVerificationError
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &verification) || errors.As(err, &invalid) {
+		return fmt.Errorf("OCC operation failed: the OCC endpoint's certificate could not be verified: %w", err)
+	}
+	// A failed connection names the endpoint and the plain cause instead of the
+	// Go request and dial text (finding D765).
+	var dial *net.OpError
+	if errors.As(err, &dial) && dial.Op == "dial" {
+		return fmt.Errorf("cannot connect to OCC at %s (%s). Check OCC_URL (or --url).", client.baseURL, dialCause(dial))
+	}
+	return fmt.Errorf("OCC operation failed: %w", err)
+}
+
+// dialCause is the innermost text of a dial error, such as "connection refused"
+// or "no such host", without the operation and address prefixes.
+func dialCause(dial *net.OpError) string {
+	var dnsErr *net.DNSError
+	if errors.As(dial.Err, &dnsErr) {
+		return dnsErr.Err
+	}
+	cause := dial.Err
+	for {
+		next := errors.Unwrap(cause)
+		if next == nil {
+			return cause.Error()
+		}
+		cause = next
+	}
+}
+
 func (client *Client) apiError(status int, header http.Header, body []byte) error {
-	result := &APIError{Status: status, ServiceKeyNamespace: client.serviceKey.namespace}
+	result := &APIError{Status: status, ServiceKeyNamespace: client.serviceKey.namespace, serviceKeyFile: client.serviceKey.file}
 	var envelope errorEnvelope
 	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Code != "" {
 		result.Code = envelope.Error.Code
@@ -329,23 +417,55 @@ func (client *Client) apiError(status int, header http.Header, body []byte) erro
 	return result
 }
 
+// serviceKeyFileAdvice ends every key-file refusal: the file must be the
+// complete JSON answer of "occ service-key create" (or of bootstrap).
+const serviceKeyFileAdvice = "Use the complete JSON file from \"occ service-key create\"."
+
 func readServiceKey(path string) (serviceKey, error) {
 	contents, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return serviceKey{}, fmt.Errorf("service-key file %s does not exist. Set OCC_SERVICE_KEY_FILE (or --service-key-file) to the key file you were issued.", path)
+	}
 	if err != nil {
-		return serviceKey{}, fmt.Errorf("failed to read service-key file %s: %w", path, err)
+		cause := err
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			cause = pathErr.Err
+		}
+		return serviceKey{}, fmt.Errorf("failed to read service-key file %s: %w", path, cause)
+	}
+	if !jsontext.Value(contents).IsValid() {
+		// The parser's own text (offsets, expected tokens) does not help here.
+		return serviceKey{}, fmt.Errorf("service-key file %s is not JSON. %s", path, serviceKeyFileAdvice)
 	}
 	var envelope serviceKeyEnvelope
 	if err := json.Unmarshal(contents, &envelope); err != nil {
-		return serviceKey{}, fmt.Errorf("invalid service-key file %s: %w", path, err)
+		return serviceKey{}, fmt.Errorf("service-key file %s has no usable data.key (it must be a JSON string). %s", path, serviceKeyFileAdvice)
 	}
 	key := envelope.Data.Key
-	if strings.TrimSpace(key) == "" || strings.ContainsAny(key, "\r\n") {
-		return serviceKey{}, fmt.Errorf("invalid service-key file %s", path)
+	switch {
+	case key == "":
+		return serviceKey{}, fmt.Errorf("service-key file %s has no data.key. %s", path, serviceKeyFileAdvice)
+	case strings.ContainsAny(key, "\r\n"):
+		return serviceKey{}, fmt.Errorf("service-key file %s has a data.key split over lines. %s", path, serviceKeyFileAdvice)
+	case strings.TrimSpace(key) == "":
+		return serviceKey{}, fmt.Errorf("service-key file %s has an empty data.key. %s", path, serviceKeyFileAdvice)
 	}
 	// Optional display metadata must not make an otherwise usable key unreadable.
 	var namespace string
 	_ = json.Unmarshal(envelope.Data.NamespaceID, &namespace)
-	return serviceKey{key: key, namespace: namespace}, nil
+	return serviceKey{key: key, namespace: namespace, file: path}, nil
+}
+
+// ServiceKeyNamespace returns the Namespace ID a service-key file records for
+// its key, or "" when the file is unreadable or records none. It is local
+// display metadata, not an authorization source, and makes no request.
+func ServiceKeyNamespace(path string) string {
+	key, err := readServiceKey(path)
+	if err != nil {
+		return ""
+	}
+	return key.namespace
 }
 
 func httpTransport(caBundle string) (*http.Transport, error) {

@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const gate = resolve("scripts/ci/impact-gate.mjs");
 
 function runGate(t, mode, needs, extra = []) {
-  const dir = mkdtempSync(join(tmpdir(), "ci-impact-gate-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = temporaryDirectorySync(t, "ci-impact-gate-");
   const input = join(dir, "needs.json");
   const output = join(dir, "expanded.json");
   writeFileSync(input, typeof needs === "string" ? needs : JSON.stringify(needs));
@@ -43,7 +42,7 @@ test("gate accepts only the selected jobs and expands full-mode dependencies", (
   assert.equal(full.status, 0, full.stderr);
   assert.deepEqual(
     Object.keys(full.expanded).sort(),
-    ["impact", "audit", ...expectedFullLanes].sort(),
+    ["impact", "static-checks", ...expectedFullLanes].sort(),
   );
   for (const state of Object.values(full.expanded)) {
     assert.equal(state.result, "success");
@@ -103,7 +102,6 @@ function testNeeds(lanes) {
   const json = JSON.stringify(lanes);
   return {
     impact: { result: "success", outputs: { mode: "tests", lanes: json } },
-    audit: { result: "success", outputs: {} },
     "static-checks": { result: "success", outputs: {} },
     "pr-safe": { result: "success", outputs: {} },
     "runtime-image-fixture": {
@@ -125,7 +123,7 @@ test("tests mode expands only the selected lanes", (t) => {
   assert.equal(plain.status, 0, plain.stderr);
   assert.deepEqual(plain.expanded, {
     impact: { result: "success" },
-    audit: { result: "success" },
+    "static-checks": { result: "success" },
     "checks-baseline-1": { result: "success" },
     postgres: { result: "success" },
   });
@@ -134,7 +132,7 @@ test("tests mode expands only the selected lanes", (t) => {
   assert.equal(keycloak.status, 0, keycloak.stderr);
   assert.deepEqual(keycloak.expanded, {
     impact: { result: "success" },
-    audit: { result: "success" },
+    "static-checks": { result: "success" },
     "keycloak-oidc": { result: "success" },
   });
   const keycloakFailed = testNeeds(["keycloak-oidc"]);
@@ -145,10 +143,10 @@ test("tests mode expands only the selected lanes", (t) => {
   const fixture = runTestsGate(t, ["checks-baseline-1", "runtime-image-fixture"]);
   assert.equal(fixture.status, 0, fixture.stderr);
   assert.deepEqual(Object.keys(fixture.expanded).sort(), [
-    "audit",
     "checks-baseline-1",
     "impact",
     "runtime-image-fixture",
+    "static-checks",
   ]);
   // A failed matrix or fixture job reaches the aggregator as a failed lane.
   const failed = testNeeds(["checks-baseline-1", "runtime-image-fixture"]);

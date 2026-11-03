@@ -1,8 +1,9 @@
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { closeWorkerComposition } from "../../apps/controller/src/worker/shutdown.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
@@ -11,6 +12,7 @@ import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Worker health, readiness, leases and outages. Deployment and dispatch cases are in
 // postgres-worker-agent-revision.test.mjs, credential-source withdrawals in its
@@ -114,12 +116,30 @@ test(
   },
 );
 
+// Finding 2379: pg's pool.end() resolves before its idle sessions close, so the database drop
+// right after can end one of them. The server's 57P01 reached the pool's idle listener, which
+// re-emitted it on the pool, and with no listener that failed the test in its teardown.
+test(
+  "worker fixture teardown ignores the error of an ended pool's session the drop ends",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await setup(context);
+    const idle = await fixture.observerPool.connect();
+    idle.release();
+    await fixture.database.dispose();
+    // What that idle client receives when the drop ends its session before it closed.
+    const ended = Object.assign(new Error("terminating connection due to administrator command"), {
+      code: "57P01",
+    });
+    assert.doesNotThrow(() => idle.emit("error", ended));
+  },
+);
+
 // Runs `body` as a test file of its own under the revision fixture (created with `fixtureOptions`),
 // needing no PostgreSQL, and returns its output once its process exits with `status`, or fails
 // after 30 s naming the file as still running.
 async function runFixtureFile(t, body, { fixtureOptions, status: expectedStatus = 0 } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "revision-fixture-exit-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "revision-fixture-exit-");
   const file = join(directory, "abandoned.test.mjs");
   const helper = new URL("../helpers/postgres-worker-revision-fixture.mjs", import.meta.url);
   await writeFile(
@@ -511,7 +531,7 @@ test(
       },
     });
     const [
-      { GitHubRepoDriver },
+      { GitHubRepositoryPolicy },
       { UnixRepositoryCredentialControlClient },
       { startRegistryCredentialServiceFixture },
       { startRepositoryReceiptServer },
@@ -519,7 +539,7 @@ test(
       { createResourceScope },
       { dirname },
     ] = await Promise.all([
-      import("../../apps/controller/src/drivers/repo/github/driver.ts"),
+      import("../../apps/controller/src/drivers/repo/github/policy.ts"),
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
       import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts"),
@@ -541,14 +561,20 @@ test(
     });
     // Simulate the old broker's 404 while all other traffic still reaches the real service.
     relay.setCapabilitiesHidden(true);
-    const driver = new GitHubRepoDriver(
-      {
-        id: credentials.backendId,
-        client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
-        drivers: { repo: "repository-credentials" },
-      },
+    const repositoryBackend = {
+      id: credentials.backendId,
+      client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
+      drivers: { repo: "repository-credentials" },
+    };
+    const sender = new GitHubNativeRepositorySender(repositoryBackend, {
+      publicCa: credentials.tls.ca,
+    });
+    const driver = new GitHubRepositoryPolicy(
+      { driverId: repositoryBackend.drivers.repo, backendId: repositoryBackend.id },
       credentials.registry,
-      { sessionDurationSeconds: 60, publicCa: credentials.tls.ca },
+      {
+        sessionDurationSeconds: 60,
+      },
     );
     const receiptServer = await startRepositoryReceiptServer({
       state: fixture.state,
@@ -560,7 +586,7 @@ test(
     context.after(() => receiptServer.close());
     const resolution = driver.resolve({
       namespaceId: fixture.namespace.id,
-      bindings: [{ repositoryRef: "repo-a", profile: "git-read" }],
+      bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
     });
     const owner = await fixture.agent("repository-capability");
     const selection = {
@@ -576,7 +602,11 @@ test(
       },
       {
         pool: fixture.workerPool,
-        transformDrivers: (drivers) => ({ ...drivers, repoDriver: driver }),
+        transformDrivers: (drivers) => ({
+          ...drivers,
+          repositoryPolicy: driver,
+          nativeRepositorySender: sender,
+        }),
       },
     );
     // Four jittered retry delays can total nearly 15 seconds before the fifth claim.
@@ -589,9 +619,9 @@ test(
     await waitFor("worker readiness after compatible broker selection", async () =>
       healthy > 0 ? true : undefined,
     );
-    const open = driver.open.bind(driver);
+    const open = sender.open.bind(sender);
     let lostSessionId;
-    driver.open = async (input, signal) => {
+    sender.open = async (input, signal) => {
       const result = await open(input, signal);
       if (lostSessionId === undefined && result.kind === "created") {
         lostSessionId = result.session.sessionId;
@@ -799,5 +829,169 @@ test(
       events.some(({ event }) => event === "worker.health"),
       false,
     );
+  },
+);
+
+// Finding 2997: worker.mjs removed its readiness marker and closed the worker's parts while the
+// worker loop still ran. A health check in flight then rewrote the marker, which outlived the
+// process, and the loop could claim work after the Git owner had closed. Shutdown now stops the
+// loop and waits for its health checks before it removes the marker and closes the parts, and
+// it closes the worker's database pool last.
+
+// The revision fixture with worker.mjs's readiness writer. `holdNextHealth()` holds the next
+// health check before its write until the returned tick is released.
+async function readinessFixture(context, options = {}) {
+  const directory = await temporaryDirectory(context, "occ-worker-readiness-");
+  const readinessPath = join(directory, "ready");
+  let held;
+  const fixture = await setup(context, {
+    ...options,
+    async onHealthy() {
+      const tick = held;
+      held = undefined;
+      if (tick !== undefined) {
+        tick.entered.resolve();
+        await tick.release.promise;
+      }
+      await writeFile(readinessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
+    },
+  });
+  return {
+    fixture,
+    readinessPath,
+    holdNextHealth() {
+      held = { entered: Promise.withResolvers(), release: Promise.withResolvers() };
+      return held;
+    },
+  };
+}
+
+// worker.mjs's shutdown, with parts that record their close in `events`. `onFirstPart` runs
+// when the first part closes.
+function shutdownWithParts(worker, readinessPath, events, onFirstPart = () => {}) {
+  const step = (name) => async () => {
+    onFirstPart();
+    events.push(name);
+  };
+  return closeWorkerComposition({
+    readinessPath,
+    repositoryGitTransport: { close: step("transport") },
+    preparedRepositoryGit: { close: step("prepared") },
+    receiptServer: { close: step("receipt") },
+    closeMetrics: step("metrics"),
+    preparedGitHub: { close: step("github") },
+    worker,
+  });
+}
+
+async function assertHeldHealthEndedBeforeParts(events, readinessPath) {
+  // The held check finished before any part closed, and the worker closed after them all.
+  assert.deepEqual(events, [
+    "worker.health",
+    "transport",
+    "prepared",
+    "receipt",
+    "metrics",
+    "github",
+    "worker.stopped",
+  ]);
+  // The marker that check wrote is gone, so a stopped worker never reports ready.
+  await assert.rejects(stat(readinessPath), { code: "ENOENT" });
+}
+
+// Records the worker's health and stop events; `onEvent` sees every event.
+function recordEvents(events, onEvent = () => {}) {
+  return (event) => {
+    if (event.event === "worker.health" || event.event === "worker.stopped") {
+      events.push(event.event);
+    }
+    onEvent(event);
+  };
+}
+
+test(
+  "worker shutdown waits for the health check in flight before it removes readiness and closes parts",
+  requiresPostgres,
+  async (context) => {
+    const { fixture, readinessPath, holdNextHealth } = await readinessFixture(context);
+    const events = [];
+    await fixture.start(fixture.compute, { emit: recordEvents(events) });
+    const worker = [...fixture.database.workers].at(-1);
+    await waitFor("the first readiness marker", async () =>
+      (await stat(readinessPath).catch(() => undefined)) === undefined ? undefined : true,
+    );
+
+    // The next idle health check (at most a second away) is now held before its write.
+    const tick = holdNextHealth();
+    try {
+      await tick.entered.promise;
+      events.length = 0;
+      const closing = shutdownWithParts(worker, readinessPath, events);
+      tick.release.resolve();
+      await closing;
+    } finally {
+      tick.release.resolve();
+    }
+    await assertHeldHealthEndedBeforeParts(events, readinessPath);
+  },
+);
+
+// A claim's lease heartbeat starts health checks that the worker loop does not await, so one can
+// still be in flight when the aborted loop ends.
+test(
+  "worker shutdown waits for a claim's background health check before it removes readiness",
+  requiresPostgres,
+  async (context) => {
+    // Renewals every 1.5 s, each able to start a health check once a second has passed.
+    const { fixture, readinessPath, holdNextHealth } = await readinessFixture(context, {
+      leaseDurationMs: 4_500,
+    });
+    const { candidate } = await fixture.admitInitialRevision("background-health");
+    const preparing = Promise.withResolvers();
+    const releaseCompute = Promise.withResolvers();
+    const passEnded = Promise.withResolvers();
+    const events = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, deploymentContext) {
+          preparing.resolve();
+          await releaseCompute.promise;
+          return fixture.compute.prepareRevision(revision, deploymentContext);
+        },
+      },
+      {
+        emit: recordEvents(events, ({ event }) => {
+          if (["worker.pass-interrupted", "worker.completed", "worker.error"].includes(event)) {
+            passEnded.resolve();
+          }
+        }),
+      },
+    );
+    const worker = [...fixture.database.workers].at(-1);
+    await preparing.promise;
+    await fixture.work(candidate, "claimed");
+
+    // Compute holds the pass, so only the claim's heartbeat starts health checks: hold the next.
+    const tick = holdNextHealth();
+    try {
+      await tick.entered.promise;
+      events.length = 0;
+      // A shutdown that does not wait for that check closes the first part as soon as the
+      // pass ends, which releases the check after the marker's removal. A shutdown that waits
+      // gets it released 250 ms after the pass ends.
+      const closing = shutdownWithParts(worker, readinessPath, events, () =>
+        tick.release.resolve(),
+      );
+      releaseCompute.resolve();
+      await passEnded.promise;
+      await delay(250);
+      tick.release.resolve();
+      await closing;
+    } finally {
+      tick.release.resolve();
+      releaseCompute.resolve();
+    }
+    await assertHeldHealthEndedBeforeParts(events, readinessPath);
   },
 );
