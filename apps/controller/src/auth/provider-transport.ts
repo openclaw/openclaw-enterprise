@@ -167,7 +167,7 @@ export type PinnedEndpoint = string & { readonly [pinnedEndpoint]: true };
 declare const membershipEndpoint: unique symbol;
 /**
  * A GitHub membership URL on https://api.github.com, built in github.ts only from a validated
- * allowlist entry and the login GitHub's own profile answer returned, each URL-encoded.
+ * allowlist entry and, for a slug lookup, the login from GitHub's verified profile.
  */
 export type MembershipEndpoint = string & { readonly [membershipEndpoint]: true };
 
@@ -212,6 +212,49 @@ export async function providerMembership(
   init: RequestInit,
   signal: AbortSignal,
 ): Promise<boolean> {
+  const result = await readMembershipJSON(endpoint, init, signal, true);
+  if (result === undefined) {
+    return false;
+  }
+  const { data } = result;
+  if (typeof data === "object" && data !== null && "state" in data) {
+    if (data.state === "active" || data.state === "pending") {
+      return data.state === "active";
+    }
+  }
+  throw new ProviderUnavailableError({ step: "membership", cause: "malformed_response" });
+}
+
+const githubTeamMembersPageSize = 30;
+
+/** Use GitHub's Link header only to tell whether another page exists. */
+export async function providerGitHubTeamMembersPage(
+  endpoint: MembershipEndpoint,
+  page: number,
+  init: RequestInit,
+  signal: AbortSignal,
+): Promise<{ readonly members: readonly unknown[]; readonly hasNext: boolean }> {
+  const url = `${endpoint}?per_page=${githubTeamMembersPageSize}&page=${page}`;
+  const result = await readMembershipJSON(url, init, signal, false);
+  if (
+    result === undefined ||
+    !Array.isArray(result.data) ||
+    result.data.length > githubTeamMembersPageSize
+  ) {
+    throw new ProviderUnavailableError({ step: "membership", cause: "malformed_response" });
+  }
+  return {
+    members: result.data,
+    hasNext: /(?:^|,)\s*<[^<>]+>\s*;\s*rel="next"(?=\s*(?:;|,|$))/i.test(result.link ?? ""),
+  };
+}
+
+async function readMembershipJSON(
+  endpoint: string,
+  init: RequestInit,
+  signal: AbortSignal,
+  notFoundIsNonmember: boolean,
+): Promise<{ data: unknown; link: string | null } | undefined> {
   const step = "membership";
   let response: Response;
   try {
@@ -220,19 +263,18 @@ export async function providerMembership(
     throw new ProviderUnavailableError(transportFailure(error, step));
   }
   try {
-    if (response.status === 404) {
+    if (response.status === 404 && notFoundIsNonmember) {
       await response.body?.cancel();
-      return false;
+      return undefined;
     }
     if (response.status !== 200 || !response.body) {
       await response.body?.cancel();
       throw new ProviderUnavailableError({ step, cause: "http_status", status: response.status });
     }
-    const data = await readBoundedJSON(response, response.body, signal, step);
-    if (data.state === "active" || data.state === "pending") {
-      return data.state === "active";
-    }
-    throw new ProviderUnavailableError({ step, cause: "malformed_response" });
+    return {
+      data: await readBoundedJSONValue(response, response.body, signal, step),
+      link: response.headers.get("link"),
+    };
   } catch (error) {
     if (error instanceof ProviderUnavailableError) {
       throw error;
@@ -305,6 +347,19 @@ async function readBoundedJSON(
   signal: AbortSignal,
   step: ProviderStep,
 ): Promise<Record<string, unknown>> {
+  const data = await readBoundedJSONValue(response, body, signal, step);
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new ProviderUnavailableError({ step, cause: "malformed_response" });
+  }
+  return data as Record<string, unknown>;
+}
+
+async function readBoundedJSONValue(
+  response: Response,
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+  step: ProviderStep,
+): Promise<unknown> {
   const reader = body.getReader();
   try {
     if (Number(response.headers.get("content-length")) > providerResponseLimit) {
@@ -326,11 +381,7 @@ async function readBoundedJSON(
       }
       chunks.push(value);
     }
-    const data: unknown = JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
-    if (typeof data !== "object" || data === null || Array.isArray(data)) {
-      throw new ProviderUnavailableError({ step, cause: "malformed_response" });
-    }
-    return data as Record<string, unknown>;
+    return JSON.parse(Buffer.concat(chunks, length).toString("utf8")) as unknown;
   } finally {
     reader.releaseLock();
   }

@@ -471,6 +471,8 @@ const invalid = [
     ["an allowed organization that is not a login", "allowedOrgs", "acme/platform"],
     ["a team slug padded by U+0085", "allowedTeams", "\u0085acme/platform"],
     ["an allowed team without its organization", "allowedTeams", "platform"],
+    ["an ID entry with a zero organization", "allowedTeams", "id:0/456"],
+    ["an ID entry with a leading zero", "allowedTeams", "id:123/0456"],
   ].map(([name, list, value]) =>
     githubListEntry(`GitHub with ${name}`, list, value, { signIn: true }),
   ),
@@ -723,18 +725,19 @@ describe("sign-in chart parity", { concurrency: true }, () => {
         "auth.github.allowedOrgs[0]": "Acme",
         "auth.github.allowedOrgs[1]": "acme-labs",
         "auth.github.allowedTeams[0]": "other/platform_team",
+        "auth.github.allowedTeams[1]": "id:123/456",
       },
       {
         ...githubUpgradeSettings(recoveryUserId),
         OCC_AUTH_GITHUB_ALLOWED_ORGS: "Acme,acme-labs",
-        OCC_AUTH_GITHUB_ALLOWED_TEAMS: "other/platform_team",
+        OCC_AUTH_GITHUB_ALLOWED_TEAMS: "other/platform_team,id:123/456",
       },
       ["github"],
     );
     assert.deepEqual(githubLoginConfiguration(environment), {
       ...githubParsed,
       allowedOrgs: ["acme", "acme-labs"],
-      allowedTeams: ["other/platform_team"],
+      allowedTeams: ["other/platform_team", "id:123/456"],
     });
   });
 

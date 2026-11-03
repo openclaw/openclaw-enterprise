@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-10-15 18:55"
-last_updated_session: "authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6"
+updated: "2026-11-03 22:30"
+last_updated_session: "authoring-run/34b14770-5418-4b77-9f71-c574bb48e0fd"
 ---
 
 # Bootstrap and human authentication flow
@@ -178,10 +178,9 @@ HttpOnly cookie binds the browser; this profile rejects shared-domain sessions.
 Callback consumption commits before exchange; a losing, expired, or invalid
 attempt does not exchange a code.
 `apps/controller/src/auth/github.ts:exchangeGithubSubject` exchanges the code
-with the GitHub App client ID and secret, uses the user access token only for
-`/user`, and returns the numeric subject, which selects an exact existing
-enrollment. A valid provider-returned login accompanies the subject into the audit;
-it never selects an account or grants authority. Email and tokens are discarded. The
+with the GitHub App, then uses the user access token for `/user` and configured
+membership checks. The numeric subject selects the existing enrollment. A valid
+profile login enters the audit. The controller discards email and tokens. The
 [GitHub reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 owns OAuth scopes, token disposal, App private-key custody, and fixed
 redirects.
@@ -204,7 +203,11 @@ Denials after `consumeAttempt` matches are audited as
 `EXTERNAL_IDENTITY_REJECTED` or `ACCOUNT_DISABLED`; with GitHub's
 [allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist),
 `apps/controller/src/auth/github.ts:githubMembership` runs between `GET /user` and the account
-lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. The callback route turns
+lookup and adds `MEMBERSHIP_REQUIRED` and `MEMBERSHIP_UNAVAILABLE`. For a pinned team,
+`apps/controller/src/auth/github.ts:pinnedTeamMembership` matches the numeric
+subject from `GET /user` against the active roster for the configured IDs.
+The optional login enters the audit. Membership can change before the session
+transaction checks the account proof. The callback route turns
 the response code of those, `ACCOUNT_DISABLED` and `PROVIDER_UNAVAILABLE` into the Console's
 `authReason`, and a callback that fails inside OCE (5xx) into `authReason=unavailable`;
 State dependency failure or uncertain session completion is not a denial. Neither path retries.
@@ -348,6 +351,8 @@ Account creation issues no session and infers no grants.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 22:30: Trace GitHub sign-in admission by team ID and user ID. (authoring-run/34b14770-5418-4b77-9f71-c574bb48e0fd - 380fb5bbf0578fd8ab345acd3f041623272a703c)
 
 - 2026-10-15 18:55: Record verified GitHub identity and correlate matched sign-in attempts in audit. (authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 

@@ -2028,19 +2028,19 @@ test(
       "openclaw",
       externalSignInInput({
         trustedProxy,
-        github: { allowedOrgs: ["acme"], allowedTeams: ["other/platform"] },
+        github: { allowedOrgs: ["acme"], allowedTeams: ["other/platform", "id:123/456"] },
       }),
     );
     assert.equal(allowlisted.summary.ok, true, allowlisted.preflight.errors.join("\n"));
     assert.match(
       allowlisted.values,
-      /allowedOrgs:\n {6}- acme\n {4}allowedTeams:\n {6}- other\/platform/,
+      /allowedOrgs:\n {6}- acme\n {4}allowedTeams:\n {6}- other\/platform\n {6}- id:123\/456/,
     );
     const allowlistManifests = helmTemplate(allowlisted);
     assert.match(allowlistManifests, /name: OCC_AUTH_GITHUB_ALLOWED_ORGS\n\s+value: "acme"/);
     assert.match(
       allowlistManifests,
-      /name: OCC_AUTH_GITHUB_ALLOWED_TEAMS\n\s+value: "other\/platform"/,
+      /name: OCC_AUTH_GITHUB_ALLOWED_TEAMS\n\s+value: "other\/platform,id:123\/456"/,
     );
     // Password sign-in stays open to every account unless recovery-only is chosen.
     assert.doesNotMatch(github.values, /passwordSignIn/);
@@ -2247,6 +2247,11 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     "openclaw",
     externalSignInInput({ github: { allowedTeams: ["platform"] } }),
     /controlPlane.github.allowedTeams\[0\] must be a lowercase org\/team-slug entry/,
+  );
+  await assertPreflightFailure(
+    "openclaw",
+    externalSignInInput({ github: { allowedTeams: ["id:123/0456"] } }),
+    /controlPlane.github.allowedTeams\[0\] must be .*id:org-id\/team-id/,
   );
   await assertPreflightFailure(
     "openclaw",

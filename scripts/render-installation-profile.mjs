@@ -820,6 +820,7 @@ function clientSelectors(source, diagnostics) {
 const recoveryUserIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const githubOrganization = /^[a-z0-9][a-z0-9-]{0,38}$/;
 const githubTeam = /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9_-]{0,99}$/;
+const githubTeamId = /^id:[1-9][0-9]{0,19}\/[1-9][0-9]{0,19}$/;
 const trustedProxyPresets = ["ingress-nginx", "aws", "generic"];
 const passwordSignInPolicies = ["all", "recovery-only"];
 
@@ -906,8 +907,8 @@ function signInProvider(source, name, diagnostics) {
   }
   if (source.allowedTeams !== undefined) {
     rendered.allowedTeams = stringArray(source, [...path, "allowedTeams"], diagnostics, {
-      validate: (value) => githubTeam.test(value),
-      description: "a lowercase org/team-slug entry such as acme/platform",
+      validate: (value) => githubTeam.test(value) || githubTeamId.test(value),
+      description: "a lowercase org/team-slug entry or id:org-id/team-id entry",
       nonempty: false,
     });
   }

@@ -428,11 +428,21 @@ export async function serveAsGitHub(t, server) {
  * The authorization code names the GitHub subject: `subject-<id>`; its login is
  * `fixture-<id>`. Modes: "up", "error" (503) and "hang" (never answers). Set
  * `fixture.membership(path, subject)` to answer the allowlist's membership lookups with
- * "active", "pending" or an HTTP status; `fixture.paths` records each request path.
+ * "active", "pending", a page of JSON objects, or an HTTP status. Override
+ * `fixture.login(subject)` to simulate a different profile login. `fixture.paths` records each request path.
  */
 export async function startFakeGitHub(t) {
   const server = createServer();
-  const fixture = { mode: "up", requests: 0, paths: [], membership: undefined };
+  const fixture = {
+    mode: "up",
+    requests: 0,
+    paths: /** @type {string[]} */ ([]),
+    login: (/** @type {number} */ subject) => `fixture-${subject}`,
+    membership:
+      /** @type {((path: string, subject: number) => "active" | "pending" | number | { entries: readonly unknown[], link?: string }) | undefined} */ (
+        undefined
+      ),
+  };
   server.on("request", async (request, response) => {
     fixture.requests += 1;
     fixture.paths.push(request.url);
@@ -468,7 +478,8 @@ export async function startFakeGitHub(t) {
         response.end("{}");
         return;
       }
-      response.end(JSON.stringify({ id: Number(subject[1]), login: `fixture-${subject[1]}` }));
+      const id = Number(subject[1]);
+      response.end(JSON.stringify({ id, login: fixture.login(id) }));
     } else if (fixture.membership !== undefined) {
       const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
       const answer = subject === null ? 401 : fixture.membership(request.url, Number(subject[1]));
@@ -477,7 +488,14 @@ export async function startFakeGitHub(t) {
         response.end("{}");
         return;
       }
-      response.end(JSON.stringify({ state: answer, role: "member" }));
+      if (typeof answer === "object") {
+        if (answer.link !== undefined) {
+          response.setHeader("link", answer.link);
+        }
+        response.end(JSON.stringify(answer.entries));
+      } else {
+        response.end(JSON.stringify({ state: answer, role: "member" }));
+      }
     } else {
       response.writeHead(404);
       response.end("{}");
@@ -835,7 +853,11 @@ export async function createAccount(app, headers, { email, password, roleId }) {
  * then closes that app. `accounts` maps a name to its email and its Installation Role from
  * installationRoles: "reader" (the default) or "admin". Every account uses `password`.
  * `passwordHasher` replaces the fixtures' cheap hasher for the accounts it creates.
- * Returns `{ admin: { email, password, id }, roles, accounts: { [name]: { id, email, password } } }`.
+ * @returns {Promise<{
+ *   admin: { id: string, email: string, password: string },
+ *   roles: Awaited<ReturnType<typeof installationRoles>>,
+ *   accounts: Record<string, { id: string, email: string, password: string }>
+ * }>}
  */
 export async function onboardPasswordAccounts(
   context,
