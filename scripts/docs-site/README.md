@@ -124,7 +124,8 @@ installing controller dependencies. Do not add it to the TypeScript solution.
 ## Generated API documentation
 
 `pnpm openapi:generate` exports the registered Fastify routes and adds the
-explicit examples in `scripts/api-examples.mjs`. That catalog reuses synthetic
+explicit examples in `scripts/api-examples.ts` using `scripts/document-api-examples.ts`.
+That catalog reuses synthetic
 resource values and never imports test fixtures or live credentials. New
 operations, parameters and body-bearing responses must have examples; generation
 fails on missing coverage. Keep examples consistent with the owning route schemas
