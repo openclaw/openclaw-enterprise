@@ -1,6 +1,9 @@
 name: k3d quickstart end to end
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev/kevinlin/k3d-quickstart-actions]
 
 permissions:
   contents: read
@@ -11,7 +14,12 @@ concurrency:
 
 jobs:
   quickstart:
-    if: github.ref == 'refs/heads/main' && github.ref_protected
+    # A maintainer sets the repository variable to the reviewed commit before pushing.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected) ||
+      (github.event_name == 'push' && github.repository == 'openclaw/openclaw-enterprise' &&
+       github.ref == 'refs/heads/dev/kevinlin/k3d-quickstart-actions' &&
+       github.actor == 'kevinlin-openai' && github.sha == vars.OCE_QUICKSTART_REVIEWED_SHA)
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
