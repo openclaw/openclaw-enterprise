@@ -14,6 +14,7 @@ import {
   inspectDigest,
   remoteTagDigest,
   skopeo,
+  skopeoLogin,
   validatePackage,
   verifyGhcr,
   verifyCi,
@@ -214,18 +215,7 @@ async function publish(directory, env) {
     const metadata = helmCommand(["show", "chart", archive]);
     assert.match(metadata, new RegExp(`^version: ${version.replaceAll(".", "\\.")}$`, "mu"));
     assert.match(metadata, new RegExp(`^appVersion: ${version.replaceAll(".", "\\.")}$`, "mu"));
-    skopeo(
-      [
-        "login",
-        "--authfile",
-        authfile,
-        "--username",
-        env.GITHUB_ACTOR,
-        "--password-stdin",
-        "ghcr.io",
-      ],
-      { input: env.GH_TOKEN, stdio: ["pipe", "ignore", "pipe"] },
-    );
+    skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
     helmCommand(
       ["registry", "login", "ghcr.io", "--username", env.GITHUB_ACTOR, "--password-stdin"],
       {
