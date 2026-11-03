@@ -82,6 +82,8 @@ else
   unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 fi
 
+# If the configured pnpm store is read-only, first select a private writable store:
+# export pnpm_config_store_dir="$RUN_DIR/pnpm-store"
 # Build the CLI from the matching source and wait for k3d bootstrap.
 pnpm install --frozen-lockfile
 go build -trimpath -o bin/occ ./cmd/occ
