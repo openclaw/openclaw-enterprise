@@ -606,6 +606,9 @@ export function createRepositoryFields(
     if (state.discovery !== "ready" || !state.options.length) {
       return;
     }
+    const searchSummary = matches.length
+      ? `${matches.length} matching ${matches.length === 1 ? "repository" : "repositories"}`
+      : "No repositories match this search. If a repository is missing, ask your Namespace operator.";
     results.append(
       element(
         "div",
@@ -615,7 +618,7 @@ export function createRepositoryFields(
           "p",
           { className: "hint", role: "status" },
           query
-            ? `${matches.length} matching ${matches.length === 1 ? "repository" : "repositories"}`
+            ? searchSummary
             : !small &&
                 !searchState.browsing &&
                 matches.some((entry) => recent.includes(entry.repositoryRef))
@@ -692,15 +695,6 @@ export function createRepositoryFields(
     }
     if (visible.length) {
       results.append(list);
-    }
-    if (!visible.length) {
-      results.append(
-        element(
-          "p",
-          { className: "hint" },
-          query ? "No repositories match this search." : "No approved repositories.",
-        ),
-      );
     }
     if (!small && !searchState.browsing && matches.length > count) {
       results.append(
@@ -1081,14 +1075,15 @@ export function createRepositoryFields(
       });
       state.discovery = "ready";
       choices.setAttribute("aria-busy", "false");
-      if (clearSelections) {
-        status.textContent = options.length
-          ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
-          : "No approved repositories are available for this Namespace. Start a new draft to continue without repository access.";
+      if (!state.options.length) {
+        const next = clearSelections
+          ? "Start a new draft to continue without repository access."
+          : "You can continue without repository access.";
+        status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories. ${next}`;
       } else {
-        status.textContent = options.length
-          ? "Select repositories for this Agent. Leave all unselected to continue without repository access."
-          : "No approved repositories are available for this Namespace. You can continue without repository access.";
+        status.textContent = clearSelections
+          ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
+          : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
       }
       revealInvalidSelections();
       render();

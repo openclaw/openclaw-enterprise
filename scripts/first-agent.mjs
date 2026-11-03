@@ -1161,12 +1161,44 @@ async function main(options) {
       }
       await save(record);
     }
+    // A later deploy, such as the `occ agent deploy` that Stop's notice suggests, supersedes
+    // the recorded revision, which then never becomes active again (finding 3131). Follow the
+    // newest revision when it passes the same drift check.
+    async function followNewestRevision() {
+      const [newest] = await api("GET", `${agentPath}/revisions?limit=1`);
+      if (newest === undefined || newest.id === record.revisionId) {
+        return false;
+      }
+      const revision = await api("GET", `${agentPath}/revisions/${encodeURIComponent(newest.id)}`);
+      if (assertManagedRevision(revision, record, expectedConfiguration, revision.id)) {
+        priorPatRevisions.add(revision.id);
+      }
+      progress(
+        `Revision ${record.revisionId} was superseded; following revision ${revision.id}...`,
+      );
+      record.revisionId = revision.id;
+      await save(record);
+      return true;
+    }
+    await followNewestRevision();
     progress("Waiting for the selected revision and Kubernetes gateway...");
     await waitFor("the Agent revision to become active", async () => {
       const [observed, deployment] = await Promise.all([
         api("GET", agentPath),
         api("GET", `${agentPath}/deployments/${record.revisionId}`),
       ]);
+      if (observed.desiredRuntimeState === "stopped") {
+        throw new Error(
+          `Agent ${options.name} is stopped. Run "occ --namespace ${namespace.id} agent deploy ${agent.id}" to start it, then rerun this command with the same Agent name.`,
+        );
+      }
+      if (
+        deployment.status === "failed" &&
+        deployment.error?.code === "REVISION_SUPERSEDED" &&
+        (await followNewestRevision())
+      ) {
+        return false;
+      }
       if (deployment.status === "failed") {
         const code = /^[A-Z0-9_]+$/.test(deployment.error?.code ?? "")
           ? ` (${deployment.error.code})`
@@ -1186,7 +1218,9 @@ async function main(options) {
       revisionId: record.revisionId,
       prompt: options.prompt,
       apiKey: suppliedKey,
-      expectProviderKey: record.sandboxDriver !== "openshell",
+      // Only embedded OpenClaw calls the model from the Gateway. Dedicated Codex keeps the
+      // model credential in its Codex Pod or OpenShell Sandbox, never in the Gateway.
+      expectProviderKey: record.harness === "openclaw",
     });
     const consoleUrl = new URL(
       `/console/agents/${agent.id}`,

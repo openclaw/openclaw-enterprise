@@ -74,11 +74,13 @@ logs one `native_admin.compute_owner_mismatch` warning per version and selected
 Driver, naming both Driver IDs and implementations. To restore access, select the
 version's Compute Driver again, with the same ID and implementation.
 
-When someone opens the Agent root `/` or a copied `/chat/main` link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also works for links ending in a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque key from the Agent host, in a URL fragment. It drops the chat session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
+When someone opens the Agent root `/` or a copied `/chat/main` link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also covers a trailing slash and a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque Agent host key, in a URL fragment, drops the session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
 
-The console checks the browser session and offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation then checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action. Only a user-activated, top-level HTML navigation qualifies for the redirect. Link previews, API requests, and WebSocket upgrades keep their ordinary refusal behavior. A signed-in authorization denial does not redirect and does not start sign-in.
+Only a user-activated (`Sec-Fetch-User: ?1`) top-level HTML navigation is redirected. The same page load without that header, including every Safari navigation, stays HTTP `403` with one **Sign in** link to that console URL. Link previews, API requests, and WebSocket upgrades send no navigation Fetch Metadata and keep their ordinary refusal.
 
-When that signed-in person cannot administer the Agent, a user-activated top-level HTML navigation to `/` or `/chat/main` stays HTTP 403. The page does not name the Agent. Its only link is **Go to your Agents**, which points at `/console/agents` on the configured public console origin. The response sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. A JSON `Accept` header still receives the JSON `403`. WebSocket upgrades still close without that page.
+The console offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action.
+
+A signed-in person who cannot administer the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`. JSON requests still receive the JSON `403`; WebSocket upgrades still close.
 
 In an already-open Gateway tab, the Control UI offers **Reconnect in browser** if a reconnect fails and its same-origin health request receives `401` or `403`. Following the link opens `/` on the current Agent host. The UI does not navigate automatically or carry forward the chat path or query. The response is a reason to check access, not proof that a session expired. OCC decides whether that navigation reaches sign-in or is refused.
 
@@ -166,6 +168,7 @@ device state, plugins, or other persistent gateway data.
 
 ## Changelog
 
+- 2026-11-03: Documented the unactivated sign-in page.
 - 2026-10-14 01:20: Documented the Compute-owner mismatch warning and how to restore access. (fix-1287)
 
 - 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)

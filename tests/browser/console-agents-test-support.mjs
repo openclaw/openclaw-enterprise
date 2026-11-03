@@ -537,12 +537,12 @@ export const repositoryBackendFixture = Object.freeze({
 /**
  * @param {import("node:test").TestContext} t
  * @param {(namespaceId: string) => readonly GitHubRepositoryRegistration[]} buildRepositories
- * @param {{ reloadablePolicy?: boolean }} [options]
+ * @param {{ reloadablePolicy?: boolean, includeInstallationAccess?: boolean }} [options]
  */
 export async function createRepositoryLaunchFixture(
   t,
   buildRepositories,
-  { reloadablePolicy = false } = {},
+  { reloadablePolicy = false, includeInstallationAccess = false } = {},
 ) {
   const fixture = await createConsoleAppFixture(t, {
     defaultPresets: [defaultCodexPreset],
@@ -551,7 +551,11 @@ export async function createRepositoryLaunchFixture(
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Repository launch", { ready: true });
-  let currentPolicy = repositoryPolicyDriver(buildRepositories(namespace.id));
+  const installationNamespaceId = includeInstallationAccess ? namespace.id : undefined;
+  let currentPolicy = repositoryPolicyDriver(
+    buildRepositories(namespace.id),
+    installationNamespaceId,
+  );
   // Simulate replacing mounted policy between requests while keeping all projection and resolution
   // decisions in the actual GitHub Driver. This does not prove production configuration reload.
   const repoDriver = reloadablePolicy
@@ -575,12 +579,12 @@ export async function createRepositoryLaunchFixture(
     /** @param {readonly GitHubRepositoryRegistration[]} repositories */
     replacePolicy(repositories) {
       assert.equal(reloadablePolicy, true);
-      currentPolicy = repositoryPolicyDriver(repositories);
+      currentPolicy = repositoryPolicyDriver(repositories, installationNamespaceId);
     },
   };
 }
 
-function repositoryPolicyDriver(repositories) {
+function repositoryPolicyDriver(repositories, installationNamespaceId) {
   const backend = repositoryBackendFixture;
   const registry = validateGitHubRepositoryRegistry(
     {
@@ -591,6 +595,14 @@ function repositoryPolicyDriver(repositories) {
       githubInstallationId: "456",
       maximumDurationSeconds: 3600,
       repositories,
+      ...(installationNamespaceId === undefined
+        ? {}
+        : {
+            installationAccess: {
+              repositoryRef: "test-installation",
+              namespaces: [{ namespaceId: installationNamespaceId, accessMode: "installation" }],
+            },
+          }),
     },
     backend.id,
   );
