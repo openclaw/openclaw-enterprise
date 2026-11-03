@@ -11,6 +11,18 @@ candidate pair, [qualify its installed dispatch and response custody](../../test
 and test the actual static inference path. A repository metadata read exercises the
 shared exchange but does not establish static inference or Git transport support.
 
+## Bundled OpenShell admission
+
+The bundled OpenShell Credential Proxy Driver no longer accepts new protected
+static OpenAI sources, re-adoption of a saved source, or new protected revisions
+that use one. These requests return a resource-state conflict before preparing
+credentials for a new plan. Ask an Installation administrator to configure
+model access through a supported driver.
+
+Previously admitted revisions can continue under their existing authorization.
+The recorded owner still handles withdrawal and cleanup. Ordinary OpenAI sources
+managed only by the Credential Gateway are unaffected.
+
 ## Execution admission cutoff
 
 New protected revisions record version 3 admission, including the Driver identity and
@@ -124,8 +136,10 @@ client transformations; they do not reinterpret function-call argument data.
 
 ## Installation configuration
 
-Use the [protected local launch profile](../../guides/deploy/local-openshell-images.md#select-the-protected-profile)
-and the [OpenShell Backend and Sandbox configuration](../drivers/openshell-credential-gateway.md).
+For retained installations, consult the
+[OpenShell Backend and Sandbox configuration](../drivers/openshell-credential-gateway.md).
+These settings describe the existing installation and do not enable new bundled
+protected static inference admission.
 Select the same Driver ID in `backend[].drivers.credential_proxy` and the
 Installation's `drivers.credential_proxy` selection. Configuring only one is an
 error, not a request to disable protection. Startup also rejects the retired

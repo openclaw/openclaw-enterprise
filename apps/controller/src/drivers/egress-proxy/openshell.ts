@@ -28,6 +28,7 @@ import {
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RetryLaterError,
+  ResourceStateConflictError,
 } from "@openclaw-enterprise/occ";
 import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
 import { type OpenShellGateway, openShellWorkspaceName } from "../../backends/openshell.ts";
@@ -42,6 +43,20 @@ import {
 import { openAiStaticProvider } from "./openai-provider.ts";
 import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
 import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
+
+// Keep the exact provider available to settle already-admitted plans. Only new
+// source admission and new revision routes are retired in the bundled composition.
+function refuseRetiredStaticAdmission(): never {
+  throw new ResourceStateConflictError(
+    "Protected static OpenAI inference is retired. Ask an Installation administrator to configure model access through a supported driver.",
+  );
+}
+
+const retiredOpenAiStaticProvider: CredentialProviderDefinition = Object.freeze({
+  ...openAiStaticProvider,
+  normalizeConfig: refuseRetiredStaticAdmission,
+  routes: refuseRetiredStaticAdmission,
+});
 
 /** Whether `registration` is a registered supervisor middleware advertising no execution capability. */
 function registeredWithoutExecution(extensions: unknown, registration: string): boolean {
@@ -356,7 +371,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
       resolver: { id: `${selection.id}/resolver`, generation: 1 },
       providers: [
-        openAiStaticProvider,
+        retiredOpenAiStaticProvider,
         credentialFreeMetadataProvider,
         ...(selection.preparedProviders ?? []),
       ],
