@@ -23,7 +23,7 @@ import {
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
-import { confirmAgentAction } from "./console-action-helpers.mjs";
+import { confirmAgentAction } from "./console-action-helpers.ts";
 import {
   focusedLabel,
   fulfillMethod,

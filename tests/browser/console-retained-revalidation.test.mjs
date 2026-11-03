@@ -18,7 +18,7 @@ import {
   stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { confirmAgentAction } from "./console-action-helpers.mjs";
+import { confirmAgentAction } from "./console-action-helpers.ts";
 import {
   heldView,
   refocus,

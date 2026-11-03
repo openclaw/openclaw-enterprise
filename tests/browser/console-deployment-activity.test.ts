@@ -21,7 +21,7 @@ import {
   waitForIdleFetches,
   trackSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
-import { responseTo } from "./console-action-helpers.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 
 // The real controller admits and authorizes the deployment. The fixture has no
 // worker: change only its exact work lookup/lease, then its revision lookup.
