@@ -8,7 +8,7 @@ Use the Console or API to discover Linear, enable it on your existing Codex Agen
 
 ## Before you start
 
-Complete one installation setup path: [local k3d](../deploy/local-setup.md), [Kubernetes](../deploy/kubernetes-setup.md), or [Amazon EKS](../deploy/eks-openshell-setup.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of setup. Use the same Agent and model Secret. The service account must already have an authorized Linear connection. Selecting a plugin does not authorize a new connection.
+Complete [Deploy your first Agent](../deploy/deploy-first-agent.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of the guide. Use the same Agent and model Secret. The service account must already have an authorized Linear connection. Selecting a plugin does not authorize a new connection.
 
 ## 1. Enable Linear and redeploy
 

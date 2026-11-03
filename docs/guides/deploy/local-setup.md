@@ -4,9 +4,9 @@ tags: [human_verified]
 
 # Set up OCE locally with OpenShell and Codex
 
-Install OpenClaw Enterprise (OCE) in a private k3d cluster and verify a Codex Agent conversation before [adding Git](../repository-credentials/openshell-git-push.md) or [plugins](../integrations/codex-plugins.md).
+Install OpenClaw Enterprise (OCE) in a private k3d cluster.
 
-[Create your first Agent](#5-create-the-configuration-and-agent) after installation.
+After installation, [deploy your first Agent](deploy-first-agent.md).
 
 ## Before you start
 
@@ -137,7 +137,7 @@ helm --kube-context "$CONTEXT" upgrade openclaw-enterprise deploy/helm/openclaw-
 
 If your network intercepts HTTPS, [install its approved public CA in the OpenShell supervisor](local-openshell-images.md#trust-an-upstream-ca-on-local-k3d).
 
-## 4. Connect to the API and register the model credential
+## 4. Prepare the operator session
 
 Set the common operator session inputs. REST paths are relative to the API root; the helper sends authenticated requests through the selected API Pod. It does not use the browser URL for API authentication.
 
@@ -170,6 +170,6 @@ TENANT_NAMESPACE=$(kube get ns -l "openclaw.dev/namespace=$namespace" -o json |
 
 The [operator session reference](quickstart-session.md) defines these inputs and helpers. Keep tracing off. If a mutation times out, read back its state before retrying.
 
-<Snippet file="../../snippets/openshell-quickstart/agent-setup.md" />
+Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 
-Continue to [Add Git](../repository-credentials/openshell-git-push.md) or [Add Plugin](../integrations/codex-plugins.md). To finish, [delete the Agent](quickstart-delete-agent.md), then [clean up this installation](local-cleanup.md).
+To finish, [delete the Agent](quickstart-delete-agent.md), then [clean up this installation](local-cleanup.md).

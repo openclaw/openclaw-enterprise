@@ -1,8 +1,10 @@
----
-published: false
----
+# Deploy your first Agent
 
-Use one model source for this Agent. If the connected service account already has a ready Credential Gateway source, select it by its registered name and continue to step 5:
+Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace, browser origin, model and credential file from setup.
+
+## 1. Select or register the model credential
+
+Use one model source for this Agent. If the connected service account already has a ready Credential Gateway source, select it by its registered name and continue to step 2:
 
 ```bash
 name="openshell-codex-$(date +%s)"
@@ -25,13 +27,13 @@ jq --arg name "$name-model" '{name:$name,type:"codex-pat",secrets:{access_token:
 modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source")
 ```
 
-## 5. Create the Configuration and Agent
+## 2. Create the Configuration and Agent
 
 Register the model with a fail-closed loopback URL. The Gateway uses authenticated WebSocket transport to the dedicated Codex Harness inside OpenShell.
 
 Render the [Codex configuration template](../../snippets/openshell-quickstart/codex-configuration.jq) with `MODEL` and post its JSON to OCE.
 
-<Snippet file="./codex-configuration.jq" lang="jq" />
+<Snippet file="../../snippets/openshell-quickstart/codex-configuration.jq" lang="jq" />
 
 ```bash
 # POST $base/configurations: save the model, sandbox and Gateway settings.
@@ -76,7 +78,7 @@ request GET "$base/configurations/$cfg" |
   request PATCH "$base/configurations/$cfg" --data-binary @- > "$RUN_DIR/browser-configuration"
 ```
 
-## 6. Grant model access and deploy
+## 3. Grant model access and deploy
 
 Create one role scoped to credential sources. Bind that role to this Agent's principal for the model source only.
 
@@ -101,14 +103,14 @@ request POST "$base/agents/$agent/runtime-credentials" --data '{}' > "$RUN_DIR/t
 
 Open `$CONSOLE_ORIGIN/console/` and sign in with the administrator account from installation setup. Keep any required private browser port-forward running.
 
-Run `deployment_preflight` in the operator shell, then use **Deploy an existing Agent’s saved draft** below for the Agent created in step 5. Do not create another Agent. After clicking deploy, run:
+Run `deployment_preflight` in the operator shell, then use **Deploy an existing Agent’s saved draft** below for the Agent created in step 2. Do not create another Agent. After clicking deploy, run:
 
 ```bash
 revision='<deployment ID from the Console URL revision parameter>'
 wait_deployment "$revision"
 ```
 
-<Snippet file="./console-deployment-actions.md" />
+<Snippet file="../../snippets/openshell-quickstart/console-deployment-actions.md" />
 
 </Accordion>
 <Accordion title="CLI">
@@ -126,7 +128,7 @@ Continue when the deployment reports `succeeded` and the Agent's `activeRevision
 
 <a id="7-verify-a-turn-through-openclaw"></a>
 
-## 7. Complete onboarding in the Control UI
+## 4. Complete onboarding in the Control UI
 
 Before sending the first prompt, use the operator shell to check the bootstrap file in this Agent's workspace. This check needs permission to list Pods and execute a command in the tenant namespace.
 
@@ -163,3 +165,5 @@ save_session
 ```
 
 Run the two commands printed by `save_session` to resume in a fresh Bash shell. The private session saves IDs and paths; the service key stays in its protected file. Keep this Agent running. Git and plugins are optional: add either first, then the other to this same Agent.
+
+On Amazon EKS, [verify workspace routing](eks-openshell-setup.md#verify-workspace-routing). To extend this Agent, continue to [Git](../repository-credentials/openshell-git-push.md) or [Plugins](../integrations/codex-plugins.md).
