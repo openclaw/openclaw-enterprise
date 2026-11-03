@@ -5,8 +5,8 @@ Record the starting state of a production installation before you run the
 [upgrade checklist](upgrade-checklist.md#record-the-starting-state) lists what to
 record; this page gives commands for its Helm, Kubernetes, OCC, PostgreSQL and
 workspace items. The upgrade helper keeps its own evidence of the release it
-changes. This baseline is what you compare against after the upgrade and use if
-you must restore.
+changes. Use the baseline to compare state after the upgrade and to rehearse a
+database restore before maintenance.
 
 ## Set the inputs
 
@@ -146,53 +146,103 @@ pg_dump --format=custom --file "$BASELINE/openclaw_enterprise.pgdump" "$OCC_MIGR
 pg_restore --list "$BASELINE/openclaw_enterprise.pgdump" >/dev/null
 ```
 
-`migrations.txt` holds the migration receipts. `pg_restore --list` only checks
-that the dump is readable. Before relying on the backup, restore it into a
-separate disposable database. Provision the required roles first, and use an
-identity authorized to restore ownership and grants. Set `RESTORE_DATABASE_URL`
-to that database privately. Use a `pg_dump` at least as new as the server.
+`migrations.txt` holds the pre-upgrade migration receipts. `pg_restore --list`
+checks that the dump is readable. Rehearse the restore in a separate, empty,
+disposable database before maintenance. Provision the required roles first and
+use an identity authorized to restore ownership and grants. Set
+`RESTORE_DATABASE_URL` to that database privately. Keep passwords in the
+protected password file because the PostgreSQL clients take URLs as arguments.
+Use a `pg_dump` at least as new as the source server and `pg_restore` from the
+same PostgreSQL client release. Stop the rehearsal if any command fails.
 
 ```bash
 pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" -- \
   "$BASELINE/openclaw_enterprise.pgdump"
 ```
 
-A failed upgrade gate leaves committed writes in the candidate database.
-Keep writers stopped, reconcile accepted operations and take a fresh full dump
-of the candidate. Retain the original while you restore the fresh archive to
-a separate empty database. Keep passwords in the protected password file
-because the restore URL is a process argument.
-
-A pre-upgrade archive can restore successfully to an empty database while
-omitting later writes. Never add `--clean` or drop schemas to restore over the
-candidate. Compare the restored Agent revisions, active selections, audit
-rows and other required data with the retained candidate before switching
-writers. Verify Gateway and workspace volumes and older-image compatibility
-separately.
-
 Keep normal ownership and ACL restoration; do not use `--no-owner` or
 `--no-acl`. Set `RESTORED_MIGRATION_DATABASE_URL` privately to the dedicated
 migrator login for that same restored database. From the root of a checkout of
-the matching release, install its dependencies and run:
+the pre-upgrade release, install its dependencies and run:
 
 ```bash
 pnpm install --frozen-lockfile
 OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" pnpm db:migrate:production --check
 ```
 
-Require exit 0, `migration.checked`, and the expected `history`. Compare all
-receipts with the baseline:
+Require exit 0, `migration.checked`, and the expected pre-upgrade `history`.
+Compare the rehearsal database's receipts with the pre-upgrade receipts:
 
 ```bash
-psql "$RESTORED_MIGRATION_DATABASE_URL" -At \
-  -c 'SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id' |
-  diff -u "$BASELINE/migrations.txt" -
+(
+  set -euo pipefail
+  psql "$RESTORED_MIGRATION_DATABASE_URL" -At \
+    -c 'SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id' |
+    diff -u "$BASELINE/migrations.txt" -
+)
 ```
 
-Compare the data you must retain with the appropriate baseline. The [catalog boundary](../../reference/settings/operations.md#migration-history)
-recognizes one reviewed logical-restore equivalent. A successful check does not
-prove backup completeness or provenance, and does not authorize a launch,
-recovery, or retry. Do not restore over the original database.
+Compare the data you must retain with the pre-upgrade baseline. The
+[migration history check](../../reference/settings/operations.md#migration-history)
+recognizes a reviewed logical restore of the catalog. A successful check does
+not prove backup completeness or provenance or authorize a launch, recovery,
+or retry. Do not restore over the original database.
+
+## Restore the retained candidate database
+
+If an upgrade gate fails after the candidate accepts writes, keep writers
+stopped and retain the candidate database. Reconcile accepted and uncertain
+operations before capture. A pre-upgrade archive can restore successfully and
+omit those writes. Take a fresh archive and receipt snapshot while writers
+remain stopped.
+
+Use the protected password file, TLS settings and PostgreSQL clients from the
+rehearsal. Set `CANDIDATE_MIGRATION_DATABASE_URL` privately to the retained
+candidate database's `occ_migrator` login. Provision the required roles on the
+target PostgreSQL server and create a separate, empty database. Confirm that
+`RESTORE_DATABASE_URL` and `RESTORED_MIGRATION_DATABASE_URL` both name that
+target, using the restore identity and dedicated migrator respectively.
+Preserve ownership and grants.
+Keep the candidate intact. Do not restore over it, add `--clean`, or drop schemas.
+
+Run the block with Bash and jq from the root of the candidate release checkout
+with its dependencies installed. Set `EXPECTED_CANDIDATE_HISTORY` from the
+reconciled migration state. Use `completed` if the candidate applied all its
+migrations. Keep shell tracing disabled. The block stops on a failed command,
+unexpected history, or different receipts.
+
+```bash
+(
+  set -euo pipefail
+  umask 077
+  : "${CANDIDATE_MIGRATION_DATABASE_URL:?}" "${RESTORE_DATABASE_URL:?}"
+  : "${RESTORED_MIGRATION_DATABASE_URL:?}" "${EXPECTED_CANDIDATE_HISTORY:?}"
+  CANDIDATE_RETURN=$(mktemp -d /secure/occ/upgrades/candidate-return.XXXXXXXX)
+  printf 'Candidate recovery evidence: %s\n' "$CANDIDATE_RETURN"
+  psql "$CANDIDATE_MIGRATION_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 \
+    -c 'SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id' \
+    >"$CANDIDATE_RETURN/candidate-migrations.txt"
+  pg_dump --format=custom --file "$CANDIDATE_RETURN/candidate.pgdump" "$CANDIDATE_MIGRATION_DATABASE_URL"
+  pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" -- \
+    "$CANDIDATE_RETURN/candidate.pgdump"
+  NODE_ENV=production OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" \
+    node scripts/migrate-production.mjs --check >"$CANDIDATE_RETURN/restored-history.json"
+  jq -se --arg expected "$EXPECTED_CANDIDATE_HISTORY" \
+    'length == 1 and .[0].event == "migration.checked" and .[0].history == $expected' \
+    "$CANDIDATE_RETURN/restored-history.json" >/dev/null
+  psql "$RESTORED_MIGRATION_DATABASE_URL" -XAt -v ON_ERROR_STOP=1 \
+    -c 'SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id' \
+    >"$CANDIDATE_RETURN/restored-migrations.txt"
+  cmp "$CANDIDATE_RETURN/candidate-migrations.txt" "$CANDIDATE_RETURN/restored-migrations.txt"
+)
+```
+
+Compare the restored Agent revisions, selected revisions, audit records and
+other required data with the retained candidate. Confirm that the restored
+database contains the records for each accepted operation. Keep writers stopped
+if any required record differs or an operation remains uncertain. Verify Gateway
+and workspace volumes and compatibility with any older image before switching
+writers.
 
 ## Record Agent data
 

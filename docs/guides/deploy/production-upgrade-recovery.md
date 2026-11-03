@@ -136,7 +136,7 @@ If the candidate API and worker refuse to start because of
 the previous controller image after the check below.
 
 Before selecting an older image, verify it can read candidate state.
-[Restore and compare committed writes](upgrade-baseline.md#record-the-database) if needed.
+[Restore the retained candidate database](upgrade-baseline.md#restore-the-retained-candidate-database) if needed.
 Preserve Agents, versions, PVCs and the bootstrap volume.
 After return, [check the original conversation](production-handoff.md#check-conversation-continuity).
 
