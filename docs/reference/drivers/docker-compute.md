@@ -28,12 +28,15 @@ host credentials. Docker Compute cannot be selected for production.
   volume.
 
 `scripts/dev-up` is the supported Podman entry point. It auto-detects Podman
-without a `docker` alias, pins the standalone `podman-compose` provider, mounts
+without a `docker` alias, requires and pins the standalone `podman-compose`
+provider, and `occ dev down` stops the stack with that same provider. It mounts
 the reported API socket through `compose.podman.yaml`, and preserves the
 driver's existing `/var/run/docker.sock` contract inside the worker. The
 Docker Compute worker disables SELinux process labeling because relabeling the
 host engine socket could disrupt the engine; the API, database, initializer,
-and migration services remain confined. The prior verified
+and migration services remain confined. Rootful Podman on Linux must expose its
+API socket (for example, `systemctl enable --now podman.socket`); the Compose
+provider reaches Podman through the `DOCKER_HOST` endpoint startup pins. The prior verified
 baseline is Podman client 6.1.0, server 5.7.1, and podman-compose 1.6.0. Prior
 Podman runtime proof covered control-plane startup, worker API preflight,
 authenticated Installation access, isolated Namespace networks, embedded and
@@ -123,6 +126,11 @@ not build, download, or publish runtime images. Missing image references,
 unsupported Harness combinations, unavailable container-engine access, failed
 transport authentication, or unready containers fail closed.
 
+To upgrade OpenClaw, deploy the Agent with a different gateway image. As on
+Kubernetes, the gateway starts OpenClaw and its state migration with
+`OPENCLAW_NO_AUTO_UPDATE=1`: OpenClaw does not check for updates, send its
+installation count request, or install updates.
+
 Container image references must already resolve in the selected engine. The
 development Driver accepts tags as well as digests; production Kubernetes
 digest requirements do not imply that the local engine enforces immutable
@@ -148,11 +156,26 @@ Driver retains the Agent-owned state and workspace volumes used for initial
 workspace setup across stop and version replacement. Without initial workspace
 inputs, writable container tmpfs remains ephemeral.
 
+For a stateful embedded Gateway, the Driver can recover after an unclean stop
+if it observed the old container's private Linux PID namespace while it ran.
+Docker Engine must report that the same container instance exited, and the
+replacement must use the same local state volume. OpenClaw checks every
+recorded holder against that namespace before releasing its locks. If the
+Driver lost its observation or the holders do not match, follow
+[operator recovery](../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+
+The Driver kills an observed embedded Gateway to record its exit. It stops
+every other container before removal: Docker sends SIGTERM and sends SIGKILL
+after 10 seconds. A Gateway that exits on SIGTERM releases its OpenClaw state
+lock, so its replacement needs no recovery. This includes a Gateway that the
+Driver did not observe, for example after a controller restart. If the stop
+fails, the Driver still removes the container and reports the stop failure.
+
 State on that volume outlives runtime image upgrades. Before OpenClaw starts,
-the gateway runs the same agent database migration as a
+the gateway runs the same state migration as a
 [Kubernetes Gateway](kubernetes-compute/storage-and-credentials.md#gateway-storage):
 `openclaw doctor --fix --non-interactive` once, with the configuration
-read-only, when an agent database uses an older schema. If a database is still
+read-only, when its shared state or an agent database uses an older schema. If a database is still
 older afterwards, the container logs `Gateway state migration failed` and exits
 without starting OpenClaw, and the deployment fails as an unready container.
 The Driver then removes the container, so Doctor's output survives only
@@ -172,8 +195,10 @@ published port cannot reach while the healthcheck on loopback passes: a
 
 The container implementation renders `gateway.auth.mode: password` when native
 Configuration omits the mode. Explicit `password` and `trusted-proxy` are supported.
-Only supported authentication fields and modes are admitted. These rules do not
-remove the harness-authentication admission limit above.
+Only supported authentication fields and modes are admitted: deployment refuses
+another mode, such as `token` or `none`, or an unsupported field, such as
+`gateway.auth.token`, with `409` before it stops the running revision. These rules
+do not remove the harness-authentication admission limit above.
 
 With password mode, omitting `gateway.auth.password` selects the managed
 `OPENCLAW_GATEWAY_PASSWORD` reference. An explicit reference to that variable also
@@ -181,7 +206,8 @@ selects a managed password, including optional loopback access with trusted prox
 For either mode, a new container receives a new managed password; a reused healthy
 container keeps its value. Other explicit password settings are preserved and
 receive no Driver-generated password. Configuration API secret-reference rules
-still apply. Trusted proxy without a password reference receives no managed
+still apply: save and deployment refuse a password SecretRef that OpenClaw cannot
+read, such as one without a provider. Trusted proxy without a password reference receives no managed
 password. The dedicated Codex `APP_SERVER_TOKEN` remains a separate transport
 credential with its existing recovery checks.
 
@@ -198,8 +224,15 @@ locations and disabled native bootstrap are rejected.
 A separate setup container runs native initialization and writes the supplied
 files and completion marker before execution starts. Later startup checks the
 marker without replaying the original text. Missing initialized storage blocks
-startup. Stop, container replacement, and redeployment retain both volumes;
-Agent or Namespace deletion removes them after the owned runtimes are removed.
+startup. Native setup holds the OpenClaw state lock on the state volume.
+Preparation never stops a running setup container, because a killed setup
+leaves its lock. A setup still running after 120 seconds keeps the deployment
+pending within its convergence deadline. A failed Docker request while setup
+starts or during that wait fails that attempt; if setup is still running, the
+next attempt reports the deployment pending. Once setup exits, the next attempt
+removes the container and continues. Stop, container replacement, and
+redeployment retain both volumes; Agent or Namespace
+deletion removes them after the owned runtimes are removed.
 These Driver-created volumes are separate from Compose's control-plane volumes
 and are not removed by `compose down --volumes`.
 

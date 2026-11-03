@@ -1,10 +1,10 @@
+import { waitFor } from "../helpers/wait-for.mjs";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { Pool } from "pg";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
 import { exerciseInstallationRequests } from "../helpers/openshell-installation-github-requests.ts";
@@ -23,11 +23,12 @@ import {
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
-import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
+import { clockBehind, preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import {
   expireStoppedClaims,
+  makeWorkDue,
   waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
@@ -64,8 +65,7 @@ test(
   { ...requiresPostgres, timeout: 385_000 },
   async (t) => {
     let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
-    const issuanceReader = new Pool({ connectionString: databaseUrl, max: 1 });
-    t.after(() => issuanceReader.end());
+    const issuanceReader = testPool(t, { connectionString: databaseUrl, max: 1 });
     const activeAtIssuance: (string | null)[] = [];
     // Observe each token POST at the supplier boundary, including the interval between
     // Compute returning ready and activation committing. Never use the worker's transaction.
@@ -119,6 +119,16 @@ test(
             beforeIssue,
             driver: protectedGit.owner.ref,
             installationAccess: true,
+            // GitHub issues tokens by the system clock: 68 s for the first, 80 s for its successor.
+            // The owner's wall clock reads 58 s behind, inside the 60 s skew allowance, so it still
+            // finds its unchanged 60 s minimum validity after the skew (68 + 58 - 60 = 66 s).
+            // PostgreSQL and every Date.now() check keep real time: the first token is usable for
+            // 8 s (expiry minus the skew), which covers the first transfer, and its retirement below
+            // still waits for its real expiry plus the skew; that wait ends soon after the admission
+            // deadline. The successor is usable for 20 s: the second transfer, API requests and
+            // withdrawal all happen inside it.
+            tokenLifetimeMs: (index) => (index === 1 ? 68_000 : 80_000),
+            ownerClock: clockBehind(58_000),
           })),
           requestedBinding: {
             repositoryRef: "team-installation",
@@ -135,6 +145,14 @@ test(
     const authority = prepared.protectedGit!;
     await protectedGit.owner.requireRepositoryGitTransport()(authority);
     assert.ok(predecessor);
+    const persisted = await f.state.read((view) =>
+      view.revisions.findRevision(revision.namespaceId, revision.agentId, revision.id),
+    );
+    assert.deepEqual(persisted?.executionAdmission, { version: 5, mode: "protected" });
+    assert.equal(persisted.egressPlan?.repositoryGitAuthorization, "online-request");
+    const workKey = `agent_revision:${revision.id}:reconcile`;
+    const activationOrder: string[] = [];
+    let heldStopped: Promise<void> | undefined;
     const preparationClaims: string[] = [];
     let oid = peer.oid;
     const workspace = kubernetesNamespaceName(revision.namespaceId);
@@ -248,6 +266,16 @@ test(
     let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
     const compute = {
       ...f.compute,
+      activationOrder: "afterCommit" as const,
+      async activateRevision(r: AgentRevision) {
+        assert.equal(r.id, revision.id);
+        activationOrder.push("activate");
+      },
+      async retireRevision(r: AgentRevision) {
+        assert.equal(r.id, predecessor.id);
+        activationOrder.push("retire predecessor");
+        await f.compute.retireRevision();
+      },
       validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
       validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
       async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
@@ -388,8 +416,16 @@ test(
               undefined,
             );
             const observed = await f.compute.prepareRevision(r);
-            return { ...observed, ready: preparationClaims.length === 3 };
+            return {
+              ...observed,
+              ready: false,
+              ...(preparationClaims.length === 3 && {
+                heldForRepositoryGitMaterial: true,
+                pendingReason: "REPOSITORY_GIT_ROUTE_PENDING" as const,
+              }),
+            };
           }
+          activationOrder.push("serving");
           return f.compute.prepareRevision(r);
         } catch (error) {
           preparationFailure ??= error;
@@ -415,13 +451,29 @@ test(
         }
       },
     };
-    type Event = { event?: string; code?: string; reason?: string };
+    type Event = {
+      event?: string;
+      code?: string;
+      reason?: string;
+      workId?: string;
+      outcome?: string;
+    };
     const events: Event[] = [];
     const start = () =>
       f.start(compute, {
         emit: (e?: Event) => {
           if (e && e.event !== "worker.health") {
             events.push(e);
+            if (
+              e.event === "worker.completed" &&
+              e.workId === workKey &&
+              e.code === "REPOSITORY_GIT_ROUTE_PENDING"
+            ) {
+              heldStopped = f.stop();
+            }
+            if (e.event === "worker.completed" && e.workId === workKey && e.outcome === "success") {
+              activationOrder.push("complete");
+            }
           }
         },
         transformDrivers: (d: { installation: { drivers: object } }) => ({
@@ -453,10 +505,16 @@ test(
     const evaluate = (upload: boolean) => evaluateRequest(inspected(upload));
     const known = () => f.state.read((v) => v.repositorySessions.findStandingExecution(key));
     const attempts = () => f.state.read((v) => v.repositorySessions.listRevisionAttempts(key));
+    // Only this Agent's rows: the database may hold an earlier run's.
     const uses = async () =>
       (
         await f.observerPool.query(
-          "select operation,material_version,attempt_id,send_start_by,authorization_reply_by from occ.prepared_repository_git_uses order by exchange_id",
+          `select operation,material_version,attempt_id,send_start_by,authorization_reply_by
+           from occ.prepared_repository_git_uses
+           where admission_id in (select admission_id from occ.repository_session_attempts
+             where namespace_id=$1 and agent_id=$2)
+           order by exchange_id`,
+          [revision.namespaceId, revision.agentId],
         )
       ).rows;
     const absent = () => {
@@ -490,11 +548,32 @@ test(
     try {
       originCallsBeforeActivation = peer.originCalls();
       await start();
+      await waitFor("held candidate pass", async () => (heldStopped ? true : undefined));
+      // The completion callback stops polling before another preparation can report serving.
+      assert.ok(heldStopped);
+      await heldStopped;
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      const heldWork = await f.observerPool.query(
+        "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key=$1",
+        [workKey],
+      );
+      assert.deepEqual(heldWork.rows, [{ state: "queued", attempt_count: 0 }]);
+      assert.equal(
+        activationOrder.length,
+        0,
+        "held candidate must not activate or retire its predecessor",
+      );
+      await makeWorkDue(f.observerPool, workKey);
+      await start();
       try {
         await f.work(revision, "succeeded");
       } catch (error) {
         throw preparationFailure ?? error;
       }
+      await waitFor("original deployment completion", async () =>
+        activationOrder.includes("complete") ? true : undefined,
+      );
+      assert.deepEqual(activationOrder, ["serving", "activate", "retire predecessor", "complete"]);
       assert.equal(preparationFailure, undefined);
       assert.equal(preparationClaims.length, 3);
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
@@ -607,7 +686,7 @@ test(
       // This provider would refuse DELETE for an expired credential. No such request is
       // needed after the authenticated expiry plus the owner's full clock-skew allowance.
       gh.setRevokeStatus(401);
-      await delay(Math.max(0, Math.max(issue1.expires + 60_100, deadline) - Date.now()));
+      await delay(Math.max(0, Math.max(issue1.expires, deadline) + 100 - Date.now()));
       assert.ok(Date.now() > Math.max(issue1.expires, deadline, world.gitExpiresAt));
       const signal = AbortSignal.timeout(15_000);
       const id = { bindingId, sandboxId, workspace, requestId: "expired" };
@@ -634,6 +713,25 @@ test(
         "cold observation does not claim a new fence",
       );
       assert.equal(await runtime.lookup(id, signal), undefined);
+      // Only this Agent's attempts: the database may hold an earlier run's.
+      const custody = () =>
+        f.observerPool
+          .query(
+            `SELECT a.state,a.custody,a.sealed IS NULL AS erased
+             FROM occ.prepared_github_attempts a JOIN occ.prepared_github_families f USING (source_id)
+             WHERE f.source#>>'{session,namespaceId}'=$1 AND f.source#>>'{session,agentId}'=$2
+             ORDER BY a.provider_expires_at`,
+            [revision.namespaceId, revision.agentId],
+          )
+          .then((x) => x.rows);
+      // The admission has ended and GitHub's expiry has passed, but a GitHub clock behind
+      // PostgreSQL's could still accept the token. Inside the skew allowance, retirement neither
+      // sends a DELETE nor erases the sealed token; it waits.
+      await prepared.maintain();
+      assert.ok(Date.now() < issue1.expires + 60_000, "observed inside the skew allowance");
+      assert.deepEqual(await custody(), [{ state: "committed", custody: "retire", erased: false }]);
+      assert.equal(gh.trace.filter((x) => x.method === "DELETE").length, 0);
+      await delay(Math.max(0, issue1.expires + 60_100 - Date.now()));
       await start();
       await waitForRevisionPass(
         "same execution with a newly installed bounded successor",
@@ -665,12 +763,6 @@ test(
       assert.equal(gh.issuesOfTokens.length, 2);
       assert.deepEqual(activeAtIssuance, [revision.id, revision.id]);
       assert.ok(later > Math.max(deadline, issue1.expires + 60_000));
-      const custody = () =>
-        f.observerPool
-          .query(
-            "SELECT state,custody,sealed IS NULL AS erased FROM occ.prepared_github_attempts ORDER BY provider_expires_at",
-          )
-          .then((x) => x.rows);
       const expired = { state: "committed", custody: "expired", erased: true };
       assert.deepEqual(await custody(), [
         expired,

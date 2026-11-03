@@ -130,10 +130,12 @@ export function openShellGitRuntimeFixture({
   store,
   world,
   resolveDelivery = createGitHubRepositoryDeliveryResolver(registry),
+  onEvent,
 }: {
   store?: ReturnType<typeof routeStore>;
   world?: World;
   resolveDelivery?: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
+  onEvent?: (event: Readonly<Record<string, unknown>>) => void;
 } = {}) {
   const revision = Object.freeze({
     id: "rev-one",
@@ -376,6 +378,7 @@ export function openShellGitRuntimeFixture({
   runtime["emit"] = (event: Readonly<Record<string, unknown>>) => {
     events.push(event);
     logRuntimeEvent(event);
+    onEvent?.(event);
   };
   runtime["routes"] = store as unknown as OpenShellGitRuntime["routes"];
   if (store !== undefined && !store.rows.has(revision.id)) {

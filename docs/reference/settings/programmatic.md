@@ -126,7 +126,7 @@ Each selected Driver exposes its closed configuration schema and validates its
 own startup settings before OCC constructs the implementation. API operations
 are authorized against their exact Namespace or Configuration, OCC validates
 native Configuration semantics, and deployment deeply snapshots the complete
-document into immutable AgentRevisions. See
+document into AgentRevisions. See
 [Namespace configuration](../configuration.md) for CRUD, exact permissions,
 minimal RBAC, startup validation, version safety, and troubleshooting.
 Configuration Driver Kubernetes access is checked lazily during the first exact

@@ -7,7 +7,7 @@ Kubernetes context. For Secret-backed authentication, you or an Installation
 administrator must [grant the Agent access to the model Secret](#grant-the-agent-access-to-its-model-secret)
 before deployment.
 
-The command path below uses Bash, Python 3, kubectl, the OCC CLI, and Node.js 24
+The command path below uses Bash, Python 3, kubectl, the OCC CLI, and Node.js 24.22.1
 or newer for transport provisioning. If Node is unavailable, use the
 [console deployment workflow](../../reference/console/create-and-deploy.md) after
 preparing the Namespace. Its **Deploy new version** action provisions transport
@@ -94,7 +94,7 @@ deploying either example. Kubernetes Compute renders native trusted-proxy
 authentication for Console workspace access; the examples omit Driver-owned
 settings. Follow the [native authentication requirements](workspace-routing.md#configure-native-gateway-authentication)
 for proxy identity and NetworkPolicy isolation; do not trust arbitrary client
-addresses. The gateway password SecretRef enables the separate local model check.
+addresses.
 Dedicated Codex also requires the [matching runtime images](workspace-routing.md#runtime-prerequisite-for-separate-storage).
 
 Choose one runtime mode and write the matching Namespace-owned
@@ -255,6 +255,13 @@ give each model a compatible Harness policy. OCC validates the full selection
 and preserves its fallback order; mixed Harnesses are rejected. See
 [native runtime selection](../../reference/harness-execution.md#native-runtime-selection).
 
+If you customize `configuration.json` and plan to verify a local model reply,
+check these settings before saving it. The [OpenClaw TUI](#attach-with-the-openclaw-tui) uses the
+`values.gateway.auth.password` SecretRef shown in both examples. The
+loopback HTTP check also needs
+`values.gateway.http.endpoints.chatCompletions.enabled` set to boolean `true`.
+Agents using neither check can omit these settings.
+
 Post the Configuration and capture the server-generated ID:
 
 ```bash
@@ -286,6 +293,52 @@ AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(j
 AGENT_SERVICE_PRINCIPAL_ID="$(printf '%s' "$AGENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servicePrincipalId"])')" &&
 export AGENT_ID AGENT_SERVICE_PRINCIPAL_ID
 ```
+
+### Check saved settings for local model verification
+
+If you used either example unchanged, continue to the grant below. To use a
+local check with a reused or customized Configuration, check the settings that
+the saved Agent references before granting model Secret access or deploying.
+The caller needs `read` on the Agent and its Namespace Configuration. Set
+`AGENT_ID` to the saved Agent's ID and pass `tui` or `http`.
+
+```bash
+OCC_NAMESPACE="${NAMESPACE_ID:?}" python3 - "${AGENT_ID:?}" tui <<'PYTHON'
+import json, subprocess, sys
+
+agent_id, route = sys.argv[1:]
+if route not in ("tui", "http"):
+    sys.exit("Choose tui or http.")
+
+def read(kind, resource_id):
+    return json.loads(subprocess.check_output(
+        ["occ", kind, "get", resource_id, "--output", "json"],
+        stderr=subprocess.DEVNULL,
+    ))
+
+try:
+    configuration_id = read("agent", agent_id)["configurationId"]
+    if not isinstance(configuration_id, str) or not configuration_id:
+        sys.exit("The saved Agent has no readable Configuration ID.")
+    configuration = read("configuration", configuration_id)
+except (OSError, subprocess.CalledProcessError, KeyError, TypeError, ValueError):
+    sys.exit("Could not read the saved settings. Check the CLI setup, IDs, and read access.")
+
+try:
+    gateway = configuration["values"]["gateway"]
+    password = {"source": "env", "provider": "default", "id": "OPENCLAW_GATEWAY_PASSWORD"}
+    if configuration["kind"] != "agent" or gateway["auth"]["password"] != password:
+        sys.exit("Use the kind and gateway password SecretRef from the example.")
+    if route == "http" and gateway["http"]["endpoints"]["chatCompletions"]["enabled"] is not True:
+        sys.exit("Enable chat completions for the HTTP check.")
+except (KeyError, TypeError):
+    sys.exit("Add the missing settings for the chosen check.")
+print("Saved Configuration matches the chosen check.")
+PYTHON
+```
+
+A match confirms the saved fields. Complete the required grants and deployment,
+then [verify a model reply](#verify-production-workloads).
 
 ### Grant the Agent access to its model Secret
 
@@ -352,12 +405,20 @@ override a matching Restriction. See [Namespace IAM policy](../../reference/auth
 
 ### Prepare transport credentials and deploy
 
+Use a separate operator shell with the production `OCC_URL`, Namespace,
+resource IDs, and Kubernetes context. Set
+`OCC_SERVICE_KEY_FILE` to the private [service API key response file](../../reference/authentication/service-api-keys.md#issue-a-service-key)
+for a non-Agent service principal in this Namespace. An Installation
+administrator who covers its grants can issue the key, which uses the
+principal's current permissions. Leave the bootstrap copy in the Installation
+shell for [cleanup](#end-the-operator-session).
+
 For a draft Agent, **Deploy new version** generates missing transport
-credentials before its first version. API clients may call the endpoint below
-first. Keep `OCC_URL` and
-`OCC_SERVICE_KEY_FILE` from Installation bootstrap. The API derives the correct
-Secret placement for the Agent's execution mode and never returns credential
-values. It never rotates credentials.
+credentials before its first version. To prepare them separately, the caller
+needs `read` and `operate` on this exact Agent. The Agent must be active in a
+ready Namespace and have no prior revision. Compute creates the backing Secrets
+using the API's Kubernetes permissions. The API selects their placement for the
+Agent's execution mode, returns only status, and never rotates credentials.
 
 ```bash
 node --input-type=module <<'NODE'
@@ -390,14 +451,17 @@ for permissions and conflicts. Dedicated Agents keep the canonical transport
 token and Gateway password in separate control-plane Kubernetes Secrets. Compute
 projects only the app-server token to the Harness. Embedded Agents use their tenant-local bundle.
 
-Kubernetes gateways use trusted-proxy authentication. For direct operator
-loopback checks, explicitly select the generated Gateway password and native HTTP
-endpoint as described in [Model response verification](../operate/model-verification.md).
 Model authentication comes from the saved `harnessAuth` binding and is projected
 only into the model-executing workload. Slack tokens use separate Namespace
 Secrets; follow [Slack setup](../integrations/slack.md). Keep credential values
 out of Helm values, Installation YAML, Configurations, shell history, and this
 repository.
+
+Deployment requires `deploy` on this Agent and `read` on its saved
+Configuration. Both the caller and the Agent's service principal need `operate`
+on the model Secret and each Configuration `secretBindings` Secret. If Compute
+generates missing transport credentials on first deploy, the caller also needs
+Agent `read` and `operate`.
 
 Deploy the Agent and capture the Agent revision ID:
 
@@ -408,12 +472,13 @@ export REVISION_ID &&
 printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,os,sys; data=json.load(sys.stdin); expected={"id":os.environ["REVISION_ID"],"agentId":os.environ["AGENT_ID"],"configurationId":os.environ["CONFIGURATION_ID"]}; sys.exit("Revision does not match this Agent and Configuration." if any(data.get(k)!=v for k,v in expected.items()) else 0)'
 ```
 
-`occ` exits unsuccessfully when deployment is rejected and returns the created
-AgentRevision for structured output. If `configuration.json` includes OCC
-`secretBindings`, the caller and Agent service principal must have `operate` on
-every selected Secret before deploy. Binding changes are authorized by OCC IAM;
-Kubernetes RoleBindings only allow the API to materialize backing tenant
-Secrets. Wait for this version's [deployment status](../../reference/agents.md#deployment-status)
+`occ` exits unsuccessfully when deployment is rejected. After admission, it
+prints the new AgentRevision and checks its [deployment status](../../reference/agents.md#deployment-status).
+If the CLI says you cannot read the new revision, deployment was accepted.
+Ask an Installation administrator for `read` on that `agent_revision`, then
+check it without deploying again. OCC IAM authorizes binding
+changes. Kubernetes RoleBindings allow the API to materialize backing tenant
+Secrets. Wait for the revision's deployment status
 to become `succeeded` before the checks below; admission and a selected version
 alone do not prove workspace connectivity.
 

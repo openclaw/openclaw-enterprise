@@ -1,7 +1,5 @@
-import type { RepositoryGitDeliveryResolver } from "../credentials/delivery.ts";
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
 import type {
-  Backend,
   ErrorDetail,
   JSONSchema,
   RepositoryPolicyDriver,
@@ -13,8 +11,8 @@ import type {
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   githubInstallationProfile,
-  createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
+  resolveSelectedRepositoryScope,
   resolveGitHubStandingApprovalScope,
   validateGitHubRepositoryRegistry,
   type GitHubRepositoryRegistry,
@@ -60,21 +58,22 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   readonly capability = "repo" as const;
   readonly implementation = "github";
   readonly id: string;
-  readonly resolveDelivery: RepositoryGitDeliveryResolver;
   readonly #registry: GitHubRepositoryRegistry;
   readonly #duration: number;
   constructor(
-    backend: Backend<unknown>,
+    owner: { readonly driverId: string; readonly backendId: string },
     registry: GitHubRepositoryRegistry,
     options: { readonly sessionDurationSeconds: number },
   ) {
-    const id = backend.drivers.repo;
+    const { driverId: id, backendId } = owner;
     if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
       throw new Error("The GitHub Backend must declare its repository policy Driver.");
     }
     this.id = id;
-    this.#registry = validateGitHubRepositoryRegistry(registry, backend.id);
-    this.resolveDelivery = createGitHubRepositoryDeliveryResolver(this.#registry);
+    if (typeof backendId !== "string") {
+      throw new Error("The GitHub repository policy must declare its owning Backend.");
+    }
+    this.#registry = validateGitHubRepositoryRegistry(registry, backendId);
     if (
       !Number.isSafeInteger(options.sessionDurationSeconds) ||
       options.sessionDurationSeconds < 1 ||
@@ -140,7 +139,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       ) {
         throw new Error("invalid-bindings");
       }
-      return Object.freeze({
+      const resolved = Object.freeze({
         bindings: Object.freeze(
           input.bindings.map((entry) =>
             resolveGitHubRepositoryBinding(this.#registry, {
@@ -151,6 +150,10 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         ),
         sessionDurationSeconds: this.#duration,
       });
+      if (resolved.bindings.some((b) => b.profile === "github-repository")) {
+        resolveSelectedRepositoryScope(this.#registry, input.namespaceId, resolved.bindings);
+      }
+      return resolved;
     } catch {
       throw new ScopeViolationError(
         "The requested repository bindings are not permitted for this Namespace.",

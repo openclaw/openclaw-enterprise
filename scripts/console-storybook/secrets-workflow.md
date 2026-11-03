@@ -14,13 +14,21 @@ Kubernetes storage, credential delivery, or runtime consumption.
 4. Delete the unreferenced Secret after reviewing the confirmation. Verify that
    it leaves the list.
 5. Open **Consumers and restricted references**. Inspect the Agent link, other
-   IDs, hidden count, incomplete-list notice, and disabled deletion.
+   IDs, hidden count, incomplete-list notice, and disabled deletion. Check that
+   the previously listed Agent shows no identity or link and asks you to reopen
+   the Secret to check again, without claiming why it is no longer listed.
 6. Inspect **Missing value**, **Create denied**, **Replace denied**, **Unknown save
    outcome**, and **Concurrent reference conflict**. Uncertain submissions must
    remain disabled. Close, then refresh or inspect current state as instructed.
 7. Inspect **Empty**, **Loading**, **Read unavailable**, **No readable Namespace**,
-   and **Namespace provisioning**. Repeat the creation and deletion controls in
-   **Mobile** at 390 × 844.
+   and **Namespace provisioning**. In **Create not permitted**, Create Secret is
+   disabled and the access note under the toolbar is its description.
+8. In **Mobile** (390 × 844), open the single search result, then **Replace value**.
+   The header and sheet reach the right edge without an empty strip. Press Escape,
+   clear **Search Secrets**, scroll to the last Secret, and open it. A classic
+   scrollbar takes its usual space; an overlay scrollbar takes no extra width.
+   Escape returns focus to the Secret you opened. Repeat creation and deletion
+   in this phone layout.
 
 Capture final desktop/mobile screenshots, consumer and failure states, and a
 short create/replace/delete recording outside the checkout. Record the tested

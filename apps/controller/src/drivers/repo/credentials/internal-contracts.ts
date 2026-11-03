@@ -1,4 +1,9 @@
-import type { CredentialService, SessionStatus } from "./service-contracts.ts";
+import type {
+  CredentialService,
+  RepositoryCredentialBoundSessionInput,
+  RepositoryCredentialSessionResult,
+  SessionStatus,
+} from "./service-contracts.ts";
 import type {
   Bounds,
   Denied,
@@ -12,7 +17,8 @@ import type {
 declare const exchangeIdentity: unique symbol;
 export type ExchangeRef = Readonly<{ [exchangeIdentity]: true }>;
 export interface DispatchGate {
-  dispatch<T>(cancel: () => void, open: () => T): T;
+  /** Check transport viability synchronously before committing the first write. */
+  dispatch<T>(cancel: () => void, open: () => T, assertReady?: () => void): T | Promise<T>;
   track(io: Promise<void>): void;
 }
 export type ExchangeOutcome =
@@ -33,7 +39,15 @@ export interface RunningListeners {
   stopAdmission(): void;
   close(): Promise<void>;
 }
+/** Non-secret identifiers of the session a bearer opened, for operator logs only. */
+export type SessionLogIdentity = Readonly<{
+  sessionId: string;
+  namespaceId?: string;
+  repositoryRef?: string;
+}>;
 export interface ExchangeService {
+  /** The open session this bearer authenticates, if any; never the bearer or a credential. */
+  identify(bearer: string): SessionLogIdentity | undefined;
   reserve(bearer: string, head: RequestHead, signal: AbortSignal): ExchangeRef | Denied;
   plan(exchange: ExchangeRef): RequestPlan;
   execute(
@@ -45,5 +59,12 @@ export interface ExchangeService {
 }
 /** One runtime owner supplies both views; no separate lifecycle is introduced. */
 export interface CredentialServiceOwner extends CredentialService, ExchangeService {
+  /** Hold local capacity and the resolved grant without constructing a backend. */
+  prepareOpen(input: RepositoryCredentialBoundSessionInput): {
+    open(
+      authorizeStanding?: (sessionId: string) => Promise<void>,
+    ): RepositoryCredentialSessionResult;
+    cancel(): void;
+  };
   observeDisposal(observer: (status: SessionStatus) => void): () => void;
 }

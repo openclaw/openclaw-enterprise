@@ -68,7 +68,7 @@ var k3dLegacyNATFailure = regexp.MustCompile(`(?i)can't initialize iptables|ipta
 // Causes k3d's output can name that a missing nat table does not explain.
 // k3d's own startup timeout ("context deadline exceeded") is not one: a
 // node that cannot load the nat table fails exactly that way.
-var k3dOtherFailure = regexp.MustCompile(`(?i)x509|certificate|tls:|status code '?\d{3}|\b404\b|no such host|server misbehaving|i/o timeout|Client\.Timeout|handshake timeout|pull access denied|manifest unknown|failed to pull|ErrImagePull|ImagePullBackOff|port is already allocated|driver failed programming external connectivity`)
+var k3dOtherFailure = regexp.MustCompile(`(?i)x509|certificate|tls:|status code '?\d{3}|\b404\b|no such host|server misbehaving|i/o timeout|Client\.Timeout|handshake timeout|pull access denied|manifest unknown|failed to pull|ErrImagePull|ImagePullBackOff|port is already allocated|driver failed programming external connectivity|all predefined address pools have been fully subnetted`)
 
 // defaultK3sChannel is the Compose profile's node image without OpenShell;
 // k3d resolves it through update.k3s.io.

@@ -1,6 +1,6 @@
 // OpenClaw's compatibility selectors for OpenRouter's auto router and free models name the
 // openrouter provider without a slash, trimmed and in any case (`model-selection-normalize.ts`
-// and `model-policy-ref.ts` at the OPENCLAW_COMMIT in deploy/runtime/Dockerfile). Update this
+// and `model-policy-ref.ts` at the commit in deploy/runtime/openclaw-source.json). Update this
 // when that pin changes.
 const OPENROUTER_COMPAT_SELECTOR = /^\s*openrouter:(auto|free)\s*$/i;
 

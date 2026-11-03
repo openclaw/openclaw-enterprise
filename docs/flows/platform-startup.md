@@ -16,7 +16,7 @@ its Backend client and Driver. PostgreSQL-backed development uses the
 Docker Compute Driver by default, while the development filesystem
 Configuration Driver is API-only. The singleton invariant is the selected Driver
 identity, not JavaScript object identity. This trace ends when the API accepts
-requests and the worker begins polling durable work.
+requests and the worker starts polling PostgreSQL for queued operations.
 
 ## Entry Points
 
@@ -48,7 +48,7 @@ graph TD
   subgraph API["OCC API process"]
     A["startApi validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
     B --> C["Compose authorized OCC and Fastify"]
-    C --> E["Listen for requests and enqueue durable work"]
+    C --> E["Accept requests and queue controller operations"]
   end
 
   subgraph Worker["Controller worker process"]
@@ -68,7 +68,7 @@ graph TD
   D --> C
   D --> H
   E -->|persist lifecycle work| D
-  D -->|claim durable work| I
+  D -->|claim queued operations| I
   I -->|provision Namespace infrastructure| N
   I -->|prepare each deployed Agent's gateway| J
   I -->|development or production AgentRevision work| K

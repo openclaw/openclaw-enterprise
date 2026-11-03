@@ -22,6 +22,7 @@ import {
 } from "../../scripts/migration-catalog.mjs";
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -846,8 +847,7 @@ test(
     // The migration command reads only the logging section of the Installation startup file,
     // through the controller's own startup reader. A file the controller would refuse fails the
     // command with no migration output and the usual single structured failure line.
-    const configDirectory = await mkdtemp(join(tmpdir(), "occ-migration-config-"));
-    context.after(() => rm(configDirectory, { recursive: true, force: true }));
+    const configDirectory = await temporaryDirectory(context, "occ-migration-config-");
     const startupFile = async (name, contents) => {
       const path = join(configDirectory, name);
       await writeFile(path, contents, "utf8");
@@ -1319,7 +1319,7 @@ async function assertCompletedHistory(db, previous = []) {
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
   const receipts = await historyReceipts(db.migrator);
-  assert.equal(receipts.length, 63);
+  assert.equal(receipts.length, manifest.entries.length);
   await assertCredentialSchemaPrivileges(db.app);
   assert.deepEqual(receipts.slice(0, previous.length), previous);
   const providerEntries = manifest.compatibleLineages.providerCompleted.entries;
@@ -1843,6 +1843,20 @@ async function assertUpgradedRevisionReadable(db) {
 
 async function canonicalData(db) {
   const result = { presets: [] };
+  const migrationOwnedColumns = {
+    account: ["authentication_version", "identity_only"],
+    agents: [
+      "repository_bindings",
+      "repository_access",
+      "harness_auth_credential_source_id",
+      "plugin_approvers",
+      "credential_sources",
+      "sandbox_policy_editing",
+      "gateway_managed_mode",
+    ],
+    agent_revisions: ["gateway_managed_mode"],
+    controller_work: ["work_kind"],
+  };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
   for (const table of [
@@ -1864,27 +1878,12 @@ async function canonicalData(db) {
     "session",
     ...(hasPresets ? ["presets"] : []),
   ]) {
-    const ignoredColumns =
-      table === "account"
-        ? ["authentication_version", "identity_only"]
-        : table === "agents"
-          ? [
-              "repository_bindings",
-              "repository_access",
-              "harness_auth_credential_source_id",
-              "plugin_approvers",
-              "credential_sources",
-              "sandbox_policy_editing",
-            ]
-          : table === "controller_work"
-            ? ["work_kind"]
-            : [];
     result[table] = (
       await db.app.query(
         // New migration-owned compatibility columns may be defaulted onto
         // existing rows; every previously stored field must remain identical.
         `SELECT to_jsonb(t) - $1::pg_catalog.text[] AS value FROM occ."${table}" t ORDER BY to_jsonb(t)::pg_catalog.text`,
-        [ignoredColumns],
+        [migrationOwnedColumns[table] ?? []],
       )
     ).rows;
   }
@@ -1990,6 +1989,8 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preGatewayManagedMode"],
+      [64, "preSelectedRepositorySet"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2015,6 +2016,28 @@ test(
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
         await assertUpgradedAuthentication(db);
+        if (history === "preGatewayManagedMode") {
+          await db.app.query(
+            `INSERT INTO occ.agent_revisions
+               (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+             SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id, admitted_spec, now()
+             FROM occ.agent_revisions`,
+            [`rev_${randomUUID()}`],
+          );
+          assert.deepEqual(
+            (
+              await db.app.query(
+                `SELECT a.gateway_managed_mode AS desired, r.gateway_managed_mode AS admitted
+                 FROM occ.agents a JOIN occ.agent_revisions r
+                   ON r.namespace_id = a.namespace_id AND r.agent_id = a.id ORDER BY r.revision_number`,
+              )
+            ).rows,
+            [
+              { desired: true, admitted: false },
+              { desired: true, admitted: true },
+            ],
+          );
+        }
         if (prefix === 59) {
           const upgradedReceipts = await historyReceipts(db.migrator);
           const sessions = await db.app.query("SELECT count(*)::integer AS count FROM occ.session");
@@ -2437,13 +2460,13 @@ async function restoreHistoryArchive(context, fixture, archive) {
   return restored;
 }
 
-async function logicalRestoreSnapshot(db) {
+async function logicalRestoreSnapshot(db, identityReader = db.app) {
   const sequence = await db.migrator.query(
     "SELECT last_value,is_called FROM drizzle.__drizzle_migrations_id_seq",
   );
   return {
     ...(await historySnapshot(db)),
-    identities: (await db.app.query("SELECT * FROM occ.iam_identities ORDER BY id")).rows,
+    identities: (await identityReader.query("SELECT * FROM occ.iam_identities ORDER BY id")).rows,
     sequence: sequence.rows,
   };
 }
@@ -2453,17 +2476,25 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    for (const lineage of ["canonical", "provider"]) {
+    for (const lineage of ["canonical", "provider", "canonical51"]) {
+      const prefix = lineage === "canonical51";
+      const history = prefix ? "preProvisioningDeploymentOutcome" : "completed";
       const source = await historyDatabase(context, fixture, "dump");
       if (lineage === "provider") {
         await installProviderCompletedHistory(source);
       }
-      const previous = await historyReceipts(source.migrator);
-      assert.deepEqual(await runHistoryCommand(source, "production"), {
-        ok: true,
-        history: lineage === "provider" ? "providerCompleted" : "empty",
-      });
-      await assertCompletedHistory(source, previous);
+      if (prefix) {
+        // Use the published prefix verbatim, before any production upgrade.
+        await installCanonicalPrefix(source, 51);
+        assert.equal((await historyReceipts(source.migrator)).length, 51);
+      } else {
+        const previous = await historyReceipts(source.migrator);
+        assert.deepEqual(await runHistoryCommand(source, "production"), {
+          ok: true,
+          history: lineage === "provider" ? "providerCompleted" : "empty",
+        });
+        await assertCompletedHistory(source, previous);
+      }
       await source.app.query(
         "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES ('restore-human','principal','restore-fixture','human'), ('restore-service','service_principal',NULL,NULL)",
       );
@@ -2484,16 +2515,38 @@ test(
       assert.deepEqual(accepted.drizzle, native.drizzle);
       assert.deepEqual(accepted.identities, native.identities);
       assert.deepEqual(accepted.sequence, native.sequence);
+      assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
+        ok: true,
+        history,
+      });
+      assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
+      assert.deepEqual(await runHistoryCommand(restored, "production"), {
+        ok: true,
+        history,
+      });
       await assertCredentialSchemaPrivileges(restored.app);
-      for (const flag of ["--check", undefined]) {
-        assert.deepEqual(await runHistoryCommand(restored, "production", flag), {
+      if (prefix) {
+        const manifest = JSON.parse(
+          await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+        );
+        const upgraded = await logicalRestoreSnapshot(restored);
+        assert.deepEqual(upgraded.identities, native.identities);
+        assert.deepEqual(upgraded.receipts.slice(0, 51), native.receipts);
+        assert.deepEqual(
+          upgraded.receipts.map(({ hash, created_at }) => [hash, Number(created_at)]),
+          manifest.entries.map(({ sha256, when }) => [sha256, when]),
+        );
+        // The upgraded restore has its own completed catalog spelling.
+        assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
           ok: true,
           history: "completed",
         });
+        assert.deepEqual(await logicalRestoreSnapshot(restored), upgraded);
+      } else {
         assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
       }
 
-      if (lineage !== "canonical") {
+      if (lineage === "provider") {
         continue;
       }
       // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
@@ -2521,12 +2574,15 @@ test(
         if (expectedRows !== undefined) {
           assert.equal(change.rowCount, expectedRows);
         }
-        const beforeRefusal = await historySnapshot(drifted);
-        assert.deepEqual(await runHistoryCommand(drifted, "production", undefined, refusal), {
-          ok: false,
-          code: "MIGRATION_HISTORY_UNSUPPORTED",
-        });
-        assert.deepEqual(await historySnapshot(drifted), beforeRefusal);
+        // Read as migrator so the lost app grant does not hide row/sequence mutations.
+        const beforeRefusal = await logicalRestoreSnapshot(drifted, drifted.migrator);
+        for (const flag of ["--check", undefined]) {
+          assert.deepEqual(await runHistoryCommand(drifted, "production", flag, refusal), {
+            ok: false,
+            code: "MIGRATION_HISTORY_UNSUPPORTED",
+          });
+          assert.deepEqual(await logicalRestoreSnapshot(drifted, drifted.migrator), beforeRefusal);
+        }
       }
     }
   },
@@ -2694,9 +2750,8 @@ test(
     const manifest = JSON.parse(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
-    assert.equal(manifest.entries.length, 63);
     assert.deepEqual(
-      manifest.entries.slice(58).map(({ tag }) => tag),
+      manifest.entries.slice(58, 63).map(({ tag }) => tag),
       [
         "0059_administrator_sandbox_policy_grants",
         "0060_credential_proxy_admission",
@@ -2811,7 +2866,7 @@ test(
       });
     }
 
-    // Discarding all four new receipts leaves main's exact ledger but the completed
+    // Discarding every new receipt leaves main's exact ledger but the completed
     // catalog. The runner must refuse before replaying any credential migration.
     assert.equal(
       (
@@ -2819,7 +2874,7 @@ test(
           before.receipts.at(-1).id,
         ])
       ).rowCount,
-      4,
+      completed.receipts.length - before.receipts.length,
     );
     assert.deepEqual(await historyReceipts(db.migrator), before.receipts);
     await assertHistoryRefused(

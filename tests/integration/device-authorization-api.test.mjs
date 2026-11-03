@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -13,6 +14,8 @@ import {
 } from "../helpers/device-credential-gateway.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { createDenied, DEVICE_LOGIN_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const plugin = {
@@ -49,13 +52,7 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
     now: () => new Date(clock.wallNow()),
     // The existing Console fixture admits revisions without executing Compute.
     // Selecting a Sandbox satisfies source admission, not runtime injection proof.
-    sandboxDriver: {
-      id: "device-test-sandbox",
-      capability: "sandbox",
-      implementation: "test-admission-only",
-      facets: ["networking", "filesystem", "process"],
-      async cleanup() {},
-    },
+    sandboxDriver: deviceTestSandbox(),
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Device login", { ready: true });
@@ -144,6 +141,18 @@ async function createFixture(t, { logger, ...gatewayOptions } = {}) {
       );
       return JSON.parse(secretDriver.valueFor(secret));
     },
+  };
+}
+
+// Admits dedicated Agents without executing Compute; it proves no runtime behavior.
+function deviceTestSandbox() {
+  return {
+    id: "device-test-sandbox",
+    capability: "sandbox",
+    implementation: "test-admission-only",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async cleanup() {},
   };
 }
 
@@ -397,6 +406,68 @@ test("login handles are actor and Agent scoped while source discovery uses exact
   assertNoCredentials(fixture);
 });
 
+// Each Agent update checks credential source operate on every source the Agent lists, so the
+// caller permissions answer for Agent saves covers them (finding 2441); the same real PATCH
+// proves each answer. The Harness source and a second listed source have distinct ids, so the
+// answer is shown to cover the listed sources and not only the Harness one.
+test("the Agent sources answer covers the credential sources an Agent update checks", async (t) => {
+  const fixture = await createFixture(t);
+  const login = await readyLogin(fixture);
+  const listed = await readyLogin(fixture);
+  assert.notEqual(listed.source.id, login.source.id);
+  const harnessAuth = { method: "credential_source", sourceId: login.source.id };
+  const agent = await fixture.createAgent(
+    fixture.namespace.id,
+    "Source editor Agent",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    {
+      executionMode: "dedicated",
+      harnessAuth,
+      credentialSources: [{ sourceId: login.source.id }, { sourceId: listed.source.id }],
+    },
+  );
+  const account = await fixture.createAccountWithPolicy("source-editor", (principal) => {
+    grantRole(fixture.policy, principal.id, {
+      id: "source-editor-role",
+      namespaceId: fixture.namespace.id,
+      permissions: { namespace: ["read"], agent: ["read", "update"], configuration: ["read"] },
+    });
+  });
+  const session = await fixture.signIn(account.credentials);
+  const agentPath = `/namespaces/${fixture.namespace.id}/agents/${agent.id}`;
+  const answer = async () => {
+    const response = await fixture.request("GET", `${agentPath}/permissions`, { session });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    return response.data.agentSourcesOperate;
+  };
+  const save = () =>
+    fixture.request("PATCH", agentPath, {
+      session,
+      body: { configurationId: agent.configurationId },
+    });
+  // Agent update and Configuration read, but no operate on the bound sources.
+  assert.equal(await answer(), false);
+  assert.equal((await save()).status, 403);
+  // Operate on the Harness source only: the other listed source still refuses the update.
+  grantRole(fixture.policy, account.principal.id, {
+    id: "source-editor-source",
+    namespaceId: fixture.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: login.source,
+  });
+  assert.equal(await answer(), false);
+  assert.equal((await save()).status, 403);
+  grantRole(fixture.policy, account.principal.id, {
+    id: "source-editor-listed-source",
+    namespaceId: fixture.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: listed.source,
+  });
+  assert.equal(await answer(), true);
+  const saved = await save();
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+});
+
 test("one poll owns Gateway completion and cancellation fences its result without revoking the source", async (t) => {
   const entered = Promise.withResolvers();
   const release = Promise.withResolvers();
@@ -581,17 +652,7 @@ test("a failed Refresh login start retains a manageable source and sanitizes the
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: {
-      write(chunk) {
-        lines.push(
-          ...String(chunk)
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line)),
-        );
-        return true;
-      },
-    },
+    destination: jsonLineDestination(lines),
   });
   const fixture = await createFixture(t, {
     logger,
@@ -625,4 +686,91 @@ test("a failed Refresh login start retains a manageable source and sanitizes the
   );
   assert.equal(fixture.gateway.sources.size, 0);
   assertNoCredentials(fixture);
+});
+
+// Finding D762: an Installation that does not select both Drivers device login needs names them
+// and who selects them, after the caller's grants and before any Gateway I/O.
+test("device login without a Credential Gateway and Refresh Driver names them and who selects them", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No device login", { ready: true });
+  const refused = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/device-authorizations`,
+    { body: { harnessId: "codex" } },
+  );
+  assert.equal(refused.status, 501, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error, {
+    code: "NOT_IMPLEMENTED",
+    message: DEVICE_LOGIN_NOT_CONFIGURED,
+  });
+});
+
+// Finding 2995: the start checks every grant it needs before the Driver selection. A Namespace
+// member who may create Agents and Secrets, and read and update an Agent, still lacks credential
+// source create, which no Namespace Role can grant, so they can never start. They get the 403
+// naming that grant on Create Agent and on a saved Agent, whether or not the Installation selects
+// the Drivers, with one audited denial. The administrator, who holds every grant, still gets the
+// Driver-selection 501 (the test above).
+test("a member who can never start device login gets the grant refusal before the Driver check", async (t) => {
+  const bare = await createConsoleAppFixture(t, { sandboxDriver: deviceTestSandbox() });
+  await bare.bootstrap();
+  const bareNamespace = await bare.createNamespace("No device login drivers", { ready: true });
+  const selected = await createFixture(t);
+  for (const [fixture, namespace] of [
+    [bare, bareNamespace],
+    [selected, selected.namespace],
+  ]) {
+    // A dedicated Agent, the only kind a saved-Agent start accepts before the grants decide.
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Member device login",
+      createHarnessConfiguration("codex", "gpt-5.1"),
+      { executionMode: "dedicated", harnessAuth: null },
+    );
+    const member = await fixture.createAccountWithPolicy("device-login-member", (principal) => {
+      grantRole(fixture.policy, principal.id, {
+        id: `device-login-member-${namespace.id}`,
+        namespaceId: namespace.id,
+        permissions: {
+          namespace: ["read"],
+          agent: ["create", "read", "update"],
+          secret: ["create"],
+        },
+      });
+    });
+    const session = await fixture.signIn(member.credentials);
+    for (const path of [
+      `/namespaces/${namespace.id}/agents/device-authorizations`,
+      `/namespaces/${namespace.id}/agents/${agent.id}/device-authorizations`,
+    ]) {
+      const before = fixture.auditSink.events.length;
+      const refused = await fixture.request("POST", path, {
+        session,
+        body: { harnessId: "codex" },
+      });
+      assert.equal(refused.status, 403, JSON.stringify(refused.body));
+      assert.equal(refused.body.error.code, "FORBIDDEN");
+      assert.equal(refused.body.error.message, createDenied("CredentialSource", namespace.id));
+      // The refused start is the only audited event: one denial naming the grant.
+      const events = fixture.auditSink.events.slice(before);
+      assert.equal(events.length, 1, JSON.stringify(events));
+      assert.equal(events[0].action, "openclaw.agents.device_authorization.start");
+      assert.equal(events[0].outcome, "denied");
+      assert.deepEqual(events[0].authorization, {
+        principalId: member.principal.id,
+        action: "create",
+        resource: { kind: "credential_source", id: namespace.id, namespaceId: namespace.id },
+      });
+    }
+    // A refused start registers no source and saves no login Secret.
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/credential-sources`)).data,
+      [],
+    );
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data,
+      [],
+    );
+  }
 });

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 
 import { spawnDocsPreview, waitForDocsPreview } from "../helpers/docs-site.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("preview serves static docs on loopback and confines reads to site output", async (t) => {
@@ -16,13 +16,7 @@ test("preview serves static docs on loopback and confines reads to site output",
   await writeFile(join(fixture, "private.txt"), "not site content");
   await symlink(join(fixture, "private.txt"), join(fixture, "dist/docs/outside.txt"));
   const child = spawnDocsPreview(fixture);
-  t.after(async () => {
-    if (child.exitCode === null) {
-      const exited = once(child, "exit");
-      child.kill("SIGTERM");
-      await exited;
-    }
-  });
+  t.after(() => stopProcess(child));
   const origin = await waitForDocsPreview(child);
   const home = await fetch(origin);
   assert.equal(home.status, 200);

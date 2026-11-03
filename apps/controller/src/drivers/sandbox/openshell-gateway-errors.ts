@@ -141,16 +141,24 @@ export class OpenShellAdmissionLimitError extends TransientDependencyError {
  * and also one the gateway itself answers with for some failures (finding 2042).
  */
 export const GRPC_UNAVAILABLE = 14;
+/** gRPC DEADLINE_EXCEEDED: also grpc-js's status for a call that never got a connection. */
+export const GRPC_DEADLINE_EXCEEDED = 4;
 
 /**
- * The gateway did not answer a request: grpc-js reached no gateway or lost the connection under
- * the call (gRPC UNAVAILABLE with grpc-js's own details), so it is down or restarting. An
- * UNAVAILABLE the gateway sent itself is not this error (finding 2042). A revision pass waits for
- * it within the deployment deadline instead of spending attempts (finding 2040); every other
- * caller sees a DependencyUnavailableError, as for any other failed request.
+ * The gateway did not answer a request: grpc-js reached no gateway, lost the connection under
+ * the call, or still had no connection at the request deadline (a status grpc-js made up
+ * itself), so it is down or restarting. A status the gateway sent itself is not this error
+ * (findings 2042, 2048). A revision pass waits for it within the deployment deadline instead of
+ * spending attempts (finding 2040); every other caller sees a DependencyUnavailableError, as for
+ * any other failed request.
  */
 export class OpenShellGatewayUnavailableError extends SandboxGatewayUnavailableError {
-  readonly grpcStatus = GRPC_UNAVAILABLE;
+  readonly grpcStatus: number;
+
+  constructor(message: string, grpcStatus: number) {
+    super(message);
+    this.grpcStatus = grpcStatus;
+  }
 }
 
 export const REPLAY_REFUSAL_REASONS: ReadonlySet<string> = new Set([

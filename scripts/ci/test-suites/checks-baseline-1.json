@@ -9,8 +9,11 @@
     "tests/integration/occ-api.test.mjs",
     "tests/integration/stored-document-serialization.test.mjs",
     "tests/integration/precompiled-route-compilers.test.mjs",
+    "tests/integration/route-header-names.test.ts",
     "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
+    "tests/conformance/protected-codex-artifact-policy.test.ts",
+    "tests/integration/openshell-quickstart-policy.test.ts",
     "tests/conformance/codex-native-startup.test.mjs",
     "tests/conformance/occ-api-security.test.mjs",
     "tests/integration/configuration-startup.test.mjs",
@@ -27,6 +30,7 @@
     "tests/integration/runtime-credentials-api.test.mjs",
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.mjs",
+    "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
     "tests/conformance/kubernetes-api-read.test.mjs",
@@ -98,13 +102,18 @@
     "tests/conformance/console-json-errors.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
+    "tests/conformance/console-gateway-safety.test.mjs",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
     "tests/conformance/split-layout-tenants.test.mjs",
     "tests/conformance/split-layout-adopt.test.mjs",
     "tests/conformance/url-authority.test.mjs",
+    "tests/integration/token-retirement.test.ts",
     "tests/integration/static-egress.test.mjs",
     "tests/integration/credential-proxy-peer-pin.test.ts",
+    "tests/integration/credential-proxy-provider-pin.test.ts",
+    "tests/integration/credential-proxy-stream-exchange.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
+    "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
@@ -116,7 +125,11 @@
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
-    "tests/integration/egress-prepared-github-metadata.test.mjs"
+    "tests/integration/egress-prepared-github-metadata.test.mjs",
+    "tests/integration/protected-source-refusals.test.mjs",
+    "tests/integration/refusal-answers.test.mjs",
+    "tests/integration/namespace-deletion-console-api.test.ts",
+    "tests/integration/github-selected-repositories.test.ts"
   ],
   "files": [
     {
@@ -271,6 +284,9 @@
       "path": "tests/conformance/slack-configuration.test.mjs"
     },
     {
+      "path": "tests/conformance/console-gateway-safety.test.mjs"
+    },
+    {
       "path": "tests/conformance/service-account-driver.test.mjs"
     },
     {
@@ -342,6 +358,9 @@
       "path": "tests/integration/console-api.test.mjs"
     },
     {
+      "path": "tests/integration/caller-denial-api.test.ts"
+    },
+    {
       "path": "tests/integration/console-build-metadata.test.mjs"
     },
     {
@@ -361,6 +380,9 @@
     },
     {
       "path": "tests/integration/precompiled-route-compilers.test.mjs"
+    },
+    {
+      "path": "tests/integration/route-header-names.test.ts"
     },
     {
       "path": "tests/integration/list-summaries.test.mjs"
@@ -451,6 +473,12 @@
       "path": "tests/conformance/plugin-compute.test.mjs"
     },
     {
+      "path": "tests/conformance/protected-codex-artifact-policy.test.ts"
+    },
+    {
+      "path": "tests/integration/openshell-quickstart-policy.test.ts"
+    },
+    {
       "path": "tests/conformance/codex-native-startup.test.mjs"
     },
     {
@@ -470,6 +498,7 @@
         "exchange accepts stable keys and both absent keys",
         "exchange rejects malformed peer expiry at each public boundary",
         "exchange renewal preserves progress while bounded by original peer expiry",
+        "exchange bounds unavailable stream policy checks without extending authorization",
         "exchange renewal respects a shorter fresh peer expiry",
         "exchange send snapshots authenticated peers across receipt reservation",
         "exchange held response respects a shorter authenticated lifetime",
@@ -478,6 +507,29 @@
         "exchange busy lifetime observation requires a live exact owner",
         "duplicate send retains only an exact authenticated lifetime contraction",
         "duplicate send contraction bounds pending receipt work"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-proxy-provider-pin.test.ts",
+      "expectedTests": [
+        "credential exchange refuses a conflicted eligible provider before route fallback",
+        "credential exchange refuses duplicate and substituted providers before material access",
+        "credential exchange refuses provider replacement during a pending Secret read",
+        "credential exchange withholds a response after provider method replacement",
+        "credential exchange preserves the original possible-send receipt after provider drift",
+        "credential exchange withholds an observed response after provider replacement",
+        "credential exchange cuts a cached stream lease after provider replacement",
+        "an unbound source update keeps its admitted provider when same-type providers reorder",
+        "a source update withholds resolved material after its provider or injector changes",
+        "live static registration does not require Compute placement",
+        "live static source validation does not consult backend Gateway placement",
+        "live static registration losing to DELETE preserves its deleting row without Gateway cleanup"
+      ]
+    },
+    {
+      "path": "tests/integration/token-retirement.test.ts",
+      "expectedTests": [
+        "token retirement preserves failed stages without replay or disclosing errors"
       ]
     },
     {
@@ -499,11 +551,16 @@
       "path": "tests/integration/egress-stock-online-authority.test.mjs"
     },
     {
+      "path": "tests/integration/managed-plugin-request-authority.test.ts"
+    },
+    {
       "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
       "expectedTests": [
         "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
-        "protected Git replies to this online decision before its authority deadline"
+        "protected Git replies to this online decision before its authority deadline",
+        "shipped gh metadata stays within selected-repository authority",
+        "bounded selected REST bodies retain transport and authority limits"
       ]
     },
     {
@@ -511,7 +568,9 @@
       "expectedTests": [
         "a gateway that does not answer closes the Git route and restores it without a tombstone",
         "the Git route tombstone stays for a replaced execution, an unknown write and withdrawal",
-        "the Git route reports bootstrap, material and binding states for Compute readiness"
+        "the Git route reports bootstrap, material and binding states for Compute readiness",
+        "an observed Git route (2) rotates only after its challenge in the original worker",
+        "an observed Git route (3) rotates only after its challenge in the original worker"
       ]
     },
     {
@@ -549,6 +608,7 @@
       "path": "tests/integration/protected-driver-registration.test.ts",
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
+        "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
         "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
         "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
@@ -566,10 +626,36 @@
       "path": "tests/conformance/kubernetes-prepared-repository.test.mjs"
     },
     {
+      "path": "tests/integration/credential-proxy-stream-exchange.test.ts",
+      "expectedTests": [
+        "OpenShell exchange: first-renewal outage, then recover",
+        "OpenShell exchange: first-renewal outage, then withdraw",
+        "OpenShell exchange: post-renewal outage, then recover",
+        "OpenShell exchange: post-renewal outage, then withdraw"
+      ]
+    },
+    {
       "path": "tests/integration/egress-installation-exchange.test.mjs"
     },
     {
       "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
+    },
+    {
+      "path": "tests/integration/protected-source-refusals.test.mjs"
+    },
+    {
+      "path": "tests/integration/refusal-answers.test.mjs"
+    },
+    {
+      "path": "tests/integration/namespace-deletion-console-api.test.ts"
+    },
+    {
+      "path": "tests/integration/github-selected-repositories.test.ts",
+      "expectedTests": [
+        "selected repository issuance sends every selected stable ID and explicit permissions",
+        "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
+        "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
+      ]
     }
   ]
 }
