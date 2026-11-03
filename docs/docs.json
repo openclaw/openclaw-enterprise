@@ -51,15 +51,19 @@
                     ]
                   },
                   {
+                    "page": "guides/deploy/deploy-first-agent",
+                    "label": "Deploy Your First Agent"
+                  },
+                  {
                     "group": "Add Capabilities",
                     "pages": [
                       {
                         "page": "guides/repository-credentials/openshell-git-push",
-                        "label": "Add Git"
+                        "label": "Git"
                       },
                       {
                         "page": "guides/integrations/codex-plugins",
-                        "label": "Add Plugin"
+                        "label": "Plugins"
                       }
                     ]
                   },
@@ -1198,10 +1202,10 @@
     },
     {
       "from": "/guides/deploy/local-openshell-browser/",
-      "to": "/guides/deploy/local-setup/#6-grant-model-access-and-deploy",
+      "to": "/guides/deploy/deploy-first-agent/#3-grant-model-access-and-deploy",
       "anchors": {
-        "bind-the-origin-before-deployment": "/guides/deploy/local-setup/#bind-the-origin-before-deployment",
-        "open-the-agent-and-continue-a-chat": "/guides/deploy/local-setup/#7-verify-a-turn-through-openclaw",
+        "bind-the-origin-before-deployment": "/guides/deploy/deploy-first-agent/#bind-the-origin-before-deployment",
+        "open-the-agent-and-continue-a-chat": "/guides/deploy/deploy-first-agent/#4-complete-onboarding-in-the-control-ui",
         "restore-read-only-git-and-keep-the-agent-running": "/guides/repository-credentials/openshell-read-only/",
         "renew-expired-read-only-access": "/guides/repository-credentials/openshell-read-only/#renew-expired-read-only-access"
       }
@@ -1210,8 +1214,8 @@
       "from": "/guides/deploy/eks-openshell-owner-session/",
       "to": "/guides/deploy/quickstart-session/",
       "anchors": {
-        "choose-a-console-deployment-action": "/guides/deploy/eks-openshell-setup/#6-grant-model-access-and-deploy",
-        "complete-onboarding-in-the-browser": "/guides/deploy/eks-openshell-setup/#7-complete-onboarding-in-the-control-ui",
+        "choose-a-console-deployment-action": "/guides/deploy/deploy-first-agent/#3-grant-model-access-and-deploy",
+        "complete-onboarding-in-the-browser": "/guides/deploy/deploy-first-agent/#4-complete-onboarding-in-the-control-ui",
         "temporarily-grant-one-push": "/guides/repository-credentials/openshell-git-push/",
         "restore-read-only-access": "/guides/repository-credentials/openshell-read-only/"
       }

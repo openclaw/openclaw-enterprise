@@ -50,5 +50,9 @@ export function composeRepositoryPolicy(
     repositoryRegistry: registry,
     repositoryOwner,
     repositoryPolicy,
+    repositoryAdmission: Object.freeze({
+      policy: repositoryPolicy,
+      backendId: repositoryOwner.backendId,
+    }),
   });
 }

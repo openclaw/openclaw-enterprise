@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-30"
-last_updated_session: "authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899"
+updated: "2026-11-02"
+last_updated_session: "authoring-run/4fcd344c-7374-490d-979d-a6995b6a19dc"
 ---
 
 # Production Startup Flow
@@ -115,6 +115,16 @@ Server-connected first installs check the named Job; if present or unreadable,
 stop; preserve it; reconcile. Offline `helm template` cannot check it.
 This is no lock or freshness proof for database, identity or storage; upgrades
 are unchanged.
+
+`deploy/helm/openclaw-enterprise/values.yaml:gatewayRouting` enables private
+routing by default. `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate`
+refuses missing GatewayClass or service-key Secret names before rendering. Operators
+install Envoy Gateway, its CRDs, Gateway API CRDs and cert-manager, create the
+GatewayClass and Secret, and configure matching Installation routing settings.
+Helm neither installs those prerequisites nor checks their readiness offline.
+Explicit `gatewayRouting.enabled: false` omits routing resources and key mounts;
+it requires native admin and sandbox routing to be disabled. See
+[opt-out limits](../guides/deploy/workspace-routing.md#explicit-opt-out).
 
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` matches Compute routing validation. `database.port`,
 `cluster.port`, and `executionCluster.apiPort` must be 1–65535 without leading zeros.
@@ -347,6 +357,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 14:57: Enable Helm private routing by default and retain prerequisite validation and explicit opt-out. (authoring-run/4fcd344c-7374-490d-979d-a6995b6a19dc - cf67413c378cce3989d28fa8178ed29a405b9ce6)
 
 - 2026-10-30 14:36: Attempt every worker resource close in order after a close fails. (authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899 - 2b3b206b63525e31a6170e239991394b7909fc15)
 

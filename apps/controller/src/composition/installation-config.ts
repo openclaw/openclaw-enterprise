@@ -236,6 +236,9 @@ export interface InstallationRuntimeDrivers {
   readonly preparedGitHub?: PostgresPreparedGitHubLifecycle;
   readonly pluginDriver?: PluginDriver;
   readonly repositoryPolicy?: RepositoryPolicyDriver;
+  readonly repositoryAdmission?: Awaited<
+    ReturnType<typeof loadRepositoryPolicy>
+  >["repositoryAdmission"];
   readonly nativeRepositorySender?: NativeRepositorySender;
   readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration;
   readonly repositoryTransport?: RepositoryTransportBinding;

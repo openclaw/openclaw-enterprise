@@ -809,14 +809,15 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		return err
 	}
 	values := map[string]any{
-		"images":       map[string]string{"controller": controllerImage},
-		"installation": map[string]string{"name": "Kubernetes development"},
-		"auth":         map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
-		"bootstrap":    map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
-		"database":     map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
-		"cluster":      map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
-		"api":          map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
-		"resources":    resources,
+		"images":         map[string]string{"controller": controllerImage},
+		"installation":   map[string]string{"name": "Kubernetes development"},
+		"auth":           map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
+		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
+		"database":       map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
+		"cluster":        map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
+		"api":            map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
+		"resources":      resources,
+		"gatewayRouting": map[string]any{"enabled": routing},
 	}
 	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}

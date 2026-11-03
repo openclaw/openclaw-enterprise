@@ -1,3 +1,5 @@
+import type { Static } from "typebox";
+import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
 import type {
@@ -620,16 +622,14 @@ export function revisionCredentialSourceSnapshot(
   );
 }
 
-export type HarnessAuthBinding =
-  | {
-      readonly method: "api_key";
-      readonly source: SecretReference;
-      readonly authorizedEndpoint?: string;
-    }
-  | { readonly method: "codex_pat"; readonly source: SecretReference }
-  | { readonly method: "codex_pat"; readonly source: ServiceAccountReference }
-  | { readonly method: "credential_source"; readonly sourceId: string }
-  | { readonly method: "runtime" };
+// Expand source alternatives so callers can still Extract a binding by source.kind.
+type ReadonlyAuthBinding<Binding> = Binding extends { source: infer Source }
+  ? Source extends unknown
+    ? { readonly [Key in keyof Binding]: Key extends "source" ? Readonly<Source> : Binding[Key] }
+    : never
+  : Readonly<Binding>;
+
+export type HarnessAuthBinding = ReadonlyAuthBinding<Static<typeof HarnessAuthBindingSchema>>;
 
 /** Private admission metadata. Public APIs expose only HarnessAuthBinding. */
 export type HarnessAuthSnapshot =
