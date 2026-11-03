@@ -225,26 +225,25 @@ TLS, mTLS and authentication for every Kubernetes-only OpenShell installation.
 The default profile registers no static-inference middleware and waits for the
 Gateway before installing OCE. It needs no corrective Gateway upgrade or Pod deletion.
 
-The explicit `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` profile additionally enables
-static-inference enforcement. It requires Kubernetes Compute, Kubernetes control
-plane and OpenShell Sandbox with compatible images/charts. It prepares authority server TLS and its public CA,
-then installs OpenShell with native PKI and a TLS middleware registration.
-OpenShell owns the complete Gateway server/client certificate and extension-JWT
-key set. The launcher reads only its public key ID and writes the paired Backend,
-egress Driver and authority listener settings into the Installation.
+New protected static-inference launches are retired.
+`CheckDevelopmentProfile` rejects `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` before
+Compute dispatch, including the former Kubernetes/OpenShell selection. Direct
+Kubernetes startup also checks `protectedEgressSelection` before provisioning.
+Any presence of `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including an empty
+value, is rejected. Unset, empty and `0` protected-egress selections retain ordinary
+startup; malformed values still fail validation. Refusal does not select a fallback.
 
-Gateway startup contacts the registry, so `installDevelopmentPlatform` defers
-its readiness wait until after the OCE release's normal readiness gates. API
-composition starts the authority; Backend validation is declarative, and worker
-startup/preflight and health do not require a Gateway call. The final Gateway
-rollout gate still precedes Namespace readiness. Any failure returns to the
-existing owned-cluster rollback path; no empty registry response substitutes for
-negotiation.
+The authority provisioning and release ordering remain for already recorded state
+and historical packaging checks. They do not admit new local protected launches.
+Recorded protected state retains its authority TLS and public trust, OpenShell's
+native PKI, and paired Backend and authority configuration. Its retained release
+path waits for the Gateway after the API authority starts, before starting workers.
+Failures retain the existing owned-cluster rollback and recovery path.
 
 The chart projects the administrative client certificate into API and worker
 only. The Backend supplies it to verified gRPC TLS for DNS or exact-IP server
-identities. Service traffic keeps its separate scoped bearer identity. The API
-alone receives authority TLS and the issuer public key; selected Gateway and
+identities. Service traffic keeps its separate scoped bearer identity. For recorded
+protected state, the API alone receives authority TLS and the issuer public key; selected Gateway and
 supervisor Pods can reach that listener through narrow NetworkPolicies. See the
 [Backend authentication boundary](../reference/backends.md#openshell-gateway).
 
@@ -253,9 +252,9 @@ before effects. `installKubernetesControlPlane` uses that name in creation, read
 migrator and application URLs. Bootstrap, API and worker share the limited
 application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
 Helm waits for both. Unselected profiles retain the existing database and
-transport defaults. The [launch guide](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
-owns inputs; [packaging verification](../testing/static-egress.md#protected-launch-packaging)
-distinguishes local proof from pending connected runtime qualification.
+transport defaults. The [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
+describes accepted selectors; retained [packaging verification](../testing/static-egress.md#protected-launch-packaging)
+covers historical configuration and existing owners, not new local launches.
 
 ## Debugging and Verification
 
