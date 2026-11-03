@@ -315,6 +315,28 @@ export function renderAgentLogs(
         : []),
     );
   }
+  // A stop, or another version selected for service, from the Agent page. A version the reader
+  // cannot read gets no runtime status, so a stop made elsewhere showed only in the page summary,
+  // off-screen above this view at phone width (finding 3012). The words come from the summary and
+  // say nothing more about the version. Drawn in place and only when they change, so the status
+  // is announced once, not on every poll.
+  const servingChangeNotice = element("div", {
+    className: "log-serving-change",
+    role: "status",
+  });
+  let servingChangeShown: string | null = null;
+  function showServingChange(text: string | null) {
+    void versionRead.then((readable) => {
+      const shown = readable === false ? text : null;
+      if (!current() || shown === servingChangeShown) {
+        return;
+      }
+      servingChangeShown = shown;
+      servingChangeNotice.replaceChildren(
+        ...(shown ? [statusBlock("info", null, shown, [], { role: null })] : []),
+      );
+    });
+  }
   function showStripStatus(text: string) {
     setText(stripObserved, "");
     stripStatus.textContent = text;
@@ -1242,6 +1264,7 @@ export function renderAgentLogs(
     stripLine,
     strip,
     deploymentFailureNotice,
+    servingChangeNotice,
     runningVersionNotice,
     element(
       "div",
@@ -1376,5 +1399,5 @@ export function renderAgentLogs(
     .then(() => firstLogRead)
     .catch(() => {})
     .finally(showFirstView);
-  return { section, firstView, showDeploymentFailure };
+  return { section, firstView, showDeploymentFailure, showServingChange };
 }

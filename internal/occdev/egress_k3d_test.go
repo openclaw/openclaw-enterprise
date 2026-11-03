@@ -19,50 +19,61 @@ import (
 )
 
 func TestProtectedEgressSelectionFailsBeforeEffects(t *testing.T) {
-	env := candidateOpenShellEnvironment()
-	env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = "1"
-	for _, key := range []string{"OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE"} {
-		env[key] = "registry.example/runtime@" + profileTestDigest
-	}
-	for _, key := range []string{"OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART"} {
-		env[key] = "/explicit/chart"
-	}
-	r := &runner{env: env}
+	const retired = "OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; unset it or set it to 0 for ordinary development. This does not convert an existing installation; use occ dev down for cleanup."
+	const hostRetired = "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired; remove this setting"
+	r := &runner{env: candidateOpenShellEnvironment()}
+	r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] = "kubernetes"
+	r.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = "1"
 	check := func(controlPlane, sandbox, want string) {
 		t.Helper()
 		enabled, err := r.protectedEgressSelection(controlPlane, sandbox)
-		if enabled != (want == "enabled") || (err != nil) != (want == "rejected") {
-			t.Fatalf("selection for %s/%s, env=%v: enabled=%t, err=%v, want %s", controlPlane, sandbox, r.env, enabled, err, want)
+		if enabled || (want == "" && err != nil) || (want != "" && (err == nil || err.Error() != want)) {
+			t.Fatalf("selection for %s/%s: enabled=%t, err=%v, want %q", controlPlane, sandbox, enabled, err, want)
 		}
 	}
-	check("kubernetes", "openshell", "enabled")
-	check("compose", "openshell", "rejected")
-	check("kubernetes", "none", "rejected")
-	for key, value := range env {
-		if key == "OCC_DEVELOPMENT_PROTECTED_EGRESS" {
-			continue
+	// Even the formerly supported selection must refuse before provisioning.
+	check("kubernetes", "openshell", retired)
+	check("compose", "openshell", retired)
+	check("kubernetes", "none", retired)
+	for _, value := range []string{"1", "0", ""} {
+		r.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = value
+		for _, address := range []string{"172.30.42.1", ""} {
+			r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"] = address
+			check("kubernetes", "openshell", hostRetired)
 		}
-		delete(env, key)
-		check("kubernetes", "openshell", "rejected")
-		env[key] = value
 	}
-	// Only an explicitly selected owned private host can receive the native alias.
-	for _, address := range []string{"", "127.0.0.1", "0.0.0.0", "169.254.169.254", "8.8.8.8", "::1", "172.030.42.1", "host.example.test"} {
-		env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"] = address
-		check("kubernetes", "openshell", "rejected")
-	}
-	env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"] = "172.30.42.1"
-	check("kubernetes", "openshell", "enabled")
-	env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = "0"
-	check("kubernetes", "openshell", "rejected")
-	delete(env, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP")
+	delete(r.env, "OCC_DEVELOPMENT_PROTECTED_EGRESS")
+	check("kubernetes", "openshell", hostRetired)
+	delete(r.env, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP")
 	for _, value := range []string{"true", "yes", "2"} {
-		env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = value
-		check("kubernetes", "openshell", "rejected")
+		r.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = value
+		check("kubernetes", "openshell", "OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1")
 	}
 	for _, value := range []string{"", "0"} {
-		r.env = map[string]string{"OCC_DEVELOPMENT_PROTECTED_EGRESS": value}
-		check("compose", "none", "disabled")
+		r.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = value
+		check("compose", "none", "")
+		check("kubernetes", "openshell", "")
+	}
+	delete(r.env, "OCC_DEVELOPMENT_PROTECTED_EGRESS")
+	check("compose", "none", "")
+	check("kubernetes", "openshell", "")
+
+	// Direct Kubernetes startup must refuse before tools or state creation,
+	// even when it is called without the CLI's shared profile check.
+	directory := filepath.Join(t.TempDir(), "state")
+	t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", directory)
+	t.Setenv("OCC_DEVELOPMENT_PROTECTED_EGRESS", "1")
+	t.Setenv("PATH", t.TempDir())
+	// Absence matters for this retired override; an empty value is also refused.
+	t.Setenv("OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP", "")
+	if err := os.Unsetenv("OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"); err != nil {
+		t.Fatal(err)
+	}
+	if err := upK3d(context.Background(), Options{}, "openshell", nil, nil); err == nil || err.Error() != retired {
+		t.Fatalf("direct startup: %v", err)
+	}
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Fatalf("direct startup created state: %v", err)
 	}
 }
 
@@ -257,7 +268,7 @@ done
 			t.Fatalf("database role or selector diverged for %s", key)
 		}
 	}
-	selectedGateway := readJSONFile(t, filepath.Join(state.directory, "openshell-protected-values.json"))
+	selectedGateway := readJSONFile(t, filepath.Join(state.directory, "openshell-gateway-values.json"))
 	if selectedGateway["server"].(map[string]any)["hostGatewayIP"] != state.OpenShellHostGatewayIP {
 		t.Fatal("selected owned host did not reach the supplier chart input")
 	}
@@ -270,7 +281,7 @@ done
 		"deploy/helm/openclaw-enterprise", "install-values"), 1)
 	if supplierChart != "" {
 		out := renderDevelopmentChart(t, helm, state, openShellGatewayService, supplierChart,
-			"openshell-protected-values.json", "--set", "agentSandbox.preflight.enabled=false", "--set", "fullnameOverride=openshell-gateway")
+			"openshell-gateway-values.json", "--set", "agentSandbox.preflight.enabled=false", "--set", "fullnameOverride=openshell-gateway")
 		if err := verifyProtectedOpenShellChart(out, state); err != nil {
 			t.Fatal(err)
 		}

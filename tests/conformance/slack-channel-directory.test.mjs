@@ -14,6 +14,7 @@ import {
   requestThroughProxy,
   startSlackProxy,
 } from "../helpers/slack-proxy.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 const { Agent, fetch: undiciFetch } = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -146,16 +147,8 @@ test("bundled Slack proxy process exits on SIGTERM and closes open tunnels", asy
   });
 
   child.kill("SIGTERM");
-  const bound = (promise, what) =>
-    Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        const timer = setTimeout(() => reject(new Error(`${what} within 5 s`)), 5_000);
-        timer.unref();
-      }),
-    ]);
-  assert.deepEqual(await bound(exited, "proxy exit"), { code: 0, signal: null });
-  await bound(tunnelClosed, "tunnel close");
+  assert.deepEqual(await within(exited, "proxy exit", 5_000), { code: 0, signal: null });
+  await within(tunnelClosed, "tunnel close", 5_000);
 });
 
 function auth() {

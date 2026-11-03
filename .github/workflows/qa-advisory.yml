@@ -140,11 +140,13 @@ jobs:
   openshell:
     name: QA advisory (OpenShell${{ needs.eligibility.outputs.openshell-file != '' && ' Compose' || '' }})
     needs: eligibility
-    # OpenShell requires an enabled Landlock LSM, absent on the Blacksmith kernel.
+    # OpenShell requires Landlock, which the Blacksmith kernel does not provide.
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: integration-qa-pr
     env:
+      # The packaged browser has Ubuntu's AppArmor user-namespace permission.
+      OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
       # The registered plugin-install case uses this admitted curated selection.
       OCC_TEST_CODEX_INSTALL_PLUGIN_ID: codex-plugin:linear@openai-curated-remote
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}

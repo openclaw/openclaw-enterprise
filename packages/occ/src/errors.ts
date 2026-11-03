@@ -6,6 +6,13 @@ import type {
   SecretConsumers,
 } from "@openclaw-enterprise/contracts";
 
+import {
+  configurationFieldMessage,
+  configurationSettingMessage,
+  keyedSettingPath,
+  quotedSettingKey,
+} from "./environment-references.ts";
+
 export class AuthorizationDeniedError extends Error {
   readonly evidence?: AuthorizationEvidence;
   readonly authorization?: {
@@ -425,19 +432,6 @@ export class SecretBindingValidationError extends ScopeViolationError {
 }
 
 /**
- * Builds a message that names a Configuration field. The error contract caps messages at
- * 256 characters; a long provider name shortens the path. The cut counts code points, so it
- * never leaves half of a surrogate pair.
- */
-function configurationFieldMessage(path: string, message: (path: string) => string): string {
-  const budget = 256 - message("").length;
-  const characters = Array.from(path);
-  return message(
-    characters.length <= budget ? path : `${characters.slice(0, budget - 1).join("")}…`,
-  );
-}
-
-/**
  * Builds a message that names the Configuration setting `<parent>.<key>`. A submitted key can
  * hold any character: control, format, line and paragraph separator characters show as ?, a
  * key that is not a plain ID is quoted, and a long key shortens the path to fit the
@@ -451,42 +445,34 @@ function keyedSettingMessage(
   return configurationFieldMessage(keyedSettingPath(parent, key), message);
 }
 
-/**
- * The Configuration setting path `<parent>.<key>` for a submitted key: control, format, line
- * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
- */
-export function keyedSettingPath(parent: string, key: string): string {
-  const shown = shownKey(key);
-  return /^[A-Za-z0-9_-]+$/.test(shown)
-    ? `${parent}.${shown}`
-    : `${parent}[${JSON.stringify(shown)}]`;
-}
-
-// Control, format, line and paragraph separator characters and lone surrogates show as ?.
-const shownKey = (key: string): string => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+// The Console's secret reference reader shows names with these too (environment-references.ts).
+export { configurationSettingMessage, keyedSettingPath, quotedSettingKey };
 
 /**
- * A submitted key a message names, such as a header name, in double quotes: characters
- * keyedSettingPath hides show as ?, and a key longer than `limit` code points is cut with …,
- * so the message keeps its cap (`limit` is at least 1). Use it only for keys that are not secrets.
+ * Builds a message that names two Configuration settings. When both paths do not fit the
+ * 256-character cap, the longer one is shortened first, and neither below half of the room
+ * left; the cut counts code points, as configurationFieldMessage's does.
  */
-export function quotedSettingKey(key: string, limit: number): string {
-  const characters = Array.from(shownKey(key));
-  return JSON.stringify(
+export function configurationSettingsMessage(
+  first: string,
+  second: string,
+  message: (first: string, second: string) => string,
+): string {
+  const budget = 256 - message("", "").length;
+  const firstCharacters = Array.from(first);
+  const secondCharacters = Array.from(second);
+  if (firstCharacters.length + secondCharacters.length <= budget) {
+    return message(first, second);
+  }
+  const half = Math.floor(budget / 2);
+  const firstLimit = Math.max(half, budget - secondCharacters.length);
+  const shorten = (characters: string[], limit: number): string =>
     characters.length <= limit
       ? characters.join("")
-      : `${characters.slice(0, limit - 1).join("")}…`,
-  );
-}
-
-/**
- * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit
- * the 256-character cap. Build a path that holds a submitted key with keyedSettingPath.
- */
-export function configurationSettingMessage(setting: string, requirement: string): string {
-  return configurationFieldMessage(
-    setting,
-    (path) => `Configuration setting ${path} ${requirement}.`,
+      : `${characters.slice(0, limit - 1).join("")}…`;
+  return message(
+    shorten(firstCharacters, firstLimit),
+    shorten(secondCharacters, budget - Math.min(firstLimit, firstCharacters.length)),
   );
 }
 
@@ -697,24 +683,30 @@ export class CredentialSourceUnprotectedError extends ResourceStateConflictError
   }
 }
 
+const REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES = Object.freeze({
+  several:
+    "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+  single:
+    "A Credential Proxy cannot deliver this repository's Git access level. Use `github-repository` or `git-write` for it, or ask an administrator to use native prepared Git without a Sandbox or Proxy, then deploy again.",
+});
+
 /**
- * Finding 2204: a Credential Proxy delivers repository Git only for one binding with a mapped
- * delivery profile (`git-write` or `github-installation`; `repositoryGitDeliveryProfile`).
- * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
- * several bindings, could never start. Deploy refuses it with 409
- * REPOSITORY_GIT_PROFILE_UNSUPPORTED before reading the counterpart, instead of a generic 503 or
- * 500. The bundled OpenShell `configureRevision` repeats it and the worker fails it at once; that
- * is defence in depth, as PostgreSQL cannot read a stored revision of this shape. HTTP keeps
- * messages under 256 characters.
+ * Finding 2204: a Credential Proxy delivers repository Git for any number of `github-repository`
+ * bindings, or for one `git-write` or `github-installation` binding
+ * (`repositoryGitDeliveryProfile`). Protected admission v4-v7 requires a mapped profile, so a
+ * `git-read` or `git-full` binding, or several bindings that are not all `github-repository`,
+ * could never start. Deploy refuses it with 409 REPOSITORY_GIT_PROFILE_UNSUPPORTED before
+ * reading the counterpart, instead of a generic 503 or 500. The message depends on whether the
+ * selection holds several bindings. The bundled OpenShell `configureRevision` repeats it and the
+ * worker fails it at once; that is defence in depth, as PostgreSQL cannot read a stored revision
+ * of this shape. HTTP keeps messages under 256 characters.
  */
 export class RepositoryGitProfileUnsupportedError extends ResourceStateConflictError {
   static readonly code = "REPOSITORY_GIT_PROFILE_UNSUPPORTED";
-  static readonly description =
-    "A Credential Proxy delivers repository Git only for one git-write or github-installation binding, so this Agent's repository access cannot start. Keep one such binding, remove them, or use native prepared Git without a Sandbox or Proxy, then deploy again.";
   readonly code = RepositoryGitProfileUnsupportedError.code;
 
-  constructor() {
-    super(RepositoryGitProfileUnsupportedError.description);
+  constructor(bindingCount: number) {
+    super(REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES[bindingCount > 1 ? "several" : "single"]);
     this.name = "RepositoryGitProfileUnsupportedError";
   }
 }
@@ -951,13 +943,21 @@ export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
  * Dedicated native OpenClaw needs a provisioning SandboxDriver with networking, filesystem and
  * process containment, and the Installation selects none. The Installation's shape refuses
  * every new attempt the same way, so a new provisioning request or deploy answers the 409 other
- * plan refusals use, with this fixed message (finding 1609). Stored provisioning work never
- * throws this: it stays a retryable DependencyUnavailableError (503) carrying the same message,
- * and resumes once a qualifying Driver is selected.
+ * plan refusals use, with this message (finding 1609). It names what makes the Agent deployable:
+ * codex for the selected models when Codex runs them (`codexRuns`), else a Codex model, or a
+ * qualifying Driver (finding 3036). Stored provisioning work never throws this: it stays a
+ * retryable DependencyUnavailableError (503) with DEDICATED_OPENCLAW_SANDBOX_REQUIRED, and resumes
+ * once a qualifying Driver is selected.
  */
 export class DedicatedOpenClawSandboxError extends ResourceStateConflictError {
-  constructor() {
-    super(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
+  constructor(codexRuns = false) {
+    super(
+      `${DEDICATED_OPENCLAW_SANDBOX_REQUIRED} ${
+        codexRuns
+          ? "Set agentRuntime.id to codex for the selected models"
+          : "Select a codex/<model> model with agentRuntime.id codex"
+      }, or ask an Installation administrator for such a SandboxDriver.`,
+    );
     this.name = "DedicatedOpenClawSandboxError";
   }
 }
@@ -1117,6 +1117,7 @@ export class SandboxRevisionUnsupportedError extends Error {
   readonly code:
     | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
     | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_POD_LABELS_NOT_PERMITTED"
     | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
   constructor(code: SandboxRevisionUnsupportedError["code"], message: string) {
@@ -1499,9 +1500,7 @@ const RETRY_LATER_MESSAGES = Object.freeze({
   deviceLoginFailed: () =>
     "The sign-in service did not complete this device login, so it was cancelled. Start a new device login. If it keeps failing, ask an operator to check the API logs.",
   proxyRegistration: () =>
-    "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration and version, then retry.",
-  previewGatewayVersion: () =>
-    "Installation-wide repository access uses the observed-hook preview, which needs OpenShell gateway 0.1.5, and the gateway reports another version. Ask an operator to run 0.1.5 or turn the preview off, then retry.",
+    "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration, protocol and capabilities, then retry.",
 });
 
 /**
@@ -1511,12 +1510,12 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * workers still retry it. A failed device login keeps the Refresh Driver's error as `cause`, so
  * the API's 503 log record, which the text points the caller to, names that error's class and
  * code (never its message). The bundled OpenShell Credential Proxy raises the gateway states an
- * operator can fix (`proxyRegistration`, `previewGatewayVersion`) from its availability check.
+ * operator can fix (`proxyRegistration`) from its availability check.
  */
 export class RetryLaterError extends DependencyUnavailableError {
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
-  constructor(reason: "proxyRegistration" | "previewGatewayVersion");
+  constructor(reason: "proxyRegistration");
   constructor(reason: keyof typeof RETRY_LATER_MESSAGES, detail?: unknown) {
     super(
       RETRY_LATER_MESSAGES[reason](
@@ -1717,6 +1716,8 @@ export class RuntimeLogsError extends Error {
 export class PluginPolicyValidationError extends Error {
   /** The rejected plugin selection key, so HTTP can point at `/plugins/<id>`. */
   readonly pluginId?: string;
+  /** For `unknownPlugin`, the offered ID the rejected one leaves the version out of. */
+  readonly offeredId?: string;
 
   constructor(
     field?:
@@ -1727,6 +1728,7 @@ export class PluginPolicyValidationError extends Error {
       | "unknownPlugin",
     driverId?: string,
     pluginId?: string,
+    offeredId?: string,
   ) {
     let message = "The supplied plugin policies are invalid.";
     if (field === "unknownPlugin") {
@@ -1736,9 +1738,11 @@ export class PluginPolicyValidationError extends Error {
       // the advice first.
       message = `A plugin selection names a plugin that the selected Plugin Driver${
         driverId === undefined ? "" : ` (${driverId})`
-      } does not offer${
-        pluginId === undefined ? "" : `: ${pluginId}`
-      }. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.`;
+      } does not offer${pluginId === undefined ? "" : `: ${pluginId}`}. ${
+        offeredId === undefined
+          ? "Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver."
+          : `Use ${offeredId}.`
+      }`;
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';
@@ -1756,6 +1760,9 @@ export class PluginPolicyValidationError extends Error {
     this.name = "PluginPolicyValidationError";
     if (field === "unknownPlugin" && pluginId !== undefined) {
       this.pluginId = pluginId;
+      if (offeredId !== undefined) {
+        this.offeredId = offeredId;
+      }
     }
   }
 

@@ -12,6 +12,7 @@ import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   githubInstallationProfile,
   resolveGitHubRepositoryBinding,
+  resolveSelectedRepositoryScope,
   resolveGitHubStandingApprovalScope,
   validateGitHubRepositoryRegistry,
   type GitHubRepositoryRegistry,
@@ -83,6 +84,11 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     this.#duration = options.sessionDurationSeconds;
   }
   async listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
+    return this.listCatalog(input);
+  }
+
+  /** Provider catalog shared by the Installation picker and the legacy Driver adapter. */
+  async listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
     const options: RepositoryOption[] = [];
     this.#registry.repositories.forEach((repository) => {
       const policy = repository.namespaces.find(
@@ -130,6 +136,14 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
   }): RepositoryCredentialResolution {
+    return this.resolveBindings(input);
+  }
+
+  /** Provider policy shared by Installation admission and the legacy Driver adapter. */
+  resolveBindings(input: {
+    readonly namespaceId: string;
+    readonly bindings: readonly RepositoryBindingRequest[];
+  }): RepositoryCredentialResolution {
     try {
       if (
         !Array.isArray(input.bindings) ||
@@ -138,7 +152,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       ) {
         throw new Error("invalid-bindings");
       }
-      return Object.freeze({
+      const resolved = Object.freeze({
         bindings: Object.freeze(
           input.bindings.map((entry) =>
             resolveGitHubRepositoryBinding(this.#registry, {
@@ -149,6 +163,10 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         ),
         sessionDurationSeconds: this.#duration,
       });
+      if (resolved.bindings.some((b) => b.profile === "github-repository")) {
+        resolveSelectedRepositoryScope(this.#registry, input.namespaceId, resolved.bindings);
+      }
+      return resolved;
     } catch {
       throw new ScopeViolationError(
         "The requested repository bindings are not permitted for this Namespace.",

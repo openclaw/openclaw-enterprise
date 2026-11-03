@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json/v2"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,12 +31,8 @@ func CheckDevelopmentProfile() error {
 	r := newRunner(Options{})
 	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
 	sandbox := r.setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
-	protected, err := r.protectedEgressSelection(controlPlane, sandbox)
-	if err != nil {
+	if _, err := r.protectedEgressSelection(controlPlane, sandbox); err != nil {
 		return err
-	}
-	if protected && r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "kubernetes" {
-		return fmt.Errorf("protected egress requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes")
 	}
 	if _, err := r.selectedDevelopmentDatabase(controlPlane); err != nil {
 		return err
@@ -53,31 +48,13 @@ func (r *runner) protectedEgressSelection(controlPlane, sandbox string) (bool, e
 	if value != "" && value != "0" && value != "1" {
 		return false, fmt.Errorf("OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1")
 	}
-	if address, selected := r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"]; selected {
-		ip, err := netip.ParseAddr(address)
-		if value != "1" || err != nil || !ip.Is4() || !ip.IsPrivate() || ip.String() != address {
-			return false, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP requires protected egress and a canonical private IPv4 address for the owned host")
-		}
+	if _, selected := r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"]; selected {
+		return false, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired; remove this setting")
 	}
-	if value != "1" {
-		return false, nil
+	if value == "1" {
+		return false, fmt.Errorf("OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; unset it or set it to 0 for ordinary development. This does not convert an existing installation; use occ dev down for cleanup.")
 	}
-	if controlPlane != "kubernetes" || sandbox != "openshell" {
-		return false, fmt.Errorf("protected egress requires Kubernetes control plane and OpenShell Sandbox")
-	}
-	// The bundled release predates the protected middleware contract. Require an
-	// explicit candidate; the ordinary image import/revision checks still apply.
-	for _, key := range []string{
-		"OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE",
-		"OCC_DEVELOPMENT_OPENSHELL_GATEWAY_IMAGE", "OCC_DEVELOPMENT_OPENSHELL_SANDBOX_IMAGE",
-		"OCC_DEVELOPMENT_OPENSHELL_SUPERVISOR_IMAGE", "OCC_DEVELOPMENT_OPENSHELL_SOURCE_REVISION",
-		"OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART",
-	} {
-		if r.env[key] == "" {
-			return false, fmt.Errorf("protected egress requires explicit %s", key)
-		}
-	}
-	return true, nil
+	return false, nil
 }
 
 func (r *runner) selectedDevelopmentDatabase(controlPlane string) (string, error) {
@@ -121,7 +98,7 @@ func developmentAuthorityEndpoint(state *developmentState) string {
 	return fmt.Sprintf("https://%s:%d", developmentAuthorityHostname(state), developmentEgressPort)
 }
 
-func developmentProtectedOpenShellValues(state *developmentState) map[string]any {
+func developmentAuthenticatedOpenShellValues(state *developmentState) map[string]any {
 	values := map[string]any{
 		"pkiInitJob": map[string]any{"enabled": true},
 		"server": map[string]any{
@@ -129,12 +106,7 @@ func developmentProtectedOpenShellValues(state *developmentState) map[string]any
 			"auth":       map[string]any{"allowUnauthenticatedUsers": false},
 			"tls":        map[string]any{"enableMtls": true},
 		},
-		"supervisor": map[string]any{"middleware": []any{map[string]any{
-			"name":         developmentEgressMiddleware,
-			"grpcEndpoint": developmentAuthorityEndpoint(state),
-			"audience":     developmentEgressAudience, "tlsCaConfigMapName": developmentEgressCA,
-			"maxPayloadBytes": developmentEgressPayload, "timeout": developmentEgressTimeout,
-		}}},
+		"gatewayConfig": map[string]any{"openshell.supervisor.middleware": []any{}},
 	}
 	if state.OpenShellHostGatewayIP != "" {
 		values["server"].(map[string]any)["hostGatewayIP"] = state.OpenShellHostGatewayIP
@@ -142,12 +114,44 @@ func developmentProtectedOpenShellValues(state *developmentState) map[string]any
 	return values
 }
 
-func (r *runner) writeProtectedOpenShellValues(state *developmentState) (string, error) {
-	data, err := json.Marshal(developmentProtectedOpenShellValues(state))
+// TODO(#4437): Remove this optional static-inference profile and its authority.
+// Gateway authentication is independent and remains enabled without this profile.
+func developmentProtectedOpenShellValues(state *developmentState) map[string]any {
+	values := developmentAuthenticatedOpenShellValues(state)
+	values["gatewayConfig"] = map[string]any{
+		"openshell.supervisor.middleware": []any{map[string]any{
+			"name":                     developmentEgressMiddleware,
+			"grpc_endpoint":            developmentAuthorityEndpoint(state),
+			"audience":                 developmentEgressAudience,
+			"tls_ca_cert_path":         "/etc/openshell/oce-authority/ca.crt",
+			"allow_insecure_transport": false,
+			"max_payload_bytes":        developmentEgressPayload,
+			"timeout":                  developmentEgressTimeout,
+			"binding_policy":           "allowlist",
+			"bindings":                 []string{"http_request_pre_credentials"},
+		}},
+	}
+	server := values["server"].(map[string]any)
+	server["extraVolumes"] = []any{map[string]any{
+		"name":      "oce-authority-ca",
+		"configMap": map[string]any{"name": developmentEgressCA},
+	}}
+	server["extraVolumeMounts"] = []any{map[string]any{
+		"name": "oce-authority-ca", "mountPath": "/etc/openshell/oce-authority", "readOnly": true,
+	}}
+	return values
+}
+
+func (r *runner) writeOpenShellGatewayValues(state *developmentState) (string, error) {
+	values := developmentAuthenticatedOpenShellValues(state)
+	if state.ProtectedEgress {
+		values = developmentProtectedOpenShellValues(state)
+	}
+	data, err := json.Marshal(values)
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(state.directory, "openshell-protected-values.json")
+	path := filepath.Join(state.directory, "openshell-gateway-values.json")
 	return path, exclusiveWrite(path, data, 0600)
 }
 
