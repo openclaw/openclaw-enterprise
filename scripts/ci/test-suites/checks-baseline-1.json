@@ -35,6 +35,7 @@
     "tests/conformance/kubernetes-client.test.mjs",
     "tests/conformance/kubernetes-api-read.test.mjs",
     "tests/integration/configuration-controller.test.mjs",
+    "tests/integration/configuration-roster-work.test.ts",
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.mjs",
@@ -338,6 +339,9 @@
     },
     {
       "path": "tests/integration/configuration-controller.test.mjs"
+    },
+    {
+      "path": "tests/integration/configuration-roster-work.test.ts"
     },
     {
       "path": "tests/integration/configuration-body-limits.test.mjs"

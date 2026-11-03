@@ -5593,7 +5593,7 @@ test("Configuration save refuses a document too large to store before its conten
   );
 });
 
-test("Configuration save checks a large agents roster in step with its size", async () => {
+test("Configuration save validates a 60,000-agent roster within the relative time budget", async () => {
   // Finding 1321: a valid Configuration of 60,000 agents.entries without their own settings
   // (710 KB, under the 1 MiB cap) held the controller's event loop for 7-8 s at save, so every
   // tenant's requests waited. The Kubernetes Configuration Driver's credential rules and the
@@ -5647,17 +5647,17 @@ test("Configuration save checks a large agents roster in step with its size", as
   assert.equal(saved.status, 200, JSON.stringify(saved.body).slice(0, 500));
   assert.equal(Object.keys(saved.body.data.values.agents.entries).length, 60_000);
   assert.equal(checks.length, 2);
-  // The bound is relative to a structured clone of the same document, so a slow or busy runner
-  // does not fail it. The two are timed in turn, each at its best of five. At two CPUs the
-  // save's two rules take about 2.5 clones; they took about 13 before.
+  // Compare the best of five rule runs with the best of five clones of the same document.
+  // Alternate which runs first to reduce the effect of a fixed order on the comparison.
   const timings = { checking: Infinity, cloning: Infinity };
+  const work = [
+    ["checking", () => checks.forEach((check) => check())],
+    ["cloning", () => structuredClone(values)],
+  ];
   for (let round = 0; round < 5; round += 1) {
-    for (const [name, work] of [
-      ["checking", () => checks.forEach((check) => check())],
-      ["cloning", () => structuredClone(values)],
-    ]) {
+    for (const [name, run] of round % 2 === 0 ? work : work.toReversed()) {
       const started = performance.now();
-      work();
+      run();
       timings[name] = Math.min(timings[name], performance.now() - started);
     }
   }
