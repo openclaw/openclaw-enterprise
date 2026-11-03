@@ -8,19 +8,8 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 // No legacy exec policy beside the setting: OpenClaw reads a mode over `security` and `ask`.
 const noExecPolicy = (exec) => exec.security === undefined && exec.ask === undefined;
 
-// Deployment admission fills these settings when the Configuration leaves them unset, ahead of
-// OpenClaw's security preset, which fills only what is still unset. Each row: the setting's path,
-// the value admission fills, whether the object that would hold it admits the fill (in order: the
-// inline-program rule reads the mode filled before it), and an explicit value of another kind,
-// which admission keeps.
-// - apply_patch stays in the workspace (OpenClaw's earlier value).
-// - OpenClaw's own sandbox stays off: its Docker backend cannot run in the OCE runtime (finding
-//   2767).
-// - exec runs without per-command approval, the personal preset's mode, unless tools.exec sets a
-//   security or ask: the corporate "ask" needs an approval client OCE does not have (finding 2771).
-// - In mode "full" with no security or ask, inline programs need no approval either (the personal
-//   preset's strictInlineEval; corporate's `true` needs the same approval client).
-// Collaborative steering keeps the preset's default (on) unless the Configuration sets it.
+// Each row gives an unset setting its OCE default and supplies an explicit value admission
+// preserves. The inline-program rule reads the exec mode filled by the preceding row.
 export const GATEWAY_SECURITY_DEFAULTS = Object.freeze([
   { path: ["tools", "exec", "applyPatch", "workspaceOnly"], value: true, explicit: false },
   { path: ["agents", "defaults", "sandbox", "mode"], value: "off", explicit: "all" },
@@ -48,50 +37,13 @@ function withUnset(parent, [key, ...rest], value, admits = () => true) {
   return { ...parent, [key]: withUnset(current, rest, value, admits) };
 }
 
-const objectAt = (value) =>
-  value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
-
-// An Agent entry's own exec policy replaces the top-level mode but inherits the top-level
-// strictInlineEval. Where admission filled `false` there under the corporate preset, an entry
-// whose policy is not mode "full" and that sets no strictInlineEval keeps the preset's `true`.
-function withEntryInlineEvalRule(values, filled) {
-  const entries = objectAt(filled.agents?.entries);
-  if (
-    values.tools?.exec?.strictInlineEval !== undefined ||
-    filled.tools?.exec?.strictInlineEval !== false ||
-    values.security?.preset !== "corporate" ||
-    entries === undefined
-  ) {
-    return filled;
-  }
-  const kept = Object.fromEntries(
-    Object.entries(entries).map(([id, entry]) => {
-      const exec = objectAt(entry?.tools?.exec);
-      const ownPolicy =
-        exec !== undefined &&
-        exec.strictInlineEval === undefined &&
-        (exec.mode === undefined ? !noExecPolicy(exec) : exec.mode !== "full");
-      return [
-        id,
-        ownPolicy
-          ? { ...entry, tools: { ...entry.tools, exec: { ...exec, strictInlineEval: true } } }
-          : entry,
-      ];
-    }),
-  );
-  return { ...filled, agents: { ...filled.agents, entries: kept } };
-}
-
 // `values` with each of `defaults` (every GATEWAY_SECURITY_DEFAULTS row unless given) it leaves
 // unset filled, as deployment admission fills it: a value of any type, or a non-object on the
 // path, is kept.
 export function withGatewaySecurityDefaults(values, defaults = GATEWAY_SECURITY_DEFAULTS) {
-  return withEntryInlineEvalRule(
+  return defaults.reduce(
+    (filled, { path, value, admits }) => withUnset(filled, path, value, admits),
     values,
-    defaults.reduce(
-      (filled, { path, value, admits }) => withUnset(filled, path, value, admits),
-      values,
-    ),
   );
 }
 

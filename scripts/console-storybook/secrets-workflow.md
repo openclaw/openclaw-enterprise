@@ -14,7 +14,9 @@ Kubernetes storage, credential delivery, or runtime consumption.
 4. Delete the unreferenced Secret after reviewing the confirmation. Verify that
    it leaves the list.
 5. Open **Consumers and restricted references**. Inspect the Agent link, other
-   IDs, hidden count, incomplete-list notice, and disabled deletion.
+   IDs, hidden count, incomplete-list notice, and disabled deletion. Check that
+   the previously listed Agent shows no identity or link and asks you to reopen
+   the Secret to check again, without claiming why it is no longer listed.
 6. Inspect **Missing value**, **Create denied**, **Replace denied**, **Unknown save
    outcome**, and **Concurrent reference conflict**. Uncertain submissions must
    remain disabled. Close, then refresh or inspect current state as instructed.

@@ -1,16 +1,17 @@
 import type {
   CredentialSourceReference,
   HarnessAuthBinding,
+  InstallationCapabilities,
   SecretMetadata,
   SecretReference,
   ServiceAccount,
 } from "@openclaw-enterprise/contracts";
-import { requestFailure, responseFields } from "../api-client.mjs";
-import { element } from "../dom.mjs";
+import { INSTALLATION_ADMINISTRATION, requestFailure, responseFields } from "../api-client.mjs";
+import { element, setUnavailable } from "../dom.mjs";
 import { message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
-import { createDeviceLogin, type DeviceLogin } from "./device-login.mjs";
+import { createDeviceLogin, deviceLoginOffered, type DeviceLogin } from "./device-login.mjs";
 
 // Display native model policy; deployment admission owns full Configuration validation.
 export function configuredHarnessId(values: unknown): "codex" | "openclaw" | undefined {
@@ -54,7 +55,10 @@ export function configuredHarnessId(values: unknown): "codex" | "openclaw" | und
 }
 
 type AuthBinding = HarnessAuthBinding | null | undefined;
-type HarnessAuthContext = AgentAccessContext & { agentId?: string | undefined };
+type HarnessAuthContext = AgentAccessContext & {
+  agentId?: string | undefined;
+  installationAdmin?: boolean | null;
+};
 
 export function harnessAuthDescription(binding: AuthBinding) {
   if (!binding) {
@@ -115,7 +119,12 @@ export function createHarnessAuthFields(
   context: HarnessAuthContext,
   binding: AuthBinding,
   harnessId: ReturnType<typeof configuredHarnessId>,
-  options: { draft?: HarnessAuthDraft | undefined; agentName?: string; onChange?(): void } = {},
+  options: {
+    draft?: HarnessAuthDraft | undefined;
+    agentName?: string;
+    onChange?(): void;
+    onStartSettled?(): void;
+  } = {},
 ) {
   const method = element(
     "select",
@@ -167,7 +176,14 @@ export function createHarnessAuthFields(
   let previousMethod = method.value;
   let accountsLoaded = false;
   let disabled = false;
+  let disabledReason: HTMLElement | null = null;
   const feedback = element("p", { className: "hint", role: "status" });
+  // An account select that cannot be used stays in the Tab order while its reason shows (findings
+  // 2899, 2925): the form's update denial, or the failed Service Account read. While the accounts
+  // load there is no reason to read, so it is natively disabled.
+  function updateAccount() {
+    setUnavailable(account, disabled || !accountsLoaded, disabled ? disabledReason : feedback);
+  }
   const secretPicker = createSecretReferenceField({
     context,
     id: "harness-auth-secret",
@@ -202,7 +218,31 @@ export function createHarnessAuthFields(
         options.onChange?.();
       }
     },
+    onStartSettled: () => options.onStartSettled?.(),
   });
+  // Only an Installation administrator reads the Installation, which says whether its Drivers
+  // offer a device login at all (finding 2991). Read once, when ChatGPT OAuth is first chosen; a
+  // failed read leaves Sign in offered.
+  let offerRead = false;
+  function readOffer() {
+    if (offerRead || context.installationAdmin !== true) {
+      return;
+    }
+    offerRead = true;
+    context.request("/installation", INSTALLATION_ADMINISTRATION).then(
+      (installation) => {
+        if (context.isCurrent()) {
+          const { capabilities } = responseFields(installation);
+          oauthLogin.setOffered(deviceLoginOffered(capabilities as InstallationCapabilities));
+        }
+      },
+      (error: unknown) => {
+        if (context.isCurrent() && requestFailure(error).status === 401) {
+          context.onExpired();
+        }
+      },
+    );
+  }
   const currentOAuth = element(
     "p",
     { className: "hint" },
@@ -250,6 +290,9 @@ export function createHarnessAuthFields(
     validationHint.hidden = usesOAuth;
     oauthLogin.setActive(usesOAuth);
     oauthLogin.setDisabled(disabled);
+    if (usesOAuth) {
+      readOffer();
+    }
     currentOAuth.hidden =
       method.value !== "credential_source" || binding?.method !== "credential_source";
     secretField.hidden = !directSecret;
@@ -272,6 +315,8 @@ export function createHarnessAuthFields(
     secretPicker.setDisabled(disabled || !directSecret);
     secretPicker.refresh();
     account.required = method.value === "service_account";
+    // The read's failure shows only beside this select's own method.
+    updateAccount();
   }
   method.addEventListener("change", update);
   update();
@@ -283,7 +328,6 @@ export function createHarnessAuthFields(
       }
       const issued = issuedAccounts(items);
       accountsLoaded = true;
-      account.disabled = disabled;
       const selected = account.value;
       account.replaceChildren(
         element("option", { value: "" }, "Select an issued account"),
@@ -296,6 +340,7 @@ export function createHarnessAuthFields(
       feedback.textContent = issued.length
         ? "Issued accounts in this Namespace are available."
         : "No issued ChatGPT accounts available in this Namespace.";
+      updateAccount();
     })
     .catch((error: unknown) => {
       if (!context.isCurrent()) {
@@ -305,6 +350,7 @@ export function createHarnessAuthFields(
         context.onExpired();
       } else {
         feedback.textContent = `Service Accounts unavailable. ${message(error, false, namespaceListNeed("Service Accounts"))}`;
+        updateAccount();
       }
     });
   return {
@@ -317,11 +363,14 @@ export function createHarnessAuthFields(
       account: account.value,
       oauthLogin: oauthLogin.capture(),
     }),
-    setDisabled(value: boolean) {
+    // A disabled method or account select with a shown `reason` stays in the Tab order
+    // (findings 2899, 2925).
+    setDisabled(value: boolean, reason: HTMLElement | null = null) {
       disabled = value;
-      method.disabled = value;
+      disabledReason = reason;
+      setUnavailable(method, value, reason);
       secretPicker.setDisabled(value || !["api_key", "codex_pat"].includes(method.value));
-      account.disabled = value || !accountsLoaded;
+      updateAccount();
       oauthLogin.setDisabled(value);
     },
     async readBinding(): Promise<HarnessAuthBinding | null> {

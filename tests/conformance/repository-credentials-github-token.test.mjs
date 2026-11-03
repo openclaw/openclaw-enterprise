@@ -45,24 +45,6 @@ function tokenFactory({
   return { clock, config, factory, owner };
 }
 
-/** Factory options selecting one binding of the configured token grant (`github-test`, 73). */
-function factoryBinding(identity = {}, extra = {}) {
-  return {
-    options: {
-      binding: {
-        profile: "git-write",
-        identity: {
-          providerInstanceId: "github-test",
-          repositoryId: "73",
-          grantId: "x",
-          ...identity,
-        },
-        ...extra,
-      },
-    },
-  };
-}
-
 function appFactory() {
   const clock = createControlledClock(1700000000000);
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -208,10 +190,17 @@ test("token grant identities distinguish policy and cannot reuse a previous App 
   assert.deepEqual(token.factory.resolve("git-write").client.pushRefAllowlist, [
     "refs/heads/agent/*",
   ]);
-  // A session admitted for an App grant can never be served by a token backend.
-  assert.throws(() => bind(token, "git-write", previousBinding), {
-    message: "invalid-binding",
-  });
+  // App grants and foreign repository/provider bindings cannot use the token backend.
+  const canonicalBinding = token.factory.resolve("git-write").binding;
+  for (const binding of [
+    previousBinding,
+    { ...canonicalBinding, repositoryId: "74" },
+    { ...canonicalBinding, providerInstanceId: "github-other" },
+  ]) {
+    assert.throws(() => bind(token, "git-write", binding), {
+      message: "invalid-binding",
+    });
+  }
   token.owner.close();
 });
 
@@ -226,8 +215,6 @@ test("token factory refuses mismatched authorities, metadata scope, broad GraphQ
       { token: sentinel("ghp_"), configuration: { allowGraphql: true } },
     ],
     // A lease must cover one exchange deadline plus two safety margins.
-    // The gateway enforces the configured allowlist; a binding cannot replace it.
-    ["binding push allowlist", factoryBinding({}, { pushRefAllowlist: ["refs/heads/*"] })],
     [
       "lease below the exchange bound",
       { configuration: { leaseSeconds: 900 }, limits: { exchangeMs: 900000 } },
@@ -368,20 +355,19 @@ test("static acquisition checks every bound before borrowing and never dispatche
   assert.equal(session.custody.records.size, 1);
 });
 
-test("a factory binding must name the configured provider instance and repository", () => {
-  tokenFactory(factoryBinding()).owner.close();
-  for (const [name, identity] of [
-    ["another repository", { repositoryId: "74" }],
-    ["another provider instance", { providerInstanceId: "github-other" }],
-  ]) {
-    const owner = createGitHubStaticTokenOwner({ token: Buffer.from(oauthToken) });
-    assert.throws(
-      () => tokenFactory({ ...factoryBinding(identity), owner }),
-      { message: "invalid-binding" },
-      name,
-    );
-    owner.close();
-  }
+test("token factory refuses a caller-supplied grant override", (t) => {
+  const owner = createGitHubStaticTokenOwner({ token: Buffer.from(oauthToken) });
+  t.after(() => owner.close());
+  const binding = {
+    profile: "git-write",
+    identity: { providerInstanceId: "github-test", repositoryId: "73", grantId: "x" },
+  };
+  assert.throws(() => tokenFactory({ owner, options: { binding } }), {
+    message: "invalid-configuration",
+  });
+  assert.throws(() => tokenFactory({ owner, options: { binding: undefined } }), {
+    message: "invalid-configuration",
+  });
 });
 
 test("development token upload-pack deadlines fit the configured lease", () => {

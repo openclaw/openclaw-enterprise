@@ -11,8 +11,11 @@ The OpenClaw Control Plane (OCC) adds multi-tenancy, governance, and hard securi
 
 Choose where to install:
 
-- [Local Setup](guides/quickstart.md): run the platform on your machine, then [deploy your first Agent](guides/first-agent.md). You need an OpenAI API key for that walkthrough.
-- [Kubernetes Setup](guides/kubernetes-setup.md): install the control plane on a cluster you already operate, then [deploy and verify an Agent on that installation](guides/deploy/production-agents.md).
+- [Local k3d](guides/deploy/local-setup.md)
+- [Kubernetes](guides/deploy/kubernetes-setup.md)
+- [Amazon EKS](guides/deploy/eks-openshell-setup.md)
+
+After installation, [deploy your first Agent](guides/deploy/deploy-first-agent.md), complete browser onboarding, and save the operator session. Use the shared [Add Git](guides/repository-credentials/openshell-git-push.md), [Add Plugin](guides/integrations/codex-plugins.md), and [Delete Agent](guides/deploy/quickstart-delete-agent.md) instructions. Installation cleanup is separate for each platform.
 
 If you are still learning the product, start with [Concepts](guides/concepts.md).
 
@@ -24,7 +27,7 @@ If you are still learning the product, start with [Concepts](guides/concepts.md)
 | --------------------------------------------- | ------------------------------------------------------------------------ |
 | [Topics](guides/topics/README.md)             | Understand Agents, access and security, plugins, and configuration.      |
 | [Integrations](guides/integrations/README.md) | Choose and configure Drivers, experimental Backends, and channels.       |
-| [Operate](guides/operate/README.md)           | Install and run the platform, manage credentials, and diagnose failures. |
+| [Deploy & Operate](guides/operate/README.md)  | Install and run the platform, manage credentials, and diagnose failures. |
 | [Reference](reference/README.md)              | Look up OCC CLI commands and HTTP API operations.                        |
 | [Contribute](contributing/README.md)          | Set up a development environment and change the platform or its docs.    |
 

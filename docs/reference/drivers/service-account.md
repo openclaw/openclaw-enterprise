@@ -21,7 +21,7 @@ provider credential. See [Driver selection](selection.md).
 
 ### Operations and credential boundary
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires all
+The [shared interface](../../../packages/contracts/src/drivers/service-account/index.ts) requires all
 three methods; none is optional once a Driver is selected.
 
 | Method                      | Contract                                                                                                               |

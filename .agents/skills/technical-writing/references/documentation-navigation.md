@@ -14,14 +14,14 @@ one coherent question or helps complete one task. Organize around reader intent,
 not the code tree. Keep the starting path first and ongoing work separate from
 first-time setup.
 
-| Section         | What belongs there                                                                                                           |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Getting Started | Orientation, concepts, setup, and the first successful use.                                                                  |
-| Topics          | Product concepts, feature behavior, configuration, and feature troubleshooting that do not belong to a named implementation. |
-| Integrations    | Named Drivers, Providers, or channels; their setup, support limits, and comparisons.                                         |
-| Operate         | Production installation and ongoing work: monitoring, platform troubleshooting, credentials, upgrades, and recovery.         |
-| Reference       | Exact CLI and HTTP API contracts: commands, flags, requests, responses, and errors.                                          |
-| Contribute      | Work on the platform itself: Design, Local Development, Repository Layout, and Documentation.                                |
+| Section          | What belongs there                                                                                                           |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Getting Started  | Orientation, concepts, setup, and the first successful use.                                                                  |
+| Topics           | Product concepts, feature behavior, configuration, and feature troubleshooting that do not belong to a named implementation. |
+| Integrations     | Named Drivers, Providers, or channels; their setup, support limits, and comparisons.                                         |
+| Deploy & Operate | Production installation and ongoing work: monitoring, platform troubleshooting, credentials, upgrades, and recovery.         |
+| Reference        | Exact CLI and HTTP API contracts: commands, flags, requests, responses, and errors.                                          |
+| Contribute       | Work on the platform itself: Design, Local Development, Repository Layout, and Documentation.                                |
 
 The first page in each menu should orient readers to the whole section, not
 drop them into one category. Put prerequisites before the steps that need them;

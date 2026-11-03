@@ -81,3 +81,33 @@ test("Filesystem Configuration shares the URL credential check work budget acros
   await driver.create(fresh);
   assert.deepEqual(await driver.read(fresh), fresh);
 });
+
+test("Filesystem Configuration replacement keeps its promised file mode under a restrictive umask", async (t) => {
+  const root = await temporaryDirectory(t, "occ-configuration-update-mode-");
+  const driver = new FilesystemConfigurationDriver(root);
+  const original = {
+    id: `cfg_${randomUUID()}`,
+    namespaceId: `ns_${randomUUID()}`,
+    kind: "agent",
+    generation: 1,
+    createdAt: new Date().toISOString(),
+    values: {},
+  };
+  await driver.create(original);
+  const destination = join(root, original.namespaceId, `${original.id}.json`);
+  assert.equal((await stat(destination)).mode & 0o777, 0o600);
+  const replacement = {
+    ...original,
+    generation: 2,
+    values: { env: { vars: { EXAMPLE_SETTING: "updated" } } },
+  };
+  // Use the existing writable Namespace: a new directory can fail before any replacement.
+  const previousMask = process.umask(0o777);
+  try {
+    await driver.update(replacement);
+  } finally {
+    process.umask(previousMask);
+  }
+  assert.equal((await stat(destination)).mode & 0o777, 0o600);
+  assert.deepEqual(await driver.read(original), replacement);
+});

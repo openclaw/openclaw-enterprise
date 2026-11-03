@@ -238,6 +238,8 @@ case "${profile}" in
     ;;
   postgres)
     require_docker
+    install_yq
+    need_command jq
     ;;
   images)
     require_docker

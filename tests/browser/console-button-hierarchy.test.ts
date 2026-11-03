@@ -87,7 +87,16 @@ async function failedRedeploy(fixture: ConsoleFixture, namespace: NamespaceWire)
   return { agent, active, route };
 }
 
-test("Agents, Agent detail, Create Agent and Logs each show at most one primary action at 1440 and 390", async (t) => {
+// A Workspace view is ready once its first file's Save and the recovery's primary show.
+async function workspaceReady(page: Page, primary: string) {
+  await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).waitFor();
+  await page
+    .getByRole("region", { name: "Deployment needs attention" })
+    .getByRole("link", { name: primary })
+    .waitFor();
+}
+
+test("Agents, Agent detail, Workspace, Create Agent and Logs each show at most one primary action at 1440 and 390", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Primary actions", {
     computeDriver: createRuntimeLogComputeDriver(),
     agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
@@ -98,6 +107,22 @@ test("Agents, Agent detail, Create Agent and Logs each show at most one primary 
     const size = `${viewport.width}x${viewport.height}`;
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await route(page);
+    // The fixture runs no gateway, so the failed Agent's Workspace files are answered here. A
+    // loaded file can be edited, which makes its Save live.
+    await page.route(`**/agents/${failed.id}/workspace/files/*`, (request) =>
+      request.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            name: decodeURIComponent(
+              new URL(request.request().url()).pathname.split("/").at(-1) ?? "",
+            ),
+            content: "Saved instructions.",
+          },
+        }),
+      }),
+    );
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
 
     const views = [
@@ -137,6 +162,24 @@ test("Agents, Agent detail, Create Agent and Logs each show at most one primary 
         primary: "Deploy again",
       },
       {
+        // Each Workspace file's Save is secondary, so the failed deployment's recovery stays the
+        // view's one primary (finding 1968).
+        name: "Agent detail, failed, Workspace",
+        url: detailUrl(fixture, namespace.id, failed.id, active.revision.id, "workspace"),
+        ready: () => workspaceReady(page, "Deploy again"),
+        primary: "Deploy again",
+        workspace: true,
+      },
+      {
+        // The draft's live workspace view offers no Deploy again, so the recovery's Logs link
+        // is its primary.
+        name: "Agent detail, failed, draft, Workspace",
+        url: detailUrl(fixture, namespace.id, failed.id, "draft", "workspace"),
+        ready: () => workspaceReady(page, "Open v2 Logs"),
+        primary: "Open v2 Logs",
+        workspace: true,
+      },
+      {
         name: "Create Agent",
         url: new URL(`/console/agents/new?namespace=${namespace.id}`, fixture.origin),
         ready: async () => {
@@ -166,6 +209,25 @@ test("Agents, Agent detail, Create Agent and Logs each show at most one primary 
       // Park the pointer so no hover repaints a control.
       await page.mouse.move(0, 0);
       assert.deepEqual(await filledActions(page), [view.primary], `${view.name} at ${size}`);
+      if (view.workspace) {
+        // An unsaved edit makes Save live, and it stays secondary. Undoing the edit leaves no
+        // unsaved draft for the next view.
+        const editor = page.getByRole("textbox", { name: "AGENTS.md", exact: true });
+        await editor.and(page.locator(":enabled")).waitFor();
+        const saved = await editor.inputValue();
+        await editor.fill(`${saved}\nEdited.`);
+        await page
+          .getByRole("button", { name: "Save AGENTS.md", exact: true })
+          .and(page.locator(":enabled"))
+          .waitFor();
+        await page.mouse.move(0, 0);
+        assert.deepEqual(
+          await filledActions(page),
+          [view.primary],
+          `${view.name}, unsaved edit, at ${size}`,
+        );
+        await editor.fill(saved);
+      }
       if (view.primary === "Deploy again") {
         // Its secondary action is a white button on the card's warning tint, so its edge marks
         // it (finding 1958).
@@ -385,14 +447,16 @@ test("a permanently disabled button says not allowed, not busy", async (t) => {
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
   // An API key can never browse the catalog, so Load plugins stays disabled: nothing is pending.
+  // Its reason shows, so it stays focusable (aria-disabled, finding 2899) and fades its label,
+  // not the whole button, which would dim its focus ring (finding 2863).
   const load = dialog.getByRole("button", { name: "Load plugins" });
   assert.equal(await load.isDisabled(), true);
   assert.deepEqual(
     await load.evaluate((node) => {
       const style = globalThis.getComputedStyle(node);
-      return [style.cursor, style.opacity];
+      return [style.cursor, style.opacity, node.getAttribute("aria-disabled")];
     }),
-    ["not-allowed", "0.6"],
+    ["not-allowed", "1", "true"],
   );
 });
 

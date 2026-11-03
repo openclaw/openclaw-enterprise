@@ -1,9 +1,17 @@
+---
+tags: [nolimit]
+---
+
 # Install the production control plane
 
-Prepare [Kubernetes](kubernetes.md) or [EKS](eks.md), the
-[production prerequisites](../deploy.md#production-prerequisites), and
+Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
+[prerequisites below](#before-you-start), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
-Keep private routing enabled. Start with the password profile and
+Private routing is enabled by default. The chart does not install Envoy Gateway,
+Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
+controllers first; create the service-key Secret and match Helm and Installation
+settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.
+Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
 [GitHub](#enable-github-browser-sign-in) or [Google](google-sign-in.md) sign-in requires disabling native administration.
 
@@ -15,13 +23,15 @@ Use a clean checkout matching the image source commit. Follow
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
 
+## Before you start
+
+<Snippet file="../../snippets/kubernetes-prerequisites.md" />
+
 ## Use published images
 
-Use `ghcr.io/openclaw/openclaw-enterprise-controller:latest` and
-`ghcr.io/openclaw/openclaw-enterprise-runtime:latest` through the
-[published-image procedure](published-images.md), which checks the image source commits and sets
-`CONTROLLER_IMAGE` and `RUNTIME_IMAGE` and selects the matching checkout and
-chart. Complete it before generating configuration; then skip the build section.
+Before generating configuration, [select the published image pair](published-images.md)
+(`stable` or `latest`). Verify the source commit, export `CONTROLLER_IMAGE` and
+`RUNTIME_IMAGE`, and use the matching checkout and chart. Skip the build section.
 
 Public GHCR pulls need no pull Secret. For private registry copies, give every node
 that runs control-plane or tenant Pods its own pull access; see
@@ -41,7 +51,7 @@ or build these images for your registry:
 Select your registry, repository, and platform. Buildx uses the [runtime recipe's](../../../deploy/runtime/README.md) reviewed CI base.
 
 Authenticate the builder with `docker login <registry-host>` and approved
-credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
+credentials; for private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
 
 In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
 Stop on failure; retain metadata.
@@ -83,6 +93,8 @@ else
   false
 fi
 ```
+
+If a runtime build fails certificate verification when downloading a package behind an HTTPS proxy, add `--secret "id=build-ca,src=$CA_BUNDLE"` to the runtime `docker buildx build` command above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy CA certificate. The runtime Dockerfile mounts this file only during the download steps. Image registry TLS uses the builder's own trust configuration.
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull
@@ -423,13 +435,48 @@ deployment, or a model turn.
 
 ## Authenticate to the production API
 
-Retrieve and privately retain `initial-admin-service-key.json` from the
-protected bootstrap PVC through approved storage access. This example works on
-a session copy:
+Read the protected bootstrap files before you authenticate. The claim holds
+`initial-admin-service-key.json` and `initial-admin-password` as mode 0600 files
+in a root directory owned by UID 1000 with mode 0700. A one-use reader Pod must
+run as UID 1000 on the claim's control nodes and mount the claim read-only. If
+admission refuses UID 1000, have the cluster administrator allow it for this Pod.
+Permission to read this claim is privileged.
+
+```bash
+export READER_DIRECTORY="${READER_DIRECTORY:-/secure/occ}"
+(
+  set -euo pipefail
+  umask 077
+  jq -n --arg image "$CONTROLLER_IMAGE" --arg namespace openclaw-system \
+    --arg claim "$BOOTSTRAP_CLAIM" \
+    --argjson nodeSelector "$(yq e -o=json -I=0 '.controlPlane.nodeSelector' "$OCC_INPUT_DIRECTORY/values.yaml")" \
+    -f docs/snippets/openshell-quickstart/kubernetes/bootstrap-reader.jq |
+    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create -f -
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    wait --for=condition=Ready pod/oce-owner-bootstrap-reader --timeout=3m
+  for file in initial-admin-password initial-admin-service-key.json; do
+    test ! -e "$READER_DIRECTORY/$file"
+    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+      exec oce-owner-bootstrap-reader -- \
+      node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))' \
+      "/bootstrap/$file" > "$READER_DIRECTORY/$file.tmp"
+    test -s "$READER_DIRECTORY/$file.tmp"
+    mv "$READER_DIRECTORY/$file.tmp" "$READER_DIRECTORY/$file"
+  done
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    delete pod oce-owner-bootstrap-reader
+)
+```
+
+The block stops before it replaces a retained file or keeps a failed read; delete
+the reader Pod before you retry. The files use the default names;
+`bootstrap.password.fileName` and `bootstrap.serviceKey.fileName` override them. Sign in to the Console with
+`bootstrap.adminEmail` and `initial-admin-password`. The service key file
+authenticates the CLI and REST calls below. This example works on a session copy:
 
 ```bash
 export OCC_URL="${OCC_URL:-https://<internal-occ-host>}"
-export OCC_BOOTSTRAP_KEY_FILE="${OCC_BOOTSTRAP_KEY_FILE:-/secure/occ/initial-admin-service-key.json}"
+export OCC_BOOTSTRAP_KEY_FILE="${OCC_BOOTSTRAP_KEY_FILE:-${READER_DIRECTORY:-/secure/occ}/initial-admin-service-key.json}"
 umask 077
 prepare_occ_service_key() {
   local working_directory
@@ -473,53 +520,61 @@ including its [model-response check](production-agents.md#verify-production-work
 
 ## Enable GitHub browser sign-in
 
-Use a controller image that includes GitHub sign-in: a [published image](#use-published-images)
-from a commit that includes it, or [your own build](#build-and-publish-production-images).
-Follow the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
-during stopped maintenance, after first installing without GitHub as above.
+Install the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
+with GitHub off and a compatible [published](#use-published-images) or [self-built](#build-and-publish-production-images) image.
+Keep `auth.github` configured. Never [roll back](production-upgrade-recovery.md#roll-back-across-human-sign-in) past activation.
+[Deactivate during stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
 
-Activation is one-way: the database refuses older images' sessions and
-`auth.github` must stay set. Never `helm rollback` past activation
-([rollback](production-upgrade-recovery.md#roll-back-across-human-sign-in));
-[stopped maintenance](auth-maintenance.md) deactivates it.
-
-1. Verify password recovery ([replaceable](../../reference/authentication/external-sign-in.md#session-and-recovery-controls)
-   later). Register
-   the GitHub App callback and protect its **client ID** (not App ID) and secret
-   as the [reference](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts) describes.
-   As the recovery administrator, read `data.user.id` from
+1. Verify password sign-in as recovery administrator. Read `data.user.id` from
    `GET /api/auth/session`.
-2. Create the Secret, then set `auth.github.enabled: true`, that ID as
-   `auth.recoveryUserId`, and `agentNativeAdmin.enabled: false` in protected
-   values, keeping workspace routing. Optionally narrow `auth.github.egressCidrs`, set `api.trustedProxy`
-   ([settings](../../reference/settings/production.md#github-sign-in-and-trusted-proxies)), or limit
-   sign-in to members with `auth.github.allowedOrgs` and `allowedTeams`, after granting the App
-   Members: read ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist)).
-   Profile installs set [these inputs](installation-profiles.md#external-sign-in-and-trusted-proxies)
-   and keep them in every rerender; rerender.
+2. Reuse the release Namespace’s dedicated sign-in Secret without reading values.
+   If absent, use protected files:
 
    ```bash
-   kubectl -n openclaw-system create secret generic occ-github-login \
+   kubectl --kubeconfig "${KUBECONFIG_FILE:?}" --context "${CONTEXT:?}" \
+     -n openclaw-system create secret generic occ-github-login \
      --from-file=client-id=/secure/occ/github-client-id \
      --from-file=client-secret=/secure/occ/github-client-secret
    ```
 
-3. Close ingress. Disable automatic restarts and policy/provisioning writers;
-   drain admitted requests.
-4. Run `helm upgrade` with the compatible image. The api Deployment uses
-   `Recreate`, so the old Pod stops first; startup enrolls qualifying accounts, logs any it skips,
-   and invalidates unbound sessions before serving. After a failure, keep ingress closed.
-5. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
-   verify password recovery, new session admission,
-   the expected Namespaces and existing Agent detail, and rejected stale sessions.
-   Reopen ingress only after these checks, retaining one serving controller.
+   Protected values:
 
-For enrollment, obtain the numeric subject with `gh api user --jq .id` as the
-intended GitHub user; verify ownership through your identity process, not
-email or usernames. Follow the reference's attachment and unknown-outcome handling.
-Once every ordinary account has an identity, set `auth.passwordSignIn: recovery-only`
-([recovery-only sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)).
-Loopback tests do not qualify production stop/drain, cookies, logging, or GitHub registration.
+   ```yaml
+   auth:
+     recoveryUserId: "<recovery administrator user ID>"
+     github:
+       enabled: true
+       secretName: occ-github-login
+       clientIdKey: client-id
+       clientSecretKey: client-secret
+   agentNativeAdmin:
+     enabled: false
+   ```
+
+   Match its name and distinct keys (client ID, not App ID).
+   Rerender with workspace routing and [profile inputs](installation-profiles.md#external-sign-in-and-trusted-proxies). Register the [callback](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+   See [allowlists, egress and proxies](../../reference/settings/production.md#github-sign-in-and-trusted-proxies).
+
+3. Close ingress. Disable auto-restarts and policy/provisioning writers. Drain requests.
+   [Stop API, worker and other database clients](auth-maintenance.md#stop-every-writer).
+   At first activation, [run `activate --recovery-user <recoveryUserId> --writers-stopped`](auth-maintenance.md#run-the-command).
+   This enrolls qualifying accounts, reports skips, and ends unbound sessions. After `status`, return here with ingress closed and old API/worker replicas at zero.
+4. On success, one normal `helm upgrade` restores configured replicas. Keep initialization hooks enabled.
+   The Job checks the Installation, migrates, then bootstraps without reissuing verified Installations’ credentials.
+5. Confirm rollout completion, no old API Pods, and one serving controller.
+   Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access), verify password recovery, new sessions,
+   expected Namespaces and Agent detail, and stale-session rejection before reopening ingress.
+
+Restart the API after secret rotation. Keeping the client ID preserves attachments. Changing it ends old-instance sessions:
+reattach under the new ID before detaching old methods.
+
+[Enroll skipped accounts](../../reference/authentication/external-sign-in.md#session-and-recovery-controls) first.
+Through the site’s identity process, an Installation administrator verifies the intended GitHub user owns the enrolled local OCE account.
+Never match by email or username. That user runs `gh api user --jq .id` as themselves. [Attach their numeric ID to that account](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+Resolve failed or uncertain writes before retrying. Attach identities to all ordinary accounts. Each user must sign in once with theirs before
+[`auth.passwordSignIn: recovery-only`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in).
+
+Loopback cannot qualify production stop/drain, cookies, logging, and GitHub registration.
 
 ## Related
 
