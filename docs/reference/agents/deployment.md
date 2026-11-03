@@ -184,9 +184,6 @@ apply its workspace node, so activation fails at once with
 `gateway.auth.password` to `OPENCLAW_GATEWAY_PASSWORD` (**Enable gateway password
 access**) and deploy again; the gateway log's `runtime.workspace_node` line names
 OpenClaw's refusal `reason`. A rate-limited or pairing refusal still waits.
-Configuration save and deployment admission refuse a Dedicated Codex
-Configuration without that password before any version
-([Compute admission](../drivers/compute-admission.md#kubernetes-compute)).
 
 A dependency that fails while it converges is pending too.
 `AGENT_GATEWAY_UNAVAILABLE` means the worker could not reach the new gateway

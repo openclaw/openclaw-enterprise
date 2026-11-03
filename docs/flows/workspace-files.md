@@ -224,10 +224,7 @@ Other Harnesses are replaced, restarting their Gateway.
   newly loaded registry. A Gateway that refuses that SDK connection's own
   credentials (a fixed auth refusal such as `AUTH_UNAUTHORIZED`, not rate
   limiting or pairing) reports `GATEWAY_UNAUTHORIZED` at once, and activation
-  fails with `AGENT_GATEWAY_UNAUTHORIZED`. That client signs in with
-  `gateway.auth.password`, so `validateConfiguration`
-  (`requireWorkspaceNodeGatewayPassword`) refuses a Codex Configuration without
-  it at save, preflight, provisioning and deploy.
+  fails with `AGENT_GATEWAY_UNAUTHORIZED`.
   Otherwise the ID is set at Gateway start; losing it fails.
 - The Gateway's own `/home/node/workspace` stays empty. Through
   `codexDynamicToolsExclude` (keeping owner entries) Codex loses OpenClaw tools

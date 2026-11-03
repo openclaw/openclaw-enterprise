@@ -113,7 +113,9 @@ admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Confi
 save also refuses both), unknown or padded operator scopes, blank or padded identity keys,
 grants for identities outside `allowUsers`, malformed `requiredHeaders`, and human
 admission with admin device scopes, including whitespace; human allowlists render
-`x-openclaw-scopes` as required. These refusals precede workload replacement.
+`x-openclaw-scopes` as required. With private status, `validateConfiguration`
+also refuses a Codex Configuration without `gateway.auth.password`, which the
+workspace node check signs in with. These refusals precede workload replacement.
 Human ingress and its network policy remain operator-managed; no OCE human
 account is required. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
 Provisioning supplies no Gateway token or trust override. Losing its claim cancels
