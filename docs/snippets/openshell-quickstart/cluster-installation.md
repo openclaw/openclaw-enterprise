@@ -128,21 +128,22 @@ kubectl -n "$PLATFORM_NS" create secret generic "$peer_secret" \
   --from-file="installation.yaml=$RUN_DIR/installation-with-peers.json"
 jq --arg secret "$peer_secret" '.installation.secretName=$secret | .worker.replicaCount=1' \
   "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
-# Permit the worker to reach only this OpenShell management Service and its Pods.
+# The API registers model credentials and the worker manages workspaces through OpenShell.
 kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
   jq -e --arg ns "$PLATFORM_NS" --arg release "$RELEASE" '
     .spec as $svc | select($svc.type=="ClusterIP" and ($svc.selector|length)>0
       and ($svc.clusterIP|test("^[0-9]+(\\.[0-9]+){3}$"))) |
     [$svc.ports[] | select(.protocol=="TCP" and .port==8080)] | select(length==1) | first as $port |
     {apiVersion:"networking.k8s.io/v1", kind:"NetworkPolicy",
-     metadata:{namespace:$ns,name:"oce-worker-openshell-management"},
+     metadata:{namespace:$ns,name:"oce-controller-openshell-management"},
      spec:{podSelector:{matchLabels:{"app.kubernetes.io/name":"openclaw-enterprise",
-       "app.kubernetes.io/instance":$release,"app.kubernetes.io/component":"worker"}},
+       "app.kubernetes.io/instance":$release},matchExpressions:[
+       {key:"app.kubernetes.io/component",operator:"In",values:["api","worker"]}]},
        policyTypes:["Egress"],egress:[
          {to:[{ipBlock:{cidr:($svc.clusterIP+"/32")}}],ports:[{protocol:"TCP",port:8080}]},
          {to:[{podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
-       ]}}' > "$RUN_DIR/worker-management-policy.json"
-kube create -f "$RUN_DIR/worker-management-policy.json"
+       ]}}' > "$RUN_DIR/management-policy.json"
+kube create -f "$RUN_DIR/management-policy.json"
 helm upgrade oce "$OCE_CHART" -n "$PLATFORM_NS" -f "$RUN_DIR/worker.json" --wait
 cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
 cp "$RUN_DIR/worker.json" "$VALUES_FILE"
