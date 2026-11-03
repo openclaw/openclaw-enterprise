@@ -275,6 +275,11 @@ function sampleString(random, schema) {
     let text;
     if (pattern !== undefined) {
       text = synthesize(random, schema.pattern);
+      // A prefix match such as ^https:// may need a suffix to satisfy minLength.
+      const missing = minLength - ucs2Length(text);
+      if (missing > 0) {
+        text += "a".repeat(missing);
+      }
     } else {
       const length = integer(random, minLength, Math.min(maxLength, minLength + 12));
       text = Array.from({ length }, () => pick(random, ALPHABET.slice(0, 62))).join("");
