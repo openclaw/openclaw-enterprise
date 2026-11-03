@@ -49,7 +49,9 @@ owns the operator procedure and destructive cleanup boundary.
 
 ```mermaid
 graph TD
-  A["./bin/occ dev up"] --> Profile{"Compute profile"}
+  A["./bin/occ dev up"] --> Guard{"Development settings valid?"}
+  Guard -->|No| Refuse["Refuse before startup"]
+  Guard -->|Yes| Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
   Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
   KPre --> KControl{"Control-plane profile"}
@@ -60,12 +62,9 @@ graph TD
   KCodex -->|failure| KRollback
   KDriver -->|OpenShell| KOpenFirst["Prepare OpenShell assets,<br/>install routing, then import runtime"]
   KRoutingFirst --> KOnly["Install selected control-plane profile<br/>and retain all readiness gates"]
-  KOpenFirst --> KProtection{"Static inference enabled?"}
-  KProtection -->|Off| KGateway["Install authenticated Gateway<br/>and wait for readiness"]
+  KOpenFirst --> KGateway["Install authenticated Gateway<br/>and wait for readiness"]
   KGateway --> KOnly
-  KProtection -->|On| KAuthority["Prepare authority TLS and registry<br/>Install Gateway without readiness wait"]
-  KAuthority --> KOnly
-  KOnly --> KWait["Complete readiness gates<br/>including protected Gateway rollout"]
+  KOnly --> KWait["Complete control-plane readiness gates"]
   KWait --> KWorkspace
   KControl -->|Compose| KConfig["Validate Compose and claim<br/>private state with snapshot"]
   KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
@@ -235,10 +234,9 @@ startup; malformed values still fail validation. Refusal does not select a fallb
 
 The retained packaging fixtures still exercise authority provisioning and release
 ordering: the Gateway becomes ready after the API authority starts and before
-workers start. Recorded protected state retains its authority TLS and public trust,
-OpenShell's native PKI, and paired Backend and authority configuration. For an
-existing installation, keep that state and its ownership evidence for cleanup
-and rollback.
+workers start. The fixtures cover authority TLS and public trust, native OpenShell
+PKI, and paired Backend and authority settings. For an existing installation,
+keep the recorded state and ownership evidence for cleanup and rollback.
 
 The chart projects the administrative client certificate into API and worker
 only. The Backend supplies it to verified gRPC TLS for DNS or exact-IP server
