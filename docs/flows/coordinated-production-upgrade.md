@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-03"
-last_updated_session: "authoring-run/a4cf6a1b-e333-44d4-8e78-138caa5c190a"
+last_updated_session: "authoring-run/1308615d-068b-473e-8062-2baec5b66ab0"
 ---
 
 # Production image upgrade flow
@@ -15,11 +15,10 @@ read-only Doctor lint.
 
 ## Entry Points
 
-- Trigger: an operator runs `scripts/upgrade-production-images` with selected
-  images and cluster, release, source, and protected-file inputs.
-- Required state: a healthy production Helm release and matching OCC and
-  Kubernetes Installation identity. Runtime releases additionally require a
-  complete authorized fleet inventory with no deployment in progress.
+- Trigger: run `scripts/upgrade-production-images` with the selected images, target,
+  release, source revision and protected files.
+- Required: a healthy production Helm release and matching OCC and Kubernetes
+  Installation IDs. Runtime upgrades require complete authorized inventory and no deployment in progress.
 - Source: `scripts/upgrade-production-images`,
   `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`,
   and `packages/occ/src/index.ts:OpenClawController.deployAgent`.
@@ -63,39 +62,38 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Before protected-file reads, evidence writes or cluster access, repository
-`HEAD` must match `--source-revision`.
-Local edits and image provenance remain unverified.
+Before reading protected files, writing evidence or contacting the cluster, the helper
+matches `HEAD` to `--source-revision` and checks the stock Helm chart against that commit.
+It rejects extra, missing or changed chart files, symlinks, and baseline or evidence paths
+inside the chart, including aliases. Keep the checkout unchanged throughout the run.
+Other local edits and image provenance remain unchecked.
 
-Resume checks the evidence directory's canonical path, device and inode before
-live access. Aliases to the original directory share its lock. Runtime upgrades
-also lock a private sibling dispatch journal bound to the run and frozen fleet.
-The journal survives restoration of the evidence alone.
+Resume checks the evidence directory's canonical path, device and inode before cluster
+access. Aliases share its lock. Runtime upgrades also lock a private sibling dispatch journal
+for the run and frozen fleet. Restoring evidence leaves the journal intact.
 
-It checks protected files, cluster, deployed Helm release and matching OCC/Secret
-Installation IDs. Reviewed candidates must match the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
+It checks protected inputs, cluster, deployed release and matching OCC/Secret Installation IDs.
+Candidates must match the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
 as ordered YAML mappings, including images; non-mappings stop preparation before
 rendering. Only the Slack directory proxy and curated Codex PluginDriver selection
 may change before image flags apply. Broker checks compare references, not
 ConfigMap or Secret contents.
 
-Runtime upgrades require complete authorized inventory of running Agents' baseline versions. Nonterminal
-deployments, missing selected versions or unready Namespaces stop preparation.
-Stopped/deleting Agents are excluded; pending repository cleanup does not block.
+Runtime upgrades require a complete, authorized inventory of running Agents and baseline versions.
+Nonterminal deployments, missing versions or unready Namespaces stop preparation.
+Stopped or deleting Agents are excluded; pending repository cleanup does not block.
 
-Repository-enabled releases require explicit immutable controller and broker
-images. The helper inventories all nodes matching the control plane selector,
-including unready and cordoned nodes; they must have one native architecture.
-`scripts/upgrade-image-identity.py:read_platform` reads Docker's native OCI export
-and verifies the selected configuration's platform, with hash checks and 2 MiB
-per-blob and 32 MiB total metadata limits.
-`scripts/upgrade-repository-image-probe.mjs` runs both images with synthetic
-inputs and a private receipt listener. It checks recovery and refused reservation
-through the actual Driver and broker, recording the selected digest, platform
-manifest, configuration, requests, and responses. This proves wire compatibility,
-not Kubernetes image availability, receipt durability, or disposal. The helper
-preserves the live broker hostname; broker restart recovery remains an operator
-task in the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
+Repository-enabled releases require explicit immutable controller and broker images.
+All nodes matching the control plane selector, even unready or cordoned nodes,
+must share one architecture. `scripts/upgrade-image-identity.py:read_platform`
+verifies the selected platform and blob hashes in Docker's OCI export
+(2 MiB per blob, 32 MiB total metadata).
+`scripts/upgrade-repository-image-probe.mjs` tests recovery and refused reservations
+through both images using synthetic inputs and a private receipt listener. It
+records the digest, platform manifest, configuration, requests and responses.
+This verifies the Driver and broker protocol; Kubernetes image availability,
+receipt durability and disposal remain unverified. The live broker hostname
+stays fixed. For restart recovery, follow the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
 
 After rendering and a server-side Helm dry run,
 [`scripts/upgrade-startup-preflight.mjs`](../../scripts/upgrade-startup-preflight.mjs)
@@ -296,8 +294,8 @@ Agents or Secrets.
 
 ## Debugging and Verification
 
-- For chart or admission failures before mutation, inspect `server-dry-run.txt`;
-  for rejected candidates, inspect `preflight-<api|worker>.log` and `-status.json`.
+- Read stderr for chart, output path or Helm dry-run errors. `server-dry-run.txt`
+  contains Helm's standard output. For rejected candidates, inspect `preflight-<api|worker>.log` and `-status.json`.
 - For native scale, Helm upgrade, or rollout status failures, inspect
   `native-command-failures.tsv`; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
 - Before retrying runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
@@ -325,6 +323,8 @@ Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 10:46: Document stock chart verification. (authoring-run/1308615d-068b-473e-8062-2baec5b66ab0 - 11099b579a5c197e0ec5c342bffb78036c321a32)
 
 - 2026-11-03 02:34: Preserve journaled replacements when evidence is restored. (authoring-run/a4cf6a1b-e333-44d4-8e78-138caa5c190a - 19f63529413d4a530ac4eb65204980720d6d8ce9)
 
