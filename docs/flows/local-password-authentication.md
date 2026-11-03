@@ -24,7 +24,6 @@ rotation and revocation.
   and [`apps/controller/src/index.ts:createFastifyApp`](../../apps/controller/src/index.ts).
 - Assumptions: Migrated PostgreSQL, configured Better Auth, native IAM bootstrap,
   protected output storage, disabled public signup, and exact IAM authorization.
-  Production and development differ only in password output placement.
 
 ## Flow
 
@@ -198,14 +197,14 @@ including `hd` and `email_verified` when allowed domains are set, and returns
 With the experimental OIDC trust claim configured
 ([settings](../reference/settings/oidc.md)),
 `apps/controller/src/auth/oidc.ts:exchangeOidcSubject` also compares the verified
-ID token's named claim for the exact value; only a match returns `trusted` with
-the token's email claim. An unattached matched subject falls back to
+ID token's named claim for the exact value; only a match returns `trusted` and
+the token's email claim. An unattached match falls back to
 `packages/occ/src/state/human-authentication.ts:provisionTrustedExternalAccount`:
 one transaction writes the user, identity-only method, grantless Principal, and
 enrolment, auditing `authentication.account.self-enrol` before
-`authentication.login`. A savepoint wraps the writes, so a uniqueness conflict —
+`authentication.login`. A savepoint wraps the writes: a uniqueness conflict —
 a concurrent enrolment or a held email — rolls back and fails
-closed; locks are user-first, matching session issuance, and the attempt's
+closed; locks are user-first, and the attempt's
 creation time travels in, so an identity that appeared or changed after the
 attempt began refuses like an attached one.
 
