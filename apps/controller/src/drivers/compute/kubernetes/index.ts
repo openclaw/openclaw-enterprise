@@ -2938,7 +2938,7 @@ function withoutVariableProviders(
 function requireConfiguredModelProviders(
   configuration: Readonly<OpenClawConfigurationDocument>,
   options?: ConfigurationValidationOptions,
-): void {
+): string | undefined {
   let harnessId: string;
   let authentication: ReturnType<typeof harnessModelAuthentication>;
   try {
@@ -2960,6 +2960,7 @@ function requireConfiguredModelProviders(
   );
   // An inline key is left to the Configuration Driver, whose message says to use a Secret.
   requireProviderApiKeys(configuration, harnessId === "openclaw", authentication, true, options);
+  return harnessId;
 }
 
 // The Harness the Configuration's model policy selects, resolved as requireConfiguredModelProviders
@@ -4852,10 +4853,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     options?: ConfigurationValidationOptions,
   ): void {
     this.validateConfigurationContent(configuration, options);
-    requireConfiguredModelProviders(configuration, options);
+    const harnessId = requireConfiguredModelProviders(configuration, options);
     refuseUnreadablePluginSecretInputs(configuration, callerSettingError, options);
     // A Configuration whose model policy selects Codex runs only as Dedicated Codex.
-    if (configuredHarnessId(configuration, options) === "codex") {
+    if ((harnessId ?? configuredHarnessId(configuration, options)) === "codex") {
       requireCodexPlugin(configuration, callerSettingError, options);
     }
     // Deployment admission refuses the rest of the gateway shape in its own order.
