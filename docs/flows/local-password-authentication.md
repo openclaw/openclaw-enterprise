@@ -24,8 +24,7 @@ rotation and revocation.
   and [`apps/controller/src/index.ts:createFastifyApp`](../../apps/controller/src/index.ts).
 - Assumptions: Migrated PostgreSQL, configured Better Auth, native IAM bootstrap,
   protected output storage, disabled public signup, and exact IAM authorization.
-  Production receives a private password path and sibling service-key path;
-  development receives only the service-key output path.
+  Production and development differ only in password output placement.
 
 ## Flow
 
@@ -195,6 +194,20 @@ Google reuses `auth/human-login.ts:externalProviderEndpoints`.
 `apps/controller/src/auth/google.ts:exchangeGoogleSubject` verifies its ID token,
 including `hd` and `email_verified` when allowed domains are set, and returns
 `sub`. It does not use the OIDC enrollment policy.
+
+With the experimental OIDC trust claim configured
+([settings](../reference/settings/oidc.md)),
+`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` also compares the verified
+ID token's named claim for the exact value; only a match returns `trusted` with
+the token's email claim. An unattached matched subject falls back to
+`packages/occ/src/state/human-authentication.ts:provisionTrustedExternalAccount`:
+one transaction writes the user, identity-only method, grantless Principal, and
+enrolment, auditing `authentication.account.self-enrol` before
+`authentication.login`. A savepoint wraps the writes, so a uniqueness conflict —
+a concurrent enrolment or a held email — rolls back and fails
+closed; locks are user-first, matching session issuance, and the attempt's
+creation time travels in, so an identity that appeared or changed after the
+attempt began refuses like an attached one.
 
 `apps/controller/src/auth/client-address.ts:clientAddressConfiguration` canonicalizes
 IPv4-mapped addresses before prefix validation, refusing entries covering every
