@@ -2,27 +2,22 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  protectedJSON,
+  type FixtureRun,
+  type LocalRehearsalCluster,
+  type RehearsalCustody,
+} from "./production-rehearsal-custody.ts";
 
 const controllerRepository = "ghcr.io/openclaw/openclaw-enterprise-controller";
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
 
-type Run = (
-  command: string,
-  args: string[],
-  options?: {
-    cwd?: string;
-    env?: NodeJS.ProcessEnv;
-    input?: string;
-    protectedInput?: boolean;
-    timeout?: number;
-  },
-) => Promise<string>;
-
 type ControllerImage = {
   reference: string;
   configDigest: string;
   manifestDigest: string;
+  platform: string;
   checkout: string;
   revision: string;
 };
@@ -91,12 +86,12 @@ export function assertDistinctControllers(
   assert.notEqual(
     previous.configDigest,
     candidate.configDigest,
-    "controller image contents must differ",
+    "controller platform configs must differ",
   );
   assert.notEqual(previous.revision, candidate.revision, "controller source commits must differ");
 }
 
-export async function selectRehearsalControllers(run: Run, env: NodeJS.ProcessEnv) {
+export function assertLocalRehearsalSelection(env: NodeJS.ProcessEnv) {
   assert.ok(
     !env.CI &&
       !env.GITHUB_ACTIONS &&
@@ -108,6 +103,10 @@ export async function selectRehearsalControllers(run: Run, env: NodeJS.ProcessEn
       !env.OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE,
     "run the controller rehearsal locally without model credentials or the live TUI/runtime upgrade",
   );
+}
+
+export async function selectRehearsalControllers(run: FixtureRun, env: NodeJS.ProcessEnv) {
+  assertLocalRehearsalSelection(env);
   const imageIdentity = fileURLToPath(
     new URL("../../scripts/upgrade-image-identity.py", import.meta.url),
   );
@@ -188,6 +187,7 @@ export async function selectRehearsalControllers(run: Run, env: NodeJS.ProcessEn
       ...selection,
       manifestDigest: identity.manifestDigest as string,
       configDigest: identity.configDigest as string,
+      platform,
     };
   };
   const previous = await inspect(previousSource);
@@ -204,6 +204,27 @@ type Api = (
   expected?: number,
 ) => Promise<unknown>;
 type Kubectl = (...args: string[]) => Promise<string>;
+type ExternalRequest = (
+  method: "GET",
+  path: string,
+  body: undefined,
+  options: { authenticated: boolean },
+) => Promise<{ status?: number; body: unknown }>;
+
+export async function assertReturnedInstallationAuthentication(
+  request: ExternalRequest,
+  installationId: string,
+) {
+  const denied = await request("GET", "/installation", undefined, { authenticated: false });
+  assert.equal(denied.status, 401, "the returned OCC must deny anonymous Installation reads");
+  const authorized = await request("GET", "/installation", undefined, { authenticated: true });
+  assert.equal(authorized.status, 200, "the returned OCC must accept the original service key");
+  const body = authorized.body as { data?: { id?: string } } | null;
+  assert.ok(
+    body?.data?.id === installationId,
+    "the returned OCC must serve the original Installation",
+  );
+}
 type Rehearsal = {
   controllers: Controllers;
   kubeconfig: string;
@@ -216,9 +237,12 @@ type Rehearsal = {
   namespaceId: string;
   tenant: string;
   runtime: string;
-  run: Run;
+  run: FixtureRun;
   kubectl: Kubectl;
   api: Api;
+  externalRequest: ExternalRequest;
+  custody: RehearsalCustody;
+  localCluster: LocalRehearsalCluster;
   waitFor: <T>(
     description: string,
     check: () => Promise<T | false>,
@@ -230,22 +254,43 @@ type Rehearsal = {
 type ContainerStatus = {
   name: string;
   imageID: string;
+  containerID: string;
   ready: boolean;
 };
 
 type Pod = {
   metadata: { name: string; uid: string; labels: Record<string, string> };
-  spec: { serviceAccountName: string; containers: { name: string; image: string }[] };
+  spec: {
+    nodeName: string;
+    serviceAccountName: string;
+    containers: { name: string; image: string }[];
+  };
   status: { phase: string; podIP: string; containerStatuses?: ContainerStatus[] };
 };
 
-function assertImageID(image: ControllerImage, imageID: string | undefined) {
+export async function assertRunningController(
+  image: Pick<ControllerImage, "reference" | "platform" | "manifestDigest" | "configDigest">,
+  platform: string,
+  imageID: string | undefined,
+  readContainerImage: () => Promise<string | undefined>,
+) {
+  assert.equal(
+    platform,
+    image.platform,
+    "controller Pod is scheduled on a different OS or architecture",
+  );
   const observed = imageID?.match(/sha256:[a-f0-9]{64}$/u)?.[0];
-  const manifestDigest = image.reference.split("@")[1];
+  if (observed === image.manifestDigest || observed === image.configDigest) {
+    return observed;
+  }
+  // Kubernetes can report the repository index instead of the selected child.
+  // An index is only a locator. Prove the actual container's config separately.
   assert.ok(
-    observed && [manifestDigest, image.manifestDigest, image.configDigest].includes(observed),
+    observed === image.reference.split("@")[1] &&
+      (await readContainerImage()) === image.configDigest,
     "the running controller image ID differs from the selected platform image",
   );
+  return image.configDigest;
 }
 
 const components = ["api", "worker"] as const;
@@ -277,6 +322,9 @@ export async function rehearsePopulatedReturn({
   run,
   kubectl,
   api,
+  externalRequest,
+  custody,
+  localCluster,
   waitFor,
   record,
 }: Rehearsal) {
@@ -289,18 +337,24 @@ export async function rehearsePopulatedReturn({
   const helm = (...args: string[]) => run("helm", [...args, ...helmArgs], { timeout: 330_000 });
   const kube = (...args: string[]) => kubectl("--namespace", namespace, ...args);
   const get = async (resource: string) => JSON.parse(await kube("get", resource, "-o", "json"));
-  const kubeWrite = (verb: "create" | "replace", object: object, protectedInput = false) =>
-    run(
-      "kubectl",
-      [
-        `--kubeconfig=${kubeconfig}`,
-        `--context=${context}`,
-        `--namespace=${namespace}`,
-        verb,
-        "-f",
-        "-",
-      ],
-      { input: JSON.stringify(object), protectedInput },
+  const startupSecret = async () =>
+    protectedJSON<{
+      metadata: { uid: string; annotations: Record<string, string> };
+      data: { "installation.yaml": string };
+    }>(
+      await run(
+        "kubectl",
+        [
+          `--kubeconfig=${kubeconfig}`,
+          `--context=${context}`,
+          `--namespace=${namespace}`,
+          "get",
+          "secret/occ-installation-startup",
+          "-o",
+          "json",
+        ],
+        { protectedInput: true },
+      ),
     );
   const installationPath = "/installation";
   const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
@@ -324,20 +378,7 @@ export async function rehearsePopulatedReturn({
     });
     return result;
   };
-  const postgres = (command: string, ...args: string[]) =>
-    kube(
-      "exec",
-      "pod/postgres",
-      "--",
-      "sh",
-      "-ec",
-      'umask 077; export PGPASSWORD="$POSTGRES_PASSWORD"; exec "$@"',
-      "postgres-fixture",
-      command,
-      "--host=127.0.0.1",
-      "--username=postgres",
-      ...args,
-    );
+  const { postgres } = custody;
   const sql = async (database: string, query: string) =>
     (
       await postgres("psql", "-XAt", "-v", "ON_ERROR_STOP=1", `--dbname=${database}`, "-c", query)
@@ -389,6 +430,27 @@ export async function rehearsePopulatedReturn({
         return { name, uid: metadata.uid, volume: spec.volumeName };
       }),
     );
+  const verifyPodImage = async (
+    image: ControllerImage,
+    pod: Pod,
+    status: ContainerStatus | undefined,
+  ) => {
+    assert.equal(
+      pod.spec.nodeName,
+      localCluster.node,
+      "controller Pod must use the owned k3d Node",
+    );
+    const node = await get(`node/${pod.spec.nodeName}`);
+    assert.equal(node.metadata.uid, localCluster.nodeUID, "the owned k3d Node was replaced");
+    const { operatingSystem, architecture } = node.status.nodeInfo;
+    assert.ok(status, "the controller container has no runtime status");
+    return assertRunningController(
+      image,
+      `${operatingSystem}/${architecture}`,
+      status.imageID,
+      () => localCluster.runningConfigDigest(status.containerID, pod.metadata.uid),
+    );
+  };
   const controlPlane = async (image: ControllerImage, database: string) => {
     const currentPods = await pods();
     assert.equal(currentPods.length, components.length, "expected one API and one worker Pod");
@@ -417,19 +479,26 @@ export async function rehearsePopulatedReturn({
         );
         const status = pod.status.containerStatuses?.find((item) => item.name === component);
         assert.ok(status?.ready, `${component} container is not ready`);
-        assertImageID(image, status.imageID);
+        const imageDigest = await verifyPodImage(image, pod, status);
         assert.equal(pod.spec.serviceAccountName, `openclaw-enterprise-${component}`);
         const account = await get(`serviceaccount/${pod.spec.serviceAccountName}`);
         assert.ok(account.metadata.uid, `${component} ServiceAccount must have an identity`);
-        const selectedDatabase = await kube(
-          "exec",
-          `pod/${pod.metadata.name}`,
-          "-c",
-          component,
-          "--",
-          "node",
-          "-e",
-          "console.log(new URL(process.env.OCC_DATABASE_URL).pathname.slice(1))",
+        const selectedDatabase = await run(
+          "kubectl",
+          [
+            `--kubeconfig=${kubeconfig}`,
+            `--context=${context}`,
+            `--namespace=${namespace}`,
+            "exec",
+            `pod/${pod.metadata.name}`,
+            "-c",
+            component,
+            "--",
+            "node",
+            "-e",
+            "console.log(new URL(process.env.OCC_DATABASE_URL).pathname.slice(1))",
+          ],
+          { protectedInput: true },
         );
         assert.equal(selectedDatabase.trim(), database, `${component} uses the wrong database`);
         return {
@@ -440,6 +509,7 @@ export async function rehearsePopulatedReturn({
           serviceAccountUID: account.metadata.uid,
           ip: pod.status.podIP,
           imageID: status.imageID,
+          imageDigest,
         };
       }),
     );
@@ -460,18 +530,27 @@ export async function rehearsePopulatedReturn({
   const baselineRelease = await helmStatus();
   assert.equal(baselineRelease.info.status, "deployed");
   assert.ok(Number.isSafeInteger(baselineRelease.version) && baselineRelease.version > 0);
-  const namespaceUID = (await get(`namespace/${namespace}`)).metadata.uid;
-  const tenantUID = (await get(`namespace/${tenant}`)).metadata.uid;
+  await custody.assertRelease();
+  const postgresIdentity = await custody.assertPostgres();
+  const namespaceUID = custody.namespaceUID(namespace);
+  const tenantUID = custody.namespaceUID(tenant);
   const claims = await claimIdentity();
-  const startupSecret = await get("secret/occ-installation-startup");
-  const startup = JSON.parse(
-    Buffer.from(startupSecret.data["installation.yaml"], "base64").toString("utf8"),
+  const initialStartupSecret = await startupSecret();
+  custody.assertUID("secret/occ-installation-startup", initialStartupSecret.metadata.uid);
+  const startup = protectedJSON<{
+    drivers?: { compute?: { configuration?: { images?: { gateway?: string; agent?: string } } } };
+  }>(Buffer.from(initialStartupSecret.data["installation.yaml"], "base64").toString("utf8"));
+  const startupImages = startup.drivers?.compute?.configuration?.images;
+  assert.ok(
+    startupImages?.gateway === runtime && startupImages?.agent === runtime,
+    "installation startup Secret must retain the selected runtime image",
   );
-  assert.equal(startup.drivers.compute.configuration.images.gateway, runtime);
-  assert.equal(startup.drivers.compute.configuration.images.agent, runtime);
   const { id: installationId } = (await api("GET", installationPath)) as { id: string };
-  assert.ok(installationId && namespaceUID && tenantUID && startupSecret.metadata.uid);
-  assert.equal(startupSecret.metadata.annotations["openclaw.dev/installation-id"], installationId);
+  assert.ok(installationId && namespaceUID && tenantUID && initialStartupSecret.metadata.uid);
+  assert.equal(
+    initialStartupSecret.metadata.annotations["openclaw.dev/installation-id"],
+    installationId,
+  );
   const verifyInstallation = async () => {
     const installation = (await api("GET", installationPath)) as { id: string };
     assert.equal(installation.id, installationId);
@@ -520,6 +599,7 @@ export async function rehearsePopulatedReturn({
     namespaceUID,
     tenantUID,
     claims,
+    postgres: postgresIdentity,
     baseline,
     previousPods,
     previous,
@@ -554,12 +634,16 @@ export async function rehearsePopulatedReturn({
     "--timeout-seconds",
     "300",
   ];
-  const upgrade = (args: string[]) =>
-    run("bash", ["scripts/upgrade-production-images", ...upgradeArgs, ...args], {
+  const upgrade = async (args: string[]) => {
+    await localCluster.assertCluster();
+    await custody.assertPostgres();
+    await custody.assertRelease();
+    return run("bash", ["scripts/upgrade-production-images", ...upgradeArgs, ...args], {
       cwd: candidate.checkout,
       env: occEnv,
       timeout: 720_000,
     });
+  };
   await phase("Check the candidate without stopping writers", () =>
     upgrade(["--preflight-only", "--evidence-dir", join(directory, "preflight")]),
   );
@@ -569,7 +653,7 @@ export async function rehearsePopulatedReturn({
   });
   const candidateRelease = await helmStatus();
   assert.equal(candidateRelease.info.status, "deployed");
-  assert.ok(candidateRelease.version > baselineRelease.version);
+  await custody.bindRelease(candidateRelease.version);
   const candidatePods = await controlPlane(candidate, originalDatabase);
   assert.deepEqual(writerIdentities(candidatePods), writerIdentities(previousPods));
   assert.deepEqual(await readAgent(baseline.id), baseline);
@@ -585,13 +669,23 @@ export async function rehearsePopulatedReturn({
   });
 
   await phase("Stop both candidate writers", async () => {
-    await kube(
-      "scale",
-      "deployment/openclaw-enterprise-api",
-      "deployment/openclaw-enterprise-worker",
-      "--current-replicas=1",
-      "--replicas=0",
-    );
+    await custody.assertPostgres();
+    await custody.assertRelease();
+    for (const { component, deploymentUID } of candidatePods) {
+      const resource = `deployment/openclaw-enterprise-${component}`;
+      const { metadata } = await get(resource);
+      assert.ok(
+        metadata.uid === deploymentUID && metadata.resourceVersion,
+        `candidate ${component} Deployment was replaced`,
+      );
+      await kube(
+        "scale",
+        resource,
+        "--current-replicas=1",
+        "--replicas=0",
+        `--resource-version=${metadata.resourceVersion}`,
+      );
+    }
     await waitFor(
       "candidate writer Pods and database connections to terminate",
       async () => (await pods()).length === 0 && (await candidateConnections()) === "0",
@@ -614,38 +708,23 @@ export async function rehearsePopulatedReturn({
     assertReturnedAgents(baseline, accepted, await databaseAgents(restoredDatabase));
   });
 
-  const databaseSecret = await get("secret/occ-database");
-  assert.ok(databaseSecret.metadata.uid && databaseSecret.metadata.resourceVersion);
-  const restoreCredentials = Object.fromEntries(
-    ["application-url", "migration-url"].map((key) => {
-      const url = new URL(Buffer.from(databaseSecret.data[key], "base64").toString("utf8"));
-      assert.equal(url.pathname, `/${originalDatabase}`);
-      assert.equal(url.hostname, `postgres.${namespace}.svc.cluster.local`);
-      assert.equal(url.username, key === "application-url" ? "occ_app" : "occ_migrator");
-      url.pathname = `/${restoredDatabase}`;
-      return [key, Buffer.from(url.toString()).toString("base64")];
-    }),
-  );
   const probeName = "return-compatibility";
   await phase("Check the restored database with the previous controller", async () => {
     const probeSecret = {
       apiVersion: "v1",
       kind: "Secret",
-      metadata: { name: probeName },
-      data: { "migration-url": restoreCredentials["migration-url"] },
+      metadata: custody.metadata(probeName),
+      data: { "migration-url": await custody.restoredMigrationURL(restoredDatabase) },
     };
     const probe = {
       apiVersion: "v1",
       kind: "Pod",
-      metadata: {
-        name: probeName,
-        // Copy the chart's network policy labels, not the Job's ownership labels.
-        labels: {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/instance": release,
-          "app.kubernetes.io/component": "initialization",
-        },
-      },
+      // Copy the chart's network policy labels, not the Job's ownership labels.
+      metadata: custody.metadata(probeName, {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": release,
+        "app.kubernetes.io/component": "initialization",
+      }),
       spec: {
         restartPolicy: "Never",
         activeDeadlineSeconds: 120,
@@ -666,13 +745,18 @@ export async function rehearsePopulatedReturn({
         ],
       },
     };
-    await kubeWrite("create", probeSecret, true);
-    await kubeWrite("create", probe);
+    await custody.create(probeSecret);
+    const probeUID = await custody.create(probe);
     const completed = await waitFor<Pod>("previous controller migration check", async () => {
       const pod: Pod = await get(`pod/${probeName}`);
+      assert.equal(pod.metadata.uid, probeUID, "the compatibility Pod was replaced");
       return ["Succeeded", "Failed"].includes(pod.status.phase) ? pod : false;
     });
-    assertImageID(previous, completed.status.containerStatuses?.[0]?.imageID);
+    await verifyPodImage(
+      previous,
+      completed,
+      completed.status.containerStatuses?.find(({ name }) => name === "migration"),
+    );
     const output = await kube("logs", `pod/${probeName}`, "-c", "migration");
     assert.equal(
       completed.status.phase,
@@ -692,66 +776,65 @@ export async function rehearsePopulatedReturn({
   });
 
   await phase("Return to the previous Helm revision on the restored database", async () => {
+    await localCluster.assertCluster();
+    await custody.assertRelease();
     await assertNoCandidateWriters();
-    delete databaseSecret.metadata.managedFields;
-    // Keep the original connection settings available if the return stops
-    // after changing the Secret. Never copy them into the proof.
-    await writeFile(
-      join(directory, "candidate-database-secret.json"),
-      JSON.stringify(databaseSecret) + "\n",
-      {
-        mode: 0o600,
-        flag: "wx",
-      },
-    );
-    databaseSecret.data = { ...databaseSecret.data, ...restoreCredentials };
-    await kubeWrite("replace", databaseSecret, true);
+    await custody.replaceDatabase(restoredDatabase, directory);
+    await custody.assertPostgres();
+    await custody.assertRelease();
     await helm("rollback", release, String(baselineRelease.version), "--wait", "--timeout=5m");
     await verifyInstallation();
   });
   const returned = await helmStatus();
   assert.equal(returned.info.status, "deployed");
-  assert.ok(returned.version > candidateRelease.version);
+  await custody.bindRelease(returned.version);
   assert.deepEqual(await claimIdentity(), claims);
   assert.equal((await get(`namespace/${namespace}`)).metadata.uid, namespaceUID);
   assert.equal((await get(`namespace/${tenant}`)).metadata.uid, tenantUID);
-  const returnedSecret = await get("secret/occ-installation-startup");
-  assert.equal(returnedSecret.metadata.uid, startupSecret.metadata.uid);
-  assert.equal(returnedSecret.data["installation.yaml"], startupSecret.data["installation.yaml"]);
+  const returnedSecret = await startupSecret();
+  assert.equal(returnedSecret.metadata.uid, initialStartupSecret.metadata.uid);
+  assert.ok(
+    returnedSecret.data["installation.yaml"] === initialStartupSecret.data["installation.yaml"],
+    "the original installation startup Secret contents changed",
+  );
   assert.equal(returnedSecret.metadata.annotations["openclaw.dev/installation-id"], installationId);
-  assert.equal((await get("secret/occ-database")).metadata.uid, databaseSecret.metadata.uid);
+  await custody.assertPostgres();
   const returnedPods = await controlPlane(previous, restoredDatabase);
   assert.deepEqual(writerIdentities(returnedPods), writerIdentities(previousPods));
   for (const pod of returnedPods) {
     assert.ok(![...previousPods, ...candidatePods].some((earlier) => earlier.uid === pod.uid));
   }
-  await phase("Read the acknowledged write through the returned OCC", async () => {
-    // Bind the database readback to both serving controller Pods and check that
-    // the retained candidate database has no application connections.
-    await waitFor(
-      "both returned controller connections on the restored database",
-      async () => {
-        assertReturnedAgents(baseline, accepted, [
-          await readAgent(baseline.id),
-          await readAgent(accepted.id),
-        ]);
-        const active = (
-          await sql(
-            "postgres",
-            `SELECT datname || ':' || host(client_addr)
+  await phase(
+    "Verify authentication and read the acknowledged write through the returned OCC",
+    async () => {
+      await assertReturnedInstallationAuthentication(externalRequest, installationId);
+      // Bind the database readback to both serving controller Pods and check that
+      // the retained candidate database has no application connections.
+      await waitFor(
+        "both returned controller connections on the restored database",
+        async () => {
+          assertReturnedAgents(baseline, accepted, [
+            await readAgent(baseline.id),
+            await readAgent(accepted.id),
+          ]);
+          const active = (
+            await sql(
+              "postgres",
+              `SELECT datname || ':' || host(client_addr)
         FROM pg_stat_activity WHERE usename = 'occ_app'
           AND datname IN ('${originalDatabase}', '${restoredDatabase}')`,
-          )
-        ).split("\n");
-        return returnedDatabaseConnections(
-          active,
-          returnedPods.map(({ ip }) => ip),
-        );
-      },
-      30_000,
-    );
-    assertReturnedAgents(baseline, accepted, await databaseAgents(originalDatabase));
-  });
+            )
+          ).split("\n");
+          return returnedDatabaseConnections(
+            active,
+            returnedPods.map(({ ip }) => ip),
+          );
+        },
+        30_000,
+      );
+      assertReturnedAgents(baseline, accepted, await databaseAgents(originalDatabase));
+    },
+  );
   await record("Populated controller upgrade and compatible return", {
     installationId,
     namespaceId,

@@ -357,31 +357,33 @@ Secrets, bootstrap volume, or Agent PVCs to force an upgrade or recovery.
 
 ## Rehearse a compatible controller return
 
-Use an owned disposable loopback k3d cluster, Docker 29 or newer, Go, kubectl,
-Helm, OpenSSL, jq, yq v4 and Python 3. Stage two distinct
-[verified controller publications](published-images.md#check-publication-and-source)
-by digest in Docker and k3d. Set these variables in `TEST_ENV_FILE`, a private
-file without model or Git credentials:
+On native Linux, use rootful Docker 29 or newer at `/var/run/docker.sock`, k3d, Go,
+kubectl, Helm, OpenSSL, jq, yq v4 and Python 3. Create a disposable k3d cluster
+for this run with one server, no agents, `--no-lb`, `--api-port 127.0.0.1:<free-port>`,
+`--kubeconfig-update-default=false` and `--kubeconfig-switch-context=false`.
+The test derives its kubeconfig from that
+cluster and creates a new installation with its own PostgreSQL.
 
+Stage two compatible [verified controller publications](published-images.md#check-publication-and-source)
+in Docker and k3d. In a private environment file without model or Git credentials, set:
+
+- `OCC_TEST_REHEARSAL_K3D_CLUSTER`: the k3d cluster name.
 - `OCC_TEST_REHEARSAL_PREVIOUS_SOURCE` and `OCC_TEST_REHEARSAL_CANDIDATE_SOURCE`:
   absolute paths to clean release checkouts.
 - `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE` and
-  `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE`: previous and candidate digest-pinned references.
-- `OCC_TEST_KUBERNETES_RUNTIME_IMAGE`, `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`,
-  and `OCC_TEST_PRODUCTION_NODE_IMAGE`: unchanged runtime and digest-pinned fixture references.
-- `OCC_TEST_KUBERNETES_KUBECONFIG` and `OCC_TEST_KUBERNETES_CONTEXT`: the
-  absolute path to an owner-only kubeconfig and dedicated `k3d-*` context.
+  `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE`: previous and candidate digest references.
+- `OCC_TEST_KUBERNETES_RUNTIME_IMAGE`, `OCC_TEST_PRODUCTION_POSTGRES_IMAGE` and
+  `OCC_TEST_PRODUCTION_NODE_IMAGE`: fixed fixture images by digest.
 
 From the test checkout with dependencies installed, run:
 
 ```bash
+TEST_ENV_FILE="$HOME/.config/oce/rehearsal.env"
 OCC_TEST_PRODUCTION_TUI_REHEARSAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-The previous image must accept the restored candidate migration history as
-complete. The test verifies that a stale restore loses the acknowledged Agent
-draft and that the returned OCC serves both drafts from the candidate restore.
-Read private `proof.json` for phase durations. These durations do not measure
-client downtime. Inspect retained resources before cleaning up a failed rehearsal.
-Set `OCC_TEST_PRODUCTION_TUI_KEEP=1` to retain a successful disposable installation.
+The previous controller must accept the restored migration history. The stale
+archive omits the acknowledged draft. After return, OCC denies anonymous reads
+and serves both drafts with the original key. Private `proof.json` times operations and checks. Keep the cluster exclusive through cleanup. Inspect retained resources
+after failure, or set `OCC_TEST_PRODUCTION_TUI_KEEP=1` to retain a successful run.
