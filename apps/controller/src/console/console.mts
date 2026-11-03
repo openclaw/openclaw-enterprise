@@ -463,7 +463,7 @@ async function recheckAdministration() {
     return;
   }
   const owner = sessionOwnerKey(session);
-  let answer;
+  let answer: NamespacePermissions | null;
   try {
     answer = await namespacePermissionsRead();
   } catch {
@@ -496,7 +496,7 @@ async function rereadNamespacesAfterAdministration() {
   }
   const owner = sessionOwnerKey(session);
   const active = lifetime.capture();
-  let readable;
+  let readable: unknown;
   try {
     readable = await request("/namespaces");
   } catch {
@@ -591,7 +591,7 @@ function administrationRead(path: string, options: RequestOptions): Promise<unkn
         administrationConfirmed = true;
       }
     },
-    (error) => settleAdministrationRefusal(error, owner),
+    (error: unknown) => settleAdministrationRefusal(error, owner),
   );
   trackAdministrationCheck(check);
   return check.then(() => read);
@@ -612,7 +612,7 @@ async function settleAdministrationRefusal(error: unknown, owner: string | null)
   if (requestFailure(error).status !== 403) {
     return;
   }
-  let answer;
+  let answer: NamespacePermissions | null;
   try {
     answer = await namespacePermissionsRead({ outlivesView: true });
   } catch {
@@ -1243,11 +1243,14 @@ function headerPage(current: Route): NonNullable<ShellState["page"]> | null {
   return current.agentId ? { agentId: current.agentId } : null;
 }
 
-function collectionPath(feature: string, selection: string | null) {
-  return (
-    { namespaces: "/namespaces", backends: "/backends" }[feature] ??
-    `/namespaces/${encodeURIComponent(String(selection))}/${feature}`
-  );
+function collectionPath(feature: string, namespacePath: string | null) {
+  if (feature === "namespaces") {
+    return "/namespaces";
+  }
+  if (feature === "backends") {
+    return "/backends";
+  }
+  return namespacePath === null ? null : `${namespacePath}/${feature}`;
 }
 
 function renderShell(
@@ -1977,9 +1980,12 @@ async function loadPage({
       )?.id ??
       null;
     replaceUrl(pageUrl(current.target));
+    const selectedNamespace = namespaceId;
+    const namespacePath =
+      selectedNamespace === null ? null : `/namespaces/${encodeURIComponent(selectedNamespace)}`;
     const scopedNamespaceUnavailable =
       ["agents", "secrets"].includes(current.feature) &&
-      !namespaces.some((item) => item.id === namespaceId);
+      (namespacePath === null || !namespaces.some((item) => item.id === selectedNamespace));
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
       // usable while the destination's first read runs. A switch resets the lifetime, discarding
@@ -1996,14 +2002,18 @@ async function loadPage({
     // The Agents and Secrets lists, and Create Agent, paint with the caller's permission answer,
     // never enabled and then refused (findings 1517, 1521, 2365). Gating only: the API still
     // authorizes creation, so an unknown answer (a failed read) keeps the controls.
-    const permissionsPath = `/namespaces/${encodeURIComponent(String(namespaceId))}/permissions`;
-    const readSelectedNamespacePermissions = () =>
-      readNamespacePermissions(permissionsPath).catch(() => null);
+    const permissionsPath = namespacePath === null ? null : `${namespacePath}/permissions`;
+    const agentPath =
+      namespacePath !== null && current.agentId
+        ? `${namespacePath}/agents/${encodeURIComponent(current.agentId)}`
+        : null;
+    const itemsPath = collectionPath(current.feature, namespacePath);
     const permissionsRead =
       !scopedNamespaceUnavailable &&
+      permissionsPath !== null &&
       ["agents", "secrets"].includes(current.feature) &&
       !current.agentId
-        ? readSelectedNamespacePermissions()
+        ? readNamespacePermissions(permissionsPath).catch(() => null)
         : null;
     const accessRead =
       owner && observabilityOwner === owner ? null : installationAccess(owner, permissionsRead);
@@ -2011,11 +2021,9 @@ async function loadPage({
     accessRead?.catch(() => {});
     let firstPermissions: NamespacePermissions | null = null;
     if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
-      if (current.agentId) {
-        firstAgent = (await request(
-          `/namespaces/${encodeURIComponent(namespaceId!)}/agents/${encodeURIComponent(current.agentId)}`,
-        )) as AgentRead;
-      } else {
+      if (agentPath !== null) {
+        firstAgent = (await request(agentPath)) as AgentRead;
+      } else if (itemsPath !== null) {
         if (current.feature === "backends") {
           // Backends need Installation administration, like the probe. A caller this load knows
           // is no administrator gets the refusal without the read, which the API would audit as
@@ -2034,10 +2042,7 @@ async function loadPage({
             throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
           }
         }
-        firstItems =
-          current.feature === "namespaces"
-            ? namespaces
-            : await request(collectionPath(current.feature, namespaceId));
+        firstItems = current.feature === "namespaces" ? namespaces : await request(itemsPath);
       }
       if (!lifetime.isCurrent(active)) {
         return;
@@ -2063,15 +2068,12 @@ async function loadPage({
     let unchanged = false;
     if (retained && reuseView && retainedState && !scopedNamespaceUnavailable) {
       const fresh = new Map<string, unknown>([["/namespaces", namespaces]]);
-      if (firstAgent) {
-        fresh.set(
-          `/namespaces/${encodeURIComponent(namespaceId!)}/agents/${encodeURIComponent(current.agentId!)}`,
-          firstAgent,
-        );
-      } else if (firstItems && current.feature !== "namespaces") {
-        fresh.set(collectionPath(current.feature, namespaceId), firstItems);
+      if (firstAgent && agentPath !== null) {
+        fresh.set(agentPath, firstAgent);
+      } else if (firstItems && itemsPath !== null && current.feature !== "namespaces") {
+        fresh.set(itemsPath, firstItems);
       }
-      if (firstPermissions !== null) {
+      if (firstPermissions !== null && permissionsPath !== null) {
         fresh.set(permissionsPath, firstPermissions);
       }
       const refused = new Map<string, number>();
@@ -2117,12 +2119,14 @@ async function loadPage({
         namespaceId === current.namespace &&
         validations.every((result) => result.status === "fulfilled") &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
-        [...retainedState.reads].every(
-          ([path, value]) =>
-            (refused.has(path)
-              ? refusedRead(refused.get(path)!)
-              : readSignature(fresh.get(path), retainedState.metaReads.has(path))) === value,
-        );
+        [...retainedState.reads].every(([path, value]) => {
+          const refusal = refused.get(path);
+          return (
+            (refusal === undefined
+              ? readSignature(fresh.get(path), retainedState.metaReads.has(path))
+              : refusedRead(refusal)) === value
+          );
+        });
     }
     // Resolve the old link in the admitted list, even if its row reads were unfinished and we
     // must rebuild it. Capture focus before replacing the shell, not after it falls back to body
@@ -2301,7 +2305,7 @@ async function loadPage({
       attachDiagnostics(shell.diagnostics);
     }
     if (current.feature === "settings") {
-      shell.view.append(settingsView());
+      shell.view.append(settingsView(session.user));
       if (installationAdmin) {
         shell.view.append(
           renderInstallationConfigurations({
@@ -2339,8 +2343,8 @@ async function loadPage({
       (namespacePermissionsRead ??=
         firstPermissions !== null
           ? Promise.resolve(firstPermissions)
-          : namespaces.some((item) => item.id === namespaceId)
-            ? readSelectedNamespacePermissions()
+          : permissionsPath !== null && namespaces.some((item) => item.id === selectedNamespace)
+            ? readNamespacePermissions(permissionsPath).catch(() => null)
             : Promise.resolve(null));
     const secretsCreateAllowed = () =>
       namespacePermissions().then((permissions) => permissions?.secrets?.create);
@@ -2446,7 +2450,7 @@ async function loadPage({
         agentContext.setWriteInFlight(writing);
       },
     };
-    if (firstPermissions !== null) {
+    if (firstPermissions !== null && permissionsPath !== null) {
       viewState.reads.set(permissionsPath, readSignature(firstPermissions));
     } else if (permissionsRead) {
       // Painted without the permissions answer: a return reads it again instead of reusing this.
@@ -2463,10 +2467,10 @@ async function loadPage({
         }
       });
     }
-    if (current.creating) {
+    if (current.creating && selectedNamespace !== null) {
       const createContext: Parameters<typeof renderCreateAgent>[0] = {
         ...agentContext,
-        namespaceId: namespaceId!,
+        namespaceId: selectedNamespace,
         permissions: firstPermissions,
         // Create Agent rereads the answer in place, so its Secret fields follow the latest one.
         secretsCreateAllowed: async () => createContext.permissions?.secrets?.create,
@@ -2490,7 +2494,7 @@ async function loadPage({
       markMountedRoute(current);
       return;
     }
-    if (current.agentId) {
+    if (current.agentId && selectedNamespace !== null && agentPath !== null) {
       let markRevealed = () => {};
       const revealed = new Promise<void>((resolve) => {
         markRevealed = resolve;
@@ -2577,17 +2581,12 @@ async function loadPage({
       } else {
         markRevealed();
       }
-      viewState.reads.set(
-        `/namespaces/${encodeURIComponent(String(namespaceId))}/agents/${encodeURIComponent(current.agentId)}`,
-        JSON.stringify(firstAgent),
-      );
-      viewState.readablePaths.add(
-        `/namespaces/${encodeURIComponent(String(namespaceId))}/agents/${encodeURIComponent(current.agentId)}`,
-      );
+      viewState.reads.set(agentPath, JSON.stringify(firstAgent));
+      viewState.readablePaths.add(agentPath);
       const agent = await renderAgentDetail(
         {
           ...agentContext,
-          namespaceId: namespaceId!,
+          namespaceId: selectedNamespace,
           agentId: current.agentId,
           onProtectedReadDenied(error, receipt) {
             if (viewIsCurrent()) {
@@ -2612,14 +2611,14 @@ async function loadPage({
       return;
     }
     const items = firstItems;
-    if (!Array.isArray(items)) {
+    if (!Array.isArray(items) || itemsPath === null) {
       throw new Error("Invalid collection response");
     }
-    viewState.reads.set(collectionPath(current.feature, namespaceId), JSON.stringify(items));
-    if (current.feature === "agents") {
+    viewState.reads.set(itemsPath, JSON.stringify(items));
+    if (current.feature === "agents" && selectedNamespace !== null) {
       renderAgentList({
         ...agentContext,
-        namespaceId: namespaceId!,
+        namespaceId: selectedNamespace,
         items,
         permissions: firstPermissions,
         resumed: resumingView,
@@ -2655,10 +2654,10 @@ async function loadPage({
         },
         items,
       );
-    } else if (current.feature === "secrets") {
+    } else if (current.feature === "secrets" && selectedNamespace !== null) {
       renderSecrets({
         ...agentContext,
-        namespaceId: namespaceId!,
+        namespaceId: selectedNamespace,
         items,
         sorted,
         permissions: firstPermissions,
@@ -2666,14 +2665,14 @@ async function loadPage({
       });
       // Shown (its dialog opened or the unlisted note), so a later load does not reopen it.
       linkedSecret = null;
-    } else {
-      if (current.feature === "backends" && backendsDenied) {
+    } else if (current.feature === "backends") {
+      if (backendsDenied) {
         backendsDenied = false;
         if (shell.scopeSelector) {
           shell.scopeSelector.hidden = false;
         }
       }
-      renderRows(shell.view, current.feature as "backends", items);
+      renderRows(shell.view, current.feature, items);
     }
     markMountedRoute(current);
   } catch (error) {
@@ -2946,7 +2945,7 @@ async function revalidateMountedAgent(current: Route) {
   const agent = mountedAgent;
   const owner = sessionOwnerKey(session);
   const selectedNamespace = namespaceId;
-  if (!view || !agent || !owner || !key) {
+  if (!view || !agent || !owner || !key || selectedNamespace === null) {
     await loadPage();
     return;
   }
@@ -2956,13 +2955,14 @@ async function revalidateMountedAgent(current: Route) {
     mountedRouteKey === key &&
     routeKey(route()) === key &&
     view.isConnected;
-  const path = `/namespaces/${encodeURIComponent(String(selectedNamespace))}/agents/${encodeURIComponent(agent.id)}`;
+  const namespacePath = `/namespaces/${encodeURIComponent(selectedNamespace)}`;
+  const path = `${namespacePath}/agents/${encodeURIComponent(agent.id)}`;
   const pageActions = mountedViewState?.pageActions?.isConnected
     ? mountedViewState.pageActions
     : null;
   const activeElement = document.activeElement;
   const focused =
-    activeElement instanceof HTMLElement &&
+    (activeElement instanceof HTMLElement || activeElement instanceof SVGElement) &&
     (view.contains(activeElement) || pageActions?.contains(activeElement))
       ? activeElement
       : null;
@@ -3031,7 +3031,7 @@ async function revalidateMountedAgent(current: Route) {
         current.url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
       const snapshotPath =
         selected === "draft"
-          ? `/namespaces/${encodeURIComponent(String(selectedNamespace))}/configurations/${encodeURIComponent(agent.configurationId)}`
+          ? `${namespacePath}/configurations/${encodeURIComponent(agent.configurationId)}`
           : `${path}/revisions/${encodeURIComponent(selected)}`;
       const previousSnapshotRead = mountedViewState?.reads.get(snapshotPath);
       const snapshotWasReadable = mountedViewState?.readablePaths.has(snapshotPath);
@@ -3055,10 +3055,18 @@ async function revalidateMountedAgent(current: Route) {
               if (!Array.isArray(data)) {
                 throw new Error("Invalid collection response");
               }
-              return (
-                (responseFields(meta).nextCursor ?? null) === null &&
-                !data.some((item: unknown) => responseFields(item).id === selected)
-              );
+              if ((responseFields(meta).nextCursor ?? null) !== null) {
+                return false;
+              }
+              // A complete page proves omission only when every row identifies a revision.
+              const ids = data.map((item: unknown) => {
+                const { id } = responseFields(item);
+                if (typeof id !== "string") {
+                  throw new Error("Invalid collection response");
+                }
+                return id;
+              });
+              return !ids.includes(selected);
             }))));
       await Promise.all([
         versions,
@@ -3157,8 +3165,7 @@ function resumePage() {
 
 // Settings (UX spec 3.10): the signed-in account, and this session with Sign out. The session
 // read carries no sign-in method, sign-in time or expiry, so the cards show only what it has.
-function settingsView() {
-  const { user } = session!;
+function settingsView(user: Session["user"]) {
   return element(
     "div",
     { className: "settings-page" },
