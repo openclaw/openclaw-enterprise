@@ -82,7 +82,9 @@ try {
     await verifySandboxDeleted(tenant, sandbox);
   } else {
     for (const { blocked } of rows) {
-      if (reasons.has(blocked)) console.log("Git route:", blocked);
+      if (reasons.has(blocked)) {
+        console.log("Git route:", blocked);
+      }
     }
   }
 } finally {

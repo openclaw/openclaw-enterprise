@@ -101,7 +101,9 @@ if (mode === "history") {
   if (phases.includes(stage) && existsSync(join(directory, logFile))) {
     const log = read(logFile);
     const http = /^OCE REST request failed with HTTP ([1-5]\d\d)$/m.exec(log);
-    if (http) console.log("Linear HTTP:", http[1]);
+    if (http) {
+      console.log("Linear HTTP:", http[1]);
+    }
     for (const [needle, label] of [
       ["Linear is unavailable for this account.", "account-plugin-unavailable"],
       ["Expected exactly one marked run.", "marked-run-missing-or-ambiguous"],
@@ -112,7 +114,9 @@ if (mode === "history") {
       ["Transcript event length mismatch.", "transcript-event-length-mismatch"],
       ["SQLITE_BUSY", "transcript-database-busy"],
     ]) {
-      if (log.includes(needle)) console.log("Linear cause:", label);
+      if (log.includes(needle)) {
+        console.log("Linear cause:", label);
+      }
     }
   }
   const before = readJson("linear-agent-before.json")?.data;
@@ -167,12 +171,19 @@ if (mode === "history") {
         "mentions-unavailable",
       ],
     ]) {
-      if (pattern.test(reply)) console.log("Linear reply:", label);
-      if (results.some((r) => pattern.test(JSON.stringify(r.content))))
+      if (pattern.test(reply)) {
+        console.log("Linear reply:", label);
+      }
+      if (results.some((r) => pattern.test(JSON.stringify(r.content)))) {
         console.log("Linear result:", label);
+      }
     }
-    if (results.some((m) => m.isError === true)) console.log("Linear result: tool-error");
-    if (results.some((m) => m.isError !== true)) console.log("Linear result: tool-response");
+    if (results.some((m) => m.isError === true)) {
+      console.log("Linear result: tool-error");
+    }
+    if (results.some((m) => m.isError !== true)) {
+      console.log("Linear result: tool-response");
+    }
     console.log(
       "Linear reply:",
       containsTeam(chat.outcome?.terminalReply?.text)
