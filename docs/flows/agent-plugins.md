@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-02
-last_updated_session: authoring-run/84451153-a081-4e74-aa29-e1a4acecddad
+updated: 2026-11-03
+last_updated_session: authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7
 ---
 
 # Agent Plugin Deployment Flow
@@ -138,13 +138,13 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC revalidates selections and queues a revision with the Driver and policies. Startup resolves native metadata.
+OCC validates selections and queues the Agent revision.
 
-The Gateway loads the Google skill. OpenShell injects the bearer after the shared
-guard checks the `gog` operation and the account’s host, path, and scopes.
-Other attachments survive withdrawal. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+- **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
+- **Hosted MCP packages.** The Credential Gateway matches the endpoint and placeholder. The Sandbox translates selected tool names into OpenShell rules and rejects overlapping routes.
+- **Native runtime plugins.** Startup installs packages and verifies native tool policy.
 
-The Credential Gateway matches the reviewed MCP endpoint and placeholder. The Sandbox Driver compiles selected tools, rejects overlapping routes, and removes injection after withdrawal.
+Credential withdrawal removes injection. Recovery preserves other attachments.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -185,8 +185,8 @@ container's private temporary home.
 Embedded OpenClaw validates selections against its bundled catalog and policy.
 Grants enter nonempty `tools.allow`, otherwise `tools.alsoAllow`; denies and profiles
 remain. Tool `enabled` overrides `toolDefaults.enabled`; disabled tools emit denies.
-Master disable and operator denies prevail. Diffs adds no review for
-`provider_default` or `none`. Version-private installs use `--pin --force --no-enable`,
+Master disable and operator denies prevail. The supported modes
+`provider_default` and `none` add no plugin review. Version-private installs use `--pin --force --no-enable`,
 preserving enablement and tool policy. Preparation refreshes the registry and verifies
 configuration, plugin/package identity, versions, integrity and source containment
 within the install path. Verification failures keep the Gateway unready. Confirmed
@@ -372,6 +372,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
 
 - 2026-11-02 22:29: Trace Slack credential policy. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
 
