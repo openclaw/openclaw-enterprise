@@ -72,6 +72,7 @@ import {
 } from "@openclaw-enterprise/occ";
 
 import {
+  isRemoteProviderHarness,
   KubernetesComputeDriver,
   PreprovisionedKubernetesNamespace,
   type KubernetesComputeDriverOptions,
@@ -1007,6 +1008,27 @@ export async function loadInstallationConfiguration(options: {
           "drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured.",
       },
     ]);
+  }
+  if (kubernetesCompute) {
+    const providerHarness = (compute.configuration as unknown as KubernetesComputeDriverOptions)
+      .network.providerHarness;
+    // The remote form's egress and hostname rendering are reviewed, but no supported
+    // topology can activate an Agent with it yet: the Sandbox supervisor cannot call
+    // back cross-cluster and the workspace claim cannot be placed in the provider
+    // cluster. Refuse the form at startup until the Compute/Sandbox contract for those
+    // responsibilities lands in an RFC, rather than accepting a configuration that
+    // leaves every revision incomplete. A field error, so the startup logs and the
+    // pre-upgrade installation check name the field.
+    if (providerHarness !== undefined && isRemoteProviderHarness(providerHarness)) {
+      throw new InstallationFieldError([
+        {
+          path: "/drivers/compute/configuration/network/providerHarness",
+          code: "INVALID_VALUE",
+          message:
+            "drivers.compute.configuration.network.providerHarness remote form requires the cross-cluster callback and workspace-storage contract; it is not supported until that contract lands in an RFC.",
+        },
+      ]);
+    }
   }
   const sandbox =
     sandboxSelection === undefined

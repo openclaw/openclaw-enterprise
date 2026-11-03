@@ -31,15 +31,17 @@ This ClusterIP bridge supports only owned k3d profiles advertising
 the endpoint capability retain ordinary Service or private routing.
 
 When the provider serves Harness endpoints from a cluster Compute cannot
-reach with Pod selection, configure `{ remote: true, address, port }`.
-The `address` is one exact IP address, bare
-or with an explicit `/32` or `/128` prefix; range, all-address, unspecified
-and IPv4-mapped addresses fail startup. Gateway egress admits only that
-address and port. The advertised endpoint must use WSS; only the local bridge may use WS. The tenant
-`allow-gateway-ingress` policy then also admits namespaces labeled
-`openshell.ai/managed-by: openshell` on the Gateway port. That admission is
-namespace-wide, so the remote form is not production-supported; its callback
-isolation contract is under review.
+reach with Pod selection, the `providerHarness` remote form (`{ remote: true,
+address, port }`, one exact IP, WSS endpoint) is **refused at startup**: no
+supported topology can activate an Agent with it yet, because the Sandbox
+supervisor cannot call back to the Agent Gateway across clusters and the
+workspace claim cannot be placed in the provider cluster. The refusal names
+the missing cross-cluster callback and workspace-storage contract; the
+remote form is accepted only when that contract lands in an RFC. The exact-IP
+and WSS validation and the Gateway egress and hostname rendering for the
+remote form are implemented and covered by tests, so the RFC can enable them
+without rework. Gateway callback admission stays with the revision-scoped
+workspace-node relay policy in every form.
 
 For startup, plugin and deployment diagnostics, set
 `network.pluginStatusProxySourceCidrs` to the API server's Pod-proxy source

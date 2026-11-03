@@ -269,21 +269,22 @@ test("a remote provider Harness route renders exact egress, ingress and a bare h
     },
   ]);
 
-  // Only the remote form adds the OpenShell sandbox namespace admission to the
-  // tenant gateway ingress; the local Pod-peer form keeps it unchanged.
+  // Neither form adds any OpenShell sandbox namespace admission to the tenant
+  // gateway ingress: callback admission stays with the revision-scoped
+  // workspace-node relay policy (#2183 isolation), which admits nothing
+  // cross-cluster — fail-closed while the remote form is refused at startup.
   const remoteIngress = driver
     .networkPolicies({ namespaceId: revision.namespaceId }, target)
     .find(({ metadata }) => metadata.name === "allow-gateway-ingress");
-  const remoteRules = remoteIngress.spec.ingress.filter((rule) =>
-    rule.from.some(
-      (peer) => peer.namespaceSelector?.matchLabels?.["openshell.ai/managed-by"] === "openshell",
-    ),
+  assert.equal(
+    JSON.stringify(remoteIngress.spec.ingress).includes("openshell.ai/managed-by"),
+    false,
+    "the remote form must not admit OpenShell-managed namespaces",
   );
-  assert.deepEqual(remoteRules, [
-    {
-      from: [{ namespaceSelector: { matchLabels: { "openshell.ai/managed-by": "openshell" } } }],
-      ports: [{ protocol: "TCP", port: options().network.gatewayPort }],
-    },
+  // The tenant gateway ingress keeps exactly the routed Envoy peer rule.
+  assert.equal(remoteIngress.spec.ingress.length, 1);
+  assert.deepEqual(remoteIngress.spec.ingress[0].ports, [
+    { protocol: "TCP", port: options().network.gatewayPort },
   ]);
   const local = new KubernetesComputeDriver(
     routedOptions({

@@ -448,3 +448,43 @@ test("the upgrade hook check refuses a repository broker peer until the operator
   assert.equal(recovered.status, 0, recovered.stderr);
   assert.equal(recovered.stdout, "installation-startup-ready\n");
 });
+
+test("the upgrade hook check refuses the remote Provider Harness until the cross-cluster contract lands", async (t) => {
+  // The remote form's rendering is implemented, but no supported topology can
+  // activate an Agent with it: the Sandbox supervisor cannot call back across
+  // clusters and the workspace claim cannot be placed in the provider cluster.
+  // Startup and the pre-upgrade hook refuse the form — the same refusal the API
+  // and worker apply — so an operator never reaches the incomplete-revision
+  // state the live run recorded.
+  const remote = installation();
+  remote.drivers.compute.configuration.network.providerHarness = {
+    remote: true,
+    address: "192.0.2.10",
+    port: 8443,
+  };
+  const refused = await runCheck(t, remote);
+  assert.equal(refused.status, 1);
+  assert.equal(refused.stdout, "");
+  assert.equal(
+    refused.stderr,
+    'installation-check: API and worker startup would refuse the Installation: DRIVER_CONFIGURATION_INVALID: [{"path":"/drivers/compute/configuration/network/providerHarness","code":"INVALID_VALUE","message":"drivers.compute.configuration.network.providerHarness remote form requires the cross-cluster callback and workspace-storage contract; it is not supported until that contract lands in an RFC."}]\n',
+  );
+  // The documented recovery removes only the remote form; the rest of the
+  // Installation is unchanged and the local Pod-peer form stays accepted.
+  delete remote.drivers.compute.configuration.network.providerHarness;
+  const recovered = await runCheck(t, remote);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(recovered.stdout, "installation-startup-ready\n");
+  // The local Pod-peer form is not refused: only the remote variant names the
+  // missing contract.
+  const local = installation();
+  local.drivers.compute.configuration.network.providerHarness = {
+    namespace: "openshell-system",
+    podLabels: { "app.kubernetes.io/name": "openshell" },
+    address: "10.43.0.50",
+    port: 8080,
+  };
+  const localChecked = await runCheck(t, local);
+  assert.equal(localChecked.status, 0, localChecked.stderr);
+  assert.equal(localChecked.stdout, "installation-startup-ready\n");
+});
