@@ -2168,7 +2168,8 @@ function buildRendered(profile, parsed, diagnostics) {
 
   diagnostics.prerequisites.push(
     "Default ReadWriteOnce storage class available for dedicated Codex workspace claims.",
-    "Envoy Gateway and cert-manager installed before applying gatewayRouting values.",
+    "Envoy Gateway and cert-manager ready, their CRDs and Gateway API CRDs Established, and the configured GatewayClass Accepted before Helm installation; the chart does not install these prerequisites.",
+    "Configured gatewayApiKeySecretName Secret created with key occ in the control-plane namespace before Helm installation; private routing is enabled by default.",
   );
   if (agentNativeAdmin.enabled) {
     diagnostics.prerequisites.push(

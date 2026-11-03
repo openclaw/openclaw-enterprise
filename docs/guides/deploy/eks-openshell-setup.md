@@ -34,6 +34,8 @@ Create encrypted `encrypted-gp3` RWO filesystem storage with `WaitForFirstConsum
 
 ### Enable Console workspace files
 
+Private gateway routing is enabled by default. Prepare its controllers, CRDs, GatewayClass and service-key Secret before installing OCC; the Helm chart does not install these prerequisites.
+
 Install cert-manager, Gateway API, Envoy Gateway and the matching Agent Sandbox controller on the control pool. Before rollout, prepare policies for controllers and certificate Jobs: DNS and API Service VIPs, API EndpointSlice addresses, API-server admission to webhooks and Envoy data-plane access to xDS. Match installed labels and ports on both sides. Include all private EKS control-plane interface addresses for webhook callers; one Service endpoint or public DNS answer may omit them. Require ready controllers before installing OCE.
 
 The templates below enable private Envoy routing with a `ClusterIP` Service and a separate routing key. OCC checks Agent permissions; the browser connects to OCC’s HTTPS origin. The deployment helpers verify actual Envoy peers and apply Agent network policies. Preserve certificate/hostname verification, exact proxy CIDRs and the fixed native identity’s `operator.admin` grant. Keep model and channel credentials separate from routing credentials. See [private routing](workspace-routing.md#configure-private-routing) for the configuration contract and [existing-resource preparation](workspace-routing.md#enable-routing-for-existing-namespaces-and-agents) when updating an existing installation.
