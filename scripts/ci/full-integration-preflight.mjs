@@ -18,17 +18,24 @@ export const fullIntegrationLanes = Object.freeze([
 ]);
 
 const lanes = new Set(fullIntegrationLanes);
-const credentialedLanes = new Set([
-  "qa-matrix",
-  "docker-model",
+const branchEligibleLanes = new Set([
   "k3d-model",
-  "production-tui",
-  "k3d-otel",
-  "gateway-routing",
-  "slack",
-  "provider-account",
   "openshell",
+  "dev-up-k3d",
+  "skipper-prepared-git-installed",
 ]);
+const providerAccountEnvironment = "integration-provider-account";
+const laneEnvironments = Object.freeze({
+  "qa-matrix": "integration-qa",
+  "docker-model": "integration-model",
+  "k3d-model": "integration-model",
+  "production-tui": "integration-model",
+  "k3d-otel": "integration-otel",
+  "gateway-routing": "integration-routing",
+  slack: "integration-slack",
+  "provider-account": providerAccountEnvironment,
+  openshell: "integration-openshell",
+});
 
 export function selectLane({ eventName, inputLane }) {
   if (eventName === "workflow_dispatch") {
@@ -37,11 +44,12 @@ export function selectLane({ eventName, inputLane }) {
   throw new Error(`Unsupported full integration event: ${eventName}`);
 }
 
-export function assertSourceRef(ref) {
-  if (!/^refs\/heads\/.+/.test(ref ?? "")) {
-    throw new Error(
-      "Full integration must run from a repository branch at the approved github.sha.",
-    );
+export function assertSourceRef(ref, lane) {
+  if (branchEligibleLanes.has(lane) && /^refs\/heads\/.+/.test(ref ?? "")) {
+    return;
+  }
+  if (ref !== "refs/heads/main") {
+    throw new Error("Full integration must run from main at the approved github.sha.");
   }
 }
 
@@ -49,21 +57,74 @@ export function requiredEnvironmentsForLane(selected) {
   if (!lanes.has(selected)) {
     throw new Error(`Unknown lane: ${selected}`);
   }
-  return selected === "all" || credentialedLanes.has(selected) ? ["integration"] : [];
+  return [
+    ...new Set(
+      Object.entries(laneEnvironments)
+        .filter(([lane]) => selected === "all" || selected === lane)
+        .map(([, environment]) => environment),
+    ),
+  ];
 }
 
 function requiredReviewersRule(environment) {
   return environment.protection_rules?.find((rule) => rule.type === "required_reviewers");
 }
 
-export function validateEnvironmentPolicy(environmentName, environment) {
+function branchPolicies(policies) {
+  return policies?.branch_policies ?? [];
+}
+
+function hasMainBranchPolicy(policies) {
+  return branchPolicies(policies).some((branch) => branch.name === "main");
+}
+
+function assertCustomMainOnlyPolicy(environmentName, environment, policies) {
+  const policy = environment.deployment_branch_policy;
+  if (policy?.custom_branch_policies !== true || policy?.protected_branches !== false) {
+    throw new Error(`Protected environment ${environmentName} must use custom main-only policy.`);
+  }
+  const branches = branchPolicies(policies);
+  if (
+    policies?.total_count !== branches.length ||
+    branches.length !== 1 ||
+    branches[0]?.name !== "main" ||
+    branches[0]?.type !== "branch"
+  ) {
+    throw new Error(`Protected environment ${environmentName} must allow only the main branch.`);
+  }
+}
+
+export function validateEnvironmentPolicy(environmentName, environment, policies) {
   const reviewers = requiredReviewersRule(environment);
   if ((reviewers?.reviewers ?? []).length > 0) {
     throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
   }
-  if (environment.deployment_branch_policy !== null) {
-    throw new Error(`Environment ${environmentName} must permit all repository branches.`);
+  if (environmentName === providerAccountEnvironment) {
+    assertCustomMainOnlyPolicy(environmentName, environment, policies);
+    return;
   }
+
+  const policy = environment.deployment_branch_policy;
+  if (policy?.protected_branches === true) {
+    return;
+  }
+  if (policy?.custom_branch_policies !== true) {
+    throw new Error(
+      `Protected environment ${environmentName} is not restricted to protected branches or main.`,
+    );
+  }
+  if (!hasMainBranchPolicy(policies)) {
+    throw new Error(
+      `Protected environment ${environmentName} has no main deployment branch policy.`,
+    );
+  }
+}
+
+function needsBranchPolicies(environmentName, environment) {
+  return (
+    environmentName === providerAccountEnvironment ||
+    environment.deployment_branch_policy?.custom_branch_policies === true
+  );
 }
 
 async function fetchGithubJson({ repository, token, path }) {
@@ -85,7 +146,7 @@ export async function validateFullIntegrationPreflight({
   env = process.env,
   github = fetchGithubJson,
 } = {}) {
-  assertSourceRef(env.GITHUB_REF);
+  assertSourceRef(env.GITHUB_REF, env.INPUT_LANE);
   const selected = selectLane({ eventName: env.GITHUB_EVENT_NAME, inputLane: env.INPUT_LANE });
   const required = requiredEnvironmentsForLane(selected);
   for (const environmentName of required) {
@@ -94,7 +155,24 @@ export async function validateFullIntegrationPreflight({
       token: env.GITHUB_TOKEN,
       path: `/environments/${environmentName}`,
     });
-    validateEnvironmentPolicy(environmentName, environment);
+    const policies = needsBranchPolicies(environmentName, environment)
+      ? await github({
+          repository: env.GITHUB_REPOSITORY,
+          token: env.GITHUB_TOKEN,
+          path: `/environments/${environmentName}/deployment-branch-policies`,
+        })
+      : undefined;
+    validateEnvironmentPolicy(environmentName, environment, policies);
+    if (
+      env.GITHUB_REF !== "refs/heads/main" &&
+      (environment.deployment_branch_policy?.custom_branch_policies !== true ||
+        !branchPolicies(policies).some(
+          (branch) =>
+            branch.type === "branch" && branch.name === env.GITHUB_REF.slice("refs/heads/".length),
+        ))
+    ) {
+      throw new Error(`Protected environment ${environmentName} must allow this exact branch.`);
+    }
   }
   return { selectedLane: selected, runAll: selected === "all" };
 }

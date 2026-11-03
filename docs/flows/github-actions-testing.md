@@ -1,20 +1,20 @@
 ---
 created: 2026-09-04
 updated: 2026-11-03
-last_updated_session: authoring-run/a92e60d3-d308-4086-8b46-76307e117964
+last_updated_session: authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-[Ordinary CI](../testing/ci.md#ci) rejects missing or skipped coverage. Docs-only checks do not prove credentialed integrations.
+The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci.md#qa-matrix).
-- `.github/workflows/full-integration.yml:jobs`: manual integrations from reviewed repository branches.
+- `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
 
@@ -39,8 +39,8 @@ graph TD
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
   C["Manual integration dispatch"] --> P["Source and environment preflight"]
-  P -->|manual repository branch and environment policy| E["Protected test jobs"]
-  P -->|all or selected installation lane| U["Credential-free installation jobs"]
+  P -->|eligible source and environment| E["Protected test jobs"]
+  P -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
   P -->|missing protection| X["Failed check"]
   E --> T["Owned preparation, tests, cleanup and aggregation"]
@@ -91,23 +91,22 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration pins `github.sha`; `all` selects every lane. Credentialed jobs
-use unrestricted `integration` without reviewers. Dispatchers review commits;
-preflight requires manual branch dispatch. QA waits for Slack; cancellation stops
-QA. Aggregation requires QA and installation results.
-
-Environment-free `dev-up-k3d` and `skipper-prepared-git-installed` accept reviewed
-branches and serialize per branch. Others share `full-integration`; none cancel.
-`dev-up-k3d` uses Ubuntu 22.04, Go, CLI, Chromium and k3d; file/job deadlines are
-150/180 minutes. PR advisory keeps separate `integration-qa-pr` credentials.
+Full Integration checks out immutable `github.sha`. `all` selects every dispatch
+lane and CI suite; preflight includes `integration-qa`. QA waits for Slack to finish, regardless of success.
+Aggregation requires QA and `dev-up-k3d` results. Cancellation stops QA.
+`all` requires `main`. Only `k3d-model`/`openshell` admit exact environment-granted
+branches; administrators remove temporary grants after verification.
+Credential-free `dev-up-k3d` also accepts branches and prepares Go, CLI, Chromium
+and k3d on Ubuntu 22.04, with 150/180-minute file/job deadlines.
+Dispatches serialize without cancellation: standalone `dev-up-k3d` per branch,
+others in `full-integration`. Preflight rejects required reviewers and retains
+branch restrictions. Dispatchers inspect commits; no approval is needed.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
 The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
 
 The [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) prepares, runs, and cleans up lanes and uploads sanitized results. Callers set the commit, environment, credentials, and timeout. Tests stop five minutes early.
-
-`scripts/ci/qa-matrix-credentials.mjs` materializes `REPOSITORY_REGISTRY_FILE` beside the secret App key; missing or mismatched inputs fail. QA restricts Agent Git to one branch; the isolated observer has repository-level write access.
 
 PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay main-scoped. Results and credential-bearing state are not caches; protected jobs do not promote PR artifacts.
 
@@ -161,11 +160,7 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner assigns each active file to one lane and invokes whole files with
-invocation-scoped environment inputs. Different prerequisites require separate
-files. The reporter publishes case names, locations and outcomes, excluding
-arbitrary output. [Failure diagnostics](../testing/ci.md#failure-diagnostics)
-add sanitized errors and structured observations to results and job logs.
+The runner discovers active test files and verifies one lane assignment per file. Different prerequisites require separate files. It invokes whole files with invocation-scoped environment inputs. A custom Node reporter publishes case names, locations and outcomes, excluding arbitrary output. The runner also keeps each failure's error message (at most 600 characters) and top stack frame (240), with the repository path stripped, every nonpublic environment value of eight or more characters (from the job and from the test process) replaced by `[env:NAME]`, and common token, key, URL-password and `password=`-style values replaced by `[redacted]`; the runner prints the same line per failed case to the job log. Values a test generates at run time are redacted only when they match those shapes. Failed provider-test HTTP assertions also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Denied-traffic failures retain only an allowlisted traffic category, without target addresses or response data. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
@@ -267,19 +262,9 @@ External reconciliation awaits an approved resource ledger.
 
 ## Changelog
 
-- 2026-11-03 08:36: Preserve the OpenShell browser override in test children and its resource-preparation flow. (authoring-run/a92e60d3-d308-4086-8b46-76307e117964 - c3d77bc8b16d7f33b0215dcdddaac24db2bdb0fc)
-
 - 2026-11-03 01:07: Bind staging tests to release source. (authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06 - d2fc28e1d6d70292e462956cedef0dae9281c48c)
 
 - 2026-11-02 23:56: Trace staging authentication. (authoring-run/5817dfd2-487d-44bc-a2f7-2d57659ea0fc - db2cc11c4fd767c47394d680ef46bf26e1202fbc)
-
-- 2026-11-02 22:01: Use the packaged sandboxed browser for OpenShell and verify its launch before resource preparation. (authoring-run/a92e60d3-d308-4086-8b46-76307e117964 - a013e9381a166024d749fd45d06fdd53106edcfc)
-
-- 2026-11-02 18:03: Allow branch dispatch. (authoring-run/69a634bd-8971-4b09-8874-c449a237d117 - d415b949e58f9def9824188f17313c925d5a270e)
-
-- 2026-11-02 17:43: Load QA registries from files. (authoring-run/af85064b-4dc8-4fc5-b59d-b55efb3321a5 - f1c4746031c95fb863f02e17537e67c09d0d1ba3)
-
-- 2026-11-02 16:59: Consolidate integration environments; preserve PR credentials and credential-free branch dispatch. (authoring-run/bb0f8642-6ddd-45dd-b762-a4775812d9c5 - a5748f8bd30d17524e6e4b73c683e279b64c7c8c)
 
 - 2026-10-29 02:11: Add focused Compose OpenShell selection and sanitized native worker observations. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
 
