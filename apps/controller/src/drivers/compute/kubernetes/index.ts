@@ -16103,7 +16103,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       const packages = [];
       for (const install of managedInstalls) {
         const selection = selections[install.id];
-        if (!selection || (!selection.enabled && role !== "gateway")) continue;
+        if (!selection || (!selection.enabled && role !== "gateway")) {
+          continue;
+        }
         const binding =
           install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
         packages.push({

@@ -13,12 +13,11 @@ and supported controls before saving nonempty selections. Startup runs
 
 ## Current support
 
-Dedicated OpenClaw on Kubernetes can run Google Workspace and Slack together. Set `plugins[id].enabled` for each package.
-[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
-[Slack](../../apps/controller/plugins/oce-slack/plugin.json) exposes selected MCP
-tools on the worker with a compatible account. The pinned OpenClaw worker advertises up to
-128 MCP tools across its servers. [Worker discovery limits](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/src/node-host/mcp.ts#L36-L38).
-[Configure and verify](../guides/topics/plugins-configure.md#use-the-console).
+Dedicated OpenClaw on Kubernetes supports both packages together (`plugins[id].enabled`).
+[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) supplies a Gateway skill and worker CLI.
+[Slack](../../apps/controller/plugins/oce-slack/plugin.json) exposes selected MCP tools with a compatible account.
+Workers advertise up to 128 tools across MCP servers.
+[Setup](../guides/topics/plugins-configure.md#use-the-console).
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
