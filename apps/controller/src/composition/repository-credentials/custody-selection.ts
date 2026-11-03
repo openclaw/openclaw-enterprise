@@ -15,6 +15,7 @@ const trustedPolicy = Symbol("repository Git custody policy");
 type CustodyPolicy = Readonly<{
   [trustedPolicy]: true;
   evidence: RepositoryGitRecipientEvidence;
+  expectedExecutionAdmissionVersion: string;
   observedHook: boolean;
   controllerWitness: boolean;
   terminalRetirement?: string;
@@ -23,12 +24,24 @@ type CustodyPolicy = Readonly<{
 const controllerWitness: CustodyPolicy = Object.freeze({
   [trustedPolicy]: true as const,
   evidence: registeredGitRecipientEvidence,
+  // Fixed session-query alias. Unknown and observed-hook modes cannot become peer claims.
+  expectedExecutionAdmissionVersion: `CASE
+    WHEN p.installation #>> '{plan,policyReductionVersion}' = '2' THEN '7'
+    WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5'
+    WHEN NOT (p.installation->'plan' ? 'repositoryGitAuthorization') THEN '4'
+    END`,
   observedHook: false,
   controllerWitness: true,
 });
 const openShellSnapshot: CustodyPolicy = Object.freeze({
   [trustedPolicy]: true as const,
   evidence: openShellGitRecipientEvidence,
+  expectedExecutionAdmissionVersion: `CASE
+    WHEN p.installation #>> '{plan,policyReductionVersion}' = '2' THEN '7'
+    WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5'
+    WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'request-hook-observed' THEN '6'
+    WHEN NOT (p.installation->'plan' ? 'repositoryGitAuthorization') THEN '4'
+    END`,
   observedHook: true,
   controllerWitness: false,
   terminalRetirement: openShellPreviewEnded,

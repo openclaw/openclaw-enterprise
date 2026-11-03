@@ -162,10 +162,7 @@ function sessionQuery(proxy: Recipient): string {
     proxy
       ? `s.broker_protocol=2 AND s.session_id IS NOT NULL
     AND rev.admitted_spec #>> '{execution_admission,version}' =
-      CASE WHEN p.installation #>> '{plan,policyReductionVersion}' = '2' THEN '7'
-        WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5'
-        WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'request-hook-observed' THEN '6'
-        ELSE '4' END
+      ${proxy.policy.expectedExecutionAdmissionVersion}
     AND p.installation#>'{plan,driver}'=${selectedRepositoryGitDriver}
     AND p.installation->'plan'=rev.admitted_spec->'egress_plan'
     AND p.installation#>'{plan,repositoryGit}'=rev.admitted_spec->'repository_credentials'
