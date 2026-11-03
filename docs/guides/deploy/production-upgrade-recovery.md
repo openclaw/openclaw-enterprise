@@ -2,33 +2,34 @@
 
 Preserve original [upgrade](production-upgrade.md) evidence privately, including Secrets.
 
-A pre-window `--preflight-only` rehearsal leaves writers serving without
-a production freeze. Do not use `--resume`. Settle cleanup using original evidence. Later deployment uses fresh evidence and
-repeats checks.
+Resume requires the original canonical path, device and inode in `parameters.json`.
+Relative and parent-symlink aliases share its lock; leaf symlinks remain refused. Copies, moves, replacements and missing identity are refused
+before live access. Copies may omit later intents or responses: inspect only.
+Do not reconstruct evidence or change identity; stop if custody is uncertain.
 
-For unfinished real deployments, keep the applicable freeze and single operator.
-Before `prepared`, the helper has not stopped serving writers or changed the Helm
-release. Reconcile, then restart with fresh evidence. After `prepared`, reconcile the original
-process, live release, migration, rollout and dispatch. When eligible, resume with
-original evidence, arguments, protected paths, kubeconfig contents, OCC URL,
-scripts, flow and chart, adding `--resume`. Keep candidate flags and files semantically unchanged. The helper rechecks image pair and eligible nodes,
-reads live Secret and Helm state, and accepts only recorded baseline or candidate
-before continuing the frozen fleet.
+`--preflight-only` leaves writers serving without a freeze. It cannot resume;
+reconcile its resources before deploying with fresh evidence and checks.
 
-For verified completed upgrades, clean up only. Do not rerun Helm, Agent rollout,
-Doctor or `--resume`, or reinstate the freeze. `prepared` survives success.
+Keep one operator and the applicable freeze for unfinished deployments. Before
+`prepared`, writers and Helm are unchanged: reconcile, then use fresh evidence.
+Afterward, reconcile processes, release, migration, rollout and dispatch, then
+add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
+OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
+The helper rechecks the pair, nodes and live state against baseline or candidate.
+
+After verified completion, clean up only: no Helm, Agent rollout, Doctor,
+`--resume` or renewed freeze. `prepared` survives success.
 
 ## Clean up preflight resources
 
-The release owner coordinates one upgrade operator for all cleanup. Do not
-initiate a production freeze solely for cleanup.
+The release owner coordinates one cleanup operator; cleanup alone needs no freeze.
 
-Preflight cleanup is best effort. Leftovers can outlast startup, preparation or
-upgrade success despite earlier warnings. On interruption, preserve evidence and
-`.upgrade-lock` (retained on `SIGHUP`, `SIGINT`, `SIGTERM`). Before manual cleanup,
-lock removal or retry, confirm the original helper and local children stopped;
-reconcile accepted external operations and temporary resources. Only then remove
-the original empty `.upgrade-lock`. It protects only this evidence directory.
+Preflight cleanup is best effort; leftovers can outlast success.
+Preserve evidence and `.upgrade-lock` after interruption (`SIGHUP`, `SIGINT`,
+`SIGTERM`). Before cleanup, unlocking or retrying, confirm the helper and children
+stopped and reconcile accepted operations and temporary resources. Only then
+restore a moved original directory to its original path and remove its empty
+`.upgrade-lock`. The lock protects only that directory.
 
 Each successfully acknowledged and recorded create retains
 `preflight-<slot>-identity.json`, with slots `networkpolicy`, `secret`, `api`,

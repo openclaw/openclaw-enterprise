@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-29"
-last_updated_session: "authoring-run/729e3e30-1ab9-4e2c-bae2-42834bf535c4"
+updated: "2026-11-02"
+last_updated_session: "authoring-run/6d0d6a0b-04b9-4aa2-ba84-ed3c2406340f"
 ---
 
 # Production image upgrade flow
@@ -9,14 +9,14 @@ last_updated_session: "authoring-run/729e3e30-1ab9-4e2c-bae2-42834bf535c4"
 ## Overview
 
 `scripts/upgrade-production-images` updates the OpenClaw Control Plane (OCC),
-Agent runtimes, or both. Controller-only upgrades end after API and worker recovery,
-without Agent deployments. Runtime upgrades deploy every initially running Agent,
-then wait for ready Pods and read-only Doctor lint.
+Agent runtimes, or both. Controller-only upgrades stop after API/worker recovery.
+Runtime upgrades redeploy initially running Agents, then check ready Pods and
+read-only Doctor lint.
 
 ## Entry Points
 
-- Trigger: an operator runs `scripts/upgrade-production-images` with one or both
-  image options and explicit cluster, release, source, and protected-file inputs.
+- Trigger: an operator runs `scripts/upgrade-production-images` with selected
+  images and cluster, release, source, and protected-file inputs.
 - Required state: a healthy production Helm release and matching OCC and
   Kubernetes Installation identity. Runtime releases additionally require a
   complete authorized fleet inventory with no deployment in progress.
@@ -66,16 +66,21 @@ Before protected-file reads, evidence writes or cluster access, repository
 `HEAD` must match `--source-revision`.
 Local edits and image provenance remain unverified.
 
-It verifies protected files, cluster, deployed Helm release and matching OCC/Secret
-Installation IDs. It records reviewed candidates and compares the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration),
-including image fields, as ordered YAML mappings. A non-mapping document stops
-preparation before rendering. Only the Slack directory proxy and curated Codex
-PluginDriver selection may change; image flags apply afterward. Broker checks compare references, not ConfigMap or Secret contents.
+Evidence I/O retains the supplied path. Python records its canonical path,
+`st_dev` and `st_ino` in `parameters.json`; resume rejects mismatches before
+cluster/OCC access. Relative and parent-symlink aliases share the lock; leaf symlinks remain refused.
+Copies, moves and replacements cannot replay stale dispatch evidence.
 
-Complete authorized inventory supplies each running Agent's baseline version for
-runtime upgrades. Nonterminal deployments, missing selected versions or unready
-Namespaces stop preparation. Stopped and deleting Agents are excluded; pending
-repository cleanup does not block preparation.
+It checks protected files, cluster, deployed Helm release and matching OCC/Secret
+Installation IDs. Reviewed candidates must match the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
+as ordered YAML mappings, including images; non-mappings stop preparation before
+rendering. Only the Slack directory proxy and curated Codex PluginDriver selection
+may change before image flags apply. Broker checks compare references, not
+ConfigMap or Secret contents.
+
+Runtime upgrades require complete authorized inventory of running Agents' baseline versions. Nonterminal
+deployments, missing selected versions or unready Namespaces stop preparation.
+Stopped/deleting Agents are excluded; pending repository cleanup does not block.
 
 Repository-enabled releases require explicit immutable controller and broker
 images. The helper inventories all nodes matching the control plane selector,
@@ -142,28 +147,25 @@ the unique ID (UID) returned on create, leaving same-name replacements alone;
 `preflight-cleanup.err` records refusals. The operator checks whether an
 ambiguous create left an object behind.
 
-`--preflight-only` leaves writers running with private, non-resumable evidence.
-Preparation saves candidate inputs, inventory, target identity and parameter
-hashes under an exclusive directory lock.
-`scripts/upgrade-production-images:interrupted_upgrade` retains it and skips
-preflight cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`. Before unlocking, confirm
-helper and children stopped and reconcile unfinished operations and temporary
-preflight resources; interruption does not cancel accepted work. Freeze other
-writers, autoscalers, Helm changes and runtime drafts per
-the [production guide](../guides/deploy/production-upgrade.md).
+`--preflight-only` leaves writers serving with private, non-resumable evidence.
+Preparation saves candidates, inventory, target identity and parameter hashes
+under the directory lock. `scripts/upgrade-production-images:interrupted_upgrade`
+retains it and skips preflight cleanup on `SIGHUP`, `SIGINT`, or `SIGTERM`.
+Before unlocking, confirm helper/children stopped and reconcile accepted operations
+and temporary resources. Freeze other writers, autoscalers, Helm changes and runtime
+drafts per the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
 `scripts/upgrade-production-images:1040`
 
 Resume requires prepared evidence; otherwise reconcile preflight resources and
-use a fresh private directory per
-[upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
-Resume binds kubeconfig contents, inputs, OCC URL, scripts, flow, chart and pair
-evidence; requalifies the pair; and rejects changed eligible nodes.
-Reject ineligible Helm states before values or Secret reads.
-Values must match the baseline or candidate; Secret UID, Installation annotation
-and other data must match the baseline. Apply only saved reviewed candidates; reject drift.
+use fresh evidence per [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
+It binds directory identity, kubeconfig contents, inputs, OCC URL, scripts, flow,
+chart and pair evidence; requalifies the pair; and rejects changed eligible nodes.
+Ineligible Helm states stop before values/Secret reads. Values must match baseline
+or candidate; Secret UID, Installation annotation and other data must match baseline.
+Only saved reviewed candidates apply.
 
 Skip Helm only if this attempt started it and its newer deployed release matches
 candidate values. Otherwise, require the operator's migration-history check and
@@ -203,18 +205,14 @@ replica counts, and changed Installation checksums. Each component needs
 exactly one named container. A broker-enabled worker may instead be a restartable
 init container; non-restartable or ambiguous placement fails. Authenticated OCC
 access is retried and must return the same Installation ID.
-An existing version keeps the Pod specification of the controller that
-deployed it only until the worker prepares it again. Agents with repository
-credentials get a maintenance pass every 30 seconds until their repository
-session deadline. Other Agents
+Versions retain their deploying controller's Pod specification until worker preparation. Repository-bound Agents get maintenance every 30 seconds until their session deadline. Other Agents
 are prepared again only when their deployment was still finishing as the new
 worker took over (the helper checks for unfinished deployments only before a
 runtime release).
 Kubernetes Compute applies the Gateway and, for dedicated Harnesses, Harness
 Deployments as the new controller renders them, with the Installation's current
 images, so a changed Pod template rolls those Pods once on the unchanged runtime
-image. Chat is
-unavailable until the new Pods are ready, about 17 seconds in one test.
+image. Chat remains unavailable until the new Pods are ready.
 Controller fixes to Gateway and Agent Pods, such as
 [diagnostics](agent-deployment-diagnostics.md) mappings, reach an Agent then or
 at its next deployment.
@@ -329,6 +327,8 @@ Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 23:23: Bind directory identity; preserve evidence paths. (authoring-run/6d0d6a0b-04b9-4aa2-ba84-ed3c2406340f - cf67413c378cce3989d28fa8178ed29a405b9ce6)
 
 - 2026-10-29 23:05: Retain the upgrade lock after interruption until operations are reconciled. (authoring-run/729e3e30-1ab9-4e2c-bae2-42834bf535c4 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
 

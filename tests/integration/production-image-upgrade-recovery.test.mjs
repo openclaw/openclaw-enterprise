@@ -15,10 +15,21 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test, { describe } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -1188,11 +1199,13 @@ async function fixture(
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
   const bin = join(directory, "bin");
   await mkdir(bin);
+  const commands = [];
   let upgradeProcess;
   let interrupted = false;
   const server = await startCommandServer({
     forwardedEnv: [],
     handle: ({ command, args, cwd, io }) => {
+      commands.push(command);
       if (
         preflightFault?.mode === "interrupt" &&
         !interrupted &&
@@ -1461,6 +1474,7 @@ async function fixture(
   return {
     directory,
     evidence,
+    commands,
     kubernetesReads: api?.reads ?? [],
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],
@@ -1675,6 +1689,153 @@ test("resume reads back and stops on an unknown Agent deployment instead of retr
   );
   await f.run("--resume");
   assert.equal((await f.state()).dispatches, 1);
+});
+
+test("resume binds stale prepared copies to the original evidence directory before live access", async (t) => {
+  const f = await fixture(t, { agent: true });
+  await f.failNext("fail-rollout-worker");
+  await assert.rejects(f.run(), injectedFault);
+  const copy = join(f.directory, "stale-copy");
+  await cp(f.evidence, copy, { recursive: true });
+
+  // The copy predates dispatch. The original records a later accepted request
+  // whose response was lost; replay from the stale copy would deploy twice.
+  await f.failNext("lost-agent-response");
+  await assert.rejects(f.run("--resume"), /deployment outcome is unknown/);
+  assert.equal((await f.state()).dispatches, 1);
+  const lock = join(f.evidence, ".upgrade-lock");
+  await mkdir(lock);
+  const calls = f.commands.length;
+  const refusal = await f.run("--resume", "--evidence-dir", copy).then(
+    () => null,
+    (error) => error,
+  );
+  assert.equal(
+    (await f.state()).dispatches,
+    1,
+    "a stale copy must not replay the accepted dispatch",
+  );
+  assert.match(refusal?.stderr ?? "", /resume evidence directory/);
+  assert.equal(f.commands.length, calls, "reject before external commands, including reads");
+  assert.ok(existsSync(lock), "a copy must not remove the original's held lock");
+  await rm(lock, { recursive: true });
+  await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+  assert.equal((await f.state()).dispatches, 1);
+});
+
+test("resume binds moved and replaced evidence directories before live access", async (t) => {
+  for (const change of ["move", "replacement", "missing identity"]) {
+    await t.test(change, async (t) => {
+      const f = await fixture(t, { agent: true });
+      await f.failNext("fail-scale-worker");
+      await assert.rejects(f.run(), injectedFault);
+      const moved = join(f.directory, "moved-evidence");
+      if (change === "missing identity") {
+        const path = join(f.evidence, "parameters.json");
+        const parameters = JSON.parse(await readFile(path, "utf8"));
+        delete parameters.evidenceDirectory;
+        await writeFile(path, JSON.stringify(parameters));
+      } else {
+        await rename(f.evidence, moved);
+        if (change === "replacement") {
+          await cp(moved, f.evidence, { recursive: true });
+        }
+      }
+      const calls = f.commands.length;
+      await assert.rejects(
+        f.run("--resume", "--evidence-dir", change === "move" ? moved : f.evidence),
+        /resume evidence directory/,
+      );
+      assert.equal(f.commands.length, calls, "reject before external commands, including reads");
+      assert.equal((await f.state()).dispatches, 0);
+      if (change === "move") {
+        await rename(moved, f.evidence);
+        await f.run("--resume");
+        assert.equal((await f.state()).dispatches, 1);
+      }
+    });
+  }
+});
+
+test("resume accepts the original evidence directory and canonical aliases", async (t) => {
+  for (const alias of ["original", "relative", "parent symlink"]) {
+    await t.test(alias, async (t) => {
+      const f = await fixture(t, { agent: true });
+      await f.failNext("fail-scale-worker");
+      await assert.rejects(f.run(), injectedFault);
+      let evidence = f.evidence;
+      if (alias === "relative") {
+        evidence = relative(repository, f.evidence);
+      } else if (alias === "parent symlink") {
+        const parent = join(f.directory, "parent-alias");
+        symlinkSync(f.directory, parent, "dir");
+        evidence = join(parent, "evidence");
+      } else {
+        // Canonicalization must not bypass the existing leaf-symlink or mode guards.
+        const leaf = join(f.directory, "leaf-alias");
+        symlinkSync(f.evidence, leaf, "dir");
+        const calls = f.commands.length;
+        await assert.rejects(
+          f.run("--resume", "--evidence-dir", leaf),
+          /requires the original evidence directory/,
+        );
+        await chmod(f.evidence, 0o755);
+        await assert.rejects(f.run("--resume"), /must not grant group or other permissions/);
+        await chmod(f.evidence, 0o700);
+        assert.equal(f.commands.length, calls);
+      }
+      // Aliases must still share the original lock, not create another lock.
+      const lock = join(f.evidence, ".upgrade-lock");
+      await mkdir(lock);
+      const calls = f.commands.length;
+      await assert.rejects(
+        f.run("--resume", "--evidence-dir", evidence),
+        /evidence directory is locked/,
+      );
+      assert.equal(f.commands.length, calls);
+      await rm(lock, { recursive: true });
+      await f.run("--resume", "--evidence-dir", evidence);
+      assert.equal((await f.state()).dispatches, 1);
+      assert.equal(existsSync(lock), false);
+    });
+  }
+});
+
+test("newline-suffixed evidence paths never use the existing sibling directory", async (t) => {
+  const f = await fixture(t, { agent: true });
+  const evidence = f.evidence + "\n";
+  const siblingParameters = join(f.evidence, "parameters.json");
+  const sentinel = "Preserve the unrelated sibling's evidence.\n";
+  await mkdir(f.evidence, { mode: 0o700 });
+  await writeFile(siblingParameters, sentinel, { mode: 0o600 });
+
+  // Shell command substitution would strip the newline, redirecting both
+  // the lock and evidence writes into the pre-existing sibling directory.
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run("--evidence-dir", evidence), injectedFault);
+  assert.equal(await readFile(siblingParameters, "utf8"), sentinel);
+  assert.deepEqual(await readdir(f.evidence), ["parameters.json"]);
+  assert.ok(existsSync(join(evidence, "prepared")));
+
+  const lock = join(evidence, ".upgrade-lock");
+  await mkdir(lock);
+  const calls = f.commands.length;
+  await assert.rejects(
+    f.run("--resume", "--evidence-dir", evidence),
+    /evidence directory is locked/,
+  );
+  assert.equal(f.commands.length, calls);
+  await rm(lock, { recursive: true });
+
+  // A lock held by the sibling must neither block this resume nor be removed.
+  const siblingLock = join(f.evidence, ".upgrade-lock");
+  await mkdir(siblingLock);
+  await f.run("--resume", "--evidence-dir", evidence);
+  assert.equal((await f.state()).dispatches, 1);
+  assert.equal(existsSync(lock), false);
+  assert.ok(existsSync(siblingLock));
+  assert.equal(await readFile(siblingParameters, "utf8"), sentinel);
+  assert.deepEqual((await readdir(f.evidence)).sort(), [".upgrade-lock", "parameters.json"]);
 });
 
 // OCC admits a deploy in one transaction, so a 4xx answer with an OCC error code saved
