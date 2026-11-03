@@ -11,17 +11,13 @@ After installation, [deploy your first Agent](deploy-first-agent.md).
 ## Before you start
 
 - Install the [local Kubernetes tools on Linux](local-kubernetes-tools.md). Use Bash, curl and jq.
-- [Create a ChatGPT workspace service account and generate its Codex access token](https://learn.chatgpt.com/docs/enterprise/service-accounts).
 - Use the generated OCE service key for REST and the [private Gateway routing key and CA](workspace-routing.md) for WebSocket access. Keep credential files outside the checkout with owner-only permissions.
 - The operator needs permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
 
-Set your token file and assigned model in Bash:
+Set the model ID your credential can use. Choose the credential when you deploy the Agent.
 
 ```bash
-# Use the file containing the raw token, not the token itself.
-export CODEX_TOKEN_FILE=/secure/oce/codex-token
 export MODEL=gpt-5.4
-test -r "$CODEX_TOKEN_FILE" && test -s "$CODEX_TOKEN_FILE"
 ```
 
 ## 1. Prepare the quickstart files and select a matching release

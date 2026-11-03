@@ -74,12 +74,10 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" wait gatewayclass/eg --f
 
 ## 4. Prepare the operator session
 
-Set `CODEX_TOKEN_FILE` to the private service-account PAT file and `MODEL` to the authorized native model ID. A Linear connection and GitHub App are not needed for installation setup. See the [operator session](quickstart-session.md).
+Set `MODEL` to a model your credential can use. Choose the credential when you deploy the Agent. A Linear connection and GitHub App are not needed for installation setup. See the [operator session](quickstart-session.md).
 
 ```bash
-export CODEX_TOKEN_FILE=/secure/oce/codex-token
 export MODEL=gpt-5.4
-test -r "$CODEX_TOKEN_FILE" && test -s "$CODEX_TOKEN_FILE"
 ```
 
 Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).

@@ -1,29 +1,61 @@
 # Deploy your first Agent
 
-Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace, browser origin, model and credential file from setup.
+Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace, browser origin and model from setup.
 
 ## 1. Select or register the model credential
 
-Use one model source for this Agent. If the connected service account already has a ready Credential Gateway source, select it by its registered name and continue to step 2:
+Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
+
+### Option A. ChatGPT service account token
+
+Choose this path to use Codex plugins. Use a [ChatGPT workspace service account](https://learn.chatgpt.com/docs/enterprise/service-accounts) with the plugins you need enabled. For a new source, save its Codex access token in a private file outside the checkout.
 
 ```bash
-name="openshell-codex-$(date +%s)"
-modelSource=$(request GET "$base/credential-sources" |
-  jq -er --arg n "${MODEL_SOURCE_NAME:?Set the registered source name}" '[.data[]|select(.name==$n and .type=="codex-pat" and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
+source_type=codex-pat
+secret_field=access_token
+credential_file=/secure/oce/codex-token
 ```
 
-For a new source, store the PAT in a Namespace Secret and register its reference before enabling the repository Credential Proxy.
+### Option B. OpenAI API key
+
+> **Warning:** An Agent that uses an OpenAI API key cannot access Codex plugins, including Linear. Choose the service account token if you need plugins.
+
+Use an OpenAI API key with access to the model selected during setup. For a new source, save the key in a private file outside the checkout.
 
 ```bash
-# POST $base/secrets: stream the raw PAT from its private file.
+source_type=openai
+secret_field=api_key
+credential_file=/secure/oce/openai-api-key
+```
+
+### Select or register the source
+
+Set the Agent name once:
+
+```bash
 name="openshell-codex-$(date +%s)"
-jq -n --arg name "$name-model" --rawfile token "${CODEX_TOKEN_FILE:?}" \
+```
+
+If the credential is already registered, set `MODEL_SOURCE_NAME` to its registered name. Select the ready source and continue to step 2:
+
+```bash
+modelSource=$(request GET "$base/credential-sources" |
+  jq -er --arg n "${MODEL_SOURCE_NAME:?Set the registered source name}" --arg t "$source_type" \
+    '[.data[]|select(.name==$n and .type==$t and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
+```
+
+Otherwise, store the credential in a Namespace Secret and register its reference before enabling the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
+
+```bash
+# POST $base/secrets: read the credential from its file.
+jq -n --arg name "$name-model" --rawfile token "$credential_file" \
   '{name:$name,value:($token|rtrimstr("\n"))}' |
   request POST "$base/secrets" --data-binary @- > "$RUN_DIR/model-secret"
 
-# POST $base/credential-sources: return the source ID only if registration reached ready.
-jq --arg name "$name-model" '{name:$name,type:"codex-pat",secrets:{access_token:.data.ref}}' \
-  "$RUN_DIR/model-secret" | request POST "$base/credential-sources" --data-binary @- > "$RUN_DIR/model-source"
+# POST $base/credential-sources: register the Secret reference for the selected login method.
+jq --arg name "$name-model" --arg t "$source_type" --arg field "$secret_field" \
+  '{name:$name,type:$t,secrets:{($field):.data.ref}}' "$RUN_DIR/model-secret" |
+  request POST "$base/credential-sources" --data-binary @- > "$RUN_DIR/model-source"
 modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source")
 ```
 
@@ -37,7 +69,7 @@ Render the [Codex configuration template](../../snippets/openshell-quickstart/co
 
 ```bash
 # POST $base/configurations: save the model, sandbox and Gateway settings.
-jq -n --arg model "${MODEL:?Set the service account model ID}" -f "$RUN_DIR/codex-configuration.jq" |
+jq -n --arg model "${MODEL:?Set an authorized model ID}" -f "$RUN_DIR/codex-configuration.jq" |
   request POST "$base/configurations" --data-binary @- > "$RUN_DIR/configuration"
 
 # POST $base/agents: bind the model source to one dedicated Agent.
@@ -164,6 +196,6 @@ The shared `turn` helper starts a new conversation on each call. A terminal mode
 save_session
 ```
 
-Run the two commands printed by `save_session` to resume in a fresh Bash shell. The private session saves IDs and paths; the service key stays in its protected file. Keep this Agent running. Git and plugins are optional: add either first, then the other to this same Agent.
+Run the two commands printed by `save_session` to resume in a fresh Bash shell. The private session saves IDs and paths; the service key stays in its protected file. Keep this Agent running. You can add Git with either credential. To add plugins, use the service account token.
 
 On Amazon EKS, [verify workspace routing](eks-openshell-setup.md#verify-workspace-routing). To extend this Agent, continue to [Git](../repository-credentials/openshell-git-push.md) or [Plugins](../integrations/codex-plugins.md).
