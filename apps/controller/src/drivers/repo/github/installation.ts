@@ -5,24 +5,21 @@ import {
   closed,
   nonempty,
   object,
-  openShellRepositoryConfiguration,
+  type ConfigurationRecord,
 } from "../../../composition/installation-fields.ts";
 import type { SelectedDriverConfiguration } from "../../../composition/installation-config.ts";
 import type { PreparedRepositoryGitConfiguration } from "../../../backends/repository-credentials/prepared-git-owner.ts";
 import { preparedGitHubConfiguration } from "./credentials/prepared-configuration.ts";
 import type { GitHubRepositoryRegistry } from "./credentials/registry.ts";
 
-/** Interpret the existing public GitHub selection at its Repo owner. */
-export function githubRepositoryConfiguration(input: unknown, mode: "development" | "production") {
-  if (input === undefined) {
+/** Parse Repo-owned fields of the closed legacy selection supplied by private composition. */
+export function githubRepositoryConfiguration<Transport>(
+  selection: ConfigurationRecord | undefined,
+  parseTransport: () => Transport,
+) {
+  if (selection === undefined) {
     return undefined;
   }
-  const selection = object(input, "repository");
-  closed(
-    selection,
-    ["id", "configuration", "preparedGitHub", "openShell", "nativeSender"],
-    "repository",
-  );
   const native =
     selection.nativeSender === undefined
       ? undefined
@@ -45,7 +42,8 @@ export function githubRepositoryConfiguration(input: unknown, mode: "development
             selection.preparedGitHub,
             true,
           ) as PreparedRepositoryGitConfiguration),
-    transport: openShellRepositoryConfiguration(selection.openShell, mode),
+    // Defer adapter parsing until after native and prepared fields, preserving error order.
+    transport: parseTransport(),
   };
 }
 

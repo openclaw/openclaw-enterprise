@@ -89,8 +89,7 @@ const egressAuthorityFields = [
 ] as const;
 
 /**
- * Validate one TLS and issuer listener block, `drivers.credential_proxy.configuration.authority`
- * or `repository.openShell.authority`. Each fault names its own field and never echoes a value,
+ * Validate one TLS and issuer listener block. Each fault names its own field and never echoes a value,
  * so startup logs and the chart's upgrade check say which key to fix (finding 2216).
  */
 export function egressAuthorityConfiguration(
@@ -210,19 +209,6 @@ export const chartListeners = {
       ],
     },
   },
-  openshellGit: {
-    path: "repository.openShell.authority",
-    chart: "openshellGit",
-    variable: "OCC_OPENSHELL_GIT_PORT",
-    files: {
-      certificatePath: ["/etc/openclaw/openshell-git/tls.crt", "openshellGit.tlsSecretName"],
-      privateKeyPath: ["/etc/openclaw/openshell-git/tls.key", "openshellGit.tlsSecretName"],
-      issuerPublicKeyPath: [
-        "/etc/openclaw/openshell-git/gateway-public.pem",
-        "openshellGit.issuerPublicKeyConfigMapName",
-      ],
-    },
-  },
 } as const;
 
 /**
@@ -240,7 +226,17 @@ export function requireChartListener(
       >
     | undefined,
   environment: Readonly<Record<string, string | undefined>>,
-  listener: (typeof chartListeners)[keyof typeof chartListeners],
+  listener: {
+    readonly path: string;
+    readonly chart: string;
+    readonly variable: string;
+    readonly files: Readonly<
+      Record<
+        "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath",
+        readonly [string, string]
+      >
+    >;
+  },
 ): void {
   const declared = environment[listener.variable];
   if (declared === undefined) {
@@ -287,23 +283,4 @@ export function requireChartListener(
       );
     }
   }
-}
-
-export function openShellRepositoryConfiguration(
-  input: unknown,
-  mode: "development" | "production",
-) {
-  if (input === undefined) {
-    return undefined;
-  }
-  const value = object(input, "repository.openShell");
-  closed(value, ["registrationName", "authority"], "repository.openShell");
-  return {
-    registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
-    authority: egressAuthorityConfiguration(
-      value.authority,
-      mode,
-      "repository.openShell.authority",
-    ),
-  };
 }

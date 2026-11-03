@@ -63,7 +63,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     [
       "repository installation admits its exact field helpers",
       installation,
-      'import { object as record, closed as check, nonempty as text, openShellRepositoryConfiguration as repository } from "../../../composition/installation-fields.ts"; void record; void check; void text; void repository;',
+      'import { object as record, closed as check, nonempty as text } from "../../../composition/installation-fields.ts"; void record; void check; void text;',
     ],
     [
       "prepared Git admits its existing transaction class and worker identity",
@@ -262,6 +262,18 @@ test("credential source boundary rejects new raw capabilities in the real source
       "field consumers reject extra symbol",
       'import { egressAuthorityConfiguration } from "../../../composition/installation-fields.ts";',
       /unreviewed shared field validation/,
+      installation,
+    ],
+    [
+      "repository installation rejects the former shared adapter parser",
+      'import { openShellRepositoryConfiguration } from "../../../composition/installation-fields.ts";',
+      /unreviewed shared field validation/,
+      installation,
+    ],
+    [
+      "repository installation rejects the adapter-owned parser",
+      'import { openShellRepositoryConfiguration } from "../../egress-proxy/openshell-configuration.ts";',
+      /runtime import has no scanned credential source/,
       installation,
     ],
     [

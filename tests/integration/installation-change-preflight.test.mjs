@@ -17,6 +17,7 @@ import {
   chartListeners,
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
+import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
@@ -331,7 +332,7 @@ test(
     );
     for (const [listener, files] of [
       [chartListeners.egressAuthority, mounted(api, "api")],
-      [chartListeners.openshellGit, mounted(worker, "worker")],
+      [openShellGitChartListener, mounted(worker, "worker")],
     ]) {
       for (const [path] of Object.values(listener.files)) {
         assert.ok(files.includes(path), `${listener.chart}: ${path} in ${files.join(", ")}`);
@@ -382,17 +383,17 @@ test(
       host: "0.0.0.0",
       port: 8445,
       ...Object.fromEntries(
-        Object.entries(chartListeners.openshellGit.files).map(([key, [path]]) => [key, path]),
+        Object.entries(openShellGitChartListener.files).map(([key, [path]]) => [key, path]),
       ),
     };
     const declared = { OCC_OPENSHELL_GIT_PORT: "8445" };
-    requireChartListener(transport, declared, chartListeners.openshellGit);
+    requireChartListener(transport, declared, openShellGitChartListener);
     assert.throws(
       () =>
         requireChartListener(
           { ...transport, issuerPublicKeyPath: "/etc/openclaw/openshell-git/issuer.pub" },
           declared,
-          chartListeners.openshellGit,
+          openShellGitChartListener,
         ),
       {
         name: "ChartListenerMismatchError",

@@ -1,5 +1,7 @@
 import {
   openShellProxyConfiguration,
+  openShellRepositoryConfiguration,
+  openShellGitChartListener,
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
 import {
@@ -707,9 +709,19 @@ export async function loadInstallationConfiguration(options: {
       } Do not replay uncertain work.`,
     );
   }
-  const repositoryConfiguration = githubRepositoryConfiguration(
-    configuration.repository,
-    options.mode,
+  const repositorySelection =
+    configuration.repository === undefined
+      ? undefined
+      : object(configuration.repository, "repository");
+  if (repositorySelection !== undefined) {
+    closed(
+      repositorySelection,
+      ["id", "configuration", "preparedGitHub", "openShell", "nativeSender"],
+      "repository",
+    );
+  }
+  const repositoryConfiguration = githubRepositoryConfiguration(repositorySelection, () =>
+    openShellRepositoryConfiguration(repositorySelection?.openShell, options.mode),
   );
   const repoSelection =
     repositoryConfiguration &&
@@ -804,7 +816,7 @@ export async function loadInstallationConfiguration(options: {
   requireChartListener(
     repositoryTransportConfiguration?.authority,
     environment,
-    chartListeners.openshellGit,
+    openShellGitChartListener,
   );
 
   const backends = backendConfiguration(
