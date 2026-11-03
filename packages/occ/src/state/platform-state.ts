@@ -1049,12 +1049,37 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     revision.compute === null ||
     Array.isArray(revision.compute) ||
     Object.keys(revision.compute).some(
-      (key) => !["id", "implementation", "admission"].includes(key),
+      (key) => !["id", "implementation", "admission", "serviceAccess"].includes(key),
     ) ||
     !Object.hasOwn(revision.compute, "id") ||
     !Object.hasOwn(revision.compute, "implementation") ||
     !isNonEmptyString(revision.compute.id) ||
     !isNonEmptyString(revision.compute.implementation) ||
+    (revision.compute.serviceAccess !== undefined &&
+      (!Array.isArray(revision.compute.serviceAccess) ||
+        revision.compute.serviceAccess.length === 0 ||
+        new Set(revision.compute.serviceAccess.map((service) => service?.id)).size !==
+          revision.compute.serviceAccess.length ||
+        revision.compute.serviceAccess.some(
+          (service) =>
+            !service ||
+            !isDeepStrictEqual(Object.keys(service).sort(), [
+              "configuration",
+              "driverId",
+              "endpoint",
+              "id",
+              "implementation",
+            ]) ||
+            typeof service.id !== "string" ||
+            !/^[a-z][a-z0-9-]{0,63}$/.test(service.id) ||
+            service.driverId !== revision.compute.id ||
+            service.implementation !== revision.compute.implementation ||
+            typeof service.endpoint !== "string" ||
+            service.endpoint.length === 0 ||
+            service.configuration === null ||
+            typeof service.configuration !== "object" ||
+            Array.isArray(service.configuration),
+        ))) ||
     (revision.compute.admission !== undefined &&
       (typeof revision.compute.admission !== "string" ||
         !/^[\x20-\x7e]{1,1024}$/.test(revision.compute.admission))) ||

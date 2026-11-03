@@ -8442,3 +8442,123 @@ test(
     );
   },
 );
+
+test("OpenShell public-reader material stays in endpoint-bound provider credentials across renewal and rejects ambient delivery", async (t) => {
+  const tls = await harnessTlsFixture(t);
+  const gateway = workspaceGatewayClient();
+  let created;
+  gateway.createSandbox = async (request) => {
+    created = storedSandbox(request);
+    return created;
+  };
+  gateway.getSandbox = async () => created;
+  gateway.getService = async () => ({
+    targetPort: 8080,
+    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+    advertisedUrl: "http://codex.example.test:8080/",
+    url: "http://codex.example.test:8080/",
+  });
+  const driver = openShellDriver(gateway);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver);
+  const descriptor = {
+    id: "public-github-read",
+    driverId: "kubernetes",
+    implementation: "kubernetes",
+    endpoint: "https://10.96.0.55:8080",
+    configuration: {
+      policy: { mode: "all" },
+      peer: { namespace: "reader", podLabels: { app: "reader" } },
+      installationId: "ins_reader",
+      authorizationConfigMapName: "reader-authorizations",
+      caBundle: tls.caBundle,
+    },
+  };
+  revision.compute = {
+    id: "kubernetes",
+    implementation: "kubernetes",
+    serviceAccess: [descriptor],
+  };
+  revision.sandboxPolicy = driver.admitNetworkPolicy([], 1, undefined, {
+    serviceAccess: [descriptor],
+  });
+  const runtime = JSON.parse(requirements.files[0].content);
+  runtime.publicGithubRead = {
+    endpoint: descriptor.endpoint,
+    materialPath: "/runtime/public-github-read.json",
+  };
+  requirements.files[0].content = JSON.stringify(runtime);
+  requirements.files.push(
+    {
+      name: "public-github-read.json",
+      environmentVariable: "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE",
+      content: JSON.stringify({
+        endpoint: descriptor.endpoint,
+        caBundle: tls.caBundle,
+        authenticatedRepositories: [],
+      }),
+    },
+    {
+      name: "public-github-read.md",
+      environmentVariable: "OCE_PUBLIC_GITHUB_READ_SKILL_FILE",
+      content: "Use the authenticated public-reader for public GitHub reads.",
+    },
+  );
+  requirements.serviceAccessMaterials = [
+    { serviceId: "public-github-read", values: { capability: "synthetic-reader-capability" } },
+  ];
+  const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+  await driver.ensureNamespace(context);
+  await provision();
+  const providerCreate = gateway.calls.find(([operation]) => operation === "createProvider")[1];
+  assert.deepEqual(providerCreate.credentials, {
+    OCE_PUBLIC_GITHUB_READ_CAPABILITY: "synthetic-reader-capability",
+  });
+  assert.doesNotMatch(JSON.stringify(providerCreate.config), /synthetic-reader-capability/);
+  assert.doesNotMatch(JSON.stringify(created.spec), /synthetic-reader-capability/);
+  const profile = gateway.profiles.get("oce-codex-runtime-public-github-read").profile;
+  assert.deepEqual(profile.endpoints, [], "only the admitted policy endpoint binds the credential");
+  assert.deepEqual(profile.credentials, [
+    {
+      name: "public_github_read_capability",
+      envVars: ["OCE_PUBLIC_GITHUB_READ_CAPABILITY"],
+      required: true,
+      authStyle: "bearer",
+      headerName: "authorization",
+      stablePlaceholder: true,
+    },
+  ]);
+  assert.equal(profile.files.length, 6);
+  const serviceRule = created.spec.policy.network_policies["public-github-read"];
+  assert.deepEqual(serviceRule.endpoints[0].credential_binding, { provider: providerCreate.name });
+  for (const [name, rule] of Object.entries(created.spec.policy.network_policies)) {
+    if (name !== "public-github-read") {
+      assert.ok(rule.endpoints.every((endpoint) => endpoint.credential_binding === undefined));
+    }
+  }
+  await provision();
+  assert.equal(
+    gateway.calls.filter(([operation]) => operation === "updateProviderCredentials").length,
+    0,
+    "stable preparation must not rotate its provider on every reconcile",
+  );
+  requirements.serviceAccessMaterials[0].values.capability = "renewed-reader-capability";
+  await provision();
+  assert.deepEqual(
+    gateway.calls
+      .filter(([operation]) => operation === "updateProviderCredentials")
+      .at(-1)
+      .slice(2),
+    [{ OCE_PUBLIC_GITHUB_READ_CAPABILITY: "renewed-reader-capability" }],
+  );
+  const writes = gateway.calls.length;
+  requirements.serviceAccessMaterials[0].values.extra = "must-refuse";
+  await assert.rejects(provision, /public-reader service material/);
+  assert.equal(gateway.calls.length, writes);
+  delete requirements.serviceAccessMaterials[0].values.extra;
+  requirements.files[2].content = JSON.stringify({
+    endpoint: "https://10.96.0.56:8080",
+    caBundle: tls.caBundle,
+    authenticatedRepositories: [],
+  });
+  await assert.rejects(provision, /public-reader runtime files/);
+});

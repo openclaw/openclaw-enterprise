@@ -4,6 +4,7 @@ import type { TestContext } from "node:test";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
+  ComputeServiceAccess,
   SandboxPolicySnapshot,
   ProxyRevisionContext,
 } from "../../packages/contracts/src/index.ts";
@@ -13,6 +14,7 @@ import {
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { openShellProtectedCodexArtifacts } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { openShellGitRuntimeFixture } from "../helpers/openshell-git-runtime.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
@@ -185,7 +187,11 @@ function protectedRevision(snapshot: SandboxPolicySnapshot): AgentRevision {
     configuration: createHarnessConfiguration("codex", "fixture"),
     gatewayManagedMode: false,
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
-    compute: { id: "kubernetes", implementation: "kubernetes" },
+    compute: {
+      id: "kubernetes",
+      implementation: "kubernetes",
+      ...(snapshot.serviceAccess === undefined ? {} : { serviceAccess: snapshot.serviceAccess }),
+    },
     sandboxDriverId: snapshot.driverId,
     sandboxPolicy: snapshot,
     repositoryCredentials: repository,
@@ -391,5 +397,119 @@ test("paired observation rejects changed, missing or extra artifact rules before
       operationId: "artifact-apply",
     }),
     /unavailable for protected execution/,
+  );
+});
+
+test("paired OpenShell compilers compose inspected public reads separately from frozen artifacts and reject changed descriptors", async (t) => {
+  const tls = await harnessTlsFixture(t);
+  const service: ComputeServiceAccess = {
+    id: "public-github-read",
+    driverId: "kubernetes",
+    implementation: "kubernetes",
+    endpoint: "https://10.96.0.55:8080",
+    configuration: {
+      policy: { mode: "repositories", repositories: ["example/library"] },
+      peer: { namespace: "reader", podLabels: { app: "public-reader" } },
+      authorizationConfigMapName: "reader-authorizations",
+      installationId: "ins_artifact",
+      caBundle: tls.caBundle,
+    },
+  };
+  const driver = sandbox(t, [artifact()], [artifact().name]);
+  const admission = driver.admitProtectedNetworkPolicy(3, [service]);
+  assert.equal(admission.purpose, "protected-network");
+  assert.deepEqual(admission.declaredRuleNames, [artifact().name, "public-github-read"]);
+  assert.deepEqual(admission.snapshot.serviceAccess, [service]);
+  assert.deepEqual(Object.keys(admission.snapshot.defaults), [artifact().name]);
+  const revision = protectedRevision(admission.snapshot);
+  const options = {
+    middlewareName: "exchange",
+    repositoryMiddlewareName: "oce-prepared-git",
+    authorityScope: "execution" as const,
+  };
+  const compile = (candidate: AgentRevision) =>
+    openShellEgressConfiguration(candidate.egressPlan!, options, candidate);
+  const compiled = compile(revision);
+  const rules = compiled.network_policies as Record<
+    string,
+    { endpoints: Record<string, unknown>[] }
+  >;
+  assert.deepEqual(rules["public-github-read"], {
+    name: "public-github-read",
+    binaries: [
+      "/usr/bin/node",
+      "/usr/bin/git",
+      "/usr/lib/git-core/git-remote-https",
+      "/usr/lib/git-core/git-remote-http",
+      "/usr/libexec/git-core/git-remote-https",
+      "/usr/libexec/git-core/git-remote-http",
+    ].map((path) => ({ path })),
+    endpoints: [
+      {
+        host: "10.96.0.55",
+        ports: [8080],
+        allowed_ips: ["10.96.0.55"],
+        protocol: "rest",
+        enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        credential_binding: { provider: "oce-runtime-8774ba4feb359bde" },
+        rules: [
+          { allow: { method: "GET", path: "/repos/**" } },
+          { allow: { method: "GET", path: "/git/**/info/refs" } },
+          { allow: { method: "POST", path: "/git/**/git-upload-pack" } },
+        ],
+      },
+    ],
+  });
+  for (const changed of [
+    { ...service, id: "unknown-service" },
+    { ...service, endpoint: "http://10.96.0.55:8080" },
+    { ...service, endpoint: "https://reader:8080" },
+    { ...service, endpoint: "https://10.96.0.55:8080/elsewhere" },
+    { ...service, configuration: { ...service.configuration, token: "untrusted" } },
+    {
+      ...service,
+      configuration: {
+        ...service.configuration,
+        policy: { mode: "repositories", repositories: [] },
+      },
+    },
+    {
+      ...service,
+      configuration: {
+        ...service.configuration,
+        policy: { mode: "repositories", repositories: ["Example/Library"] },
+      },
+    },
+    {
+      ...service,
+      configuration: { ...service.configuration, peer: { namespace: "reader", podLabels: {} } },
+    },
+    { ...service, configuration: { ...service.configuration, caBundle: "not a CA" } },
+  ]) {
+    assert.throws(
+      () => driver.admitProtectedNetworkPolicy(3, [changed]),
+      ConfigurationValidationError,
+    );
+    assert.throws(
+      () =>
+        compile({
+          ...revision,
+          sandboxPolicy: { ...admission.snapshot, serviceAccess: [changed] },
+        }),
+      ConfigurationValidationError,
+    );
+  }
+  assert.throws(
+    () => compile({ ...revision, compute: { ...revision.compute, id: "other-compute" } }),
+    ConfigurationValidationError,
+  );
+  const ordinary = driver.admitNetworkPolicy([], 3, undefined, { serviceAccess: [service] });
+  assert.deepEqual(ordinary.serviceAccess, [service]);
+  assert.throws(
+    () =>
+      driver.admitNetworkPolicy([], 3, undefined, {
+        serviceAccess: [{ ...service, endpoint: "https://127.0.0.1:8080" }],
+      }),
+    ConfigurationValidationError,
   );
 });

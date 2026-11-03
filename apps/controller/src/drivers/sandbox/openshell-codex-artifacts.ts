@@ -4,6 +4,7 @@ import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import type { AgentRevision, OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 
+import { openShellRevisionServiceRules } from "./openshell-service-access.ts";
 import { AGENT_POLICY_PREFIX } from "./openshell-policy.ts";
 
 // These are the two native entrypoints shipped by the qualified bundled Codex release.
@@ -157,7 +158,15 @@ export function openShellProtectedCodexArtifacts(
   if (snapshot === undefined) {
     return {};
   }
-  exactKeys(snapshot, ["driverId", "implementation", "version", "defaults", "additions"]);
+  openShellRevisionServiceRules(revision);
+  exactKeys(snapshot, [
+    "driverId",
+    "implementation",
+    "version",
+    "defaults",
+    "additions",
+    ...(snapshot.serviceAccess === undefined ? [] : ["serviceAccess"]),
+  ]);
   if (
     revision?.executionAdmission.mode !== "protected" ||
     revision.harness.id !== "codex" ||

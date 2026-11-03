@@ -41,6 +41,7 @@ import {
   openShellExchangeCapabilities as capabilities,
 } from "./openshell-exchange-capabilities.ts";
 import { createOpenAiStaticProvider } from "./openai-provider.ts";
+import { openShellRevisionServiceRules } from "../sandbox/openshell-service-access.ts";
 import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
 import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
 
@@ -197,6 +198,10 @@ export function openShellEgressConfiguration(
   revision?: Readonly<AgentRevision>,
 ): Readonly<Record<string, unknown>> {
   const artifacts = openShellProtectedCodexArtifacts(revision);
+  const services = openShellRevisionServiceRules(revision);
+  if (Object.keys(services).some((name) => Object.hasOwn(artifacts, name))) {
+    throw new Error("Service rules conflict with artifact declarations.");
+  }
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
     throw new Error("The protected execution permits at most one binding.");
   }
@@ -219,7 +224,7 @@ export function openShellEgressConfiguration(
     // The prepared provider supplies the endpoints for the admitted GitHub scope. No generic exchange
     // authority, broad Git network rule or second credential-bearing sender accompanies it.
     return immutableCopy({
-      network_policies: artifacts,
+      network_policies: { ...artifacts, ...services },
       network_middlewares: openShellGitMiddleware(
         options.repositoryMiddlewareName,
         plan.execution.executionId,
