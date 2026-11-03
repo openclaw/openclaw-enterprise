@@ -389,6 +389,10 @@
                           {
                             "page": "reference/drivers/kubernetes-compute/split-layout-installations",
                             "label": "Split-Layout Installations"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/preprovisioned-namespace",
+                            "label": "Preprovisioned Namespace"
                           }
                         ]
                       },
