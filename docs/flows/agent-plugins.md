@@ -138,11 +138,11 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-Deployment revalidates selections and Configuration, records the Driver and
-policy-only plugin map in an Agent revision, and queues it. Native app mapping,
-release metadata, and configuration resolve later.
+OCC revalidates Configuration and selections, snapshots Driver and policies, and queues the revision. Startup resolves native metadata.
 
-Google Workspace binds an attached Agent credential to a pinned release. The OpenClaw Gateway loads the skill. At deployment, the Sandbox Driver binds the credential’s host, path and scopes. When the worker runs `gog`, its OpenShell supervisor asks the execution cluster’s shared guard to check the actual request against that binding and the release’s operation map. OpenShell injects the bearer after approval. Withdrawal detaches that source. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+For Google Workspace, the Gateway loads the skill. The Sandbox Driver binds the selected Agent credential’s host, path and scopes to the pinned release. OpenShell injects a bearer after the cluster’s shared guard checks each `gog` request against the binding and release operation map. Withdrawal detaches the credential. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+
+For Slack, the worker verifies the pinned MCP descriptor and stages the server with `enabled: false`.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -373,5 +373,7 @@ establish starvation.
 
 - 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
 - 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
+
+- 2026-10-28 14:40: Trace worker installation and discovery of Slack MCP tools. (authoring-run/55da35a7-f123-436e-9c32-65036b85894d - 0ba3c0fd5a26a82dba6551f04b74a697c5324fdd)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

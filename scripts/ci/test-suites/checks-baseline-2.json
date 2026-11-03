@@ -126,7 +126,9 @@
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
-    { "path": "tests/integration/controlled-tls-origin.test.ts" },
+    {
+      "path": "tests/integration/controlled-tls-origin.test.ts"
+    },
     {
       "path": "tests/integration/tls-peer-certificate.test.mjs"
     },
@@ -600,6 +602,9 @@
         "OpenShell direct construction and policy rendering still enforce configuration validation",
         "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
+    },
+    {
+      "path": "tests/integration/staging-qualification.test.ts"
     }
   ]
 }

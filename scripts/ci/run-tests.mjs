@@ -1051,6 +1051,50 @@ function imageDigests(env) {
   );
 }
 
+function validateExpectedTests(path, expectedTests, tests, issues) {
+  if (expectedTests.length === 0) {
+    return;
+  }
+  const statusByName = new Map();
+  for (const testCase of tests) {
+    if (!isObject(testCase) || typeof testCase.name !== "string") {
+      issues.push(
+        issue("invalid-test-evidence", "test evidence contains an invalid case entry", {
+          file: path,
+        }),
+      );
+      return;
+    }
+    const previousStatus = statusByName.get(testCase.name);
+    // A pass cannot erase a non-passing occurrence of the same required name.
+    if (previousStatus === undefined || previousStatus === "passed") {
+      const status = ["passed", "failed", "skipped", "todo"].includes(testCase.status)
+        ? testCase.status
+        : "invalid";
+      statusByName.set(testCase.name, status);
+    }
+  }
+  for (const name of expectedTests) {
+    const status = statusByName.get(name);
+    if (status === undefined) {
+      issues.push(
+        issue("missing-expected-test", `expected test did not run: ${name}`, {
+          file: path,
+          name,
+        }),
+      );
+    } else if (status !== "passed") {
+      issues.push(
+        issue("expected-test-not-passed", `expected test did not pass: ${name}`, {
+          file: path,
+          name,
+          status,
+        }),
+      );
+    }
+  }
+}
+
 async function runFile(root, lane, file, statePath, prepareFile, setup = (step) => step()) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
@@ -1306,26 +1350,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   if (nodeResult) {
-    const testsByName = new Map(tests.map((testCase) => [testCase.name, testCase]));
-    for (const name of file.expectedTests) {
-      const expected = testsByName.get(name);
-      if (!expected) {
-        issues.push(
-          issue("missing-expected-test", `expected test did not run: ${name}`, {
-            file: relativePath,
-            name,
-          }),
-        );
-      } else if (expected.status !== "passed") {
-        issues.push(
-          issue("expected-test-not-passed", `expected test did not pass: ${name}`, {
-            file: relativePath,
-            name,
-            status: expected.status,
-          }),
-        );
-      }
-    }
+    validateExpectedTests(relativePath, file.expectedTests, tests, issues);
 
     for (const skipped of tests.filter((testCase) =>
       ["skipped", "todo"].includes(testCase.status),
@@ -1641,6 +1666,8 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
           file: expectedFile.path,
         }),
       );
+    } else {
+      validateExpectedTests(expectedFile.path, expectedFile.expectedTests, observed.tests, issues);
     }
     if (observed.cleanup != null && observed.cleanup.status !== "passed") {
       issues.push(
