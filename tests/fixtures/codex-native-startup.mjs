@@ -88,6 +88,8 @@ export function createCodexStartup(
     probeDirectoryFailureAt,
     // Extra wrapper environment, such as the CA settings the workspace node supervisor passes.
     environment = {},
+    // The wrapper refuses startup by exiting; otherwise any exit fails the test.
+    expectExit = false,
   },
 ) {
   const directory = mkdtempSync(join(tmpdir(), "openclaw-plugin-ready-"));
@@ -100,6 +102,7 @@ export function createCodexStartup(
   const retryTimers = [];
   const loginPauses = [];
   const boundaryErrors = [];
+  const exits = [];
   let statusHandler;
   let enrollmentHandler;
   const plan = {
@@ -343,8 +346,12 @@ export function createCodexStartup(
           throw error;
         }
       },
-      exit() {
-        assert.fail("startup must either remain unready or start the app server");
+      exit(code) {
+        if (!expectExit) {
+          assert.fail("startup must either remain unready or start the app server");
+        }
+        exits.push(code);
+        settleStartup();
       },
     },
     require(specifier) {
@@ -509,6 +516,7 @@ export function createCodexStartup(
     },
     appServerSpawns,
     probeSignals,
+    exits,
     start() {
       vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
       return this.settled();

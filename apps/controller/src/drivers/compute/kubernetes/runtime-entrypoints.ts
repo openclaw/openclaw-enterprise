@@ -4343,6 +4343,14 @@ function codexProbeRetryable(result) {
 // A single startup budget includes both process attempts and the retry delay.
 // No signal handler is installed before app-server starts, so under tini
 // SIGTERM ends the probe, its backoff or a held failure at once.
+// The model check is asynchronous, so a startup refusal after it rejects a promise. End
+// the wrapper explicitly, as the synchronous throw did, not through Node's rejection mode.
+function startCodexOrExit(attempt, deadline) {
+  startAuthenticatedCodex(attempt, deadline).catch((error) => {
+    console.error(String(error?.stack ?? error));
+    process.exit(1);
+  });
+}
 async function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 61000) {
   const startedAt = performance.now();
   const timeout = Math.min(30000, Math.floor(deadline - startedAt));
@@ -4370,7 +4378,7 @@ async function startAuthenticatedCodex(attempt = 1, deadline = performance.now()
   const delay = codexRetryDelay(1);
   if (pluginRuntime?.manifest.providerTools !== "none" && attempt === 1 && codexProbeRetryable(result) &&
       deadline - performance.now() - delay >= 1000) {
-    setTimeout(() => startAuthenticatedCodex(2, deadline), delay);
+    setTimeout(() => startCodexOrExit(2, deadline), delay);
     return;
   }
   if (result.code !== undefined) {
@@ -4497,7 +4505,7 @@ ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_re
 })();
 }
 let modelProbeStartedAt = Date.now();
-startAuthenticatedCodex();
+startCodexOrExit();
 }
 };
 const protectedStartup = enrollment !== undefined || noInference ||

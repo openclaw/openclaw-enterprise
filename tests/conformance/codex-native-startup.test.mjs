@@ -42,7 +42,7 @@ const probeAuthenticationFailure = { ...probeFailure(), code: "AUTHENTICATION_FA
 const errorEvent = (message) => ({ type: "error", message });
 const failedTurn = (message) => ({ type: "turn.failed", error: { message } });
 
-test("verifier-only Codex refuses enabled plugins with API-key login before app-server spawn", (t) => {
+test("verifier-only Codex refuses enabled plugins with API-key login before app-server spawn", async (t) => {
   // Login/probe output is scripted here; the generated wrapper owns this refusal.
   // No fake plugin response is used to establish installation behavior.
   const runtime = createCodexStartup(t, {
@@ -59,8 +59,14 @@ test("verifier-only Codex refuses enabled plugins with API-key login before app-
       kind: "codex",
       selections: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
     }),
+    expectExit: true,
   });
-  assert.throws(() => runtime.start(), /API-key authentication cannot install them/);
+  // The refusal follows the asynchronous model check, so the wrapper reports it and exits.
+  await runtime.start();
+  assert.deepEqual(runtime.exits, [1]);
+  assert.ok(
+    runtime.diagnostics.some((line) => /API-key authentication cannot install them/.test(line)),
+  );
   assert.equal(runtime.appServerStarts, 0);
   assert.equal(runtime.marker(), undefined);
   runtime.assertNativeScriptConsumed();
