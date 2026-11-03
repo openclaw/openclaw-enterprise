@@ -2,34 +2,52 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 const digest = `sha256:${"b".repeat(64)}`;
 const repository = "openclaw/openclaw-enterprise";
+const runtimeFile = "tests/integration/runtime-image-startup.test.mjs";
+const runtimeChildCase = "runtime startup child consumes the CI-prepared Codex seccomp profile";
 
-test("staging workflow command consumes bound digests and refuses invalid release evidence", async (t) => {
+if (process.argv[1] === resolve(runtimeFile)) {
+  test(runtimeChildCase, consumePreparedProfile);
+} else {
+  test(
+    "staging workflow command consumes bound digests and refuses invalid release evidence",
+    checkWorkflowCommand,
+  );
+  test("staging runtime lane preserves the reviewed Codex version in its child", checkRuntimeChild);
+}
+
+async function checkWorkflowCommand(t: TestContext) {
   const directory = await mkdtemp(join(process.cwd(), ".staging-command-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const root = join(directory, "trusted-source");
-  const hostEnv = { HOME: directory, PATH: process.env.PATH };
-  const git = (args: string[]) => execute("git", ["-C", root, ...args], { env: hostEnv });
-  const commit = async () => {
-    await git(["add", "--all"]);
-    await git([
-      "-c",
-      "user.name=CI Fixture",
-      "-c",
-      "user.email=fixture@example.invalid",
-      "commit",
-      "--quiet",
-      "--no-gpg-sign",
-      "-m",
-      "Fixture inputs",
-    ]);
-    return (await git(["rev-parse", "HEAD"])).stdout.trim();
+  const hostEnv = { HOME: directory, PATH: process.env.PATH, GIT_NO_LAZY_FETCH: "1" };
+  const git = (args: string[], cwd = root) =>
+    execute("git", ["-C", cwd, ...args], { env: hostEnv });
+  const commit = async (cwd = root) => {
+    await git(["add", "--all"], cwd);
+    await git(
+      [
+        "-c",
+        "user.name=CI Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "--no-gpg-sign",
+        "-m",
+        "Fixture inputs",
+      ],
+      cwd,
+    );
+    return (await git(["rev-parse", "HEAD"], cwd)).stdout.trim();
   };
   const recipePath = join(root, "deploy/runtime/Dockerfile");
   await mkdir(dirname(recipePath), { recursive: true });
@@ -44,7 +62,7 @@ test("staging workflow command consumes bound digests and refuses invalid releas
     recipePath,
     recipe.replace("OPENAI_CODEX_VERSION=0.164.0", "OPENAI_CODEX_VERSION=0.160.0"),
   );
-  await git(["init", "--quiet"]);
+  await git(["init", "--quiet", "--initial-branch=main"]);
   const unsupported = await commit();
   await writeFile(recipePath, recipe + "\nENV OPENAI_CODEX_VERSION=0.164.0\n");
   const duplicateField = await commit();
@@ -74,6 +92,13 @@ test("staging workflow command consumes bound digests and refuses invalid releas
   await writeFile(join(root, "workflow-marker"), "Trusted workflow revision\n");
   const workflowSha = await commit();
   await git(["update-ref", "refs/remotes/origin/main", workflowSha]);
+  // Advance main only on the remote so the runner starts without this commit.
+  const remote = join(directory, "official-origin");
+  await git(["clone", "--quiet", "--no-local", root, remote]);
+  await git(["config", "uploadpack.allowFilter", "true"], remote);
+  await writeFile(join(remote, "workflow-marker"), "Main advanced after checkout\n");
+  const newerMain = await commit(remote);
+  const newerTree = (await git(["rev-parse", "HEAD^{tree}"], remote)).stdout.trim();
   const env = {
     ...hostEnv,
     RUNNER_TEMP: directory,
@@ -157,7 +182,7 @@ globalThis.fetch = async (url, options) => {
   log({api: path});
   let body;
   if (path === '/repos/' + repo) body = {full_name: repo, private: false, default_branch: 'main'};
-  else if (path.endsWith('/branches/main')) body = {name: 'main', protected: !env.UNPROTECTED, commit: {sha: workflowSha}};
+  else if (path.endsWith('/branches/main')) body = {name: 'main', protected: !env.UNPROTECTED, commit: {sha: env.OBSERVED_MAIN_SHA || workflowSha}};
   else if (path.endsWith('/workflows/container-publish.yml')) body = {id: 123, path: publication, state: 'active'};
   else if (path.endsWith('/workflows/ci.yml')) body = {id: 456, path: '.github/workflows/ci.yml', state: 'active'};
   else if (path.endsWith('/workflows/ci.yml/runs')) {
@@ -189,6 +214,15 @@ child.execFileSync = (command, args, options) => {
     assert.equal(options.env.GH_TOKEN, undefined);
     assert.equal(options.env.GITHUB_TOKEN, undefined);
     assert.equal(options.env.GITHUB_OUTPUT, undefined);
+    if (command === 'git' && args.includes('fetch')) {
+      const official = 'https://github.com/openclaw/openclaw-enterprise.git';
+      assert.equal(args.at(-2), official);
+      assert.equal(args.at(-1), ${JSON.stringify(newerMain)});
+      assert.equal(options.env.GIT_TERMINAL_PROMPT, '0');
+      log({gitFetch: args.at(-1)});
+      // Redirect only transport. Git still fetches and checks the real fixture history.
+      return executeSync(command, args.map(arg => arg.replace(official, ${JSON.stringify(pathToFileURL(remote).href)})), options);
+    }
     return executeSync(command, args, options);
   }
   assert.equal(process.env.GH_TOKEN, undefined);
@@ -258,7 +292,29 @@ syncBuiltinESMExports();
       .split("\n")
       .map((line) => JSON.parse(line));
   const containerCalls = async () => (await calls()).filter((call) => call.command || call.spawn);
+  const refsBefore = (await git(["show-ref", "--head"])).stdout;
+  const configPath = join(root, ".git/config");
+  const configBefore = await readFile(configPath);
   await run("validate");
+  assert.ok(!(await calls()).some((call) => call.gitFetch));
+  await assert.rejects(git(["cat-file", "-e", newerMain]), { code: 1 });
+  await run("validate", { OBSERVED_MAIN_SHA: newerMain });
+  assert.equal((await git(["cat-file", "-t", newerMain])).stdout, "commit\n");
+  await assert.rejects(git(["cat-file", "-e", newerTree]), { code: 1 });
+  assert.equal((await git(["show-ref", "--head"])).stdout, refsBefore);
+  assert.equal((await git(["status", "--porcelain"])).stdout, "");
+  assert.deepEqual(await readFile(configPath), configBefore);
+  await assert.rejects(readFile(join(root, ".git/FETCH_HEAD")), { code: "ENOENT" });
+  assert.deepEqual(
+    (await calls()).flatMap((call) => (call.gitFetch ? [call.gitFetch] : [])),
+    [newerMain],
+  );
+  const beforeDivergence = (await calls()).length;
+  await assert.rejects(run("validate", { OBSERVED_MAIN_SHA: unrelated }), { code: 1 });
+  assert.deepEqual((await calls()).slice(beforeDivergence), [
+    { api: `/repos/${repository}` },
+    { api: `/repos/${repository}/branches/main` },
+  ]);
   assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), "owner data\n");
   const success = await run("pull");
   assert.equal(success.stdout, "");
@@ -400,4 +456,99 @@ syncBuiltinESMExports();
   }
   assert.deepEqual(await containerCalls(), before);
   assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), "owner data\n");
-});
+}
+
+async function consumePreparedProfile() {
+  const { reviewedCodexSeccompSecurityOptions } =
+    await import("../helpers/runtime-image-startup.mjs");
+  const profile = process.env.OCC_TEST_CODEX_SECCOMP_PROFILE;
+  assert.ok(profile);
+  assert.equal(process.env.OCC_TEST_STAGING_UNDECLARED, undefined);
+  assert.deepEqual(
+    await reviewedCodexSeccompSecurityOptions({
+      codexVersion: process.env.OCC_TEST_STAGING_CODEX_VERSION,
+    }),
+    ["--security-opt", "no-new-privileges", "--security-opt", `seccomp=${profile}`],
+  );
+}
+
+async function checkRuntimeChild(t: TestContext) {
+  const root = await mkdtemp(join(tmpdir(), "staging-runtime-lane-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const lane = "images-runtime-startup";
+  const manifest = join(root, "manifest.json");
+  const state = join(root, "state.json");
+  const result = join(root, "results.json");
+  const original = JSON.parse(await readFile(`scripts/ci/test-suites/${lane}.json`, "utf8"));
+  // Keep the actual lane's environment contract and startup file selection. The
+  // fixture root has no preparer and runs only the typed profile check above.
+  await mkdir(join(root, dirname(runtimeFile)), { recursive: true });
+  await symlink(fileURLToPath(import.meta.url), join(root, runtimeFile));
+  await writeFile(
+    manifest,
+    JSON.stringify({
+      version: 1,
+      lanes: {
+        [lane]: {
+          ...original,
+          files: [{ path: runtimeFile, expectedTests: [runtimeChildCase] }],
+          parallelFiles: [],
+        },
+      },
+      groups: {},
+    }),
+  );
+  const contents = '{"defaultAction":"SCMP_ACT_ERRNO","syscalls":[]}\n';
+  const sha256 = createHash("sha256").update(contents).digest("hex");
+  for (const version of [undefined, "0.163.0-alpha.2"]) {
+    const profile = join(root, `codex-${version ?? "0.164.0"}-${sha256}.json`);
+    await writeFile(profile, contents);
+    await writeFile(
+      state,
+      JSON.stringify({
+        resources: [{ kind: "k3d-cluster", codexDockerSeccompProfile: { path: profile, sha256 } }],
+      }),
+    );
+    await execute(
+      process.execPath,
+      [
+        "scripts/ci/run-tests.mjs",
+        "run",
+        lane,
+        "--file",
+        runtimeFile,
+        "--root",
+        root,
+        "--manifest",
+        manifest,
+        "--state",
+        state,
+        "--results",
+        result,
+      ],
+      {
+        timeout: 30_000,
+        env: {
+          HOME: root,
+          PATH: process.env.PATH,
+          CI: "1",
+          OPENCLAW_ENTERPRISE_CI_STATE: state,
+          OCC_TEST_CODEX_SECCOMP_PROFILE: profile,
+          OCC_TEST_RUNTIME_IMAGE: `sha256:${"a".repeat(64)}`,
+          OCC_TEST_WORKSPACE_ENVOY_IMAGE:
+            original.prepare.defaultEnv.OCC_TEST_WORKSPACE_ENVOY_IMAGE,
+          OCC_TEST_STAGING_CODEX_VERSION: version,
+          OCC_TEST_STAGING_UNDECLARED: "outer-only",
+        },
+      },
+    );
+    const proof = JSON.parse(await readFile(result, "utf8"));
+    assert.deepEqual(
+      proof.files.map((file: { path: string; tests: { name: string; status: string }[] }) => ({
+        path: file.path,
+        tests: file.tests.map(({ name, status }) => ({ name, status })),
+      })),
+      [{ path: runtimeFile, tests: [{ name: runtimeChildCase, status: "passed" }] }],
+    );
+  }
+}

@@ -4,6 +4,7 @@
     "OCC_TEST_CODEX_SECCOMP_PROFILE",
     "OCC_TEST_WORKSPACE_ENVOY_IMAGE"
   ],
+  "optionalEnv": ["OCC_TEST_STAGING_CODEX_VERSION"],
   "prepare": {
     "requiresPreparedStateForFile": true,
     "codexSeccomp": true,

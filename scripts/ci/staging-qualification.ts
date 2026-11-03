@@ -41,14 +41,66 @@ function subprocessEnv() {
   return clean;
 }
 
-function git(root: string, args: string[]) {
+function git(
+  root: string,
+  args: string[],
+  options: { input?: string; env?: NodeJS.ProcessEnv } = {},
+) {
   return execFileSync("git", args, {
     cwd: root,
-    env: subprocessEnv(),
+    env: { ...subprocessEnv(), ...options.env },
+    input: options.input,
     encoding: "utf8",
     maxBuffer: 128 * 1024,
     timeout: 30_000,
   });
+}
+
+function requireMainCommit(root: string, sha: string) {
+  const objectType = () =>
+    git(root, ["cat-file", "--batch-check=%(objecttype)"], {
+      input: `${sha}\n`,
+      env: { GIT_NO_LAZY_FETCH: "1" },
+    }).trim();
+  let type = objectType();
+  if (type === `${sha} missing`) {
+    // Main may advance after checkout. Fetch its observed commit and ancestry
+    // without moving a ref or bringing in trees or blobs.
+    const officialOrigin = `https://github.com/${repository}.git`;
+    assert.equal(
+      git(root, ["ls-remote", "--get-url", officialOrigin]).trim(),
+      officialOrigin,
+      "Git must use the official repository URL.",
+    );
+    git(
+      root,
+      [
+        // Set both for this command so Git does not persist a promisor remote.
+        "-c",
+        `remote.${officialOrigin}.promisor=true`,
+        "-c",
+        `remote.${officialOrigin}.partialclonefilter=tree:0`,
+        "-c",
+        "credential.helper=",
+        "-c",
+        "http.extraHeader=",
+        "-c",
+        "http.followRedirects=false",
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--no-auto-maintenance",
+        "--no-recurse-submodules",
+        "--refmap=",
+        "--filter=tree:0",
+        officialOrigin,
+        sha,
+      ],
+      { env: { GIT_TERMINAL_PROMPT: "0" } },
+    );
+    type = objectType();
+  }
+  assert.equal(type, "commit", "The observed main SHA must identify a commit.");
 }
 
 async function trustedSource() {
@@ -124,6 +176,7 @@ async function producer() {
   assert.equal(main.protected, true, "Main must be protected.");
   assert.match(main.commit?.sha ?? "", /^[a-f0-9]{40}$/);
   assert.equal(main.commit.sha.length, 40);
+  requireMainCommit(root, main.commit.sha);
   git(root, ["merge-base", "--is-ancestor", env.GITHUB_WORKFLOW_SHA!, main.commit.sha]);
   const profile = await releaseProfile(root);
   const run = await github(`repos/${repository}/actions/runs/${env.PUBLICATION_RUN_ID}`);
