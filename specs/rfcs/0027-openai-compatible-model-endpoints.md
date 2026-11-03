@@ -30,6 +30,7 @@ Create Agent does not expose this path as a first-class workflow. Its provider s
 
 - Add the custom provider choice, endpoint field, generic API-key label, and required manual model-ID entry to Create Agent.
 - Persist and enforce the credential-endpoint pair for direct Secret delivery.
+- Keep provider-specific destination parsing and normalization inside the selected Credential Gateway Driver. OCC compares normalized Gateway destinations with Secret authorization and does not interpret OpenShell configuration itself.
 - Let Gateway-backed Dedicated Codex and Dedicated native OpenClaw use an existing Credential Source whose immutable `base_url` is authoritative and read-only.
 - Preserve the OpenAI provider, its existing authentication choices, and the Installation-default-then-OpenAI Dedicated Codex precedence.
 - Expose `runtime.codexModelBaseUrl` as `agentProvisioning.codexApiKeyBaseUrl` to authorized Installation readers.
@@ -68,6 +69,8 @@ Extend `ComputeAgentProvisioningCapabilities` with optional `codexApiKeyBaseUrl`
 
 Extend `HarnessAuthBinding` and its immutable `AgentRevision` snapshot so an API-key Secret records its authorized endpoint. Store only the Secret reference and endpoint, never the key value. Admission and provisioning reject a mismatch or a missing required binding. Existing Credential Source bindings continue to use the source’s immutable `base_url`.
 
+Extend the Credential Gateway Driver contract with a Gateway-owned destination-description operation. For a proposed source registration, the Gateway reports one normalized destination for each credential field. OCC compares those destinations with the Secret’s authorized endpoint before it creates or attaches the source. The Gateway continues to own provider-specific parsing, normalization, defaults, and refusal messages.
+
 ## Security and failure boundaries
 
 Directly delivered API keys are readable by the Harness. The existing public TCP/443 Agent NetworkPolicy does not allowlist the configured hostname and does not prevent Harness code from using the key at another reachable endpoint. UI text and documentation must not describe this path as hostname-confined.
@@ -83,8 +86,9 @@ The [implementation plan](../plans/0027-openai-compatible-model-endpoints.md) ow
 1. Browser coverage for provider and endpoint changes, manual model entry, validation, credential clearing, persisted Configuration, and authorization refusals, with matching Storybook scenarios and visual evidence.
 2. OpenAPI checks showing that `GET /installation` returns `agentProvisioning.codexApiKeyBaseUrl` when configured and omits it otherwise.
 3. Integration coverage proving admission and provisioning reject shared Secret and endpoint mismatches.
-4. Real streaming Agent turns with a tool call for OpenAI and one qualified custom endpoint in all three supported topologies.
-5. Updated Create Agent, Compute, OpenShell, and execution-flow documentation.
+4. Integration coverage proving the Credential Gateway reports normalized destinations and OCC refuses a shared Secret whose authorization does not match every destination.
+5. Real streaming Agent turns with a tool call for OpenAI and one qualified custom endpoint in all three supported topologies.
+6. Updated Create Agent, Compute, OpenShell, and execution-flow documentation.
 
 ## Rationale and alternatives
 
