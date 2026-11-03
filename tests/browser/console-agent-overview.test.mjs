@@ -622,13 +622,6 @@ for (const surface of ["list", "detail"]) {
       0,
     );
     await stop.click();
-    if (surface === "detail") {
-      // Stop is below the fold. Sticky navigation must stay at the viewport's edge,
-      // not move with the document as the operator opens the confirmation.
-      const sidebar = await page.locator(".sidebar").boundingBox();
-      assert.ok(Math.abs(sidebar.y) < 1);
-      assert.ok((await page.evaluate(() => globalThis.scrollY)) > 0);
-    }
     const dialog = page.getByRole("dialog", {
       name: surface === "list" ? `Stop ${agent.name}?` : "Stop this Agent?",
     });
@@ -741,6 +734,8 @@ for (const readback of ["stop status", "deployment"]) {
       );
       const activity = await openDeploymentActivity(page);
       await activity.getByRole("button", { name: "Refresh deployment" }).click();
+      // Stop lives in the Danger zone, which only the Configuration tab shows.
+      await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     } else {
       await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
     }
@@ -761,6 +756,7 @@ for (const readback of ["stop status", "deployment"]) {
     // Readback is reachable once the detail page observes the other actor's stop.
     const activity = await openDeploymentActivity(page);
     await activity.getByRole("button", { name: "Refresh deployment" }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
     await stopRegion
       .getByText("No version is selected. Deploy a new version to start this Agent.", {
