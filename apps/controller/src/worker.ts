@@ -1199,6 +1199,7 @@ export class ControllerWorker {
   private claimedPassesSinceSweep = 0;
   private readonly nativeRepositorySender: NativeRepositorySender | undefined;
   private readonly repositoryPolicy: RepositoryPolicyDriver | undefined;
+  private readonly repositoryAdmission: InstallationRuntimeDrivers["repositoryAdmission"];
   private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDriver: PluginDriver | undefined;
   private readonly repositoryCredentials: RepositoryCredentialLifecycle;
@@ -1368,6 +1369,7 @@ export class ControllerWorker {
     this.onProgress = options.onProgress;
     this.repositoryGitMaterial = options.repositoryGitMaterial;
     this.repositoryPolicy = drivers?.repositoryPolicy;
+    this.repositoryAdmission = drivers?.repositoryAdmission;
     this.nativeRepositorySender = drivers?.nativeRepositorySender;
     this.repositoryCleanupRetryMs = positiveInteger(
       this.nativeRepositorySender?.maintenanceIntervalMs ?? 30_000,
@@ -1419,7 +1421,7 @@ export class ControllerWorker {
     this.installation = installation;
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
-    const provisioning = new OpenClawController(installation, {
+    const provisioningOptions = {
       preparedTokens: this.preparedTokens,
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
@@ -1432,7 +1434,15 @@ export class ControllerWorker {
       ...(this.nativeWorkerSupport === undefined
         ? {}
         : { nativeWorkerSupport: this.nativeWorkerSupport }),
-    });
+    };
+    const provisioning =
+      this.repositoryAdmission === undefined
+        ? new OpenClawController(installation, provisioningOptions)
+        : OpenClawController.forInstallation(
+            installation,
+            provisioningOptions,
+            this.repositoryAdmission,
+          );
     const protectedDriver = this.protectedDriver;
     if (protectedDriver !== undefined) {
       provisioning.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
