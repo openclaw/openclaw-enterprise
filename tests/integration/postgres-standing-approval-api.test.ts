@@ -28,6 +28,7 @@ import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs"
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
@@ -62,8 +63,13 @@ test(
     const iam = new NativeIAMDriver(state, { id: "standing-iam" });
     const configuration = createTestConfigurationDriver({ id: "standing-config" });
     const secrets = createTestSecretDriver({ id: "standing-secret" });
+    const repositoryTopology = createTestKubernetesComputeDriver("standing-compute", {
+      repositoryCredentials: true,
+    });
     const compute = createReadyComputeDriver("standing-compute", {
       validateRepositoryCredentials() {},
+      validateRepositoryCredentialSupport:
+        repositoryTopology.validateRepositoryCredentialSupport.bind(repositoryTopology),
       validateHarnessAuth() {},
     });
     const namespaceId = `ns_${randomUUID()}`;
@@ -223,6 +229,130 @@ test(
     });
     assert.equal(secret.statusCode, 201, secret.body);
     const secretRef = secret.json().data.ref;
+
+    await t.test(
+      "finite repository picker uses the bound catalog without standing permission",
+      async (t) => {
+        const { allowStandingApprovals: _standingOptIn, ...finiteRegistry } = registry;
+        const expected = [
+          {
+            repositoryRef: "project",
+            displayName: "example/project",
+            allowedProfiles: ["git-write"],
+          },
+          {
+            repositoryRef: "project-two",
+            displayName: "example/another",
+            allowedProfiles: ["git-write"],
+          },
+        ];
+        const pickerPath = `/namespaces/${namespaceId}/agents/repository-options`;
+        for (const bundled of [false, true]) {
+          const { controller } = await selectRepo(finiteRegistry, "registry", { bundled });
+          const policy = selectedPolicy;
+          assert.ok(policy instanceof GitHubRepositoryPolicy);
+          // The legacy route must delegate to the same catalog. The bundled route must
+          // work even when the old Driver method refuses every call.
+          const legacy = t.mock.method(
+            policy,
+            "listOptions",
+            bundled
+              ? async () => {
+                  throw new Error("legacy list must not run");
+                }
+              : policy.listOptions.bind(policy),
+          );
+          const listCatalog = policy.listCatalog.bind(policy);
+          const catalog = t.mock.method(policy, "listCatalog");
+          const standing = t.mock.method(policy, "allowsStandingApproval", () => {
+            throw new Error("finite listing must not consult standing permission");
+          });
+          const listed = await request("GET", pickerPath);
+          assert.equal(listed.statusCode, 200, listed.body);
+          assert.deepEqual(listed.json().data, expected);
+          assert.equal(legacy.mock.callCount(), bundled ? 0 : 1);
+          assert.equal(catalog.mock.callCount(), 1);
+          assert.equal(standing.mock.callCount(), 0);
+          if (bundled) {
+            let replacementCalls = 0;
+            const replacement: RepositoryPolicyDriver = {
+              id: "unbound-picker",
+              capability: "repo",
+              implementation: "custom-picker",
+              async listOptions() {
+                replacementCalls++;
+                return { options: expected };
+              },
+              resolve: (input) => policy.resolve(input),
+            };
+            controller.registerDriver(replacement);
+            const entered = Promise.withResolvers<void>();
+            const release = Promise.withResolvers<void>();
+            catalog.mock.mockImplementationOnce(async (input) => {
+              const result = await listCatalog(input);
+              entered.resolve();
+              await release.promise;
+              return result;
+            });
+            const pending = request("GET", pickerPath);
+            try {
+              await Promise.race([
+                entered.promise,
+                pending.then(() =>
+                  assert.fail("listing ended before the bound catalog was called"),
+                ),
+              ]);
+              controller.selectDriver("repo", replacement.id);
+            } finally {
+              release.resolve();
+            }
+            const stale = await pending;
+            assert.equal(stale.statusCode, 503, stale.body);
+            assert.equal(stale.json().data, undefined, "no options from the former policy");
+            assert.equal(catalog.mock.callCount(), 2);
+
+            const denied = await request("GET", pickerPath);
+            assert.equal(denied.statusCode, 503, denied.body);
+            assert.equal(denied.json().error.code, "DEPENDENCY_UNAVAILABLE");
+            assert.equal(denied.json().data, undefined);
+            assert.equal(replacementCalls, 0);
+            assert.equal(
+              catalog.mock.callCount(),
+              2,
+              "wrong owner cannot invoke the bound catalog",
+            );
+          }
+          standing.mock.restore();
+          catalog.mock.restore();
+          legacy.mock.restore();
+        }
+        // Ordinary registration still dispatches to the selected in-process extension.
+        let customCalls = 0;
+        const customOptions = [
+          {
+            repositoryRef: "custom",
+            displayName: "Custom repository",
+            allowedProfiles: ["git-read"],
+          },
+        ];
+        await selectRepo(finiteRegistry, "registry", {
+          adaptPolicy: (policy) => ({
+            id: policy.id,
+            capability: "repo",
+            implementation: "custom-picker",
+            async listOptions() {
+              customCalls++;
+              return { options: customOptions };
+            },
+            resolve: (input) => policy.resolve(input),
+          }),
+        });
+        const custom = await request("GET", pickerPath);
+        assert.equal(custom.statusCode, 200, custom.body);
+        assert.deepEqual(custom.json().data, customOptions);
+        assert.equal(customCalls, 1);
+      },
+    );
 
     await t.test(
       "fresh Installation admission bypasses the legacy resolver and preserves finite grants",
