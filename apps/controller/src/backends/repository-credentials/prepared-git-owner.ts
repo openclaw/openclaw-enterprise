@@ -1,10 +1,10 @@
+import type { RepositoryGitCustody } from "../../composition/repository-credentials/custody-selection.ts";
 import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
 import { createHash, createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import type {
-  DriverRegistrationRef,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
@@ -36,7 +36,6 @@ import {
   protectedGitAdoption,
   installationGitAdoption,
   selectedGitAdoption,
-  type RepositoryGitRecipientEvidence,
 } from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
 import { TokenService } from "../token-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
@@ -70,10 +69,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
     severity?: "info" | "error",
   ) => void;
   startWorker?: boolean;
-  /** The installation-selected Sandbox and Credential Proxy, not the repository issuer or a request field. */
-  protectedGitDriver?: DriverRegistrationRef;
-  /** Host-owned durable observer for this selection. A Driver cannot supply these queries. */
-  protectedGitEvidence?: RepositoryGitRecipientEvidence;
+  /** Private host selection; never derived from issuer configuration or a request. */
+  repositoryGitCustody?: RepositoryGitCustody;
   tokenService?: TokenService;
 }
 
@@ -205,6 +202,10 @@ export async function startPreparedGitHubGitOwner(
   options: Options,
   clock: Clock = createSystemClock(),
 ) {
+  const custodySelection: RepositoryGitCustody = options.repositoryGitCustody ?? {
+    kind: options.controlSocket === undefined ? "unavailable" : "native-broker",
+  };
+  const selected = custodySelection.kind === "selected";
   const registry = validateGitHubRepositoryRegistry(options.registry, options.backendId);
   for (const repo of registry.repositories) {
     if (
@@ -238,7 +239,7 @@ export async function startPreparedGitHubGitOwner(
       const { repositoryRef, profile } = binding;
       if (binding.profile === "github-repository") {
         if (
-          !options.protectedGitDriver ||
+          !selected ||
           driver.id !== options.driverId ||
           driver.implementation !== options.implementation ||
           !session.bindings
@@ -272,7 +273,7 @@ export async function startPreparedGitHubGitOwner(
         driver.id !== options.driverId ||
         driver.implementation !== options.implementation ||
         (installation
-          ? !options.protectedGitDriver ||
+          ? !selected ||
             access?.repositoryRef !== repositoryRef ||
             !access.namespaces.some(
               (p) => p.namespaceId === namespaceId && p.accessMode === "installation",
@@ -315,7 +316,7 @@ export async function startPreparedGitHubGitOwner(
       }
       return {
         ...common,
-        adoption: options.protectedGitDriver ? protectedGitAdoption : "prepared_repository_git",
+        adoption: selected ? protectedGitAdoption : "prepared_repository_git",
         grant: {
           ...grant,
           repositoryId: repo!.repositoryId,
@@ -327,9 +328,7 @@ export async function startPreparedGitHubGitOwner(
         ...(base && policy?.draftPullLimit === "none" ? { draftPullLimit: "none" as const } : {}),
       };
     },
-    options.protectedGitDriver ??
-      (options.controlSocket === undefined ? "unregistered" : undefined),
-    options.protectedGitEvidence,
+    custodySelection,
   );
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>
@@ -431,7 +430,7 @@ export async function startPreparedGitHubGitOwner(
     inspectTokenAttempt: (familyId: string, attemptId: string) =>
       store.inspectTokenAttempt(familyId, attemptId),
     // Deployment-only observation for the native broker; protected delivery observes its install.
-    ...(options.protectedGitDriver === undefined && options.controlSocket !== undefined
+    ...(custodySelection.kind === "native-broker" && options.controlSocket !== undefined
       ? { revisionMaterial: (revisionId: string) => store.revisionMaterial(revisionId) }
       : {}),
     // Worker-only custody transfer to the verified OpenShell provider; never a control RPC.
