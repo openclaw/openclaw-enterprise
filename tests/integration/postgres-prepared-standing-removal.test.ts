@@ -60,11 +60,33 @@ for (const first of ["removal", "use"] as const) {
             );
             return "same material";
           }),
-          f.owner.authorizeOpenShellRequest(q, { preparationAttemptId, materialVersion }, signal),
-        ]).catch((error: unknown) => error); // assert the result after releasing the transaction barrier
+          f.owner.use(q, signal).then(
+            (used) => {
+              assert.ok("value" in used, "native use must return material, not just a receipt");
+              assert.equal(used.exchangeId, q.exchangeId);
+              assert.equal(used.preparationAttemptId, preparationAttemptId);
+              assert.equal(used.materialVersion, materialVersion);
+              assert.equal(used.value, material.value);
+              assert.ok(new Date(used.sendStartBy).getTime() <= Date.parse(material.expiresAt));
+              assert.equal(f.gh.issuesOfTokens.length, 1, "native use must not mint again");
+              return "same material";
+            },
+            (error: unknown) => {
+              if (
+                error instanceof Error &&
+                error.message === "Prepared GitHub custody transaction did not complete (guard)."
+              ) {
+                return "native guard";
+              }
+              throw error;
+            },
+          ),
+        ]);
+        // Observe rejection while blocked; awaiting result after the barrier still rethrows it.
+        void result.catch(() => {});
         return { result, exchangeId: q.exchangeId };
       };
-      const denied = ["withdrawn", "access_withdrawn"];
+      const denied = ["withdrawn", "native guard"];
 
       // This pool has exactly one connection. Observe its actual lock waits and run the
       // removal owner's Namespace, Agent and generation-fenced State operations on it.
@@ -126,7 +148,7 @@ for (const first of ["removal", "use"] as const) {
           const removal = remove();
           await blocked(readers, 1, writer);
           await holder.query("ROLLBACK");
-          assert.deepEqual(await pending.result, ["same material", true]);
+          assert.deepEqual(await pending.result, ["same material", "same material"]);
           await removal;
           expectedReceipts = [pending.exchangeId];
           failed = false;
