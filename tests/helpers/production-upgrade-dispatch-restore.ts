@@ -149,6 +149,13 @@ export function registerDispatchRestoreTests(
         assert.equal(await projectedRevision(), revisionB);
 
         await recordReplacement(revisionC, revisionB);
+        // A status command that emits a body but fails cannot prove the
+        // predecessor is failed. The next successful read can confirm it.
+        await f.failNext("fail-deployment-status-after-output");
+        await assert.rejects(f.run("--resume"), /cannot confirm the failed deployment/);
+        assert.deepEqual(await readFile(journal), currentJournal);
+        assert.equal(await projectedRevision(), revisionB);
+        assert.equal((await f.state()).dispatches, 3);
         await f.run("--resume");
         assert.equal(await projectedRevision(), revisionC);
         assert.deepEqual(await lastEntry(), [

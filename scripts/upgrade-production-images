@@ -1481,7 +1481,8 @@ if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
           die "replacement for Agent $agent_id must name the current journaled revision $recorded_revision. Preserve the response and inspect revision history and audit records before recording a replacement."
         [[ "$revision" != "$baseline_revision" ]] ||
           die "the baseline revision cannot replace journaled deployment $recorded_revision for Agent $agent_id."
-        [[ "$(confirmed_deployment_status "$namespace_id" "$agent_id" "$recorded_revision")" == failed ]] &&
+        recorded_status=$(confirmed_deployment_status "$namespace_id" "$agent_id" "$recorded_revision") &&
+          [[ "$recorded_status" == failed ]] &&
           confirmed_deployment_status "$namespace_id" "$agent_id" "$revision" >/dev/null ||
           die "cannot confirm the failed deployment and its recorded replacement for Agent $agent_id. Preserve the response and inspect both deployment statuses before resuming."
         dispatch_state replace "$targets" "$namespace_id" "$agent_id" "$recorded_revision" "$revision"

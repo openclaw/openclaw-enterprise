@@ -1021,6 +1021,9 @@ async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) 
         return fail(1, "deployment not found");
       }
       out({ namespaceId, agentId, deploymentId, status });
+      if (take("fail-deployment-status-after-output")) {
+        return fail(9);
+      }
     } else {
       out({ id: "ins_test", name: state.installationName });
     }
