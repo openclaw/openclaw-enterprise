@@ -413,7 +413,8 @@ jobs:
 
   k3d-otel:
     name: k3d OTEL
-    runs-on: ubuntu-24.04
+    # Match the passing native Codex seccomp and k3d fixture kernel.
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'k3d-otel'
     timeout-minutes: 65
