@@ -2000,11 +2000,9 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
 });
 
 test("A Git-only Credential Proxy names repository.openShell instead of a 503 or a bare 404", async (t) => {
-  // Finding 2360: with repository.openShell the Proxy's only registration is the request-phase
-  // Git service, which never advertises the execution profile. Creating a model source answered a
-  // generic 503, and deploying an Agent without Git whose Gateway source predates the Proxy
-  // answered 404 with nothing logged. Each refusal now names what cannot serve it; any other
-  // probe outcome keeps the binding refusal.
+  // Fresh protected static inference is retired before checking the OpenShell registration.
+  // Deploying an Agent that already has a Gateway-owned source still explains the Git-only limit
+  // or reports that the source cannot be protected, as before.
   for (const [label, options, refusal] of [
     ["stock 0.1.5", {}, CredentialProxyRepositoryOnlyError],
     ["with the execution profile", { advertised: true }, CredentialSourceUnprotectedError],
@@ -2021,21 +2019,15 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
     });
     assert.equal(secret.status, 201, JSON.stringify(secret));
     const sourceInput = { type: "openai", config: {}, secrets: { api_key: secret.data.ref } };
-    if (label !== "with the execution profile") {
-      // The Installation refusal comes before any Secret read: this fixture's Secret Driver
-      // has no versioned reads, which would otherwise answer first. A gateway without the
-      // registration is a state an operator fixes: a 503 that names it (finding 2536).
-      const created = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
-        name: "fresh-model",
-        ...sourceInput,
-      });
-      const [status, message] =
-        label === "stock 0.1.5"
-          ? [409, CredentialProxyRepositoryOnlyError.description]
-          : [503, PROXY_REGISTRATION_UNAVAILABLE];
-      assert.equal(created.status, status, `${label}: ${JSON.stringify(created)}`);
-      assert.equal(created.error.message, message, label);
-    }
+    const readsBeforeCreate = f.gatewayReads();
+    const created = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+      name: "fresh-model",
+      ...sourceInput,
+    });
+    assert.equal(created.status, 409, `${label}: ${JSON.stringify(created)}`);
+    assert.equal(created.error.code, "RESOURCE_CONFLICT", label);
+    assert.match(created.error.message, /Protected static OpenAI inference is retired\./, label);
+    assert.equal(f.gatewayReads(), readsBeforeCreate, `${label}: no Gateway probe on create`);
     // A Gateway-owned source registered before the Installation selected the Proxy.
     const sourceId = `cs_${randomUUID()}`;
     await f.state.transact((unit) =>
