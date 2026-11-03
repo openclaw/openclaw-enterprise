@@ -8,9 +8,8 @@ last_updated_session: 01a12074-7896-7f63-99fe-9f42e9041d02
 
 ## Overview
 
-The worker claims accepted PostgreSQL work, rechecks authorization, calls
-Compute, and saves results under its claim for Namespace, Agent
-stop/deletion, and Agent revision work. The
+The worker claims PostgreSQL work, rechecks authorization, calls Compute, and
+saves claim-protected Namespace, Agent stop/deletion, and revision results. The
 [controller reference](../reference/controller.md) owns the contract and the
 [deployment guide](../guides/deploy.md) owns process setup.
 
@@ -424,7 +423,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
-- 2026-11-03 21:08: Require regular files for worker probe markers. (01a12074-7896-7f63-99fe-9f42e9041d02 - b627f0997c12d10aaa87f764eac1019c67199d2f)
+- 2026-11-03 21:08: Reject directory markers. (01a12074-7896-7f63-99fe-9f42e9041d02 - b627f0997c12d10aaa87f764eac1019c67199d2f)
 
 - 2026-10-30 17:22: Shutdown stops the loop before readiness and parts close. (fix-2997)
 
