@@ -36,7 +36,13 @@ storage and projection methods and optionally supports transient server-side use
 
 The current `SecretBackendRef` contains `namespaceName`, `name`, `key`, and
 `uid`; these are internal metadata, never caller-selected locations. The public
-`SecretMetadata` contains only `id`, `namespaceId`, `name`, and a platform `ref`.
+`SecretMetadata` contains `id`, `namespaceId`, `name`, a platform `ref`, and an
+optional `authorizedEndpoint`. The creator can set this endpoint when supplying
+a key through Secret creation. It is immutable, including when the value is
+replaced. Custom model bindings must match it; Secret operate permission does
+not authorize another destination. Store the normalized endpoint reported by the
+owning Compute or Credential Gateway Driver. OCC checks the binding again before
+workload delivery. Secret values remain outside OCC state.
 OCC rejects empty values, NUL, invalid text, and values above 65,536 UTF-8 bytes.
 
 OCC uses `withValue` to register and update [credential sources](../credential-sources.md)

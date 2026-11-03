@@ -942,6 +942,45 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     );
   }
 
+  describeSourceDestinations(input: Pick<CredentialSourceInput, "type" | "config">) {
+    const type = sourceType(input.type, this.options, this.refresh);
+    const config = input.config;
+    if (input.type === "openai") {
+      const endpoint = sourceBaseUrl(config);
+      return Object.freeze({
+        api_key: Object.freeze({ endpoint, isDefault: endpoint === OPENAI_DEFAULT_BASE_URL }),
+      });
+    }
+    const profile = type.profile(
+      "destination-description",
+      config,
+      this.options,
+      this.backend.client.placement(),
+    );
+    const endpoints = (
+      type.refresh === undefined
+        ? profile.endpoints.map(
+            (endpoint) =>
+              `https://${endpoint.host}${endpoint.port === 443 ? "" : `:${endpoint.port}`}${(endpoint.path ?? "/").replace(/\/\*\*$/u, "") || "/"}`,
+          )
+        : [config.token_url!]
+    ).map((endpoint) => endpoint.replace(/\/$/u, ""));
+    return Object.freeze(
+      Object.fromEntries(
+        type.catalog.secrets.map(({ name }) => [
+          name,
+          Object.freeze({
+            endpoint: endpoints[0]!,
+            ...(endpoints.length > 1
+              ? { additionalEndpoints: Object.freeze(endpoints.slice(1)) }
+              : {}),
+            isDefault: input.type === "codex-pat",
+          }),
+        ]),
+      ),
+    );
+  }
+
   async registerSource(
     context: CredentialSourceContext,
     input: CredentialSourceInput,

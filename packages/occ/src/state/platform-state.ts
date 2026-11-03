@@ -632,10 +632,15 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
           value.loginMode === "chatgptAuthTokens")
       );
     }
-    const binding = normalizeHarnessAuthBinding({ method: value.method, source: value.source });
+    const endpoint = value.method === "api_key" ? value.authorizedEndpoint : undefined;
+    const binding = normalizeHarnessAuthBinding({
+      method: value.method,
+      source: value.source,
+      ...(endpoint === undefined ? {} : { authorizedEndpoint: endpoint }),
+    });
     if (isSecretHarnessAuth(binding)) {
       return (
-        Object.keys(value).length === 3 &&
+        Object.keys(value).length === (endpoint === undefined ? 3 : 4) &&
         binding.source.namespaceId === namespaceId &&
         isSecretHarnessAuth(value) &&
         isNonEmptyString(value.secretDriverId)
@@ -1386,6 +1391,10 @@ async function assertConfigurationUsableByAgent(
 
 function assertSecret(secret: Secret): void {
   if (
+    (secret.authorizedEndpoint !== undefined &&
+      (typeof secret.authorizedEndpoint !== "string" ||
+        Array.from(secret.authorizedEndpoint).length < 1 ||
+        Array.from(secret.authorizedEndpoint).length > 2048)) ||
     !secretIdentifier.test(secret.id) ||
     !namespaceIdentifier.test(secret.namespaceId) ||
     typeof secret.name !== "string" ||

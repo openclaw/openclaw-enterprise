@@ -909,7 +909,7 @@ export async function createQaAgent(
   presetName,
   browserOrigin,
   nameSuffix = "",
-  { apiKeyAuth = false } = {},
+  { apiKeyAuth = false, customResponses = false } = {},
 ) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
@@ -918,23 +918,49 @@ export async function createQaAgent(
   assert.equal(selected.namespaceId, f.namespace.id, "Preset must belong to the QA Namespace");
   const preset = await f.api("GET", `/namespaces/${selected.namespaceId}/presets/${selected.id}`);
   const codex = presetName === "Codex";
-  const codexAccountLogin = codex && !apiKeyAuth;
-  const credential = apiKeyAuth
-    ? await protectedModelApiKey()
-    : await protectedText(
-        process.env[
-          codexAccountLogin ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"
-        ],
-        "model credential",
-      );
-  const model =
-    process.env[codex ? "OCC_TEST_QA_CODEX_MODEL" : "OCC_TEST_QA_OPENAI_MODEL"] || "gpt-6-luna";
+  const codexAccountLogin = codex && !apiKeyAuth && !customResponses;
+  let credential;
+  if (customResponses) {
+    credential = await protectedText(
+      process.env.OCC_TEST_QA_RESPONSES_KEY_FILE,
+      "custom Responses credential",
+    );
+  } else if (apiKeyAuth) {
+    credential = await protectedModelApiKey();
+  } else {
+    const credentialFile = codexAccountLogin
+      ? process.env.OCC_TEST_QA_CODEX_TOKEN_FILE
+      : process.env.OCC_TEST_QA_OPENAI_KEY_FILE;
+    credential = await protectedText(credentialFile, "model credential");
+  }
+  const model = customResponses
+    ? process.env.OCC_TEST_QA_RESPONSES_MODEL
+    : process.env[codex ? "OCC_TEST_QA_CODEX_MODEL" : "OCC_TEST_QA_OPENAI_MODEL"] || "gpt-6-luna";
   const rendered = renderPresetTemplate(preset.template, {
     name: `qa-${f.suffix}-${presetName}${nameSuffix}`,
     model,
     modelSecret: "provided-through-secret-api",
   });
   const values = rendered.configuration.values;
+  let endpoint;
+  if (customResponses) {
+    endpoint = process.env.OCC_TEST_QA_RESPONSES_BASE_URL;
+  } else if (apiKeyAuth) {
+    endpoint = f.configuration.drivers.compute.configuration.runtime.codexModelBaseUrl;
+  }
+  if (customResponses && !codex) {
+    const reference = `custom/${model}`;
+    values.models.providers = {
+      custom: {
+        baseUrl: endpoint,
+        api: "openai-responses",
+        apiKey: "${OCE_MODEL_API_KEY}",
+        models: [{ id: model, name: model }],
+      },
+    };
+    values.agents.defaults.model = reference;
+    values.agents.defaults.models = { [reference]: { agentRuntime: { id: "openclaw" } } };
+  }
   assert.equal(
     f.configuration.drivers.plugin?.id,
     codex ? "codex-plugin" : "occ-plugin",
@@ -955,9 +981,11 @@ export async function createQaAgent(
   const secret = await f.api("POST", `/namespaces/${f.namespace.id}/secrets`, {
     name: `${rendered.agent.name}-model`,
     value: credential,
+    ...(endpoint === undefined ? {} : { authorizedEndpoint: endpoint }),
   });
   const auth = {
     method: codexAccountLogin ? "codex_pat" : "api_key",
+    ...(endpoint === undefined ? {} : { authorizedEndpoint: endpoint }),
     source: { kind: "secret", namespaceId: f.namespace.id, id: secret.id },
   };
   if (provisionNativeAdmin) {

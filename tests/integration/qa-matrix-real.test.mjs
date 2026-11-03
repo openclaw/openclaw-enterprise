@@ -21,7 +21,8 @@ test(
     validateQaInputs(selection);
     const { createQaInstallation, prepareQaPreset, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
-    const { protectedText } = await import("../helpers/qa-secrets.mjs");
+    const { protectedText, grantQaSecret } = await import("../helpers/qa-secrets.mjs");
+    const { verifyQaCustomResponses } = await import("../helpers/qa-custom-responses.mjs");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
@@ -159,6 +160,7 @@ test(
                           assert.ok(ready, "blocked by preset preparation failure");
                           return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
                             apiKeyAuth: name === "codex-search-config",
+                            customResponses: name === "custom-responses",
                           });
                         },
                       );
@@ -188,6 +190,14 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "custom-responses",
+                    async (agent, step) => {
+                      await step("streaming custom Responses model and real shell tool", () =>
+                        verifyQaCustomResponses(f, agent, preset),
+                      );
+                    },
+                  ],
                   [
                     "console-secrets",
                     async (agent, step) => {
@@ -265,7 +275,7 @@ test(
                         await step(
                           "embedded configured-provider Secret and real model turn",
                           async () => {
-                            // Keep the admitted model and Secret, changing only the logical provider.
+                            // Supplying an endpoint-specific key authorizes the new custom provider binding.
                             const values = structuredClone(agent.configuration.values);
                             const selected = values.agents.defaults.model;
                             const primary =
@@ -293,6 +303,35 @@ test(
                               "PATCH",
                               `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
                               { values },
+                            );
+                            const customSecret = await f.api(
+                              "POST",
+                              `/namespaces/${agent.namespaceId}/secrets`,
+                              {
+                                name: `custom-model-${randomUUID()}`,
+                                value: await protectedText(
+                                  process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
+                                  "model credential",
+                                ),
+                                authorizedEndpoint: values.models.providers.configured.baseUrl,
+                              },
+                            );
+                            await grantQaSecret(
+                              f,
+                              agent,
+                              customSecret.id,
+                              `custom-${randomUUID()}`,
+                            );
+                            await f.api(
+                              "PATCH",
+                              `/namespaces/${agent.namespaceId}/agents/${agent.id}`,
+                              {
+                                harnessAuth: {
+                                  method: "api_key",
+                                  source: customSecret.ref,
+                                  authorizedEndpoint: values.models.providers.configured.baseUrl,
+                                },
+                              },
                             );
                             await f.deployAndWait(agent);
                             const gateway = await f.gatewayUrl(agent);

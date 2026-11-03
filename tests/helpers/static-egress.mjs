@@ -540,6 +540,11 @@ export async function staticEgressFixture(
     response.end();
   });
   const providerPort = await listen(t, provider);
+  const inferenceSecret = await post("secrets", {
+    name: "inference-provider-key",
+    value: "synthetic-key-initial",
+    authorizedEndpoint: `https://provider.example.test:${providerPort}/v1`,
+  });
   let legacySource;
   if (includeLegacy) {
     legacySource = await post("credential-sources", {
@@ -555,7 +560,7 @@ export async function staticEgressFixture(
         name: "inference",
         type: "openai",
         config: { base_url: `https://provider.example.test:${providerPort}/v1` },
-        secrets: { api_key: secret.ref },
+        secrets: { api_key: inferenceSecret.ref },
       });
   const config = await app.createConfiguration(namespace.id, {
     agents: {
@@ -580,7 +585,7 @@ export async function staticEgressFixture(
     // A prepared provider may have a distinct issuer input; never pass it to the inference source.
     const issuer =
       secretValue === undefined
-        ? secret
+        ? inferenceSecret
         : await post("secrets", { name: "prepared-github-issuer", value: secretValue });
     ({ agent, source } = await admitSource({
       app,
@@ -1038,7 +1043,7 @@ export async function staticEgressFixture(
     async rotateSecret(value) {
       const result = await app.request(
         "PATCH",
-        `/namespaces/${namespace.id}/secrets/${secret.id}`,
+        `/namespaces/${namespace.id}/secrets/${inferenceSecret.id}`,
         {
           body: { value },
         },

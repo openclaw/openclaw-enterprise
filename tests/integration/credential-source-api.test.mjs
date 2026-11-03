@@ -172,10 +172,23 @@ async function fixture(
   const toolSecret = toolSources
     ? await app.createSecret(namespace.id, "tool-material", "synthetic-tool-material")
     : undefined;
-  const create = (name, config = {}) =>
-    app.request("POST", path, {
-      body: { name, type: "openai", config, secrets: { api_key: secret.ref } },
+  const create = async (name, config = {}, authorizedEndpoint) => {
+    const selected =
+      authorizedEndpoint === undefined
+        ? secret
+        : (
+            await app.request("POST", `/namespaces/${namespace.id}/secrets`, {
+              body: {
+                name: `endpoint-key-${randomUUID()}`,
+                value: "synthetic-model-key",
+                authorizedEndpoint,
+              },
+            })
+          ).data;
+    return app.request("POST", path, {
+      body: { name, type: "openai", config, secrets: { api_key: selected.ref } },
     });
+  };
   return {
     ...app,
     driver,
@@ -527,8 +540,16 @@ test("credential source HTTP deletion uses source ownership even with an invalid
 test("OpenShell custom and default credential profiles keep independent ownership and lifecycle", async (t) => {
   const f = await fixture(t);
   const standard = await f.create("default");
-  const custom = await f.create("custom", { base_url: "https://MODELS.example.test:8443/api/v1/" });
-  const shared = await f.create("shared", { base_url: "https://models.example.test:8443/api/v1" });
+  const custom = await f.create(
+    "custom",
+    { base_url: "https://MODELS.example.test:8443/api/v1/" },
+    "https://models.example.test:8443/api/v1",
+  );
+  const shared = await f.create(
+    "shared",
+    { base_url: "https://models.example.test:8443/api/v1" },
+    "https://models.example.test:8443/api/v1",
+  );
   for (const result of [standard, custom, shared]) {
     assert.equal(result.status, 201, JSON.stringify(result.body));
     assert.equal(result.data.status.state, "ready");
@@ -730,7 +751,8 @@ test("concrete credential source endpoints retain normalized profile scope", asy
     ["https:\\\\models.example.test/v1", "models.example.test", 443, "/v1/**"],
   ];
   for (const [base_url, host, port, path] of cases) {
-    const created = await f.create("concrete endpoint", { base_url });
+    const authorized = `https://${host}${port === 443 ? "" : ":" + port}${path.slice(0, -3)}`;
+    const created = await f.create("concrete endpoint", { base_url }, authorized);
     assert.equal(created.status, 201, JSON.stringify(created.body));
     // The stored endpoint is the one the profile uses, not the written spelling (finding 1292).
     const stored = `https://${host}${port === 443 ? "" : ":" + port}${path.slice(0, -3)}`;
@@ -1251,4 +1273,36 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
   });
   assert.equal(unavailable.status, 409, JSON.stringify(unavailable.body));
   await f.assertNothingSaved();
+});
+
+test("Gateway destination authorization refuses shared-key redirection before value reads", async (t) => {
+  const f = await fixture(t);
+  const endpoint = "https://models.example.test/v1";
+  const refused = await f.create("unauthorized", { base_url: endpoint });
+  assert.equal(refused.status, 400, JSON.stringify(refused.body));
+  assert.match(refused.body.error.message, /does not authorize its destination/);
+  await f.assertNothingSaved();
+  // The real OpenShell Driver normalizes the destination; OCC compares its result before reading the key.
+  assert.deepEqual(
+    f.driver.describeSourceDestinations({
+      type: "openai",
+      config: { base_url: "https://MODELS.example.test:443/v1/" },
+    }),
+    {
+      api_key: { endpoint, isDefault: false },
+    },
+  );
+  assert.deepEqual(f.driver.describeSourceDestinations({ type: "openai", config: {} }), {
+    api_key: { endpoint: "https://api.openai.com/v1", isDefault: true },
+  });
+  const mismatch = await f.create(
+    "mismatched",
+    { base_url: endpoint },
+    "https://other.example.test/v1",
+  );
+  assert.equal(mismatch.status, 400, JSON.stringify(mismatch.body));
+  await f.assertNothingSaved();
+  const accepted = await f.create("authorized", { base_url: endpoint }, endpoint);
+  assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
+  assert.equal(accepted.data.status.state, "ready");
 });

@@ -1,3 +1,4 @@
+import { runPostgresAdmin } from "../../scripts/ci/postgres-admin.mjs";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -4521,5 +4522,49 @@ revisionTest(
         (error) => error.code === "23514",
       );
     }
+  },
+);
+
+revisionTest(
+  "revision dispatch refuses persisted credential endpoint disagreement before delivery",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("endpoint-disagreement");
+    // Simulate inconsistent restored Secret metadata after a valid admission. An immutable
+    // revision cannot borrow the different destination authorization now stored for its key.
+    const database = new URL(fixture.database.url);
+    // Only a privileged restore can alter immutable metadata. Use the administrator of this
+    // owned disposable database, in one transaction, to reproduce that unsupported stored state.
+    await runPostgresAdmin({
+      port: Number(database.port),
+      database: database.pathname.slice(1),
+      statements: [
+        "BEGIN",
+        "ALTER TABLE occ.secrets DISABLE TRIGGER secret_metadata_is_immutable",
+        {
+          text: "UPDATE occ.secrets SET authorized_endpoint = $2 WHERE id = $1",
+          values: [owner.harnessAuth.source.id, "https://other.example.test/v1"],
+        },
+        "ALTER TABLE occ.secrets ENABLE TRIGGER secret_metadata_is_immutable",
+        "COMMIT",
+      ],
+    });
+    const effects = [];
+    await fixture.start({
+      ...fixture.compute,
+      async bindAgent() {
+        effects.push("bind");
+      },
+      async prepareRevision(revision) {
+        effects.push("prepare");
+        return fixture.compute.prepareRevision(revision);
+      },
+    });
+    await fixture.work(candidate, "failed_permanent");
+    assert.deepEqual(effects, []);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+    assert.equal(
+      (await fixture.deploymentStatus(owner, candidate)).error.code,
+      "HARNESS_AUTH_ENDPOINT_MISMATCH",
+    );
   },
 );

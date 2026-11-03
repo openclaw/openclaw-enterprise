@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-10-30
-last_updated_session: authoring-run/6e73ff4f-8905-4066-a81d-d629e40296e7
+updated: 2026-11-03
+last_updated_session: authoring-run/84f241a8-57a6-4718-b5a4-1d673374440c
 ---
 
 # Agent provisioning flow
@@ -60,6 +60,17 @@ dedicated Codex. Preset restoration and Credentials read native model runtime
 policy through `apps/controller/src/console/agents/harness-auth.mjs:configuredHarnessId`.
 
 The Slack modal immediately saves new tokens through `POST /namespaces/:namespaceId/secrets`, before an Agent exists, then clears entered values. Apply stages references and environment bindings; Cancel discards selections but retains created Secrets. Model discovery uses an API key or service account token without saving it. Create Agent runs its preflight, then saves it as a Namespace Secret, clears the input, and reuses the reference on retries. Bound Presets retain their credential/provider. A lost Secret-save response requires recovery, not automatic repetition.
+
+Custom Responses selection in `apps/controller/src/console/agents/create.mts:renderCreateAgent`
+clears credentials and model IDs when the endpoint changes. Secret creation records
+`authorizedEndpoint`; the Agent API-key binding carries the same normalized value.
+`packages/occ/src/index.ts:authorizeHarnessAuthSource` compares the binding with
+immutable Secret metadata. Source registration asks
+`CredentialGatewayDriver.describeSourceDestinations` before reading any key.
+The worker repeats the comparison in
+`apps/controller/src/worker.ts:resolveRevisionSecretContext` and
+`resolveRevisionCredentialSource`, before Compute receives delivery references.
+Kubernetes Compute validates the provider endpoint during admission and preparation.
 
 A selected Credential Gateway's catalog directs Console to register the model
 Secret before source-backed provisioning. [Console recovery](../reference/console/create-and-deploy.md)
@@ -189,6 +200,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 15:26: Trace custom endpoint authorization in the accompanying implementation. (authoring-run/84f241a8-57a6-4718-b5a4-1d673374440c - b73f9939afe1da527a6ffd89ae048924b71e3ea8)
 
 - 2026-10-30 07:41: Omit admission-only Gateway catalog lookup from source-backed provisioning status; retain ownership and grant checks. (authoring-run/6e73ff4f-8905-4066-a81d-d629e40296e7 - 429951edfc002c1c6ef98970696e655e03ba3ec7)
 

@@ -5444,6 +5444,33 @@ export class ControllerWorker {
         revisionId,
         sourceId,
       );
+      if (
+        withdrawal === undefined &&
+        source?.state === "ready" &&
+        credentialSourceMatchesSnapshot(source, snapshot) &&
+        source.ownerCapability === "credential_gateway" &&
+        this.credentialGateway !== undefined
+      ) {
+        const destinations = this.credentialGateway.describeSourceDestinations({
+          type: source.type,
+          config: source.config,
+        });
+        for (const [field, reference] of Object.entries(source.secrets)) {
+          const secret = await view.secrets.findSecret(namespaceId, reference.id);
+          const destination = destinations[field];
+          if (
+            secret === undefined ||
+            destination === undefined ||
+            (secret.authorizedEndpoint === undefined
+              ? destination.isDefault !== true
+              : [destination.endpoint, ...(destination.additionalEndpoints ?? [])].every(
+                  (endpoint) => endpoint !== secret.authorizedEndpoint,
+                ))
+          ) {
+            return { source: undefined, withdrawal };
+          }
+        }
+      }
       return {
         source:
           withdrawal === undefined &&
@@ -5529,6 +5556,9 @@ export class ControllerWorker {
         secret.backendRef.uid.trim().length === 0
       ) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+      }
+      if (auth.method === "api_key" && auth.authorizedEndpoint !== secret.authorizedEndpoint) {
+        return { result: { outcome: "permanent", code: "HARNESS_AUTH_ENDPOINT_MISMATCH" } };
       }
       // Admission verifies the physical source. Workers project authoritative
       // OCC metadata without requiring permission to read backend Secret values.

@@ -353,6 +353,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 | `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
 | `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                    |
 | `openshell-linear-read` | No          | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                           |
+| `custom-responses`      | No          | OpenClaw, Codex | Opt-in endpoint-authorized API-key creation, streaming response, and real shell read; runtime qualification remains unverified.         |
 | `codex-search-config`   | No          | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.         |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
@@ -360,6 +361,14 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+
+`custom-responses` requires an exclusive selection and `OCC_TEST_QA_RESPONSES_BASE_URL`,
+`OCC_TEST_QA_RESPONSES_MODEL`, and `OCC_TEST_QA_RESPONSES_KEY_FILE`. The endpoint must
+be normalized. The private key file must belong to that endpoint. The scenario
+is excluded from default and advisory runs until provider qualification is recorded.
+It covers Embedded OpenClaw and Dedicated Codex; Dedicated native OpenClaw still
+requires separate source-backed qualification. No real custom-endpoint run has
+been performed for this change.
 
 `codex-search-config` requires an exclusive explicit scenario selection. It changes
 only its disposable Installation, uses dedicated Codex API-key authentication,
