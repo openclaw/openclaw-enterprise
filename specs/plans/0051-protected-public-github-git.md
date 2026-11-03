@@ -8,6 +8,7 @@ rfc: ../rfcs/0020-anonymous-public-github-reads.md
 - **Delivery status:** In progress
 - **Owner:** russellb
 - **Source baseline:** `bdb4e1aad80d6f417b9e0b19f563d9c747e74caf`
+- **Integrated upstream:** `44c2f77b6`, merged without rewriting in `c00065ccee26b4132d062c6ab8712b7a6e11d304`
 
 > Execute tasks with the subagent-driven-development workflow. Each task uses failing integration checks before implementation, followed by independent review.
 
@@ -44,11 +45,11 @@ rfc: ../rfcs/0020-anonymous-public-github-reads.md
 
 **Interfaces:** Export `PublicGithubReadPolicy` as `{mode:"all"}` or `{mode:"repositories",repositories:readonly string[]}`; `canonicalPublicGithubRepository(value:string):string|undefined`; `publicGithubReadPolicy(value:unknown):PublicGithubReadPolicy`; and `publicGithubReadAllowed(policy,repository):boolean`. Export `PublicGithubReadAuthorization` with `installationId`, `namespaceId`, `agentId`, `revisionId`, `tokenSha256`, `policy`, and ISO `validUntil`. Reader options include a current ceiling and an authorization loader; missing configuration denies all repository requests. Production startup requires TLS certificate/key and reads policy and authorization files from mounted configuration.
 
-- [ ] Write HTTP checks for missing/forged capability, policy intersection, two Agents, API bypass, withdrawal, expired/unreadable registry, and credential absence. Observe failure on current code.
-- [ ] Implement reader authentication before API deduplication and provider I/O. A Bearer capability is `revisionId.random-32-byte-base64url`; compare its SHA-256 with the stored verifier. Identity and policy come from the registry, never request headers.
-- [ ] Add strict `/git/OWNER/REPOSITORY.git/info/refs?service=git-upload-pack` and `/git/OWNER/REPOSITORY.git/git-upload-pack` routes to fixed `https://github.com`; use streaming backpressure and the RFC limits. Reject writes, malformed paths, bodies and redirects before forwarding credentials.
-- [ ] Extend real Git HTTP fixtures using `git http-backend` behind verified TLS. Clone and incremental fetch must transfer real objects; denied operations must not reach the provider.
-- [ ] Run `node --test tests/integration/public-github-read-http.test.mjs tests/integration/public-github-git-read.test.mjs`; expect no failures. Commit with sign-off.
+- [x] Write HTTP checks for missing/forged capability, policy intersection, two Agents, API bypass, withdrawal, expired/unreadable registry, and credential absence. Observe failure on current code.
+- [x] Implement reader authentication before API deduplication and provider I/O. A Bearer capability is `revisionId.random-32-byte-base64url`; compare its SHA-256 with the stored verifier. Identity and policy come from the registry, never request headers.
+- [x] Add strict `/git/OWNER/REPOSITORY.git/info/refs?service=git-upload-pack` and `/git/OWNER/REPOSITORY.git/git-upload-pack` routes to fixed `https://github.com`; use streaming backpressure and the RFC limits. Reject writes, malformed paths, bodies and redirects before forwarding credentials.
+- [x] Extend real Git HTTP fixtures using `git http-backend` behind verified TLS. Clone and incremental fetch must transfer real objects; denied operations must not reach the provider.
+- [x] Run `node --test tests/integration/public-github-read-http.test.mjs tests/integration/public-github-git-read.test.mjs`; expect no failures. Commit with sign-off.
 
 ## Task 2: Generic admission and paired OpenShell enforcement
 
@@ -56,27 +57,27 @@ rfc: ../rfcs/0020-anonymous-public-github-reads.md
 
 **Interfaces:** Add `ComputeServiceAccess {id,driverId,implementation,endpoint,configuration}` with a nonsecret opaque configuration document. Add optional `ComputeDriver.admitServiceAccess({configuration,harness})` returning descriptors. Persist them as optional `SandboxPolicySnapshot.serviceAccess`. Add optional `SandboxDriver.admitProtectedNetworkPolicy(version,serviceAccess)` returning `{purpose:"protected-network",declaredRuleNames,snapshot}`. Keep the artifact-only method for revisions without service contributions. OCC validates exact acknowledgement and descriptor identity without vendor interpretation.
 
-- [ ] Add failing normal Agent deployment admission tests: source settings survive Sandbox normalization, exact acknowledgement persists, unsupported or changed contributions fail closed, old revisions gain no service.
-- [ ] Invoke the Compute producer before `agentRuntimeConfiguration`. Feed descriptors through generic network-policy admission for ordinary and protected dedicated Codex repository execution. Keep existing protected Agent additions refusal.
-- [ ] Implement OpenShell rule compilation for only `id:"public-github-read"`, HTTPS endpoint and its frozen scope/peer. Inspect GET and upload-pack POST only. Independently validate the same descriptor in the Credential Proxy before release; do not qualify it as an artifact.
-- [ ] Extend provider runtime-file projection to bounded public-reader skill, transport source/config, trust and revision capability files through the existing Compute-to-Sandbox requirements. Preserve model and repository paths, including token retirement.
-- [ ] Run owning conformance and integration checks; expect all selected cases to pass. Commit with sign-off.
+- [x] Add failing normal Agent deployment admission tests: source settings survive Sandbox normalization, exact acknowledgement persists, unsupported or changed contributions fail closed, old revisions gain no service.
+- [x] Invoke the Compute producer before `agentRuntimeConfiguration`. Feed descriptors through generic network-policy admission for ordinary and protected dedicated Codex repository execution. Keep existing protected Agent additions refusal.
+- [x] Implement OpenShell rule compilation for only `id:"public-github-read"`, HTTPS endpoint and its frozen scope/peer. Inspect GET and upload-pack POST only. Independently validate the same descriptor in the Credential Proxy before release; do not qualify it as an artifact.
+- [x] Extend provider runtime-file projection to bounded public-reader skill, transport source/config, trust and separate private capability material through the existing Compute-to-Sandbox requirements. Preserve model and repository paths, including token retirement.
+- [x] Run owning conformance and integration checks; expect all selected cases to pass. Commit with sign-off.
 
 ## Task 3: Managed Git transport and Kubernetes lifecycle
 
 **Files:** `public-read/transport.mjs`, `codex.ts`; Compute `plugin-runtime.ts`, Kubernetes modules and plugin runtime launcher; chart values/templates and profile renderer/tests.
 
-**Interfaces:** The managed helper consumes a read-only JSON configuration containing reader `endpoint`, `caPath`, `capabilityPath`, and canonical `authenticatedRepositories`. Its launcher sets a private `GIT_EXEC_PATH` while preserving discovery of the image's original helpers. It delegates bound repositories unchanged and rewrites eligible unbound GitHub reads only inside the child HTTP transport. It never saves reader URLs in repository configuration.
+**Interfaces:** The managed helper consumes a read-only JSON configuration containing reader `endpoint`, `caPath`, a private `capabilityPath` or the dedicated capability environment name, and canonical `authenticatedRepositories`. The launcher consumes separate nonsecret endpoint/CA/routing material. Its launcher sets a private `GIT_EXEC_PATH` while preserving discovery of the image's original helpers. It delegates bound repositories unchanged and rewrites eligible unbound GitHub reads only inside the child HTTP transport. It never saves reader URLs in repository configuration.
 
-Compute descriptor configuration carries `policy`, `peer:{namespace,podLabels}`, `authorizationConfigMapName`, and public `caBundle`. The reader endpoint is verified HTTPS. Agent selection is `plugins.entries.codex.config.publicGithubRead` with the policy shape from Task 1; omission/empty list means no selection. Native network denies remain narrowing constraints.
+Compute descriptor configuration carries `policy`, `peer:{namespace,podLabels}`, `installationId`, `authorizationConfigMapName`, and public `caBundle`. The reader endpoint is verified HTTPS. Agent selection is `plugins.entries.codex.config.publicGithubRead` with the policy shape from Task 1; omission/empty list means no selection. Native network denies remain narrowing constraints.
 
-Compute creates one owned revision Secret with a random capability, and publishes only its verifier, identities, scope and lease in a dedicated reader ConfigMap's `authorizations.json`, using resource-version compare-and-swap. The reader mounts this ConfigMap read-only and has no Kubernetes service-account token. Compute refreshes a 10-minute lease through 30-second maintenance, without redeployment; unchanged capabilities stay stable across restart. Reader health returns the loaded registry digest. Withdrawal removes authorization and waits for the reader to acknowledge the resulting registry before completing, then stops the correct owner-provisioned Harness. An unavailable reader or stale authorization never reports successful withdrawal.
+Compute creates one owned revision Secret with a random capability, and publishes only its verifier, identities, scope and lease in a dedicated reader ConfigMap's `authorizations.json`, using resource-version compare-and-swap. The reader mounts this ConfigMap read-only and has no Kubernetes service-account token. Compute refreshes a 10-minute lease through 30-second maintenance, without redeployment; unchanged capabilities stay stable across restart. Reader health returns global and per-revision authorization digests. Withdrawal expires authorization and attempts the correct owner-provisioned Harness shutdown before waiting for the reader's revision acknowledgement. An unavailable reader or registry cannot prevent that shutdown attempt or report successful withdrawal. The operator initializes the mutable registry outside Helm; chart upgrades never render its contents.
 
-- [ ] Write failing transport checks for real clone/fetch, canonical unchanged remotes, bound-repository delegation, credentials stripped on public path, helper discovery, and no fallback on denial.
-- [ ] Implement the managed helper and launch environment. Refuse conflicting Git helper configuration; preserve inherited credential settings on the authenticated path.
-- [ ] Implement Compute service contribution, owned capability and registry lifecycle, lease refresh and withdrawal acknowledgement. Extend runtime projection for ordinary and protected Harnesses. Protect secret material from descriptions/logs.
-- [ ] Add supervisor-only reader egress for protected execution; keep ordinary selected Harness egress. Deliver trust and authorization registry through Helm/profile inputs, with explicit all/list Installation scope and required verified TLS. Approve both GitHub Git and API destination CIDRs.
-- [ ] Run transport, Compute lifecycle, chart/profile and runtime-file checks. Commit with sign-off.
+- [x] Write failing transport checks for real clone/fetch, canonical unchanged remotes, bound-repository delegation, credentials stripped on public path, helper discovery, and no fallback on denial.
+- [x] Implement the managed helper and launch environment. Refuse conflicting Git helper configuration; preserve inherited credential settings on the authenticated path.
+- [x] Implement Compute service contribution, owned capability and registry lifecycle, lease refresh and withdrawal acknowledgement. Extend runtime projection for ordinary and protected Harnesses. Protect secret material from descriptions/logs.
+- [x] Add supervisor-only reader egress for protected execution; keep ordinary selected Harness egress. Deliver trust and authorization registry through Helm/profile inputs, with explicit all/list Installation scope and required verified TLS. Approve both GitHub Git and API destination CIDRs.
+- [x] Run transport, Compute lifecycle, chart/profile and runtime-file checks. Commit with sign-off.
 
 ## Task 4: Local deployment proof, QA registration and current docs
 
@@ -91,7 +92,11 @@ Compute creates one owned revision Secret with a random capability, and publishe
 
 ## Delivery record
 
-2026-11-03: User approved implementation and requested Podman + k3d + OpenShell local proof. RFC amendment is submitted on PR #4505 at `647f5828ee175a13f8c9196175503108b91631c2`. Implementation and runtime checks are pending.
+2026-11-03: User approved implementation and requested Podman + k3d + OpenShell local proof. RFC amendment was submitted on PR #4505 at `647f5828ee175a13f8c9196175503108b91631c2`.
+
+Tasks 1–3 are implemented in `da9c3f7a2`, `cec046516`, `83a172891` and `08eef0277`. Independent canonical Codex reviews found no actionable P0–P2 findings in their supplied scope; the lifecycle review lacked full RFC-0023 context. These reviews do not qualify an installed runtime. The bounded reader file owner retained its security guard: 179 checks pass. Worker expiry recovery passes all 34 teardown tests, including seven expiry variants. After the main merge, full typechecking and 204 admission/compiler/runtime-material checks pass without skips. Controlled Git/TLS transport passes 18 checks; five existing reader quota cases need unavailable macOS loopback aliases. The owned Kubernetes authorization test passes, including restart and permanent withdrawal.
+
+Task 4 remains in progress. CI registration covers controlled Git reads/transport and the real Kubernetes registry lifecycle. The selected Podman + k3d + OpenShell Agent journey is being executed. Stock supervisor trust needs a qualified CA image layer or operator admission injection; no general supervisor mount override exists. Public-only protected composition requires empty artifact defaults. Live protected fork writes, private-provider denial and expiry isolation remain qualification requirements; fixture results do not establish them.
 
 ## Manual Notes
 

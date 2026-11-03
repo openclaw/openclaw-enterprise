@@ -59,16 +59,19 @@ at startup.
 
 ### Trust the reader in OpenShell
 
-For protected execution, configure public CA trust in **both** the native Git
-client in the Harness and the OpenShell supervisor's outbound TLS verifier.
-Compute projects the Harness trust. The OCE chart does not configure the separate
-OpenShell installation. For stock OpenShell v0.1.6, mount a PEM trust bundle into
-each supervisor and set `SSL_CERT_FILE` to its absolute path before the supervisor
-starts. Include the reader issuer and the existing public roots needed by the
-supervisor's other HTTPS destinations. Use the OpenShell installation's supported
-Pod environment and volume configuration; provision that public bundle in each
-selected managed namespace. The native certificate loader in
-`openshell-supervisor-network/src/l7/tls.rs` reads this trust at startup.
+Configure trust in both the native Git client in the Harness and the OpenShell
+supervisor's outbound TLS verifier. Compute projects Harness trust; the separate
+OpenShell installation owns supervisor trust. Its native certificate loader in
+`openshell-supervisor-network/src/l7/tls.rs` reads system roots and
+`SSL_CERT_FILE` at startup.
+
+Stock OpenShell v0.1.6's Kubernetes Driver has no general supervisor environment
+or volume override. Use a qualified supervisor image with the reader issuer added
+to its system trust, or operator-managed admission injection that mounts a PEM
+bundle and sets `SSL_CERT_FILE` before the supervisor starts. Retain public roots
+needed by other destinations. Adding a CA layer does not require changing the
+OpenShell binary, but the resulting image still needs deployment qualification.
+The OCE chart does not install this trust or an admission injector.
 
 An application CA file alone does not configure the supervisor. Verify a public
 clone through the deployed protected Agent, with certificate verification enabled,

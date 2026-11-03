@@ -7,7 +7,9 @@ import { KubernetesPublicGithubReadAuthorizationStore } from "../../apps/control
 const { KubeConfig, CoreV1Api } = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 )("@kubernetes/client-node");
-const selected = process.env.OCC_TEST_PUBLIC_GITHUB_READ_KUBERNETES === "1";
+const selected =
+  process.env.OCC_TEST_PUBLIC_GITHUB_READ_KUBERNETES === "1" ||
+  process.env.OCC_TEST_KUBERNETES_CONFIGURATION === "1";
 
 test(
   "Kubernetes public-reader authorization survives restart and permanently withdraws only its revision",

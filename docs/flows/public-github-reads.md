@@ -79,7 +79,9 @@ projects only endpoint, public CA, authenticated repository names and the manage
 skill. An ordinary Harness mounts its capability Secret. OpenShell delivers the
 capability through its existing endpointless runtime provider; the workload sees
 an identity-bound placeholder. Only the selected reader endpoint binds that
-provider. The supervisor needs the reader CA in its own native TLS trust store.
+provider. The supervisor needs the reader CA in its own native TLS trust store. Stock
+Kubernetes OpenShell needs a qualified trust-image layer or operator admission
+injection for a private issuer; Harness trust alone does not configure it.
 Compute's NetworkPolicy grants reader egress to the selected ordinary Harness or
 the exact trusted supervisor peer; a protected workload receives no direct grant.
 

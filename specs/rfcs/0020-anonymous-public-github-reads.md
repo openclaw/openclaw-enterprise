@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: freeqaz-openai
 ---
 
@@ -42,7 +42,8 @@ and later `git fetch` without installing an App in the upstream organization.
 The same Agent must retain its separately authorized fork reads and writes.
 Clone commands and saved remote URLs use ordinary GitHub HTTPS URLs. A managed
 transport helper can route a public read internally; callers do not need a
-reader-specific URL or command. This extension is proposed, not implemented.
+reader-specific URL or command. The extension remains proposed; implementation
+is in progress in PR #4505 and installed-runtime qualification is pending.
 
 ### Decision and scope
 
