@@ -616,6 +616,10 @@
                     "label": "Keycloak Sign-in"
                   },
                   {
+                    "page": "guides/deploy/external-openshell-gateway",
+                    "label": "External OpenShell Gateway"
+                  },
+                  {
                     "group": "Settings",
                     "pages": [
                       {

@@ -490,6 +490,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.backend.chatgpt.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/chatgpt" -}}
 {{- end -}}
+{{- if .Values.backend.openshell.caSecretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts (dir .Values.backend.openshell.caFilePath) -}}
+{{- end -}}
 {{- if and .Values.auth.oidc .Values.auth.oidc.enabled .Values.auth.oidc.caSecretName -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/api-extra-ca" -}}
 {{- end -}}

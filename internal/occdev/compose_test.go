@@ -97,6 +97,43 @@ func TestAddComposeGatewayRoutingProjectsTrustIntoControlPlane(t *testing.T) {
 	}
 }
 
+// An external OpenShell gateway selection has no in-cluster gateway key or CA to
+// mount; only the optional external CA bundle reaches the control-plane services.
+func TestComposeExternalOpenShellMountsOnlyTheSelectedCA(t *testing.T) {
+	state := &developmentState{directory: "/private/development-state", openShellExternal: &externalOpenShell{}}
+	rendered := map[string]any{
+		"services": map[string]any{
+			"controller":        map[string]any{"environment": map[string]any{"NODE_ENV": "development"}, "volumes": []any{}},
+			"worker-kubernetes": map[string]any{"environment": map[string]any{"NODE_ENV": "development"}, "volumes": []any{}},
+		},
+	}
+	if err := addComposeExternalOpenShell(rendered, state); err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered["services"].(map[string]any)["controller"].(map[string]any)["volumes"].([]any)) != 0 {
+		t.Fatal("without a CA selection nothing is mounted")
+	}
+	state.openShellExternal.caPath = "/secure/openshell-ca.crt"
+	if err := addComposeExternalOpenShell(rendered, state); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"controller", "worker-kubernetes"} {
+		service := rendered["services"].(map[string]any)[name].(map[string]any)
+		environment := service["environment"].(map[string]any)
+		if environment["NODE_EXTRA_CA_CERTS"] != openShellExternalCAContainerPath {
+			t.Fatalf("%s does not trust the external CA: %v", name, environment)
+		}
+		volumes := service["volumes"].([]any)
+		if len(volumes) != 1 {
+			t.Fatalf("%s has unexpected volumes: %v", name, volumes)
+		}
+		volume := volumes[0].(map[string]any)
+		if volume["source"] != filepath.Join(state.directory, "openshell-ca.crt") || volume["target"] != openShellExternalCAContainerPath || volume["read_only"] != true {
+			t.Fatalf("%s has an unexpected CA volume: %v", name, volume)
+		}
+	}
+}
+
 func TestComposeNativeAdminPublishesOnlyTheOwnedHTTPSOrigin(t *testing.T) {
 	state := &developmentState{
 		Cluster:       "occ-dev-example",
