@@ -981,6 +981,27 @@ export const scenarios = {
     description:
       "Failed provider discovery leaves the password form usable without provider buttons.",
   },
+  loginWrongOrigin: {
+    group: "Pages/Sign in",
+    name: "Wrong Console address",
+    path: "/console/login",
+    signedOut: true,
+    rules: [
+      {
+        path: "/api/auth/sign-in/email",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message: "A trusted browser origin is required.",
+      },
+    ],
+    actions: submitPassword,
+    description:
+      "Sign-in from another address asks for the administrator's Console link. No destination is inferred from the browser address or the error response.",
+    steps: [
+      "Read the recovery instruction. Confirm that no Open sign-in page link is offered without a trusted destination.",
+    ],
+  },
   loginError: {
     group: "Pages/Sign in",
     name: "Invalid credentials",
@@ -4767,6 +4788,26 @@ export const scenarios = {
     ],
     gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.mjs.",
   },
+  createSaveUnconfirmed: {
+    group: "Pages/Create Agent",
+    name: "Agent save unconfirmed",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        method: "POST",
+        status: 503,
+      },
+    ],
+    actions: [...readyForm, click("Create Agent")],
+    description:
+      "A failed response does not establish whether the Agent was saved. The form asks the reader to refresh and check before submitting again.",
+    steps: [
+      "Read the uncertain-save guidance, then open Agents to inspect saved state before starting another draft.",
+    ],
+    gap: "Simulated response loss. The browser regression also exercises an accepted create through the real controller before hiding its response.",
+  },
   createUnknown: {
     group: "Pages/Create Agent",
     name: "Provisioning outcome unknown",
@@ -7697,6 +7738,26 @@ export const scenarios = {
     steps: [
       "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
       "When “Outcome unknown” takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
+    ],
+  },
+  deployRepositoryRequired: {
+    group: "Pages/Agent detail",
+    name: "Deployment requires a repository",
+    path: draft,
+    rules: [
+      {
+        method: "POST",
+        suffix: "/deploy",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "Select a repository for this Agent, save your changes, and deploy again. This installation requires every Agent to have a repository.",
+      },
+    ],
+    description:
+      "Deploy refuses an Agent without a repository on an installation that requires one.",
+    steps: [
+      "Select Deploy new version. Read the refusal, open Repositories, select an approved repository and save before deploying again.",
     ],
   },
   deployRefusedSetting: {

@@ -144,7 +144,7 @@ A candidate with only provider Harness status (`running`, `starting`, or `lost`)
 needs to be proven newer; `unknown` alone is not runtime evidence. Otherwise
 both read the selected version, else the latest version you can `read`. They print the revision ID they
 read to stderr; a reader without Agent `operate` cannot probe runtime status, so the
-notice names the other readable version to pass. Notices call any other version newer or
+notice names both versions, the failed read, and `--revision ID` to retry that version. Notices call any other version newer or
 older only when the selected version's metadata proves it. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the Agent revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
@@ -195,7 +195,8 @@ without the HTTP envelope. Deleting a Configuration prints
 
 Failures go to stderr and the CLI exits nonzero. For HTTP errors, the CLI prints
 the status and, when present, the API error code and message, and the
-`Retry-After` delay. Delay-seconds and HTTP-date values
+`Retry-After` delay. Runtime-log rate limits name the delay once, or say to try
+again shortly when no usable delay is available. Delay-seconds and HTTP-date values
 ([HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3))
 up to one hour are accepted and rounded up to whole seconds for notices and
 waits; an expired or invalid date keeps the normal follow interval. It does not print

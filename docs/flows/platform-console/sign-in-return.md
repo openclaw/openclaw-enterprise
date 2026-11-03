@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-10-26
-last_updated_session: fix-2643
+updated: "2026-11-03"
+last_updated_session: 01a1a347-0985-76c2-8271-9a448c4224d5
 ---
 
 # Console sign-in and destination recovery
@@ -61,7 +61,9 @@ browser-origin check, a provider that the API no longer configures (`403`), or
 an attempt that expired or was replaced (`401`), never a refused identity.
 Password sign-in reports `429` with the `Retry-After` wait. The provider
 budgets send no `Retry-After`, so provider start and the exchange say to wait a
-minute. Each reports the origin check with its own text; every other password
+minute. `console.mjs:untrustedOriginFailure` explains that sign-in requires the
+configured scheme, hostname and port, and asks for the administrator's link. It
+does not build a link from the request or error text. Every other password
 `400`, `401` or `403` keeps one message. On the API side, `sendAuthEndpoint`
 answers `429` with the wait and `503` with an outage message; every refusal
 keeps the endpoint's one message.
@@ -130,6 +132,8 @@ native-gateway integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 14:40: Explain recovery from an untrusted sign-in origin. (01a1a347-0985-76c2-8271-9a448c4224d5 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
 
 - 2026-10-26 18:00: A Secrets page link's Secret ID survives sign-in. (2645)
 

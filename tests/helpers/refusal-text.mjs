@@ -73,7 +73,7 @@ export const credentialSourceFieldRequired = (type, field) =>
 export const REPOSITORY_SELECTION_NOT_APPROVED =
   "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
 export const REPOSITORY_ACCESS_OR_BINDINGS =
-  "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
+  "Remove either `repositoryAccess` or `repositoryBindings`. Send only one.";
 export const COMPUTE_REPOSITORY_UNSUPPORTED =
   "This Installation's Compute Driver cannot deliver repository credentials, so this Agent cannot use repository access. Remove its repository bindings, or ask an Installation administrator to select Kubernetes Compute.";
 // Saved selections (an Agent's, or queued provisioning work's) the repository policy no longer

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-03"
-last_updated_session: authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7
+last_updated_session: 01a1a347-0985-76c2-8271-9a448c4224d5
 ---
 
 # Agent repository credential flow
@@ -94,25 +94,26 @@ graph TD
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
-`listRepositoryOptions` checks Namespace create or exact Agent update permission
-and Compute availability. Bundled listing uses the bound GitHub catalog;
-programmatic listing uses the registered Repo Driver. Stale owner results are
-rejected. Deploy checks the exact Harness. An empty Namespace catalog yields `[]`;
-absent `repository` adds `meta.notConfigured`. Closed Namespaces conflict.
-Classified discovery failures return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
+`listRepositoryOptions` checks Namespace create or Agent update permission and
+Compute availability. Bundled listing uses the bound GitHub catalog;
+programmatic listing uses the registered Repo Driver. Stale owners are rejected.
+Deploy checks the Harness. Empty catalogs yield `[]`; absent `repository` adds
+`meta.notConfigured`. Closed Namespaces conflict. Classified discovery failures
+return `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
-`createRepositoryFields` searches up to 1,000 choices with 16 attachments.
+`createRepositoryFields`: 1,000 searchable choices, 16 attachments.
 `repositorySettings` requires the bound Installation policy for explicit and
-inherited saves, refusing mismatches. Without that binding it uses the registered
-Repo Driver. The database checks bindings. Only fresh, empty drafts tolerate a
-classified outage. The catalog omits sender metadata, credentials and provider descriptions.
+inherited saves. Mismatches fail; unbound callers use the registered Repo Driver. `repositoryAccessProblem` names conflicting fields, invalid defaults
+and duplicates. The database checks bindings.
+Only fresh, empty drafts tolerate classified outages. The catalog omits sender
+metadata, credentials and provider descriptions.
 
-Save Configuration first; reuse it after known Agent rejections.
-Repository retries require reload and nonempty reselection. Failed reloads block
-creation; ignore stale results. After unknown outcomes, read stored Agent and Configuration.
+[Console recovery](../reference/console/repository-access.md) reuses saved Configuration,
+requires reload and nonempty reselection after rejection, and checks saved state
+after unknown outcomes.
 
-Requests carry distinct opaque refs and optional profiles, never tokens or grant IDs.
-Nonempty selections without a configured Repo Driver return `409 RESOURCE_CONFLICT`.
+Requests carry distinct refs and optional profiles, never tokens or grant IDs.
+Without a Repo Driver, nonempty selections return `409 RESOURCE_CONFLICT`.
 OCC saves normalized selections in request order. GitHub’s registry defaults legacy profiles to
 `git-write` without GitHub or control-socket calls.
 
@@ -140,6 +141,9 @@ refuses Codex proxy settings that block the broker.
 
 Deploy resolves through the current Repo Driver again after reading standing
 approval. Denial or a changed binding or scope blocks revision creation.
+
+`OpenClawController.admitProxyPlan` distinguishes repository-free deployment
+from unsupported sources on Git-only Proxies.
 
 Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Proxy
 Driver. Finite sessions need no native sender, control socket, broker CA or
@@ -177,7 +181,7 @@ confirmed disposal or a missing opening without a recorded session ID. Invalidat
 sessions block replacement. Closing raises `REPOSITORY_CLEANUP_PENDING`, subject to Work
 bounds and the revision deadline. Cleanup uses the configured interval while any session
 closes. Otherwise, an unsettled obligation retains its code and retries at `age / 40`,
-bounded by the configured interval and ten minutes.
+between the configured interval and ten minutes.
 `apps/controller/src/worker.ts:processRepositoryCleanup` logs
 `worker.repository-cleanup-warning` with `cause` once per worker.
 
@@ -395,6 +399,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 14:40: Clarify validation and recovery. (01a1a347-0985-76c2-8271-9a448c4224d5 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
 
 - 2026-11-03 16:24: Document bound repository admission. (authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7 - 47a126079e6037a1ad1d27db1b514fde1cde345c)
 

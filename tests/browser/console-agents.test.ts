@@ -1189,7 +1189,9 @@ test("Agent creation does not expose recovery actions after an unknown admission
   await page.getByLabel("Agent name").fill("Unknown Outcome Agent");
 
   await page.getByRole("button", { name: "Create Agent" }).click();
-  await page.getByText(/Outcome unknown/).waitFor();
+  await page
+    .getByText("We couldn't confirm whether your change was saved.", { exact: false })
+    .waitFor();
   assert.equal(
     await page
       .getByRole("heading", {

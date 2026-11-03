@@ -46,6 +46,17 @@ an empty catalog cannot convert the attempt to an ordinary Agent. Failed reloads
 disable creation and show the Configuration ID. Expiry returns to sign-in.
 **Start a new draft** preserves the saved Configuration.
 
+## Recover from a refused deployment
+
+When the installation requires repository access, deploying an Agent without a
+repository returns `409 RESOURCE_CONFLICT`. Open **Repositories**, select an
+approved repository, save, and deploy again. Creating an unsupported credential
+source has separate guidance for the installation administrator.
+
+`REPOSITORY_GIT_SENDER_UNQUALIFIED` means this installation cannot enforce the
+selected Git permissions. Ask an administrator to enable protected Git access.
+Do not broaden repository permissions or disable the Sandbox to bypass it.
+
 ## Use repositories and Slack on the same Agent
 
 Select **Codex**, **Dedicated**, the approved repositories and an explicit access level.

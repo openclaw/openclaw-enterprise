@@ -154,3 +154,18 @@ Previous row feedback disappears. No empty-list message appears beside the
 unavailable warning. Submitted requests report generic acceptance, refusal or
 unknown outcomes without Agent details or replay. Browser tests also cover session
 expiry. Use the late Stop response story to inspect its generic result.
+
+## Recovery guidance
+
+- **Pages / Sign in / Wrong Console address** asks for the administrator's
+  sign-in link and names the scheme, hostname and port. It offers no inferred URL.
+- **Pages / Create Agent / Agent save unconfirmed** asks the reader to refresh
+  and check saved state before submitting again. Scroll to the message below
+  Channels, then open Agents to inspect the result.
+- **Pages / Agent detail / Deployment requires a repository** starts on the
+  draft. Select **Deploy new version**, read the refusal, then open
+  **Repositories**. The next action is to select and save an approved repository.
+
+These previews use simulated API responses. The browser regressions verify
+wrong-origin refusal and an accepted Agent save whose response is lost through
+the real controller with in-memory storage; they do not verify a running Agent.

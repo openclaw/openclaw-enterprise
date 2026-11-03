@@ -2471,6 +2471,11 @@ test("runtime log reads are rate limited per principal and Agent with Retry-Afte
   }
   assert.ok(limited, "the burst of 10 is exhausted within 12 immediate requests");
   assert.equal(limited.body.error.code, "RUNTIME_LOGS_RATE_LIMITED");
+  const seconds = Number(limited.headers.get("retry-after"));
+  assert.equal(
+    limited.body.error.message,
+    `Too many log requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`,
+  );
   assert.match(limited.headers.get("retry-after") ?? "", /^[1-9][0-9]*$/);
 
   // Authorization runs before the limiter: an unauthorized principal past the burst is

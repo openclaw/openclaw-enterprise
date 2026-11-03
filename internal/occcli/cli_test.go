@@ -521,7 +521,7 @@ func TestAgentLogsDefaultToANewerRevisionWithPodsAndNameTheRevision(t *testing.T
 		{"newer revision has no Pods", []string{"rev_00000000-0000-4000-8000-000000000002"}, nil, "rev_00000000-0000-4000-8000-000000000001", "notice: reading the active revision rev_00000000-0000-4000-8000-000000000001\n"},
 		// A log reader without Agent operate cannot read the runtime description;
 		// the notice still names the newer revision it may read with --revision.
-		{"newer revision runtime is refused", nil, []string{"rev_00000000-0000-4000-8000-000000000002"}, "rev_00000000-0000-4000-8000-000000000001", "notice: reading the active revision rev_00000000-0000-4000-8000-000000000001; a newer revision rev_00000000-0000-4000-8000-000000000002 exists but its runtime could not be read (OCC operation failed (HTTP 403): FORBIDDEN: fixed message); pass --revision rev_00000000-0000-4000-8000-000000000002 to read it"},
+		{"newer revision runtime is refused", nil, []string{"rev_00000000-0000-4000-8000-000000000002"}, "rev_00000000-0000-4000-8000-000000000001", "notice: Showing active revision rev_00000000-0000-4000-8000-000000000001. Could not read runtime status for newer revision rev_00000000-0000-4000-8000-000000000002: OCC operation failed (HTTP 403): FORBIDDEN: fixed message. To retry that revision, pass --revision rev_00000000-0000-4000-8000-000000000002."},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stub := &runtimeLogStub{t: t, activeID: "rev_00000000-0000-4000-8000-000000000001", revisions: revisions, podless: test.podless, forbidden: test.forbidden, pages: []func(http.ResponseWriter, url.Values){
@@ -584,7 +584,7 @@ func TestAgentLogsDefaultToANewerRevisionWithPodsAndNameTheRevision(t *testing.T
 // only when the active revision's metadata proves it, never assume "newer" (D607).
 func TestAgentLogsNameTheOrderOfAnUnprobedOtherRevision(t *testing.T) {
 	for _, test := range []struct{ name, metadata, other string }{
-		{"older", `{"id":"rev_00000000-0000-4000-8000-000000000002","revision":2}`, "an older revision rev_00000000-0000-4000-8000-000000000001"},
+		{"older", `{"id":"rev_00000000-0000-4000-8000-000000000002","revision":2}`, "older revision rev_00000000-0000-4000-8000-000000000001"},
 		{"active metadata refused", "forbidden", "another readable revision rev_00000000-0000-4000-8000-000000000001"},
 		{"active number missing", `{"id":"rev_00000000-0000-4000-8000-000000000002"}`, "another readable revision rev_00000000-0000-4000-8000-000000000001"},
 	} {
@@ -596,7 +596,7 @@ func TestAgentLogsNameTheOrderOfAnUnprobedOtherRevision(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "notice: reading the active revision rev_00000000-0000-4000-8000-000000000002; " + test.other + " exists but its runtime could not be read"
+			want := "notice: Showing active revision rev_00000000-0000-4000-8000-000000000002. Could not read runtime status for " + test.other
 			if !strings.Contains(errOut, want) || strings.Contains(errOut, "newer") {
 				t.Fatalf("notice = %q, want %q", errOut, want)
 			}

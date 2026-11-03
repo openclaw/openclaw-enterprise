@@ -294,3 +294,5 @@ export const ConfigurationSaveReadDenied = {
   ...story("configurationSaveReadDenied"),
   name: "Configuration Save read denied",
 };
+
+export const DeployRepositoryRequired = story("deployRepositoryRequired");

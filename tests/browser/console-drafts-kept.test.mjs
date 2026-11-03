@@ -889,13 +889,16 @@ test("an uncertain Create outcome keeps no draft", async (t) => {
   const namespace = await fixture.createNamespace("Uncertain create", { ready: true });
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
+  let submissions = 0;
   await page.route(`**/namespaces/${namespace.id}/agents`, async (route, request) => {
     if (request.method() !== "POST") {
       await route.fallback();
       return;
     }
     // The Agent is created, but the answer does not say so: a retry could create another.
-    await route.fetch();
+    submissions += 1;
+    const saved = await route.fetch();
+    assert.equal(saved.status(), 201);
     await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "masked"));
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -903,8 +906,15 @@ test("an uncertain Create outcome keeps no draft", async (t) => {
   await enterManualModel(page, "synthetic-guard-model-key", "gpt-5.1");
   await page.getByLabel("Agent name", { exact: true }).fill("Uncertain Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByText(/^Outcome unknown\. The result could not be confirmed\./).waitFor();
+  await page
+    .getByText(
+      "We couldn't confirm whether your change was saved. Refresh the page and check before submitting it again.",
+    )
+    .waitFor();
   await expectNoKeptDraft(page);
+  assert.equal(submissions, 1, "inspection must not repeat the accepted create");
+  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents`);
+  assert.equal(saved.data.filter((agent) => agent.name === "Uncertain Agent").length, 1);
 });
 
 test("a refused read of an admitted provisioning job keeps no draft", async (t) => {

@@ -12,8 +12,9 @@ Use matching OpenShell 0.1.6 components and mandatory pre-credential middleware
 for [repository enrollment](repository-credentials/openshell-enrollment.md).
 A rollout or source registration alone does not establish enforcement. Missing
 request hooks are refused before credential release. Older or unqualified
-compositions can return `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`; do not broaden a
-ref-limited grant to bypass that error. The
+compositions can return `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`. Ask an
+administrator to enable protected Git access on this installation, then deploy
+again. Do not broaden a ref-limited grant to bypass that error. The
 [Credential Proxy reference](../reference/drivers/credential-proxy.md) describes
 the delivery contracts.
 

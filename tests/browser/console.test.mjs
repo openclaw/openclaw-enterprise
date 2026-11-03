@@ -1565,7 +1565,7 @@ const GOOGLE_EXCHANGE_REFUSED =
 const GOOGLE_PROVIDER_GONE =
   "Could not finish signing in with Google. Google sign-in is no longer available on this Installation. Use another sign-in method, or ask an Installation administrator.";
 const UNTRUSTED_ORIGIN_SIGN_IN =
-  "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
+  "Sign-in requires the Console's exact address, including http or https, hostname, and port. Ask your administrator for the Console sign-in link.";
 
 const UNCONFIRMED_PASSWORD_SIGN_IN =
   "Could not confirm whether sign-in completed. Reload the page to check your session before trying your password again.";
@@ -1720,6 +1720,7 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
   const answer = await refused;
   assert.equal(answer.status(), 403, await answer.text());
   await signingIn;
+  assert.equal(await page.getByRole("link", { name: "Open sign-in page" }).count(), 0);
   await page.unroute("**/api/auth/sign-in/email");
 
   for (const [response, expected] of [

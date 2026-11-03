@@ -248,7 +248,7 @@ function untrustedOrigin(error) {
   );
 }
 const untrustedOriginFailure =
-  "Sign-in was refused because this page was not opened from the console's configured address. Open the console from its configured URL and sign in there. If you did, ask an operator to check the console address setting (OCC_AUTH_BASE_URL) and any proxy in front of it.";
+  "Sign-in requires the Console's exact address, including http or https, hostname, and port. Ask your administrator for the Console sign-in link.";
 
 // A sign-in limit is not a refusal: an Installation administrator's correct password still
 // signs in while the limit applies, so the form stays usable and only says how long to wait.

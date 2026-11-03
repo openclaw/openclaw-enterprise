@@ -389,7 +389,7 @@ import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
 import { WorkClaimLostError, type ClaimedWork } from "./state/postgres-work-queue.ts";
 import {
   validAdmittedRepositoryBindings,
-  validRepositoryAccess,
+  repositoryAccessProblem,
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
 } from "./state/repository-credential-state.ts";
@@ -6431,7 +6431,7 @@ export class OpenClawController {
           .assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS))
           .catch((error: unknown) => {
             if (error instanceof CredentialProxyRepositoryOnlyError) {
-              throw error;
+              throw new CredentialProxyRepositoryOnlyError("deploy");
             }
           });
       }
@@ -6460,7 +6460,12 @@ export class OpenClawController {
       driver.sourceControl,
       AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       gitProfile,
-    );
+    ).catch((error: unknown) => {
+      if (repositoryGit === undefined && error instanceof CredentialProxyRepositoryOnlyError) {
+        throw new CredentialProxyRepositoryOnlyError("deploy");
+      }
+      throw error;
+    });
     if (gitAuthorization === "unavailable") {
       throw new DependencyUnavailableError(
         "The selected Credential Proxy did not confirm installation-wide repository access.",
@@ -15000,8 +15005,12 @@ export class OpenClawController {
         repositoryBindings: resolve(input.repositoryBindings),
       };
     }
-    if (input.repositoryBindings !== undefined || !validRepositoryAccess(input.repositoryAccess)) {
+    if (input.repositoryBindings !== undefined) {
       throw new RepositoryBindingSelectionError(RepositoryBindingSelectionError.accessOrBindings);
+    }
+    const problem = repositoryAccessProblem(input.repositoryAccess);
+    if (problem !== undefined) {
+      throw new RepositoryBindingSelectionError(problem);
     }
     const requested = input.repositoryAccess.repositories.map((entry) => ({
       repositoryRef: entry.repositoryRef,

@@ -602,7 +602,7 @@ const RUNTIME_LOG_FAILURES: Readonly<
   },
   RUNTIME_LOGS_RATE_LIMITED: {
     status: 429,
-    message: "Too many runtime log requests. Wait for Retry-After and try again.",
+    message: "Too many log requests. Try again shortly.",
   },
   RUNTIME_LOGS_CLUSTER_RBAC: {
     status: 503,
@@ -694,6 +694,19 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof RuntimeLogsError) {
     const mapped = RUNTIME_LOG_FAILURES[error.code];
+    if (
+      error.code === "RUNTIME_LOGS_RATE_LIMITED" &&
+      error.retryAfterSeconds !== undefined &&
+      Number.isFinite(error.retryAfterSeconds) &&
+      error.retryAfterSeconds > 0
+    ) {
+      const seconds = Math.ceil(error.retryAfterSeconds);
+      return failure(
+        mapped.status,
+        error.code,
+        `Too many log requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`,
+      );
+    }
     return failure(
       mapped.status,
       error.code,

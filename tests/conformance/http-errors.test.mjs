@@ -267,7 +267,7 @@ const cases = [
       status: 409,
       code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
       message:
-        "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Remove the binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.",
+        "This installation cannot enforce the Git access selected for this Agent. Ask an administrator to enable protected Git access before deploying. The selected Credential Proxy has no qualified Git sender.",
     },
   ],
   [
@@ -804,11 +804,7 @@ const cases = [
       "The requested Pod is not a current Pod of this Agent version and source.",
     ],
     ["RUNTIME_LOGS_SOURCE_UNAVAILABLE", 400, runtimeLogSourceUnavailable("such")],
-    [
-      "RUNTIME_LOGS_RATE_LIMITED",
-      429,
-      "Too many runtime log requests. Wait for Retry-After and try again.",
-    ],
+    ["RUNTIME_LOGS_RATE_LIMITED", 429, "Too many log requests. Try again shortly."],
     [
       "RUNTIME_LOGS_CLUSTER_RBAC",
       503,

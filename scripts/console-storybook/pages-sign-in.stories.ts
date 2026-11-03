@@ -26,3 +26,5 @@ export const GoogleAccountDisabled = { ...story("googleAccountDisabled") };
 export const RecoveryOnlyAccountDisabled = { ...story("recoveryOnlyAccountDisabled") };
 export const RecoveryOnlyProviderUnavailable = { ...story("recoveryOnlyProviderUnavailable") };
 export const ProviderDiscoveryUnavailable = { ...story("providerDiscoveryUnavailable") };
+
+export const LoginWrongOrigin = story("loginWrongOrigin");
