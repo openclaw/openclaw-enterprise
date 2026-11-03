@@ -305,7 +305,7 @@ push_turn first "$base_sha"
 ## 4. Verify the remote ref
 
 <AccordionGroup>
-<Accordion title="Console">
+<Accordion title="GitHub">
 
 Open the repository in GitHub. Select the generated branch, inspect the commit, and confirm its SHA matches `LOCAL_SHA` from the successful tool output. Confirm its parent is `base_sha`, it changes no files, and both author and committer match the verified App bot name and email. A chat reply alone does not prove a push. Use the CLI path for the optional renewal proof.
 
