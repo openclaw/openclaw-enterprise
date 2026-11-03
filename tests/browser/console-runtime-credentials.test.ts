@@ -1382,10 +1382,10 @@ async function saveOvertakesGrantRead(
   }
   // The save ends with a grant read still to come, so it does not point to Deploy yet. With the
   // app grant present, the save's own unheld recheck may already have settled and named Deploy.
-  const saveStatus = page
-    .locator("section.channel-secrets p.hint[role=status]")
-    .filter({ hasText: /^Channel Secret bindings saved\./ });
-  await saveStatus.waitFor();
+  const saveStatus = page.locator("section.channel-secrets p.hint[role=status]");
+  const saved = page.getByText(CHANNEL_SECRETS_SAVED, { exact: true });
+  const savedWithDeploy = page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY, { exact: true });
+  await saveStatus.and(saved.or(savedWithDeploy)).waitFor();
   if (!appGranted) {
     assert.equal(await saveStatus.textContent(), CHANNEL_SECRETS_SAVED);
   }
@@ -1405,7 +1405,7 @@ async function saveOvertakesGrantRead(
     const before = records(beforeRead.data, "Agent revisions before deploy");
     assert.equal(await deployStatus.textContent(), "Ready to deploy.");
     // With nothing left to hold Deploy, the save outcome names it as the next step.
-    await saveStatus.and(page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY, { exact: true })).waitFor();
+    await saveStatus.and(savedWithDeploy).waitFor();
     assert.equal(await saveStatus.textContent(), CHANNEL_SECRETS_SAVED_DEPLOY);
     const deployResponse = page.waitForResponse(
       (response) =>
