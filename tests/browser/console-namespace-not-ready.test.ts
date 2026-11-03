@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { createRequire } from "node:module";
+import type { Locator, Page, Response } from "playwright";
+
+import {
+  AgentResponse,
+  AgentSchema,
+  NamespaceListResponse,
+  PresetListResponse,
+  type AgentWire,
+  type NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
+import type { AccessBinding, Role } from "../../packages/contracts/src/index.ts";
+import type { Preset } from "../../packages/contracts/src/presets.ts";
 
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -35,6 +48,8 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 // statuses the API refuses for every new Agent disable creation.
 // The note must show the whole sentence. Absence checks keep a prefix, so a reworded or truncated
 // sentence still counts as present.
+// The test runner's Node supports this built-in; the tests' ES2022 library predates it.
+assert.ok("escape" in RegExp && typeof RegExp.escape === "function");
 const NOT_READY = new RegExp(RegExp.escape(CONSOLE_NAMESPACE_NOT_READY));
 const NOT_READY_PREFIX =
   /This Namespace is not ready yet\. Check its status on the Namespaces page/;
@@ -50,10 +65,31 @@ const WARNING = { className: "status", tone: "warning", role: "status" };
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
+const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
+const {
+  Check,
+}: {
+  Check: {
+    (schema: typeof NamespaceListResponse, value: unknown): value is NamespaceListResponse;
+    (schema: typeof PresetListResponse, value: unknown): value is PresetListResponse;
+    (schema: typeof AgentResponse, value: unknown): value is AgentResponse;
+    (schema: typeof AgentSchema, value: unknown): value is AgentWire;
+  };
+} = require("typebox/value");
+
+type NamespacePatch = Partial<Pick<NamespaceWire, "status" | "existingNamespace">> | null;
 
 // A bootstrapped Installation: its only Namespace is "default", still provisioning, plus any
 // named ones (also provisioning).
-async function firstRun(t, names = [], fixtureOptions = {}) {
+async function firstRun(
+  t: TestContext,
+  names: readonly string[] = [],
+  fixtureOptions: {
+    computeDriver?: SshComputeDriver;
+    state?: InMemoryPlatformState;
+    defaultPresets?: readonly Pick<Preset, "name" | "template">[];
+  } = {},
+) {
   const fixture = await createConsoleAppFixture(t, fixtureOptions);
   await fixture.bootstrap();
   for (const name of names) {
@@ -61,19 +97,31 @@ async function firstRun(t, names = [], fixtureOptions = {}) {
   }
   const listed = await fixture.request("GET", "/namespaces");
   assert.equal(listed.status, 200);
-  const namespaces = Object.fromEntries(listed.data.map((item) => [item.name, item]));
-  assert.equal(namespaces.default.status, "provisioning");
-  assert.equal(namespaces.default.existingNamespace, undefined);
-  return { fixture, namespaces };
+  const body: unknown = listed.body;
+  assert.ok(Check(NamespaceListResponse, body), "expected a Namespace list from the controller");
+  const namespaces = new Map(body.data.map((item) => [item.name, item]));
+  const namespaceNamed = (name: string) => {
+    const namespace = namespaces.get(name);
+    assert.ok(namespace, `expected the fixture Namespace ${name}`);
+    return namespace;
+  };
+  const defaultNamespace = namespaceNamed("default");
+  assert.equal(defaultNamespace.status, "provisioning");
+  assert.equal(defaultNamespace.existingNamespace, undefined);
+  return { fixture, namespaceNamed };
 }
 
 // Answers GET /namespaces from the real API with the listed Namespaces' fields replaced; a null
 // patch leaves the Namespace out, as a list read after it was deleted or access was removed.
-async function reportNamespaces(page, patches) {
+async function reportNamespaces(page: Page, patches: ReadonlyMap<string, NamespacePatch>) {
   await page.route(
     (url) => url.pathname === "/namespaces",
     (route) =>
-      fulfillPatchedJson(route, (body) => {
+      fulfillPatchedJson(route, (body: unknown) => {
+        assert.ok(
+          Check(NamespaceListResponse, body),
+          "expected a Namespace list from the controller",
+        );
         body.data = body.data
           .filter((item) => patches.get(item.id) !== null)
           .map((item) => (patches.has(item.id) ? { ...item, ...patches.get(item.id) } : item));
@@ -90,6 +138,7 @@ test("a first run's provisioning Namespace names its status and still offers dra
   await view.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
   const noteBlock = view.getByRole("status").filter({ hasText: NOT_READY });
   const note = await noteBlock.textContent();
+  assert.ok(note);
   assert.match(note, /^Namespace status: Provisioning\. /);
   assert.ok(note.endsWith(` ${DRAFTS}`), note);
   assert.deepEqual(await statusTone(noteBlock), WARNING);
@@ -103,16 +152,16 @@ test("a first run's provisioning Namespace names its status and still offers dra
 });
 
 test("Create Agent names a provisioning Namespace's status before any start", async (t) => {
-  const { fixture, namespaces } = await firstRun(t);
+  const { fixture, namespaceNamed } = await firstRun(t);
   const { page } = await newPage(t, fixture, { browser });
   // An Installation that provisions Dedicated Agents as they are created.
   await routeInstallationProvisioning(page, fixture);
-  await login(page, fixture, `/console/agents/new?namespace=${namespaces.default.id}`);
+  await login(page, fixture, `/console/agents/new?namespace=${namespaceNamed("default").id}`);
   const view = page.locator(settledView);
   const start = view.getByRole("button", { name: "Start without Preset" });
   await start.waitFor();
   const note = view.getByRole("status").filter({ hasText: NOT_READY });
-  assert.match(await note.textContent(), /^Namespace status: Provisioning\. /);
+  assert.match((await note.textContent()) ?? "", /^Namespace status: Provisioning\. /);
   // The note comes before the start controls in reading order.
   const startHandle = await start.elementHandle();
   assert.equal(
@@ -133,7 +182,7 @@ test("Create Agent names a provisioning Namespace's status before any start", as
   await start.click();
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
   const formNote = view.getByRole("status").filter({ hasText: NOT_READY });
-  assert.match(await formNote.textContent(), /^Namespace status: Provisioning\. /);
+  assert.match((await formNote.textContent()) ?? "", /^Namespace status: Provisioning\. /);
   assert.deepEqual(await statusTone(formNote), WARNING);
   await view
     .getByText(
@@ -180,7 +229,7 @@ test("a provisioning Namespace saves an Agent draft from a seeded runtime-auth P
     },
     network: { gatewayPortRange: { start: 18800, end: 18899 } },
   });
-  const preset = {
+  const preset: Pick<Preset, "name" | "template"> = {
     name: "Operator-managed credentials",
     template: {
       agent: {
@@ -191,14 +240,17 @@ test("a provisioning Namespace saves an Agent draft from a seeded runtime-auth P
       configuration: { values: nativeValues("provisioning-draft") },
     },
   };
-  const { fixture, namespaces } = await firstRun(t, [], {
+  const { fixture, namespaceNamed } = await firstRun(t, [], {
     computeDriver,
     state: new InMemoryPlatformState(),
     defaultPresets: [preset],
   });
-  const namespace = namespaces.default;
+  const namespace = namespaceNamed("default");
   const seeded = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
-  const seededPreset = seeded.data.find((item) => item.name === preset.name);
+  assert.equal(seeded.status, 200);
+  const presetList: unknown = seeded.body;
+  assert.ok(Check(PresetListResponse, presetList), "expected a Preset list from the controller");
+  const seededPreset = presetList.data.find((item) => item.name === preset.name);
   assert.ok(seededPreset, "Namespace creation seeds the Installation's Presets");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
@@ -216,20 +268,26 @@ test("a provisioning Namespace saves an Agent draft from a seeded runtime-auth P
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await created;
   assert.equal(response.status(), 201);
-  assert.deepEqual((await response.json()).data.harnessAuth, { method: "runtime" });
+  const body: unknown = await response.json();
+  assert.ok(Check(AgentResponse, body), "expected the created Agent from the controller");
+  assert.deepEqual(body.data.harnessAuth, { method: "runtime" });
   assert.equal(secretPostRequests(requests, namespace.id).length, 0);
 });
 
 test("a Namespace that takes no new Agent disables Create Agent with its reason", async (t) => {
   // A provisioning Namespace that adopts an existing Kubernetes namespace takes no Configuration
   // until it is ready.
-  const { fixture, namespaces } = await firstRun(t);
+  const { fixture, namespaceNamed } = await firstRun(t);
   const { page } = await newPage(t, fixture, { browser });
-  await reportNamespaces(page, new Map([[namespaces.default.id, { existingNamespace: "team-a" }]]));
+  await reportNamespaces(
+    page,
+    new Map([[namespaceNamed("default").id, { existingNamespace: "team-a" }]]),
+  );
   await login(page, fixture, "/console/");
   const view = page.locator(settledView);
   await view.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
   const note = await view.getByRole("status").filter({ hasText: NOT_READY }).textContent();
+  assert.ok(note);
   assert.match(note, /^Namespace status: Provisioning\. /);
   assert.ok(!note.includes(DRAFTS), note);
   const create = view.getByRole("button", { name: "Create Agent" });
@@ -239,11 +297,11 @@ test("a Namespace that takes no new Agent disables Create Agent with its reason"
   await view.getByText("You can create Agents here once this Namespace is ready.").waitFor();
 
   await page.goto(
-    new URL(`/console/agents/new?namespace=${namespaces.default.id}`, fixture.origin).href,
+    new URL(`/console/agents/new?namespace=${namespaceNamed("default").id}`, fixture.origin).href,
   );
   await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
   const panelNote = view.getByRole("status").filter({ hasText: NOT_READY });
-  assert.match(await panelNote.textContent(), /^Namespace status: Provisioning\. /);
+  assert.match((await panelNote.textContent()) ?? "", /^Namespace status: Provisioning\. /);
   assert.deepEqual(await statusTone(panelNote), WARNING);
   assert.equal(await view.getByRole("button", { name: "Start without Preset" }).count(), 0);
   assert.equal(await page.getByRole("dialog").count(), 0);
@@ -251,13 +309,13 @@ test("a Namespace that takes no new Agent disables Create Agent with its reason"
 
 test("a deleting Namespace is never the default pick while another remains", async (t) => {
   // Sorted by name, the deleting Namespace comes first; none is ready.
-  const { fixture, namespaces } = await firstRun(t, ["alpha"]);
+  const { fixture, namespaceNamed } = await firstRun(t, ["alpha"]);
   const { page } = await newPage(t, fixture, { browser });
-  await reportNamespaces(page, new Map([[namespaces.alpha.id, { status: "deleting" }]]));
+  await reportNamespaces(page, new Map([[namespaceNamed("alpha").id, { status: "deleting" }]]));
   await login(page, fixture, "/console/");
   await page.locator(settledView).getByRole("heading", { name: "No Agents yet" }).waitFor();
   await page.getByText("Namespace · default", { exact: true }).waitFor();
-  assert.equal(new URL(page.url()).searchParams.get("namespace"), namespaces.default.id);
+  assert.equal(new URL(page.url()).searchParams.get("namespace"), namespaceNamed("default").id);
 });
 
 // Deleting and failed Namespaces take no new Agent and neither becomes ready by waiting; each
@@ -271,17 +329,17 @@ const UNAVAILABLE = [
     "failed",
     "Namespace status: Failed. Provisioning this Namespace failed, so it cannot hold new Agents. Ask an operator to check it on the Namespaces page, or choose another Namespace.",
   ],
-];
+] as const;
 
 for (const [status, reason] of UNAVAILABLE) {
   test(`with only a ${status} Namespace, the pick names it and offers no wait`, async (t) => {
-    const { fixture, namespaces } = await firstRun(t);
+    const { fixture, namespaceNamed } = await firstRun(t);
     const { page } = await newPage(t, fixture, { browser });
-    await reportNamespaces(page, new Map([[namespaces.default.id, { status }]]));
+    await reportNamespaces(page, new Map([[namespaceNamed("default").id, { status }]]));
     await login(page, fixture, "/console/");
     const view = page.locator(settledView);
     await view.getByRole("heading", { name: "No Agents yet" }).waitFor();
-    const note = view.getByRole("status").filter({ hasText: reason.split(".")[0] });
+    const note = view.getByRole("status").filter({ hasText: reason.split(".")[0] ?? reason });
     assert.equal(await note.textContent(), reason);
     await view.getByText("Agents cannot be created in this Namespace.").waitFor();
     assert.equal(await view.getByText(INVITATION).count(), 0);
@@ -293,7 +351,7 @@ for (const [status, reason] of UNAVAILABLE) {
 
     // Create Agent itself refuses to start, with the same reason.
     await page.goto(
-      new URL(`/console/agents/new?namespace=${namespaces.default.id}`, fixture.origin).href,
+      new URL(`/console/agents/new?namespace=${namespaceNamed("default").id}`, fixture.origin).href,
     );
     await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
     assert.equal(await view.getByRole("status").filter({ hasText: reason }).count(), 1);
@@ -305,7 +363,9 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
   const { page } = await newPage(t, fixture, { browser });
   // The Namespace reads as an adopted, provisioning one until it is released.
-  const patches = new Map([[namespace.id, { status: "provisioning", existingNamespace: "team" }]]);
+  const patches = new Map<string, NamespacePatch>([
+    [namespace.id, { status: "provisioning", existingNamespace: "team" }],
+  ]);
   await reportNamespaces(page, patches);
   await routeInstallationProvisioning(page, fixture);
   const view = page.locator(settledView);
@@ -344,14 +404,14 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
   const { page } = await newPage(t, fixture, { browser });
   await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
-  const patches = new Map([[namespace.id, { status: "provisioning" }]]);
+  const patches = new Map<string, NamespacePatch>([[namespace.id, { status: "provisioning" }]]);
   await reportNamespaces(page, patches);
   await routeInstallationProvisioning(page, fixture);
   const view = page.locator(settledView);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   await view.getByText(DRAFT_INVITATION).waitFor();
-  const reads = [];
+  const reads: Response[] = [];
   page.on("response", (response) => {
     if (new URL(response.url()).pathname === "/namespaces") {
       reads.push(response);
@@ -369,7 +429,7 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   // A hidden tab reads nothing. Only the property changes, so the page's own visibility
   // recheck stays out of this.
-  const hidden = (value) =>
+  const hidden = (value: boolean) =>
     page.evaluate((shown) => {
       Object.defineProperty(globalThis.document, "hidden", {
         configurable: true,
@@ -411,18 +471,18 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
 
 // The Agents list waiting on a provisioning Namespace, with the page clock held: `poll()` runs one
 // check and waits for its read to arrive, so its answer, not the absence of one, is what shows.
-async function waitingList(t) {
+async function waitingList(t: TestContext) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
   const { page } = await newPage(t, fixture, { browser });
   await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
-  const patches = new Map([[namespace.id, { status: "provisioning" }]]);
+  const patches = new Map<string, NamespacePatch>([[namespace.id, { status: "provisioning" }]]);
   await reportNamespaces(page, patches);
   await routeInstallationProvisioning(page, fixture);
   const view = page.locator(settledView);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   await view.getByText(DRAFT_INVITATION).waitFor();
-  const reads = [];
+  const reads: number[] = [];
   page.on("response", (response) => {
     if (new URL(response.url()).pathname === "/namespaces") {
       reads.push(response.status());
@@ -449,7 +509,7 @@ async function waitingList(t) {
     assert.equal(requested, settled);
   };
   const create = view.getByRole("button", { name: "Create Agent" });
-  const set = (patch) => patches.set(namespace.id, patch);
+  const set = (patch: NamespacePatch) => patches.set(namespace.id, patch);
   return { fixture, namespace, page, view, reads, poll, assertStopped, create, set };
 }
 
@@ -459,7 +519,7 @@ async function waitingList(t) {
 for (const [status, reason] of [
   ["failed", "Namespace status: Failed. Provisioning this Namespace failed"],
   ["deleting", "Namespace status: Deleting. This Namespace is being deleted"],
-]) {
+] as const) {
   test(`the Agents list turns its gate off when its Namespace turns ${status}`, async (t) => {
     const { view, poll, assertStopped, create, set } = await waitingList(t);
     assert.equal(await create.isEnabled(), true);
@@ -502,7 +562,7 @@ test("the Agents list keeps checking its Namespace after a failed read", async (
   const { page, view, reads, poll, create, set } = await waitingList(t);
   // An unchanged answer leaves the note as it is: the same node, not announced again.
   const note = view.getByRole("status").filter({ hasText: NOT_READY });
-  await note.evaluate((node) => {
+  await note.evaluate((node: HTMLElement) => {
     node.dataset.kept = "";
   });
   await poll();
@@ -549,13 +609,17 @@ const WAITS =
   "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then.";
 const READY_PLAN = "Dedicated Agents are provisioned and deployed when created.";
 
-async function openGatedForm(t, { fixture, namespace }, { clock = false } = {}) {
+async function openGatedForm(
+  t: TestContext,
+  { fixture, namespace }: Awaited<ReturnType<typeof createReadyConsoleNamespace>>,
+  { clock = false } = {},
+) {
   const { page } = await newPage(t, fixture, { browser });
   if (clock) {
     await page.clock.install({ time: new Date("2026-10-19T12:00:00Z") });
   }
   // The Namespace reads as provisioning, and takes drafts, until it is released.
-  const patches = new Map([[namespace.id, { status: "provisioning" }]]);
+  const patches = new Map<string, NamespacePatch>([[namespace.id, { status: "provisioning" }]]);
   await reportNamespaces(page, patches);
   await routeInstallationProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -568,14 +632,14 @@ async function openGatedForm(t, { fixture, namespace }, { clock = false } = {}) 
   // The reader is mid-edit: the caret sits inside the typed name.
   const name = view.getByLabel("Agent name");
   await name.fill("Probe Agent");
-  await name.evaluate((input) => input.setSelectionRange(5, 5));
+  await name.evaluate((input: HTMLInputElement) => input.setSelectionRange(5, 5));
   return { page, view, create, name, release: () => patches.delete(namespace.id) };
 }
 
-async function assertDraftIntact(name) {
+async function assertDraftIntact(name: Locator) {
   assert.equal(await name.inputValue(), "Probe Agent");
   assert.deepEqual(
-    await name.evaluate((input) => [
+    await name.evaluate((input: HTMLInputElement) => [
       globalThis.document.activeElement === input,
       input.selectionStart,
       input.selectionEnd,
@@ -637,7 +701,7 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
     await view.getByRole("button", { name: "Start without Preset" }).click();
     await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
     await view.getByText(WAITS, { exact: true }).waitFor();
-    const reads = [];
+    const reads: Response[] = [];
     page.on("response", (response) => {
       if (new URL(response.url()).pathname === "/namespaces") {
         reads.push(response);
@@ -661,9 +725,14 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
 for (const reader of [false, true]) {
   for (const width of [1440, 390]) {
     test(`idle collection removes revoked Namespace rows for ${reader ? "reader" : "admin"} at ${width}px`, async (t) => {
-      const { fixture, namespaces } = await firstRun(t, ["Idle collection"]);
-      const namespace = namespaces["Idle collection"];
-      const agent = await fixture.createAgent(namespace.id, "Private draft", nativeValues("idle"));
+      const { fixture, namespaceNamed } = await firstRun(t, ["Idle collection"]);
+      const namespace = namespaceNamed("Idle collection");
+      const agent: unknown = await fixture.createAgent(
+        namespace.id,
+        "Private draft",
+        nativeValues("idle"),
+      );
+      assert.ok(Check(AgentSchema, agent), "expected the fixture's Private draft");
       const member = reader
         ? await fixture.createNamespaceMember("idle-reader", namespace.id, AGENT_READ)
         : null;
@@ -716,8 +785,8 @@ for (const reader of [false, true]) {
 for (const kind of ["stop", "delete"]) {
   for (const outcome of ["unsubmitted", "accepted", "unknown", "failed", "expired", "previous"]) {
     test(`collection ${kind} dialog closes on Namespace loss with ${outcome} request`, async (t) => {
-      const { fixture, namespaces } = await firstRun(t, ["Dialog race"]);
-      const namespace = namespaces["Dialog race"];
+      const { fixture, namespaceNamed } = await firstRun(t, ["Dialog race"]);
+      const namespace = namespaceNamed("Dialog race");
       const { page } = await newPage(t, fixture, { browser });
       await page.clock.install();
       const initial = await holdRequests(t, page, (url) => url.pathname === "/namespaces", {
@@ -726,12 +795,20 @@ for (const kind of ["stop", "delete"]) {
       });
       const opening = login(page, fixture, `/console/agents?namespace=${namespace.id}`);
       await initial.requested;
-      const admin = fixture.policy.roles.find((role) => role.name === "Installation administrator");
-      const actor = fixture.policy.bindings.find(
-        (binding) => binding.roleId === admin.id,
-      ).subjectId;
-      await fixture.controller.handleNamespaceLifecycle(actor, namespace.id, "ready");
-      const agent = await fixture.createAgent(namespace.id, "Dialog Agent", nativeValues("dialog"));
+      const roles: readonly Role[] = fixture.policy.roles;
+      const bindings: readonly AccessBinding[] = fixture.policy.bindings;
+      const admin = roles.find((role) => role.name === "Installation administrator");
+      assert.ok(admin);
+      const binding = bindings.find((candidate) => candidate.roleId === admin.id);
+      assert.ok(binding);
+      assert.ok(fixture.controller);
+      await fixture.controller.handleNamespaceLifecycle(binding.subjectId, namespace.id, "ready");
+      const agent: unknown = await fixture.createAgent(
+        namespace.id,
+        "Dialog Agent",
+        nativeValues("dialog"),
+      );
+      assert.ok(Check(AgentSchema, agent), "expected the fixture's Dialog Agent");
       await fixture.seedActiveAgentRevision(namespace.id, agent.id);
       initial.release();
       await opening;
@@ -757,8 +834,8 @@ for (const kind of ["stop", "delete"]) {
           writes += 1;
         }
       });
-      let mutation;
-      let priorRequestId;
+      let mutation: Awaited<ReturnType<typeof holdRequests>> | undefined;
+      let priorRequestId: string | undefined;
       if (outcome === "failed" || outcome === "previous") {
         revokeAdministratorGrant(fixture, [kind === "stop" ? "operate" : "delete", "agent"]);
       }
@@ -774,6 +851,7 @@ for (const kind of ["stop", "delete"]) {
         await confirm.click();
         const response = await mutation.requested;
         if (outcome !== "expired") {
+          assert.ok(response);
           assert.equal(
             response.status(),
             outcome === "failed" || outcome === "previous" ? 403 : 202,
@@ -834,6 +912,7 @@ for (const kind of ["stop", "delete"]) {
         return;
       }
       const visible = await page.locator("body").textContent();
+      assert.ok(visible !== null);
       assert.equal(visible.includes(agent.name), false);
       assert.equal(visible.includes(agent.id), false);
       assert.equal(visible.includes("Request ID:"), false);
