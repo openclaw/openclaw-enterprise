@@ -22,15 +22,13 @@ existing installation, follow the
 
 ## Prerequisites
 
-Check these before qualifying a protected release; each one can stop Git or the Agent:
+Check these before qualifying a release:
 
-- **Kernel.** The Driver requires Landlock (`hard_requirement`), and Sandboxes need
-  Landlock ABI v3 or later, Linux 6.2 or newer. A node on an older kernel, such as
-  the 5.15 kernel of Ubuntu 22.04, fails Sandbox startup.
-- **Supervisor trust.** The OpenShell supervisor makes its own TLS connections to
-  GitHub and the model endpoint, using its image's CA bundle. If a private CA or a
-  TLS-inspecting proxy sits on either path, use a supervisor image that trusts that
-  CA; otherwise the model probe times out and Git requests fail.
+- **Kernel.** The Driver requires Landlock (`hard_requirement`). Sandboxes need ABI
+  v3 or later and Linux 6.2 or newer. Ubuntu 22.04's 5.15 kernel cannot start them.
+- **Supervisor trust.** The supervisor uses its image's CA bundle for GitHub and
+  model TLS. Include any private or intercepting CA in that image; otherwise model
+  probes time out and Git requests fail.
 - **Unattended commands.** With
   `plugins.entries.codex.config.appServer.approvalPolicy: on-request` and no
   approver, Codex declines the shell commands it asks about, so Git never runs. For
@@ -40,15 +38,17 @@ Check these before qualifying a protected release; each one can stop Git or the 
 
 <a id="install-without-the-repository-broker"></a>
 
-Select Kubernetes Compute, dedicated Codex, and Sandbox and Credential Proxy
-from one Driver registration. Use
-[Installation configuration](../../../deploy/examples/repository-credentials/openshell.fragment.yaml);
-declare [artifact rules](../drivers/openshell-sandbox.md#protected-codex-artifact-rules).
-Keep `repository.preparedGitHub`, `repository.openShell`, the session duration,
-and the GitHub Backend registry at `/etc/openclaw/repository-registry/registry.json`.
-Omit `controlSocket`, `publicCaPath`, and `repository.nativeSender`. Remove
-`network.repositoryCredentials` from the Compute configuration: startup refuses it
-without `repository.nativeSender`.
+Select Kubernetes Compute, dedicated Codex, Sandbox and Credential Proxy from one
+Driver registration. Use
+[Installation configuration](../../../deploy/examples/repository-credentials/openshell.fragment.yaml) and
+[artifact rules](../drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+Set repository eligibility in the GitHub Backend registry at
+`/etc/openclaw/repository-registry/registry.json`. Keep the session duration and
+`repository.preparedGitHub` for prepared credentials. Connect the selected Driver
+with `repository.openShell` and Helm `openshellGit`. Omit `controlSocket`,
+`publicCaPath`, and `repository.nativeSender`.
+Remove Compute's `network.repositoryCredentials`: startup refuses it without
+`repository.nativeSender`.
 
 Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`,
 `repositoryCredentials.enabled: false`, and
@@ -120,11 +120,12 @@ combined production values, then use your normal Helm upgrade procedure.
 ## Register the request-phase service
 
 Use matching stock OpenShell 0.1.6 Gateway and supervisor images for required
-request bindings. The adapter uses static operator middleware configuration. Add the following entry
-to the Gateway configuration, using the certificate's exact Service DNS name.
-Mount the serving CA's public certificate at `tls_ca_cert_path` on the Gateway.
-Its existing `[openshell.gateway.gateway_jwt]` must be configured with signing key,
-public key, key ID and gateway ID matching the OCE verifier settings.
+request bindings. Register this middleware so OpenShell can enforce OCE's
+decisions; [grant repository access separately](#grant-access-to-a-github-app-installation).
+Use the certificate's exact Service DNS name and mount the serving CA's public
+certificate at `tls_ca_cert_path` on the Gateway. Its
+`[openshell.gateway.gateway_jwt]` signing key, public key, key ID and gateway ID
+must match the OCE verifier settings.
 
 ```toml
 [[openshell.supervisor.middleware]]

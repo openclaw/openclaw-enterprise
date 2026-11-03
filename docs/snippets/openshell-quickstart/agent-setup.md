@@ -128,7 +128,27 @@ Continue when the deployment reports `succeeded` and the Agent's `activeRevision
 
 ## 7. Complete onboarding in the Control UI
 
-Use **Open Agent UI** for this same Agent. In a fresh workspace, confirm `BOOTSTRAP.md` exists before sending a prompt. Give the Agent a name and one unique preference to remember, and ask it to complete onboarding and save them in its workspace. In the Console **Workspace** tab, confirm `IDENTITY.md` and `USER.md` changed and `BOOTSTRAP.md` was removed.
+Before sending the first prompt, use the operator shell to check the bootstrap file in this Agent's workspace. This check needs permission to list Pods and execute a command in the tenant namespace.
+
+```bash
+revision=$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)
+agent_pod=$(kube -n "${TENANT_NAMESPACE:?}" get pods \
+  -l "openclaw.dev/agent=$agent,openclaw.dev/revision=${revision:?}" -o json |
+  jq -er '[.items[] | select(.metadata.deletionTimestamp == null and
+    any(.status.containerStatuses[]?; .name == "agent" and .ready))] |
+    select(length == 1) | first.metadata.name')
+workspace_check() {
+  kube -n "$TENANT_NAMESPACE" exec "$agent_pod" -c agent -- sh -c \
+    'cd /sandbox/enterprise && test -x . && test "$@"' sh "$@"
+}
+workspace_check -f BOOTSTRAP.md
+```
+
+Use **Open Agent UI** for the same Agent. Give it a name and one unique preference to remember. Ask it to complete onboarding and save them in its workspace. In the Console **Workspace** tab, open `IDENTITY.md` and `USER.md` and verify the saved values. Back in the operator shell, confirm the Agent removed the bootstrap file:
+
+```bash
+workspace_check ! -e BOOTSTRAP.md
+```
 
 Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen **Open Agent UI**, and select the **same conversation** in chat history. Ask for the saved preference without including its value in the prompt. Check the response against the original value. Retain the conversation's browser path with the private session record.
 

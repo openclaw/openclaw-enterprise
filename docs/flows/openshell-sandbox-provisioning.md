@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-01
-last_updated_session: authoring-run/4063742f-8365-4098-b623-c6d59626a0ce
+updated: 2026-11-03
+last_updated_session: authoring-run/1a111804-4886-49c8-b16b-bf3d756a0216
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -218,7 +218,8 @@ Landlock is required. Unsupported enums, inherited keys, `passthrough` TLS,
 missing executable paths and invalid readiness `timeoutMs` prevent Kubernetes
 calls; the timeout must be a positive safe integer. Duplicate names and
 `workspace-node-enrollment` prevent construction. The Gateway rejects template
-Pod labels absent from `allowed_pod_labels`.
+Pod labels absent from `allowed_pod_labels`; that refusal
+(`SANDBOX_POD_LABELS_NOT_PERMITTED`) fails the deployment at once.
 
 `provisionHarness` creates or adopts the provider. Renewal checks its version
 and updates only `node_setup_json` through `UpdateProvider`. Codex route exposure
@@ -424,6 +425,6 @@ live provider removal or Kubernetes concurrency; that combined proof remains unr
 
 ## Changelog
 
-- 2026-11-01 08:39: Preserve NetworkPolicy ingress restrictions through journal creation and updates when integrating main. (authoring-run/4063742f-8365-4098-b623-c6d59626a0ce - 1cae053ef4e6c6772136be0681a11cf72c85f222)
+- 2026-11-03 08:34: Preserve cleanup and Pod-label refusals. (authoring-run/1a111804-4886-49c8-b16b-bf3d756a0216 - 720dbad2180c451679bba0dd0e5a4911e4754eb7)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

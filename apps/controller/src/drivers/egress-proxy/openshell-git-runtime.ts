@@ -15,8 +15,8 @@ import type {
   SandboxRepositoryAccess,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
-import type { startPreparedGitHubGitOwner } from "../../backends/repository-credentials/prepared-git-owner.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
+import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
 import type {
   RepositoryGitDeliveryResolver,
@@ -90,7 +90,6 @@ export interface OpenShellGitRuntimeConfiguration {
   readonly observedHookPreviewWorkspace?: string;
   readonly authority: EgressAuthorityConfiguration;
 }
-type GitOwner = Awaited<ReturnType<typeof startPreparedGitHubGitOwner>>;
 type ReadMaterial = ProtectedRepositoryGitAuthority["online"]["readMaterial"];
 type MaterialReader = {
   readOpenShellMaterial(
@@ -109,7 +108,6 @@ type MaterialReader = {
 type OnlineGitOwner = MaterialReader & {
   authorizeOnlineRequest: NonNullable<OpenShellOnlineGitAuthorityOptions["authorizeOnlineRequest"]>;
 };
-type Owner = OnlineGitOwner | (MaterialReader & Pick<GitOwner, "authorizeOpenShellRequest">);
 
 /** The bundled sender cannot honor an exact-send permit. Both calls use only the online port. */
 export function protectedOpenShellGitOwner(
@@ -204,8 +202,6 @@ export function openShellGitRouteReadiness(
   }
   return "pending";
 }
-
-export type OpenShellGitRuntimeEmit = (event: Readonly<Record<string, unknown>>) => void;
 
 interface Entry extends OpenShellGitObservationEntry {
   continuityDiagnosticReported?: true;
@@ -449,8 +445,8 @@ export class OpenShellGitRuntime {
   private readonly unsentBootstraps = new Map<string, number>();
   /** One reconcile pass's read budget; a provider write has its own deadline. */
   private observeTimeoutMs = OBSERVE_TIMEOUT_MS;
-  private owner: Owner | undefined;
-  private emit: OpenShellGitRuntimeEmit | undefined;
+  private owner: OnlineGitOwner | undefined;
+  private emit: RepositoryTransportEmit | undefined;
   private routes: OpenShellGitRouteStore | undefined;
   /** This worker process, as the persisted routes name their holder. */
   private readonly instance = randomUUID();
@@ -2313,7 +2309,7 @@ export class OpenShellGitRuntime {
   }
 
   /** Composition supplies this Driver's store. Neither the pool nor this store is a sender port. */
-  connectRouteStore(pool: PostgresPool, emit?: OpenShellGitRuntimeEmit): OpenShellGitRouteStore {
+  connectRouteStore(pool: PostgresPool, emit?: RepositoryTransportEmit): OpenShellGitRouteStore {
     this.routes = new PostgresOpenShellGitRouteStore(pool);
     this.emit = emit;
     return this.routes;
@@ -2337,8 +2333,8 @@ export class OpenShellGitRuntime {
    * re-adopts it (finding 2128); without it a restart requires a new revision.
    */
   async start(
-    owner: Owner,
-    emit?: OpenShellGitRuntimeEmit,
+    owner: OnlineGitOwner,
+    emit?: RepositoryTransportEmit,
     routes?: OpenShellGitRouteStore,
   ): Promise<void> {
     if (this.owner || this.stopped.signal.aborted) {
@@ -2386,9 +2382,7 @@ export class OpenShellGitRuntime {
         });
         return binding ?? (refused === undefined ? undefined : { refused });
       },
-      ...("authorizeOnlineRequest" in owner
-        ? { authorizeOnlineRequest: owner.authorizeOnlineRequest }
-        : { approve: owner.authorizeOpenShellRequest }),
+      authorizeOnlineRequest: owner.authorizeOnlineRequest,
       onDeny: (denial) => {
         this.emit?.({ event: "worker.openshell-git-denied", ...denial });
       },

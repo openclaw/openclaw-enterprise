@@ -8,6 +8,10 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-01 08:39: Preserve NetworkPolicy ingress restrictions through journal creation and updates when integrating main. (authoring-run/4063742f-8365-4098-b623-c6d59626a0ce - 1cae053ef4e6c6772136be0681a11cf72c85f222)
+
+- 2026-10-21 23:00: Fail a Gateway Pod-label refusal permanently instead of retrying it as an outage. (authoring-run/016ma8eD5SYoBTV5kswEV3Dn - 6d8d23457)
+
 - 2026-10-30 16:38: Merge online Git startup with durable Namespace cleanup in the accompanying main merge. (authoring-run/1ef4bc7c-b32a-46c2-91a8-84483e88bbe7 - 75ac1fa63ed75ea1f7493d7172f02ddbb497f51b)
 
 - 2026-10-30 16:09: Preserve capability-based repository admission while integrating patched runtime provenance. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
