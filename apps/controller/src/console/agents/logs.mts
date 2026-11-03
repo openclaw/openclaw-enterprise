@@ -292,6 +292,51 @@ export function renderAgentLogs(
         : []),
     );
   }
+  // The latest deployment's failure, from the Agent page's recovery card. That card sits above
+  // the tabs, about 700 px above this view at phone width, so a redeploy from elsewhere that
+  // failed while Logs stayed open said nothing here (finding 2993). It is drawn in place, without
+  // moving focus or scrolling, and only when it changes, so a reader on its link keeps focus.
+  const deploymentFailureNotice = element("div", {
+    className: "log-deployment-failure",
+    role: "status",
+  });
+  let deploymentFailureShown: string | null = null;
+  function showDeploymentFailure(
+    failure: { revisionId: string; text: string; link: HTMLElement } | null,
+  ) {
+    const key = failure ? JSON.stringify([failure.revisionId, failure.text]) : null;
+    if (!current() || key === deploymentFailureShown) {
+      return;
+    }
+    deploymentFailureShown = key;
+    deploymentFailureNotice.replaceChildren(
+      ...(failure
+        ? [statusBlock("danger", null, failure.text, [failure.link], { role: null })]
+        : []),
+    );
+  }
+  // A stop, or another version selected for service, from the Agent page. A version the reader
+  // cannot read gets no runtime status, so a stop made elsewhere showed only in the page summary,
+  // off-screen above this view at phone width (finding 3012). The words come from the summary and
+  // say nothing more about the version. Drawn in place and only when they change, so the status
+  // is announced once, not on every poll.
+  const servingChangeNotice = element("div", {
+    className: "log-serving-change",
+    role: "status",
+  });
+  let servingChangeShown: string | null = null;
+  function showServingChange(text: string | null) {
+    void versionRead.then((readable) => {
+      const shown = readable === false ? text : null;
+      if (!current() || shown === servingChangeShown) {
+        return;
+      }
+      servingChangeShown = shown;
+      servingChangeNotice.replaceChildren(
+        ...(shown ? [statusBlock("info", null, shown, [], { role: null })] : []),
+      );
+    });
+  }
   function showStripStatus(text: string) {
     setText(stripObserved, "");
     stripStatus.textContent = text;
@@ -712,6 +757,23 @@ export function renderAgentLogs(
     return runtimeStatusDenied({ operate, versionRead: await versionRead });
   }
 
+  // A remembered status denial is never asked again on a timer: each ask is an audited denial.
+  // Its view still rereads the Agent, which needs neither operate nor a version read: with no
+  // poll, a stop or redeploy made elsewhere showed only after a refocus (finding 3005). Two loads
+  // that both took the denial schedule one poll.
+  function pollAgent() {
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => {
+      if (!current()) {
+        return;
+      }
+      if (!document.hidden) {
+        void showRunningVersion(true);
+      }
+      pollAgent();
+    }, STATUS_POLL_MS);
+  }
+
   async function loadStatus() {
     clearTimeout(statusTimer);
     if (!current()) {
@@ -755,18 +817,28 @@ export function renderAgentLogs(
         deniedStatusViews.set(statusKey, operate);
         showStripStatus(revokedStatusViews.has(statusKey) ? STATUS_ACCESS_CHANGED : denial);
         offerLogsWithoutStatus();
+        pollAgent();
         return;
       }
     }
     // Runtime status also checks AgentRevision read on the version, so a version the page could
     // not read would only be refused: an audited denial on each Logs visit, shown with a Request
-    // ID. The strip says why in words, sends nothing and polls nothing; log text, which needs no
+    // ID. The strip says why in words and sends no status read; log text, which needs no
     // version read, still shows (finding D794).
     if ((await versionRead) === false) {
-      if (current() && !superseded()) {
+      if (!current() || superseded()) {
+        return;
+      }
+      if (!statusDenied) {
         showStripStatus(RUNTIME_STATUS_VERSION_UNREADABLE);
         offerLogsWithoutStatus();
+      } else if (!document.hidden) {
+        // The poll still rereads the Agent, which needs no version read: with no poll, a stop
+        // and redeploy made elsewhere left this version named as selected for service until a
+        // reload (finding 3000).
+        void showRunningVersion(true);
       }
+      statusTimer = setTimeout(() => void loadStatus(), STATUS_POLL_MS);
       return;
     }
     if (!document.hidden) {
@@ -856,6 +928,9 @@ export function renderAgentLogs(
                   deniedStatusViews.set(statusKey, answer?.operate === true);
                 }
               });
+            // A fresh refusal is remembered like one taken from the answer: the view rereads
+            // the Agent alone and never asks for status on a timer (finding 3010).
+            pollAgent();
           }
           return;
         }
@@ -1188,6 +1263,8 @@ export function renderAgentLogs(
     element("h3", {}, "Runtime"),
     stripLine,
     strip,
+    deploymentFailureNotice,
+    servingChangeNotice,
     runningVersionNotice,
     element(
       "div",
@@ -1322,5 +1399,5 @@ export function renderAgentLogs(
     .then(() => firstLogRead)
     .catch(() => {})
     .finally(showFirstView);
-  return { section, firstView };
+  return { section, firstView, showDeploymentFailure, showServingChange };
 }

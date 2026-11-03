@@ -4,6 +4,7 @@ import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises
 import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it as test } from "node:test";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import {
   cleanEnvironment,
@@ -62,15 +63,7 @@ const hash = (value) => createHash("sha256").update(JSON.stringify(value)).diges
 const opened = (sessionId, { repository = "example/project", pushRefAllowlist } = {}) => ({
   session: { sessionId, deadlineWallMs: Date.now() + 86400000 },
   bearer: `controlled_gateway_${sessionId}_${"0".repeat(32)}`,
-  client: {
-    gatewayOrigin: "https://credentials.example.test",
-    gitRemote: `https://credentials.example.test/${repository}.git`,
-    gitUsername: "gateway-session",
-    canonicalApiHost: "github.com",
-    apiHost: "credentials.example.test",
-    repository,
-    ...(pushRefAllowlist && { pushRefAllowlist }),
-  },
+  client: repositoryClientData({ repository, ...(pushRefAllowlist && { pushRefAllowlist }) }),
 });
 /** Native material from `[repositoryRef, opened]` pairs. */
 const nativeMaterial = (t, ...entries) =>

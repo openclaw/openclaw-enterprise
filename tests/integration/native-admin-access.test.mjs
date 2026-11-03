@@ -54,6 +54,19 @@ function nativeOriginForAgent(
   return `${publicUrl.protocol}//${publicUrl.host}`;
 }
 
+function nativeAdminHarnessConfiguration(nativeOrigin) {
+  const configuration = withNativeAdminGateway(
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+    nativeOrigin,
+  );
+  // Preserve read/write device coverage: the machine identity supplies admin.
+  configuration.gateway.auth.trustedProxy.deviceAutoApprove.scopes = [
+    "operator.read",
+    "operator.write",
+  ];
+  return configuration;
+}
+
 function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
   return createReadyComputeDriver("native-admin-compute", {
     // Kubernetes dedicated revisions stop their predecessors before they start.
@@ -200,7 +213,7 @@ async function createLiveNativeAgent(fixture, namespace, name, options = {}) {
   await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
-    withNativeAdminGateway(createHarnessConfiguration("openclaw", "gpt-4.1"), nativeOrigin),
+    nativeAdminHarnessConfiguration(nativeOrigin),
   );
   const revision = await fixture.controller.deployAgent(
     adminPrincipal(fixture).id,

@@ -1,0 +1,169 @@
+diff --git a/src/infra/private-store-file.ts b/src/infra/private-store-file.ts
+index a3219363773..1e87f9e78b7 100644
+--- a/src/infra/private-store-file.ts
++++ b/src/infra/private-store-file.ts
+@@ -1,6 +1,10 @@
+ import fs from "node:fs";
+ import path from "node:path";
+-import { createDirectorySync, createFileSync } from "@openclaw/fs-safe/advanced";
++import {
++  assertDirectoryIdentitySync,
++  createDirectorySync,
++  createFileSync,
++} from "@openclaw/fs-safe/advanced";
+ import { FsSafeError } from "@openclaw/fs-safe/errors";
+ import { applyPrivateModeSync } from "./private-mode.js";
+ 
+@@ -16,6 +20,69 @@ function createPrivateIfMissing(create: () => void): boolean {
+   }
+ }
+ 
++function createPrivateStoreDirectorySync(directory: string): void {
++  const parentPath = path.dirname(directory);
++  const parent =
++    process.platform === "linux" ? fs.lstatSync(parentPath, { bigint: true }) : undefined;
++  try {
++    createDirectorySync(directory, { private: true });
++  } catch (error) {
++    const publication = error instanceof FsSafeError ? error.details?.publication : undefined;
++    if (
++      process.platform !== "linux" ||
++      typeof process.getuid !== "function" ||
++      !parent ||
++      !(error instanceof FsSafeError && error.code === "helper-failed") ||
++      !(error.cause instanceof FsSafeError && error.cause.code === "insecure-permissions") ||
++      error.details?.path !== directory ||
++      !publication ||
++      typeof publication !== "object" ||
++      !("status" in publication && publication.status === "published")
++    ) {
++      throw error;
++    }
++    // Linux inherits setgid even for mkdir(0700). Normalize only this published,
++    // owner-only directory; all other private-creation refusals remain failures.
++    let fd: number | undefined;
++    try {
++      assertDirectoryIdentitySync(parentPath, parent);
++      fd = fs.openSync(
++        directory,
++        fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
++      );
++      const created = fs.fstatSync(fd, { bigint: true });
++      const named = fs.lstatSync(directory, { bigint: true });
++      if (
++        !created.isDirectory() ||
++        created.uid !== BigInt(process.getuid()) ||
++        (created.mode & 0o7777n) !== 0o2700n ||
++        created.dev !== named.dev ||
++        created.ino !== named.ino
++      ) {
++        throw error;
++      }
++      assertDirectoryIdentitySync(parentPath, parent);
++      fs.fchmodSync(fd, 0o700);
++      const normalized = fs.fstatSync(fd, { bigint: true });
++      const current = fs.lstatSync(directory, { bigint: true });
++      if (
++        (normalized.mode & 0o7777n) !== 0o700n ||
++        normalized.dev !== current.dev ||
++        normalized.ino !== current.ino
++      ) {
++        throw error;
++      }
++      assertDirectoryIdentitySync(parentPath, parent);
++    } catch {
++      throw error;
++    } finally {
++      if (fd !== undefined) {
++        fs.closeSync(fd);
++      }
++    }
++  }
++}
++
+ /** The caller admits the existing parent before preparing this store's private file. */
+ export function preparePrivateStoreFileSync(pathname: string, directoryExists: boolean): boolean {
+   const directory = path.dirname(pathname);
+@@ -28,7 +95,7 @@ export function preparePrivateStoreFileSync(pathname: string, directoryExists: b
+     path.basename(directory),
+   );
+   if (!directoryExists) {
+-    createPrivateIfMissing(() => createDirectorySync(creationDirectory, { private: true }));
++    createPrivateIfMissing(() => createPrivateStoreDirectorySync(creationDirectory));
+   }
+   applyPrivateModeSync(directory, 0o700);
+   if (!fs.existsSync(pathname)) {
+diff --git a/src/infra/private-store-file.test.ts b/src/infra/private-store-file.test.ts
+new file mode 100644
+index 00000000000..e82f6644e35
+--- /dev/null
++++ b/src/infra/private-store-file.test.ts
+@@ -0,0 +1,68 @@
++import fs from "node:fs";
++import path from "node:path";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
++import { preparePrivateStoreFileSync } from "./private-store-file.js";
++
++const tempDirs = useAutoCleanupTempDirTracker(afterEach);
++afterEach(() => vi.restoreAllMocks());
++
++describe.runIf(process.platform === "linux")("private store creation under setgid", () => {
++  it("creates a private store on the first attempt without changing the containing root", () => {
++    const root = tempDirs.make("private-store-setgid-");
++    fs.chmodSync(root, 0o2700);
++    const pathname = path.join(root, "control", "services.sqlite");
++
++    expect(preparePrivateStoreFileSync(pathname, false)).toBe(true);
++    expect(fs.statSync(root).mode & 0o7777).toBe(0o2700);
++    expect(fs.statSync(path.dirname(pathname)).mode & 0o7777).toBe(0o700);
++    expect(fs.statSync(pathname).mode & 0o7777).toBe(0o600);
++    fs.writeFileSync(pathname, "retained data");
++    expect(preparePrivateStoreFileSync(pathname, true)).toBe(false);
++    expect(fs.readFileSync(pathname, "utf8")).toBe("retained data");
++  });
++
++  it.each([0o2770, 0o3700])("does not admit a newly created directory with mode %s", (mode) => {
++    const root = tempDirs.make("private-store-refusal-");
++    const directory = path.join(root, "control");
++    const mkdir = fs.mkdirSync;
++    vi.spyOn(fs, "mkdirSync").mockImplementation((target, options) => {
++      const result = mkdir(target, options);
++      if (String(target) === directory) {
++        fs.chmodSync(directory, mode);
++      }
++      return result;
++    });
++
++    expect(() =>
++      preparePrivateStoreFileSync(path.join(directory, "services.sqlite"), false),
++    ).toThrow(
++      expect.objectContaining({
++        code: "helper-failed",
++        message: "created directory admission failed",
++      }),
++    );
++    expect(fs.statSync(directory).mode & 0o7777).toBe(mode);
++    expect(fs.readdirSync(directory)).toEqual([]);
++  });
++
++  it("preserves the creation refusal when private-mode normalization fails", () => {
++    const root = tempDirs.make("private-store-chmod-refusal-");
++    fs.chmodSync(root, 0o2700);
++    const directory = path.join(root, "control");
++    vi.spyOn(fs, "fchmodSync").mockImplementation(() => {
++      throw Object.assign(new Error("read-only fixture"), { code: "EROFS" });
++    });
++
++    expect(() =>
++      preparePrivateStoreFileSync(path.join(directory, "services.sqlite"), false),
++    ).toThrow(
++      expect.objectContaining({
++        code: "helper-failed",
++        message: "created directory admission failed",
++      }),
++    );
++    expect(fs.statSync(directory).mode & 0o7777).toBe(0o2700);
++    expect(fs.readdirSync(directory)).toEqual([]);
++  });
++});

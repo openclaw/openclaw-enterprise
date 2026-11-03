@@ -75,6 +75,7 @@ export type {
   PreparedGitHubEgressSource,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseResponse,
   PreparedGitHubPullScope,
   PreparedGitHubPullProjection,
@@ -120,6 +121,7 @@ export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandb
 import type { SandboxPolicySnapshot } from "./sandbox-policy.ts";
 
 export type {
+  ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxPolicySnapshot,
@@ -296,6 +298,8 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
+  /** The API offers native admin configuration during Agent provisioning. */
+  readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
@@ -1446,7 +1450,7 @@ export type {
 
 export type JSONSchema = Readonly<Record<string, unknown>>;
 
-export { normalizeSecretBindings } from "./secret-bindings.ts";
+export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
 export * from "./api/resources.ts";
@@ -1504,6 +1508,7 @@ export type {
   ProtectedRepositoryGitAuthority,
   RepositoryGitBinding,
   ProtectedRepositoryGitMaterial,
+  ProtectedGitHubRepositoryMaterial,
   ProtectedGitHubInstallationMaterial,
   GitHubInstallationSendDecision,
   GitHubInstallationSendPermit,

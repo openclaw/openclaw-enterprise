@@ -23,7 +23,7 @@ import (
 // controller downloads and network-policy probes, which only a real cluster proves
 // (see dev-up-openshell-k3d-real and local-first-agent-openshell-k3d-real).
 
-const profileTestDigest = "sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6"
+const profileTestDigest = "sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea"
 
 // fakeProfileCommands puts fake binaries on PATH. Each records its arguments and
 // answers only the listed cases, so a step that issues a new command fails.
@@ -157,7 +157,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 	text := string(data)
 	for _, required := range []string{
 		"id: sandbox-openshell-development",
-		"endpoint: http://openshell-gateway.oce-system.svc.cluster.local:8080",
+		"endpoint: https://openshell-gateway.oce-system.svc.cluster.local:8080",
 		"requestTimeoutMs: 30000",
 		"mode: inCluster",
 		"workspaceMode: operator",
@@ -168,6 +168,11 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		if !strings.Contains(text, required) {
 			t.Fatalf("installation.yaml is missing %q", required)
 		}
+	}
+	// Default Gateway authentication must not opt into static-inference authority.
+	if strings.Contains(text, "credential_proxy:") || strings.Contains(text, "insecureTransport:") ||
+		!strings.Contains(text, "mode: mtls") || !strings.Contains(text, "rootCertificatePath: /etc/openclaw/openshell/ca.crt") {
+		t.Fatal("expected authenticated Gateway without static inference")
 	}
 	// In-cluster Drivers authenticate with their ServiceAccounts, not a host kubeconfig.
 	if strings.Contains(text, "kubeconfigPath") {
@@ -214,8 +219,8 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		t.Fatalf("unexpected OpenShell startup delay: %d", sandbox.StartupDelayMs)
 	}
 	if !reflect.DeepEqual(installation.Drivers.CredentialGateway.Configuration.Binaries, []string{
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 		"/usr/local/bin/node",
 	}) {
 		t.Fatalf("unexpected OpenShell credential binary allowlist: %#v", installation.Drivers.CredentialGateway.Configuration.Binaries)
@@ -314,9 +319,9 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			// Fixed source pins guard the released default; candidate digests deliberately
 			// differ from the containerd manifests returned by the import fixture.
 			sources := []string{
-				"ghcr.io/nvidia/openshell/gateway:0.1.5@sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6",
-				"ghcr.io/nvidia/openshell/sandbox:0.1.5@sha256:e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851",
-				"ghcr.io/nvidia/openshell/supervisor:0.1.5@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161",
+				"ghcr.io/nvidia/openshell/gateway:0.1.6@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
+				"ghcr.io/nvidia/openshell/sandbox:0.1.6@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
+				"ghcr.io/nvidia/openshell/supervisor:0.1.6@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
 			}
 			selection := candidateOpenShellEnvironment()
 			if candidate {
@@ -406,6 +411,22 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			if strings.Contains(install, "service.type=NodePort") ||
 				strings.Contains(install, "supervisor.sandboxRuntime.networkPolicyEnforced=true") {
 				t.Fatalf("unexpected OpenShell gateway install values: %s", install)
+			}
+			// The first install must use native PKI and authentication, not rely on a later repair.
+			gatewayValues := readJSONFile(t, filepath.Join(state.directory, "openshell-gateway-values.json"))
+			if field(t, gatewayValues, "pkiInitJob", "enabled") != true ||
+				field(t, gatewayValues, "server", "disableTls") != false ||
+				field(t, gatewayValues, "server", "tls", "enableMtls") != true ||
+				field(t, gatewayValues, "server", "auth", "allowUnauthenticatedUsers") != false {
+				t.Fatal("default OpenShell must require authenticated TLS")
+			}
+			if len(field(t, gatewayValues, "gatewayConfig", "openshell.supervisor.middleware").([]any)) != 0 ||
+				!strings.Contains(install, "-f "+filepath.Join(state.directory, "openshell-gateway-values.json")) ||
+				!strings.Contains(install, "--wait") {
+				t.Fatal("default Gateway must start without static-inference middleware")
+			}
+			if strings.Contains(strings.Join(commands(), "\n"), "create secret generic openshell-gateway-jwt-keys") {
+				t.Fatal("native PKI must own Gateway signing keys")
 			}
 			// Without the full allowlist the gateway rejects every Harness Sandbox at create, for
 			// both image selections. Compare the recorded Helm argument with the Sandbox Driver's
@@ -1085,6 +1106,12 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 			values := readJSONFile(t, filepath.Join(state.directory, "helm-values.json"))
 			if !reflect.DeepEqual(values["auth"], jsonValue(t, map[string]string{"baseUrl": test.origin})) {
 				t.Fatalf("authentication must use the published Console origin: %#v", values["auth"])
+			}
+			if _, enabled := values["egressAuthority"]; enabled {
+				t.Fatal("default control plane must not enable the static-inference authority")
+			}
+			if test.sandboxDriver == "openshell" && field(t, values, "backend", "openshell", "clientSecretName") != "openshell-client-tls" {
+				t.Fatal("default OpenShell must project its administrative client identity")
 			}
 			gatewayRouting := map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 			if test.sandboxDriver == "openshell" {

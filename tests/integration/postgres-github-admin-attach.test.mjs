@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
+  accountPrincipalId,
   assertConsoleSignIn,
   changeAccount,
   clientAddresses,
@@ -242,16 +243,9 @@ test(
     });
 
     await t.test("every change is audited to the acting administrator", async () => {
-      const principalOf = async (userId) =>
-        (
-          await pool.query(
-            "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
-            [userId],
-          )
-        ).rows[0].principal_id;
       const [adminPrincipal, secondPrincipal] = [
-        await principalOf(admin.id),
-        await principalOf(second.id),
+        await accountPrincipalId(pool, admin.id),
+        await accountPrincipalId(pool, second.id),
       ];
       const audits = (await state.transact((unit) => unit.audit.list()))
         .filter(({ action }) =>

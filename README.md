@@ -6,11 +6,11 @@ OpenClaw Enterprise (OCE) is the open source, vendor neutral platform for managi
 
 OCE includes the [OpenClaw Control Plane (OCC)](docs/guides/concepts.md#control-plane)
 for deploying and managing [Agents](docs/guides/concepts.md#agents-and-revisions).
-Start with [Getting Started](docs/README.md) to use the platform, [Operate](docs/guides/operate/README.md) to administer it, or [Contribute](docs/contributing/README.md) to change its source.
+Start with [Getting Started](docs/README.md) to use the platform, [Deploy & Operate](docs/guides/operate/README.md) to administer it, or [Contribute](docs/contributing/README.md) to change its source.
 
 ## Getting started
 
-Choose [Local Setup](docs/guides/quickstart.md) to run OCC on your machine, or [Kubernetes Setup](docs/guides/kubernetes-setup.md) to install it on a cluster you already operate. For local setup, run from the repository root:
+Choose one OpenShell installation path: [local k3d](docs/guides/deploy/local-setup.md), [Kubernetes](docs/guides/deploy/kubernetes-setup.md), or [Amazon EKS](docs/guides/deploy/eks-openshell-setup.md). Each finishes with a running, onboarded Codex Agent and the same operator session for [Add Git](docs/guides/repository-credentials/openshell-git-push.md), [Add Plugin](docs/guides/integrations/codex-plugins.md), and [Delete Agent](docs/guides/deploy/quickstart-delete-agent.md). For the [local quickstart without OpenShell](docs/guides/quickstart.md), run from the repository root:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
@@ -26,7 +26,7 @@ Agents.
 
 You need Docker Engine or Podman, k3d, kubectl, Helm, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24.22.1 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
 
-After local setup, [deploy your first Agent](docs/guides/first-agent.md) and send it a model request. You need an OpenAI API key with access to the [default model or your selected override](docs/guides/first-agent.md#before-you-start) for that step. If you installed on an existing cluster, [deploy and verify an Agent on that installation](docs/guides/deploy/production-agents.md).
+For a dedicated OpenShell Codex Agent, follow the [local k3d quickstart](docs/guides/deploy/local-setup.md) through deployment and browser onboarding. For an existing installation, [deploy and verify an Agent](docs/guides/deploy/production-agents.md).
 
 Reuse settings with [Agent Presets](docs/guides/topics/agent-presets.md), then fill variables and review the copied draft in the console.
 
@@ -66,7 +66,7 @@ Use `npm run docs:build` for the full static build. See the
 
 - [Getting Started](docs/README.md) and [Concepts](docs/guides/concepts.md): setup, the first Agent, and the product model.
 - [Topics](docs/guides/topics/README.md) and [Integrations](docs/guides/integrations/README.md): feature behavior and named implementations.
-- [Operate](docs/guides/operate/README.md) and [Reference](docs/reference/README.md): platform operations, the CLI, and the HTTP API.
+- [Deploy & Operate](docs/guides/operate/README.md) and [Reference](docs/reference/README.md): platform operations, the CLI, and the HTTP API.
 - [Contribute](docs/contributing/README.md): development, design, and documentation.
 
 ## Contributors

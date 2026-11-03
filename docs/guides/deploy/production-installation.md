@@ -1,7 +1,11 @@
+---
+tags: [nolimit]
+---
+
 # Install the production control plane
 
-Prepare [Kubernetes](kubernetes.md) or [EKS](eks.md), the
-[production prerequisites](../deploy.md#production-prerequisites), and
+Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
+[prerequisites below](#before-you-start), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
 Keep private routing enabled. Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
@@ -15,13 +19,15 @@ Use a clean checkout matching the image source commit. Follow
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
 
+## Before you start
+
+<Snippet file="../../snippets/kubernetes-prerequisites.md" />
+
 ## Use published images
 
-Use `ghcr.io/openclaw/openclaw-enterprise-controller:latest` and
-`ghcr.io/openclaw/openclaw-enterprise-runtime:latest` through the
-[published-image procedure](published-images.md), which checks the image source commits and sets
-`CONTROLLER_IMAGE` and `RUNTIME_IMAGE` and selects the matching checkout and
-chart. Complete it before generating configuration; then skip the build section.
+Before generating configuration, [select the published image pair](published-images.md)
+(`stable` or `latest`). Verify the source commit, export `CONTROLLER_IMAGE` and
+`RUNTIME_IMAGE`, and use the matching checkout and chart. Skip the build section.
 
 Public GHCR pulls need no pull Secret. For private registry copies, give every node
 that runs control-plane or tenant Pods its own pull access; see
@@ -41,7 +47,7 @@ or build these images for your registry:
 Select your registry, repository, and platform. Buildx uses the [runtime recipe's](../../../deploy/runtime/README.md) reviewed CI base.
 
 Authenticate the builder with `docker login <registry-host>` and approved
-credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
+credentials; for private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
 
 In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
 Stop on failure; retain metadata.
@@ -83,6 +89,8 @@ else
   false
 fi
 ```
+
+If a runtime build fails certificate verification when downloading a package behind an HTTPS proxy, add `--secret "id=build-ca,src=$CA_BUNDLE"` to the runtime `docker buildx build` command above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy CA certificate. The runtime Dockerfile mounts this file only during the download steps. Image registry TLS uses the builder's own trust configuration.
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull

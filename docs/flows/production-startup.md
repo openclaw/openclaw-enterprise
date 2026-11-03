@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-10-30"
-last_updated_session: "authoring-run/3277ff6a-7559-43e6-842d-93513c8dd124"
+last_updated_session: "authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899"
 ---
 
 # Production Startup Flow
@@ -205,6 +205,12 @@ The exchange binding is independent of the protected Driver. See
 `apps/controller/src/composition/production.ts:composeProduction` and
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`.
 
+The worker closes the repository Git sender binding, prepared Git owner, receipt
+listener, metrics, and prepared GitHub owner in order, continuing after a close
+fails, then stops its loop and database. A listener left open would keep the Pod
+running until its grace ends. Any failure logs `worker.error` `SHUTDOWN_FAILED`
+(exit 1). See `apps/controller/src/worker/shutdown.ts:closeWorkerComposition`.
+
 Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
 on reviewed control-plane nodes; empty defaults omit it.
 `deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also applies it
@@ -341,6 +347,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-30 14:36: Attempt every worker resource close in order after a close fails. (authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899 - 2b3b206b63525e31a6170e239991394b7909fc15)
 
 - 2026-10-30 05:46: Attempt every PostgreSQL API resource close in order and preserve the original error. (authoring-run/3277ff6a-7559-43e6-842d-93513c8dd124 - 60b6beb56d038c012d318cc6249003707c7ec9d5)
 

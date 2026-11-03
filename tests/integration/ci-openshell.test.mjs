@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
-import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { delimiter, join } from "node:path";
 import test from "node:test";
@@ -28,11 +27,11 @@ import {
   openShellGatewayNetworkPolicies,
   outageAttemptRead,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function fixture(t, prefix = "ci-openshell-test") {
-  const root = await mkdtemp(join(tmpdir(), `${prefix}-`));
+  const root = await temporaryDirectory(t, `${prefix}-`);
   await chmod(root, 0o700);
-  t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
 
@@ -105,7 +104,7 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("OpenShell Helm chart image values use the v0.1.5 registry and digest contract", () => {
+test("OpenShell Helm chart image values use the v0.1.6 registry and digest contract", () => {
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
@@ -948,7 +947,7 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   const matches = (selector, labels) =>
     selector.matchLabels !== undefined &&
     Object.entries(selector.matchLabels).every(([key, value]) => labels[key] === value);
-  // OpenShell v0.1.5 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
+  // OpenShell v0.1.6 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
   const supervisor = {
     "openshell.ai/managed-by": "openshell",
     "openshell.ai/boundary-role": "supervisor",

@@ -127,7 +127,7 @@ test(
         "--version",
       )
     ).trim();
-    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.163.0-alpha.2";
+    const expectedCodexVersion = process.env.OCC_TEST_KUBERNETES_CODEX_VERSION ?? "0.164.0";
     assert.ok(codexVersion.includes(expectedCodexVersion));
     context.diagnostic(`dedicated: ${codexVersion}`);
     await assertUnauthorizedCodexSocket(topology);
@@ -172,7 +172,8 @@ test(
     assert.equal(topology.harnessPod, undefined, "embedded execution must not create a Codex Pod");
     assert.equal(topology.gatewayPod.spec.serviceAccountName, topology.agentServiceName);
     assert.equal((await resources("deployments", topology.placement)).length, 1);
-    assertPrivateStateInitContainer(topology.gatewayPod);
+    // This Agent binds no Secret into its environment, so the gateway records its owner key.
+    assertPrivateStateInitContainer(topology.gatewayPod, { embeddedGatewayOwner: true });
     await assertEmbeddedCreatesNoHarnessWorkspaceClaim(topology);
     const privateClaim = await assertGatewayPrivateResources(topology);
 

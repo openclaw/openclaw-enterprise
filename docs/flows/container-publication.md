@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-26
-last_updated_session: authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9
+updated: 2026-10-30
+last_updated_session: authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008
 ---
 
 # Container publication flow
@@ -104,8 +104,12 @@ pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
 within the 24 series. Older explicit overrides fail. Both bases apply available
 Debian updates; image digests do not freeze Debian repositories.
 
-The build runs the caller-authority and Gateway recovery tests offline. The final
-image records the patch checksums in its provenance.
+The build runs the caller-authority, Gateway recovery and Linux private-store
+tests offline. The private-store bridge normalizes inherited setgid only for a
+new owner-only directory, so native first use can create private SQLite stores
+under the Sandbox workspace. Existing parent permissions and filesystem admission
+checks remain unchanged. The final image records the patch checksums in its
+provenance.
 
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
@@ -243,6 +247,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-30 10:12: Document the private-store bridge and its offline owning tests. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
 - 2026-10-26 10:23: Read OpenClaw source metadata from one manifest; validate build arguments and provenance. (authoring-run/3032d748-8d18-4cef-a903-f9a72ed8cda9 - 37d28e211ed5831dc201433d36bb23eadd834f6b)
 

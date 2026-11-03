@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-15
-last_updated_session: authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1
+updated: 2026-11-02
+last_updated_session: 01a19d8b-33a8-76c0-9817-521a7f10626d
 ---
 
 # Compose development flow
@@ -60,8 +60,9 @@ graph TD
   KCodex -->|failure| KRollback
   KDriver -->|OpenShell| KOpenFirst["Prepare OpenShell assets,<br/>install routing, then import runtime"]
   KRoutingFirst --> KOnly["Install selected control-plane profile<br/>and retain all readiness gates"]
-  KOpenFirst --> KProtection{"Protected egress?"}
-  KProtection -->|Off| KOnly
+  KOpenFirst --> KProtection{"Static inference enabled?"}
+  KProtection -->|Off| KGateway["Install authenticated Gateway<br/>and wait for readiness"]
+  KGateway --> KOnly
   KProtection -->|On| KAuthority["Prepare authority TLS and registry<br/>Install Gateway without readiness wait"]
   KAuthority --> KOnly
   KOnly --> KWait["Complete readiness gates<br/>including protected Gateway rollout"]
@@ -188,7 +189,12 @@ the registry attachment for `occ dev down` to detach.
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, OpenShell uses the
 Kubernetes-only lifecycle before Compose rendering. It pins K3s and OpenShell
 inputs, installs PostgreSQL, OCE, and one central Gateway in `oce-system`, and
-publishes only an admitted API proxy on host loopback.
+publishes only an admitted API proxy on host loopback. The source archive and all three
+OpenShell images select 0.1.6 together, including the paired sandbox/supervisor
+control protocol and compromised-key rejection. The observed-hook repository
+credential preview admits 0.1.6 through its existing opt-in, held-launcher and
+recipient checks. Repository-scoped access uses the separate
+[protected Git enrollment](../guides/repository-credentials/openshell-enrollment.md).
 
 By default, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
 the API, and the worker in Compose. It installs the central Gateway in
@@ -212,9 +218,16 @@ OCC Namespace becomes ready. See the
 `internal/occdev/openshell_k3d.go:installDevelopmentPlatform`,
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createClient`
 
-The explicit protected profile requires Kubernetes Compute, Kubernetes control
-plane, OpenShell Sandbox, and reviewed
-candidate images/charts. It prepares authority server TLS and its public CA,
+`internal/occdev/openshell.go:installOpenShellGateway` enables native PKI,
+TLS, mTLS and authentication for every Kubernetes-only OpenShell installation.
+`openShellBackendConfiguration` selects HTTPS and client certificates;
+`installKubernetesControlPlane` projects them into the API and worker through Helm.
+The default profile registers no static-inference middleware and waits for the
+Gateway before installing OCE. It needs no corrective Gateway upgrade or Pod deletion.
+
+The explicit `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` profile additionally enables
+static-inference enforcement. It requires Kubernetes Compute, Kubernetes control
+plane and OpenShell Sandbox with compatible images/charts. It prepares authority server TLS and its public CA,
 then installs OpenShell with native PKI and a TLS middleware registration.
 OpenShell owns the complete Gateway server/client certificate and extension-JWT
 key set. The launcher reads only its public key ID and writes the paired Backend,
@@ -300,6 +313,14 @@ distinguishes local proof from pending connected runtime qualification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 13:31: Separate default authenticated Gateway bootstrap from opt-in static inference; accompanying launcher changes. (01a19d8b-33a8-76c0-9817-521a7f10626d - f5bef23f5796c2c3421189c79e6508079257cfd5)
+
+- 2026-10-30 16:09: Reconcile patched OpenShell documentation with capability-based repository admission. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
+
+- 2026-10-30 10:12: Select paired OpenShell 0.1.6 and preserve guarded preview admission. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
+
+- 2026-10-28 21:21: Select paired OpenShell 0.1.6 inputs without widening credential preview admission. (authoring-run/cc92d8d2-ac00-488a-a581-bba758672967 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
 
 - 2026-10-15 23:41: Isolate development-wrapper path resolution from CDPATH while preserving the CLI environment. (authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1 - 04514330688378316bd0641b8d5560da56aeff85)
 
