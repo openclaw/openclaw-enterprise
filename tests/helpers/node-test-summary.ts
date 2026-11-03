@@ -4,25 +4,33 @@
 // appear exactly once: a missing or repeated line means the output is not one
 // complete run summary. Errors end with the output's last 2000 characters,
 // where the runner prints the totals and any failing tests.
-const summaryKeys = ["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"];
+type SummaryKey = "tests" | "suites" | "pass" | "fail" | "cancelled" | "skipped" | "todo";
 
-export function nodeTestSummary(output) {
-  const summary = {};
-  for (const key of summaryKeys) {
+export function nodeTestSummary(output: string): Record<SummaryKey, number> {
+  function count(key: SummaryKey): number {
     const matches = [...output.matchAll(new RegExp(`^(?:ℹ|#) ${key} (\\d+)\\r?$`, "gmu"))];
-    if (matches.length !== 1) {
+    const match = matches[0];
+    if (matches.length !== 1 || match === undefined) {
       throw new Error(
         `Expected one "${key}" count in the node test summary, found ${matches.length}: ${outputTail(output)}`,
       );
     }
-    summary[key] = Number(matches[0][1]);
+    return Number(match[1]);
   }
-  return summary;
+  return {
+    tests: count("tests"),
+    suites: count("suites"),
+    pass: count("pass"),
+    fail: count("fail"),
+    cancelled: count("cancelled"),
+    skipped: count("skipped"),
+    todo: count("todo"),
+  };
 }
 
 // Every test in the run passed: at least `minimum` tests, none failed,
 // cancelled, skipped or todo.
-export function assertAllPassed(output, { minimum = 1 } = {}) {
+export function assertAllPassed(output: string, { minimum = 1 }: { minimum?: number } = {}) {
   const summary = nodeTestSummary(output);
   const { tests, pass, fail, cancelled, skipped, todo } = summary;
   if (
@@ -40,6 +48,6 @@ export function assertAllPassed(output, { minimum = 1 } = {}) {
   return summary;
 }
 
-function outputTail(output) {
+function outputTail(output: string) {
   return output.trim().slice(-2_000);
 }
