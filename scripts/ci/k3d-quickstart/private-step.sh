@@ -27,6 +27,20 @@ else
   grep -Ex 'quickstart-location browser\.mjs:[0-9]{1,5}|Control UI navigation HTTP (0|[1-5][0-9]{2})' "$log" | tail -2 || true
   if [[ $phase == linear ]]; then
     node scripts/ci/k3d-quickstart/linear-evidence.mjs diagnose "$RUN_DIR" || true
+    if [[ -s "$RUN_DIR/linear-deployment.json" ]]; then
+      jq -r '.data.warnings[]?.code | select(.=="PLUGIN_INSTALL_FAILED" or .=="PLUGIN_AUTH_REQUIRED") | "Linear deployment: " + .' "$RUN_DIR/linear-deployment.json"
+    fi
+    # Report only regional package hosts from denied sandbox requests. Signed
+    # download paths, query strings, account data and raw logs stay private.
+    if [[ -s "$RUN_DIR/session.sh" ]]; then
+      (
+        source "$RUN_DIR/session.sh"
+        kube -n "$TENANT_NAMESPACE" logs -l "openclaw.dev/agent=$agent" --all-containers --tail=2500 |
+          grep -Ei 'den(y|ied)|block(ed)?|reject' |
+          grep -Eio 'sdmntpr[a-z]{2,25}[0-9]{0,2}\.oaiusercontent\.com' | sort -u |
+          sed 's/^/Linear denied package host: /'
+      ) 2>/dev/null || true
+    fi
   fi
   # File presence distinguishes cluster bootstrap, model registration and Agent deployment.
   for milestone in k3d-state/state.json values.json model-source agent transport requested-revision session.sh; do

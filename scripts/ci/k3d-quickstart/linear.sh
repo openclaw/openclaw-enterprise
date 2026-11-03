@@ -33,13 +33,19 @@ jq -e --arg agent "$agent" --arg ref "$ref" --slurpfile git "$RUN_DIR/git-receip
 for stage in catalog deploy prompt send; do
   printf '%s\n' "$stage" > "$stage_file"
   if [[ $stage == send ]]; then
-    # Ask for a tool invocation that both documented readers can verify.
-    printf '%s\n' 'Call codex_apps.linear.list_teams directly, or use dispatch_action for that exact tool. Do not use Code Mode, shell commands, or a second lookup.' >> "$RUN_DIR/linear-prompt"
+    # Native Codex may expose the installed plugin through Code Mode discovery.
+    # Give it the team's key; the expected ID stays out of the entire prompt.
+    printf '%s\n' 'Through your managed Linear plugin, find the team with key OCE and include its ID, key and name from the real tool result. Use the native tool search and Code Mode if needed to discover and invoke the Linear list_teams action. Do not use shell, network commands, or guessed data.' >> "$RUN_DIR/linear-prompt"
   fi
   echo "Running Add Plugin step: $stage"
   # The published examples display connected-account data. Keep all raw output
   # private, including stderr. Source in this shell so the plugin ID persists.
   source "$RUN_DIR/linear-$stage.sh" > "$RUN_DIR/linear-$stage.log" 2>&1
+  if [[ $stage == deploy ]]; then
+    revision=$(cat "$RUN_DIR/requested-revision")
+    request GET "$base/agents/$agent/deployments/$revision" > "$RUN_DIR/linear-deployment.json"
+    jq -e '.data.status=="succeeded" and (.data.warnings // [])==[]' "$RUN_DIR/linear-deployment.json" > /dev/null
+  fi
 done
 printf '%s\n' agent > "$stage_file"
 revision=$(cat "$RUN_DIR/requested-revision")

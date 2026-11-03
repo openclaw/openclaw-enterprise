@@ -12,6 +12,14 @@ function readJson(file) {
   }
 }
 const tool = "codex_apps.linear.list_teams";
+// OpenClaw renders native MCP events as server.tool. Some Codex versions
+// surface the full provider-callable name instead. Match only this operation.
+const listTools = new Set([
+  tool,
+  "mcp__codex_apps__linear_list_teams",
+  "mcp__codex_apps__linear__list_teams",
+  "codex_apps.linear_list_teams",
+]);
 const team = process.env.OCC_TEST_LINEAR_TEAM_ID?.toLowerCase();
 const containsTeam = (value) =>
   Boolean(
@@ -47,13 +55,13 @@ function historyMatched() {
   }
   return calls.some(
     (call) =>
-      call.name === tool &&
+      listTools.has(call.name) &&
       typeof call.id === "string" &&
       call.id.length > 0 &&
       results.some(
         (result) =>
           result.toolCallId === call.id &&
-          result.toolName === tool &&
+          result.toolName === call.name &&
           result.isError !== true &&
           containsTeam(result.content),
       ),
@@ -134,12 +142,43 @@ if (mode === "history") {
       singleTurn ? "marked-single-turn" : "missing-single-marked-prompt",
     );
     const names = new Set([...calls.map((c) => c.name), ...results.map((r) => r.toolName)]);
+    const knownTools = new Set([
+      ...listTools,
+      "dispatch_action",
+      "tool_search",
+      "search_tools",
+      "tool_search_tool_regex",
+      "mcp__node_repl__js",
+      "node_repl.js",
+      "code_mode",
+      "exec",
+      "bash",
+      "exec_command",
+      "mcp__codex_apps__search",
+      "codex_apps.search",
+    ]);
     for (const name of names) {
-      if (name === tool || name === "dispatch_action" || name === "code_mode")
-        console.log("Linear tool:", name);
+      const label = knownTools.has(name)
+        ? name
+        : /^(?:mcp__codex_apps__linear_|codex_apps\.linear[._])/.test(name)
+          ? "other-linear-action"
+          : "other";
+      console.log("Linear tool:", label);
     }
-    if (names.size && !names.has(tool) && !names.has("dispatch_action"))
-      console.log("Linear tool: other");
+    // Returned text is diagnostic only. Report categories, never account output.
+    const reply = chat.outcome?.terminalReply?.text ?? "";
+    for (const [pattern, label] of [
+      [/not connected|connect your account|reconnect|sign in|log in|oauth/i, "mentions-connection"],
+      [/unauthorized|unauthenticated|forbidden|permission denied/i, "mentions-authorization"],
+      [
+        /unavailable|not available|not installed|could not find|no matching|no tools/i,
+        "mentions-unavailable",
+      ],
+    ]) {
+      if (pattern.test(reply)) console.log("Linear reply:", label);
+      if (results.some((r) => pattern.test(JSON.stringify(r.content))))
+        console.log("Linear result:", label);
+    }
     if (results.some((m) => m.isError === true)) console.log("Linear result: tool-error");
     if (results.some((m) => m.isError !== true)) console.log("Linear result: tool-response");
     console.log(
