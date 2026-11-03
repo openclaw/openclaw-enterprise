@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
@@ -11,6 +11,7 @@ import {
   isKubernetesNamespaceName,
   isKubernetesResourceName,
 } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
+import { modelEgressWarning } from "../apps/controller/src/drivers/compute/kubernetes/model-egress.ts";
 
 import {
   normalizeOpenAiBaseUrl,
@@ -316,6 +317,11 @@ function codexModelBaseUrl(runtime, diagnostics) {
       openAiBaseUrlSpellingMessage(field, value) ??
         `${field} requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.`,
     );
+  }
+  // Compute startup warns too: an operator's own NetworkPolicy can admit it (finding 2284).
+  const blocked = url === undefined ? undefined : modelEgressWarning(field, url);
+  if (blocked !== undefined) {
+    diagnostics.warnings.push(blocked);
   }
   return url ?? value;
 }
@@ -1843,12 +1849,14 @@ function buildRendered(profile, parsed, diagnostics) {
             // scheduling reservation unchanged. Memory requests cover measured
             // use between turns, so the scheduler places Agents by what they
             // actually hold; limits cover measured peaks.
-            // Gateways, embedded or dedicated, held 1.2-1.6 GiB between turns
-            // and peaked at 1.8-2.2 GiB; a dedicated Codex Gateway serving native
-            // admin chat was OOM-killed at 2Gi on its first coding turn.
+            // Since the OpenClaw pin of #2982, an embedded Gateway holds 2.3-2.4 GiB
+            // between turns and peaks at 2.5-2.8 GiB on its first turn, when
+            // OpenClaw starts most of its worker threads (finding 2700); a
+            // dedicated Codex Gateway serving native admin chat was OOM-killed
+            // at 2Gi on its first coding turn.
             gateway: {
-              requests: { cpu: "100m", memory: "1792Mi" },
-              limits: { cpu: "4", memory: "3Gi" },
+              requests: { cpu: "100m", memory: "2560Mi" },
+              limits: { cpu: "4", memory: "4Gi" },
             },
             // A Codex Harness held 0.45-0.57 GiB between turns and peaked at
             // 1 GiB running a test suite and 1.9 GiB running tsc; lint, tsc and
@@ -2288,6 +2296,17 @@ async function writePreflight(outDir, profile, diagnostics, output = {}) {
   return preflight;
 }
 
+function sameProfileFile(input, output) {
+  try {
+    const inputFile = statSync(input, { bigint: true });
+    const outputFile = statSync(output, { bigint: true });
+    return inputFile.dev === outputFile.dev && inputFile.ino === outputFile.ino;
+  } catch {
+    // Normal cleanup and input loading own missing, inaccessible, or looping paths.
+    return false;
+  }
+}
+
 // Renders one profile in-process: writes the same files as the CLI and returns its
 // preflight summary. `args` takes the CLI's parsed shape: { profile, input, outDir }.
 // It never writes to stdout or stderr or exits; a refusal without a preflight rejects.
@@ -2308,6 +2327,12 @@ export async function renderInstallationProfile(args) {
     installation: resolve(outDir, "installation.yaml"),
     preflight: resolve(outDir, "preflight.json"),
   };
+  // Check file identity before cleanup, including symlink and case-insensitive aliases.
+  if (Object.values(output).some((path) => sameProfileFile(resolve(args.input), path))) {
+    fail(
+      "--input must not name a generated output file; choose another input name or output directory.",
+    );
+  }
   // A failed rerender must not expose artifacts or a success report from a prior run.
   await Promise.all(Object.values(output).map((path) => rm(path, { force: true })));
   const diagnostics = { errors: [], warnings: [], prerequisites: [], nextSteps: [] };

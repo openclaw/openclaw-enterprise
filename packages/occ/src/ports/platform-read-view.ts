@@ -53,6 +53,7 @@ export function createPlatformReadView(
     agents: bindRepository(repositories.agents, lifetime, [
       "findAgent",
       "listAgents",
+      "hasAgentNamed",
       "findAgentForBrowsing",
       "listAgentsForBrowsing",
       "listAgentReferences",

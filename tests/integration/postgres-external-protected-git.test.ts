@@ -36,6 +36,7 @@ import {
 import { createBackendController } from "../helpers/postgres-backend-state.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
@@ -43,6 +44,7 @@ import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 import {
   expireStoppedClaims,
+  nextMaintenancePass,
   settleRevisionMaintenance,
   waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
@@ -61,6 +63,7 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import { PostgresPlatformState, ResourceStateConflictError } from "../../packages/occ/src/index.ts";
 
 const conversationRequired = process.env.OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION === "1";
 const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
@@ -73,9 +76,19 @@ if (conversationRequired) {
   await access(codex, constants.X_OK);
 }
 
+// The worker reconciles a protected Git Driver every second. Cases here count reconcile passes
+// and wait for passes to settle deliveries, so every binding in this file uses the same loop with
+// a shorter wait between passes.
+const transportOptions = { reconcileIntervalMs: 100 };
+
 // Production package selection, OCC deployment, worker and custody. The external package,
 // its workload, Kubernetes placement, GitHub and the private Git origin are controlled locally.
 const journeyOptions = { ...requiresPostgres, timeout: 240_000 };
+test(
+  "protected Codex artifact admission freezes the acknowledged subset and refuses unsupported or ignored purpose",
+  journeyOptions,
+  externalGitJourney("repository", true),
+);
 test(
   "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
   journeyOptions,
@@ -116,6 +129,10 @@ function repositoryConfiguration(input: {
   apiOrigin: string;
 }) {
   const base = createInstallationDriverConfiguration();
+  // Dedicated Agents need gateway routing with runtime storage (finding 2349); routing derives
+  // the Gateway client peer.
+  const compute = base.drivers.compute.configuration;
+  const { gatewayClients: _gatewayClients, ...network } = compute.network;
   return {
     ...base,
     presets: { includeDefaults: false },
@@ -139,6 +156,19 @@ function repositoryConfiguration(input: {
     },
     drivers: {
       ...base.drivers,
+      compute: {
+        ...base.drivers.compute,
+        configuration: {
+          ...compute,
+          network,
+          gatewayRouting: {
+            hostname: "agents.example.test",
+            gatewayName: "gateways",
+            gatewayNamespace: "occ-system",
+            envoyNamespace: "envoy",
+          },
+        },
+      },
       sandbox: { id: input.id, package: input.id, configuration: input.sandbox },
       credential_proxy: { id: input.id, configuration: {} },
     },
@@ -163,7 +193,7 @@ test("production composition separates repository policy from protected and expl
       })),
     })),
   };
-  await writeFile(registryPath, JSON.stringify(registry));
+  await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
   const path = join(directory, "installation.json");
   const configuration = repositoryConfiguration({
     ...origin,
@@ -332,6 +362,7 @@ function externalGitJourney(
     | "online-installation"
     | "reducible-installation"
     | "lost-rotation",
+  artifactAdmissionOnly = false,
 ) {
   return async (t: TestContext) => {
     let prepared: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
@@ -368,9 +399,14 @@ function externalGitJourney(
       };
     };
     let deliveryDiagnostic = () => ({});
+    // Completed passes, for nextMaintenancePass.
+    const completions: Readonly<Record<string, unknown>>[] = [];
     const emit = (event: Readonly<Record<string, unknown>>) => {
       if (typeof event.event !== "string") {
         return;
+      }
+      if (event.event === "worker.completed") {
+        completions.push(event);
       }
       const code = typeof event.code === "string" ? event.code : undefined;
       const outcome = typeof event.outcome === "string" ? event.outcome : undefined;
@@ -475,7 +511,8 @@ function externalGitJourney(
       join(entry, "repository-git.mjs")
     )) as typeof import("../fixtures/driver-packages/protected-execution-driver/repository-git.ts");
     const registryPath = join(directory, "registry.json");
-    await writeFile(registryPath, JSON.stringify(registry));
+    // The production loader refuses group-writable registry files, including under umask 0002.
+    await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
     const path = join(directory, "installation.json");
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const { certFile } = tls;
@@ -563,6 +600,8 @@ function externalGitJourney(
             implementation: apiDrivers.computeDriver.implementation,
             protectedDriver: apiOwner,
             credentialGatewayDriver: modelGateway,
+            // As production composition selects it; this test never enrolls a node.
+            nodeEnrollment: createGatewayNodeEnrollment(async () => "unused"),
           },
         )
       : (apiDrivers.computeDriver as KubernetesComputeDriver);
@@ -582,7 +621,13 @@ function externalGitJourney(
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
     prepared = await startOwner();
-    transport = await bindRepositoryGitTransport(drivers, prepared, f.observerPool, emit);
+    transport = await bindRepositoryGitTransport(
+      drivers,
+      prepared.protectedGit,
+      f.observerPool,
+      emit,
+      transportOptions,
+    );
     assert.ok(transport);
     const { peer } = cedar;
     deliveryDiagnostic = () => ({
@@ -597,6 +642,10 @@ function externalGitJourney(
     let preparations = 0;
     let withdrawalStarted = false;
     let preparationsBeforeWithdrawal: number;
+    // The assertion in prepareRevision below throws inside a worker pass, which only records the
+    // failure; this count fails the test.
+    const assertNoPreparationAfterWithdrawal = () =>
+      assert.equal(preparations, preparationsBeforeWithdrawal, "must not prepare after withdrawal");
     let checkedNegativeCapability = false;
     let stopAttempts = 0;
     t.after(() => {
@@ -926,6 +975,93 @@ function externalGitJourney(
       resolveApprovedHarness,
     );
     const deploy = () => controller.deployAgent(who, key, resolveApprovedHarness);
+    if (artifactAdmissionOnly) {
+      // This controlled external Driver proves OCC admission and PostgreSQL freezing.
+      // Native OpenShell artifact enforcement is qualified separately with shipped images.
+      const sandbox = apiOwner.require("sandbox");
+      const original = sandbox.admitProtectedCodexArtifactPolicy!;
+      const defaults = {
+        "codex-artifacts": {
+          name: "codex-artifacts",
+          binaries: [
+            {
+              path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+            },
+          ],
+          endpoints: [
+            {
+              host: "assets.example.test",
+              ports: [443],
+              protocol: "rest",
+              enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+              access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+            },
+          ],
+        },
+      };
+      const admission = (version: number) => ({
+        purpose: "protected-codex-artifacts",
+        declaredRuleNames: ["codex-artifacts"],
+        snapshot: { ...original(version).snapshot, defaults },
+      });
+      const fresh = new PostgresPlatformState(pool);
+      const refused: Array<[string, unknown]> = [
+        ["unsupported purpose", undefined],
+        ["ordinary snapshot", (version: number) => admission(version).snapshot],
+        [
+          "ignored purpose",
+          (version: number) => ({ ...admission(version), purpose: "ordinary-network-policy" }),
+        ],
+        [
+          "undeclared extra rule",
+          (version: number) => ({
+            ...admission(version),
+            snapshot: {
+              ...admission(version).snapshot,
+              defaults: { ...defaults, ambient: defaults["codex-artifacts"] },
+            },
+          }),
+        ],
+        [
+          "duplicate declaration",
+          (version: number) => ({
+            ...admission(version),
+            declaredRuleNames: ["codex-artifacts", "codex-artifacts"],
+          }),
+        ],
+      ];
+      try {
+        for (const [name, producer] of refused) {
+          await t.test(name, async () => {
+            Reflect.set(sandbox, "admitProtectedCodexArtifactPolicy", producer);
+            await assert.rejects(deploy, ResourceStateConflictError);
+            assert.deepEqual(
+              await fresh.read((view) => view.revisions.listRevisions(namespaceId, agentId)),
+              [],
+            );
+            assert.equal(
+              gh.issuesOfTokens.length,
+              0,
+              "refused admission cannot reach worker issuance",
+            );
+          });
+        }
+        Reflect.set(sandbox, "admitProtectedCodexArtifactPolicy", admission);
+        const expected = structuredClone(admission(1).snapshot);
+        const admitted = await deploy();
+        // A changed producer/default cannot broaden the previously stored revision.
+        defaults["codex-artifacts"].endpoints[0]!.host = "changed.example.test";
+        const stored = await fresh.read((view) =>
+          view.revisions.findRevision(namespaceId, agentId, admitted.id),
+        );
+        assert.deepEqual(stored?.sandboxPolicy, expected);
+        assert.equal(gh.issuesOfTokens.length, 0);
+        await controller.stopAgent(who, namespaceId, agentId);
+      } finally {
+        Reflect.set(sandbox, "admitProtectedCodexArtifactPolicy", original);
+      }
+      return;
+    }
     if (broad) {
       capability.profile = "repository_git";
       await assert.rejects(deploy, /did not confirm installation-wide repository access/);
@@ -1528,7 +1664,13 @@ function externalGitJourney(
           await transport!.close();
           await prepared.close();
           prepared = await startOwner();
-          transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+          transport = await bindRepositoryGitTransport(
+            drivers,
+            prepared.protectedGit,
+            pool,
+            emit,
+            transportOptions,
+          );
           await expireStoppedClaims(f, revision);
           await f.start(compute, {
             emit,
@@ -1603,7 +1745,7 @@ function externalGitJourney(
             10_000,
           );
           await deniedFetch();
-          assert.equal(preparations, preparationsBeforeWithdrawal);
+          assertNoPreparationAfterWithdrawal();
           assert.equal(stopAttempts, 0);
           assert.deepEqual((await readReduction()).records, []);
           peer.reduction.loseReply = true;
@@ -1695,7 +1837,7 @@ function externalGitJourney(
             { operation: original.request, current: original.request.expected },
           ]);
           assert.deepEqual(await readDelivery(), settled);
-          assert.equal(preparations, preparationsBeforeWithdrawal);
+          assertNoPreparationAfterWithdrawal();
           assert.equal(stopAttempts, 0);
           t.diagnostic(
             `withdrawal settled: ${JSON.stringify({
@@ -1748,6 +1890,11 @@ function externalGitJourney(
         ).length,
         issues: gh.issuesOfTokens.length,
       });
+      // Withdraw between worker passes, and snapshot the provider once none is running. A pass
+      // that checked the approval just before removal may still prepare after it commits; its
+      // Git is still denied per request and cleanup reduces after it. Every pass that starts
+      // after the withdrawal must never prepare.
+      await settleRevisionMaintenance(f, revision);
       const before = providerTraffic();
       const decisions = peer.decisions.length;
       if (reducible) {
@@ -1757,10 +1904,6 @@ function externalGitJourney(
           releaseReduction = resolve;
         });
         peer.reduction.beforeApply = () => hold;
-        // Withdraw between worker passes. A pass that checked the approval just before removal
-        // may still prepare after it commits; its Git is still denied per request and cleanup
-        // reduces after it. Every pass that starts after the withdrawal must never prepare.
-        await settleRevisionMaintenance(f, revision);
       }
       preparationsBeforeWithdrawal = preparations;
       withdrawalStarted = true;
@@ -1820,7 +1963,13 @@ function externalGitJourney(
         await transport!.close();
         await prepared.close();
         prepared = await startOwner();
-        transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared.protectedGit,
+          pool,
+          emit,
+          transportOptions,
+        );
         await expireStoppedClaims(f, revision);
         await f.start(compute, {
           emit,
@@ -1852,7 +2001,7 @@ function externalGitJourney(
         assert.equal(peer.reduction.attempts, 1, "lost acknowledgment never replays POST");
         assert.equal(peer.reduction.applies, 1);
         t.diagnostic("reduction after replacement: attempts=1 applies=1");
-        assert.equal(preparations, preparationsBeforeWithdrawal);
+        assertNoPreparationAfterWithdrawal();
         assert.equal(
           (await f.state.read((view) => view.agents.findAgent(namespaceId, agentId)))
             ?.activeRevisionId,
@@ -1902,7 +2051,7 @@ function externalGitJourney(
         t.diagnostic(
           "final reduction: attempts=2 applies=2; metadata requests=2, final read denied",
         );
-        assert.equal(preparations, preparationsBeforeWithdrawal);
+        assertNoPreparationAfterWithdrawal();
         assert.equal(independentRequests, 2, "deny-all prevents a new independent origin request");
         assert.equal(
           (await f.state.read((view) => view.agents.findAgent(namespaceId, agentId)))
@@ -1912,18 +2061,27 @@ function externalGitJourney(
       }
       if (broad) {
         await broad.installation.verifyTokenStillWorks();
-        t.diagnostic(
-          "one installation token, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal, zero provider connection or HTTP, then direct proof the same token was still accepted",
-        );
-        return;
+      } else {
+        assert.ok("tokenState" in gh);
+        const [, live] = gh.tokenState();
+        assert.equal(live?.uses, 2);
+        assert.equal(live.revoked, false);
+        assert.equal(await receiptCount(), 2);
       }
-      assert.ok("tokenState" in gh);
-      const [, live] = gh.tokenState();
-      assert.equal(live?.uses, 2);
-      assert.equal(live.revoked, false);
-      assert.equal(await receiptCount(), 2);
+      // The worker keeps running. A maintenance pass that starts after the withdrawal must
+      // neither prepare nor reach the provider.
+      const settledTraffic = providerTraffic();
+      await nextMaintenancePass(f, revision, completions);
+      assertNoPreparationAfterWithdrawal();
+      assert.deepEqual(
+        providerTraffic(),
+        settledTraffic,
+        "maintenance after withdrawal reaches no provider",
+      );
       t.diagnostic(
-        "fetched two previously absent commits using distinct material; withdrawn request reached the same sender, with zero additional origin connections or HTTP requests",
+        broad
+          ? "one installation token, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal, zero provider connection or HTTP, then direct proof the same token was still accepted; a later maintenance pass did not prepare"
+          : "fetched two previously absent commits using distinct material; withdrawn request reached the same sender, with zero additional origin connections or HTTP requests; a later maintenance pass did not prepare",
       );
     } catch (error) {
       failed = true;

@@ -11,6 +11,7 @@ import {
   settledView,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // The page header (UX plan D3, spec 3.2): collections show the Namespace selector as one compact
 // 32 px control beside Refresh; an Agent's page and Create Agent lead with ← Agents and carry the
@@ -152,7 +153,7 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
     await page.getByRole("heading", { name: LONG_NAME, level: 1 }).waitFor();
     await page
       .locator(".content .page-header")
-      .getByRole("button", { name: "Create new version" })
+      .getByRole("button", { name: "Open draft" })
       .waitFor();
     await page.locator("#namespace-selector:not(:disabled)").waitFor();
 
@@ -176,7 +177,7 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
       {
         "← Agents": "header",
         Refresh: "actions",
-        "Create new version": "actions",
+        "Open draft": "actions",
         "Copy Agent ID": "meta",
         Namespace: "meta",
       },
@@ -211,6 +212,12 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
         );
       }
     }
+
+    // Replacing the rail with a picker must not introduce horizontal overflow on phones.
+    const picker = page.getByRole("combobox", { name: "Viewing version", exact: true });
+    const bounds = await picker.boundingBox();
+    assert.ok(bounds, `${size}: picker is visible`);
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= viewport.width, `${size}: picker fits`);
 
     // The copy button puts the ID on the clipboard and says so.
     await header.getByRole("button", { name: "Copy Agent ID" }).click();
@@ -273,6 +280,25 @@ test("Create Agent leads with ← Agents and puts the Namespace under its title"
     return { title: size(".page-header h1"), card: size(".launch-intro h2") };
   });
   assert.deepEqual(sizes, { title: "24px", card: "18px" });
+  // The intro promises nothing the Installation may not offer: repository access needs
+  // repository settings (finding 2404).
+  assert.equal(
+    await page.locator(".launch-intro > p.muted").textContent(),
+    "Choose a model and give your Agent a place to work.",
+  );
+  // Both start cards use the card padding at every width; the intro kept 24px on a phone while
+  // the Preset card narrowed to 16px (finding 2404).
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const paddings = await page.evaluate(() =>
+      [".launch-intro", ".launch-preset"].map(
+        (selector) =>
+          globalThis.getComputedStyle(globalThis.document.querySelector(selector)!).padding,
+      ),
+    );
+    assert.equal(paddings[0], paddings[1], `${width}: ${paddings.join(" vs ")}`);
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
 
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByRole("heading", { name: "Agents", exact: true, level: 1 }).waitFor();
@@ -288,13 +314,7 @@ test("Settings offers no Namespace recovery, which needs the selector it no long
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/backends?namespace=${revoked.id}`);
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
-  fixture.policy.restrictions.push({
-    id: "deny-revoked-read",
-    namespaceId: revoked.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "read", "namespace", { namespaceId: revoked.id });
 
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   const recover = page.getByRole("button", { name: "Switch Namespace", exact: true });

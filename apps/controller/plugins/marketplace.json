@@ -1,0 +1,5 @@
+{
+  "name": "oce-managed",
+  "owner": { "name": "OpenClaw Enterprise" },
+  "plugins": [{ "name": "oce-google-workspace", "source": "./oce-google-workspace" }]
+}

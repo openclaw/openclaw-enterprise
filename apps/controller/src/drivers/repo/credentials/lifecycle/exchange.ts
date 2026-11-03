@@ -30,6 +30,7 @@ export interface ExecutingExchange {
 
 interface ExchangeOwner {
   readonly clock: Clock;
+  admitted(): boolean;
   finish(): void;
   cancel(): void;
 }
@@ -48,6 +49,10 @@ export async function executeExchange(
   let senderEntered = false;
   let acceptingIO = true;
   let senderWork: Promise<ExchangeOutcome> | undefined;
+  let senderFinished = false;
+  let dispatchAttempted = false;
+  let dispatchClosed = false;
+  let dispatchWork: Promise<unknown> | undefined;
   const failure = (): ExchangeOutcome =>
     Object.freeze({
       kind: exchange.dispatched ? "possibly-dispatched" : "not-dispatched",
@@ -60,17 +65,39 @@ export async function executeExchange(
       const bounds = Object.freeze({ signal, deadlineMonoMs: exchange.deadline });
       let assertSendStart: () => void;
       const gate: DispatchGate = Object.freeze({
-        dispatch<T>(stop: () => void, open: () => T): T {
-          if (exchange.dispatched || exchange.finished || exchange.controller.signal.aborted) {
+        dispatch<T>(stop: () => void, open: () => T, assertReady?: () => void): T | Promise<T> {
+          if (dispatchAttempted) {
             throw new Error("DISPATCH_CLOSED");
           }
-          if (owner.clock.monotonicNow() >= exchange.deadline) {
-            throw new Error("DISPATCH_EXPIRED");
+          dispatchAttempted = true;
+          const commit = () => {
+            if (
+              dispatchClosed ||
+              exchange.dispatched ||
+              exchange.finished ||
+              signal.aborted ||
+              senderFinished
+            ) {
+              throw new Error("DISPATCH_CLOSED");
+            }
+            if (owner.clock.monotonicNow() >= exchange.deadline) {
+              throw new Error("DISPATCH_EXPIRED");
+            }
+            assertReady?.();
+            assertSendStart();
+            exchange.cancellations.add(stop);
+            exchange.dispatched = true;
+            return open();
+          };
+          if (!owned?.authorizeStanding) {
+            return commit();
           }
-          assertSendStart();
-          exchange.cancellations.add(stop);
-          exchange.dispatched = true;
-          return open();
+          const decision = Promise.resolve()
+            .then(() => owned.authorizeStanding!())
+            .then(commit);
+          dispatchWork = decision;
+          void decision.catch(() => {});
+          return decision;
         },
         track(io: Promise<void>) {
           if (!acceptingIO || exchange.finished || exchange.io.size >= 16) {
@@ -89,7 +116,8 @@ export async function executeExchange(
         if (
           !plan.bindRequestDigest ||
           !requestDigestSha256 ||
-          !/^[0-9a-f]{64}$/.test(requestDigestSha256)
+          !/^[0-9a-f]{64}$/.test(requestDigestSha256) ||
+          !owner.admitted()
         ) {
           return failure();
         }
@@ -99,10 +127,15 @@ export async function executeExchange(
         if ("kind" in authorized) {
           return authorized;
         }
-        assertSendStart = authorized.assertSendStart;
-        if (signal.aborted) {
+        if (signal.aborted || !owner.admitted()) {
           return authorized.settle ? authorized.settle("not-submitted") : failure();
         }
+        assertSendStart = () => {
+          if (!owner.admitted()) {
+            throw new Error("DISPATCH_CLOSED");
+          }
+          authorized.assertSendStart();
+        };
         senderEntered = true;
         senderWork = send(
           {
@@ -119,25 +152,41 @@ export async function executeExchange(
         // A token may still be valid at the provider after approval was removed or the
         // execution stopped. Recheck here even when acquisition used a cached token.
         await owned!.authorizeStanding?.();
-        owned!.lifecycle.assertUse(lease, exchange.deadline);
         assertSendStart = () => owned!.lifecycle.assertUse(lease, exchange.deadline);
-        outcome = await owned!.driver.withAuthentication(lease.ref, plan, (request) => {
-          if (senderEntered || signal.aborted || request.plan !== plan) {
-            throw new Error("SENDER_CLOSED");
-          }
-          senderEntered = true;
-          senderWork = Promise.resolve().then(() => send(request, { ...bounds, gate }));
-          void senderWork.catch(() => {});
-          return senderWork;
-        });
+        assertSendStart();
+        const authenticate = owned!.driver.prepareAuthentication(lease.ref, plan);
+        outcome = await owned!.lifecycle.withUseBytes(lease, (bytes) =>
+          authenticate(bytes, (request) => {
+            if (senderEntered || exchange.finished || signal.aborted || request.plan !== plan) {
+              throw new Error("SENDER_CLOSED");
+            }
+            senderEntered = true;
+            senderWork = Promise.resolve().then(() => send(request, { ...bounds, gate }));
+            void senderWork.then(
+              () => {
+                senderFinished = true;
+              },
+              () => {
+                senderFinished = true;
+              },
+            );
+            return senderWork;
+          }),
+        );
       }
       const sent = await senderWork;
+      await dispatchWork;
       if (!senderEntered || outcome !== sent) {
         return failure();
       }
-      return outcome.kind === "completed" && !exchange.dispatched ? failure() : outcome;
+      return (outcome.kind === "completed" && !exchange.dispatched) ||
+        (outcome.kind === "not-dispatched" && exchange.dispatched)
+        ? failure()
+        : outcome;
     } catch {
-      return failure();
+      // An authenticator can reject after admitting a sender. Close its gate
+      // before joining it, then classify from the settled dispatch state.
+      dispatchClosed = true;
     } finally {
       await senderWork?.catch(() => {});
       acceptingIO = false;
@@ -147,6 +196,7 @@ export async function executeExchange(
       }
       owner.finish();
     }
+    return failure();
   })();
   try {
     return await waitWithin(work, exchange.controller.signal, exchange.deadline, owner.clock);

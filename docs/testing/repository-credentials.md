@@ -22,7 +22,7 @@ node --test tests/integration/repository-credentials-git.test.mjs \
   tests/integration/repository-credentials-service-loss.test.mjs
 ```
 
-The source Git tests require a `node:24-bookworm` image and `gh` **2.100.0**
+The source Git tests require a `node:24-bookworm` image and `gh` **2.103.2**
 at `/usr/bin/gh`. Override these with `REPOSITORY_CREDENTIALS_NODE_IMAGE` and
 `REPOSITORY_CREDENTIALS_GH_BINARY`. Missing prerequisites fail the tests. The
 fixtures use a controlled provider and verified TLS; they do not prove live GitHub
@@ -93,7 +93,7 @@ a running Kubernetes Pod or model turn.
 
 ```sh
 pnpm credentials:build
-node --test tests/integration/repository-credentials-package.test.mjs
+node --test tests/integration/repository-credentials-package.test.ts
 ```
 
 This verifies the emitted service and client without workspace source or runtime
@@ -108,7 +108,8 @@ docker build --builder default --load --pull=false \
   -f tests/fixtures/repository-credentials/Dockerfile.qualification \
   -t repository-credentials-qualification:test .
 REPOSITORY_CREDENTIALS_TEST_IMAGE=repository-credentials-qualification:test \
-  node --test tests/integration/repository-credentials-container.test.mjs
+  node --test tests/integration/repository-credentials-container.test.mjs \
+    tests/integration/repository-credentials-gh.test.mjs
 ```
 
 The combined suite runs the emitted service/client cases, native Git paths, pinned

@@ -113,6 +113,15 @@ and set a reachable resolver for a fresh start. That recovery changes only the
 owned node's resolver. If startup rolls the cluster back, wait until that
 command exits before starting again.
 
+## Local Agent Sandbox controller image pull fails
+
+Inspect controller Pod events in `agent-sandbox-system` with the
+[startup kubeconfig and context](#local-startup-stalls-on-cert-manager).
+`ImagePullBackOff` with resets from `cdn.registry.k8s.io` indicates failed image
+delivery. Verify node access to registry and redirected blob hosts. Local manifest
+overrides do not preload images. Use a [verified image cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache),
+or restore registry connectivity. Preserve image versions and TLS verification.
+
 ## Local Codex sandbox check fails
 
 Kubernetes Compute startup with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` verifies the
@@ -295,6 +304,19 @@ worker logs and the [tenant RoleBindings](../deploy/production-agents.md#grant-t
 After fixing the cause, repeat `occ installation get` and confirm the Namespace
 reports `ready` before creating an Agent there. A healthy control plane does
 not prove an Agent has deployed or can run a model.
+
+## A deployment fails because Kubernetes refused a Secret
+
+`KUBERNETES_SECRET_WRITE_FORBIDDEN` means Kubernetes answered `403` to one of
+the version's private Secret writes or readbacks, so the worker failed the
+deployment without retrying. A preparation failure's
+`worker.compute-prepare-failed` log line names the `step`. Check that the worker's
+[tenant RoleBindings](../deploy/production-agents.md#grant-tenant-rolebindings)
+grant `get`, `create` and `update` on `secrets` in the Agent's Kubernetes
+namespaces (with an execution cluster, also the control cluster's Gateway
+namespace), and that no admission policy or ResourceQuota refuses Secrets
+there. Then deploy again. A running version's maintenance does not fail: it
+retries and recovers by itself once the grant is fixed.
 
 ## An Agent's Gateway or Harness Pod stays unready
 

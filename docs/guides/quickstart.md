@@ -11,13 +11,15 @@ cannot deploy Agents. A separate [Compose OCC with Kubernetes compute profile](d
 has fewer configured capabilities. To install OCC itself in a cluster you already operate,
 use [Kubernetes Setup](kubernetes-setup.md).
 
+For local OpenShell with native Git or Codex plugins, start with [Setup OCE on local k3d](deploy/local-openshell-setup.md). The instructions below use the profile without OpenShell.
+
 ## Before you start
 
 Run the commands below from the repository root on Linux or macOS. You need:
 
 - Docker Engine, k3d, kubectl, and Helm. Podman users should first
   check the [local Kubernetes requirements](deploy/local-kubernetes-development.md#start-the-profile).
-- The Go version in `go.mod`, Node.js 24 or later, and the pnpm version pinned
+- The Go version in `go.mod`, Node.js 24.22.1 or later, and the pnpm version pinned
   in `package.json`.
 - About 20 GB of free container-engine storage for the first build. On macOS
   that space is inside the Podman or Docker virtual machine rather than on your
@@ -35,10 +37,10 @@ key available when you continue to [deploy your first Agent](first-agent.md).
 ## Start the local stack
 
 By default, startup builds this checkout. To use published images, first
-[select the `latest` pair](#optional-use-matching-published-images).
+[select the published pair](#optional-use-matching-published-images).
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
@@ -127,13 +129,13 @@ if you used a custom state directory or service-key location.
 
 ## Optional: use matching published images
 
-Follow [Use the latest published images](deploy/published-images.md) to pull both
-`latest` tags and select their matching source checkout. Keep its resolved image
+Follow [Use published controller and runtime images](deploy/published-images.md) to pull
+the `latest` or `stable` pair and select its matching source checkout. Keep its resolved image
 variables in the shell used for startup:
 
 ```bash
-export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the latest controller image first}"
-export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the latest runtime image first}"
+export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller image first}"
+export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the published runtime image first}"
 ```
 
 Return to [Start the local stack](#start-the-local-stack) in that checkout.

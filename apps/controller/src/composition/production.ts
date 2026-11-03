@@ -1,3 +1,4 @@
+import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
@@ -68,6 +69,11 @@ export interface ProductionConfig {
   readonly gatewayApiKeyPath?: string;
   readonly channelDirectoryProxyUrl?: string;
   readonly channelDirectoryManagedProxyHost?: string;
+  /**
+   * OCC_API_HTTPS_EGRESS_OPEN: a sign-in egress rule lets the API reach any address on TCP 443,
+   * so Slack can answer without a proxy. Default: closed.
+   */
+  readonly apiHttpsEgressOpen?: boolean;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
@@ -139,6 +145,9 @@ export async function composeProduction(
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
 
+  let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
+  const close = (database: { close(): Promise<void> }) =>
+    closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
@@ -299,6 +308,9 @@ export async function composeProduction(
             config.channelDirectoryManagedProxyHost === undefined
               ? []
               : [config.channelDirectoryManagedProxyHost],
+          // A closed egress reaches Slack only through a proxy; an open one may reach it
+          // directly, so a timeout there stays a retryable outage (finding 2533).
+          expectProxy: config.apiHttpsEgressOpen !== true,
         },
       );
       controller.registerDriver(channelDriver);
@@ -391,24 +403,18 @@ export async function composeProduction(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     await preparedGitHub?.connect(pool);
-    const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
+    exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
       return { status: "ready" };
     });
-    app.addHook("onClose", async () => {
-      await exchange?.close();
-      await config.drivers.protectedDriver?.close();
-      await preparedGitHub?.close();
-      await state.close();
-    });
+    app.addHook("onClose", () => close(state));
     phaseCompleted("routes");
     return app;
   } catch (error) {
-    await config.drivers.protectedDriver?.close();
-    await preparedGitHub?.close();
-    await pool.end();
+    // Preserve the startup failure after attempting each cleanup.
+    await close({ close: () => pool.end() }).catch(() => undefined);
     throw error;
   }
 }

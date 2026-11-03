@@ -219,11 +219,34 @@ func dockerHubReference(reference string) (string, bool) {
 func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string, error) {
 	image := r.setting("OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart")
 	if r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
-		if _, err := r.output(ctx, r.engine, "image", "inspect", image); err != nil {
-			return "", fmt.Errorf("explicitly selected runtime image must already exist locally: %s", image)
+		if err := r.requireSelectedDevelopmentImage(ctx, "runtime", image); err != nil {
+			return "", err
 		}
 	} else {
-		if err := r.run(ctx, r.engine, "build", "-f", "deploy/runtime/Dockerfile", "--tag", image, "."); err != nil {
+		const sourcePath = "deploy/runtime/openclaw-source.json"
+		data, err := os.ReadFile(filepath.Join(r.opts.Repository, sourcePath))
+		if err != nil {
+			return "", fmt.Errorf("read runtime source identity: %w", err)
+		}
+		var source struct {
+			Commit              string `json:"commit"`
+			SourceArchiveSHA256 string `json:"sourceArchiveSha256"`
+			BuildTimestamp      string `json:"buildTimestamp"`
+		}
+		if err := json.Unmarshal(data, &source, json.RejectUnknownMembers(true)); err != nil {
+			return "", fmt.Errorf("invalid %s: %w", sourcePath, err)
+		}
+		timestamp, err := time.Parse(time.RFC3339, source.BuildTimestamp)
+		if !regexp.MustCompile(`^[a-f0-9]{40}$`).MatchString(source.Commit) ||
+			!regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(source.SourceArchiveSHA256) ||
+			err != nil || len(source.BuildTimestamp) != 20 || timestamp.Format(time.RFC3339) != source.BuildTimestamp {
+			return "", fmt.Errorf("invalid %s: require a lowercase 40-character commit, 64-character archive SHA-256, and UTC build timestamp YYYY-MM-DDTHH:mm:ssZ", sourcePath)
+		}
+		if err := r.run(ctx, r.engine, "build", "-f", "deploy/runtime/Dockerfile",
+			"--build-arg", "OPENCLAW_COMMIT="+source.Commit,
+			"--build-arg", "OPENCLAW_SOURCE_SHA256="+source.SourceArchiveSHA256,
+			"--build-arg", "OPENCLAW_BUILD_TIMESTAMP="+source.BuildTimestamp,
+			"--tag", image, "."); err != nil {
 			return "", err
 		}
 	}
@@ -231,6 +254,9 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 }
 
 func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState, image string) (result string, resultErr error) {
+	if port, path, ok := r.imageRegistry.source(image); ok {
+		return r.pullDevelopmentImage(ctx, s, image, port, path)
+	}
 	selected := image
 	if strings.Contains(image, "@") {
 		digest := sha256.Sum256([]byte(image))
@@ -266,14 +292,32 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
-	archive := filepath.Join(s.directory, "development-import.tar")
+	// Docker's containerd image store cannot save a manifest-list reference
+	// as one complete image (see resolveDevelopmentImageSource), so point the
+	// staging tag at the platform child the list names for this host when there
+	// is one.
+	resolved, err := r.resolveDevelopmentImageSource(ctx, image, platform)
+	if err != nil {
+		return "", err
+	}
+	if resolved != image {
+		if err := r.run(ctx, r.engine, "tag", resolved, selected); err != nil {
+			return "", err
+		}
+	}
+	// Images are imported concurrently, so each needs its own archive.
+	archive := filepath.Join(s.directory, developmentImportArchive(selected))
 	defer func() {
 		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
 		}
 	}()
+	// The staging tag names one complete image once it points at the platform
+	// child, so the archive needs no platform selection. Without a resolved
+	// child, keep the platform filter: it still works where the engine can
+	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" {
+	if r.engine == "docker" && resolved == image {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, selected)
@@ -324,6 +368,13 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	return reference, nil
 }
 
+// developmentImportArchive names the archive importDevelopmentImage saves an
+// image to before importing it into the node.
+func developmentImportArchive(image string) string {
+	sum := sha256.Sum256([]byte(image))
+	return fmt.Sprintf("development-import-%x.tar", sum[:6])
+}
+
 // The local profile trusts only Pod loopback; first-agent verifies model access
 // with the separate loopback password. Routed installations supply Envoy source CIDRs.
 // statusProxySource is the API server's Pod proxy source (developmentStatusProxySource).
@@ -340,11 +391,11 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	resources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "256Mi"}, "limits": map[string]string{"cpu": "2", "memory": "2Gi"}}
 	// Memory matches the installation profiles (scripts/render-installation-profile.mjs):
 	// requests cover measured use between turns and limits cover measured peaks.
-	// Gateways held 1.2-1.6 GiB and peaked at 2.2 GiB; a dedicated Codex Gateway
-	// with native admin chat was OOM-killed at 2Gi. A Codex Harness held about
+	// Gateways hold 2.3-2.4 GiB and peak at 2.8 GiB on their first turn; a dedicated
+	// Codex Gateway with native admin chat was OOM-killed at 2Gi. A Codex Harness held about
 	// 0.5 GiB; running lint, tsc and tests together it was OOM-killed at 2Gi and
 	// reached a 4Gi limit.
-	gatewayResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "1792Mi"}, "limits": map[string]string{"cpu": "2", "memory": "3Gi"}}
+	gatewayResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "2560Mi"}, "limits": map[string]string{"cpu": "2", "memory": "4Gi"}}
 	harnessResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "768Mi"}, "limits": map[string]string{"cpu": "2", "memory": "6Gi"}}
 	config := map[string]any{
 		"sandboxNetworkPolicyCeiling": s.SandboxNetworkPolicyCeiling,
@@ -369,11 +420,11 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
 		compute["runtime"].(map[string]any)["codexSeccompProfile"] = codexSeccompProfile
 	}
+	config["drivers"].(map[string]any)["plugin"] = map[string]any{
+		"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
+	}
 	if s.SandboxDriver == "none" {
 		config["presets"] = map[string]any{"includeDefaults": true}
-		config["drivers"].(map[string]any)["plugin"] = map[string]any{
-			"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
-		}
 	}
 	if s.SandboxDriver == "openshell" {
 		if openShell == nil {
@@ -430,8 +481,8 @@ const (
 // The container engine may run remotely, so the launcher's architecture is not authoritative.
 func openShellCodexBinaries() []string {
 	return []string{
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 	}
 }
 

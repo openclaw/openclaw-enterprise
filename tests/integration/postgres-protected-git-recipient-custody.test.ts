@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
+import { postgresRepositorySessions } from "../../packages/occ/src/state/postgres-repository-sessions.ts";
 import { CredentialDeliveries } from "../../packages/occ/src/index.ts";
 import type {
   AdmittedRepositoryBinding,
@@ -12,6 +13,8 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { fixture } from "../fixtures/prepared-repository-git.mjs";
+import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
@@ -323,6 +326,11 @@ test(
       { absent: "unprepared" },
       "the narrow sender cannot get the wide token",
     );
+    assert.deepEqual(
+      await host.githubRepository!.readMaterial(route, t.signal),
+      { absent: "unprepared" },
+      "a selected-repository sender cannot get the installation-wide token",
+    );
     // Deliberately lose the installation confirmation. Only provider retirement can settle the token;
     // changing the Agent's binding and disposing its session cannot adopt or replay that installation.
     const { preparationAttemptId, materialVersion } = read;
@@ -575,6 +583,9 @@ async function admitProtectedSession(
   f: Fixture,
   driver: DriverRegistrationRef,
   binding: AdmittedRepositoryBinding,
+  bindings: readonly AdmittedRepositoryBinding[] = [binding],
+  deadlineWallMs = f.deadlineWallMs,
+  pendingMember?: string,
 ) {
   const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } =
     f.revision as AgentRevision;
@@ -597,7 +608,10 @@ async function admitProtectedSession(
     },
     sandboxDriverId: driver.id,
     egressDriverId: driver.id,
-    repositoryGit: { ...repositoryCredentials!, bindings: [binding] },
+    repositoryGit: { ...repositoryCredentials!, bindings, deadlineWallMs },
+    ...(binding.profile === "github-repository" && {
+      repositoryGitAuthorization: "online-request" as const,
+    }),
     routes: [],
   };
   const installation = {
@@ -610,12 +624,16 @@ async function admitProtectedSession(
       configurationId: "one-config",
       policyHash: "one-policy",
       authorityScope: "execution" as const,
-      peerKeyId: "authenticated-test-peer",
+      ...(binding.profile !== "github-repository" && { peerKeyId: "authenticated-test-peer" }),
       repositoryGitRecipient: {
         providerId: "provider",
         attachmentEpoch: "epoch",
         processInstanceId: "process",
         networkInstanceId: "net",
+        ...(binding.profile === "github-repository" && {
+          deliveryProfile: "github_repository" as const,
+          authorization: "online-request" as const,
+        }),
         ...(binding.profile === "github-installation" && {
           deliveryProfile: "github_installation" as const,
         }),
@@ -624,7 +642,6 @@ async function admitProtectedSession(
   };
   await f.state.transact(async (u) => {
     const sessions = u.repositorySessions;
-    const { repositoryRef, profile } = binding;
     await u.agents.updateConfiguration(
       namespaceId,
       agentId,
@@ -633,38 +650,367 @@ async function admitProtectedSession(
       undefined,
       undefined,
       undefined,
-      [{ repositoryRef, profile }],
+      bindings.map(({ repositoryRef, profile }) => ({ repositoryRef, profile })),
     );
     await u.revisions.createRevision({
       ...(f.revision as AgentRevision),
       id: revisionId,
       revision: f.revision.revision + 1,
-      executionAdmission: { version: 4, mode: "protected" },
+      executionAdmission: {
+        version: binding.profile === "github-repository" ? 5 : 4,
+        mode: "protected",
+      },
       egressPlan: plan,
       repositoryCredentials: plan.repositoryGit,
     });
     assert.ok(
       await u.agents.compareAndSetActiveRevision(namespaceId, agentId, f.revision.id, revisionId),
     );
-    await sessions.createAttempt({
-      namespaceId,
-      agentId,
-      revisionId,
-      admissionId,
-      repositoryRef,
-      durationSeconds: 3600,
-      deadlineWallMs: f.deadlineWallMs,
-      createdAt,
-      brokerProtocol: 2,
-    });
-    await sessions.advanceAttempt({
-      admissionId,
-      expectedPhase: "opening",
-      phase: "open",
-      sessionId,
-      updatedAt: createdAt,
-    });
+    for (const member of bindings) {
+      const memberAdmission = member === binding ? admissionId : randomUUID();
+      await sessions.createAttempt({
+        namespaceId,
+        agentId,
+        revisionId,
+        admissionId: memberAdmission,
+        repositoryRef: member.repositoryRef,
+        durationSeconds: 3600,
+        deadlineWallMs,
+        createdAt,
+        brokerProtocol: 2,
+      });
+      if (member.repositoryRef === pendingMember) {
+        continue;
+      }
+      await sessions.advanceAttempt({
+        admissionId: memberAdmission,
+        expectedPhase: "opening",
+        phase: "open",
+        sessionId: member === binding ? sessionId : randomUUID(),
+        updatedAt: createdAt,
+      });
+    }
     await u.credentialSources.recordEgressInstallation(installation);
   });
   return { installation, sessionId, admissionId, revisionId };
+}
+
+for (const removal of [
+  "B session",
+  "B replacement",
+  "B deadline",
+  "NULL selection",
+  "empty selection",
+] as const) {
+  test(
+    `selected repository set retires after ${removal} across owner restart`,
+    requiresPostgres,
+    async (t) => {
+      const f = await fixture(t);
+      await disposeNativeSession(f);
+      const entries = [
+        { repositoryRef: "A", repository: "fixture/repository", repositoryId: "73" },
+        { repositoryRef: "B", repository: "fixture/second", repositoryId: "74" },
+      ];
+      const peer = await standingGitOrigin(t, f.revision.namespaceId, 600_000, undefined, false, {
+        entries,
+        selectedRepositoryIds: ["73", "74"],
+        permissions: { contents: "write", metadata: "read" },
+      });
+      const registry = { ...peer.registry, backendId: f.registry.backendId };
+      const bindings = entries.map(({ repositoryRef }) =>
+        resolveGitHubRepositoryBinding(registry, {
+          namespaceId: f.revision.namespaceId,
+          repositoryRef,
+          profile: "github-repository",
+        }),
+      );
+      const driver = {
+        id: "set-custody",
+        implementation: "custody-fixture",
+        configurationId: "c".repeat(64),
+      };
+      const start = () =>
+        f.startOwner({
+          controlSocket: undefined,
+          registry,
+          protectedGitDriver: driver,
+          privateKeyPath: peer.privateKeyPath,
+          custodyKeyPath: peer.custodyKeyPath,
+          apiOrigin: peer.gh.origin,
+          ca: peer.tls.ca,
+        });
+      const owner = await start();
+      const { installation, revisionId, admissionId, sessionId } = await admitProtectedSession(
+        f,
+        driver,
+        bindings[0]!,
+        bindings,
+        removal === "B deadline" ? Date.now() + 5000 : undefined,
+        "B",
+      );
+      const host = owner.protectedGit!;
+      const selected = host.online.githubRepository!;
+      const route = await host.recipients.observe(installation);
+      assert.ok(route);
+      await owner.maintain();
+      assert.equal(peer.gh.issuesOfTokens.length, 0, "an opening B cannot issue an A-only subset");
+      const pendingMember = await f.pool.query(
+        "SELECT admission_id FROM occ.repository_session_attempts WHERE revision_id=$1 AND repository_ref='B'",
+        [revisionId],
+      );
+      await f.state.transact((u) =>
+        u.repositorySessions.advanceAttempt({
+          admissionId: pendingMember.rows[0].admission_id,
+          expectedPhase: "opening",
+          phase: "open",
+          sessionId: randomUUID(),
+          updatedAt: new Date().toISOString(),
+        }),
+      );
+      await owner.maintain();
+      const material = await selected.readMaterial(route, t.signal);
+      assert.ok(material && "value" in material);
+      const version = {
+        preparationAttemptId: material.preparationAttemptId,
+        materialVersion: material.materialVersion,
+      };
+      const pending = await host.recipients.beginInstall(route, version);
+      assert.ok(pending);
+      const installedRoute = await host.recipients.confirmInstall(pending);
+      assert.ok(installedRoute);
+      const installed = { route: installedRoute, ...version };
+      const request = () => ({
+        sessionId,
+        exchangeId: randomUUID(),
+        requestDigestSha256: "a".repeat(64),
+        deadlineAt: new Date(Date.now() + 5000).toISOString(),
+        providerInstanceId: bindings[0]!.grant.providerInstanceId,
+        grantId: bindings[0]!.grant.grantId,
+        scope: "github-repository" as const,
+        installationId: registry.githubInstallationId,
+        repositories: entries.map(({ repositoryId, repository }) => ({ repositoryId, repository })),
+        operation: "receive-pack" as const,
+      });
+      assert.equal((await selected.authorize(request(), installed, t.signal)).kind, "allow");
+      // The use check compares the request's repository set with the token's exact grant:
+      // a request that also names an unselected C cannot use the A+B token.
+      const withC = [
+        ...request().repositories,
+        { repositoryId: "75", repository: "fixture/third" },
+      ];
+      assert.equal(
+        (await selected.authorize({ ...request(), repositories: withC }, installed, t.signal)).kind,
+        "denied",
+      );
+      const sessions = await f.pool.query(
+        "SELECT admission_id,repository_ref,phase FROM occ.repository_session_attempts WHERE revision_id=$1 ORDER BY repository_ref",
+        [revisionId],
+      );
+      assert.deepEqual(
+        sessions.rows.map((r) => [r.repository_ref, r.phase]),
+        [
+          ["A", "open"],
+          ["B", "open"],
+        ],
+      );
+      const useCount = async () =>
+        (
+          await f.pool.query(
+            "SELECT count(*)::int n FROM occ.prepared_repository_git_uses WHERE admission_id=$1",
+            [admissionId],
+          )
+        ).rows[0].n;
+      assert.equal(await useCount(), 1);
+      const originalSource = (
+        await f.pool.query("SELECT source FROM occ.prepared_github_families WHERE source_id=$1", [
+          "repository-git:" + admissionId,
+        ])
+      ).rows[0].source;
+      if (removal === "B session") {
+        // Pause the real authorization at B's row, then close B before releasing it.
+        // PostgreSQL's lock graph proves the wait; no timing-based synchronization.
+        const writer = await f.pool.connect();
+        let pending: ReturnType<typeof selected.authorize> | undefined;
+        try {
+          await writer.query("BEGIN");
+          const held = await writer.query(
+            "SELECT pg_backend_pid() pid FROM occ.repository_session_attempts WHERE admission_id=$1 FOR UPDATE",
+            [sessions.rows[1].admission_id],
+          );
+          pending = selected.authorize(request(), installed, t.signal);
+          await waitForLockWaiter(f.pool, held.rows[0].pid, "authorization waits for B", {
+            queryLike: "%FOR SHARE OF s,%",
+            timeoutMs: 3000,
+          });
+          await assert.rejects(
+            f.pool.query(
+              "SELECT FROM occ.repository_session_attempts WHERE admission_id=$1 FOR UPDATE NOWAIT",
+              [admissionId],
+            ),
+            { code: "55P03" },
+            "authorization already holds A before waiting for B",
+          );
+          assert.ok(
+            await postgresRepositorySessions(writer).advanceAttempt({
+              admissionId: sessions.rows[1].admission_id,
+              expectedPhase: "open",
+              phase: "closing",
+              updatedAt: new Date().toISOString(),
+            }),
+          );
+          await writer.query("COMMIT");
+        } finally {
+          await writer.query("ROLLBACK");
+          writer.release();
+        }
+        assert.ok(pending);
+        assert.equal(
+          (await pending).kind,
+          "denied",
+          "waiting authorization rechecks B after commit",
+        );
+      } else if (removal === "B replacement") {
+        await f.state.transact(async (u) => {
+          for (const [expectedPhase, phase] of [
+            ["open", "closing"],
+            ["closing", "disposed"],
+          ] as const) {
+            assert.ok(
+              await u.repositorySessions.advanceAttempt({
+                admissionId: sessions.rows[1].admission_id,
+                expectedPhase,
+                phase,
+                updatedAt: new Date().toISOString(),
+              }),
+            );
+          }
+          const replacement = randomUUID();
+          await u.repositorySessions.createAttempt({
+            namespaceId: f.revision.namespaceId,
+            agentId: f.revision.agentId,
+            revisionId,
+            admissionId: replacement,
+            repositoryRef: "B",
+            durationSeconds: 3600,
+            deadlineWallMs: f.deadlineWallMs,
+            createdAt: new Date().toISOString(),
+            brokerProtocol: 2,
+          });
+          await u.repositorySessions.advanceAttempt({
+            admissionId: replacement,
+            expectedPhase: "opening",
+            phase: "open",
+            sessionId: randomUUID(),
+            updatedAt: new Date().toISOString(),
+          });
+        });
+      } else if (removal === "B deadline") {
+        // Finite members share their immutable admitted deadline. A shorter B-only
+        // deadline is rejected by PostgreSQL; both rows remain open as real time passes.
+        await f.pool.query(
+          "SELECT pg_sleep(GREATEST(0, deadline_wall_ms/1000.0-extract(epoch FROM clock_timestamp())+0.01)) FROM occ.repository_session_attempts WHERE admission_id=$1",
+          [sessions.rows[1].admission_id],
+        );
+        const expired = await f.pool.query(
+          "SELECT repository_ref,phase,deadline_wall_ms < extract(epoch FROM clock_timestamp())*1000 expired FROM occ.repository_session_attempts WHERE revision_id=$1 ORDER BY repository_ref",
+          [revisionId],
+        );
+        assert.deepEqual(expired.rows, [
+          { repository_ref: "A", phase: "open", expired: true },
+          { repository_ref: "B", phase: "open", expired: true },
+        ]);
+      } else if (removal === "empty selection") {
+        await f.state.transact((u) =>
+          u.agents.updateConfiguration(
+            f.revision.namespaceId,
+            f.revision.agentId,
+            f.revision.configurationId,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            [],
+          ),
+        );
+      } else {
+        await f.pool.query("UPDATE occ.agents SET repository_bindings=$2::jsonb WHERE id=$1", [
+          f.revision.agentId,
+          null,
+        ]);
+      }
+      assert.deepEqual(
+        (
+          await f.pool.query("SELECT repository_bindings FROM occ.agents WHERE id=$1", [
+            f.revision.agentId,
+          ])
+        ).rows[0].repository_bindings,
+        removal.startsWith("B ")
+          ? entries.map(({ repositoryRef }) => ({ repositoryRef, profile: "github-repository" }))
+          : null,
+      );
+      const denied = await selected.authorize(request(), installed, t.signal);
+      const unavailable = await selected.readMaterial(installedRoute, t.signal);
+      // Replacing B leaves a live selection with different session identities. It has
+      // no matching material, rather than withdrawn authority. Neither result permits
+      // reading or using the old family; discovery separately retires that family.
+      const absence = { absent: removal === "B replacement" ? "unprepared" : "withdrawn" };
+      assert.equal(denied.kind, "denied", "changed set cannot authorize the old material");
+      assert.deepEqual(unavailable, absence);
+      assert.equal(await useCount(), 1, "denial must precede background retirement");
+      const beforeRestart = await f.pool.query(
+        "SELECT enabled FROM occ.prepared_github_families WHERE source_id=$1",
+        ["repository-git:" + admissionId],
+      );
+      assert.equal(
+        beforeRestart.rows[0].enabled,
+        true,
+        "use denial did not retire the family; discovery must do it",
+      );
+      await owner.close();
+      const restarted = await start();
+      await restarted.maintain();
+      if (removal === "B replacement") {
+        // A later pass may rediscover the new live selection, but it cannot rebind or
+        // re-enable the old anchor's family after its original token was retired.
+        await restarted.maintain();
+      }
+      assert.deepEqual(
+        await restarted.protectedGit!.online.githubRepository!.readMaterial(
+          installedRoute,
+          t.signal,
+        ),
+        absence,
+      );
+      const afterRestart = await restarted.protectedGit!.online.githubRepository!.authorize(
+        request(),
+        installed,
+        t.signal,
+      );
+      const saved = await f.pool.query(
+        "SELECT f.enabled,a.custody,a.sealed IS NULL erased,f.source=$2::jsonb original_source,a.id=$3::uuid original_attempt FROM occ.prepared_github_families f JOIN occ.prepared_github_attempts a USING(source_id) WHERE f.source_id=$1",
+        ["repository-git:" + admissionId, originalSource, material.preparationAttemptId],
+      );
+      t.diagnostic(
+        JSON.stringify({
+          removal,
+          before: denied.kind,
+          after: afterRestart.kind,
+          custody: saved.rows,
+        }),
+      );
+      assert.deepEqual(saved.rows, [
+        {
+          enabled: false,
+          custody: "revoked",
+          erased: true,
+          original_source: true,
+          original_attempt: true,
+        },
+      ]);
+      assert.equal(afterRestart.kind, "denied");
+      assert.equal(await useCount(), 1, "no post-end dispatch receipt");
+      assert.equal(peer.gh.issuesOfTokens.length, 1, "no renewal after a member ends");
+    },
+  );
 }

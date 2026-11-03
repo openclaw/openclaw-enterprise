@@ -6,7 +6,6 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -14,10 +13,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import test, { after } from "node:test";
+import test from "node:test";
 import { runInNewContext } from "node:vm";
 import {
   captureChild,
@@ -26,6 +24,7 @@ import {
   settled,
 } from "../helpers/child-processes.mjs";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
+import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { checkArguments, classify, respond } from "../../scripts/ci/impact.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -78,12 +77,6 @@ async function command(cwd, program, args, input) {
   return result.stdout.trim();
 }
 
-function tempDir(t, prefix) {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return dir;
-}
-
 // An executable placed first on PATH; returns the environment override.
 function shim(dir, name, body) {
   mkdirSync(dir, { recursive: true });
@@ -114,8 +107,7 @@ function repository(repo) {
 // A repository holding only the base commit. Fixtures with the same initial
 // files and modes copy one built per file instead of each committing it again.
 const baseRepositories = new Map();
-const baseRoot = mkdtempSync(join(tmpdir(), "ci-impact-bases-"));
-after(() => rmSync(baseRoot, { recursive: true, force: true }));
+const baseRoot = fileTemporaryDirectory("ci-impact-bases-");
 function baseRepository(initial, initialModes) {
   const key = JSON.stringify([initial, initialModes]);
   if (!baseRepositories.has(key)) {
@@ -134,7 +126,7 @@ async function initBase(repo, initial, initialModes) {
   await git("init", "-q");
   // Commit and merge otherwise start `git maintenance run --auto --detach`,
   // which outlives them and can rewrite .git/objects under the test and
-  // tempDir's removal (ENOTEMPTY); Git 2.55, for one, repacks in the
+  // the temporary directory's removal (ENOTEMPTY); Git 2.55, for one, repacks in the
   // background once objects/17 holds two loose objects.
   appendFileSync(
     join(repo, ".git/config"),
@@ -262,7 +254,7 @@ async function fixture(
   initialModes = {},
   { moveMain, cliVerify = false } = {},
 ) {
-  const dir = tempDir(t, "ci-impact-");
+  const dir = temporaryDirectorySync(t, "ci-impact-");
   const repo = join(dir, "repo");
   const template = await baseRepository(initial, initialModes);
   // The copy's index keeps the template's stat data; Git re-hashes a file whose
@@ -606,7 +598,7 @@ test("affected-package advisory is isolated from required jobs and tolerates sum
   const match = / {8}run: \|\n((?: {10}.*\n)+)/.exec(advisory);
   assert.ok(match, "summary script exists");
   const script = match[1].replace(/^ {10}/gm, "");
-  const dir = tempDir(t, "ci-advisory-summary-");
+  const dir = temporaryDirectorySync(t, "ci-advisory-summary-");
   await all(["", join(dir, "missing", "summary")], async (summary) => {
     const result = await run("bash", ["-e", "-c", script], {
       cwd: repositoryRoot,
@@ -1040,7 +1032,7 @@ test("the checked-in policy can select a documentation-only pull request", async
 
 test("workflow executes only the base policy on a shallow merge checkout", async (t) => {
   // The PR selector would select docs and leave a marker if the bootstrap ran it.
-  const marker = join(tempDir(t, "ci-impact-marker-"), "untrusted-marker");
+  const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
   const [[, docs], [, mixed], [, code]] = await settled([
     policyFixture(t, docsChange),
     policyFixture(t, ({ put }) => {
@@ -1077,7 +1069,7 @@ test("a documentation-only pull request stays documentation-only after main move
 test("a non-documentation change still selects full after main moves", async (t) => {
   const moveMain = ({ put }) => put("docs/main.md");
   // The pull request's own selector still never runs, even on a moved base.
-  const marker = join(tempDir(t, "ci-impact-marker-"), "untrusted-marker");
+  const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
   const untrusted = ({ put }) => {
     put("scripts/ci/impact.mjs", untrustedSelector(marker, "mode=docs\\n"));
     put("docs/change.md");
@@ -1203,7 +1195,7 @@ test("unusable base policy cannot select documentation", async (t) => {
 
 test("documentation workflow selects documentation checks and omits product tests", () => {
   const docs = job("static-checks");
-  assert.match(docs, /needs\.impact\.outputs\.mode == 'docs'/);
+  assert.doesNotMatch(docs, /^ {4}(?:needs|if):/m);
   for (const command of [
     "check:workspace",
     "lint",
@@ -1298,7 +1290,7 @@ test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.y
   }
 });
 
-test("Static Checks runs every check the CI lanes skip", () => {
+test("Suite Audit and Static Checks runs the audit and every check the lanes skip", () => {
   const workflow = loadYaml(".github/workflows/ci.yml");
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
   const lane = workflow.jobs["pr-safe"].steps.find(
@@ -1306,8 +1298,8 @@ test("Static Checks runs every check the CI lanes skip", () => {
   );
   assert.equal(lane.with["static-checks"], "false");
   assert.equal(action.inputs["static-checks"].default, "true");
-  const skipped = action.runs.steps.filter((step) =>
-    String(step.if ?? "").includes("inputs.static-checks != 'false'"),
+  const skipped = action.runs.steps.filter(
+    (step) => step.run && String(step.if ?? "").includes("inputs.static-checks != 'false'"),
   );
   assert.deepEqual(
     skipped.map((step) => step.run),
@@ -1316,15 +1308,71 @@ test("Static Checks runs every check the CI lanes skip", () => {
       "pnpm lint",
       "pnpm format:check",
       "pnpm openapi:check",
-      "pnpm docs:install && pnpm docs:check && pnpm docs:build",
+      "pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build",
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
-  const runs = workflow.jobs["static-checks"].steps.map((step) => step.run);
-  for (const step of skipped) {
-    assert.ok(runs.includes(step.run), step.run);
+  const staticChecks = workflow.jobs["static-checks"];
+  assert.equal(staticChecks.needs, undefined, "start alongside CI Impact");
+  assert.equal(staticChecks.if, undefined, "every selection needs these checks");
+  assert.equal(staticChecks["continue-on-error"], undefined);
+  const commands = [
+    "bash scripts/ci/setup-tools.sh workflows",
+    "actionlint .github/workflows/*.yml",
+    "node scripts/ci/run-tests.mjs audit",
+    ...skipped.map((step) => step.run),
+  ];
+  const checks = staticChecks.steps.filter((step) => commands.includes(step.run));
+  assert.deepEqual(
+    checks.map((step) => step.run),
+    commands,
+    "require the suite audit before static checks",
+  );
+  for (const step of checks) {
+    assert.equal(step.if, undefined, step.name);
+    assert.equal(step["continue-on-error"], undefined, step.name);
   }
   assert.ok(workflow.jobs["ci-required"].needs.includes("static-checks"));
+});
+
+test("every formatting check provisions pinned Bun and scans without a formatter cache", () => {
+  const scripts = JSON.parse(read("package.json")).scripts;
+  assert.equal(
+    scripts["format:check"],
+    scripts["format:fix"].replace("bun fmt --no-script", "bun fmt --no-script --check"),
+  );
+  assert.match(read(".bun-version").trim(), /^\d+\.\d+\.\d+$/);
+  const staticSteps = loadYaml(".github/workflows/ci.yml").jobs["static-checks"].steps;
+  const laneSteps = loadYaml(".github/actions/run-ci-lane/action.yml").runs.steps;
+  for (const steps of [staticSteps, laneSteps]) {
+    const setup = steps.find((step) => step.name === "Set up formatter");
+    assert.match(setup.uses, /^oven-sh\/setup-bun@[a-f0-9]{40}$/);
+    assert.deepEqual(setup.with, { "bun-version-file": ".bun-version" });
+    const check = steps.find((step) => step.run === "pnpm format:check");
+    assert.ok(steps.indexOf(setup) < steps.indexOf(check));
+    assert.equal(setup.if, check.if);
+    assert.equal(setup["continue-on-error"], undefined);
+    assert.equal(check["continue-on-error"], undefined);
+    assert.equal(
+      steps.some((step) => JSON.stringify(step).includes("prettier-cache")),
+      false,
+    );
+    assert.equal(
+      steps.some((step) => step.run?.includes("pnpm format:check --cache")),
+      false,
+    );
+  }
+  const setup = laneSteps.find((step) => step.name === "Set up formatter");
+  for (const { lane } of laneTable()) {
+    for (const staticChecks of ["true", "false"]) {
+      assert.equal(
+        runInNewContext(setup.if.replace("inputs.static-checks", "inputs.staticChecks"), {
+          inputs: { lane, staticChecks },
+        }),
+        lane === "checks-baseline-1" && staticChecks !== "false",
+      );
+    }
+  }
 });
 
 test("lane lists outside the lane table name every lane they must", async () => {
@@ -1416,8 +1464,7 @@ test("every lane job stops its test files before its own timeout", (t) => {
   }
 
   // The step itself: five minutes before the job's timeout, measured from its start.
-  const root = mkdtempSync(join(tmpdir(), "lane-deadline-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const root = temporaryDirectorySync(t, "lane-deadline-");
   const output = join(root, "output");
   const setDeadline = (minutes) => {
     writeFileSync(output, "");
@@ -1561,7 +1608,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     // The inventory checks above still require every production CI lane.
     assert.deepEqual(
       Object.keys(selectedNeeds).sort(),
-      ["impact", "audit", ...expectedFullLanes].sort(),
+      ["impact", "static-checks", ...expectedFullLanes].sort(),
     );
     for (const lane of expectedFullLanes) {
       assert.equal(selectedNeeds[lane].result, "success", lane);
@@ -1614,7 +1661,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
 });
 
 async function summarizeImpact(t, outcome, mode, reason, extra = {}) {
-  const summary = join(tempDir(t, "ci-impact-summary-"), "summary");
+  const summary = join(temporaryDirectorySync(t, "ci-impact-summary-"), "summary");
   writeFileSync(summary, "");
   const result = await run(
     "bash",
@@ -2242,7 +2289,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
 });
 
 test("the pull request's own selector never decides test-only mode", async (t) => {
-  const marker = join(tempDir(t, "ci-impact-marker-"), "untrusted-marker");
+  const marker = join(temporaryDirectorySync(t, "ci-impact-marker-"), "untrusted-marker");
   const untrusted = untrustedSelector(
     marker,
     'mode=tests\\nreason=tests_only\\nlanes=["checks-baseline-1"]\\n',
@@ -2279,7 +2326,7 @@ test("test-only selection is limited to pull request events", async (t) => {
 });
 
 async function buildMatrix(t, mode, lanes) {
-  const output = join(tempDir(t, "ci-impact-matrix-"), "output");
+  const output = join(temporaryDirectorySync(t, "ci-impact-matrix-"), "output");
   writeFileSync(output, "");
   const result = await run(
     "bash",
@@ -2413,10 +2460,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   );
   // Static checks (lint, format, OpenAPI, docs) run in every mode; the smoke
   // and the advisory job stay off in tests mode.
-  assert.match(
-    job("static-checks"),
-    /if: \$\{\{ needs\.impact\.outputs\.mode == 'docs' \|\| needs\.impact\.outputs\.mode == 'full' \|\| needs\.impact\.outputs\.mode == 'tests' \}\}/,
-  );
+  assert.doesNotMatch(job("static-checks"), /^ {4}(?:needs|if):/m);
   for (const name of ["first-agent-smoke", "affected-packages"]) {
     assert.doesNotMatch(job(name), /'tests'/, name);
   }
@@ -2448,7 +2492,6 @@ async function gatedTestLanes(t, change, expected) {
   const root = bootstrap.checkout;
   const needs = {
     impact: { result: "success", outputs: { mode: "tests", lanes } },
-    audit: { result: "success", outputs: {} },
     "static-checks": { result: "success", outputs: {} },
     "pr-safe": { result: "success", outputs: {} },
     "runtime-image-fixture": { result: "skipped", outputs: {} },
@@ -2464,7 +2507,7 @@ test("a test-only selection without Checks and Conformance 1 passes the gate", a
     editTest("tests/integration/postgres-a.test.mjs"),
     '["postgres"]',
   );
-  assert.deepEqual(Object.keys(needs), ["impact", "audit", "postgres"]);
+  assert.deepEqual(Object.keys(needs), ["impact", "static-checks", "postgres"]);
 });
 
 test("tests mode flows through the gate to a source-bound aggregate of only its lanes", async (t) => {

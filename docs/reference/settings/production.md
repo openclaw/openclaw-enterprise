@@ -36,6 +36,7 @@ session cookie before forwarding to the native gateway.
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
 | `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.         |
 | `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.                   |
+| `OCC_API_HTTPS_EGRESS_OPEN`                | Optional `true` or `false`, default `false`; set by Helm.                                                          | API only; `true` (open sign-in egress) makes an unanswered Slack check a retryable `503`.                                    |
 | `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for private Gateway or IdP CAs.                                                                | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do.      |
 | `OCC_GATEWAY_CA_PATH`                      | Optional absolute path to the Gateway-only CA bundle; empty means no private Gateway CA.                           | API only; Harness node enrollment reads it instead of `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.               |
 
@@ -67,21 +68,16 @@ and stored ownership before accepting work. With the bundled Kubernetes Compute
 Driver, `drivers.compute.configuration` holds the
 [`KubernetesComputeDriverOptions` shape](../drivers/kubernetes-compute.md#configuration).
 Production use of that Driver requires `images.requireImmutableDigest: true`,
-digest-pinned gateway and Agent image references, and exactly one in-cluster
+digest-pinned gateway and Agent image references, projected ServicePrincipal
+credentials unless a Sandbox Driver is selected, and exactly one in-cluster
 identity or explicitly named kubeconfig/context. The processes then verify
 authenticated, TLS-checked, read-only Kubernetes Namespace access before serving
 requests or claiming work. Installed Drivers validate their own reviewed
 configuration and implementation-specific prerequisites.
 
 Agent workspace-file requests use the selected Compute Driver's private gateway
-endpoint. Kubernetes derives the URL from the optional `gatewayRouting.hostname`
-and the admitted Namespace and Agent IDs. If the hostname is omitted or empty,
-Compute derives the chart's Service DNS hostname from the required `gatewayName`,
-`gatewayNamespace`, and `envoyNamespace`. It derives the allowed Envoy peer from
-those settings and rejects explicit `network.gatewayClients` in routed mode. It
-does not read a per-Agent endpoint file or persist a URL in Agent Configuration.
-See [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
-for the hostname contract and each setting's role.
+endpoint; [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
+define the hostname contract and each setting's role.
 
 `OCC_GATEWAY_API_KEY_PATH` mounts a dedicated, high-entropy Envoy service key;
 never reuse the Better Auth signing secret or a model-provider credential.
@@ -90,12 +86,8 @@ during rotation makes new requests unavailable. The worker needs
 route configuration and namespace-bound HTTPRoute permissions, but no service
 key or CA bundle for native file access.
 
-With Helm routing enabled and no `gatewayRouting.issuerRef.name`, cert-manager
-bootstraps a private CA and issues Envoy's certificate. The chart projects only
-the generated root Secret's public `tls.crt` into API and worker Pods and sets
-`NODE_EXTRA_CA_CERTS`; the CA signing key is never mounted into OCC. An explicit
-issuer selects operator-managed issuance instead. Its optional `caSecretName`
-and `caSecretKey` must be supplied together when additional CA trust is needed.
+The [TLS lifecycle](../gateway-routing.md#tls-and-certificate-lifecycle) covers
+the generated private CA, explicit issuers, and the trust OCC loads.
 
 See the [deployment procedure](../../guides/deploy/workspace-routing.md#agent-workspace-files)
 for Envoy, cert-manager, native trusted-proxy configuration, and key/certificate rotation.
@@ -279,11 +271,12 @@ See [chart defaults](../../../deploy/helm/openclaw-enterprise/values.yaml) for
 credential, runtime-export, and workload isolation boundaries.
 
 The chart rejects obvious malformed quantities such as `foo`, `10MiB`, and
-`1K` in top-level `resources`, Collector `resources`, and Collector volume size
-limits, with an error naming the setting. Kubernetes remains responsible for
-complete quantity validation; exponent ranges and numeric parsing edge cases
-are not checked during rendering. A successful render does not prove API
-acceptance. Setting a resource map or Collector size limit to `null` clears its
+`1K` in top-level `resources`, `slackProxy.resources`, Collector `resources`,
+and Collector volume size limits, with an error naming the setting. It also
+rejects a value with a leading `-` (negative) and resource names Kubernetes
+refuses. Kubernetes remains responsible for complete quantity validation;
+exponent ranges, numeric parsing edge cases and a request above its limit are
+not checked during rendering. A successful render does not prove API acceptance. Setting a resource map or Collector size limit to `null` clears its
 chart default; a null size limit leaves that volume unlimited.
 
 ### Private telemetry defaults

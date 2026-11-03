@@ -9,11 +9,21 @@ Codex Agents use a different catalog and approval policy; see
 ## Use the console
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
-Use **Configure plugins** to edit saved selections and tool policy. Only
-dedicated Codex Agents that do not authenticate with an API key can browse a
-catalog. For other Agents, **Configure plugins** reports that browsing is
-unavailable; add a known plugin ID in **Plugin selections JSON** instead. The
-CLI example below shows the Diffs ID.
+Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
+OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
+**Google Workspace** and add it. Leave **Install without an account** selected
+to verify the installation with `gog --version`. To make Google API calls, choose a ready
+**Google account**, save the selection and deploy. The worker receives an
+OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
+
+The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
+`read` and `operate` on the source, and the Agent needs `operate`. If the
+package digest changes, select the account again. Clearing the slot or removing
+the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+
+Dedicated Codex Agents with a supported login can browse their app catalog.
+For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
+The CLI example below uses Diffs.
 For dedicated Codex browsing, the curated catalog needs no Secret. Hosted
 discovery requires a bound Service Accounts token Secret under **Credentials**
 and uses it server-side; other authentication methods cannot browse the hosted
@@ -83,6 +93,16 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   an Agent entry. A `tools.byProvider` object that also has a
   `<provider>/<model>` key for that provider is not checked, because OpenClaw
   may rewrite the model ID it matches.
+- Check the Configuration's plugin settings. With Diffs enabled, the Gateway
+  does not start when `plugins.enabled` is `false`, `plugins.deny` lists
+  `diffs`, or a non-empty `plugins.allow` leaves it out. Configuration save
+  refuses an item in either list that is not text, such as `1`. OCE writes the
+  `plugins.entries.diffs` entry from the selection. The Configuration can hold
+  only an exact copy: `{"enabled": true}` with Diffs enabled, or
+  `{"enabled": false}` with it disabled. With an HTTPS `gateway.publicOrigin` listed in
+  `gateway.controlUi.allowedOrigins` and Diffs enabled, it must not hold one.
+  Agent create, update, provisioning and deployment return `400` naming the
+  setting.
 - With one Agent under `agents.entries` and a `minimal`, `coding` or
   `messaging` tool profile, the Agent's own `tools.alsoAllow` replaces the
   top-level list that grants Diffs, so the request returns `400` unless that

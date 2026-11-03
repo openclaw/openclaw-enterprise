@@ -223,7 +223,7 @@ async function main(): Promise<void> {
       throw new Error("invalid-admission-id");
     }
     process.stderr.write(
-      `credential-admission ${admissionId}; recover with open --admission-id and the same inputs\n`,
+      `credential-admission ${admissionId}; if the outcome is uncertain, inspect the original owner and use status for any known session\n`,
     );
     const result = await callControl(
       socket,
@@ -245,7 +245,7 @@ async function main(): Promise<void> {
       }
       process.stdout.write(JSON.stringify({ ...result, recovered: true }) + "\n");
       process.stderr.write(
-        `credential-admission-recovered session=${result.sessionId}; close this session, then open with a new admission ID\n`,
+        `credential-admission-recovered session=${result.sessionId}; inspect this session's status on the original owner\n`,
       );
       return;
     }

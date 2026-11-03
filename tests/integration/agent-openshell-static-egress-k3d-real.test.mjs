@@ -114,6 +114,11 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     "credential-sources",
     protectedSourceBody(`egress-${runId}`, secret.ref, controller.providerOrigin),
   );
+  const ownerCapability = created.ownerCapability;
+  assert.ok(
+    ownerCapability === "credential_gateway" || ownerCapability === "credential_proxy",
+    "the created source must identify a public owner capability",
+  );
   // This is a fresh, unbound source. Record the maintainer's explicit consent
   // before binding it. Legacy and narrower approvals require this same PATCH.
   const source = await api("PATCH", `${namespacePath}/credential-sources/${created.id}`, {
@@ -121,6 +126,10 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
     authorityScope: "execution",
   });
   assert.equal(source.id, created.id);
+  assert.ok(
+    source.ownerCapability === ownerCapability,
+    "adoption must preserve the source owner capability",
+  );
   assert.deepEqual(
     source.egress,
     { adoption: "live", retention: "none" },
@@ -159,7 +168,17 @@ async function deployProtectedAgent(setup, stack, evidence, owned) {
   assert.equal(transport.transportConfigured, true);
   await checkpoint("deploy-request", { agentId: agent.id });
   const revision = await api("POST", `${namespacePath}/agents/${agent.id}/deploy`, undefined, 202);
-  await checkpoint("deployed", { agentId: agent.id, revisionId: revision.id });
+  assert.ok(
+    revision.harnessAuth?.method === "credential_source" &&
+      revision.harnessAuth.sourceId === source.id,
+    "the admitted Harness must select the adopted source",
+  );
+  await checkpoint("deployed", {
+    agentId: agent.id,
+    revisionId: revision.id,
+    sourceId: source.id,
+    ownerCapability,
+  });
   const deploymentPath = `${namespacePath}/agents/${agent.id}/deployments/${revision.id}`;
   await waitFor(
     "protected Agent activation with genuine installed evidence",

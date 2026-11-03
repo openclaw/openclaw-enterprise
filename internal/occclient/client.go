@@ -327,6 +327,13 @@ func (client *Client) GetAgent(namespaceID, agentID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents", agentID)
 }
 
+// GetAgentCallerPermissions reads the caller's advisory permission summary for
+// one Agent (update, deploy, operate, delete). It does not authorize a later
+// request; the CLI uses it only to choose advice.
+func (client *Client) GetAgentCallerPermissions(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "permissions")
+}
+
 // UpdateAgent updates an Agent from a JSON document.
 func (client *Client) UpdateAgent(namespaceID, agentID string, body jsontext.Value) (any, error) {
 	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID}, body)

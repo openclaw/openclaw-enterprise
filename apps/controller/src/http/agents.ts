@@ -19,10 +19,17 @@ import {
   type ValidateAgentCreateInput,
 } from "@openclaw-enterprise/occ";
 import type { FastifyRequest } from "fastify";
+import {
+  prepareNativeAdminConfiguration,
+  type NativeAdminAccessConfig,
+} from "../gateway/native-admin.ts";
 import { dependencyUnavailable, failure } from "./errors.ts";
 import type { RequestContext, ResourceHandler, ResourceHandlers } from "./types.ts";
 
 interface AgentHandlerOptions {
+  readonly nativeAdmin: NativeAdminAccessConfig | undefined;
+  readonly publicOrigin: string | undefined;
+  readonly installationId: string;
   readonly resolveHarness: HarnessResolver;
   readonly requireCredentialCsrf: (request: FastifyRequest) => void;
   readonly rejectDeployment: (request: FastifyRequest, context: RequestContext) => Promise<void>;
@@ -41,6 +48,7 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     configurationId: agent.configurationId,
     backendId: agent.backendId,
     executionMode: agent.executionMode,
+    gatewayManagedMode: agent.gatewayManagedMode,
     plugins: agent.plugins,
     pluginApprovers: agent.pluginApprovers,
     repositoryBindings: agent.repositoryBindings,
@@ -93,9 +101,11 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     configurationKind: revision.configurationKind,
     configurationGeneration: revision.configurationGeneration,
     backendId: revision.backendId,
+    gatewayManagedMode: revision.gatewayManagedMode,
     configuration: revision.configuration,
     harness: revision.harness,
     compute: { id: revision.compute.id, implementation: revision.compute.implementation },
+    sandboxDriverId: revision.sandboxDriverId,
     secretDriverId: revision.secretDriverId,
     secretBindings: revision.secretBindings,
     plugins: revision.plugins,
@@ -147,7 +157,7 @@ async function listRepositoryOptions({
       allowedProfiles,
       ...(description === undefined ? {} : { description }),
     })),
-    meta: { requestId: request.id },
+    meta: { requestId: request.id, ...(result.notConfigured ? { notConfigured: true } : {}) },
   });
 }
 
@@ -234,7 +244,9 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       namespaceId,
       mutationEvent,
     }) {
-      const input = body as Omit<ProvisionAgentInput, "namespaceId">;
+      const { nativeAdmin, ...input } = body as Omit<ProvisionAgentInput, "namespaceId"> & {
+        nativeAdmin?: boolean;
+      };
       validateWorkspaceSetup(input);
       const provisioned = await controller.provisionAgent(
         context.actorId,
@@ -245,6 +257,30 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
             id: provisioned.provisioning.agentId ?? provisioned.provisioning.workId,
             namespaceId,
           }),
+        nativeAdmin === true
+          ? {
+              key: "native-admin",
+              prepare: (agent, values) => {
+                if (
+                  !options.nativeAdmin?.enabled ||
+                  !options.nativeAdmin.domain ||
+                  !options.publicOrigin
+                ) {
+                  throw failure(
+                    400,
+                    "INVALID_REQUEST",
+                    "Native admin UI access is not enabled on this Installation.",
+                  );
+                }
+                return prepareNativeAdminConfiguration(values, {
+                  agent,
+                  installationId: options.installationId,
+                  publicOrigin: options.publicOrigin,
+                  domain: options.nativeAdmin.domain,
+                });
+              },
+            }
+          : undefined,
       );
       const result = {
         provisioning: clientAgentProvisioning(provisioned.provisioning, namespaceId),
@@ -501,6 +537,8 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
           configurationGeneration: summary.configurationGeneration,
           harness: summary.harness,
           createdAt: summary.createdAt,
+          deploymentStatus: summary.deploymentStatus,
+          deploymentErrorCode: summary.deploymentErrorCode,
         })),
         meta: {
           requestId: request.id,

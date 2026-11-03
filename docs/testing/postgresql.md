@@ -11,7 +11,9 @@ URLs skip cases, so check the test results for skips.
 ## Version-worker tests
 
 The application lane prepares isolated databases and removes its resources on
-exit. Each run needs its own state file. With Docker Compose available, run:
+exit. Its PostgreSQL server is disposable, so preparation turns off `fsync`,
+`synchronous_commit` and `full_page_writes` there; keep no data in it. Each run
+needs its own state file. With Docker Compose available, run:
 
 ```sh
 (

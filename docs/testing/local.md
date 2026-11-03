@@ -99,7 +99,10 @@ node scripts/generate-occ-api-reference.mjs --check
 ```
 
 Run `pnpm hooks:install` to reinstall the managed pre-push hook. It refuses to
-replace an unmanaged hook and preserves `core.hooksPath`.
+replace an unmanaged hook and preserves `core.hooksPath`. The hook checks files
+on disk in the active checkout, including unstaged edits. To verify formatting
+for a trusted outgoing commit, run `pnpm format:check` in a clean, isolated
+checkout of its exact commit ID with matching dependencies already installed.
 
 ## Metrics and observability tests
 

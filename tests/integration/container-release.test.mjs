@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -27,6 +26,7 @@ import {
   stageReleaseChart,
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.mjs";
+import { setEnvironment } from "../helpers/environment.mjs";
 import { writeCommand } from "../helpers/fake-commands.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -207,18 +207,9 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
 });
 
 test("chart push accepts a digest on stderr only after a successful exit", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-push-stream-"));
+  const directory = await temporaryDirectory(t, "oce-chart-push-stream-");
   const helm = join(directory, "helm");
-  const previous = process.env.OCC_HELM_BIN;
-  t.after(async () => {
-    if (previous === undefined) {
-      delete process.env.OCC_HELM_BIN;
-    } else {
-      process.env.OCC_HELM_BIN = previous;
-    }
-    await rm(directory, { recursive: true, force: true });
-  });
-  process.env.OCC_HELM_BIN = helm;
+  setEnvironment(t, { OCC_HELM_BIN: helm });
   const reported = `sha256:${"f".repeat(64)}`;
   // Helm writes the successful push digest to stderr, so stdout-only parsing fails.
   await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\n`);
@@ -306,15 +297,7 @@ for (const workflow of [
 test("only explicit bootstrap lookups tolerate missing package metadata", async (t) => {
   // The external API supplies status codes; the real client must distinguish
   // absence from authorization failures before harmless bootstrap is permitted.
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   for (const status of [401, 403, 404, 429, 500]) {
     t.mock.method(globalThis, "fetch", async () => new Response(null, { status }));
     await assert.rejects(
@@ -351,15 +334,7 @@ test("container context rejects malformed repository privacy in preparation and 
 });
 
 test("post-marker metadata retries only 404 and remains bounded", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   // Accelerate only the backoff; the real client still interprets API responses.
   t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
   const pkg = { name: "example", package_type: "container", visibility: "public" };
@@ -387,15 +362,7 @@ test("post-marker metadata retries only 404 and remains bounded", async (t) => {
 });
 
 test("GHCR publication accepts omitted repository metadata without approval and rejects unsafe packages", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   const image = "ghcr.io/openclaw/openclaw-enterprise-controller";
   // GHCR can omit repository even for connected packages. The real validator
   // must accept that response without consulting deployment review history.
@@ -750,15 +717,7 @@ test("OCI archive validation binds both platforms to their real manifest and con
 });
 
 test("metadata GET transport retries are bounded, diagnostic and do not retry denials", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
   const path = "orgs/openclaw/packages/container/example";
   let calls = 0;
@@ -968,9 +927,9 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   const notInSmoke = {
     // Drives the image helpers against a stand-in docker binary; it needs no image.
     "tests/integration/runtime-image-failure-output.test.mjs": null,
-    // Image Model Probes files: the release smoke has never run them. The outcomes moved
-    // into Image Runtime Startup 2 and stay out of the smoke.
-    "tests/integration/runtime-image-model-probe.test.mjs": "images-model-probes",
+    // Model probe files: the release smoke has never run them. The contention case runs
+    // in Image Runtime Startup 3 and the outcomes in Image Runtime Startup 2.
+    "tests/integration/runtime-image-model-probe.test.mjs": "images-runtime-startup-3",
     "tests/integration/runtime-image-model-probe-outcomes.test.mjs": "images-runtime-startup-2",
   };
   for (const [path, lane] of Object.entries(notInSmoke)) {
@@ -984,6 +943,7 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   }
   // Image Runtime Startup files outside the runtime-image-* names.
   const otherSmokeFiles = [
+    "tests/integration/codex-plugin-stdio-real.test.ts",
     // Its OpenShell initializer case executes the pinned native workspace initializer.
     "tests/integration/sandbox-driver-startup.test.mjs",
     "tests/integration/workspace-files-native.test.mjs",

@@ -1,8 +1,21 @@
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
-import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
+import {
+  CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
+  OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
+  requireConfiguration,
+  ConfigurationValidationError,
+} from "@openclaw-enterprise/contracts";
+import {
+  googlePackage,
+  managedCredentialBinding,
+  managedGoogleInstall,
+  managedPluginCredentials,
+  requireManagedCredentialRuntime,
+} from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
   type JSONSchema,
+  type RevisionHarnessDescriptor,
   type PluginCatalogEntry,
   type PluginCatalogPage,
   type PluginDiscoveryAuthentication,
@@ -19,17 +32,23 @@ import {
   NotImplementedError,
   PluginDiscoveryError,
   PluginPolicyValidationError,
+  resolveConfiguredHarnessId,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
 import {
   hasAliasedSelections,
   openClawCatalogEntries,
+  openClawManagedPluginIds,
   validatePolicies,
   type CodexPluginCatalogReader,
 } from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
 import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
 import { deniedOpenClawSelection, openClawToolDenialMessage } from "./openclaw-tool-denial.ts";
+import {
+  openClawPluginSettingConflict,
+  openClawPluginSettingMessage,
+} from "./openclaw-plugin-settings.ts";
 import { validateCodexAutomaticReviewerPolicy } from "../../gateway/codex-approval-policy.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
@@ -43,10 +62,25 @@ type BundledCatalogEntry = PluginCatalogEntry;
 
 export class PluginValidationError extends ScopeViolationError {}
 
+// Whether the Configuration's models select the OpenClaw Harness. A model policy no deployment
+// accepts is the Configuration's own refusal, named by the rules that check it.
+function openClawHarnessConfiguration(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+): boolean {
+  try {
+    return resolveConfiguredHarnessId(configuration) === "openclaw";
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 const OCC_DRIVER_ID = "occ-plugin";
-const OCC_IMPLEMENTATION = "occ/openclaw-plugin";
+const OCC_IMPLEMENTATION = OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION;
 const CODEX_DRIVER_ID = "codex-plugin";
-const CODEX_IMPLEMENTATION = "occ/codex-plugin";
+const CODEX_IMPLEMENTATION = CODEX_PLUGIN_DRIVER_IMPLEMENTATION;
 
 const EMPTY_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
   type: "object",
@@ -349,8 +383,11 @@ class BundledPluginDriverBase {
 }
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
+  readonly discoveryCredential = "none" as const;
+  readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    policyScopeByPlugin: { [managedGoogleInstall.id]: managedGoogleInstall.policyScope },
     approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
@@ -358,7 +395,23 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   });
 
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
-    this.validate("openclaw", selections, defaultApprovers);
+    const { [managedGoogleInstall.id]: google, ...native } = selections;
+    if (google && Object.keys(native).length > 0) {
+      throw new ConfigurationHarnessError(
+        "Google Workspace must be the only plugin selected for this release.",
+      );
+    }
+    if (
+      google &&
+      (typeof google.enabled !== "boolean" ||
+        Object.keys(google).some((key) => key !== "enabled" && key !== "driverPolicy"))
+    ) {
+      throw new ConfigurationHarnessError(
+        "The Google Workspace package supports enablement and an optional credential slot.",
+      );
+    }
+    managedCredentialBinding(selections);
+    this.validate("openclaw", native, defaultApprovers);
   }
 
   static validateConfiguration(): readonly ErrorDetail[] {
@@ -371,14 +424,81 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   }
 
   async listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]> {
+    if (
+      context.harness.id === managedGoogleInstall.placement.harnessId &&
+      context.harness.mode === managedGoogleInstall.placement.mode
+    ) {
+      return this.catalog([googlePackage]);
+    }
     ensureHarness(context, "embedded");
     return this.catalog(OCC_CATALOG);
+  }
+
+  async discoverCatalog(input: {
+    readonly q?: string;
+    readonly cursor?: string;
+  }): Promise<PluginCatalogPage> {
+    const q = input.q?.toLowerCase() ?? "";
+    const matches =
+      !input.cursor &&
+      [googlePackage.id, googlePackage.name, googlePackage.description].some((value) =>
+        value.toLowerCase().includes(q),
+      );
+    return { plugins: matches ? this.catalog([googlePackage]) : [], nextCursor: null };
+  }
+
+  async getCatalogPlugin(input: { readonly pluginId: string }): Promise<PluginCatalogEntry> {
+    if (input.pluginId !== googlePackage.id) {
+      throw new PluginDiscoveryError("invalid_response");
+    }
+    return this.catalog([googlePackage])[0]!;
+  }
+
+  validatePlacement(
+    selections: PluginDesiredState,
+    harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+    computeImplementation: string,
+    credentialRuntime?: {
+      readonly sandbox: string | undefined;
+      readonly gateway: string | undefined;
+    },
+  ): void {
+    if (!Object.hasOwn(selections, managedGoogleInstall.id)) {
+      return;
+    }
+    const { placement } = managedGoogleInstall;
+    if (harness.id !== placement.harnessId || harness.mode !== placement.mode) {
+      throw new ConfigurationHarnessError("Google Workspace requires a dedicated OpenClaw Agent.");
+    }
+    if (!placement.computeImplementations.includes(computeImplementation)) {
+      throw new ConfigurationHarnessError("Google Workspace requires Kubernetes Compute.");
+    }
+    requireManagedCredentialRuntime(
+      selections,
+      credentialRuntime?.sandbox,
+      credentialRuntime?.gateway,
+    );
   }
 
   validateAgentConfiguration(
     selections: PluginDesiredState,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
+    // The Gateway refuses these settings at every start, before any turn (finding 3091). These
+    // plugins run only in an OpenClaw Harness: for another, placement refuses the selection
+    // (validatePluginPlacement) and is the refusal to name, since a Codex Configuration's
+    // plugins.allow, for example, always leaves them out.
+    const conflict = openClawHarnessConfiguration(configuration)
+      ? openClawPluginSettingConflict(
+          selections,
+          configuration,
+          openClawManagedPluginIds(),
+          `${OCC_DRIVER_ID}:`,
+        )
+      : undefined;
+    if (conflict !== undefined) {
+      throw new ConfigurationHarnessError(openClawPluginSettingMessage(conflict));
+    }
     const denied = deniedOpenClawSelection(OCC_CATALOG, selections, configuration);
     if (denied !== undefined) {
       throw new ConfigurationHarnessError(openClawToolDenialMessage(denied));

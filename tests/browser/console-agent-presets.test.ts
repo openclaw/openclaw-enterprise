@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import type { Dialog, Locator, Request, Response as BrowserResponse } from "playwright";
+import type { Dialog, Locator, Page, Request } from "playwright";
 
 import type {
   HarnessAuthBinding,
@@ -40,13 +40,19 @@ import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { consoleStorage } from "../helpers/console-storage.mjs";
 import {
   apiRequests,
+  consoleViewports,
   detailUrl,
+  expectReachableReason,
+  focusKeptOverClose,
+  holdRequests,
+  inViewport,
   login,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
   pathRequests,
   secretOptionLabel,
+  operateDeniedSecretOption,
   secretPostRequests,
   selectSecret,
   settlePageRequests,
@@ -64,9 +70,24 @@ import {
   configurationPostRequests,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
+  assertAgentNameTaken,
   optionValues,
+  raceAgentName,
   waitForCreateFormReads,
+  submitCreateAgent,
+  createAgentThroughForm,
 } from "./console-agents-test-support.mjs";
+import {
+  AGENT_NAME_CONFLICT,
+  callerDenied,
+  READ_UNAVAILABLE,
+  namespaceListDenied,
+  PLUGIN_CREDENTIALS_REJECTED,
+  KUBERNETES_ALLOW_USERS_REFUSAL,
+} from "../helpers/refusal-text.mjs";
+import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
@@ -93,12 +114,6 @@ async function presetTemplate(fixture: ConsoleFixture, namespaceId: string, pres
   );
   assert.equal(preset.status, 200);
   return preset.data.template;
-}
-
-async function createdAgent(response: Promise<BrowserResponse>): Promise<AgentWire> {
-  const result = await response;
-  assert.equal(result.status(), 201);
-  return (await result.json()).data;
 }
 
 const defaultCodexPreset: Pick<Preset, "name" | "template"> = JSON.parse(
@@ -294,6 +309,7 @@ test("Selecting an existing fallback keeps the referenced model catalog deployab
       await model.fill(id);
       await model.press("Tab");
       const selected: typeof values = JSON.parse(await editor.inputValue());
+      assert.equal(resolveConfiguredHarnessId(selected), "openclaw");
       assert.equal(selected.agents.defaults.model.primary, reference(id));
       assert.deepEqual(selected.agents.defaults.model.fallbacks, ids.slice(1).map(reference));
       assert.deepEqual(
@@ -333,6 +349,452 @@ test("Selecting an existing fallback keeps the referenced model catalog deployab
     await model.fill("");
     await model.press("Tab");
     await checkSelection("another-model", [...ids.slice(1), "another-model"]);
+    // An unrelated JSON edit during a temporary clear must not orphan the previous primary.
+    await model.fill("");
+    await model.press("Tab");
+    await openAdvancedSettings(page);
+    const pending: typeof values = JSON.parse(await editor.inputValue());
+    pending.models.providers.openai.baseUrl = "https://edited-models.example.test/v1";
+    await editor.fill(JSON.stringify(pending));
+    const edited = await checkSelection("json-replacement", [...ids.slice(1), "json-replacement"]);
+    assert.equal(edited.models.providers.openai.baseUrl, "https://edited-models.example.test/v1");
+  }
+});
+
+test("Changing a Preset model keeps explicit and inherited roster selections deployable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap("Roster model selection");
+  const namespace = await fixture.createNamespace("Roster model choices", { ready: true });
+  const reference = (id: string) => `openai/${id}`;
+  const original = "primary-model";
+  const fallback = "fallback-model";
+  const replacement = "replacement-model";
+  const policy = (alias: string, temperature: number) => ({
+    agentRuntime: { id: "openclaw" },
+    alias,
+    params: { temperature },
+  });
+  const initialValues = {
+    agents: {
+      ownership: "explicit",
+      defaults: {
+        model: { primary: reference(original), fallbacks: [reference(fallback)] },
+        models: {
+          [reference(original)]: policy("Default primary", 0.2),
+          [reference(fallback)]: policy("Default fallback", 0.3),
+        },
+      },
+      entries: {
+        main: {
+          model: reference(original),
+          models: {
+            [reference(original)]: policy("Main primary", 0.4),
+            [reference(replacement)]: policy("Main replacement", 0.7),
+          },
+        },
+        assistant: {
+          model: { primary: reference(original), fallbacks: [reference(fallback)] },
+          models: {
+            [reference(original)]: policy("Assistant primary", 0.5),
+            [reference(fallback)]: policy("Assistant fallback", 0.6),
+            [reference(replacement)]: policy("Assistant replacement", 0.8),
+          },
+          workspace: "/workspace/synthetic-assistant",
+        },
+        inherited: {
+          models: {
+            [reference(original)]: policy("Inherited primary", 0.9),
+            [reference(fallback)]: policy("Inherited fallback", 1),
+          },
+        },
+      },
+    },
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://models.example.test/v1",
+          api: "openai-responses",
+          models: [original, fallback].map((id) => ({
+            id,
+            name: id,
+            contextWindow: 128000,
+            maxTokens: 8192,
+            reasoning: true,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          })),
+        },
+      },
+    },
+  };
+  const { model: originalModel, ...defaultSettings } = initialValues.agents.defaults;
+  for (const shape of ["default-object", "default-string", "no-default"] as const) {
+    const values = {
+      ...initialValues,
+      agents: {
+        ...initialValues.agents,
+        defaults: {
+          ...defaultSettings,
+          ...(shape === "no-default"
+            ? {}
+            : { model: shape === "default-object" ? originalModel : reference(original) }),
+        },
+        entries: {
+          main: initialValues.agents.entries.main,
+          assistant: initialValues.agents.entries.assistant,
+          // Without a default model, every entry must explicitly select its primary.
+          ...(shape === "no-default"
+            ? {}
+            : {
+                inherited: initialValues.agents.entries.inherited,
+                inheritedEmpty: { models: {} },
+              }),
+        },
+      },
+    };
+    // All explicit entries share the primary; an entry without a model inherits it.
+    const baseline = await fixture.createConfiguration(namespace.id, values);
+    assert.equal(resolveConfiguredHarnessId(baseline.values), "openclaw");
+    const preset: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      {
+        body: {
+          name: `Roster models ${shape}`,
+          template: { configuration: { values }, agent: { executionMode: "embedded" } },
+        },
+      },
+    );
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    const model = page.getByLabel("Model ID", { exact: true });
+    const editor = page.locator("#configuration-json");
+    for (const id of [replacement, "another-model"]) {
+      t.diagnostic(`Selecting ${shape} roster primary ${id}`);
+      if (id !== replacement) {
+        // Clearing is a temporary edit: it must not discard explicit or inherited local policy.
+        await model.fill("");
+        await model.press("Tab");
+        const cleared: typeof values = JSON.parse(await editor.inputValue());
+        assert.equal(cleared.agents.entries.main.model, reference(replacement));
+        // An edit that leaves every selection unchanged keeps the clear pending: the control must
+        // not refill from a roster entry while the defaults select no primary (finding 2342).
+        await openAdvancedSettings(page);
+        await editor.fill(JSON.stringify(cleared));
+        assert.equal(await model.inputValue(), "");
+        // The kept draft keeps the clear pending: after navigation, the same edit leaves the
+        // control empty too. The marker proves the form was rebuilt from the draft.
+        await page.locator("#create-agent-form").evaluate((form: HTMLElement) => {
+          form.dataset.kept = "";
+        });
+        // A read that answers differently on return makes the console rebuild the form from the
+        // kept draft instead of mounting the retained view again. Repository discovery's fixed
+        // composition 503 is one such answer.
+        await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
+          route.fulfill({
+            status: 503,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: {
+                code: "REPOSITORY_OPTIONS_UNAVAILABLE",
+                message: "Repository options are unavailable.",
+              },
+            }),
+          }),
+        );
+        await page.getByRole("link", { name: "← Agents" }).click();
+        await page.waitForURL(/\/console\/agents(\?|$)/);
+        await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+        await page.getByLabel("Agent name", { exact: true }).waitFor();
+        assert.equal(await page.locator("#create-agent-form[data-kept]").count(), 0);
+        await openAdvancedSettings(page);
+        await editor.fill(JSON.stringify(cleared));
+        assert.equal(await model.inputValue(), "");
+        if (values.agents.entries.inherited) {
+          assert.deepEqual(cleared.agents.entries.inherited?.models, {
+            [reference(replacement)]: values.agents.entries.inherited.models[reference(original)],
+            [reference(fallback)]: values.agents.entries.inherited.models[reference(fallback)],
+          });
+        }
+      }
+      await model.fill(id);
+      await model.press("Tab");
+      const selected: typeof values = JSON.parse(await editor.inputValue());
+      const configuration = await fixture.createConfiguration(namespace.id, selected);
+      const reread: FixtureResponse<ConfigurationWire> = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      );
+      assert.equal(reread.status, 200);
+      assert.deepEqual(reread.data.values, selected);
+      // Saving the form's output must retain the common primary required by deployment admission.
+      assert.equal(resolveConfiguredHarnessId(reread.data.values), "openclaw");
+      assert.deepEqual(
+        selected.agents.defaults.model,
+        shape === "default-object"
+          ? { primary: reference(id), fallbacks: [reference(fallback)] }
+          : reference(id),
+      );
+      assert.equal(selected.agents.entries.main.model, reference(id));
+      assert.deepEqual(selected.agents.entries.main.models, {
+        [reference(id)]: values.agents.entries.main.models[reference(replacement)],
+      });
+      assert.deepEqual(selected.agents.entries.assistant, {
+        ...values.agents.entries.assistant,
+        model: { primary: reference(id), fallbacks: [reference(fallback)] },
+        models: {
+          [reference(id)]: values.agents.entries.assistant.models[reference(replacement)],
+          [reference(fallback)]: values.agents.entries.assistant.models[reference(fallback)],
+        },
+      });
+      assert.deepEqual(
+        selected.agents.entries.inherited,
+        values.agents.entries.inherited
+          ? {
+              models: {
+                [reference(id)]: values.agents.entries.inherited.models[reference(original)],
+                [reference(fallback)]: values.agents.entries.inherited.models[reference(fallback)],
+              },
+            }
+          : undefined,
+      );
+      assert.deepEqual(
+        selected.agents.entries.inheritedEmpty,
+        shape === "no-default" ? undefined : { models: {} },
+      );
+      assert.deepEqual(selected.agents.defaults.models, {
+        [reference(id)]: values.agents.defaults.models[reference(original)],
+        [reference(fallback)]: values.agents.defaults.models[reference(fallback)],
+      });
+      const provider = selected.models.providers.openai;
+      assert.deepEqual(
+        provider.models.map((entry) => entry.id),
+        [id, fallback],
+      );
+      assert.deepEqual(provider.models[1], values.models.providers.openai.models[1]);
+      assert.equal(provider.baseUrl, values.models.providers.openai.baseUrl);
+      assert.equal(provider.api, values.models.providers.openai.api);
+    }
+  }
+});
+
+test("Main-only Preset models create drafts through the regular Agent APIs", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap("Main-only roster creation");
+  const namespace = await fixture.createNamespace("Main-only roster", { ready: true });
+  const original = "openai/primary-model";
+  const replacement = "openai/replacement-model";
+  const base = nativeValues("main-only-model", { providerModel: "primary-model" });
+  const localPolicy = {
+    agentRuntime: { id: "openclaw" },
+    alias: "Main model",
+    params: { temperature: 0.4 },
+  };
+  for (const scenario of ["edited-default", "unchanged-entry", "advanced-entry"] as const) {
+    const expected = scenario === "unchanged-entry" ? original : replacement;
+    t.diagnostic(`Creating ${scenario} main-only draft`);
+    const values = {
+      ...base,
+      agents: {
+        ...base.agents,
+        defaults:
+          scenario !== "edited-default"
+            ? { models: base.agents.defaults.models }
+            : base.agents.defaults,
+        entries: { main: { model: original, models: { [original]: localPolicy } } },
+      },
+    };
+    assert.equal(resolveConfiguredHarnessId(values), "openclaw");
+    const template = {
+      agent: { name: `Main-only ${scenario}`, executionMode: "embedded" },
+      configuration: { values },
+    };
+    const preset: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      { body: { name: `Main-only ${scenario}`, template } },
+    );
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    const model = page.getByLabel("Model ID", { exact: true });
+    assert.equal(await model.inputValue(), "primary-model");
+    if (scenario === "edited-default") {
+      await model.fill("replacement-model");
+      await model.press("Tab");
+    }
+    if (scenario === "advanced-entry") {
+      await openAdvancedSettings(page);
+      // This is a valid entry-only edit: change both the primary and its catalog references.
+      await page
+        .getByLabel("Configuration JSON", { exact: true })
+        .fill(JSON.stringify(values).replaceAll("primary-model", "replacement-model"));
+    }
+    await createModelCredentialSecret(page, "synthetic-main-only-model-key");
+    await waitForCreateFormReads(page);
+    const preflight = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
+      { timeout: 15_000 },
+    );
+    const createdResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents`,
+      { timeout: 15_000 },
+    );
+    const outcomes = Promise.all([preflight, createdResponse]);
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    const [validation, agentResponse] = await outcomes.catch(async (error) => {
+      t.diagnostic(
+        `${scenario} visible alerts: ${await page.getByRole("alert").allTextContents()}`,
+      );
+      t.diagnostic(
+        `${scenario} create requests: preflight=${pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`).length}, configuration=${configurationPostRequests(requests, namespace.id).length}, agent=${agentPostRequests(requests, namespace.id).length}`,
+      );
+      throw error;
+    });
+    assert.equal(validation.status(), 204);
+    assert.equal(agentResponse.status(), 201);
+    const created: AgentWire = (await agentResponse.json()).data;
+    assert.equal(created.executionMode, "embedded");
+    assert.equal(created.activeRevisionId ?? null, null);
+    const saved: FixtureResponse<ConfigurationWire> = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.equal(saved.status, 200);
+    const persisted = saved.data.values as typeof values;
+    assert.equal(
+      "model" in persisted.agents.defaults ? persisted.agents.defaults.model : undefined,
+      scenario === "edited-default" ? expected : undefined,
+    );
+    assert.equal(persisted.agents.entries.main.model, expected);
+    assert.deepEqual(persisted.agents.entries.main.models, { [expected]: localPolicy });
+    assert.equal(resolveConfiguredHarnessId(persisted), "openclaw");
+    assert.equal(
+      pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`).length,
+      1,
+    );
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+    // This workflow saves a draft; it does not dispatch a deployment or provisioning job.
+    assert.equal(
+      pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/provision`).length,
+      0,
+    );
+    assert.equal(
+      pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${created.id}/deploy`)
+        .length,
+      0,
+    );
+    const unchanged = await presetTemplate(fixture, namespace.id, preset.data.id);
+    assert.deepEqual(unchanged, template);
+  }
+});
+
+test("Model edits preserve refusals for invalid Advanced JSON rosters", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap("Invalid roster editing");
+  const namespace = await fixture.createNamespace("Invalid roster drafts", { ready: true });
+  const original = "openai/primary-model";
+  const replacement = "openai/replacement-model";
+  const base = nativeValues("invalid-roster", { providerModel: "primary-model" });
+  const values = {
+    ...base,
+    agents: {
+      ...base.agents,
+      ownership: "explicit",
+      entries: { writer: { model: original }, editor: { model: original } },
+    },
+  };
+  assert.equal(resolveConfiguredHarnessId(values), "openclaw");
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Invalid roster editing control",
+        template: { agent: { executionMode: "embedded" }, configuration: { values } },
+      },
+    },
+  );
+  assert.equal(preset.status, 201);
+  // Each roster is one the resolver refuses, and the control must leave it that way: divergent
+  // primaries, an unqualified primary, one with an empty provider or model, a default that names
+  // fallbacks but no primary, and an entry that inherits while no default selects a model.
+  const scenarios = [
+    "divergent",
+    "unqualified",
+    "empty provider",
+    "empty model",
+    "fallbacks without a primary",
+    "inherited without a default",
+  ] as const;
+  // One signed-in tab serves every case. Each case loads Create Agent again, which starts a fresh
+  // form: the form keeps no draft across a page load.
+  const { page } = await newPage(t, fixture);
+  const createUrl = `/console/agents/new?namespace=${namespace.id}`;
+  await login(page, fixture, createUrl);
+  let loaded = true;
+  for (const scenario of scenarios) {
+    for (const clearFirst of [false, true]) {
+      await t.test(
+        `${scenario}: ${clearFirst ? "clear then select" : "direct select"}`,
+        async () => {
+          if (!loaded) {
+            await page.goto(new URL(createUrl, fixture.origin).href);
+          }
+          loaded = false;
+          await page.getByLabel("Preset template").selectOption(preset.data.id);
+          await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+          await openAdvancedSettings(page);
+          const invalid = structuredClone(values);
+          if (scenario === "divergent") {
+            invalid.agents.entries.editor.model = replacement;
+            const provider = invalid.models.providers.openai;
+            assert.ok(provider);
+            const first = provider.models[0];
+            assert.ok(first);
+            provider.models.push({ ...first, id: "replacement-model", name: "replacement-model" });
+          } else if (scenario === "fallbacks without a primary") {
+            (invalid.agents.defaults as { model: unknown }).model = { fallbacks: [original] };
+          } else if (scenario === "inherited without a default") {
+            delete (invalid.agents.defaults as { model?: unknown }).model;
+            delete (invalid.agents.entries.editor as { model?: string }).model;
+          } else {
+            const primary = {
+              unqualified: "bare",
+              "empty provider": "/bare",
+              "empty model": "bare/",
+            }[scenario];
+            invalid.agents.defaults.model = primary;
+            invalid.agents.entries.writer.model = primary;
+            invalid.agents.entries.editor.model = primary;
+          }
+          const refusal = /same primary model|must name each model as|is required when/;
+          assert.throws(() => resolveConfiguredHarnessId(invalid), refusal);
+          const editor = page.getByLabel("Configuration JSON", { exact: true });
+          await editor.fill(JSON.stringify(invalid));
+          const model = page.getByLabel("Model ID", { exact: true });
+          if (clearFirst) {
+            await model.fill("");
+            await model.press("Tab");
+          }
+          await model.fill("replacement-model");
+          await model.press("Tab");
+          // A convenience control must not silently repair an invalid roster's explicit selections.
+          const edited = JSON.parse(await editor.inputValue());
+          assert.throws(() => resolveConfiguredHarnessId(edited), refusal);
+        },
+      );
+    }
   }
 });
 
@@ -383,13 +845,7 @@ test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenA
   assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-4.1");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.equal(created.executionMode, "embedded");
   assert.deepEqual(created.harnessAuth, { method: "runtime" });
   const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
@@ -405,6 +861,91 @@ test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenA
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
     0,
   );
+});
+
+// The same operator-managed binding on Kubernetes Compute, which takes only an API key for
+// embedded OpenClaw. The Installation's capabilities do not say so, so Create Agent asks Agent
+// save's preflight with the Preset's runtime binding once they are read, and refuses the Preset
+// up front, naming what an operator changes: the form can change neither the binding nor the
+// execution mode the refusal names (finding 2427). Without the binding in the preflight, the form
+// saved a Configuration that Agent create then refused, and could no longer edit it.
+test("Runtime-auth Presets are refused before anything is saved where Compute refuses them", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Runtime Preset refused", { ready: true });
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Operator-managed credentials",
+        template: {
+          agent: {
+            name: "Runtime Agent",
+            executionMode: "embedded",
+            harnessAuth: { method: "runtime" },
+          },
+          configuration: { values: nativeValues("runtime-refused") },
+        },
+      },
+    },
+  );
+  assert.equal(preset.status, 201);
+  const refusal =
+    "This Preset's operator-managed credentials need a Compute Driver that supplies them. Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute. Ask an Installation administrator to change the Preset's harnessAuth or the Compute Driver, or start without a Preset.";
+  const validatePath = `/namespaces/${namespace.id}/agents/validate`;
+  const createButton = (page: Page) =>
+    page.getByRole("button", { name: "Create Agent", exact: true });
+  await t.test("up front", async (t) => {
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    const alert = page.getByRole("alert").filter({ hasText: "operator-managed credentials" });
+    await alert.waitFor();
+    assert.equal(await alert.textContent(), refusal);
+    assert.equal(await createButton(page).isDisabled(), true);
+    // The only request is the preflight with the Preset's binding; nothing was saved.
+    const checks = pathRequests(requests, "POST", validatePath);
+    assert.equal(checks.length, 1);
+    assert.deepEqual((checks[0]?.body as { harnessAuth?: unknown }).harnessAuth, {
+      method: "runtime",
+    });
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  });
+  // Create Agent pressed before that answer arrives: its own preflight refuses with the same copy,
+  // before any write.
+  await t.test("at Create Agent", async (t) => {
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const early = await holdRequests(t, page, `${fixture.origin}${validatePath}`, {
+      once: true,
+      method: "POST",
+    });
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    await early.requested;
+    const preflight = page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}${validatePath}` &&
+        response.request().method() === "POST",
+    );
+    await createButton(page).click();
+    const response = await preflight;
+    assert.equal(response.status(), 400);
+    assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "runtime" });
+    const { meta } = await response.json();
+    const feedback = page.getByRole("alert").filter({ hasText: meta.requestId });
+    await feedback.waitFor();
+    assert.equal(await feedback.textContent(), `${refusal} Request ID: ${meta.requestId}`);
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+    early.release();
+    await page.getByRole("button", { name: "Create Agent", disabled: true }).waitFor();
+  });
 });
 
 test("Create Agent browses the curated plugin catalog without a discovery credential", async (t) => {
@@ -930,7 +1471,8 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   } finally {
     detailRelease.resolve();
   }
-  await dialog.getByText(/credential was rejected or cannot access plugins/).waitFor();
+  // The request ID uses the one label every console failure uses (finding 2538).
+  await dialog.getByText(`${PLUGIN_CREDENTIALS_REJECTED} Request ID: req_`).waitFor();
   assert.equal(await heading.evaluate((node) => node === node.ownerDocument.activeElement), true);
   assert.equal((await dialog.textContent())?.includes("private upstream response"), false);
   failTools = false;
@@ -940,10 +1482,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     await dialog.locator('details.plugin-tool-row[data-tool="app_shared/events%2Flist"]').count(),
     1,
   );
-  assert.equal(
-    await dialog.getByText(/credential was rejected or cannot access plugins/).count(),
-    0,
-  );
+  assert.equal(await dialog.getByText(PLUGIN_CREDENTIALS_REJECTED).count(), 0);
   const detailLogo = dialog.locator(".plugin-detail-header .plugin-logo img");
   await detailLogo.evaluate((image: HTMLImageElement) => image.decode());
   assert.ok(await detailLogo.evaluate((image: HTMLImageElement) => image.naturalWidth > 0));
@@ -1250,18 +1789,13 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   });
   await pluginEnabled.check();
   await dialog.getByRole("button", { name: removedPluginId, exact: true }).click();
+  await dialog.getByRole("button", { name: "More actions", exact: true }).click();
   await dialog.getByRole("button", { name: `Remove ${removedPluginId}`, exact: true }).click();
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   assert.equal(await dialog.isVisible(), false);
   assert.deepEqual(JSON.parse(await json.inputValue()), expected);
 
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   const saved: FixtureResponse<AgentWire> = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${created.id}`,
@@ -1402,14 +1936,15 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   assert.equal(dedicated.agents.defaults.model, "codex/gpt-5.1");
   // Existing dedicated Presets may also use the supported OpenAI model prefix.
   dedicated.agents.defaults.model = "openai/gpt-5.1";
+  // Its Codex runtime policy follows the primary: a policy left on codex/ names another provider,
+  // and a codex catalog row names no selected model, which save refuses as deployment does
+  // (findings 3019 and 3020).
+  dedicated.agents.defaults.models = {
+    "openai/gpt-5.1": dedicated.agents.defaults.models["codex/gpt-5.1"],
+  };
+  delete dedicated.models.providers.codex.models;
   await configuration.fill(JSON.stringify(dedicated));
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(created.harnessAuth, harnessAuth);
   assert.equal(created.executionMode, "dedicated");
   const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
@@ -1492,13 +2027,7 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
   }
   // Dedicated OpenClaw needs the native model catalog's endpoint, which Agent save checks, so
   // this custom transport is created embedded.
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.equal(created.executionMode, "embedded");
   assert.deepEqual(created.harnessAuth, harnessAuth);
   const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
@@ -1540,13 +2069,7 @@ test("Partial Presets without a model policy retain the default Codex harness", 
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-astra");
   await createModelCredentialSecret(page, "partial-preset-model-key");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.equal(created.executionMode, "dedicated");
   const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
     "GET",
@@ -1738,6 +2261,10 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     [],
     "navigation must not save the local draft",
   );
+  // A retained draft revalidates the Preset read on return; saving never reads it again.
+  const presetPath = `/namespaces/${namespace.id}/presets/${preset.data.id}`;
+  const presetReads = pathRequests(requests, "GET", presetPath).length;
+  assert.ok(presetReads >= 1);
   // Canceling Start over keeps the ordinary draft and its ability to save.
   page.once("dialog", (dialog) => dialog.dismiss());
   await page.getByRole("button", { name: "Start over" }).click();
@@ -1746,7 +2273,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     JSON.parse(await page.getByLabel("Configuration JSON", { exact: true }).inputValue()),
     edited,
   );
-  await page.getByLabel("Agent name", { exact: true }).fill("Existing Agent");
+  // Another create takes the name after the preflight, so the Configuration is saved first.
+  await page.getByLabel("Agent name", { exact: true }).fill("Racing Agent");
+  await raceAgentName(page, fixture, namespace.id, "Racing Agent");
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -1754,19 +2283,11 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   );
   await save.click();
   assert.equal((await conflict).status(), 409);
-  await page
-    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
-    .waitFor();
+  await page.getByText(AGENT_NAME_CONFLICT).waitFor();
   assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   await page.getByLabel("Agent name", { exact: true }).fill("Preset Agent");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await save.click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
     0,
@@ -1802,10 +2323,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(saved.data.values.plugins.entries.knowledge.config.marker, "changed");
   assert.deepEqual(saved.data.values.plugins.entries.knowledge.config.thresholds, [5, 6]);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
-  assert.equal(
-    pathRequests(requests, "GET", `/namespaces/${namespace.id}/presets/${preset.data.id}`).length,
-    1,
-  );
+  assert.equal(pathRequests(requests, "GET", presetPath).length, presetReads);
 
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
@@ -1875,6 +2393,75 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   );
 });
 
+// The standard Preset fills a form taller than the window. Its only primary, Create Agent, stays
+// in view after Use Preset, and the form starts at its focused heading even when the chooser was
+// scrolled (finding 2098).
+test("Create Agent stays in view after Use Preset fills a long form", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Preset action", { ready: true });
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    { body: structuredClone(standardCodexPreset) },
+  );
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  for (const viewport of [{ width: 1280, height: 800 }, ...consoleViewports]) {
+    const { page } = await newPage(t, fixture);
+    await page.setViewportSize(viewport);
+    await routeInstallationWithoutProvisioning(page, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByLabel("Name", { exact: true }).fill("Preset action");
+    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-preset-action-key");
+    const use = page.getByRole("button", { name: "Use Preset" });
+    await use.scrollIntoViewIfNeeded();
+    await use.click();
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    await create.waitFor();
+    const size = `${viewport.width}x${viewport.height}`;
+    assert.ok(
+      await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight),
+      `${size}: the filled form is taller than the window`,
+    );
+    assert.equal(await inViewport(create), true, `${size}: Create Agent is in view`);
+    assert.deepEqual(
+      await page.locator(".content .button--primary:visible").allTextContents(),
+      ["Create Agent"],
+      `${size}: one primary`,
+    );
+    const heading = page.getByRole("heading", { level: 1, name: "Create Agent" });
+    assert.equal(
+      await heading.evaluate((node) => node === document.activeElement),
+      true,
+      `${size}: focus is on the heading`,
+    );
+    assert.equal(await inViewport(heading), true, `${size}: the form starts at its heading`);
+    // Tab down the form to the row: no focused control on the way is under it.
+    let reachedRow = false;
+    for (let step = 1; step <= 60 && !reachedRow; step += 1) {
+      await page.keyboard.press("Tab");
+      const focus = await page.evaluate(() => {
+        const focused = document.activeElement!;
+        const row = document.querySelector("#create-agent-form ~ .form-actions")!;
+        if (row.contains(focused)) {
+          return { inRow: true, hidden: null };
+        }
+        const { bottom } = focused.getBoundingClientRect();
+        return {
+          inRow: false,
+          hidden:
+            bottom > row.getBoundingClientRect().top + 1 ? focused.outerHTML.slice(0, 120) : null,
+        };
+      });
+      assert.equal(focus.hidden, null, `${size}: Tab ${step} focused a control under the row`);
+      reachedRow = focus.inRow;
+    }
+    assert.equal(reachedRow, true, `${size}: Tab reaches the action row`);
+  }
+});
+
 test("standard Codex password Preset creates one scoped Secret and reuses it after an Agent conflict", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1915,6 +2502,24 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
   );
   assert.equal(nonAuthWriteRequests(requests).length, 0);
   const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  // The preflight refuses the taken name before the Preset's model Secret is saved, so no Secret
+  // is left behind, and marks the name field (finding 2420).
+  const preflight = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents/validate`) &&
+      response.request().method() === "POST",
+  );
+  await save.click();
+  assert.equal((await preflight).status(), 409);
+  await page.getByText(AGENT_NAME_CONFLICT).waitFor();
+  await assertAgentNameTaken(page);
+  assert.deepEqual(secretPostRequests(requests, namespace.id), []);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(await apiKey.inputValue(), key);
+  // Another create takes the next name after the preflight: the Secret and Configuration are
+  // saved, and the retry reuses them.
+  await page.getByLabel("Agent name", { exact: true }).fill("Racing Agent");
+  await raceAgentName(page, fixture, namespace.id, "Racing Agent");
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -1922,19 +2527,11 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
   );
   await save.click();
   assert.equal((await conflict).status(), 409);
-  await page
-    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
-    .waitFor();
+  await page.getByText(AGENT_NAME_CONFLICT).waitFor();
   assert.equal(await apiKey.inputValue(), "");
   assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
   await page.getByLabel("Agent name", { exact: true }).fill("Password Agent");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await save.click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   const secretWrites = secretPostRequests(requests, namespace.id);
   assert.equal(secretWrites.length, 1);
@@ -2017,10 +2614,273 @@ test("Preset marks referenced variables without defaults as required before rend
   );
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
   await model.fill("gpt-5.1");
-  await page.getByRole("button", { name: "Use Preset" }).click();
-  await page.getByLabel("Agent name", { exact: true }).waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Required Agent");
+  assert.equal(await (await usePreset(page)).inputValue(), "Required Agent");
 });
+
+type VariablePresetTemplate = (typeof standardCodexPreset)["template"] & {
+  configuration: {
+    values: {
+      gateway: Record<string, unknown>;
+      agents: { defaults: { models: Record<string, unknown> } };
+    };
+  };
+};
+
+// The standard Preset edited by `edit`, chosen on Create Agent at `viewport` with its name and
+// model filled. An existing model Secret is bound (a restored form then needs no new key) unless
+// `modelSecretVariable` keeps the Preset's Model Secret password variable.
+async function variablePresetForm(
+  t: TestContext,
+  label: string,
+  viewport: { width: number; height: number },
+  edit: (template: VariablePresetTemplate) => void,
+  { modelSecretVariable = false } = {},
+) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(label, { ready: true });
+  const artifact = structuredClone(standardCodexPreset) as typeof standardCodexPreset & {
+    template: VariablePresetTemplate;
+  };
+  if (!modelSecretVariable) {
+    const modelSecret = await fixture.createSecret(
+      namespace.id,
+      "Model token",
+      "hidden-model-token",
+    );
+    delete artifact.template.variables.modelSecret;
+    artifact.template.agent.harnessAuth = { method: "api_key", source: modelSecret.ref };
+  }
+  edit(artifact.template);
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    { body: artifact },
+  );
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture, { context: { viewport } });
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Variable Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  return { fixture, namespace, preset: preset.data, page };
+}
+
+// A string variable Human fills the trusted-proxy allowlist beside the machine identity, which
+// Kubernetes Compute refuses with a case-duplicate of that identity. The allowlist waits on the
+// variable, so the Preset itself saves (finding 3122).
+function humanAllowlistVariable(template: VariablePresetTemplate) {
+  template.variables.human = {
+    type: "string",
+    description: "Identity of the person who runs this Agent",
+  };
+  const auth = nativeAdminGatewayAuth();
+  auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
+  const gateway = template.configuration.values.gateway;
+  gateway.controlUi = { enabled: true, allowedOrigins: ["http://127.0.0.1:18789"] };
+  gateway.auth = auth;
+}
+
+// Use Preset fills the Agent form; its Agent name field is returned once shown.
+async function usePreset(page: Page) {
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const agentName = page.getByLabel("Agent name", { exact: true });
+  await agentName.waitFor();
+  return agentName;
+}
+
+// Create Agent's preflight refuses the form; the alert holding `refusal` shows it.
+async function refusedPreflight(page: Page, namespaceId: string, refusal: string) {
+  const preflight = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespaceId}/agents/validate`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await preflight).status(), 400);
+  const feedback = page.getByRole("alert").filter({ hasText: refusal });
+  await feedback.waitFor();
+  return feedback;
+}
+
+for (const viewport of consoleViewports) {
+  // A Preset variable feeds the trusted-proxy allowlist with a case-duplicate of the machine
+  // identity. The refusal names only the setting, so Create Agent names the variable that filled
+  // it and reopens the Preset with that field marked and focused; a valid value then creates the
+  // Agent (finding 3122).
+  test(`A refused setting a Preset variable filled marks that variable at ${viewport.width}px`, async (t) => {
+    const { fixture, namespace, page } = await variablePresetForm(
+      t,
+      "Preset variable refusal",
+      viewport,
+      humanAllowlistVariable,
+      { modelSecretVariable: true },
+    );
+    const human = page.getByLabel("Human", { exact: true });
+    const password = page.getByLabel("Model Secret", { exact: true });
+    await password.fill("synthetic-variable-key");
+    // Identities compare case-insensitively, so this duplicates the machine identity.
+    await human.fill("OCC-Workspace-Files");
+    await usePreset(page);
+
+    const feedback = await refusedPreflight(page, namespace.id, KUBERNETES_ALLOW_USERS_REFUSAL);
+    // The API's sentence, then the variable the person typed into; never the value.
+    const feedbackText = (await feedback.textContent()) ?? "";
+    assert.match(
+      feedbackText,
+      /^Configuration setting gateway\.auth\.trustedProxy\.allowUsers .* names\. The Preset variable Human filled this setting\. Request ID: \S+ Change Human$/,
+    );
+    assert.equal(feedbackText.includes("OCC-Workspace-Files"), false);
+    await feedback.getByRole("button", { name: "Change Human", exact: true }).click();
+
+    // The Preset step again, with the entered variables kept (never the password): Human holds
+    // the refusal under it and has focus.
+    await page.locator("#preset-variable-human[aria-invalid=true]").waitFor();
+    const error = await human.evaluate((input) => {
+      const doc = globalThis.document;
+      const errorId = input
+        .getAttribute("aria-describedby")
+        ?.split(/\s+/)
+        .find((id) => id.endsWith("-error"));
+      return {
+        focused: doc.activeElement === input,
+        text: errorId ? doc.getElementById(errorId)?.textContent : undefined,
+      };
+    });
+    assert.deepEqual(error, { focused: true, text: KUBERNETES_ALLOW_USERS_REFUSAL });
+    assert.equal(await human.inputValue(), "OCC-Workspace-Files");
+    assert.equal(await page.getByLabel("Name", { exact: true }).inputValue(), "Variable Agent");
+    assert.equal(await password.inputValue(), "");
+    // Editing the variable clears its mark.
+    await human.fill("oidc:member-01");
+    assert.equal(await human.getAttribute("aria-invalid"), null);
+    await password.fill("synthetic-variable-key");
+    await usePreset(page);
+    const created = await createAgentThroughForm(page, fixture, namespace.id);
+    await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+    const configuration: FixtureResponse<ConfigurationWire> = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.deepEqual(responseAllowUsers(configuration.data.values), [
+      "occ-workspace-files",
+      "oidc:member-01",
+    ]);
+    assert.equal(
+      await page.evaluate(
+        () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+      ),
+      true,
+    );
+  });
+
+  // The API quotes a key that is not a plain ID, here one a variable filled with a space in it:
+  // agents.defaults.models["openai/gpt 5 mini"]. The refusal still names the variable (finding
+  // 3122). The Storybook scenario createPresetQuotedSettingRefused shows this same sentence.
+  test(`A refused quoted setting key names the Preset variable that filled it at ${viewport.width}px`, async (t) => {
+    const refusal =
+      'Configuration setting agents.defaults.models["openai/gpt 5 mini"] is not on the primary model\'s provider, "codex": remove it, or list a model of that provider.';
+    const { namespace, page } = await variablePresetForm(
+      t,
+      "Quoted setting",
+      viewport,
+      (template) => {
+        template.variables.fallback = { type: "string", description: "Another model ref" };
+        template.configuration.values.agents.defaults.models["{{ vars.fallback }}"] = {
+          agentRuntime: { id: "codex" },
+        };
+      },
+    );
+    const fallback = page.getByLabel("Fallback", { exact: true });
+    await fallback.fill("openai/gpt 5 mini");
+    await usePreset(page);
+    const feedback = await refusedPreflight(page, namespace.id, refusal);
+    const feedbackText = (await feedback.textContent()) ?? "";
+    assert.ok(feedbackText.startsWith(`${refusal} `), feedbackText);
+    assert.match(
+      feedbackText,
+      / The Preset variable Fallback filled this setting\. Request ID: \S+ Change Fallback$/,
+    );
+    await feedback.getByRole("button", { name: "Change Fallback", exact: true }).click();
+    await page.locator("#preset-variable-fallback[aria-invalid=true]").waitFor();
+    assert.equal(
+      await fallback.evaluate((input) => globalThis.document.activeElement === input),
+      true,
+    );
+    assert.equal(await fallback.inputValue(), "openai/gpt 5 mini");
+  });
+
+  // An Agent form edit survives navigating away and back (the restored draft keeps it as edited),
+  // so Change <variable> still asks before it discards it. When the Preset then fails to load, the
+  // pressed button is gone and focus goes to the chooser heading, not the document (findings
+  // 1446, 3122).
+  test(`Change Preset variables confirms restored form edits and keeps focus when the Preset fails to load at ${viewport.width}px`, async (t) => {
+    const { namespace, preset, page } = await variablePresetForm(
+      t,
+      "Preset variable return",
+      viewport,
+      humanAllowlistVariable,
+    );
+    await page.getByLabel("Human", { exact: true }).fill("OCC-Workspace-Files");
+    const agentName = await usePreset(page);
+    await agentName.fill("Edited Variable Agent");
+    await page.getByRole("link", { name: "← Agents" }).click();
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await agentName.waitFor();
+    assert.equal(await agentName.inputValue(), "Edited Variable Agent");
+    const feedback = await refusedPreflight(page, namespace.id, KUBERNETES_ALLOW_USERS_REFUSAL);
+
+    await page.route(`**/namespaces/${namespace.id}/presets/${preset.id}`, (route) =>
+      route.abort("failed"),
+    );
+    const dialogs: string[] = [];
+    page.on("dialog", (dialog) => {
+      dialogs.push(dialog.message());
+      void dialog.accept();
+    });
+    await feedback.getByRole("button", { name: "Change Human", exact: true }).click();
+    await page.getByText(/^This Preset could not be loaded\./).waitFor();
+    assert.deepEqual(dialogs, ["Discard the changes on this form and go back to the Preset?"]);
+    assert.equal(
+      await page.evaluate(() => {
+        const active = globalThis.document.activeElement;
+        return active?.tagName === "H2" ? active.textContent : active?.tagName;
+      }),
+      "Use a saved setup",
+    );
+  });
+
+  // The Preset variable filled a valid allowlist, and the reader then edited that setting in the
+  // Configuration JSON. The refusal is of their edit, so it names no Preset variable and offers
+  // no Change <variable>, which would discard the edit and render the variable's value again.
+  test(`A refused setting the reader edited after the Preset names no Preset variable at ${viewport.width}px`, async (t) => {
+    const { namespace, page } = await variablePresetForm(
+      t,
+      "Edited Preset setting",
+      viewport,
+      humanAllowlistVariable,
+    );
+    await page.getByLabel("Human", { exact: true }).fill("oidc:member-01");
+    await usePreset(page);
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const values = JSON.parse(await configuration.inputValue());
+    assert.deepEqual(responseAllowUsers(values), ["occ-workspace-files", "oidc:member-01"]);
+    // Identities compare case-insensitively, so the added entry duplicates the machine identity.
+    values.gateway.auth.trustedProxy.allowUsers.push("OCC-Workspace-Files");
+    await configuration.fill(JSON.stringify(values, null, 2));
+    const feedback = await refusedPreflight(page, namespace.id, KUBERNETES_ALLOW_USERS_REFUSAL);
+    assert.equal(((await feedback.textContent()) ?? "").includes("Preset variable"), false);
+    assert.equal(await feedback.getByRole("button").count(), 0);
+  });
+}
+
+function responseAllowUsers(values: unknown) {
+  const gateway = (values as { gateway?: { auth?: { trustedProxy?: { allowUsers?: unknown } } } })
+    .gateway;
+  return gateway?.auth?.trustedProxy?.allowUsers;
+}
 
 test("Preset with a prebound model Secret grants the created draft access", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -2045,13 +2905,7 @@ test("Preset with a prebound model Secret grants the created draft access", asyn
   await page.getByLabel("Name", { exact: true }).fill("Bound Secret Agent");
   await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByRole("button", { name: "Use Preset" }).click();
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   const bindings: FixtureResponse<IAMAccessBindingWire[]> = await fixture.request(
     "GET",
@@ -2191,13 +3045,7 @@ test("password Preset can reuse an existing Secret and retry an uncertain grant 
     assert.equal(response.status(), 201);
     await route.abort("failed");
   });
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page
     .getByRole("alert")
     .filter({ hasText: /credential access is not confirmed.*interrupted/ })
@@ -2236,7 +3084,6 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Codex PAT Preset", { ready: true });
-  await fixture.createAgent(namespace.id, "Existing Codex Agent");
   const artifact = structuredClone(standardCodexPreset);
   artifact.name = "standard-codex-pat";
   const auth = artifact.template.agent.harnessAuth;
@@ -2264,6 +3111,8 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   const token = page.getByLabel("Service account token", { exact: true });
   assert.equal(await token.inputValue(), "at-codex-pat-preset-token");
   const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  // Another create takes the name after the preflight, so the Secret is saved first.
+  await raceAgentName(page, fixture, namespace.id, "Existing Codex Agent");
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -2271,18 +3120,10 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   );
   await save.click();
   assert.equal((await conflict).status(), 409);
-  await page
-    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
-    .waitFor();
+  await page.getByText(AGENT_NAME_CONFLICT).waitFor();
   assert.equal(await token.inputValue(), "");
   await page.getByLabel("Agent name", { exact: true }).fill("Codex PAT Agent");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await save.click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   const secretWrites = secretPostRequests(requests, namespace.id);
   assert.equal(secretWrites.length, 1);
@@ -2293,7 +3134,240 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   assert.equal(created.harnessAuth?.method, "codex_pat");
 });
 
-test("password Preset names the taken Secret when an earlier Agent left one with the same name", async (t) => {
+for (const recovery of ["existing", "alternate", "denied existing"] as const) {
+  test(`password Preset recovers a confirmed Secret name conflict with ${recovery}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Secret name conflict", { ready: true });
+    // Deleting an Agent keeps its model Secret, which is named after the Agent.
+    const existing = await fixture.createSecret(
+      namespace.id,
+      "Recreated Agent",
+      "earlier-model-key",
+    );
+    const artifact = structuredClone(standardCodexPreset);
+    const preset: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      {
+        body: artifact,
+      },
+    );
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    await routeInstallationWithoutProvisioning(page, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
+    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await page.getByLabel("Model Secret", { exact: true }).fill("replacement-model-key");
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    const apiKey = page.getByLabel("API key", { exact: true });
+    const save = page.getByRole("button", { name: "Create Agent", exact: true });
+    await openAdvancedSettings(page);
+    await page.getByLabel("USER.md", { exact: true }).fill("Preserve this workspace draft.");
+    const configurationBefore = await page
+      .getByLabel("Configuration JSON", { exact: true })
+      .inputValue();
+    const conflict = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/namespaces/${namespace.id}/secrets`) &&
+        response.request().method() === "POST",
+    );
+    await save.click();
+    assert.equal((await conflict).status(), 409);
+    await page
+      .getByText(
+        'A Secret named "Recreated Agent" already exists in this Namespace. Choose an existing Secret or use another Secret name. Other draft fields stay unchanged.',
+        { exact: false },
+      )
+      .waitFor();
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+    assert.equal(await apiKey.inputValue(), "replacement-model-key");
+    if (recovery === "denied existing") {
+      // Access can change after the conflict. The picker must not allow this exact Secret.
+      restrict(fixture.policy, "operate", "secret", {
+        namespaceId: namespace.id,
+        resourceId: existing.id,
+      });
+      await page.getByRole("button", { name: "Choose existing Secret", exact: true }).click();
+      await operateDeniedSecretOption(page, "API key Secret", existing);
+      assert.equal(
+        await page.getByLabel("API key Secret", { exact: true }).inputValue(),
+        existing.name,
+      );
+      assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+      assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+      return;
+    }
+    if (recovery === "existing") {
+      // A different Agent name also changes the generated Secret name; the old refusal is stale.
+      const agentName = page.getByLabel("Agent name", { exact: true });
+      await agentName.fill("Different Agent");
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), false);
+      assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+      await agentName.fill("Recreated Agent");
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), false);
+      const repeatedConflict = page.waitForResponse(
+        (response) => response.url().endsWith("/secrets") && response.request().method() === "POST",
+      );
+      await save.click();
+      assert.equal((await repeatedConflict).status(), 409);
+      await page.getByRole("button", { name: "Choose existing Secret", exact: true }).click();
+      assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
+      await selectSecret(page, "API key Secret", existing);
+    } else {
+      await page.getByRole("button", { name: "Use another Secret name", exact: true }).click();
+      const alternateName = page.getByLabel("New Secret name", { exact: true });
+      // Invalid recovery input must stop before any resource write, without losing the draft.
+      const writesBeforeInvalidName = nonAuthWriteRequests(requests).length;
+      for (const invalidName of ["   ", "x".repeat(256)]) {
+        await alternateName.fill(invalidName);
+        await save.click();
+        await page.waitForFunction(
+          () => document.activeElement?.id === "alternate-model-secret-name",
+        );
+        assert.equal(nonAuthWriteRequests(requests).length, writesBeforeInvalidName);
+        assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+        assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+        assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+        assert.equal(await apiKey.inputValue(), "replacement-model-key");
+      }
+      await alternateName.fill("  Alternate model key  ");
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), false);
+      // Updating controls or the Agent name must not discard an independent alternate name.
+      await page.getByLabel("Agent name", { exact: true }).fill("Different Agent");
+      assert.equal(await alternateName.inputValue(), "  Alternate model key  ");
+      assert.equal(await alternateName.isVisible(), true);
+      await page.getByLabel("Agent name", { exact: true }).fill("Recreated Agent");
+    }
+    assert.equal(
+      await page.getByLabel("Agent name", { exact: true }).inputValue(),
+      "Recreated Agent",
+    );
+    assert.equal(await page.getByLabel("Model ID", { exact: true }).inputValue(), "gpt-5.1");
+    assert.equal(
+      await page.getByLabel("USER.md", { exact: true }).inputValue(),
+      "Preserve this workspace draft.",
+    );
+    assert.equal(
+      await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+      configurationBefore,
+    );
+    const created = await createAgentThroughForm(page, fixture, namespace.id);
+    await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+    const secretWrites = secretPostRequests(requests, namespace.id);
+    assert.deepEqual(
+      secretWrites.map(({ body }) => body),
+      (recovery === "existing"
+        ? ["Recreated Agent", "Recreated Agent"]
+        : ["Recreated Agent", "Alternate model key"]
+      ).map((name) => ({ name, value: "replacement-model-key" }) satisfies CreateSecretBody),
+    );
+    if (recovery === "existing") {
+      assert.deepEqual(created.harnessAuth, { method: "api_key", source: existing.ref });
+    }
+    assert.equal(requests.filter(({ method }) => method === "DELETE").length, 0);
+  });
+}
+
+test("codex_pat Secret recovery restores authenticated plugin discovery", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("PAT recovery", { ready: true });
+  const existing = await fixture.createSecret(namespace.id, "Recreated Agent", "at-existing");
+  const originalFetch = globalThis.fetch;
+  const discoveryTokens: string[] = [];
+  // Keep real routes and the selected Driver; isolate every external provider request.
+  t.mock.method(globalThis, "fetch", async (...[input, options]: Parameters<typeof fetch>) => {
+    const url = new URL(input instanceof globalThis.Request ? input.url : input);
+    if (["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
+      return originalFetch(input, options);
+    }
+    const token = new Headers(options?.headers).get("authorization") ?? "";
+    if (url.hostname === "auth.openai.com") {
+      return Response.json({
+        chatgpt_account_id: "recovery-account",
+        chatgpt_account_is_fedramp: false,
+      });
+    }
+    assert.equal(url.hostname, "chatgpt.com");
+    assert.ok(url.pathname.endsWith("/plugins/list"), url.pathname);
+    discoveryTokens.push(token);
+    return Response.json({ plugins: [], pagination: { next_page_token: null } });
+  });
+  const artifact = structuredClone(standardCodexPreset);
+  artifact.template.agent.harnessAuth = {
+    ...artifact.template.agent.harnessAuth,
+    method: "codex_pat",
+  };
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    { body: artifact },
+  );
+  assert.equal(preset.status, 201);
+  const { page } = await newPage(t, fixture);
+  await page.route("**/*", (route) => {
+    const url = new URL(route.request().url());
+    return url.origin === fixture.origin ? route.continue() : route.abort();
+  });
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model Secret", { exact: true }).fill("at-replacement");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const conflict = page.waitForResponse(
+    (response) => response.url().endsWith("/secrets") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await conflict).status(), 409);
+  await page.getByRole("button", { name: "Choose existing Secret", exact: true }).click();
+  const disclosure = page.locator("#plugin-discovery-token > summary");
+  await disclosure.click();
+  const token = page.getByLabel("Token for plugin discovery", { exact: true });
+  assert.equal(await token.inputValue(), "");
+  const discovered = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/agents/plugins") &&
+      response.request().postDataJSON()?.accessToken === "at-discovery",
+  );
+  await token.fill("at-discovery");
+  assert.equal((await discovered).status(), 200);
+  assert.ok(discoveryTokens.includes("Bearer at-discovery"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.waitFor();
+  // Done closes the dialog, and its close event fires a task later. Focus that moves to the
+  // Secret field in between must stay there: taking it back closed the field's list while
+  // selectSecret typed (finding 2862).
+  assert.equal(
+    await focusKeptOverClose(
+      dialog.getByRole("button", { name: "Done", exact: true }),
+      page.getByLabel("Service account token Secret", { exact: true }),
+    ),
+    true,
+    "closing the dialog keeps focus on the Secret field",
+  );
+  await selectSecret(page, "Service account token Secret", existing);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
+  assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: existing.ref });
+  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+  assert.equal(
+    requests.filter(({ method }) => ["DELETE", "PATCH", "PUT"].includes(method)).length,
+    0,
+  );
+});
+
+test("password Secret recovery clears on OAuth and Preset context changes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Secret name conflict", { ready: true });
@@ -2319,6 +3393,9 @@ test("password Preset names the taken Secret when an earlier Agent left one with
   await page.getByRole("button", { name: "Use Preset" }).click();
   const apiKey = page.getByLabel("API key", { exact: true });
   const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  await openAdvancedSettings(page);
+  await page.getByLabel("USER.md", { exact: true }).fill("Preserve this workspace draft.");
+
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/secrets`) &&
@@ -2326,32 +3403,183 @@ test("password Preset names the taken Secret when an earlier Agent left one with
   );
   await save.click();
   assert.equal((await conflict).status(), 409);
-  await page
-    .getByText(
-      'A Secret named "Recreated Agent" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.',
-    )
-    .waitFor();
+
+  const alternate = page.getByRole("button", { name: "Use another Secret name", exact: true });
+  await page.waitForFunction(() => document.activeElement?.id === "model-secret-conflict");
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Choose existing Secret", exact: true })
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+  await page.keyboard.press("Tab");
+  assert.equal(await alternate.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  const alternateName = page.getByLabel("New Secret name", { exact: true });
+  assert.equal(await alternateName.evaluate((node) => node === document.activeElement), true);
+  const method = page.getByLabel("Authentication method", { exact: true });
+  await method.focus();
+  await method.selectOption("credential_source");
+  assert.equal(await method.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await alternate.isVisible(), false, "OAuth does not own a model Secret write");
+  assert.equal(await alternateName.evaluate((node: HTMLInputElement) => node.required), false);
+  assert.equal(
+    await page.getByRole("button", { name: "Choose existing Secret", exact: true }).isVisible(),
+    false,
+  );
+  assert.equal(
+    await page.getByLabel("USER.md", { exact: true }).inputValue(),
+    "Preserve this workspace draft.",
+  );
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Recreated Agent",
+  );
+  await method.selectOption("api_key");
+  await apiKey.fill("new-context-key");
+  assert.equal(
+    await alternate.isVisible(),
+    false,
+    "switching back must not revive the old conflict",
+  );
+  assert.equal(await alternateName.inputValue(), "");
+  assert.equal(await apiKey.inputValue(), "new-context-key");
+  assert.equal(
+    secretPostRequests(requests, namespace.id).length,
+    1,
+    "context changes do not retry the write",
+  );
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
-  assert.equal(await apiKey.inputValue(), "replacement-model-key");
-  await waitForEnabled(page.getByRole("button", { name: "Start over" }));
-  await page.getByLabel("Agent name", { exact: true }).fill("Recreated Agent 2");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
+  assert.equal(
+    requests.filter(({ method }) => ["DELETE", "PATCH", "PUT"].includes(method)).length,
+    0,
   );
-  await save.click();
-  const created = await createdAgent(createdResponse);
-  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
-  const secretWrites = secretPostRequests(requests, namespace.id);
-  assert.deepEqual(
-    secretWrites.map(({ body }) => body),
-    ["Recreated Agent", "Recreated Agent 2"].map(
-      (name) => ({ name, value: "replacement-model-key" }) satisfies CreateSecretBody,
-    ),
-  );
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Start over", exact: true }).click();
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Fresh preset draft");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model Secret", { exact: true }).fill("fresh-preset-key");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  assert.equal(await alternate.isVisible(), false);
+  assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "fresh-preset-key");
+  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
 });
+
+for (const failure of ["denied", "uncertain", "generic conflict"] as const) {
+  test(`password Preset does not offer Secret recovery after ${failure}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Secret name conflict", { ready: true });
+    const artifact = structuredClone(standardCodexPreset);
+    const preset: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      {
+        body: artifact,
+      },
+    );
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    await routeInstallationWithoutProvisioning(page, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
+    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await page.getByLabel("Model Secret", { exact: true }).fill("replacement-model-key");
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    const apiKey = page.getByLabel("API key", { exact: true });
+    const save = page.getByRole("button", { name: "Create Agent", exact: true });
+
+    const path = `${fixture.origin}/namespaces/${namespace.id}/secrets`;
+    if (failure === "generic conflict") {
+      // The next known refusal must replace an earlier real duplicate-name response.
+      await fixture.createSecret(namespace.id, "Recreated Agent", "earlier-model-key");
+      const duplicate = page.waitForResponse(
+        (response) => response.url() === path && response.request().method() === "POST",
+      );
+      await save.click();
+      assert.equal((await duplicate).status(), 409);
+      await page.getByRole("button", { name: "Use another Secret name", exact: true }).click();
+      await page.getByLabel("New Secret name", { exact: true }).fill("Recreated Agent");
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), true);
+    }
+    if (failure === "denied") {
+      // Revoke after rendering: the real native IAM admission must deny the write.
+      restrict(fixture.policy, "create", "secret", { namespaceId: namespace.id });
+    } else {
+      await page.route(path, async (route) => {
+        if (route.request().method() !== "POST") {
+          await route.continue();
+          return;
+        }
+        if (failure === "uncertain") {
+          // Persist through the real API, then lose its reply. Retrying could duplicate work.
+          const response = await route.fetch();
+          assert.equal(response.status(), 201);
+          await route.abort("failed");
+        } else {
+          await route.fulfill({
+            status: 409,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: {
+                code: "RESOURCE_CONFLICT",
+                message: "The requested platform resource already exists.",
+              },
+              meta: { requestId: "req_00000000-0000-4000-8000-000000000409" },
+            }),
+          });
+        }
+      });
+    }
+    const reply =
+      failure === "denied"
+        ? page.waitForResponse(
+            (response) => response.url() === path && response.request().method() === "POST",
+          )
+        : undefined;
+    await save.click();
+    if (reply) {
+      assert.equal((await reply).status(), 403);
+    }
+    await page
+      .getByRole("alert")
+      .filter({
+        hasText: failure === "uncertain" ? /unknown|not confirmed|could not|cannot confirm/i : /\S/,
+      })
+      .first()
+      .waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Choose existing Secret", exact: true }).isVisible(),
+      false,
+    );
+    assert.equal(
+      await page.getByRole("button", { name: "Use another Secret name", exact: true }).isVisible(),
+      false,
+    );
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+    assert.equal(
+      await page.getByLabel("Agent name", { exact: true }).inputValue(),
+      "Recreated Agent",
+    );
+    if (failure === "generic conflict") {
+      assert.equal(await page.locator("#model-secret-conflict").isVisible(), false);
+      const alternateName = page.getByLabel("New Secret name", { exact: true });
+      assert.equal(await alternateName.isVisible(), true);
+      assert.equal(await alternateName.inputValue(), "Recreated Agent");
+      assert.equal(await apiKey.inputValue(), "replacement-model-key");
+    }
+    if (failure === "uncertain") {
+      assert.equal(await apiKey.inputValue(), "");
+      assert.equal(await save.isDisabled(), true);
+    }
+  });
+}
 
 test("method-only codex_pat Preset requires credential entry in the create form", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -2422,13 +3650,7 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
   await selectSecret(page, "Service account token Secret", modelSecret);
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-6-astra");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   const secretWrites = secretPostRequests(requests, namespace.id);
   assert.equal(secretWrites.length, 0);
@@ -2450,7 +3672,6 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Create credential picker", { ready: true });
-  await fixture.createAgent(namespace.id, "Existing picker Agent");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -2482,10 +3703,16 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   const submitStarted = Promise.withResolvers<void>();
   const submitRelease = Promise.withResolvers<void>();
   t.after(() => submitRelease.resolve());
+  let raced = false;
   await page.route(`${fixture.origin}/namespaces/${namespace.id}/agents`, async (route) => {
     if (route.request().method() === "POST") {
       submitStarted.resolve();
       await submitRelease.promise;
+      // Another create takes the name after the preflight, so the API refuses the first create.
+      if (!raced) {
+        raced = true;
+        await fixture.createAgent(namespace.id, "Existing picker Agent");
+      }
     }
     await route.continue();
   });
@@ -2503,9 +3730,7 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   assert.equal(pathRequests(requests, "POST", catalogPath).length, 0);
   submitRelease.resolve();
   assert.equal((await conflict).status(), 409);
-  await page
-    .getByText("An Agent with this name already exists in this Namespace. Choose a different name.")
-    .waitFor();
+  await page.getByText(AGENT_NAME_CONFLICT).waitFor();
   assert.equal(secretPostRequests(requests, namespace.id).length, 1);
   const prefetched = page.waitForResponse(
     (response) =>
@@ -2521,13 +3746,7 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   await plugins.getByRole("button", { name: "Done", exact: true }).click();
 
   await page.getByLabel("Agent name", { exact: true }).fill("Picker credential Agent");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await save.click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   assert.equal(secretPostRequests(requests, namespace.id).length, 1);
   assert.deepEqual(secretPostRequests(requests, namespace.id)[0]?.body, {
@@ -2577,12 +3796,72 @@ test("Preset Secret picker preserves existing mode on catalog failure and can sw
   await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await source.selectOption("new");
   await page.getByLabel("Model Secret", { exact: true }).fill("new-token-after-catalog-error");
-  await page.getByRole("button", { name: "Use Preset" }).click();
-  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  await usePreset(page);
   assert.equal(
     await page.getByLabel("API key", { exact: true }).inputValue(),
     "new-token-after-catalog-error",
   );
+});
+
+test("Preset list and Preset Secret field name the Namespace read a Restriction denies", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Preset Namespace read", { ready: true });
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    { body: structuredClone(standardCodexPreset) },
+  );
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  // A Restriction on Namespace read, held only while Native IAM answers one list request: both
+  // lists check Namespace read first, so the real 403 is that grant's, never an item's.
+  const denyNamespaceReadOnce = (path: string) =>
+    page.route(
+      `${fixture.origin}${path}`,
+      async (route) => {
+        const restriction = {
+          id: `deny-namespace-read-${path}`,
+          namespaceId: namespace.id,
+          resourceKind: "namespace",
+          resourceId: namespace.id,
+          action: "read",
+          effect: "deny",
+        } as const;
+        fixture.policy.restrictions.push(restriction);
+        const response = await route.fetch().finally(() => {
+          fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
+        });
+        assert.equal(response.status(), 403);
+        await route.fulfill({ response });
+      },
+      { times: 1 },
+    );
+
+  await denyNamespaceReadOnce(`/namespaces/${namespace.id}/presets`);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page
+    .getByText(`Presets unavailable. ${namespaceListDenied("Presets")}`, { exact: true })
+    .waitFor();
+  // The shortcut stays in the Tab order, described by the chooser's status (finding 2937).
+  await expectReachableReason(
+    page,
+    page.getByRole("button", { name: "Start with default Preset", exact: true }),
+    `Presets unavailable. ${namespaceListDenied("Presets")}`,
+  );
+
+  // With the list readable again, the chosen Preset's Secret field lists the Namespace's Secrets.
+  await page.reload();
+  await denyNamespaceReadOnce(`/namespaces/${namespace.id}/secrets`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Secret source for Model Secret", { exact: true }).selectOption("existing");
+  await page
+    .getByText(
+      `Existing Secrets unavailable. ${namespaceListDenied("Secrets")} Choose create-new mode to enter a new token.`,
+      { exact: true },
+    )
+    .waitFor();
 });
 
 test("Preset picker ignores stale Preset responses after switching selection", async (t) => {
@@ -2634,9 +3913,7 @@ test("Preset picker ignores stale Preset responses after switching selection", a
   await waitForSettledFetches(page, `/namespaces/${namespace.id}/presets/${first.data.id}`, 1);
   assert.equal(await page.getByLabel("First Name", { exact: true }).count(), 0);
   await page.getByLabel("Second Name", { exact: true }).fill("Current Agent");
-  await page.getByRole("button", { name: "Use Preset" }).click();
-  await page.getByLabel("Agent name", { exact: true }).waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Current Agent");
+  assert.equal(await (await usePreset(page)).inputValue(), "Current Agent");
 });
 
 test("a default starter creation form survives every exit but a confirmed Cancel", async (t) => {
@@ -3061,13 +4338,7 @@ test("an empty Namespace can create an Agent without a Preset", async (t) => {
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Kept draft");
   await page.getByLabel("Agent name", { exact: true }).fill("Agent without Preset");
   await enterManualModel(page, "no-preset-model-key", "gpt-4.1");
-  const saved = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal((await saved).status(), 201);
+  await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
   assert.equal(
     requests.filter(
       (request) =>
@@ -3157,17 +4428,7 @@ test("a delayed restored Preset list cannot read a selection after starting with
   } finally {
     releaseList();
     if (heldRequest) {
-      let timer;
-      try {
-        await Promise.race([
-          listHandled,
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error("Held Preset route did not finish")), 10_000);
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
+      await within(listHandled, "held Preset route did not finish", 10_000);
     }
     await page.unroute(listPath);
   }
@@ -3210,20 +4471,17 @@ test("denied Preset reads do not automatically start an Agent form", async (t) =
     () => globalThis.document.querySelector<HTMLSelectElement>("#agent-preset")?.disabled === false,
   );
   // Deny the exact read after the list is visible to exercise a changed grant.
-  fixture.policy.restrictions.push({
-    id: "deny-selected-preset",
-    namespaceId: namespace.id,
-    resourceKind: "preset",
-    resourceId: starter.id,
-    action: "read",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "read", "preset", { namespaceId: namespace.id, resourceId: starter.id });
   const denied = page.waitForResponse((response) =>
     response.url().endsWith(`/namespaces/${namespace.id}/presets/${starter.id}`),
   );
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   assert.equal((await denied).status(), 403);
-  await page.getByRole("alert").filter({ hasText: "Access denied" }).waitFor();
+  // The API's named denial (finding 2534) names the Preset the request sent.
+  await page
+    .getByRole("alert")
+    .filter({ hasText: callerDenied("Preset read", `Preset ${starter.id}`) })
+    .waitFor();
   assert.equal(await page.locator("#create-agent-form").count(), 0);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
@@ -3254,9 +4512,11 @@ test("The console requires a readable installed default for quick-start and stil
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page
-    .getByText("Choose a Preset. default-codex is not available to you in this Namespace.", {
-      exact: true,
-    })
+    .getByRole("status")
+    .filter({ hasText: /^Choose a Preset\.$/ })
+    .waitFor();
+  await page
+    .getByText("default-codex is not available to you in this Namespace.", { exact: true })
     .waitFor();
   assert.equal(
     await page.getByRole("button", { name: "Start with default Preset" }).isDisabled(),
@@ -3302,13 +4562,7 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
   await page.getByLabel("Name", { exact: true }).fill("Managed PAT Preset Agent");
   await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByRole("button", { name: "Use Preset" }).click();
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await createdAgent(createdResponse);
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   assert.deepEqual(created.harnessAuth, harnessAuth);
   assert.equal(
@@ -3372,9 +4626,7 @@ test("the Preset chooser names its default and fills Use Preset once a Preset is
     }),
   );
   await page.getByLabel("Preset template").selectOption(other.data.id);
-  await page
-    .getByText("Service unavailable. The read could not be completed. Try again.")
-    .waitFor();
+  await page.getByText(READ_UNAVAILABLE).waitFor();
   assert.equal(await use.isDisabled(), true);
   assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
 });

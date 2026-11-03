@@ -33,3 +33,34 @@ export function injectJson(
     ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
   });
 }
+
+/**
+ * The `fetch()` (or `new Request()`) init for one JSON request over HTTP: `method`, `headers`
+ * and, when `body` is given, the JSON-encoded body with its content type after `headers`.
+ * Spread it and add per-request options such as `signal`.
+ * @param {string} method
+ * @param {unknown} [body]
+ * @param {Record<string, string>} [headers]
+ */
+export function jsonRequestInit(method, body, headers = {}) {
+  return {
+    method,
+    headers: {
+      ...headers,
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  };
+}
+
+/**
+ * injectJson with the Host header Fastify's `inject` sends when a request names none
+ * (`localhost:80`) instead of 127.0.0.1, for suites written against that default.
+ * @param {any} app
+ * @param {string} method
+ * @param {string} url
+ * @param {Parameters<typeof injectJson>[3]} [options]
+ */
+export function injectLocalhost(app, method, url, options = {}) {
+  return injectJson(app, method, url, { host: "localhost:80", ...options });
+}
