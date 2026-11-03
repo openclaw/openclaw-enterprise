@@ -6,7 +6,7 @@ rfc: index.md
 
 This companion defines the Driver contract changes, failure behavior, and required
 outcomes for [RFC-0027](index.md). The RFC owns the decision, connection
-templates, consent rules, and personal-Agent boundary.
+templates, consent rules, and Agent attachment boundary.
 
 ## Credential Refresh Driver
 
@@ -125,8 +125,8 @@ connection template needs these additions:
   only on Installation access bindings. Its `subjectId` is a Namespace ID.
 - **Namespace context.** `AuthorizationRequest` gains optional `namespaceContext`.
   A `namespace` binding matches only when the request's `namespaceContext` equals its
-  subject. OCC sets it to the Agent's Namespace when it checks `use` at connect time,
-  after the caller passes `agent:update` there. Requests without a context never
+  subject. OCC sets it to the connection's Namespace when it checks `use` at
+  connect time, after checking the caller's access to that Namespace. Requests without a context never
   match `namespace` bindings.
 - **Identity bindings** for a person use `subjectKind: identity` and match without a
   context. Namespace-bound identities, such as service principals, still cannot use
@@ -158,9 +158,14 @@ the server URL’s HTTPS host, effective port and literal path. OpenShell permit
 endpoint. Installing the plugin alone grants no route.
 Discovery, registration and refresh use separate management endpoints.
 
-RFC-0023 authenticates an execution. Listing a binary in a connection template
-does not establish which process sent a request. Refuse deployment when the
-installation cannot enforce the executable restriction recorded at consent.
+The sender authenticates the deployed execution and checks its current authority
+to use the attached source. It evaluates the actual request before presenting the
+credential. A connector policy can restrict the operation and its arguments:
+for a Gmail metadata-only binding, `format=metadata` may pass while
+`format=full` fails on the same message URL. Apply those checks both to `gog` and
+to a direct script. For an MCP policy restricting individual tools, the guard
+must check the tool name and policy-relevant arguments in the posted message.
+If the selected route cannot enforce a promised restriction, refuse deployment.
 
 ## Failure and recovery
 
@@ -175,7 +180,7 @@ installation cannot enforce the executable restriction recorded at consent.
 | OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                      | Administrator corrects `issuer` or URLs        |
 | ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`              | Administrator checks the provider; reconnect   |
 | Connection template edited after consent                    | Source unchanged; **Reconnect to apply changes** | Owner reconnects; administrator can disconnect |
-| Withdrawal pending or failed after disconnect               | Personal restriction stays in force              | Retry withdrawal, or stop or delete the Agent  |
+| Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use            | Retry withdrawal, or stop the affected Agent   |
 | Provider disables a rotated-out client secret               | Older connections report `reauthorize`           | Owners **Reconnect**                           |
 
 The operator guide documents provider rules. Google requires verification for
@@ -187,12 +192,14 @@ issue seven-day refresh tokens.
 - **HTTP and PostgreSQL integration.** Use a real Keycloak issuer with
   authorization code, PKCE, and refresh tokens. Prove success, denied consent,
   state reuse, a cross-session callback, an expired session, and a missing grant.
-  Prove that a second user cannot connect, deploy, chat with, or receive grants on
-  a connected Agent, including through inherited admin permissions. Accept a
-  channel only when it enforces owner identity and private delivery. Reject a
-  second sender and a shared reply destination, including while withdrawal is
-  delayed or has failed after disconnect. Prove that codes and
-  tokens are absent from responses, logs, and audit.
+  Connect once, attach to Agents A and B, and refuse a third Agent without a
+  grant. Refuse attachment or deployment of a pending source before and during
+  callback. Refuse a caller who can only read the source, a caller who cannot
+  update the Agent, and an attachment across Namespaces. Detach A, including
+  with queued and serving revisions: A loses access, B can still send approved
+  requests, and neither action repeats consent. Disconnect the account and
+  verify B also loses access. Verify no codes or tokens appear in responses,
+  logs, or audit.
 - **Refresh ownership.** For both configured OAuth and MCP, observe the Token
   Service refresh the access token with the issuer in the background. Send a
   worker request with the same placeholder and verify that OpenShell presents
@@ -206,16 +213,17 @@ issue seven-day refresh tokens.
 - **Client registrations.** Two connection templates with the same `clientId` in
   two Keycloak realms keep independent secrets: rotating one leaves the other's
   sources refreshing.
-- **IAM.** A person with an identity binding and a person connecting an Agent in a
-  Namespace with a `namespace` binding can connect; the same person connecting an
-  Agent in another Namespace, a service key, and a caller without a binding are
+- **IAM.** A person with an identity binding and a person connecting in a
+  Namespace with a `namespace` binding can connect; the same person connecting
+  in another ungranted Namespace, a service key, and a caller without a binding are
   refused. Only Installation administrators can create or delete the bindings.
 - **OIDC.** Reject a version whose metadata issuer or endpoints differ, and an ID
   token with a wrong issuer, an untrusted signing key, a wrong audience, or a wrong
   nonce. Show the verified address on success.
 - **Real k3d and OpenShell.** Through the regular Agent create path, connect via
   Keycloak and prove: a tool reaches its endpoint with no added network policy; a
-  write fails under `read-only`; another tool binary cannot send the placeholder;
+  write fails under `read-only`; a tool and a script get the same allow and deny
+  decisions from the protected sender on the same requests;
   rotate, revoke, and reconnect work; an edited `tokenUrl` or endpoint leaves an
   existing source unchanged; after client secret rotation, existing sources keep
   refreshing until the old secret is disabled, then report `reauthorize`, and new
