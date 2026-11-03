@@ -1,3 +1,7 @@
+---
+tags: [nolimit]
+---
+
 # Development OCC API reference
 
 <!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->
@@ -1711,7 +1715,7 @@ Example response
 | [`GET /installation`](#get-installation) | Get the singleton Installation |
 | [`POST /installation/bootstrap`](#post-installationbootstrap) | Bootstrap the singleton Installation |
 | [`GET /installation/deployment-inventory`](#get-installationdeploymentinventory) | Get the complete authorized Agent deployment inventory |
-| [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver startup configuration schemas |
+| [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver accepted startup values and configuration schemas |
 | [`GET /observability`](#get-observability) | Get the configured external observability destination |
 
 #### `GET /installation`
@@ -1767,6 +1771,7 @@ Get the singleton Installation
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
+| `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.openclaw` | `object` | No | — |
@@ -1886,6 +1891,7 @@ Example request
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
+| `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.openclaw` | `object` | No | — |
@@ -2009,7 +2015,7 @@ Example response
 
 <span id="get-installationdriverconfigurations"></span>
 
-Inspect selected Driver startup configuration schemas
+Inspect selected Driver accepted startup values and configuration schemas
 
 **Operation ID:** `discoverInstallationConfigurations`
 
@@ -2061,6 +2067,7 @@ Inspect selected Driver startup configuration schemas
 | `data.configurations[].implementation` | `string` | Yes | — |
 | `data.configurations[].key` | `string` | Yes | — |
 | `data.configurations[].scope` | `"installation" or "agent"` | Yes | — |
+| `data.configurations[].startupConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -3383,6 +3390,7 @@ Create a new Agent and queue first-time provisioning
 | `initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `nativeAdmin` | `boolean` | No | Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -4898,6 +4906,7 @@ Discover authorized Agent Driver configuration contributions
 | `data.configurations[].implementation` | `string` | Yes | — |
 | `data.configurations[].key` | `string` | Yes | — |
 | `data.configurations[].scope` | `"installation" or "agent"` | Yes | — |
+| `data.configurations[].startupConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -6053,6 +6062,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.configuration.implementation` | `string` | Yes | — |
 | `data.configuration.key` | `string` | Yes | — |
 | `data.configuration.scope` | `"installation" or "agent"` | Yes | — |
+| `data.configuration.startupConfiguration` | `object<string, SafeJsonValue>` | No | — |
 | `data.defaults` | `null or object<string, any>` | Yes | — |
 | `data.defaultsRevisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.deployedPolicyVersion` | `integer` | No | minimum: 1; maximum: 2147483647; The saved policy version the active revision (defaultsRevisionId) was deployed with. Its Sandbox enforces that version without a live application. |

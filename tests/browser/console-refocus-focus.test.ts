@@ -3,11 +3,14 @@ import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
 import type { NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 
 import {
+  AGENT_READ,
   apiRequests,
   detailUrl,
   fileBrowser,
+  grantMember,
   hasFocus,
   holdRequests,
   login,
@@ -16,19 +19,30 @@ import {
   nonAuthWriteRequests,
   secretOptionLabel,
   selectSecret,
+  settledView,
+  waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { confirmAgentAction } from "./console-action-helpers.mjs";
+import {
+  focusedLabel,
+  fulfillMethod,
+  heldView,
+  refocus,
+  refocusHeld,
+  tagView,
+  viewTag,
+  waitForFocusedLabel,
+} from "./console-refocus-helpers.mjs";
+import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { within } from "../helpers/wait-for.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { deleteRefused } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
-
-const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
-const heldView = '.content [aria-live="polite"][inert]';
-// Refocusing the window rechecks the session and Namespace access.
-const refocus = (page: Page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
 
 // A navigation that holds the shown page keeps focus on its heading (findings 1626, 1636), but a
 // refocus recheck does not: the list stays inert while we check access, then the reader can
@@ -64,17 +78,6 @@ test("refocusing the Agents list restores its focused link unless the reader mov
   }
 });
 
-// Holds the recheck's session read so the held list can be observed, then lets it finish.
-async function refocusHeld(t: TestContext, page: Page, during?: () => Promise<void>) {
-  const read = await holdRequests(t, page, "**/api/auth/session", { once: true });
-  await refocus(page);
-  await read.requested;
-  await page.locator(heldView).waitFor();
-  await during?.();
-  read.release();
-  await page.locator(settledView).waitFor();
-}
-
 const deploymentsRead = (namespace: NamespaceWire) =>
   `**/namespaces/${namespace.id}/agents/*/deployments/*`;
 const deploymentRecord = (namespace: NamespaceWire) => ({
@@ -94,12 +97,6 @@ const holdDeploymentRead = (t: TestContext, page: Page, namespace: NamespaceWire
     once: true,
     fulfill: deploymentRecord(namespace),
   });
-// Marks the shown list, so a reused list can be told from a rebuilt one.
-const tagList = (page: Page) =>
-  page.locator(settledView).evaluate((node) => node.setAttribute("data-kept", "true"));
-const listKept = async (page: Page) =>
-  (await page.locator(`${settledView}[data-kept]`).count()) === 1;
-
 async function openDeployedList(t: TestContext, name: string) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agent = await fixture.createAgent(namespace.id, "Refocus Agent", nativeValues("v1"));
@@ -122,14 +119,14 @@ test("refocusing the Agents list while a row reads its deployment keeps the read
   await link.waitFor();
   await row.requested;
   await link.focus();
-  await tagList(page);
+  await tagView(page);
   const cell = page.locator(".content .agent-deployment");
   await refocusHeld(t, page, async () => {
     // The recheck aborted the row's read; the held list doesn't show that as its answer.
     assert.equal(await cell.textContent(), "Reading deployment…");
   });
   assert.equal(await hasFocus(link), true, "keep focus on the Agent link");
-  assert.equal(await listKept(page), true, "reuse the list");
+  assert.equal(await viewTag(page), "kept", "reuse the list");
   // The resumed list's reread fills the row; the held answer goes to the aborted request.
   row.release();
   const deployment = page.locator(settledView).locator(".agent-deployment a");
@@ -139,7 +136,7 @@ test("refocusing the Agents list while a row reads its deployment keeps the read
   // The aborted read did not make the list one a later refocus rebuilds.
   await refocusHeld(t, page);
   assert.equal(await hasFocus(link), true, "keep focus on a later refocus");
-  assert.equal(await listKept(page), true, "reuse the list on a later refocus");
+  assert.equal(await viewTag(page), "kept", "reuse the list on a later refocus");
 });
 
 // Refocusing again while a refocus's reread runs keeps focus on the pending deployment, which
@@ -151,7 +148,7 @@ test("refocusing during a deployment reread keeps focus on that deployment", asy
   const deployment = cell.getByRole("link", { name: "v1 · Completed", exact: true });
   await deployment.waitFor();
   await deployment.focus();
-  await tagList(page);
+  await tagView(page);
   const pending = cell.locator("[data-return-focus-href]");
   let reread;
   for (const refocusing of ["first", "second", "third"]) {
@@ -163,7 +160,7 @@ test("refocusing during a deployment reread keeps focus on that deployment", asy
       true,
       `the ${refocusing} refocus focuses the pending cell`,
     );
-    assert.equal(await listKept(page), true, `the ${refocusing} refocus reuses the list`);
+    assert.equal(await viewTag(page), "kept", `the ${refocusing} refocus reuses the list`);
   }
   assert.ok(reread, "Deployment reread was held");
   reread.release();
@@ -185,11 +182,137 @@ test("refocusing the Agents list after a row read failed keeps the reader's plac
   await cell.getByText("Deployment unavailable").waitFor();
   const link = page.locator(settledView).getByRole("link", { name: "Refocus Agent" });
   await link.focus();
-  await tagList(page);
+  await tagView(page);
   await refocusHeld(t, page);
   assert.equal(await hasFocus(link), true, "keep focus on the Agent link");
-  assert.equal(await listKept(page), true, "reuse the list");
+  assert.equal(await viewTag(page), "kept", "reuse the list");
   await cell.getByRole("link", { name: "v1 · Completed", exact: true }).waitFor();
+});
+
+// A row write makes the list one a refocus never reuses, so the refocus after a refused Delete
+// rebuilds it, and keyboard focus on the row's icon fell to the body, though the re-grant the
+// recheck picked up made the icon usable again (finding D814). Focus now returns to the same
+// icon in the rebuilt row.
+test("refocusing an Agents list that rebuilds keeps focus on the row's icon", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus rebuilt row");
+  const agent = await fixture.createAgent(namespace.id, "Regranted Row", nativeValues("row"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const member = "refocus-row-reader";
+  const { credentials } = await fixture.createNamespaceMember(member, namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture, { browser });
+  // The row's first permission answer is held, so Delete stays available and the API refuses it.
+  await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    { once: true, method: "GET" },
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`, credentials);
+  const remove = page
+    .locator(settledView)
+    .getByRole("button", { name: "Delete Regranted Row", exact: true });
+  await waitForEnabled(remove);
+  await remove.click();
+  await confirmAgentAction(page, "Delete Regranted Row?", "Delete");
+  const alert = page.getByRole("alert").filter({ hasText: deleteRefused("Regranted Row") });
+  await alert.waitFor();
+  // Focus returns to Delete in the confirmation's close event, a task after the alert renders
+  // (finding 3112).
+  await waitForFocusedLabel(page, "Delete Regranted Row");
+  assert.equal(await remove.getAttribute("aria-disabled"), "true");
+  await tagView(page);
+  grantMember(fixture, member, [["delete", "agent"]]);
+  await refocusHeld(t, page);
+  assert.equal(await viewTag(page), null, "the refocus rebuilds the list");
+  // The rebuilt row's permission answer can replace its icons at any moment, keeping focus on the
+  // new Delete. A locator resolved before that replacement names the old, detached icon, so the
+  // check reads the focused control in one step (finding 2970: 2 of 50 runs failed that way).
+  assert.equal(
+    await focusedLabel(page),
+    "Delete Regranted Row",
+    "focus returns to the row's Delete",
+  );
+  // That answer, read after the grant, keeps Delete usable and focused. The reader still lacks
+  // operate, so the row's note names it once the answer applies.
+  const row = page.locator(settledView).getByRole("row").filter({ hasText: "Regranted Row" });
+  await row.getByText("Needs Agent operate", { exact: true }).waitFor();
+  await waitForEnabled(remove);
+  assert.equal(await alert.count(), 0);
+  assert.equal(await hasFocus(remove), true);
+});
+
+// A rebuilt row whose focused control is gone dropped focus to the body (finding 2967). Here
+// another session stops an Agent whose first deployment had not started a version: with no
+// selected version, the rebuilt row has no Stop. Focus now goes to the same row's name.
+test("refocusing a rebuilt Agents list whose focused Stop is gone focuses the row's name", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus stopped row");
+  const agent = await fixture.createAgent(namespace.id, "Stopped Row", nativeValues("stopped"));
+  // Requested to run, with no version selected yet: the row offers Stop.
+  await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const view = page.locator(settledView);
+  const stop = view.getByRole("button", { name: "Stop Stopped Row", exact: true });
+  await waitForEnabled(stop);
+  await stop.focus();
+  await tagView(page);
+  // Another session stops the Agent, so the recheck's list read changes and the list rebuilds.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal((await fixture.request("POST", `${agentPath}/stop`)).status, 202);
+  await refocusHeld(t, page);
+  assert.equal(await viewTag(page), null, "the refocus rebuilds the list");
+  assert.equal(await stop.count(), 0, "a stopped Agent with no version has no Stop");
+  const name = view.getByRole("link", { name: "Stopped Row", exact: true });
+  assert.equal(await hasFocus(name), true, "focus goes to the row's name");
+});
+
+// A refusal that is not about grants is kept through a refocus that rebuilds the list (finding
+// D812), but only for an Agent the rebuilt list still shows. When another session's deletion
+// removed the row, the refocus drops the refusal, and focus on its icon goes to the page heading,
+// not to the body (findings 2967, 2968).
+test("refocusing after a refused row's Agent was deleted elsewhere drops the refusal", async (t) => {
+  // The fixture's own State completes the deletion work the controller records, as the
+  // worker's finalizer does.
+  const kept: { state?: InMemoryPlatformState } = {};
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus removed row", {
+    recordOperations: true,
+    wrapState: (base: InMemoryPlatformState) => (kept.state = base),
+  });
+  await fixture.createAgent(namespace.id, "Listed Row", nativeValues("listed"));
+  const removed = await fixture.createAgent(namespace.id, "Removed Row", nativeValues("removed"));
+  await fixture.seedActiveAgentRevision(namespace.id, removed.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const agentPath = `/namespaces/${namespace.id}/agents/${removed.id}`;
+  // A caller-state denial any authorized request can get; the in-memory app has no disabled
+  // identity, so the API's answer is fulfilled.
+  const message = "The acting identity is unavailable.";
+  await fulfillMethod(
+    page,
+    `${fixture.origin}${agentPath}/stop`,
+    "POST",
+    apiErrorResponse(403, "FORBIDDEN", message),
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const view = page.locator(settledView);
+  const stop = view.getByRole("button", { name: "Stop Removed Row", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  await confirmAgentAction(page, "Stop Removed Row?", "Stop");
+  const alert = page.getByRole("alert").filter({ hasText: message });
+  await alert.waitFor();
+  await waitForFocusedLabel(page, "Stop Removed Row");
+  // Another session deletes the Agent, and its deletion completes.
+  const { state } = kept;
+  assert.ok(state, "the fixture's State");
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  assert.equal(await state.completeAgentDeletion(namespace.id, removed.id), true);
+  await tagView(page);
+  await refocusHeld(t, page);
+  assert.equal(await viewTag(page), null, "the refocus rebuilds the list");
+  await view.getByRole("link", { name: "Listed Row", exact: true }).waitFor();
+  assert.equal(await view.getByRole("link", { name: "Removed Row", exact: true }).count(), 0);
+  assert.equal(await alert.count(), 0, "no refusal for an Agent the list no longer shows");
+  assert.equal(await hasFocus(page.locator(".content h1")), true, "focus goes to the heading");
 });
 
 // Shell controls outside the page are replaced by the recheck's shells; focus returns to the
@@ -286,11 +409,25 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     holdSession();
     t.after(() => releaseSession());
     let sessionReads = 0;
+    const readWaiters = new Map<number, () => void>();
     await page.route("**/api/auth/session", async (route) => {
       sessionReads += 1;
+      readWaiters.get(sessionReads)?.();
       await sessionHeld;
       await route.fallback();
     });
+    // The page holds its view inert as the recheck starts, before the recheck's session read
+    // leaves the browser and reaches the route above. So the held view does not prove the read
+    // was counted yet (finding 3119): wait for the read itself, then check it was the only one.
+    const sessionReadsReach = async (count: number, message: string) => {
+      if (sessionReads < count) {
+        await within(
+          new Promise<void>((resolve) => readWaiters.set(count, resolve)),
+          () => `${message} (session reads so far: ${sessionReads})`,
+        );
+      }
+      assert.equal(sessionReads, count, message);
+    };
     const focusIn = () =>
       page.evaluate(() => {
         const active = globalThis.document.activeElement;
@@ -326,7 +463,7 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     // A refocus that no Tab started is the reader coming back: it rechecks and holds the page.
     await refocus(page);
     await page.locator(heldView).waitFor();
-    assert.equal(sessionReads, 1);
+    await sessionReadsReach(1, "a refocus no Tab started rechecks");
     releaseSession();
     await page.locator(settledView).waitFor();
 
@@ -338,7 +475,7 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     await page.evaluate(() => globalThis.dispatchEvent(new Event("blur")));
     await refocus(page);
     await page.locator(heldView).waitFor();
-    assert.equal(sessionReads, 2, "a return from a blur no Tab started rechecks");
+    await sessionReadsReach(2, "a return from a blur no Tab started rechecks");
     releaseSession();
     await page.locator(settledView).waitFor();
 
@@ -350,10 +487,18 @@ for (const view of ["Agent page", "Create Agent"] as const) {
       await new Promise((resolve) => setTimeout(resolve, 10_500));
       await page.keyboard.press("Tab");
       await page.locator(heldView).waitFor();
-      assert.equal(sessionReads, 3, "a return after the lap window rechecks");
+      await sessionReadsReach(3, "a return after the lap window rechecks");
       releaseSession();
       await page.locator(settledView).waitFor();
     }
+    // Each stage's exact count can absorb a late duplicate read from the stage before it, and
+    // the last stage has no stage after it: once the last recheck has settled, no further
+    // session read has been sent (finding 3120).
+    assert.equal(
+      sessionReads,
+      view === "Agent page" ? 3 : 2,
+      "the last recheck sends no duplicate session read",
+    );
   });
 }
 
@@ -426,28 +571,8 @@ for (const revoked of ["configuration", "agent"] as const) {
     const agent = await fixture.createAgent(
       namespace.id,
       "Credential refocus Agent",
-      nativeValues("binding-review", {
-        harnessId: "codex",
-        channels: {
-          slack: {
-            enabled: true,
-            mode: "socket",
-            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-            dmPolicy: "allowlist",
-            groupPolicy: "allowlist",
-            allowFrom: ["U123"],
-            channels: { C123: { requireMention: true } },
-          },
-        },
-      }),
-      {
-        executionMode: "dedicated",
-        secretBindings: {
-          SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
-          SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
-        },
-      },
+      slackAgentValues("binding-review"),
+      slackTokenBindings(appSecret, botSecret),
     );
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);

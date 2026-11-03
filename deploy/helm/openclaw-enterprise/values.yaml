@@ -205,7 +205,9 @@ publicGithubRead:
   upstreamCidrs: []
 
 gatewayRouting:
-  enabled: false
+  # Requires operator-installed routing controllers/CRDs, an existing GatewayClass,
+  # and the service-key Secret below. Helm does not install those prerequisites.
+  enabled: true
   # Empty derives the private Envoy Service DNS name:
   # occ-gateway-<route-hash>.<envoyNamespace>.svc.
   hostname: ""

@@ -9,7 +9,7 @@ async function verifyEnvironment() {
   assert.equal(process.getuid?.(), 1000);
   assert.equal(
     spawnSync("codex", ["--version"], { encoding: "utf8" }).stdout.trim(),
-    "codex-cli 0.163.0-alpha.2",
+    "codex-cli 0.164.0",
   );
   await assert.rejects(
     fs.writeFile("/fixture/plugins/selected/.codex-plugin/plugin.json", "forbidden"),
@@ -52,7 +52,7 @@ async function readBaseline({ rpc, send }: Session, { skills }: PluginApi) {
     clientInfo: { name: "oce_native_fixture", version: "1" },
     capabilities: { experimentalApi: true },
   });
-  assert.match(initialized.userAgent, /\/0\.163\.0-alpha\.2\b/);
+  assert.match(initialized.userAgent, /\/0\.164\.0\b/);
   assert.equal(initialized.codexHome, process.env.CODEX_HOME);
   send(JSON.stringify({ method: "initialized" }));
   const config = await rpc<{

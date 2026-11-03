@@ -6,21 +6,14 @@ import { connect } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
-import {
-  fixtureRepository,
-  startGitHubFixture,
-} from "../fixtures/repository-credentials/github.mjs";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { listen } from "../fixtures/repository-credentials/process.mjs";
 import {
   appModule,
   eventually,
-  createLoopbackServiceConfiguration,
+  startTokenServiceScope,
 } from "../fixtures/repository-credentials/service.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import {
-  createGitHubTokenServiceFactory,
-  startServiceListeners,
-} from "../fixtures/repository-credentials/service-resources.mjs";
+import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
 
 const discovery = `/${fixtureRepository}.git/info/refs?service=git-upload-pack`;
 const upload = `/${fixtureRepository}.git/git-upload-pack`;
@@ -34,22 +27,20 @@ const completed = (bytes = 4) => ({ kind: "completed", status: 200, bytes, compl
 // The peer controls only application bytes and when it reads or writes them.
 // The listener, route policy, credential ownership and TLS sender are production code.
 async function startTransport(t, onRequest, limits = {}, { log } = {}) {
-  const resources = createTestResourceScope(t);
-  const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
-  const clock = createSystemClock();
-  const tls = await createTlsMaterial(resources);
-  // One exchange slot makes leaked reservations visible to the following request.
-  const config = await createLoopbackServiceConfiguration(resources, {
-    exchanges: 1,
-    exchangesPerSession: 1,
-    exchangeMs: 10000,
-    firstHeaderMs: 5000,
-    gitFetchExchangeMs: limits.exchangeMs ?? 10000,
-    gitFetchFirstHeaderMs: limits.firstHeaderMs ?? 5000,
-    gitFetchStallMs: limits.stallMs ?? 5000,
-    ...limits,
+  const { resources, clock, tls, config, github } = await startTokenServiceScope(t, {
+    clock: "system",
+    // One exchange slot makes leaked reservations visible to the following request.
+    limits: {
+      exchanges: 1,
+      exchangesPerSession: 1,
+      exchangeMs: 10000,
+      firstHeaderMs: 5000,
+      gitFetchExchangeMs: limits.exchangeMs ?? 10000,
+      gitFetchFirstHeaderMs: limits.firstHeaderMs ?? 5000,
+      gitFetchStallMs: limits.stallMs ?? 5000,
+      ...limits,
+    },
   });
-  const github = await startGitHubFixture(resources, { clock, tls });
   const received = [];
   const upstream = createServer(tls, (incoming, outgoing) => {
     incoming.on("error", () => {});
@@ -62,20 +53,13 @@ async function startTransport(t, onRequest, limits = {}, { log } = {}) {
   });
   const origin = await listen(resources, upstream);
   const trustedOrigins = new Set([origin]);
-  const token = `gho_${"t".repeat(36)}`;
-  github.acceptStatic(token);
-  const factory = await createGitHubTokenServiceFactory(resources, {
-    config,
-    clock,
-    token,
-    trustedEndpoints: { apiOrigin: github.origin, gitOrigin: origin, ca: tls.ca },
-  });
   const logs = [];
-  const { service, listeners } = await startServiceListeners(resources, {
+  const { service, listeners } = await startStaticTokenService(resources, {
     config,
-    factory,
     clock,
     tls,
+    github,
+    gitOrigin: origin,
     // Pass the caller's original set so production owns the security-relevant copy.
     trustedUpstreamOrigins: trustedOrigins,
     log: log ?? ((record) => logs.push(record)),
@@ -646,13 +630,13 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       const chunk = Buffer.alloc(16384, 42);
       const pump = setInterval(() => client.closed || client.socket.write(chunk), 2);
       t.after(() => clearInterval(pump));
-      await eventually(() => answeredAt !== undefined, { message: "refusal was not answered" });
+      await eventually(() => answeredAt !== undefined, { description: "the refusal answer" });
       // The sole exchange slot is free while the refused upload still lingers.
       assert.deepEqual(await readDiscovery(fixture), completed());
       assert.equal(client.closed, false);
       await eventually(() => client.closed, {
         timeoutMs: 5000,
-        message: "refused upload kept lingering",
+        description: "the refused upload to close",
       });
       clearInterval(pump);
       assert.match(answer, /^HTTP\/1\.1 413 /);

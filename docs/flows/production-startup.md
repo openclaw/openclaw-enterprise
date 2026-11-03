@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-24"
-last_updated_session: "authoring-run/21b9b442-e8b7-45d3-a482-742f1742b077"
+updated: "2026-11-03"
+last_updated_session: "authoring-run/e9eeaa5b-19a6-4496-9c6e-98357b25ef83"
 ---
 
 # Production Startup Flow
@@ -42,8 +42,10 @@ graph TD
     subgraph Helm["Helm-owned startup"]
         D --> E["Render chart with native values"]
         E --> F["Run initialization Job with migrator and application roles"]
-        F --> O{"Canonical migration history?"}
-        O -->|No| P["Refuse initialization before migration DDL"]
+        F --> V{"PostgreSQL before 17?"}
+        V -->|Yes| P["Refuse initialization before migration DDL"]
+        V -->|No| O{"Canonical migration history?"}
+        O -->|No| P
         O -->|Yes| G["Apply migrations, bootstrap administrators and write protected key output"]
         G --> H["Start private API Deployment"]
         G --> I["Start independent worker Deployment"]
@@ -116,6 +118,16 @@ stop; preserve it; reconcile. Offline `helm template` cannot check it.
 This is no lock or freshness proof for database, identity or storage; upgrades
 are unchanged.
 
+`deploy/helm/openclaw-enterprise/values.yaml:gatewayRouting` enables private
+routing by default. `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate`
+refuses missing GatewayClass or service-key Secret names before rendering. Operators
+install Envoy Gateway, its CRDs, Gateway API CRDs and cert-manager, create the
+GatewayClass and Secret, and configure matching Installation routing settings.
+Helm neither installs those prerequisites nor checks their readiness offline.
+Explicit `gatewayRouting.enabled: false` omits routing resources and key mounts;
+it requires native admin and sandbox routing to be disabled. See
+[opt-out limits](../guides/deploy/workspace-routing.md#explicit-opt-out).
+
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` matches Compute routing validation. `database.port`,
 `cluster.port`, and `executionCluster.apiPort` must be 1–65535 without leading zeros.
 Empty hosts retain Service DNS for listeners and Certificate SANs.
@@ -151,7 +163,12 @@ not `.` or a `..` prefix.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-Migration verifies the SQL source, dedicated role, receipts and catalog under
+After verifying SQL source, migration checks the server version before locking
+or reading catalogs. PostgreSQL
+before 17 fails with `MIGRATION_SERVER_UNSUPPORTED` and a fixed recovery message;
+the same guard covers first install, upgrade, and `--check`. See
+[server compatibility](../reference/settings/operations.md#postgresql-server-compatibility).
+Migration then verifies the dedicated role, receipts and catalog under
 one advisory lock on Drizzle's transaction connection. For a recognized history, it accepts the native catalog digest or
 the reviewed restore digest bound to it. Unsupported histories fail before
 migration DDL and bootstrap. See [migration history and recovery](../reference/settings/operations.md#migration-history).
@@ -197,6 +214,20 @@ replica has no peer or `preStop`; the 30-second grace cuts off unfinished reques
 Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
 or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
 
+The PostgreSQL API compositions close the exchange binding, protected Driver,
+prepared GitHub owner, and database in order, continuing after a close fails.
+Shutdown reports the first failure, wrapping a falsey thrown value as an error
+with the original value as its cause. Failed startup preserves the startup error.
+The exchange binding is independent of the protected Driver. See
+`apps/controller/src/composition/production.ts:composeProduction` and
+`apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`.
+
+The worker closes the repository Git sender binding, prepared Git owner, receipt
+listener, metrics, and prepared GitHub owner in order, continuing after a close
+fails, then stops its loop and database. A listener left open would keep the Pod
+running until its grace ends. Any failure logs `worker.error` `SHUTDOWN_FAILED`
+(exit 1). See `apps/controller/src/worker/shutdown.ts:closeWorkerComposition`.
+
 Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
 on reviewed control-plane nodes; empty defaults omit it.
 `deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also applies it
@@ -241,11 +272,11 @@ preflight with the same advisory warning, emits `worker.started`, and polls
 durable Namespace/AgentRevision work. Readiness requires fresh queue-health
 observations; neither process mounts the bootstrap PVC.
 
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
+`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 
 With `repository` selected, both processes load the same registry and construct
 `GitHubRepositoryPolicy`; the GitHub Backend's `drivers.repo` member must equal
-`repository.id`. Native delivery adds the public CA and a lazy Unix client for
+`repository.id`. Only native delivery loads the Unix client and CA reader used by
 `GitHubNativeRepositorySender`. Startup refuses the retired Installation
 `drivers.repo`. API startup performs no control operation and loads no App key.
 With prepared repository Git, the worker reads the App key at startup and exits
@@ -333,6 +364,18 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 11:28: Reconcile PostgreSQL compatibility checks with default Helm private routing. (authoring-run/e9eeaa5b-19a6-4496-9c6e-98357b25ef83 - ccc8f0359924ed62b12e619b2ef9f3ef57a3dd7a)
+
+- 2026-11-02 15:26: Refuse incompatible PostgreSQL servers before catalog checks and migration. (authoring-run/c6926504-08f3-4eb6-ba6c-28b3e113eede - 9138a0f9617742d9c4997156e7a6cf19f6241c10)
+
+- 2026-11-02 14:57: Enable Helm private routing by default and retain prerequisite validation and explicit opt-out. (authoring-run/4fcd344c-7374-490d-979d-a6995b6a19dc - cf67413c378cce3989d28fa8178ed29a405b9ce6)
+
+- 2026-10-30 14:36: Attempt every worker resource close in order after a close fails. (authoring-run/b8400fae-dc1a-49fd-be49-5d07e9dbb899 - 2b3b206b63525e31a6170e239991394b7909fc15)
+
+- 2026-10-30 05:46: Attempt every PostgreSQL API resource close in order and preserve the original error. (authoring-run/3277ff6a-7559-43e6-842d-93513c8dd124 - 60b6beb56d038c012d318cc6249003707c7ec9d5)
+
+- 2026-10-30 03:58: Load the native repository transport only for explicit native delivery. (authoring-run/43b61103-4082-4fc2-b9a0-511a18ebc761 - 87ed6c37e543e5501eae6285450d01d03d8abe7d)
 
 - 2026-10-28: Give the worker a startup probe and 5-second exec probe timeouts.
 

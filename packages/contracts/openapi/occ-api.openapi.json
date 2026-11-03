@@ -971,7 +971,7 @@
                   },
                   {
                     "const": "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
-                    "description": "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
+                    "description": "Deploy is refused because the selected Credential Proxy delivers repository Git only for github-repository bindings, or one git-write or github-installation binding; git-read, git-full or several bindings that are not all github-repository could never start.",
                     "type": "string"
                   },
                   {
@@ -12307,6 +12307,7 @@
                               "required": ["types"],
                               "type": "object"
                             },
+                            "nativeAdmin": { "const": true, "type": "boolean" },
                             "nativeWorkers": {
                               "additionalProperties": false,
                               "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
@@ -12709,6 +12710,7 @@
                               "required": ["types"],
                               "type": "object"
                             },
+                            "nativeAdmin": { "const": true, "type": "boolean" },
                             "nativeWorkers": {
                               "additionalProperties": false,
                               "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
@@ -13307,6 +13309,10 @@
                                   { "const": "installation", "type": "string" },
                                   { "const": "agent", "type": "string" }
                                 ]
+                              },
+                              "startupConfiguration": {
+                                "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                "type": "object"
                               }
                             },
                             "required": [
@@ -13403,7 +13409,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Inspect selected Driver startup configuration schemas",
+        "summary": "Inspect selected Driver accepted startup values and configuration schemas",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -17214,6 +17220,10 @@
                     "minLength": 1,
                     "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
                     "type": "string"
+                  },
+                  "nativeAdmin": {
+                    "description": "Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false.",
+                    "type": "boolean"
                   },
                   "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                   "plugins": { "$ref": "#/components/schemas/def-6" },
@@ -24416,6 +24426,10 @@
                                   { "const": "installation", "type": "string" },
                                   { "const": "agent", "type": "string" }
                                 ]
+                              },
+                              "startupConfiguration": {
+                                "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                                "type": "object"
                               }
                             },
                             "required": [
@@ -28691,6 +28705,10 @@
                                 { "const": "installation", "type": "string" },
                                 { "const": "agent", "type": "string" }
                               ]
+                            },
+                            "startupConfiguration": {
+                              "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                              "type": "object"
                             }
                           },
                           "required": [

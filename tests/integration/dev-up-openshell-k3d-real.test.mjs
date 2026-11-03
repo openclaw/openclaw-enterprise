@@ -13,6 +13,8 @@ import { promisify } from "node:util";
 import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { verifyOpenShellOwnerSession } from "../helpers/openshell-owner-session.mjs";
+import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
@@ -211,10 +213,14 @@ test(
     const stateDirectory = join(root, "state");
     const suffix = randomUUID().slice(0, 8);
     const cluster = `occ-dev-openshell-${suffix}`;
-    const apiPort = await availablePort();
-    const kubernetesPort = await availablePort();
+    const ports = new Set();
+    while (ports.size < 3) {
+      ports.add(await availablePort());
+    }
+    const [apiPort, kubernetesPort, browserPort] = ports;
     const environment = {
       ...process.env,
+      OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
       OPENCLAW_DEV_PORT: String(apiPort),
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
       OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
@@ -227,6 +233,9 @@ test(
         process.env.OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT ?? "1",
       OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "600",
     };
+    // This workflow must work without selecting static-inference enforcement.
+    delete environment.OCC_DEVELOPMENT_PROTECTED_EGRESS;
+    delete environment.OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP;
     delete environment.OCC_DEVELOPMENT_OPENSHELL_HELM_CHART;
     delete environment.OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART;
     delete environment.OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST;
@@ -265,35 +274,56 @@ test(
     assert.equal(state.deploymentMode, "k3d");
     assert.equal(state.platformNamespace, "oce-system");
     assert.equal(existsSync(join(stateDirectory, "compose.yaml")), false);
+    assert.equal(state.browserOrigin, `https://console.${cluster}.oce.localhost:${browserPort}`);
     const kubectl = [
       "--kubeconfig",
       join(stateDirectory, "kubeconfig"),
       "--context",
       `k3d-${cluster}`,
     ];
-    const releases = JSON.parse(
-      (
-        await execute(
-          "helm",
-          [
-            "list",
-            "--kubeconfig",
-            join(stateDirectory, "kubeconfig"),
-            "--kube-context",
-            `k3d-${cluster}`,
-            "--namespace",
-            "oce-system",
-            "--output",
-            "json",
-          ],
-          { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
-        )
-      ).stdout,
+    const { stdout: helmList } = await execute(
+      "helm",
+      [
+        "list",
+        "--kubeconfig",
+        join(stateDirectory, "kubeconfig"),
+        "--kube-context",
+        `k3d-${cluster}`,
+        "--namespace",
+        "oce-system",
+        "--output",
+        "json",
+      ],
+      { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
     );
-    assert.match(
-      releases.find(({ name }) => name === "openshell-gateway")?.chart ?? "",
-      /-0\.1\.5$/,
-      "the default development profile must install the documented OpenShell chart",
+    const stockChartVersion = "0.1.6";
+    const chartMetadataError = `Unexpected chart package or metadata for openshell-gateway. Check for helm-chart-${stockChartVersion}.`;
+    let releases;
+    try {
+      releases = JSON.parse(helmList);
+    } catch {
+      assert.fail(chartMetadataError);
+    }
+    assert.ok(Array.isArray(releases), chartMetadataError);
+    const release = releases.find((entry) => entry?.name === "openshell-gateway");
+    if (!release) {
+      assert.ok(
+        releases.every((entry) => typeof entry?.name === "string" && entry.name !== ""),
+        chartMetadataError,
+      );
+      assert.fail(
+        "The openshell-gateway Helm release is missing. Check the default profile install in oce-system.",
+      );
+    }
+    // Only a bounded numeric stock version can enter the failure message.
+    const version =
+      typeof release.chart === "string"
+        ? /^helm-chart-((?:0|[1-9]\d{0,3})(?:\.(?:0|[1-9]\d{0,3})){2})$/u.exec(release.chart)?.[1]
+        : undefined;
+    assert.ok(version, chartMetadataError);
+    assert.ok(
+      version === stockChartVersion,
+      `Stock OpenShell chart version ${version} does not match ${stockChartVersion}. Compare the release with the expected chart pin.`,
     );
     const namespaceList = JSON.parse(
       (
@@ -371,9 +401,8 @@ test(
     }
     assert.equal(typeof controllerImage, "string");
 
-    // The Gateway accepts unauthenticated development calls, so both halves of
-    // the NetworkPolicy boundary must deny arbitrary tenant Pods while retaining
-    // the OpenShell supervisor callback path.
+    // TLS authentication supplements NetworkPolicy: arbitrary tenant Pods still
+    // cannot connect, while supervisors retain their callback network path.
     assert.equal(
       await runGatewayProbe({
         directory: root,
@@ -386,7 +415,7 @@ test(
         labels: { "app.kubernetes.io/name": "untrusted-gateway-probe" },
       }),
       "Failed",
-      "an ordinary tenant Pod must not reach the unauthenticated Gateway",
+      "an ordinary tenant Pod must not reach the Gateway",
     );
     assert.equal(
       await runGatewayProbe({
@@ -456,13 +485,52 @@ test(
     });
     t.after(() => stopProcess(forward));
     await waitForPort(forward, gatewayPort, () => forwardError);
-    const gateway = new GrpcOpenShellGatewayClient({
-      endpoint: `http://127.0.0.1:${gatewayPort}`,
-      auth: { mode: "unauthenticated" },
-    });
+    const options = await localOpenShellGatewayOptions(
+      t,
+      kubectl,
+      environment,
+      "oce-system",
+      gatewayPort,
+    );
+    const gateway = new GrpcOpenShellGatewayClient(options);
     t.after(() => gateway.close());
     const workspace = await gateway.getWorkspace(namespace, AbortSignal.timeout(10_000));
     assert.equal(workspace?.name, namespace);
+    // The same live endpoint trusts its CA but rejects a caller without a client
+    // identity. The successful call above rules out readiness/network failures.
+    const anonymous = new GrpcOpenShellGatewayClient({
+      endpoint: options.endpoint,
+      rootCertificatePath: options.rootCertificatePath,
+      auth: { mode: "unauthenticated" },
+    });
+    try {
+      // Identity refusals keep grpc-js's raw UNAUTHENTICATED status code.
+      await assert.rejects(anonymous.getWorkspace(namespace, AbortSignal.timeout(10_000)), {
+        code: 16,
+      });
+    } finally {
+      anonymous.close();
+    }
+    assert.ok(!state.protectedEgress, "default startup must not select static inference");
+    const gatewayConfig = JSON.parse(
+      (
+        await execute(
+          "kubectl",
+          [
+            ...kubectl,
+            "get",
+            "configmap",
+            "openshell-gateway-config",
+            "-n",
+            "oce-system",
+            "-o",
+            "json",
+          ],
+          { env: environment },
+        )
+      ).stdout,
+    );
+    assert.ok(!gatewayConfig.data["gateway.toml"].includes("oce-authority"));
     assert.equal(workspace?.labels["app.kubernetes.io/managed-by"], "openclaw-enterprise");
     assert.equal(
       workspace?.labels["openclaw.dev/namespace-id"],
@@ -633,6 +701,15 @@ test(
       undefined,
     );
     await cli("secret", "delete", secret.id);
+    await verifyOpenShellOwnerSession({
+      t,
+      cluster,
+      browserPort,
+      stateDirectory,
+      namespaceId: JSON.parse(namespaces.stdout).find(({ name }) => name === "default").id,
+      kubectl,
+      environment,
+    });
   },
 );
 

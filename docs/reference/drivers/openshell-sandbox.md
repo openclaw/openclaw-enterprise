@@ -5,14 +5,14 @@ Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
 Agent revisions, Namespaces, routing, credentials, and authorization.
 
 Development supports native OpenClaw and dedicated Codex with
-[`v0.1.5`](https://github.com/NVIDIA/OpenShell/tree/v0.1.5). The pinned
+[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6). The pinned
 OCE runtime declares native Dedicated support. The paired
 [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
 each Agent revision's providers supply node enrollment and Codex files. These experimental APIs are
 unqualified for production.
 
-Embedded OpenClaw is unsupported. The Driver supplies native OpenClaw's three
-containment facets; see
+Embedded OpenClaw is unsupported. See native OpenClaw
+[containment facets](#openshell-containment-facets) and
 [qualification](#qualification-contract).
 
 ## Ownership model
@@ -20,8 +20,8 @@ containment facets; see
 [Kubernetes Compute](kubernetes-compute.md) retains baseline isolation, storage,
 routing, and the per-Agent Gateway. Sandbox owns:
 
-- `supportsHarnessExecutionMode` declares OpenClaw support at construction. Embedded
-  is unsupported; Dedicated needs `kubernetes.userNamespaces: false` and at most
+- `supportsHarnessExecutionMode` declares OpenClaw support at construction.
+  Dedicated needs `kubernetes.userNamespaces: false` and at most
   one ServiceAccount in `gateway.operatorWorkspaceResources`. See the
   [mode support contract](sandbox.md#harness-mode-support).
 - `configureAgent` pins the main Agent workspace to the configured Sandbox data
@@ -31,7 +31,9 @@ routing, and the per-Agent Gateway. Sandbox owns:
   with a single main Agent (or an omitted roster). Compute retains runtime-storage
   and identity checks; the Sandbox privately initializes the same mount.
 - In `operator` mode, `ensureNamespace` applies configured labels, workspace
-  resources, and NetworkPolicies, then owns the exact active Workspace.
+  resources, and NetworkPolicies, then owns the exact active Workspace. A
+  [preprovisioned namespace](kubernetes-compute/preprovisioned-namespace.md)
+  only verifies them.
 - `provisionHarness` creates one Workspace Sandbox. Dedicated Codex exposes its
   app-server. A native OpenClaw worker connects outbound and can expose a
   temporary status endpoint until its workspace node enrolls. The Driver adds each
@@ -137,7 +139,7 @@ Do not add a policy for the model endpoint: the credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 that host conflicts.
 
-v0.1.5 requires unique network policy names and nonempty executable
+v0.1.6 requires unique network policy names and nonempty executable
 paths. `workspace-node-enrollment` is reserved. Options include `enforcement: enforce|audit`
 and `access: read_only|read_write|full`. Omit `tls` for automatic TLS inspection;
 `tls: skip` bypasses inspection. The pinned gateway rejects explicit `terminate`
@@ -149,6 +151,26 @@ express, so startup refuses them. `gatewayConfigured` is the only ServiceAccount
 gateway's configured sandbox ServiceAccount applies to every Sandbox and does
 not satisfy the per-Agent production requirement below.
 
+### Protected Codex artifact rules
+
+For protected, dedicated Codex repository execution, select
+[approved artifact rules](../../snippets/openshell-quickstart/plugin-network-policy.yaml)
+with `policy.codexArtifactRuleNames`, for example
+`codexArtifactRuleNames: [codex-plugin-artifacts]`. Each name must identify exactly
+one existing `policy.networkPolicies` rule. Omission grants no artifact access.
+
+Selected rules require the bundled Codex executable paths, exact DNS hosts,
+port 443, `protocol: rest`, `enforcement: enforce` and `access: read_only`.
+Omit `tls`: stock OpenShell 0.1.6 verifies and inspects REST TLS by default;
+explicit skip and deprecated termination modes are refused. Wildcards, numeric
+addresses, GitHub repository hosts, reserved names and credential/provider fields are refused.
+
+Admission freezes only that qualified map with empty Agent additions. Preparation
+and replay use the revision, even if Installation defaults change. Select a new
+revision to change artifact authority. Live Agent policy apply remains unavailable.
+
+### Gateway readiness and workspace
+
 Optional readiness observes a Service and Pods in the OCC namespace (a paired
 Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;
 `pollIntervalMs` (default 1000) is at most `2147483647`. Development retains
@@ -159,7 +181,8 @@ accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
 mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
 namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
 listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
-`app.kubernetes.io/managed-by`; it rejects other labels. An OpenShell Workspace
+`app.kubernetes.io/managed-by`; otherwise deployment fails with
+`SANDBOX_POD_LABELS_NOT_PERMITTED`. An OpenShell Workspace
 name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
 15-character digest, within the 19-character limit.
 
@@ -170,21 +193,21 @@ runs in `agent-sandbox-system`. The launcher renders `openshell-workspace` once
 into trusted Installation configuration; the Driver applies it for each OCC
 Namespace before creating its Workspace, without per-Namespace Helm releases.
 
-The disposable profile uses unauthenticated development mode. The pinned release
-shares one Gateway port for control-plane RPCs and provider-advertised Harness traffic. NetworkPolicies limit access to trusted OCE,
-OpenShell, and dedicated Agent Gateway Pods, but cannot give Agent Gateways
-service-only authority on that shared listener. Accept this only in an owned
-disposable development cluster; never qualify this topology for production.
+Kubernetes-only installations enable Gateway TLS, mTLS and authentication. Static
+inference requires explicit opt-in. The Compose-backed profile permits unauthenticated
+Gateway access. Its shared port exposes both control-plane RPCs and Harness traffic;
+NetworkPolicies cannot give Agent Gateways service-only authority. Use that mode
+only in owned disposable development clusters, never production.
 
-`gateway.operatorWorkspaceResources` accepts the namespace-scoped
-ServiceAccount, Role, RoleBinding, and NetworkPolicy objects rendered from the
-workspace chart. The Driver injects the Compute-owned namespace and OCC
-ownership metadata before server-side apply. Only `operator` mode applies it;
-never include Secrets or cluster-scoped objects.
-
-`gateway.networkPolicyResources` accepts namespace-scoped Kubernetes objects
-for provider networking, applied during `ensureNamespace`. Secrets are rejected;
-OpenShell credentials must not appear in startup YAML.
+`gateway.operatorWorkspaceResources` takes the ServiceAccount, Role,
+RoleBinding, and NetworkPolicy manifests the workspace chart renders;
+`gateway.networkPolicyResources` takes namespaced provider networking
+manifests. In `operator` mode, `ensureNamespace` server-side applies both with
+the Compute-owned namespace and OCC ownership metadata, or only compares them
+with `preprovisionedNamespace`. Startup rejects Secrets,
+a NetworkPolicy ingress `_from` (write `from`), and fields the Kubernetes
+client would drop or change (a misspelled selector key, LimitRange `default`).
+Keep OpenShell credentials and cluster-scoped objects out of both lists.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount
@@ -387,7 +410,6 @@ request values.
 - [OpenShell testing](../../testing/openshell.md)
 - [OpenShell Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md)
 - [OpenShell Harness providers and exposure](openshell-sandbox/harness-providers.md)
-- [OpenShell Harness observation and restart states](openshell-sandbox/harness-providers.md#harness-observation)
 - [SandboxDriver contract](sandbox.md) and [OpenShell Credential Gateway](openshell-credential-gateway.md)
 - [ComputeDriver contract](compute.md)
 - [Kubernetes ComputeDriver](kubernetes-compute.md)

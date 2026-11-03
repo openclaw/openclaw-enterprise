@@ -89,8 +89,8 @@ the failed attempt's message. No save is sent. After access is restored, use
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.
 
 The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
-ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
-updates the URL in place.
+ID shows **Namespace unavailable**: the Namespace is missing or your access does not
+include it. On Namespaces, **Choose a valid Namespace** updates the URL in place.
 
 During session and Namespace checks, the selector is disabled and hides its choices.
 Once the list is known, it names the destination's Namespace. On returns to the same page,
@@ -275,6 +275,8 @@ domain; native chat or other Agent-host activity does not extend that session.
 Supported pages are `/console/login`, `/console/agents`,
 `/console/agents/new`, `/console/agents/:agentId`, `/console/backends`,
 `/console/namespaces`, `/console/secrets`, and `/console/settings`. `/console/` resolves the session
-and opens Agents. Unknown console paths show a generic not-found page.
+and opens Agents. A page path with trailing slashes opens that page with status `200`, and the
+address bar then shows it without them; the query, tab and hash stay. Unknown console paths
+return `404` and show a generic not-found page.
 See the [request flow](../flows/platform-console.md) and
 [local testing](../testing/local.md) for implementation and verification.
