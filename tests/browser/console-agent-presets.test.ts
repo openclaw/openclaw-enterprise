@@ -2669,15 +2669,21 @@ async function variablePresetForm(
 
 // A string variable Human fills the trusted-proxy allowlist beside the machine identity, which
 // Kubernetes Compute refuses with a case-duplicate of that identity. The allowlist waits on the
-// variable, so the Preset itself saves (finding 3122).
+// variable, so the Preset itself saves (finding 3122). The rest is a gateway a Kubernetes install
+// deploys with a human admitted (finding 3133): the Preset's generated gateway password, which a
+// Dedicated Codex workspace node needs, and device auto-approval without operator.admin.
 function humanAllowlistVariable(template: VariablePresetTemplate) {
   template.variables.human = {
     type: "string",
     description: "Identity of the person who runs this Agent",
   };
-  const auth = nativeAdminGatewayAuth();
-  auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
   const gateway = template.configuration.values.gateway;
+  const auth = {
+    ...nativeAdminGatewayAuth(),
+    password: (gateway.auth as { password: unknown }).password,
+  };
+  auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
+  auth.trustedProxy.deviceAutoApprove.scopes = ["operator.read", "operator.write"];
   gateway.controlUi = { enabled: true, allowedOrigins: ["http://127.0.0.1:18789"] };
   gateway.auth = auth;
 }
@@ -2781,6 +2787,9 @@ for (const viewport of consoleViewports) {
       "occ-workspace-files",
       "oidc:member-01",
     ]);
+    // The real Kubernetes deploy admission admits the Configuration the form saved, so this path
+    // cannot pass with one a Kubernetes install refuses (finding 3133).
+    await fixture.deployAgent(namespace.id, created.id);
     assert.equal(
       await page.evaluate(
         () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
