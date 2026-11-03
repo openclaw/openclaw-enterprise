@@ -75,9 +75,10 @@ export function documentApiExamples<T>(document: T): T {
         if (typeof parameterName !== "string") {
           throw new Error(`Missing parameter name: ${name}`);
         }
-        const value = parameterName === "cursor"
-          ? (Object.hasOwn(cursorExamples, name) ? cursorExamples[name] : undefined)
-          : lookup(parameterExamples, parameterName);
+        const value =
+          parameterName === "cursor"
+            ? (Object.hasOwn(cursorExamples, name) ? cursorExamples[name] : undefined)
+            : lookup(parameterExamples, parameterName);
         if (value === undefined) {
           throw new Error(`Missing parameter example: ${name}.${parameterName}`);
         }
@@ -88,9 +89,10 @@ export function documentApiExamples<T>(document: T): T {
             : "Example parameter; replace resource IDs with values from your Installation.",
         );
       }
-      const requestBody = operation.requestBody === undefined
-        ? undefined
-        : record(operation.requestBody, `${name} request body`);
+      const requestBody =
+        operation.requestBody === undefined
+          ? undefined
+          : record(operation.requestBody, `${name} request body`);
       const requestContent = record(requestBody?.content ?? {}, `${name} request content`);
       for (const rawContent of Object.values(requestContent)) {
         const content = record(rawContent, `${name} request media`);
@@ -142,10 +144,17 @@ export function documentApiExamples<T>(document: T): T {
               throw new Error(`Missing response example: ${name} ${status}`);
             }
             const data = lookup(responseExamples, name);
-            const responseMeta = name === "listAgentRevisions" ? { ...meta, nextCursor: null } : meta;
-            const examples: Record<string, unknown> = example({ data, meta: responseMeta }, "Example response");
+            const responseMeta =
+              name === "listAgentRevisions" ? { ...meta, nextCursor: null } : meta;
+            const examples: Record<string, unknown> = example(
+              { data, meta: responseMeta },
+              "Example response",
+            );
             if (Array.isArray(data) && data.length) {
-              examples.empty = { summary: "No readable resources", value: { data: [], meta: responseMeta } };
+              examples.empty = {
+                summary: "No readable resources",
+                value: { data: [], meta: responseMeta },
+              };
             }
             content.examples = examples;
           }
@@ -170,7 +179,12 @@ function lookupFailure(status: string): readonly [string, string] | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (!Array.isArray(value) || value.length !== 2 || typeof value[0] !== "string" || typeof value[1] !== "string") {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 2 ||
+    typeof value[0] !== "string" ||
+    typeof value[1] !== "string"
+  ) {
     throw new Error(`Invalid error example: ${status}`);
   }
   return [value[0], value[1]];
