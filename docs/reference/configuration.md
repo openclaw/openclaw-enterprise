@@ -206,20 +206,6 @@ Creation requires `create` permission for Configurations in the
 exact parent Namespace. Reads, updates, and deletes require the corresponding
 permission for the exact Configuration. Unauthenticated requests return `401`.
 
-### Checking a Configuration before Create Agent saves
-
-`POST /namespaces/:namespaceId/agents/validate` takes an unsaved
-`configuration: {kind, values, secretBindings}` with the Agent create fields it
-checks, and saves nothing. Its body may be as large as a Configuration write
-plus Agent create's 448 KiB, and its values may nest as deep as Configuration
-create's. The `agent:create` grant is checked before the body is read, then
-again with the checks, in this order: Namespace state, Configuration create's
-size and content rules (with the bindings sent), the Configuration Driver's
-`validate` (credential references), then Agent create's plugin, execution-mode,
-initial-workspace-files and Harness authentication rules, and last the Agent
-name. The bound Secrets, the Harness authentication source, credential sources
-and repository policy are checked only when Create Agent saves.
-
 ## Credentials and channels
 
 Never put plaintext credentials in Configuration values. Use unresolved native SecretRefs and authorized same-Namespace Secret bindings for gateway credentials; select model credentials through Agent `harnessAuth`. See [Configuration secrets and channels](configuration/secrets.md) for binding permissions, complete examples, runtime delivery, and supported Slack/Teams settings.
