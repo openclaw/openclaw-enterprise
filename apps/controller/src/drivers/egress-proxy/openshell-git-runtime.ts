@@ -17,6 +17,7 @@ import type {
 import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { startPreparedGitHubGitOwner } from "../../backends/repository-credentials/prepared-git-owner.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
+import type { RepositoryTransportEmit } from "../../composition/repository-credentials/contracts.ts";
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
 import type {
   RepositoryGitDeliveryResolver,
@@ -204,8 +205,6 @@ export function openShellGitRouteReadiness(
   }
   return "pending";
 }
-
-export type OpenShellGitRuntimeEmit = (event: Readonly<Record<string, unknown>>) => void;
 
 interface Entry extends OpenShellGitObservationEntry {
   continuityDiagnosticReported?: true;
@@ -450,7 +449,7 @@ export class OpenShellGitRuntime {
   /** One reconcile pass's read budget; a provider write has its own deadline. */
   private observeTimeoutMs = OBSERVE_TIMEOUT_MS;
   private owner: Owner | undefined;
-  private emit: OpenShellGitRuntimeEmit | undefined;
+  private emit: RepositoryTransportEmit | undefined;
   private routes: OpenShellGitRouteStore | undefined;
   /** This worker process, as the persisted routes name their holder. */
   private readonly instance = randomUUID();
@@ -2313,7 +2312,7 @@ export class OpenShellGitRuntime {
   }
 
   /** Composition supplies this Driver's store. Neither the pool nor this store is a sender port. */
-  connectRouteStore(pool: PostgresPool, emit?: OpenShellGitRuntimeEmit): OpenShellGitRouteStore {
+  connectRouteStore(pool: PostgresPool, emit?: RepositoryTransportEmit): OpenShellGitRouteStore {
     this.routes = new PostgresOpenShellGitRouteStore(pool);
     this.emit = emit;
     return this.routes;
@@ -2338,7 +2337,7 @@ export class OpenShellGitRuntime {
    */
   async start(
     owner: Owner,
-    emit?: OpenShellGitRuntimeEmit,
+    emit?: RepositoryTransportEmit,
     routes?: OpenShellGitRouteStore,
   ): Promise<void> {
     if (this.owner || this.stopped.signal.aborted) {

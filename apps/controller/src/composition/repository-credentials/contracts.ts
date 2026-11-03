@@ -1,3 +1,9 @@
+import type {
+  CredentialProxyBinding,
+  ProtectedRepositoryGitAuthority,
+} from "@openclaw-enterprise/contracts";
+import type { PostgresPool } from "@openclaw-enterprise/occ";
+import type { RepositoryGitRecipientEvidence } from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
 import type { RepositoryServiceFactory } from "../../drivers/repo/credentials/backend-contracts.ts";
 import type { ServiceConfig } from "../../drivers/repo/credentials/service-contracts.ts";
 import type { ProviderQueue } from "../../drivers/repo/credentials/provider-queue.ts";
@@ -16,4 +22,15 @@ export interface LoadedConfiguration {
   /** Present for the token authority only; derived from the token prefix, never secret. */
   readonly tokenClass?: GitHubTokenClass;
   close(): void;
+}
+
+export type RepositoryTransportEmit = (event: Readonly<Record<string, unknown>>) => void;
+
+export interface RepositoryTransportBinding {
+  readonly evidence: RepositoryGitRecipientEvidence;
+  bind(
+    authority: ProtectedRepositoryGitAuthority,
+    pool: PostgresPool,
+    emit?: RepositoryTransportEmit,
+  ): Promise<CredentialProxyBinding>;
 }
