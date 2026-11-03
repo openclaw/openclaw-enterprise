@@ -827,13 +827,16 @@ export const ValidateAgentCreateBody = Type.Object(
       Type.Union(
         [
           HarnessAuthBindingSchema,
-          Type.Object(
-            {
-              method: Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
-              authorizedEndpoint: Type.Optional(Type.String({ format: "uri", maxLength: 2048 })),
-            },
-            { additionalProperties: false },
-          ),
+          Type.Union([
+            Type.Object(
+              {
+                method: Type.Literal("api_key"),
+                authorizedEndpoint: Type.Optional(Type.String({ format: "uri", maxLength: 2048 })),
+              },
+              { additionalProperties: false },
+            ),
+            Type.Object({ method: Type.Literal("codex_pat") }, { additionalProperties: false }),
+          ]),
           Type.Null(),
         ],
         {

@@ -44,9 +44,16 @@ export async function verifyQaCustomResponses(f, agent, preset) {
     const body = await response.text();
     assert.ok(!body.includes(secret), "stream must not disclose the model credential");
     const chunks = body
-      .split("\n")
-      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
-      .map((line) => JSON.parse(line.slice(6)));
+      .replaceAll("\r\n", "\n")
+      .split("\n\n")
+      .flatMap((event) => {
+        const data = event
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).replace(/^ /u, ""))
+          .join("\n");
+        return data === "" || data === "[DONE]" ? [] : [JSON.parse(data)];
+      });
     const text = chunks
       .flatMap((chunk) => (chunk.choices ?? []).map((choice) => choice.delta?.content ?? ""))
       .join("");
@@ -66,12 +73,15 @@ export async function verifyQaCustomResponses(f, agent, preset) {
       shellRead: true,
     });
   } finally {
-    await f.execRole(agent, role, [
-      "node",
-      "-e",
-      "require('node:fs').rmSync(process.argv[1],{force:true})",
-      file,
-    ]);
-    await gateway.close();
+    try {
+      await f.execRole(agent, role, [
+        "node",
+        "-e",
+        "require('node:fs').rmSync(process.argv[1],{force:true})",
+        file,
+      ]);
+    } finally {
+      await gateway.close();
+    }
   }
 }

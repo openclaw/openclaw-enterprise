@@ -4808,7 +4808,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           custom &&
           (endpoint === undefined ||
             provider?.baseUrl !== endpoint ||
-            (authentication.providerId === "custom" && provider?.api !== "openai-responses"))
+            provider?.api !== "openai-responses")
         ) {
           throw callerSettingError(
             "harnessAuth.authorizedEndpoint",
@@ -4822,6 +4822,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               : "https://api.anthropic.com";
           const entries = Array.isArray(provider?.models) ? provider.models : [];
           if (
+            (endpoint !== undefined && endpoint !== expected) ||
             (provider?.baseUrl !== undefined && provider.baseUrl !== expected) ||
             entries.some(
               (entry) =>
@@ -4842,7 +4843,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           )
         ) {
           throw callerSettingError(
-            "models.providers.custom.models",
+            `${keyedSettingPath("models.providers", authentication.providerId)}.models`,
             "must inherit the authorized endpoint and Responses API",
           );
         }

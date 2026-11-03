@@ -919,16 +919,20 @@ export async function createQaAgent(
   const preset = await f.api("GET", `/namespaces/${selected.namespaceId}/presets/${selected.id}`);
   const codex = presetName === "Codex";
   const codexAccountLogin = codex && !apiKeyAuth && !customResponses;
-  const credential = customResponses
-    ? await protectedText(process.env.OCC_TEST_QA_RESPONSES_KEY_FILE, "custom Responses credential")
-    : apiKeyAuth
-      ? await protectedModelApiKey()
-      : await protectedText(
-          process.env[
-            codexAccountLogin ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"
-          ],
-          "model credential",
-        );
+  let credential;
+  if (customResponses) {
+    credential = await protectedText(
+      process.env.OCC_TEST_QA_RESPONSES_KEY_FILE,
+      "custom Responses credential",
+    );
+  } else if (apiKeyAuth) {
+    credential = await protectedModelApiKey();
+  } else {
+    const credentialFile = codexAccountLogin
+      ? process.env.OCC_TEST_QA_CODEX_TOKEN_FILE
+      : process.env.OCC_TEST_QA_OPENAI_KEY_FILE;
+    credential = await protectedText(credentialFile, "model credential");
+  }
   const model = customResponses
     ? process.env.OCC_TEST_QA_RESPONSES_MODEL
     : process.env[codex ? "OCC_TEST_QA_CODEX_MODEL" : "OCC_TEST_QA_OPENAI_MODEL"] || "gpt-6-luna";
@@ -938,11 +942,12 @@ export async function createQaAgent(
     modelSecret: "provided-through-secret-api",
   });
   const values = rendered.configuration.values;
-  const endpoint = customResponses
-    ? process.env.OCC_TEST_QA_RESPONSES_BASE_URL
-    : apiKeyAuth
-      ? f.configuration.drivers.compute.configuration.runtime.codexModelBaseUrl
-      : undefined;
+  let endpoint;
+  if (customResponses) {
+    endpoint = process.env.OCC_TEST_QA_RESPONSES_BASE_URL;
+  } else if (apiKeyAuth) {
+    endpoint = f.configuration.drivers.compute.configuration.runtime.codexModelBaseUrl;
+  }
   if (customResponses && !codex) {
     const reference = `custom/${model}`;
     values.models.providers = {

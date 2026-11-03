@@ -5431,6 +5431,7 @@ export class OpenClawController {
       }
       if (
         endpoint === undefined ||
+        Array.from(input.authorizedEndpoint).length > 2048 ||
         endpoint.protocol !== "https:" ||
         endpoint.port === "0" ||
         endpoint.username !== "" ||
@@ -6854,7 +6855,7 @@ export class OpenClawController {
       if (
         secret.authorizedEndpoint === undefined
           ? destination.isDefault !== true
-          : [destination.endpoint, ...(destination.additionalEndpoints ?? [])].some(
+          : [destination.endpoint, ...(destination.additionalEndpoints ?? [])].every(
               (endpoint) => endpoint !== secret.authorizedEndpoint,
             )
       ) {

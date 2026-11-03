@@ -5463,7 +5463,7 @@ export class ControllerWorker {
             destination === undefined ||
             (secret.authorizedEndpoint === undefined
               ? destination.isDefault !== true
-              : [destination.endpoint, ...(destination.additionalEndpoints ?? [])].some(
+              : [destination.endpoint, ...(destination.additionalEndpoints ?? [])].every(
                   (endpoint) => endpoint !== secret.authorizedEndpoint,
                 ))
           ) {

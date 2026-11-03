@@ -1304,5 +1304,5 @@ test("Gateway destination authorization refuses shared-key redirection before va
   await f.assertNothingSaved();
   const accepted = await f.create("authorized", { base_url: endpoint }, endpoint);
   assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
-  assert.equal(accepted.data.state, "ready");
+  assert.equal(accepted.data.status.state, "ready");
 });

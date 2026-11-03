@@ -957,13 +957,14 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       this.options,
       this.backend.client.placement(),
     );
-    const endpoints =
+    const endpoints = (
       type.refresh === undefined
         ? profile.endpoints.map(
             (endpoint) =>
               `https://${endpoint.host}${endpoint.port === 443 ? "" : `:${endpoint.port}`}${(endpoint.path ?? "/").replace(/\/\*\*$/u, "") || "/"}`,
           )
-        : [config.token_url!];
+        : [config.token_url!]
+    ).map((endpoint) => endpoint.replace(/\/$/u, ""));
     return Object.freeze(
       Object.fromEntries(
         type.catalog.secrets.map(({ name }) => [
@@ -973,7 +974,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
             ...(endpoints.length > 1
               ? { additionalEndpoints: Object.freeze(endpoints.slice(1)) }
               : {}),
-            isDefault: true,
+            isDefault: false,
           }),
         ]),
       ),
