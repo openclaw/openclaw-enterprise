@@ -20,6 +20,7 @@
     "../scripts/console/record-walkthrough.ts",
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
+    "helpers/temporary-directory.ts",
     "helpers/node-test-summary.ts",
     "helpers/image-smoke-timeout.ts",
     "helpers/credential-source-owner-upgrade.ts",
