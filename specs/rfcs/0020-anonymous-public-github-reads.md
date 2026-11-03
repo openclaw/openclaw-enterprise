@@ -52,19 +52,28 @@ ordinary Codex selection supported. Public visibility comes from an anonymous
 GitHub request, not from an App token, a cached visibility flag, or a successful
 credentialed response.
 
-The operator explicitly chooses one reader policy:
+The operator explicitly chooses the Installation-wide ceiling:
 
 - **All public repositories:** allow public reads for any GitHub owner/repository.
 - **Repository list:** allow reads only for configured, canonical
   `owner/repository` names that GitHub also serves anonymously. An empty list
   denies all repositories; it never means all public repositories.
 
-The service enforces this Installation-wide ceiling for every request. Agent
-selection grants access to that service, not a separate tenant-specific policy.
-Changing the operator's repository list governs subsequent service requests;
-it does not make private data public. Per-Agent repository lists with independent
-server authorization are outside this extension. The feature remains off until
-the operator enables it and an Agent explicitly selects it.
+Each Agent separately selects no access, all public repositories, or a repository
+list. Omission and an empty list grant no access. An Agent's effective access is
+the intersection of its selection and the Installation ceiling, limited to
+repositories GitHub serves anonymously. Selecting all public repositories cannot
+exceed an Installation list. For example, with an Installation ceiling of
+`example/library` and `example/tools`, an Agent selecting only `example/library`
+cannot read `example/tools`; another Agent can independently select both.
+
+The reader enforces both policies on every Git and API request. The feature is
+off until the operator enables it, and enabling it grants no Agent access by
+default. Changing the Installation list governs subsequent requests. An Agent
+policy change takes effect through deployment of a new revision; it does not
+silently rewrite an existing revision's selection. Withdrawing an old revision's
+reader authorization denies its subsequent requests. Removing a repository does
+not erase content already cloned or interrupt a transfer already authorized.
 
 Initial Git support covers HTTPS smart-protocol discovery and upload-pack,
 including shallow clone and incremental fetch. It excludes receive-pack, pushes,
@@ -83,18 +92,21 @@ Credential Proxy admission restrictions remain unchanged.
 Kubernetes Compute owns the reader's configured peer, Agent selection, managed
 runtime files and Kubernetes policy. Extend its Driver contract with a pure
 service-access contribution derived from the original source Configuration,
-before Sandbox normalization removes the native Codex proxy settings. The
-existing explicit allow for the configured reader address selects the capability;
-an absent allow or a covering deny selects nothing. A request cannot supply a
-different service peer.
+before Sandbox normalization removes the native Codex proxy settings. Add an
+explicit per-Agent public-read policy through Driver-owned configuration; a
+native proxy allow for the reader address alone no longer grants access. An
+absent selection or a covering network deny selects nothing. A request cannot
+supply a different service peer. Admission validates and canonicalizes the
+selection and records its repository scope with the revision.
 
 Sandbox owns enforcement around the Harness. Replace artifact-only protected
 policy admission with an explicit protected-network admission that can acknowledge
 the existing artifact map and approved credential-free services. Freeze the
 acknowledged service descriptors with the Sandbox policy in the Agent revision.
-Descriptors identify the Driver-owned service, exact endpoint and named rules;
-they contain no provider credentials. OCC validates the contract acknowledgement
-and saves it without interpreting GitHub or OpenShell policy syntax. Unsupported
+Descriptors identify the Driver-owned service, exact endpoint, named rules and
+normalized public-read selection; they contain no credentials. OCC validates the
+contract acknowledgement and saves it without interpreting GitHub or OpenShell
+policy syntax. Unsupported
 Driver combinations refuse admission rather than enable ordinary network access.
 
 The OpenShell adapter installs an inspected rule for the internal reader endpoint
@@ -111,6 +123,38 @@ activation, worker restart, withdrawal and retirement use the revision's recorde
 selection. A changed or missing peer must withdraw its access and observe the
 affected Harness stopped before reporting withdrawal complete. Retain the
 reserved Service address until the selecting revisions have retired.
+
+### Authenticate the revision at the reader
+
+The original anonymous internal listener cannot enforce per-Agent scope. Replace
+that trust boundary for this extension: all supported callers, including ordinary
+Codex Agents, must authenticate to the reader with a narrowly scoped, unforgeable
+service capability issued by Compute for one Installation, Agent and revision.
+This capability authorizes only the frozen public-read selection; it is not a
+GitHub credential or general platform identity. It cannot authorize a different
+revision or service. Existing revisions gain no capability automatically.
+Use certificate-verified TLS for the internal reader connection and project its
+trust through the selected Drivers; do not send a service capability over the
+original plaintext HTTP listener or disable certificate verification.
+
+The reader verifies that capability and the revision's current authorization
+before provider I/O, then applies the current Installation ceiling. Reject
+missing, invalid, withdrawn or unverifiable authorization without contacting
+GitHub. Do not trust a caller-supplied Agent ID, repository list, source IP or the
+managed Git helper as authority. There is no anonymous alternate listener for
+Git or API reads that could bypass these checks. Network policy remains an
+additional restriction, not the source of Agent identity.
+
+Compute owns capability issuance, protected projection, rotation and withdrawal;
+the reader owns verification. The implementation plan must choose the capability
+format and the durable publication and verification of revision authorization.
+Neither reader nor controller restart may restore withdrawn access. Rotation
+must preserve the same scope, and stale or unavailable authorization must fail
+closed. Compute automatically renews access material while the revision remains
+authorized; its expiry must not require routine Agent redeployment. Recheck each
+caller's authorization before joining a shared provider read. Never log the
+capability, store it in a saved Git remote URL, or forward it to GitHub. This adds internal
+service authentication, not the deferred general Agent Identity component.
 
 ### Ordinary URLs and credential separation
 
@@ -144,7 +188,7 @@ Accept only canonical repository paths under the configured public-read endpoint
 Validate method, path, query, content type, encoding and request-size limits
 before provider I/O. A POST to upload-pack is a Git read; accepting it does not
 permit arbitrary POSTs. Reject receive-pack discovery and upload, malformed
-paths, unsupported operations and repositories outside the configured list.
+paths, unsupported operations and repositories outside either allowed scope.
 
 Send requests only to the fixed GitHub HTTPS origin with certificate verification.
 Follow no redirects. A private/missing repository or a renamed destination cannot
@@ -196,14 +240,19 @@ the original plan's ordinary-reader qualification record.
 
 Require real Git clone and incremental fetch against a controlled TLS provider
 backed by a real Git repository. Verify normal HTTPS URLs and stored remotes,
-both scope modes, case normalization, absence of forwarded credentials, private
-visibility changes, write denial, redirect refusal, cancellation, size/time
-limits and incomplete transfers. Exercise the regular OCE Agent deployment path
+both scope modes and their intersections, case normalization, absence of
+forwarded credentials, private visibility changes, write denial, redirect refusal,
+cancellation, size/time limits and incomplete transfers. Exercise the regular OCE Agent deployment path
 with the paired Sandbox and Credential Proxy: public object transfer and existing
 fork read/write must coexist, unbound private access must fail, and the model
 path must remain usable. Register that scenario in the QA matrix and verify
 selection, revision replacement, cold recovery and retirement without skips.
-Include fork-token rotation and expiry while an independently selected public
-clone/fetch path remains usable.
+Use two Agents with different selections to prove that a direct reader request
+cannot access the other Agent's additional repositories. Cover omitted and empty
+selections, all-public selection under a narrow Installation ceiling, forged or
+missing capabilities, Git and API bypass attempts, capability rotation and
+withdrawal, Installation narrowing, reader/controller restart, and unavailable
+authorization. Include fork-token rotation and expiry while an independently
+selected public clone/fetch path remains usable.
 Controlled-provider proof does not establish live GitHub behavior; record the
 live anonymous GitHub check and installed OpenShell qualification separately.
