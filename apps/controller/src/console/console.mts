@@ -898,9 +898,28 @@ let resumePending: Promise<void> | null = null;
 // itself the access check, so refocusing the window waits for it (findings 1460, 1516).
 let openingAgentLoad: number | null = null;
 
-// The authentication route returns its projected account and session binding, or null.
-function readSession() {
-  return request("/api/auth/session") as Promise<Session | null>;
+// Only null confirms a signed-out session. A malformed reply cannot admit private reads.
+async function readSession(): Promise<Session | null> {
+  const result = await request("/api/auth/session");
+  if (result === null) {
+    return null;
+  }
+  const { authenticated, sessionKey, user } = responseFields(result);
+  const { id, email, name } = responseFields(user);
+  if (
+    authenticated !== true ||
+    !isNonEmptyString(sessionKey) ||
+    !isNonEmptyString(id) ||
+    !isNonEmptyString(email) ||
+    !isNonEmptyString(name)
+  ) {
+    throw new Error("Invalid session response");
+  }
+  return { sessionKey, user: { id, email, name } };
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function sessionOwnerKey(value: Session | null) {
