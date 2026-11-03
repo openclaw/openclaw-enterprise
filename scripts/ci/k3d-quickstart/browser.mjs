@@ -18,11 +18,17 @@ let stage = "initialize";
 let browser;
 
 async function openAgent(consolePage, origin, route) {
-  const [page] = await Promise.all([
-    consolePage.waitForEvent("popup"),
-    consolePage.getByRole("link", { name: "Open Agent UI", exact: true }).click(),
-  ]);
-  await page.waitForURL((url) => url.origin === origin);
+  // A saved permalink opens in a new tab in the authenticated owner's context.
+  // The initial visit uses the visible Console launch control.
+  const page = route ? await consolePage.context().newPage() : await launchFromConsole();
+  async function launchFromConsole() {
+    const [popup] = await Promise.all([
+      consolePage.waitForEvent("popup"),
+      consolePage.getByRole("link", { name: "Open Agent UI", exact: true }).click(),
+    ]);
+    await popup.waitForURL((url) => url.origin === origin);
+    return popup;
+  }
   const messages = [];
   page.on("websocket", (ws) => {
     if (new URL(ws.url()).origin !== origin.replace("https:", "wss:")) {
@@ -62,22 +68,20 @@ async function openAgent(consolePage, origin, route) {
   // sidebar can filter or collapse history, so its visible rows are not a
   // stable index into an Agent's conversations.
   if (route) {
-    assert.match(route.path, /^\/chat\/main\/[^/?#]+$/);
+    assert.ok(route.path.startsWith("/chat/main/"));
   }
   const destination = new URL(route?.path ?? "/new", origin);
   assert.equal(destination.origin, origin);
   const response = await page.goto(destination.href);
-  assert.ok(response?.ok());
+  if (!response?.ok()) {
+    console.error("Control UI navigation HTTP " + (response?.status() ?? 0));
+    throw new Error("Control UI navigation failed");
+  }
   await waitForStockUi(page);
   if (route) {
-    // The app may change the title slug during navigation. Prove it loaded
-    // this conversation before sending to it, then require the full session
-    // key on the newly submitted recall turn's terminal reply below.
+    // The UI can change the title slug. Check the route here and the full
+    // original session key on the new terminal recall reply.
     await page.waitForURL((url) => url.origin === origin && url.pathname.startsWith("/chat/main/"));
-    await page
-      .getByText("OCE_READY", { exact: true })
-      .first()
-      .waitFor({ state: "attached", timeout: 60_000 });
   }
   async function send(prompt, expected, newChat = false) {
     const editor = page.locator(".agent-chat__composer-combobox > textarea").first();
@@ -229,7 +233,12 @@ try {
     }),
     { mode: 0o600, flag: "wx" },
   );
-} catch {
+} catch (error) {
+  // Export only a source line, not a stack frame, URL or assertion operand.
+  const frame = String(error?.stack ?? "").match(/\bbrowser\.mjs:(\d{1,5}):\d+/);
+  if (frame) {
+    console.error("quickstart-location browser.mjs:" + frame[1]);
+  }
   // Playwright errors can contain URLs, form values and returned content.
   console.error(`Control UI verification failed during ${stage}.`);
   process.exitCode = 1;

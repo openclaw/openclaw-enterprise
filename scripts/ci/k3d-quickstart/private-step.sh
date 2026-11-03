@@ -24,6 +24,7 @@ else
   # Accept only known script names, numeric locations and fixed browser stage names.
   grep -Ex 'quickstart-location (setup|git|linear|browser-recall|git-cleanup|teardown|operator-session|setup-(before|after)-browser|git-guide-step|linear-(catalog|deploy|prompt|send|transcript))\.sh:[0-9]{1,5}' "$log" | tail -5 || true
   grep -Ex 'Control UI verification failed during (initialize|launch trusted Chromium|sign in to Console|resolve the running revision|complete onboarding|verify Workspace identity and preference|verify ready reply|reopen original conversation from chat history|recall saved preference)\.|OCE REST request failed with HTTP [1-5][0-9]{2}' "$log" | tail -3 || true
+  grep -Ex 'quickstart-location browser\.mjs:[0-9]{1,5}|Control UI navigation HTTP (0|[1-5][0-9]{2})' "$log" | tail -2 || true
   # File presence distinguishes cluster bootstrap, model registration and Agent deployment.
   for milestone in k3d-state/state.json values.json model-source agent transport requested-revision session.sh; do
     if [[ -s "$RUN_DIR/$milestone" ]]; then printf 'Created: %s\n' "$milestone"; fi
