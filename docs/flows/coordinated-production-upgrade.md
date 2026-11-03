@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-02"
-last_updated_session: "authoring-run/6d0d6a0b-04b9-4aa2-ba84-ed3c2406340f"
+updated: "2026-11-03"
+last_updated_session: "authoring-run/1d065972-0bb5-4523-81d3-7d83a64ff8f3"
 ---
 
 # Production image upgrade flow
@@ -48,8 +48,8 @@ graph TD
     J -->|No| K["Hand off application checks"]
     J -->|Yes| L["Deploy recorded Agents"]
     L --> M{"Dispatch response known?"}
-    M -->|No| N["Read Agent and stop for reconciliation"]
-    N --> L
+    M -->|No| N["Inspect revision history and audit records"]
+    N -->|"Confirm accepted revision"| L
     M -->|Refused| U["Name refusals and stop for correction"]
     U --> L
     M -->|Yes| O["Check versions, Pods, and Doctor"]
@@ -66,10 +66,10 @@ Before protected-file reads, evidence writes or cluster access, repository
 `HEAD` must match `--source-revision`.
 Local edits and image provenance remain unverified.
 
-Evidence I/O retains the supplied path. Python records its canonical path,
-`st_dev` and `st_ino` in `parameters.json`; resume rejects mismatches before
-cluster/OCC access. Accepted aliases share the original directory and lock.
-Copies, moves and replacements fail the identity check.
+Resume checks the evidence directory's canonical path, device and inode before
+live access. Aliases to the original directory share its lock. Runtime upgrades
+also lock a private sibling dispatch journal bound to the run and frozen fleet.
+The journal survives restoration of the evidence alone.
 
 It checks protected files, cluster, deployed Helm release and matching OCC/Secret
 Installation IDs. Reviewed candidates must match the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
@@ -225,19 +225,15 @@ remain stable across that check and before dispatch and completion.
 
 ### 5. Deploy and verify the recorded fleet
 
-`scripts/upgrade-production-images:797`
+`scripts/upgrade-production-images` and `scripts/upgrade-dispatch-state.py`
 
-Before sending each ordinary exact-Agent deployment request, the script records
-an intent. Successful responses are saved atomically. On resume, existing
-responses are reused; an intent without a response triggers an Agent readback
-and stops for operator reconciliation. The helper does not infer rejection from
-an unchanged selected version or replay an unknown request. An operator can
-record a verified accepted response and resume. OCC admits a deployment in one
-transaction, so `occ`'s one `Error:` line with a 4xx status and an OCC error
-code, other than 408, means no version was saved (`deploy_refusal`). The script
-names each refused Agent, or a refused service key, saves the message as
-`dispatch/*.rejected`, removes the intent, and stops; `--resume` sends that
-request again.
+The helper flushes a record to the journal before each deploy. It records an
+accepted revision or a definite OCC refusal after the request returns. Resume
+reuses accepted revisions and can retry a definite refusal. For an unknown
+outcome, it stops further sends until the operator confirms an accepted
+revision. Restored evidence or a read showing the earlier revision cannot
+authorize another send. If the journal may also be stale, use the
+[recovery guide](../guides/deploy/production-upgrade-recovery.md).
 
 The script polls authorized deployment status, confirms the selected version,
 and waits for its Pods to be `Running` and `Ready` on the candidate digest. Before OpenClaw
@@ -328,7 +324,7 @@ Agents or Secrets.
 
 ## Changelog
 
-- 2026-11-02 23:23: Bind directory identity; preserve evidence paths. (authoring-run/6d0d6a0b-04b9-4aa2-ba84-ed3c2406340f - cf67413c378cce3989d28fa8178ed29a405b9ce6)
+- 2026-11-02 23:23: Bind directory identity; preserve evidence paths. (authoring-run/1d065972-0bb5-4523-81d3-7d83a64ff8f3 - cf67413c378cce3989d28fa8178ed29a405b9ce6)
 
 - 2026-10-29 23:05: Retain the upgrade lock after interruption until operations are reconciled. (authoring-run/729e3e30-1ab9-4e2c-bae2-42834bf535c4 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
 

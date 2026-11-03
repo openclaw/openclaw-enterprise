@@ -1,12 +1,14 @@
 # Recover a partial production upgrade
 
-Preserve original [upgrade](production-upgrade.md) evidence privately, including Secrets.
+Keep the original [upgrade evidence](production-upgrade.md) private. For runtime
+upgrades, the helper creates `<evidence-directory>.dispatch-state` beside it. Keep
+the current journal separate from backups of the evidence directory.
 
-Resume requires the original canonical path, device and inode in `parameters.json`.
-Use the original location. Accepted aliases reach the same directory and lock.
-Copies, moves, replacements and missing identity are refused before live access.
-Copies may omit later intents or responses: inspect only.
-Do not reconstruct evidence or change identity; stop if custody is uncertain.
+Resume requires the original directory and journal. Aliases that reach the
+original directory share its lock. A different directory identity or a missing
+or invalid journal stops resume before live access. If the journal may also have
+been restored, stop and reconcile from OCC history and audit records before
+starting another run.
 
 `--preflight-only` leaves writers serving without a freeze. It cannot resume;
 reconcile its resources before deploying with fresh evidence and checks.
@@ -30,7 +32,7 @@ Preserve evidence and `.upgrade-lock` after interruption (`SIGHUP`, `SIGINT`,
 `SIGTERM`). Before cleanup, unlocking or retrying, confirm the helper and children
 stopped and reconcile accepted operations and temporary resources. Only then
 restore a moved original directory to its original path and remove its empty
-`.upgrade-lock`. The lock protects only that directory.
+`.upgrade-lock`.
 
 Each successfully acknowledged and recorded create retains
 `preflight-<slot>-identity.json`, with slots `networkpolicy`, `secret`, `api`,
@@ -87,20 +89,17 @@ helper keeps or returns OCC to zero replicas before retrying the candidate Helm
 release. Prefer a reviewed forward fix; neither Helm rollback nor the helper
 reverses committed migrations.
 
-For an unknown Agent dispatch, the helper saves an Agent readback and stops
-without replaying it. Inspect the exact Agent's authorized version history,
-deployment status, and audit records, and allow any in-flight request to finish.
-An unchanged selected version alone does not prove rejection, and a filtered
-version list does not prove absence. If you can identify the accepted version,
-record a private `dispatch/<same-prefix-as-intent>.json` containing its `id`;
-the helper checks that exact deployment's status on resume. If evidence proves
-the request was not accepted, deploy that Agent once with the ordinary OCC CLI
-and save its successful JSON response under that name. Preserve the `.intent`,
-error, and readback evidence. If the result is still uncertain, stop and
-investigate rather than submitting another request. For a known failed version,
-inspect its failure and explicitly deploy an authorized replacement before
-recording that replacement's response; preserve the original response separately.
-Each deployment snapshots current drafts.
+An unknown Agent dispatch stops further sends. Let in-flight requests finish,
+then inspect the exact Agent's revision history, deployment status, and audit
+records. A read that still shows the earlier revision cannot establish
+rejection. If you can identify the accepted revision, record its `id` in the
+private `dispatch/<namespace>--<agent>.json` file below. Preserve the intent and
+any error or partial response. If you cannot confirm the outcome, keep the run
+stopped and contact the release owner.
+
+For a known failed revision, inspect its failure before an authorized
+replacement. Preserve the failed response and record the replacement response.
+Each deploy snapshots the current drafts.
 
 For an accepted version, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
 Agent IDs, `DISPATCH_PREFIX` to the matching evidence path without `.intent` or
@@ -125,12 +124,9 @@ else
 fi
 ```
 
-Keep the shell's `umask 077`. If the status read is denied or does not identify
-the confirmed deployment, do not create the response file. The block never
-overwrites an existing response file: a rerun reports it when it records the
-same ID, and otherwise says to inspect it. The helper
-rechecks its status on resume; it does not verify how you identified an
-accepted request.
+Keep `umask 077`. The command records the response only after the status read
+identifies the confirmed deployment. A conflicting response stays in place for
+inspection. Resume also checks the deployment's identity.
 
 If the candidate API and worker refuse to start because of
 [split-layout Gateway storage](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations),

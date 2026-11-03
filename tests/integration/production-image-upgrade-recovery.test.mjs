@@ -38,6 +38,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
+import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
 const execute = promisify(execFile);
 const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
@@ -309,7 +310,7 @@ async function runPreflight(root, cwd, state, pod) {
 
 // One command of one fixture. `io` (fixture-command-server.mjs) writes its output and
 // ends it; returning without an exit ends it with status 0.
-async function fakeCommand(root, { command: tool, args, cwd }, io) {
+async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) {
   const stateFile = join(root, "state.json");
   const state = JSON.parse(readFileSync(stateFile, "utf8"));
   const save = () => writeFileSync(stateFile, JSON.stringify(state));
@@ -991,8 +992,11 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         return fail(1, failure);
       }
       state.activeRevision = "rev_new";
+      const deployment = [fileArg("--namespace"), agentId, "rev_new"].join("/");
+      state.deployments[deployment] = "succeeded";
       save();
       log(`agent-deploy ${agentId}`);
+      await afterDeploy?.();
       if (take("lost-agent-response")) {
         return fail(9);
       }
@@ -1005,7 +1009,14 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         activeRevisionId: state.activeRevision ?? "rev_old",
       });
     } else if (args.includes("deployment-status")) {
-      out({ status: "succeeded" });
+      const namespaceId = fileArg("--namespace");
+      const agentId = args.at(-2);
+      const deploymentId = args.at(-1);
+      const status = state.deployments[[namespaceId, agentId, deploymentId].join("/")];
+      if (!status) {
+        return fail(1, "deployment not found");
+      }
+      out({ namespaceId, agentId, deploymentId, status });
     } else {
       out({ id: "ins_test", name: state.installationName });
     }
@@ -1194,6 +1205,7 @@ async function fixture(
     configurationValues = null,
     olderDraftRules = false,
     unavailableDraftResolver = false,
+    afterDeploy,
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
@@ -1216,7 +1228,7 @@ async function fixture(
         interrupted = true;
         upgradeProcess.kill("SIGTERM");
       }
-      return fakeCommand(directory, { command, args, cwd }, io);
+      return fakeCommand(directory, { command, args, cwd }, io, afterDeploy);
     },
   });
   t.after(() => server.close());
@@ -1389,6 +1401,7 @@ async function fixture(
     capabilityReplies,
     capabilityProbes: [],
     dispatches: 0,
+    deployments: {},
     initActive: false,
     collectorSecretName,
     collectorSecret: await collectorConfigSecret(collectorSecretName, collector),
@@ -1503,6 +1516,8 @@ async function fixture(
     failNext: (name) => writeFile(join(directory, name), ""),
   };
 }
+
+registerDispatchRestoreTests(fixture, injectedFault);
 
 test("resume reads an accepted Secret write before Helm and preserves its other data", async (t) => {
   const f = await fixture(t);
@@ -1670,23 +1685,24 @@ test("failed Helm migration keeps old writers stopped and requires checked histo
   assert.equal((await f.events()).filter((event) => event === "migration").length, 2);
 });
 
-test("resume reads back and stops on an unknown Agent deployment instead of retrying", async (t) => {
+test("resume stops on an unknown Agent deployment until an accepted revision is confirmed", async (t) => {
   const f = await fixture(t, { agent: true });
   await f.failNext("lost-agent-response");
   await assert.rejects(f.run(), /deployment outcome is unknown/);
+  const calls = f.commands.length;
   await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+  assert.equal(f.commands.length, calls);
   assert.equal((await f.state()).dispatches, 1);
-  const readback = JSON.parse(
-    await readFile(join(f.evidence, "dispatch/ns_test--agt_test.readback.json"), "utf8"),
-  );
-  assert.equal(readback.id, "agt_test");
-  assert.equal(readback.activeRevisionId, "rev_new");
+  const receipt = join(f.evidence, "dispatch/ns_test--agt_test.json");
+  // An arbitrary or baseline revision cannot resolve the pending dispatch.
+  for (const id of ["rev_missing", "rev_old"]) {
+    await writeFile(receipt, JSON.stringify({ id }), { mode: 0o600 });
+    await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+    assert.equal((await f.state()).dispatches, 1);
+  }
   // Simulate the operator confirming this revision in durable history and
   // recording the accepted request before resuming the readiness checks.
-  await writeFile(
-    join(f.evidence, "dispatch/ns_test--agt_test.json"),
-    JSON.stringify({ id: "rev_new" }),
-  );
+  await writeFile(receipt, JSON.stringify({ id: "rev_new" }), { mode: 0o600 });
   await f.run("--resume");
   assert.equal((await f.state()).dispatches, 1);
 });

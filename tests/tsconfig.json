@@ -22,6 +22,7 @@
     "../packages/utils/prepack.ts",
     "helpers/credential-source-owner-upgrade.ts",
     "helpers/deployed-repository-capability.ts",
+    "helpers/production-upgrade-dispatch-restore.ts",
     "helpers/compute-credential-catalog.ts",
     "helpers/provisioning-repository-status.ts",
     "helpers/provisioning-source-status.ts",

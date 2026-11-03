@@ -30,6 +30,12 @@ test("production image upgrades preserve controller/runtime ownership and wait f
 
   const bin = join(directory, "bin");
   await mkdir(bin);
+  // Use real JSON operations for the run's dispatch journal and receipts.
+  const dispatchJson = `if [[ "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$1" == '-ser' ]]; then
+  PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
+fi
+`;
+
   // The fixture commands below answer at once, and the readiness polls end on their
   // counters, not on time, so the helper's 2 s poll interval only adds wall time.
   await writeCommand(bin, "sleep", "exit 0\n", { interpreter: "bash" });
@@ -60,7 +66,7 @@ fi
   await writeCommand(
     bin,
     "jq",
-    `case "$*" in
+    `${dispatchJson}case "$*" in
   *'.info.status'*) printf 'deployed\\n' ;;
   *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
@@ -97,7 +103,9 @@ esac
   await writeCommand(
     bin,
     "python3",
-    `if (($# == 3)); then
+    `if [[ "$1" == scripts/upgrade-dispatch-state.py || ( "$1" == - && "$2" == "$UPGRADE_TEST_KUBECONFIG" ) ]]; then
+  command -p python3 "$@"
+elif (($# == 3)); then
   printf '%s\\n' '${"e".repeat(64)}'
 elif [[ "$1" == "-c" && "$2" != *b64decode* ]]; then
   command -p python3 "$@"
@@ -180,6 +188,7 @@ fi
     CLUSTER_INSTALLATION_ID: "ins_upgrade_test",
     CURRENT_CONTROLLER_IMAGE: baselineControllerImage,
     ORIGINAL_TOOL_PATH: process.env.PATH,
+    UPGRADE_TEST_KUBECONFIG: protectedFiles.kubeconfig,
     LIVE_INSTALLATION_FILE: liveInstallation,
     LIVE_VALUES_FILE: liveValues,
     OCC_SERVICE_KEY_FILE: protectedFiles["service-key"],
@@ -295,7 +304,7 @@ fi
   await writeCommand(
     bin,
     "jq",
-    `if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
+    `${dispatchJson}if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
   cat
   exit 0
 fi
