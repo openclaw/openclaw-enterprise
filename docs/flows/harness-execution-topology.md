@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-31
-last_updated_session: authoring-run/afb5c72a-ef2b-4983-990c-427173225f65
+updated: 2026-11-03
+last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
 ---
 
 # Harness Execution Topology Flow
@@ -151,7 +151,7 @@ as provider default. Custom endpoints require `credential_source`; Secret-backed
 keys stay OpenAI-only. Invalid URLs fail admission.
 `apps/controller/src/drivers/credential-gateway/openshell.ts:attachForRevision`
 checks each selected model (`apps/controller/src/drivers/native-openai-catalog.ts:nativeOpenAiModelSelections`,
-the selection Compute renders) against the immutable source endpoint before
+the selection Compute renders) against the source destination authorization before
 attachment, and a refusal names the `baseUrl` setting and both hosts. Catalog
 ids match after trimming, as OpenClaw merges such entries, so a second match
 fails. The startup model probe gets only the primary model's entry as rendered
@@ -182,16 +182,15 @@ predecessor makes its successor unready. Stops retry after one, two, four, then 
 claim leases. Failed preparation or preparing or activating the predecessor clears
 its record. New exclusive versions supersede old reconciliation and maintenance
 without rollback; see [production version stages](../reference/drivers/compute.md#production-revision-stages).
-For dedicated Codex API-key auth, `pluginRuntimeSnapshot` in
-`apps/controller/src/drivers/compute/kubernetes/index.ts` selects the bound model
-source endpoint before `runtime.codexModelBaseUrl`.
-`apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` normalizes either.
+For API-key inference, `modelProviderConfiguration` in
+`apps/controller/src/drivers/compute/model-provider.ts` translates the shared
+Installation provider for OpenClaw. `pluginRuntimeSnapshot` in
+`apps/controller/src/drivers/compute/kubernetes/index.ts` supplies it to Codex.
+`admitRevision` records a provider fingerprint; recovery rejects changed settings.
+Sources authorize the chosen destination and cannot override it.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
-writes the HTTPS Responses endpoint/provider pair to the manifest and `config.toml`.
-When the API-key endpoint comes from Installation configuration,
-`runtime.codexModelSupportsStandaloneWebSearch: true` adds the standalone-search
-declaration to the same provider. A bound credential-source endpoint does not
-inherit this declaration, and `providerTools: none` still disables search.
+writes Codex's provider and optional standalone-search declaration.
+Protected `providerTools: none` still disables search.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:writeCodexConfigToml`
 writes the generated file into `CODEX_HOME` before native startup. The capability
 therefore belongs to Codex's user configuration, not a workspace override.
@@ -343,6 +342,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 
 - 2026-10-31 03:41: Observe catalog pipe writes and reply counts. (authoring-run/afb5c72a-ef2b-4983-990c-427173225f65 - fbe295286b26132acf6330c87710231324afd5b1)
 

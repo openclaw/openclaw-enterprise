@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
@@ -54,7 +54,8 @@ drivers:
 `modelProvider` is optional. When present, `protocol` and `baseUrl` are required.
 The initial protocols are `openai-responses` and `openai-completions`.
 Codex requires `openai-responses`; OpenClaw uses the matching native API adapter.
-Omission retains the default OpenAI endpoint and existing native defaults.
+Omission retains the default OpenAI endpoint and native API defaults. Custom
+OpenAI URLs in Agent Configuration require a matching shared provider.
 ChatGPT account authentication and unrelated providers are outside this setting.
 
 The optional `supportsStandaloneWebSearch` boolean describes the endpoint's
@@ -63,9 +64,9 @@ provider tools prohibited by protected execution.
 
 The shared object replaces `runtime.codexModelBaseUrl` and
 `runtime.codexModelSupportsStandaloneWebSearch`. Old configuration keys fail
-validation with the replacement path. There is no precedence chain or silent
+validation; replace them with the shared object. There is no precedence chain or silent
 fallback between old and new settings. Installation profile inputs and the
-Console's schema-driven editor expose the shared object.
+Console's read-only Driver view expose the shared object.
 
 ### Ownership and translation
 
@@ -79,15 +80,19 @@ use generic Driver contracts; it does not gain OpenAI-specific branches.
 - Embedded and dedicated native OpenClaw receive the selected provider URL and
   API adapter. Existing model IDs, limits, costs, and other required metadata
   remain the operator's responsibility.
-- Authored OpenAI provider or model URLs and API adapters must agree with the
-  selected shared provider. Conflicts fail admission instead of creating another
-  route. Unrelated providers retain their own configuration.
+- Compute translates the native default OpenAI URL to the shared endpoint, so
+  existing default model metadata remains usable for a new deployment. A different
+  custom URL or API adapter must agree with the shared provider; conflicts fail
+  admission. Unrelated providers retain their own configuration.
 - Custom dedicated native OpenClaw endpoints retain the current requirement for
   source-backed credentials. This proposal does not widen direct Secret delivery.
 
 An endpoint change must not reinterpret an existing deployment or credential
-grant. Preparation, activation, retries, and recovery check the same effective
-destination. A conflicting saved deployment fails explicitly and requires a new
+grant. Compute records a fingerprint of the provider in its existing admission
+record. Both embedded and dedicated activation paths compare it before resolving
+or delivering direct-Secret credentials or changing workloads. Preparation,
+retries, and recovery make the same comparison. A change between preparation and
+activation is refused, including removal of the shared setting. A conflicting saved deployment fails explicitly and requires a new
 authorized deployment. No URL is taken from a credential source to repair it.
 
 ### Credential destination authorization

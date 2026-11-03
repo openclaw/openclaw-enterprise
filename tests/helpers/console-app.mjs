@@ -42,6 +42,7 @@ export const backendFixtures = Object.freeze([
 
 function computeDriver({
   repositoryCredentials = false,
+  modelProvider,
   channelRuntime = false,
   routed = true,
   discoverHarnessModels = async () => [],
@@ -54,6 +55,7 @@ function computeDriver({
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
     gatewayRuntime: true,
+    ...(modelProvider === undefined ? {} : { modelProvider }),
     repositoryCredentials,
     sandboxDriver,
     credentialGatewayDriver,
@@ -423,6 +425,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         routed: options.routed !== false,
         discoverHarnessModels: options.discoverHarnessModels,
         agentProvisioning: options.agentProvisioning,
+        modelProvider: options.modelProvider,
         sandboxDriver: options.sandboxDriver,
         credentialGatewayDriver: options.credentialGatewayDriver,
         implementation: options.computeImplementation,

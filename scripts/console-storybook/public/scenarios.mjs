@@ -71,7 +71,14 @@ const readyForm = [
 const modelCredentialSourceTypes = [
   {
     type: "openai",
-    config: [],
+    config: [
+      {
+        name: "authorized_base_url",
+        required: false,
+        description:
+          "Immutable destination authorization. Must match the Installation model provider; omission authorizes only the default OpenAI endpoint.",
+      },
+    ],
     secrets: [{ name: "api_key", required: true }],
     rotation: "none",
     harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
@@ -1978,6 +1985,19 @@ export const scenarios = {
       "On a long page, scroll to the bottom and check that the sidebar background and operator profile reach it. At phone width, values fit and the existing navigation drawer still opens.",
     ],
   },
+  settingsModelProvider: {
+    group: "Pages/Settings",
+    name: "Shared model provider",
+    path: "/console/settings",
+    installationModelProvider: true,
+    description:
+      "Read the shared Compute provider as Fields and JSON. The same endpoint serves Codex and OpenClaw. These are simulated accepted Installation values; editing remains an operator configuration task.",
+    steps: [
+      "Expand Compute, then runtime and modelProvider.",
+      "Switch to JSON and confirm protocol and baseUrl.",
+      "No key or source routing field is present.",
+    ],
+  },
   settingsDriverNestedValues: {
     group: "Pages/Settings",
     name: "Nested Driver values",
@@ -3270,6 +3290,34 @@ export const scenarios = {
       "Open the Slack editor, then cancel it. Channel controls remain available for dedicated OpenClaw.",
       "Select Embedded, then return to Dedicated. Confirm the Harness remains OpenClaw.",
       "Create the Agent and follow simulated provisioning to Agent details. Open Configuration and confirm the snapshot shows Dedicated execution and the OpenClaw Harness.",
+    ],
+  },
+  createSharedModelProviderSource: {
+    group: "Pages/Create Agent",
+    name: "Authorize shared model destination",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: readyForm,
+    description:
+      "Enter destination authorization for the selected key. This does not change the Installation endpoint. The simulated API records the source and starts provisioning.",
+    steps: [
+      "Enter https://models.example.com/v1 under Authorized base url.",
+      "Create the Agent and inspect the source request: config.authorized_base_url is present; config.base_url is absent.",
+    ],
+  },
+  createSharedModelProviderRefusal: {
+    group: "Pages/Create Agent",
+    name: "Destination authorization refusal",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "invalid-config",
+    actions: readyForm,
+    description:
+      "The first source request receives a simulated destination mismatch. Check registration to confirm absence, then correct authorization and retry. Uncertain writes remain locked until checked.",
+    steps: [
+      "Select the simulated model Secret and enter https://other.example.com/v1.",
+      "Create the Agent, then choose Check credential registration.",
+      "Correct the authorization to https://models.example.com/v1 and retry.",
     ],
   },
   createDedicatedCodexCredentialSource: {
