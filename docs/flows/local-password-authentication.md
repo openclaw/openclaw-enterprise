@@ -26,8 +26,7 @@ reaches exact IAM authorization. The
   and [`apps/controller/src/index.ts:createFastifyApp`](../../apps/controller/src/index.ts).
 - Assumptions: Migrated PostgreSQL, configured Better Auth, native IAM bootstrap,
   protected output storage, disabled public signup, and exact IAM authorization.
-  Production receives a private password path and sibling service-key path;
-  development receives only the service-key output path.
+  Production and development differ only in password output placement.
 
 ## Flow
 
@@ -70,8 +69,8 @@ output changes, or identity/grant repair, including Installations predating serv
 `verifiedWithoutAuth` first runs the same check before loading Better Auth: plain
 SQL for the administrator's `occ."user"` row, then the same IAM state and
 administrator Principal check. Success logs `installation.already-bootstrapped`
-with `step: "fast-path"`. Any miss or error runs the full Better Auth check, which
-succeeds or fails exactly as before. The base URL is checked first on both paths.
+with `step: "fast-path"`. Any miss or error runs the full Better Auth check; the
+base URL is checked first on both paths.
 
 For fresh setup, production creates a Better Auth account with a random password;
 development creates the configured `OPENCLAW_DEV_EMAIL`/`OPENCLAW_DEV_PASSWORD`
@@ -107,18 +106,15 @@ Any error ends the single attempt with `installation.bootstrap-failed`,
 available non-secret IDs and paths, and a nonzero exit; the Helm initialization
 Job uses `backoffLimit: 0`. Completed tracked accounts, keys, and files,
 including partial output, remain for inspection. One pre-return Better
-Auth failure is narrower: if password `linkAccount` fails inside
-`createAccount`, the helper attempts to delete the just-created user before
-rethrowing. That is not a general artifact-recovery path; the initializer never
-automatically revokes, retries, repairs, or resets committed or uncertain state.
+Auth failure is narrower: a failed password `linkAccount` inside
+`createAccount` deletes the just-created user before rethrowing; the
+initializer otherwise never revokes, retries, or repairs committed or uncertain
+state.
 
-An uncertain commit can already have persisted the seed. Before manual repair,
-the operator confirms the original transaction has finished and compares exact
-attempt IDs; file existence or another Installation is insufficient. A
-deliberate reset must identify the disposable Installation and its dedicated
-storage. The
+An uncertain commit may already have persisted the seed; the
 [recovery procedure](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
-owns those operator actions.
+owns confirming the finished attempt and identifying the disposable Installation
+before repair.
 
 After confirmed success, the operator imports the file and retains its
 non-secret IDs. Lost output is never regenerated;
@@ -220,6 +216,20 @@ as nonce, without storage.
 Google's signing keys with the shared HTTP deadline and byte limit, verifies the RS256 ID token's
 signature, issuer, audience, expiry, and nonce (plus `hd` and `email_verified` when
 allowed domains are set), and returns only `sub`. Tokens and email are discarded.
+
+With the experimental OIDC trust claim configured
+([settings](../reference/settings/oidc.md)),
+`apps/controller/src/auth/oidc.ts:exchangeOidcSubject` also compares the verified
+ID token's named claim for the exact value; only a match returns `trusted` with
+the token's email claim. An unattached matched subject falls back to
+`packages/occ/src/state/human-authentication.ts:provisionTrustedExternalAccount`:
+one transaction writes the user, identity-only method, grantless Principal, and
+enrolment, auditing `authentication.account.self-enrol` before
+`authentication.login`. A savepoint wraps the writes, so a uniqueness conflict —
+a concurrent enrolment or a held email — rolls back and fails
+closed; locks are user-first, matching session issuance, and the attempt's
+creation time travels in, so an identity that appeared or changed after the
+attempt began refuses like an attached one.
 
 `apps/controller/src/auth/client-address.ts:clientAddressConfiguration` canonicalizes
 IPv4-mapped addresses before prefix validation, refusing entries covering every

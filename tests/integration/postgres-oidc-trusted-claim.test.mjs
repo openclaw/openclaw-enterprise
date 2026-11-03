@@ -351,10 +351,12 @@ test(
       // Accounts are never matched or linked by email, so a trusted token carrying an
       // address an unrelated account already owns fails closed rather than enrolling
       // onto or beside it; attaching the identity to that account remains the way in.
+      // The token carries the claim so the sign-in really reaches the enrolment and its
+      // savepoint conflict recovery, instead of being refused as an unclaimed subject.
       await assertRefused(
         {
           subject: takenEmailSubject,
-          claims: { email: "oidc-trust-taken@example.test" },
+          claims: { ...claim, email: "oidc-trust-taken@example.test" },
         },
         "email held by another account",
       );
