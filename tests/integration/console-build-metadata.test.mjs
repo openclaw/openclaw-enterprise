@@ -16,6 +16,10 @@ test("console image metadata preserves the supplied revision and rejects invalid
   const script = join(directory, "scripts/build-console-metadata.mjs");
   const shell = join(directory, "apps/controller/src/console/index.html");
   await cp(new URL("../../scripts/build-console-metadata.mjs", import.meta.url), script);
+  await cp(
+    new URL("../../scripts/build-console-metadata.ts", import.meta.url),
+    join(directory, "scripts/build-console-metadata.ts"),
+  );
   await cp(new URL("../../apps/controller/src/console/index.html", import.meta.url), shell);
   const revision = "abcdef1234567890abcdef1234567890abcdef12";
   await execute(process.execPath, [script, revision]);
