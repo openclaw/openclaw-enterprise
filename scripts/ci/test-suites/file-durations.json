@@ -44,7 +44,7 @@
     "tests/browser/console-repository-dedicated.test.ts": 7900,
     "tests/browser/console-repository-picker-network.test.ts": 3600,
     "tests/browser/console-retained-revalidation.test.mjs": 46200,
-    "tests/browser/console-runtime-credentials.test.mjs": 32500,
+    "tests/browser/console-runtime-credentials.test.ts": 32500,
     "tests/browser/console-secret-picker-refresh.test.ts": 9100,
     "tests/browser/console-secrets.test.ts": 19100,
     "tests/browser/console-shell.test.ts": 11100,
