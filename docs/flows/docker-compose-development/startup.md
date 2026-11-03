@@ -291,9 +291,9 @@ including Podman `localhost/` and Docker Hub, defaults omitted tags to `:latest`
 and rejects missing or ambiguous matches. Digest-pinned sources are usually
 multi-arch lists that Docker's containerd image store (Docker 29) can neither
 save with `--platform` nor export completely, so
-`internal/occdev/k3d_import.go:resolveDevelopmentImageSource` re-points the
-staging tag at the registry's platform child and saves a complete
-single-platform archive; unlisted sources, and a child pull that fails, keep
+`internal/occdev/k3d_import.go:stageDevelopmentPlatformChild` re-points the
+staging tag at the registry's platform child so the importer can save a complete
+single-platform archive. Unlisted sources and a failed child pull keep
 the pinned reference and filter.
 `importDevelopmentImage` resolves
 cluster digests. Both startup paths call
