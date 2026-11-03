@@ -140,8 +140,8 @@ jobs:
   openshell:
     name: QA advisory (OpenShell${{ needs.eligibility.outputs.openshell-file != '' && ' Compose' || '' }})
     needs: eligibility
-    # OpenShell requires an enabled Landlock LSM, absent on the Blacksmith kernel.
-    runs-on: ubuntu-24.04
+    # Use the k3d NetworkPolicy runner and keep Chromium sandboxed; verify Landlock below.
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 120
     environment: integration-qa-pr
     env:

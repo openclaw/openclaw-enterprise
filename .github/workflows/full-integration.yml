@@ -379,7 +379,8 @@ jobs:
 
   openshell:
     name: OpenShell
-    runs-on: ubuntu-24.04
+    # Match the advisory runner for k3d NetworkPolicy and browser sandbox checks.
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'openshell'
     timeout-minutes: 120

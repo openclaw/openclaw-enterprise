@@ -19,6 +19,11 @@ import {
 } from "../helpers/logging-otel-observation.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { assertApiError } from "../helpers/api-error.mjs";
+import {
+  failureSecrets,
+  newestMatchingLogLines,
+  redactLogLine,
+} from "../../scripts/ci/failure-redaction.mjs";
 
 const executeFile = promisify(execFile);
 
@@ -103,10 +108,24 @@ async function command(file, args, { env, timeoutMs = 120_000, secrets = [] } = 
       maxBuffer: 8 * 1024 * 1024,
     });
   } catch (error) {
-    const display = sanitize(`${file} ${args.join(" ")}`, secrets);
-    const stdout = sanitize(String(error.stdout ?? ""), secrets);
-    const stderr = sanitize(String(error.stderr ?? ""), secrets);
-    throw new Error(`${display} failed with exit ${error.code ?? "unknown"}.\n${stdout}${stderr}`);
+    const protectedValues = failureSecrets([env ?? process.env]);
+    const display = redactLogLine(
+      sanitize(`${file} ${args.join(" ")}`, secrets),
+      protectedValues,
+      1_000,
+    );
+    // Build failures appear after long progress logs. Redact complete output before selecting
+    // tails, then put stderr first so the reporter's input limit retains the actual cause.
+    const [stderr, stdout] = [error.stderr, error.stdout].map((output) =>
+      newestMatchingLogLines(sanitize(String(output ?? ""), secrets), protectedValues, {
+        pattern: /\S/u,
+        budget: 6_000,
+        lineChars: 1_000,
+      }),
+    );
+    throw new Error(
+      `${display} failed with exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}.\nStderr tail:\n${stderr}\nStdout tail:\n${stdout}`,
+    );
   }
 }
 
