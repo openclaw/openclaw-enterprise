@@ -30,6 +30,10 @@ concurrency:
 
 jobs:
   qualify:
+    permissions:
+      contents: read
+      actions: read
+      packages: read
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: staging-qualification

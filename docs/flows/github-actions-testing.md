@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-10-29
-last_updated_session: authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0
+updated: 2026-11-02
+last_updated_session: authoring-run/5817dfd2-487d-44bc-a2f7-2d57659ea0fc
 ---
 
 # GitHub Actions testing flow
@@ -51,8 +51,6 @@ graph TD
 <a id="1-select-one-source-revision-and-coverage-group" class="anchor-alias"></a>
 
 ### 1. Select one source commit and coverage group
-
-`scripts/ci/run-tests.mjs:main` audits, runs and aggregates both locally and in CI.
 
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
@@ -152,6 +150,10 @@ Native runtime-image tests trust a dynamic Codex Docker seccomp profile only whe
 that state is not CI proof; the standalone fallback remains the pinned reviewed
 manual profile. Production node provisioning remains outside CI ownership; see
 [Codex sandbox setup](../guides/deploy/codex-sandbox.md).
+
+`scripts/ci/staging-qualification.ts:qualify` validates digests,
+[isolates pull credentials](../testing/ci.md#qualify-a-published-release-for-staging),
+suppresses pull output, and removes credentials before preparation.
 
 ### 3. Execute and account for actual cases
 
@@ -258,6 +260,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 23:56: Trace staging authentication. (authoring-run/5817dfd2-487d-44bc-a2f7-2d57659ea0fc - db2cc11c4fd767c47394d680ef46bf26e1202fbc)
 
 - 2026-10-29 02:11: Add focused Compose OpenShell selection and sanitized native worker observations. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
 

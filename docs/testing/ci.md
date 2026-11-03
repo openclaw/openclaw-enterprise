@@ -47,7 +47,9 @@ The installation input must equal the configured ID. Use an ID of 1–63 lowerca
 letters, digits, or hyphens, starting with a letter. GHCR values are explicit
 `ghcr.io/openclaw/` repositories without tags or digests. The Node base value must
 match the publication receipt, including its digest. Restrict this environment
-to `main`. No provider credentials or cluster configuration are used.
+to `main`. The qualification job requires `packages: read`, and both GHCR
+packages must grant this repository's workflow token read access. No provider
+credentials or cluster configuration are used.
 
 The [workflow command](../../scripts/ci/staging-qualification.ts) checks the
 trusted workflow context, source ancestry, producer workflow ID, successful run
@@ -55,6 +57,12 @@ and attempt, and unique unexpired publication artifact. It repeats these checks
 after download, validates the receipt with the promotion validator, and verifies
 the receipt's exact successful CI run and attempt. Missing or conflicting
 configuration stops qualification.
+
+After checking GitHub metadata, the command removes `GH_TOKEN` from the
+environment before starting child processes. It stores the GHCR credential in a
+private Docker config for the two digest pulls on the runner's local Docker
+socket. A failed pull reports the selected reference and how to check access.
+The command removes the config before inspection, preparation, or startup.
 
 The command pulls each configured repository at the receipt's digest, verifies
 its digest, Linux amd64 platform and source label, and passes its immutable local
@@ -85,8 +93,9 @@ node scripts/ci/run-tests.mjs audit
 ```
 
 The command tests replace GitHub and Docker transport and the expensive smoke
-boundary with local fixtures. They prove digest handoff and rejection behavior;
-they do not prove a registry pull, container startup, or live installation.
+boundary with local fixtures. They cover digest handoff, credential isolation,
+output suppression, cleanup, and rejection behavior. Hosted token permissions,
+registry pulls, container startup, and live installations need separate proof.
 
 <a id="ci-configuration"></a>
 

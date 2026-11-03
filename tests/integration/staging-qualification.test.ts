@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,7 @@ test("staging workflow command consumes bound digests and refuses invalid releas
     ...process.env,
     RUNNER_TEMP: directory,
     GH_TOKEN: "fixture",
+    GITHUB_ACTOR: "fixture-actor",
     SOURCE_SHA: source,
     GITHUB_SHA: source,
     GITHUB_WORKFLOW_SHA: source,
@@ -61,12 +62,22 @@ test("staging workflow command consumes bound digests and refuses invalid releas
     `
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import child from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, statSync, readdirSync } from 'node:fs';
+import assert from 'node:assert/strict';
 const env = process.env;
 const source = env.SOURCE_SHA;
+const token = env.GH_TOKEN;
+const auth = Buffer.from(env.GITHUB_ACTOR + ':' + token).toString('base64');
+globalThis.checkPreparation = () => {
+  assert.equal(process.env.GH_TOKEN, undefined);
+  assert.ok(!readdirSync(env.RUNNER_TEMP).some(name => name.startsWith('staging-docker-')));
+  appendFileSync(env.RUNNER_TEMP + '/calls.jsonl', JSON.stringify({command: 'prepare', args: []}) + '\\n');
+};
 const repo = '${repository}';
 const publication = '.github/workflows/container-publish.yml';
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, options) => {
+  assert.equal(process.env.GH_TOKEN, token);
+  assert.ok(options.headers.Authorization.includes(token));
   const path = new URL(url).pathname;
   let body;
   const run = (id, workflow, event, attempt) => ({id, run_attempt: attempt, workflow_id: id,
@@ -86,13 +97,30 @@ globalThis.fetch = async (url) => {
 };
 registerHooks({resolve(specifier, context, next) {
   if (specifier.endsWith('/prepare.mjs')) return {url: 'data:text/javascript,' + encodeURIComponent(
-    'export async function prepareRuntimeImageSmoke({image}) { if (!image.startsWith("sha256:")) throw Error("not immutable"); return {env: {}, cleanup: async () => {}}; }'), shortCircuit: true};
+    'export async function prepareRuntimeImageSmoke({image}) { globalThis.checkPreparation(); if (!image.startsWith("sha256:")) throw Error("not immutable"); return {env: {}, cleanup: async () => {}}; }'), shortCircuit: true};
   return next(specifier, context);
 }});
 child.execFileSync = (command, args, options) => {
+  assert.equal(process.env.GH_TOKEN, undefined);
+  assert.equal(options?.env?.GH_TOKEN, undefined);
   appendFileSync(env.RUNNER_TEMP + '/calls.jsonl', JSON.stringify({command, args,
     controller: options?.env?.OCC_TEST_PRODUCTION_IMAGE, runtime: options?.env?.OCC_TEST_RUNTIME_IMAGE}) + '\\n');
-  if (command === 'docker' && args[0] === 'pull') return '';
+  if (command === 'docker' && args[0] === '--config') {
+    assert.equal(args[2], '--host=unix:///var/run/docker.sock');
+    assert.equal(args[3], 'pull');
+    assert.equal(options.stdio, 'ignore');
+    const config = args[1] + '/config.json';
+    assert.equal(statSync(config).mode & 0o777, 0o600);
+    assert.equal(statSync(args[1]).mode & 0o777, 0o700);
+    assert.deepEqual(JSON.parse(readFileSync(config, 'utf8')), {auths: {'ghcr.io': {auth}}});
+    if (env.FAIL_PULL === args.at(-1)) {
+      throw Object.assign(new Error('denied ' + token + ' ' + auth), {
+        stdout: Buffer.from('stdout-secret ' + token), stderr: Buffer.from('stderr-secret ' + auth)
+      });
+    }
+    return 'untrusted-success-output ' + token + ' ' + auth;
+  }
+  assert.ok(!readdirSync(env.RUNNER_TEMP).some(name => name.startsWith('staging-docker-')));
   if (command === 'docker' && args[0] === 'image') return JSON.stringify([{
     RepoDigests: [env.BAD_DIGEST ? 'wrong' : args[2]], Id: 'sha256:' + (args[2].includes('controller') ? 'c' : 'd').repeat(64),
     Os: 'linux', Architecture: 'amd64', Config: {Labels: {'org.opencontainers.image.revision': source}}
@@ -122,7 +150,10 @@ syncBuiltinESMExports();
   };
   await run("validate");
   assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), "artifact_id=789\n");
-  await run("qualify");
+  const success = await run("qualify");
+  assert.equal(success.stdout, "");
+  assert.equal(success.stderr, "");
+  assert.ok(!(await readdir(directory)).some((name) => name.startsWith("staging-docker-")));
   const proof = JSON.parse(await readFile(join(directory, "staging-qualification.json"), "utf8"));
   assert.equal(proof.liveInstall, false);
   assert.equal(proof.selected.runtime, `${env.GHCR_RUNTIME_IMAGE}@${digest}`);
@@ -131,7 +162,7 @@ syncBuiltinESMExports();
     .split("\n")
     .map((line) => JSON.parse(line));
   assert.deepEqual(
-    calls.filter((call) => call.args[0] === "pull").map((call) => call.args),
+    calls.filter((call) => call.args[3] === "pull").map((call) => call.args.slice(3)),
     [
       ["pull", "--platform", "linux/amd64", `${env.GHCR_CONTROLLER_IMAGE}@${digest}`],
       ["pull", "--platform", "linux/amd64", `${env.GHCR_RUNTIME_IMAGE}@${digest}`],
@@ -139,7 +170,44 @@ syncBuiltinESMExports();
   );
   assert.equal(calls.at(-1).controller, `sha256:${"c".repeat(64)}`);
   assert.equal(calls.at(-1).runtime, `sha256:${"d".repeat(64)}`);
+  // Both first- and second-pull failures must erase credentials and stop before preparation.
+  for (const reference of [proof.selected.controller, proof.selected.runtime]) {
+    await rm(join(directory, "calls.jsonl"));
+    await rm(join(directory, "staging-qualification.json"), { force: true });
+    await assert.rejects(run("qualify", { FAIL_PULL: reference }), (error: unknown) => {
+      assert.ok(error instanceof Error && "stdout" in error && "stderr" in error);
+      assert.equal(typeof error.stdout, "string");
+      assert.equal(typeof error.stderr, "string");
+      const stdout = String(error.stdout);
+      const stderr = String(error.stderr);
+      assert.ok(stderr.includes(`Unable to pull ${reference}. Check GHCR package read access`));
+      for (const secret of [
+        env.GH_TOKEN,
+        Buffer.from(`${env.GITHUB_ACTOR}:${env.GH_TOKEN}`).toString("base64"),
+        "stdout-secret",
+        "stderr-secret",
+      ]) {
+        assert.ok(!stdout.includes(secret));
+        assert.ok(!stderr.includes(secret));
+      }
+      return true;
+    });
+    assert.ok(!(await readdir(directory)).some((name) => name.startsWith("staging-docker-")));
+    const failedCalls = (await readFile(join(directory, "calls.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.ok(failedCalls.every((call) => call.command === "docker" && call.args[3] === "pull"));
+    await assert.rejects(readFile(join(directory, "staging-qualification.json")), {
+      code: "ENOENT",
+    });
+  }
   for (const patch of [
+    { GITHUB_ACTOR: "" },
+    { GH_TOKEN: "" },
+    { GHCR_RUNTIME_IMAGE: "ghcr.io/other/runtime" },
+    { GHCR_RUNTIME_IMAGE: "example.com/openclaw/runtime" },
+    { GHCR_RUNTIME_IMAGE: "ghcr.io/openclaw/runtime:latest" },
     { CONFIGURED_STAGING_INSTALLATION: "" },
     { CONFIGURED_STAGING_INSTALLATION: "other" },
     { BAD_ATTEMPT: "1" },
@@ -164,6 +232,22 @@ syncBuiltinESMExports();
       code: "ENOENT",
     });
   }
+  // Even a receipt matching an unsafe configured destination must fail before Docker.
+  for (const destination of [
+    "ghcr.io/other/runtime",
+    "example.com/openclaw/runtime",
+    "ghcr.io/openclaw/runtime:latest",
+  ]) {
+    const before = await readFile(join(directory, "calls.jsonl"), "utf8");
+    await writeFile(path, JSON.stringify([receipt[0], { ...receipt[1], destination }]));
+    await assert.rejects(run("qualify", { GHCR_RUNTIME_IMAGE: destination }), { code: 1 });
+    assert.equal(await readFile(join(directory, "calls.jsonl"), "utf8"), before);
+    assert.ok(!(await readdir(directory)).some((name) => name.startsWith("staging-docker-")));
+  }
+  const beforeInvalidDigest = await readFile(join(directory, "calls.jsonl"), "utf8");
+  await writeFile(path, JSON.stringify([receipt[0], { ...receipt[1], digest: "latest" }]));
+  await assert.rejects(run("qualify"), { code: 1 });
+  assert.equal(await readFile(join(directory, "calls.jsonl"), "utf8"), beforeInvalidDigest);
   await writeFile(path, JSON.stringify([receipt[0], { ...receipt[1], sourceSha: "e".repeat(40) }]));
   await assert.rejects(run("qualify"), /Prepared image sourceSha does not match/);
 });

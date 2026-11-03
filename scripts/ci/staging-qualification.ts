@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { validatePublicationRun, validateReceipt } from "./container-promote.mjs";
 import {
@@ -55,6 +55,11 @@ async function qualify(path: string) {
   const receipt = JSON.parse(await readFile(path, "utf8"));
   validateReceipt(receipt, env);
   await verifyCi({ ...env, CI_RUN_ID: receipt[0].ciRunId, CI_ATTEMPT: receipt[0].ciAttempt });
+  const actor = env.GITHUB_ACTOR;
+  const token = env.GH_TOKEN;
+  delete env.GH_TOKEN;
+  assert.ok(actor, "GITHUB_ACTOR is required for GHCR package read access.");
+  assert.ok(token, "GH_TOKEN is required for GHCR package read access.");
   assert.ok(env.RUNNER_TEMP, "RUNNER_TEMP is required.");
   const selected: Record<string, string> = {};
   // Validate both destinations before pulling either. No receipt-selected registry or tag.
@@ -68,9 +73,41 @@ async function qualify(path: string) {
     );
     selected[image.image] = `${configured}@${image.digest}`;
   }
+  const dockerConfig = await mkdtemp(join(env.RUNNER_TEMP, "staging-docker-"));
+  try {
+    await writeFile(
+      join(dockerConfig, "config.json"),
+      JSON.stringify({
+        auths: { "ghcr.io": { auth: Buffer.from(`${actor}:${token}`).toString("base64") } },
+      }),
+      { mode: 0o600 },
+    );
+    for (const reference of Object.values(selected)) {
+      try {
+        execFileSync(
+          "docker",
+          [
+            "--config",
+            dockerConfig,
+            "--host=unix:///var/run/docker.sock",
+            "pull",
+            "--platform",
+            "linux/amd64",
+            reference,
+          ],
+          { stdio: "ignore" },
+        );
+      } catch {
+        throw new Error(
+          `Unable to pull ${reference}. Check GHCR package read access and image availability.`,
+        );
+      }
+    }
+  } finally {
+    await rm(dockerConfig, { recursive: true, force: true });
+  }
   const ids: Record<string, string> = {};
   for (const [name, reference] of Object.entries(selected)) {
-    execFileSync("docker", ["pull", "--platform", "linux/amd64", reference], { stdio: "inherit" });
     const [image] = JSON.parse(
       execFileSync("docker", ["image", "inspect", reference], { encoding: "utf8" }),
     );
