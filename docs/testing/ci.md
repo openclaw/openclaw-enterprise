@@ -65,8 +65,9 @@ be full lowercase Git SHAs.
 The named artifact download retains an archive. Before reading it, the command
 repeats producer checks and compares its size and SHA-256 with GitHub metadata.
 The archive directory must contain exactly one regular file, at most 1 MiB.
-The archive must contain only `publication.json`; `unzip -p` reads at most 64 KiB
-without extraction or a GitHub token. The receipt must match a successful
+The command passes the verified archive bytes to Python 3's standard ZIP decoder
+on the runner. It reads only `publication.json`, at most 64 KiB, without
+extracting files or passing a GitHub token. The receipt must match a successful
 same-repository `main` push returned by the CI workflow's source-SHA query.
 Only service-derived run IDs and attempts select the exact CI run and job checks.
 The script does not write Actions outputs.
@@ -81,7 +82,7 @@ Other recipes, including the October 9 0.160.0 profile, fail before pulls.
 The receipt, recipe, and trusted packaging manifest must agree on the Node base.
 
 After checking GitHub metadata, the command removes GitHub tokens before image
-operations. Git and unzip subprocesses never receive those tokens. A private
+operations. Git and ZIP decoder subprocesses never receive those tokens. A private
 Docker config supplies GHCR authentication only for the two digest pulls on the
 runner's local Docker socket. The command removes that config before inspection
 or startup. A failed pull reports the reference and access guidance without

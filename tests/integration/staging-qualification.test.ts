@@ -13,16 +13,16 @@ const digest = `sha256:${"b".repeat(64)}`;
 const repository = "openclaw/openclaw-enterprise";
 const runtimeFile = "tests/integration/runtime-image-startup.test.mjs";
 const runtimeChildCase = "runtime startup child consumes the CI-prepared Codex seccomp profile";
+const runtimeChildFixture = new URL(
+  "../fixtures/staging-qualification-seccomp-child.ts",
+  import.meta.url,
+);
 
-if (process.argv[1] === resolve(runtimeFile)) {
-  test(runtimeChildCase, consumePreparedProfile);
-} else {
-  test(
-    "staging workflow command consumes bound digests and refuses invalid release evidence",
-    checkWorkflowCommand,
-  );
-  test("staging runtime lane preserves the reviewed Codex version in its child", checkRuntimeChild);
-}
+test(
+  "staging workflow command consumes bound digests and refuses invalid release evidence",
+  checkWorkflowCommand,
+);
+test("staging runtime lane preserves the reviewed Codex version in its child", checkRuntimeChild);
 
 async function checkWorkflowCommand(t: TestContext) {
   const directory = await mkdtemp(join(process.cwd(), ".staging-command-"));
@@ -140,12 +140,10 @@ async function checkWorkflowCommand(t: TestContext) {
   const archiveDirectory = join(directory, "publication");
   await mkdir(archiveDirectory);
   const archive = join(archiveDirectory, "response-header-filename.zip");
+  const replacement = join(directory, "replacement.zip");
   const metadata = join(directory, "artifact.json");
   const receiptPath = join(directory, "publication.json");
-  const pack = async (value: unknown) => {
-    await writeFile(receiptPath, JSON.stringify(value));
-    await rm(archive, { force: true });
-    await execute("zip", ["-q", archive, "publication.json"], { cwd: directory, env: hostEnv });
+  const recordArchive = async () => {
     const bytes = await readFile(archive);
     await writeFile(
       metadata,
@@ -155,6 +153,14 @@ async function checkWorkflowCommand(t: TestContext) {
       }),
     );
   };
+  const pack = async (value: unknown, path = archive) => {
+    await writeFile(receiptPath, JSON.stringify(value));
+    await rm(path, { force: true });
+    await execute("zip", ["-q", path, "publication.json"], { cwd: directory, env: hostEnv });
+    if (path === archive) {
+      await recordArchive();
+    }
+  };
   await pack(receipt);
   const preload = join(directory, "transport.mjs");
   await writeFile(
@@ -162,7 +168,8 @@ async function checkWorkflowCommand(t: TestContext) {
     `
 import { syncBuiltinESMExports } from 'node:module';
 import child from 'node:child_process';
-import { appendFileSync, readFileSync, statSync, readdirSync } from 'node:fs';
+import crypto from 'node:crypto';
+import { appendFileSync, readFileSync, renameSync, statSync, readdirSync, writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 const env = process.env;
 // Service identities are fixed independently of dispatched inputs and receipts.
@@ -173,6 +180,26 @@ const auth = Buffer.from('fixture-actor:' + token).toString('base64');
 const repo = '${repository}';
 const publication = '.github/workflows/container-publish.yml';
 const log = value => appendFileSync(env.RUNNER_TEMP + '/calls.jsonl', JSON.stringify(value) + '\\n');
+if (env.CHANGE_ARCHIVE) {
+  const archive = ${JSON.stringify(archive)};
+  const replacement = ${JSON.stringify(replacement)};
+  const expected = JSON.parse(readFileSync(${JSON.stringify(metadata)}, 'utf8')).digest;
+  const createHash = crypto.createHash;
+  crypto.createHash = (...args) => {
+    const hash = createHash(...args);
+    const digest = hash.digest;
+    hash.digest = function (...args) {
+      const result = digest.apply(this, args);
+      if ('sha256:' + result === expected) {
+        if (env.CHANGE_ARCHIVE === 'rename') renameSync(replacement, archive);
+        else writeFileSync(archive, readFileSync(replacement));
+        log({changedArchive: env.CHANGE_ARCHIVE});
+      }
+      return result;
+    };
+    return hash;
+  };
+}
 const run = (id, workflow, event, attempt) => ({id, run_attempt: attempt, workflow_id: id,
   path: workflow, repository: {full_name: repo}, head_repository: {full_name: repo},
   head_branch: 'main', head_sha: source, event, status: 'completed', conclusion: 'success'});
@@ -210,11 +237,11 @@ globalThis.fetch = async (url, options) => {
 };
 const executeSync = child.execFileSync;
 child.execFileSync = (command, args, options) => {
-  if (command === 'git' || command === 'unzip') {
+  if (command === 'git') {
     assert.equal(options.env.GH_TOKEN, undefined);
     assert.equal(options.env.GITHUB_TOKEN, undefined);
     assert.equal(options.env.GITHUB_OUTPUT, undefined);
-    if (command === 'git' && args.includes('fetch')) {
+    if (args.includes('fetch')) {
       const official = 'https://github.com/openclaw/openclaw-enterprise.git';
       assert.equal(args.at(-2), official);
       assert.equal(args.at(-1), ${JSON.stringify(newerMain)});
@@ -246,6 +273,14 @@ child.execFileSync = (command, args, options) => {
     Os: 'linux', Architecture: 'amd64', Config: {Labels: {'org.opencontainers.image.revision': env.BAD_LABEL ? workflowSha : source}}
   }]);
   throw Error('Unexpected subprocess: ' + command + ' ' + args.join(' '));
+};
+const spawnSync = child.spawnSync;
+child.spawnSync = (command, args, options) => {
+  assert.equal(command, 'python3');
+  assert.equal(options.env.GH_TOKEN, undefined);
+  assert.equal(options.env.GITHUB_TOKEN, undefined);
+  assert.equal(options.env.GITHUB_OUTPUT, undefined);
+  return spawnSync(command, args, options);
 };
 // Fail the real preparer's first Docker command. No helper or state outcome is
 // replaced: the preparer must record its resource, fail, and execute cleanup.
@@ -426,6 +461,21 @@ syncBuiltinESMExports();
     await assert.rejects(run("pull", patch), { code: 1 });
     await assert.rejects(readFile(pulled), { code: "ENOENT" });
   }
+  // Change the original pathname or its inode immediately after the real hash.
+  // A valid alternate receipt must not be able to select its own image digest.
+  for (const change of ["rename", "overwrite"]) {
+    await pack(receipt);
+    await pack(
+      receipt.map((image) => ({ ...image, digest: `sha256:${"e".repeat(64)}` })),
+      replacement,
+    );
+    await run("pull", { CHANGE_ARCHIVE: change });
+    assert.ok((await calls()).some((call) => call.changedArchive === change));
+    const observed = JSON.parse(await readFile(pulled, "utf8"));
+    assert.deepEqual(observed.selected, proof.selected);
+    await rm(pulled);
+  }
+  await pack(receipt);
   const before = await containerCalls();
   const bytes = await readFile(archive);
   const firstByte = bytes[0];
@@ -439,14 +489,43 @@ syncBuiltinESMExports();
   await rm(join(archiveDirectory, "extra.zip"));
   await writeFile(join(directory, "unexpected.txt"), "not a receipt");
   await execute("zip", ["-q", archive, "unexpected.txt"], { cwd: directory, env: hostEnv });
-  const extraBytes = await readFile(archive);
-  await writeFile(
-    metadata,
-    JSON.stringify({
-      digest: `sha256:${createHash("sha256").update(extraBytes).digest("hex")}`,
-      size_in_bytes: extraBytes.length,
-    }),
+  await recordArchive();
+  await assert.rejects(run("pull"), /only publication.json/);
+  await writeFile(archive, "invalid zip data");
+  await recordArchive();
+  await assert.rejects(run("pull"), /only publication.json/);
+  await pack(receipt);
+  await cp(archive, replacement);
+  await rm(archive);
+  await symlink(replacement, archive);
+  await assert.rejects(run("pull"), /ELOOP/);
+  await rm(archive);
+  await execute("mkfifo", [archive], { env: hostEnv });
+  await assert.rejects(run("pull"), /must be a regular file/);
+  await rm(archive);
+  // A valid JSON value beyond the uncompressed bound must be rejected even
+  // when the archive is small and has an authenticated digest.
+  await writeFile(receiptPath, JSON.stringify(receipt) + " ".repeat(64 * 1024));
+  await execute("zip", ["-q", archive, "publication.json"], { cwd: directory, env: hostEnv });
+  await recordArchive();
+  await assert.rejects(run("pull"), /at most 64 KiB/);
+  await writeFile(receiptPath, JSON.stringify(receipt));
+  await execute(
+    "python3",
+    [
+      "-I",
+      "-S",
+      "-c",
+      `import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED) as archive:
+    archive.write(sys.argv[2], 'publication.json')
+    archive.write(sys.argv[2], 'publication.json')`,
+      archive,
+      receiptPath,
+    ],
+    { env: hostEnv },
   );
+  await recordArchive();
   await assert.rejects(run("pull"), /only publication.json/);
   // A receipt cannot redirect the exact CI lookup, including to another valid ID.
   for (const ciRunId of ["999", "456/../../other"]) {
@@ -458,20 +537,6 @@ syncBuiltinESMExports();
   assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), "owner data\n");
 }
 
-async function consumePreparedProfile() {
-  const { reviewedCodexSeccompSecurityOptions } =
-    await import("../helpers/runtime-image-startup.mjs");
-  const profile = process.env.OCC_TEST_CODEX_SECCOMP_PROFILE;
-  assert.ok(profile);
-  assert.equal(process.env.OCC_TEST_STAGING_UNDECLARED, undefined);
-  assert.deepEqual(
-    await reviewedCodexSeccompSecurityOptions({
-      codexVersion: process.env.OCC_TEST_STAGING_CODEX_VERSION,
-    }),
-    ["--security-opt", "no-new-privileges", "--security-opt", `seccomp=${profile}`],
-  );
-}
-
 async function checkRuntimeChild(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), "staging-runtime-lane-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -481,9 +546,9 @@ async function checkRuntimeChild(t: TestContext) {
   const result = join(root, "results.json");
   const original = JSON.parse(await readFile(`scripts/ci/test-suites/${lane}.json`, "utf8"));
   // Keep the actual lane's environment contract and startup file selection. The
-  // fixture root has no preparer and runs only the typed profile check above.
+  // fixture root has no preparer and runs only the child profile check.
   await mkdir(join(root, dirname(runtimeFile)), { recursive: true });
-  await symlink(fileURLToPath(import.meta.url), join(root, runtimeFile));
+  await symlink(fileURLToPath(runtimeChildFixture), join(root, runtimeFile));
   await writeFile(
     manifest,
     JSON.stringify({

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { lstat, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { constants } from "node:fs";
+import { lstat, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -19,6 +20,7 @@ const env = process.env;
 // Staging communicates through receipt files, never Actions command files.
 delete env.GITHUB_OUTPUT;
 const workflow = ".github/workflows/staging-qualification.yml";
+const maxReceiptBytes = 64 * 1024;
 const startupFiles = [
   ["images-packaging", "tests/integration/production-image-startup.test.mjs"],
   ["images-runtime-startup", "tests/integration/runtime-image-startup.test.mjs"],
@@ -231,30 +233,88 @@ async function publicationReceipt(
   const entries = await readdir(directory);
   const [name] = entries;
   assert.ok(entries.length === 1 && name, "Require exactly one publication archive.");
-  assert.match(name, /^[a-zA-Z0-9._-]{1,128}$/, "Require a plain publication archive name.");
-  const path = join(directory, name);
-  const stat = await lstat(path);
-  assert.ok(stat.isFile(), "Publication archive must be a regular file.");
-  assert.equal(stat.size, artifact.size_in_bytes);
+  assert.ok(name.length <= 128 && !/[^a-zA-Z0-9._-]/.test(name), "Require a plain archive name.");
+  const file = await open(
+    join(directory, name),
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  let bytes: Buffer;
+  try {
+    const stat = await file.stat();
+    assert.ok(stat.isFile(), "Publication archive must be a regular file.");
+    assert.equal(stat.size, artifact.size_in_bytes);
+    // An extra byte detects growth between stat and read without unbounded I/O.
+    const buffer = Buffer.alloc(artifact.size_in_bytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await file.read(buffer, length, buffer.length - length);
+      if (bytesRead === 0) {
+        break;
+      }
+      length += bytesRead;
+    }
+    assert.equal(length, artifact.size_in_bytes, "Publication archive size changed during read.");
+    bytes = buffer.subarray(0, length);
+  } finally {
+    await file.close();
+  }
   assert.equal(
-    `sha256:${createHash("sha256")
-      .update(await readFile(path))
-      .digest("hex")}`,
+    `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
     artifact.digest,
     "Publication archive digest mismatch.",
   );
-  const options = {
-    env: subprocessEnv(),
-    encoding: "utf8" as const,
-    maxBuffer: 64 * 1024,
-    timeout: 10_000,
-  };
-  assert.equal(
-    execFileSync("unzip", ["-Z1", path], options),
-    "publication.json\n",
-    "Publication archive must contain only publication.json.",
+  // Give the decoder the authenticated snapshot and no pathname to reopen.
+  const decoded = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-S",
+      "-c",
+      `
+import io
+import stat
+import sys
+import zipfile
+
+limit = ${maxReceiptBytes}
+with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as archive:
+    entries = archive.infolist()
+    if len(entries) != 1:
+        sys.exit(1)
+    entry = entries[0]
+    if (entry.orig_filename != "publication.json"
+        or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+        or stat.S_IFMT(entry.external_attr >> 16) not in (0, stat.S_IFREG)):
+        sys.exit(1)
+    size = entry.file_size
+    if size > limit:
+        sys.exit(1)
+    # ZipFile otherwise stops at the size claimed in the central directory.
+    entry.file_size = limit + 1
+    with archive.open(entry) as member:
+        data = member.read(limit + 1)
+    if len(data) != size:
+        sys.exit(1)
+    sys.stdout.buffer.write(data)
+`,
+    ],
+    {
+      env: subprocessEnv(),
+      input: bytes,
+      encoding: "utf8",
+      maxBuffer: maxReceiptBytes,
+      timeout: 10_000,
+    },
   );
-  return JSON.parse(execFileSync("unzip", ["-p", path, "publication.json"], options));
+  assert.ok(
+    !decoded.error && decoded.status === 0,
+    "Publication archive must contain only publication.json, at most 64 KiB when decoded.",
+  );
+  try {
+    return JSON.parse(decoded.stdout);
+  } catch {
+    throw new Error("Publication receipt must be valid JSON.");
+  }
 }
 
 async function receiptCi({ ciRunId, ciAttempt }: { ciRunId: string; ciAttempt: string }) {
