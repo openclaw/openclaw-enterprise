@@ -74,7 +74,7 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
@@ -114,7 +114,7 @@ for (const action of ["Stop", "Delete"] as const) {
     );
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
     await failed;
-    await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await nextFrames(page);
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     assert.equal(await accessibleDescription(control), refusal);
@@ -125,6 +125,7 @@ for (const action of ["Stop", "Delete"] as const) {
     const answered = responseTo(page, "GET", permissionsUrl, { status: 200 });
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
     await answered;
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await alert.waitFor({ state: "detached" });
     await waitForEnabled(control);
     assert.deepEqual(
@@ -157,7 +158,7 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
@@ -198,7 +199,7 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
@@ -251,7 +252,7 @@ test("a refocus reads no permission answer for an Agent page being deleted", asy
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
   );
   const control = page.getByRole("button", { name: "Delete Agent", exact: true });
   await waitForEnabled(control);
@@ -280,7 +281,7 @@ test("a Stop that finds its Agent being deleted moves focus to the deletion row"
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
   );
   const stop = page
     .getByRole("region", { name: "Stop Agent", exact: true })
@@ -320,7 +321,7 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
@@ -629,6 +630,9 @@ test("an Agents list row refused for another reason shows the API's text and nam
         await expectReachableReason(page, each, kind === action ? refusal : alert);
       }
     };
+    // The confirmation's close event returns focus to the refused icon, a task after the alert
+    // and note render (finding 3112).
+    await waitForFocusedLabel(page, `${action} Other Row`);
     await checkRow({ inView: true });
     // A refocus rebuilds the list (a row write makes it one it does not reuse). The alert and
     // the row's note stay until Refresh, and focus stays on the refused icon.
@@ -711,7 +715,8 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
   await confirmAgentAction(page, "Delete Row C?", "Delete");
   const note = row.getByText("Not deleted: see above", { exact: true });
   await note.waitFor();
-  assert.equal(await hasFocus(icon), true);
+  // Focus returns to the icon in the confirmation's close event, a task after the note renders.
+  await waitForFocusedLabel(page, "Delete Row C");
   const scrollY = () => page.evaluate(() => globalThis.scrollY);
   // Scrolls the page so the note's bottom sits `gap` pixels above the viewport's bottom (below
   // it when negative).

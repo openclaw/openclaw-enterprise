@@ -1,5 +1,5 @@
+import { selectBundledRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -40,10 +40,11 @@ export interface SelectedRepositories {
 export async function standingGitOrigin(
   t: TestContext,
   namespaceId: string,
-  tokenLifetimeMs = 135_000,
+  tokenLifetimeMs: number | ((index: number) => number) = 135_000,
   beforeIssue?: () => Promise<void>,
   installationAccess = false,
   selection?: SelectedRepositories,
+  draftPull = false,
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
@@ -54,6 +55,9 @@ export async function standingGitOrigin(
     tokenLifetimeMs,
     beforeIssue,
     installationAccess,
+    ...(draftPull && {
+      additionalPermissions: [{ metadata: "read", contents: "write", pull_requests: "write" }],
+    }),
     ...(selection && {
       expectedRepositoryIds: selection.selectedRepositoryIds.map(Number),
       additionalRepositories: selection.entries.slice(1),
@@ -70,7 +74,7 @@ export async function standingGitOrigin(
     providerInstanceId: "fixture-provider",
     appId: fixtureAppId,
     githubInstallationId: fixtureInstallationId,
-    maximumDurationSeconds: selection ? 600 : 180,
+    maximumDurationSeconds: selection || draftPull ? 600 : 180,
     allowStandingApprovals: true,
     ...(installationAccess && {
       installationAccess: {
@@ -94,7 +98,8 @@ export async function standingGitOrigin(
               {
                 namespaceId,
                 profiles: ["git-write"],
-                transport: "git-only",
+                transport: draftPull ? "git-and-draft-pr" : "git-only",
+                ...(draftPull && { pullRequestBase: "main" }),
                 allowStandingApproval: true,
                 pushRefAllowlist: [pushRef],
               },
@@ -143,8 +148,9 @@ export async function preparedStandingGitPeer(
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
     selection?: SelectedRepositories;
-    /** GitHub's token lifetime, by the system clock. */
-    tokenLifetimeMs?: number;
+    draftPull?: boolean;
+    /** GitHub's token lifetime by the system clock, or a function of the 1-based token index. */
+    tokenLifetimeMs?: number | ((index: number) => number);
     /** Only the prepared owner's clock. GitHub, PostgreSQL and the runtime keep real time. */
     ownerClock?: Clock;
   } = {},
@@ -167,6 +173,7 @@ export async function preparedStandingGitPeer(
     options.beforeIssue,
     options.installationAccess,
     options.selection,
+    options.draftPull,
   );
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
@@ -209,8 +216,7 @@ export async function preparedStandingGitPeer(
       ca: tls.ca,
       startWorker: false,
       ...(options.driver && {
-        protectedGitDriver: options.driver,
-        protectedGitEvidence: openShellGitRecipientEvidence,
+        repositoryGitCustody: selectBundledRepositoryGitCustody(options.driver),
       }),
     },
     options.ownerClock,

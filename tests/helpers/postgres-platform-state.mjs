@@ -20,6 +20,7 @@ import {
 } from "../helpers/kubernetes-real.mjs";
 import { reservePort, reservedPortArgs } from "./available-port.mjs";
 import { stopProcess } from "./stop-process.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 import { jsonLines as parseJsonLines } from "./json-lines.mjs";
 import { waitFor } from "./wait-for.mjs";
 
@@ -421,10 +422,7 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
   context.after(reservation.release);
   const { port } = reservation;
   const driverEnvironment = await configuredDriverEnvironment(context, kubernetesDrivers);
-  const configurationRoot = await mkdtemp(join(tmpdir(), "openclaw-postgres-configurations-"));
-  context.after(async () => {
-    await rm(configurationRoot, { recursive: true, force: true });
-  });
+  const configurationRoot = await temporaryDirectory(context, "openclaw-postgres-configurations-");
   const occDatabaseUrl = contextDatabaseUrl(context);
   await ensureDevelopmentBootstrap(context, {
     databaseUrl: occDatabaseUrl,

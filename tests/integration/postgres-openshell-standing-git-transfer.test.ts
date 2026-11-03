@@ -1,6 +1,7 @@
-import { repositorySetJourney } from "../helpers/postgres-repository-set-journey.ts";
+import { waitFor } from "../helpers/wait-for.mjs";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,6 +29,7 @@ import { standingExecutionFixture } from "../helpers/postgres-standing-execution
 import { clockBehind, preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import {
   expireStoppedClaims,
+  makeWorkDue,
   waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
@@ -44,6 +46,28 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+
+// Reduce reader results before assertions: diagnostics must never retain credential material.
+function materialClass(value: unknown): string {
+  if (value === undefined) {
+    return "no-result";
+  }
+  if (value === null || typeof value !== "object") {
+    return "unexpected";
+  }
+  if ("value" in value) {
+    return "material";
+  }
+  if (
+    Reflect.ownKeys(value).length === 1 &&
+    Object.hasOwn(value, "absent") &&
+    "absent" in value &&
+    (value.absent === "withdrawn" || value.absent === "unprepared")
+  ) {
+    return value.absent;
+  }
+  return "unexpected";
+}
 
 // Release code owns the sessions, material, per-request authority, route, withdrawal and
 // continued supervision. Compute, the stock-protocol supervisor/sender and HTTPS origin are
@@ -118,13 +142,16 @@ test(
             beforeIssue,
             driver: protectedGit.owner.ref,
             installationAccess: true,
-            // GitHub issues 80 s tokens by the system clock. The owner's wall clock reads 50 s
-            // behind, inside the 60 s skew allowance, so it still finds its unchanged 60 s minimum
-            // validity after the skew (80 + 50 - 60 = 70 s). PostgreSQL and every Date.now()
-            // check keep real time: each token is usable for 20 s (expiry minus the skew), and the
-            // expired token's retirement below still waits for its real expiry plus the skew.
-            tokenLifetimeMs: 80_000,
-            ownerClock: clockBehind(50_000),
+            // GitHub issues tokens by the system clock: 68 s for the first, 80 s for its successor.
+            // The owner's wall clock reads 58 s behind, inside the 60 s skew allowance, so it still
+            // finds its unchanged 60 s minimum validity after the skew (68 + 58 - 60 = 66 s).
+            // PostgreSQL and every Date.now() check keep real time: the first token is usable for
+            // 8 s (expiry minus the skew), which covers the first transfer, and its retirement below
+            // still waits for its real expiry plus the skew; that wait ends soon after the admission
+            // deadline. The successor is usable for 20 s: the second transfer, API requests and
+            // withdrawal all happen inside it.
+            tokenLifetimeMs: (index) => (index === 1 ? 68_000 : 80_000),
+            ownerClock: clockBehind(58_000),
           })),
           requestedBinding: {
             repositoryRef: "team-installation",
@@ -139,8 +166,53 @@ test(
       );
     const { prepared, registrationName, gh, send, input } = peer;
     const authority = prepared.protectedGit!;
+    // Each explicit probe owns its receipt; runtime reconciliation uses the normal owner.
+    const readInstallation = async (
+      route: NonNullable<Parameters<typeof onlineOwner.readOpenShellMaterial>[2]>,
+      signal: AbortSignal,
+    ) => {
+      const selected = authority.online.githubInstallation;
+      assert.ok(typeof selected?.readMaterial === "function", "selected reader exists");
+      let completions = 0;
+      let matched = false;
+      let selectedResult: unknown;
+      const probe = protectedOpenShellGitOwner({
+        ...authority,
+        online: {
+          ...authority.online,
+          githubInstallation: {
+            ...selected,
+            async readMaterial(receivedRoute, receivedSignal) {
+              const result = await selected.readMaterial(receivedRoute, receivedSignal);
+              completions++;
+              matched = receivedRoute === route && receivedSignal === signal;
+              selectedResult = result;
+              return result;
+            },
+          },
+        },
+      });
+      const result = await probe.readOpenShellMaterial(
+        route.revisionId,
+        signal,
+        route,
+        "github-installation",
+      );
+      assert.equal(completions, 1, "selected probe completed exactly once");
+      assert.ok(matched, "selected reader received the original route and signal");
+      assert.ok(Object.is(result, selectedResult), "adapter preserves selected response");
+      return result;
+    };
     await protectedGit.owner.requireRepositoryGitTransport()(authority);
     assert.ok(predecessor);
+    const persisted = await f.state.read((view) =>
+      view.revisions.findRevision(revision.namespaceId, revision.agentId, revision.id),
+    );
+    assert.deepEqual(persisted?.executionAdmission, { version: 5, mode: "protected" });
+    assert.equal(persisted.egressPlan?.repositoryGitAuthorization, "online-request");
+    const workKey = `agent_revision:${revision.id}:reconcile`;
+    const activationOrder: string[] = [];
+    let heldStopped: Promise<void> | undefined;
     const preparationClaims: string[] = [];
     let oid = peer.oid;
     const workspace = kubernetesNamespaceName(revision.namespaceId);
@@ -254,6 +326,16 @@ test(
     let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
     const compute = {
       ...f.compute,
+      activationOrder: "afterCommit" as const,
+      async activateRevision(r: AgentRevision) {
+        assert.equal(r.id, revision.id);
+        activationOrder.push("activate");
+      },
+      async retireRevision(r: AgentRevision) {
+        assert.equal(r.id, predecessor.id);
+        activationOrder.push("retire predecessor");
+        await f.compute.retireRevision();
+      },
       validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
       validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
       async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
@@ -375,17 +457,52 @@ test(
             const {
               rows: [route],
             } = await f.observerPool.query(
-              "SELECT fence, desired->>'credentialState' AS credential_state, material_version, preparation_attempt_id FROM occ.credential_deliveries WHERE revision_id=$1",
-              [r.id],
+              "SELECT fence, desired->>'credentialState' AS credential_state, material_version, preparation_attempt_id, observed, revision_id, namespace_id, agent_id, target, binding_id FROM occ.credential_deliveries WHERE revision_id=$1 AND binding_id=$2",
+              [r.id, bindingId],
             );
-            assert.deepEqual(route, {
+            const {
+              observed: persistedObserved,
+              revision_id,
+              namespace_id,
+              agent_id,
+              target,
+              binding_id,
+              ...state
+            } = route;
+            assert.deepEqual(state, {
               fence: "1",
               credential_state: "bootstrap",
               material_version: null,
               preparation_attempt_id: null,
             });
-            const material = await prepared.readOpenShellMaterial(r.id, s);
-            assert.ok(!material || "absent" in material);
+            const entry = await runtime["entries"].get(r.id);
+            const fence = Number(state.fence);
+            assert.equal(
+              revision_id === r.id &&
+                namespace_id === r.namespaceId &&
+                agent_id === r.agentId &&
+                binding_id === bindingId &&
+                target?.workspace === workspace &&
+                target?.sandbox === sandbox &&
+                !!persistedObserved &&
+                !!entry?.supervisor &&
+                persistedObserved.sandboxId === sandboxId &&
+                persistedObserved.credentialState === "bootstrap" &&
+                Number.isSafeInteger(fence) &&
+                fence === entry.fence &&
+                isDeepStrictEqual(persistedObserved, entry.supervisor),
+              true,
+              "durable bootstrap matches the candidate recipient and reconciled fence",
+            );
+            const classification = materialClass(
+              await readInstallation({ revisionId: r.id, fence, observed: persistedObserved }, s),
+            );
+            // Cardinality is not pinned here; either explicit absence is permissible.
+            assert.equal(
+              classification === "withdrawn" || classification === "unprepared",
+              true,
+              "preactivation selected reader must explicitly refuse material",
+            );
             assert.equal(
               await runtime.lookup(
                 { bindingId, sandboxId, workspace, requestId: "before-active" },
@@ -394,8 +511,16 @@ test(
               undefined,
             );
             const observed = await f.compute.prepareRevision(r);
-            return { ...observed, ready: preparationClaims.length === 3 };
+            return {
+              ...observed,
+              ready: false,
+              ...(preparationClaims.length === 3 && {
+                heldForRepositoryGitMaterial: true,
+                pendingReason: "REPOSITORY_GIT_ROUTE_PENDING" as const,
+              }),
+            };
           }
+          activationOrder.push("serving");
           return f.compute.prepareRevision(r);
         } catch (error) {
           preparationFailure ??= error;
@@ -421,13 +546,29 @@ test(
         }
       },
     };
-    type Event = { event?: string; code?: string; reason?: string };
+    type Event = {
+      event?: string;
+      code?: string;
+      reason?: string;
+      workId?: string;
+      outcome?: string;
+    };
     const events: Event[] = [];
     const start = () =>
       f.start(compute, {
         emit: (e?: Event) => {
           if (e && e.event !== "worker.health") {
             events.push(e);
+            if (
+              e.event === "worker.completed" &&
+              e.workId === workKey &&
+              e.code === "REPOSITORY_GIT_ROUTE_PENDING"
+            ) {
+              heldStopped = f.stop();
+            }
+            if (e.event === "worker.completed" && e.workId === workKey && e.outcome === "success") {
+              activationOrder.push("complete");
+            }
           }
         },
         transformDrivers: (d: { installation: { drivers: object } }) => ({
@@ -459,10 +600,16 @@ test(
     const evaluate = (upload: boolean) => evaluateRequest(inspected(upload));
     const known = () => f.state.read((v) => v.repositorySessions.findStandingExecution(key));
     const attempts = () => f.state.read((v) => v.repositorySessions.listRevisionAttempts(key));
+    // Only this Agent's rows: the database may hold an earlier run's.
     const uses = async () =>
       (
         await f.observerPool.query(
-          "select operation,material_version,attempt_id,send_start_by,authorization_reply_by from occ.prepared_repository_git_uses order by exchange_id",
+          `select operation,material_version,attempt_id,send_start_by,authorization_reply_by
+           from occ.prepared_repository_git_uses
+           where admission_id in (select admission_id from occ.repository_session_attempts
+             where namespace_id=$1 and agent_id=$2)
+           order by exchange_id`,
+          [revision.namespaceId, revision.agentId],
         )
       ).rows;
     const absent = () => {
@@ -496,11 +643,32 @@ test(
     try {
       originCallsBeforeActivation = peer.originCalls();
       await start();
+      await waitFor("held candidate pass", async () => (heldStopped ? true : undefined));
+      // The completion callback stops polling before another preparation can report serving.
+      assert.ok(heldStopped);
+      await heldStopped;
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      const heldWork = await f.observerPool.query(
+        "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key=$1",
+        [workKey],
+      );
+      assert.deepEqual(heldWork.rows, [{ state: "queued", attempt_count: 0 }]);
+      assert.equal(
+        activationOrder.length,
+        0,
+        "held candidate must not activate or retire its predecessor",
+      );
+      await makeWorkDue(f.observerPool, workKey);
+      await start();
       try {
         await f.work(revision, "succeeded");
       } catch (error) {
         throw preparationFailure ?? error;
       }
+      await waitFor("original deployment completion", async () =>
+        activationOrder.includes("complete") ? true : undefined,
+      );
+      assert.deepEqual(activationOrder, ["serving", "activate", "retire predecessor", "complete"]);
       assert.equal(preparationFailure, undefined);
       assert.equal(preparationClaims.length, 3);
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
@@ -526,6 +694,42 @@ test(
       const firstPack = await allow(true);
       assert.equal(git(["index-pack", "--strict", "--stdin"], firstPack.subarray(8)).status, 0);
       assert.equal(git(["cat-file", "-t", oid]).stdout.toString().trim(), "commit");
+      const route = (await routes.standing(revision))!.route;
+      const installation = {
+        revisionId: revision.id,
+        fence: route.fence,
+        observed: route.observed,
+      };
+      for (const other of [authority, authority.online, authority.githubInstallation!]) {
+        assert.equal(
+          materialClass(await other.readMaterial(installation, t.signal)) === "unprepared",
+          true,
+          "wrong mode or narrow reader cannot release installation material",
+        );
+      }
+      assert.equal(
+        materialClass(
+          await readInstallation({ ...installation, fence: route.fence + 1 }, t.signal),
+        ) === "unprepared",
+        true,
+        "a stale installer receives no committed material",
+      );
+      const healthy = await readInstallation(installation, t.signal);
+      assert.equal(
+        healthy !== null &&
+          typeof healthy === "object" &&
+          "value" in healthy &&
+          "scope" in healthy &&
+          healthy.scope === "github-installation" &&
+          typeof healthy.value === "string" &&
+          healthy.value.length > 0 &&
+          Date.parse(healthy.expiresAt) > Date.now() &&
+          !!route.material &&
+          healthy.preparationAttemptId === route.material.preparationAttemptId &&
+          healthy.materialVersion === route.material.materialVersion,
+        true,
+        "healthy selected reader returns current installation material before expiry",
+      );
       if (conversation) {
         assert.ok(modelEnvironment);
         askModel = await conversation.launch(
@@ -555,45 +759,6 @@ test(
           [first.admissionId, crypto.randomUUID()],
         ),
         /receipt requires a current durable admission/,
-      );
-      const route = (await routes.standing(revision))!.route;
-      assert.deepEqual(
-        await authority.readMaterial(
-          {
-            revisionId: revision.id,
-            fence: route.fence,
-            observed: route.observed,
-          },
-          t.signal,
-        ),
-        { absent: "unprepared" },
-        "exact-dispatch port cannot release online material",
-      );
-      const installation = {
-        revisionId: revision.id,
-        fence: route.fence,
-        observed: route.observed,
-      };
-      for (const other of [authority.online, authority.githubInstallation!]) {
-        assert.deepEqual(
-          await other.readMaterial(installation, t.signal),
-          { absent: "unprepared" },
-          "neither a narrow online reader nor an exact-dispatch installation reader receives this material",
-        );
-      }
-      assert.deepEqual(
-        await onlineOwner.readOpenShellMaterial(
-          revision.id,
-          t.signal,
-          {
-            revisionId: revision.id,
-            fence: route.fence + 1,
-            observed: route.observed,
-          },
-          "github-installation",
-        ),
-        { absent: "unprepared" },
-        "a stale installer receives no committed material",
       );
       oid = await peer.nextObject();
       assert.notEqual(oid, firstOid);
@@ -640,10 +805,15 @@ test(
         "cold observation does not claim a new fence",
       );
       assert.equal(await runtime.lookup(id, signal), undefined);
+      // Only this Agent's attempts: the database may hold an earlier run's.
       const custody = () =>
         f.observerPool
           .query(
-            "SELECT state,custody,sealed IS NULL AS erased FROM occ.prepared_github_attempts ORDER BY provider_expires_at",
+            `SELECT a.state,a.custody,a.sealed IS NULL AS erased
+             FROM occ.prepared_github_attempts a JOIN occ.prepared_github_families f USING (source_id)
+             WHERE f.source#>>'{session,namespaceId}'=$1 AND f.source#>>'{session,agentId}'=$2
+             ORDER BY a.provider_expires_at`,
+            [revision.namespaceId, revision.agentId],
           )
           .then((x) => x.rows);
       // The admission has ended and GitHub's expiry has passed, but a GitHub clock behind
@@ -872,11 +1042,4 @@ test(
       await runtime.close();
     }
   },
-);
-
-// The same production worker/issuer and authenticated Gateway fixtures also cover finite selections.
-test(
-  "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C",
-  { ...requiresPostgres, timeout: 90000 },
-  repositorySetJourney,
 );

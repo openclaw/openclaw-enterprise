@@ -68,6 +68,81 @@ function configurationValues(scenario) {
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
     };
   }
+  if (scenario.gatewayPasswordProviderless) {
+    // A reference an older release saved without a provider, which OpenClaw cannot read.
+    values.gateway.auth = { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } };
+  }
+  if (scenario.secretProviderAliasRefused) {
+    // An env alias an older release saved in upper case, which OpenClaw's config check refuses.
+    values.secrets = { defaults: { env: "BAD" } };
+  }
+  if (scenario.pluginSecretInputProviderless) {
+    // A Google web search header an older release saved as a SecretRef without a provider, which
+    // OpenClaw cannot read, so the Gateway exits at startup.
+    values.plugins = {
+      entries: {
+        google: {
+          config: {
+            webSearch: { headers: { "X-Goog-User-Project": { source: "env", id: "GOOG_TOKEN" } } },
+          },
+        },
+      },
+    };
+  }
+  if (scenario.pluginDeny !== undefined) {
+    values.plugins = { ...values.plugins, deny: structuredClone(scenario.pluginDeny) };
+  }
+  if (scenario.configInclude) {
+    // An OpenClaw $include an older release saved, which would merge settings OCE never checked.
+    values.agents.defaults.$include = "./defaults.json";
+  }
+  if (scenario.pluginEntryKeyVariant) {
+    // A Codex entry an older release saved beside codex, which OpenClaw merges into codex.
+    values.plugins = {
+      entries: {
+        codex: { config: { appServer: { approvalPolicy: "on-request" } } },
+        Codex: { enabled: true },
+      },
+    };
+  }
+  if (scenario.openClawSandbox) {
+    // OpenClaw's own sandbox, which an older release saved and the OCE runtime cannot run.
+    values.agents.defaults.sandbox = { mode: "all" };
+  }
+  if (scenario.providerKeyVariant) {
+    // An OpenAI model provider key an older release saved, which OpenClaw applies to openai.
+    values.models = { providers: { OpenAI: { baseUrl: "https://models.example.test/v1" } } };
+  }
+  if (scenario.codexPluginsDisabled) {
+    // plugins.enabled false saved before Kubernetes Compute refused it on Dedicated Codex, whose
+    // Gateway runs the codex plugin.
+    values.plugins = { ...values.plugins, enabled: false };
+  }
+  if (scenario.trustedProxyWithoutMachine) {
+    // A trusted-proxy allowlist without occ-workspace-files, saved before Kubernetes Compute
+    // refused it.
+    values.gateway = {
+      ...values.gateway,
+      auth: {
+        ...values.gateway?.auth,
+        mode: "trusted-proxy",
+        trustedProxy: { userHeader: "x-occ-identity", allowUsers: ["oidc:member-01"] },
+      },
+    };
+  }
+  if (scenario.kubernetesEntryKeyVariant) {
+    // A File-Transfer entry saved before Kubernetes Compute refused it, which OpenClaw merges into
+    // file-transfer, the entry Kubernetes Compute enables for the workspace node.
+    values.plugins = { entries: { "File-Transfer": { enabled: true } } };
+  }
+  if (scenario.gatewayPasswordAllowlistOmits) {
+    // A default env alias on a configured env provider whose allowlist leaves out the generated
+    // password, so OpenClaw cannot read the reference Enable gateway password access would write.
+    values.secrets = {
+      defaults: { env: "vault" },
+      providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } },
+    };
+  }
   if (scenario.messageQueue !== undefined) {
     values.messages = { queue: structuredClone(scenario.messageQueue) };
   }
@@ -240,7 +315,8 @@ export function installFixture(scenario, evidence) {
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
   const configs = new Map();
-  const configurationReads = new Set();
+  // Reads of each Configuration before another browser's save (configurationChangedElsewhere).
+  const configurationReads = new Map();
   let configurationChangedElsewhere = false;
   const agents = new Map();
   const revisions = new Map();
@@ -529,7 +605,8 @@ export function installFixture(scenario, evidence) {
           Date.parse(createdAt) - (scenario.revisionHistory - number) * 86_400_000,
         ).toISOString();
         revisions.set(older.id, older);
-        // An earlier version whose deployment failed before a later one succeeded.
+        // An earlier version whose deployment failed, or that a newer one superseded
+        // (earlierVersionError), before a later one succeeded.
         if (scenario.earlierFailedVersion === number) {
           deployments.set(older.id, {
             deploymentId: older.id,
@@ -538,7 +615,8 @@ export function installFixture(scenario, evidence) {
             status: "failed",
             cleanup: null,
             progress: null,
-            error: candidateDeploymentError(scenario, older.createdAt),
+            error:
+              scenario.earlierVersionError ?? candidateDeploymentError(scenario, older.createdAt),
             warnings: [],
           });
         }
@@ -725,6 +803,33 @@ export function installFixture(scenario, evidence) {
   if (scenario.presetVariables) {
     Object.assign(preset.template.variables, structuredClone(scenario.presetVariables));
   }
+  if (scenario.presetTrustedProxyVariable) {
+    // A trusted-proxy allowlist that a Preset variable fills (finding 3122).
+    preset.template.variables.human = {
+      type: "string",
+      description: "Identity of the person who runs this Agent",
+    };
+    const { values } = preset.template.configuration;
+    values.gateway = {
+      ...values.gateway,
+      auth: {
+        mode: "trusted-proxy",
+        trustedProxy: {
+          userHeader: "x-occ-identity",
+          allowUsers: ["occ-workspace-files", "{{ vars.human }}"],
+        },
+      },
+    };
+  }
+  if (scenario.presetModelKeyVariable) {
+    // A model policy keyed by a Preset variable; the API quotes a key that is not a plain ID.
+    preset.template.variables.fallback = { type: "string", description: "Another model ref" };
+    const { values } = preset.template.configuration;
+    values.agents.defaults.models = {
+      ...values.agents.defaults.models,
+      "{{ vars.fallback }}": { agentRuntime: { id: "codex" } },
+    };
+  }
   const presets = [
     preset,
     ...(scenario.noDefaultPreset
@@ -848,7 +953,7 @@ export function installFixture(scenario, evidence) {
       { status, headers: { "content-type": "application/json" } },
     );
   const error = (status, code, message) => response(null, status, code, {}, message);
-  window.fetch = async (input, options = {}) => {
+  const answer = async (input, options = {}, call = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.origin);
     const path = url.pathname;
     const method = options.method ?? "GET";
@@ -872,6 +977,10 @@ export function installFixture(scenario, evidence) {
         continue;
       }
       rule.used = rule.once === true;
+      if (rule.lostAnswer) {
+        call.lost = true;
+        break;
+      }
       if (rule.delayMs) {
         await new Promise((resolve, reject) => {
           const finish = () => {
@@ -1093,6 +1202,7 @@ export function installFixture(scenario, evidence) {
         name: "Demo installation",
         createdAt,
         capabilities: {
+          ...(scenario.nativeAdminSetup ? { nativeAdmin: true } : {}),
           ...(scenario.unsupportedProvisioning === true
             ? {}
             : { agentProvisioning: { executionModes: ["dedicated"] } }),
@@ -1473,15 +1583,17 @@ export function installFixture(scenario, evidence) {
           return error(404);
         }
         if (method === "GET") {
-          // Another browser saves this Configuration once the page has read it
-          // (configurationChangedElsewhere), so the next save preflight finds a newer generation.
+          // Another browser saves this Configuration once the page has read it `afterReads` times
+          // (configurationChangedElsewhere; 1 by default), so the next save preflight finds a
+          // newer generation.
           if (scenario.configurationChangedElsewhere && !configurationChangedElsewhere) {
-            if (configurationReads.has(saved.id)) {
+            const reads = configurationReads.get(saved.id) ?? 0;
+            if (reads >= (scenario.configurationChangedElsewhere.afterReads ?? 1)) {
               configurationChangedElsewhere = true;
               saved.generation += 1;
               mergeElsewhere(saved.values, scenario.configurationChangedElsewhere.values ?? {});
             }
-            configurationReads.add(saved.id);
+            configurationReads.set(saved.id, reads + 1);
           }
           return response(saved);
         }
@@ -2054,7 +2166,7 @@ export function installFixture(scenario, evidence) {
                     })),
                   ],
             cursor: "simulated-policy-cursor",
-            withheld: 0,
+            withheld: scenario.policyWithheld ?? 0,
             truncated: false,
           });
         }
@@ -2809,5 +2921,15 @@ export function installFixture(scenario, evidence) {
     evidence.unhandled.push({ method, path });
     console.error(`Unconfigured story request: ${method} ${path}`);
     return error(501);
+  };
+  // A rule with `lostAnswer` lets the simulated API apply the request, then loses its answer, as
+  // when the connection drops after a write lands.
+  window.fetch = async (input, options = {}) => {
+    const call = {};
+    const reply = await answer(input, options, call);
+    if (call.lost) {
+      throw new TypeError("Failed to fetch");
+    }
+    return reply;
   };
 }

@@ -4,6 +4,7 @@ import { request as httpsRequest, createServer as createHttpsServer } from "node
 import { connect as connectTcp } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
+import { within } from "../helpers/wait-for.mjs";
 import { listen } from "../fixtures/repository-credentials/process.mjs";
 import { startTokenServiceScope } from "../fixtures/repository-credentials/service.mjs";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
@@ -148,20 +149,7 @@ for (const handshake of [false, true]) {
           headersWritten = true;
         });
       }
-      let deadline;
-      try {
-        await Promise.race([
-          closed,
-          new Promise((_, reject) => {
-            deadline = setTimeout(
-              () => reject(new Error("listener failed to close incomplete request")),
-              1000,
-            );
-          }),
-        ]);
-      } finally {
-        clearTimeout(deadline);
-      }
+      await within(closed, "listener failed to close incomplete request", 1_000);
       if (handshake) {
         assert.equal(secureConnected, true, "TLS handshake must complete before the header bound");
         assert.equal(headersWritten, true, "incomplete HTTP headers must reach the TLS socket");

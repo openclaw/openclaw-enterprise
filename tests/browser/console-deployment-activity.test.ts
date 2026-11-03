@@ -7,6 +7,7 @@ import type {
   PlatformStateStore,
 } from "../../packages/occ/src/state/platform-state.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
   detailUrl,
@@ -769,8 +770,11 @@ for (const refusal of [403, 404] as const) {
     assert.equal(refusedBody.data, undefined);
     assert.equal(refusedBody.error.code, refusal === 403 ? "FORBIDDEN" : "NOT_FOUND");
     if (refusal === 403) {
-      assert.match(refusedBody.error.message, /^Not authorized: /);
-      assert.match(refusedBody.error.message, /Ask an Installation administrator to grant it\./);
+      // The denial names the read the Restriction blocks and the version ID the URL carried.
+      assert.equal(
+        refusedBody.error.message,
+        callerDenied("AgentRevision read", `AgentRevision ${revisionId}`),
+      );
     }
     // Named denials are shown verbatim; do not restore the old generic refusal copy.
     const notice =

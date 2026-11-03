@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
-import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.mjs";
+import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, chmod, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withStateLock } from "./state-lock.mjs";
+import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -502,7 +502,7 @@ async function cleanupResource(resource, state) {
   }
 }
 
-// lockTimeoutMs limits the wait for the CI state lock (state-lock.mjs's default otherwise), so a
+// lockTimeoutMs limits the wait for the CI state lock (state-lock.ts's default otherwise), so a
 // caller that has its own limit, such as a test fixture's database drop, stops waiting with it.
 // The selected databases are dropped before that wait, each within databaseDropTimeoutMs.
 async function cleanupResourceIds(statePath, resourceIds, { lockTimeoutMs } = {}) {

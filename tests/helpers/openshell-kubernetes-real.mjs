@@ -1,3 +1,4 @@
+import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -408,8 +409,8 @@ export async function assertExposedCodexInitializes(serviceUrl, appServerToken, 
 // Model egress comes only from the credential source's profile, bound to native Codex.
 // Match either architecture of the pinned image, independent of the test runner's host.
 const openshellCodexBinaries = Object.freeze([
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 ]);
 
 export function createOpenShellInstallationConfiguration({
@@ -1029,7 +1030,7 @@ export function createOpenShellKubernetesFixture({
       "--set=server.drivers.kubernetes.allowDriverConfig=true",
       // The gateway rejects every Sandbox template label it does not allow; Harness
       // Pods carry the OCE selector labels that NetworkPolicies and Services match.
-      '--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]',
+      `--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=${JSON.stringify(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST)}`,
       "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
       "--set-string=server.drivers.kubernetes.workspaceMode=operator",
       "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
@@ -1439,6 +1440,9 @@ export function createOpenShellKubernetesFixture({
       let nextId = 1;
       let assistant = "";
       let finished = false;
+      let phase = "connect";
+      let receivedMessages = 0;
+      let completedCommands = 0;
       let failedCommands = 0;
       let approvalRequests = 0;
       // Whether the turn began anything that can act: a command, file change, tool call or
@@ -1499,6 +1503,9 @@ export function createOpenShellKubernetesFixture({
             : (error?.stack || String(error)));
         process.stderr.write("\nNative execution summary: " + JSON.stringify({
           failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
+          // These method names come only from this client, never server payloads or prompts.
+          phase, pendingRequests: [...pending.values()].map(({ method }) => method),
+          receivedMessages, completedCommands, actionSeen,
           commandGraceMs: ${codexCommandGraceMs},
           sinceTurnEndMs: turnCompletedAt === undefined ? null : Math.floor(performance.now() - turnCompletedAt),
           retrySafe,
@@ -1547,6 +1554,7 @@ export function createOpenShellKubernetesFixture({
 
       function request(method, params = {}) {
         const id = nextId++;
+        phase = method;
         return new Promise((resolve, reject) => {
           pending.set(id, { method, resolve, reject });
           socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
@@ -1601,6 +1609,7 @@ export function createOpenShellKubernetesFixture({
 
       socket.addEventListener("message", ({ data }) => {
         if (finished) return;
+        receivedMessages += 1;
         const message = JSON.parse(String(data));
         if (${JSON.stringify(readThreadId)} !== undefined && message.id === undefined) return;
         const { method, params } = message;
@@ -1646,6 +1655,7 @@ export function createOpenShellKubernetesFixture({
           commandTimes.set(item.id, { startedAt: performance.now(), deltas: 0, bytes: 0 });
         }
         if (ending) {
+          completedCommands += 1;
           pendingCommands.delete(item.id);
           if (commandDeadline && !pendingCommands.size) finish();
           return;
@@ -1665,6 +1675,7 @@ export function createOpenShellKubernetesFixture({
               const id = message.result?.turn?.id;
               if (typeof id !== "string" || !id) return fail(new Error("Codex turn/start returned no turn ID"));
               turnId = id;
+              phase = "turn";
             }
             entry.resolve(message.result);
           }

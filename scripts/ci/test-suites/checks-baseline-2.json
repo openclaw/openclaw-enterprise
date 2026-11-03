@@ -126,7 +126,9 @@
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
-    { "path": "tests/integration/controlled-tls-origin.test.ts" },
+    {
+      "path": "tests/integration/controlled-tls-origin.test.ts"
+    },
     {
       "path": "tests/integration/tls-peer-certificate.test.mjs"
     },
@@ -231,6 +233,9 @@
     },
     {
       "path": "tests/integration/ci-image-config-digest.test.mjs"
+    },
+    {
+      "path": "tests/integration/skipper-release.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-draft-pr-cli.test.mjs"
@@ -415,11 +420,11 @@
     {
       "path": "tests/integration/repository-original-lease.test.ts",
       "expectedTests": [
-        "an owned exchange keeps its original lease through replacement and an injected standing callback fences the first write",
-        "standing denial prevents eager Expect headers",
+        "an owned exchange keeps its original lease through replacement",
         "authentication rejection closes a pending dispatch",
         "a confirmed TLS close before the first write is not dispatched",
-        "authentication rejection after the first write remains uncertain"
+        "authentication rejection after the first write remains uncertain",
+        "observed owned-session expiry fences the first write after clock rollback"
       ]
     },
     {
@@ -597,6 +602,9 @@
         "OpenShell direct construction and policy rendering still enforce configuration validation",
         "OpenShell discovery and policy use the installed configuration after caller mutation"
       ]
+    },
+    {
+      "path": "tests/integration/staging-qualification.test.ts"
     }
   ]
 }

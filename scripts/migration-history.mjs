@@ -11,6 +11,15 @@ const { drizzle } = dependency("drizzle-orm/node-postgres");
 const { readMigrationFiles } = dependency("drizzle-orm/migrator");
 const lock = [1868785005, 1835624306];
 
+export class UnsupportedPostgresVersionError extends Error {
+  constructor() {
+    super(
+      "PostgreSQL versions before 17 cannot run OCE migration catalog checks (MAINTAIN privilege required). " +
+        "Stopped before migration. Use the validated PostgreSQL 18.6 baseline, preserve any existing database, and rerun --check before installing or upgrading.",
+    );
+  }
+}
+
 function refuse(reason) {
   const error = new Error(`Unsupported migration history: ${reason}.`);
   error.code = "MIGRATION_HISTORY_UNSUPPORTED";
@@ -323,6 +332,12 @@ export async function migrateWithHistory(pool, { checkOnly = false, expectEmpty 
   const client = await pool.connect();
   let locked = false;
   try {
+    const { rows } = await client.query(
+      "SELECT pg_catalog.current_setting('server_version_num')::pg_catalog.int4 >= 170000 AS compatible",
+    );
+    if (rows[0]?.compatible !== true) {
+      throw new UnsupportedPostgresVersionError();
+    }
     await client.query("SELECT pg_catalog.pg_advisory_lock($1, $2)", lock);
     locked = true;
     const history = await preflight(client, manifest);

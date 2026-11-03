@@ -1,9 +1,17 @@
+---
+tags: [nolimit]
+---
+
 # Install the production control plane
 
-Prepare [Kubernetes](kubernetes.md) or [EKS](eks.md), the
-[production prerequisites](../deploy.md#production-prerequisites), and
+Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
+[prerequisites below](#before-you-start), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
-Keep private routing enabled. Start with the password profile and
+Private routing is enabled by default. The chart does not install Envoy Gateway,
+Gateway API or Envoy CRDs, cert-manager, or the GatewayClass. Prepare those
+controllers first; create the service-key Secret and match Helm and Installation
+settings in [Prepare workspace access](#prepare-workspace-access) before Helm installation.
+Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
 [GitHub](#enable-github-browser-sign-in) or [Google](google-sign-in.md) sign-in requires disabling native administration.
 
@@ -15,13 +23,15 @@ Use a clean checkout matching the image source commit. Follow
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
 
+## Before you start
+
+<Snippet file="../../snippets/kubernetes-prerequisites.md" />
+
 ## Use published images
 
-Use `ghcr.io/openclaw/openclaw-enterprise-controller:latest` and
-`ghcr.io/openclaw/openclaw-enterprise-runtime:latest` through the
-[published-image procedure](published-images.md), which checks the image source commits and sets
-`CONTROLLER_IMAGE` and `RUNTIME_IMAGE` and selects the matching checkout and
-chart. Complete it before generating configuration; then skip the build section.
+Before generating configuration, [select the published image pair](published-images.md)
+(`stable` or `latest`). Verify the source commit, export `CONTROLLER_IMAGE` and
+`RUNTIME_IMAGE`, and use the matching checkout and chart. Skip the build section.
 
 Public GHCR pulls need no pull Secret. For private registry copies, give every node
 that runs control-plane or tenant Pods its own pull access; see
@@ -41,7 +51,7 @@ or build these images for your registry:
 Select your registry, repository, and platform. Buildx uses the [runtime recipe's](../../../deploy/runtime/README.md) reviewed CI base.
 
 Authenticate the builder with `docker login <registry-host>` and approved
-credentials; for private ECR, follow [ECR authentication](eks.md#authenticate-the-image-builder-to-ecr).
+credentials; for private ECR, follow [ECR authentication](eks-openshell-setup.md#authenticate-the-image-builder-to-ecr).
 
 In a fresh Bash shell, [resolve the OpenClaw build arguments](../../../deploy/runtime/README.md#resolve-openclaw-build-arguments).
 Stop on failure; retain metadata.
@@ -83,6 +93,8 @@ else
   false
 fi
 ```
+
+If a runtime build fails certificate verification when downloading a package behind an HTTPS proxy, add `--secret "id=build-ca,src=$CA_BUNDLE"` to the runtime `docker buildx build` command above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy CA certificate. The runtime Dockerfile mounts this file only during the download steps. Image registry TLS uses the builder's own trust configuration.
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull
@@ -423,13 +435,48 @@ deployment, or a model turn.
 
 ## Authenticate to the production API
 
-Retrieve and privately retain `initial-admin-service-key.json` from the
-protected bootstrap PVC through approved storage access. This example works on
-a session copy:
+Read the protected bootstrap files before you authenticate. The claim holds
+`initial-admin-service-key.json` and `initial-admin-password` as mode 0600 files
+in a root directory owned by UID 1000 with mode 0700. A one-use reader Pod must
+run as UID 1000 on the claim's control nodes and mount the claim read-only. If
+admission refuses UID 1000, have the cluster administrator allow it for this Pod.
+Permission to read this claim is privileged.
+
+```bash
+export READER_DIRECTORY="${READER_DIRECTORY:-/secure/occ}"
+(
+  set -euo pipefail
+  umask 077
+  jq -n --arg image "$CONTROLLER_IMAGE" --arg namespace openclaw-system \
+    --arg claim "$BOOTSTRAP_CLAIM" \
+    --argjson nodeSelector "$(yq e -o=json -I=0 '.controlPlane.nodeSelector' "$OCC_INPUT_DIRECTORY/values.yaml")" \
+    -f docs/snippets/openshell-quickstart/kubernetes/bootstrap-reader.jq |
+    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create -f -
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    wait --for=condition=Ready pod/oce-owner-bootstrap-reader --timeout=3m
+  for file in initial-admin-password initial-admin-service-key.json; do
+    test ! -e "$READER_DIRECTORY/$file"
+    kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+      exec oce-owner-bootstrap-reader -- \
+      node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))' \
+      "/bootstrap/$file" > "$READER_DIRECTORY/$file.tmp"
+    test -s "$READER_DIRECTORY/$file.tmp"
+    mv "$READER_DIRECTORY/$file.tmp" "$READER_DIRECTORY/$file"
+  done
+  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+    delete pod oce-owner-bootstrap-reader
+)
+```
+
+The block stops before it replaces a retained file or keeps a failed read; delete
+the reader Pod before you retry. The files use the default names;
+`bootstrap.password.fileName` and `bootstrap.serviceKey.fileName` override them. Sign in to the Console with
+`bootstrap.adminEmail` and `initial-admin-password`. The service key file
+authenticates the CLI and REST calls below. This example works on a session copy:
 
 ```bash
 export OCC_URL="${OCC_URL:-https://<internal-occ-host>}"
-export OCC_BOOTSTRAP_KEY_FILE="${OCC_BOOTSTRAP_KEY_FILE:-/secure/occ/initial-admin-service-key.json}"
+export OCC_BOOTSTRAP_KEY_FILE="${OCC_BOOTSTRAP_KEY_FILE:-${READER_DIRECTORY:-/secure/occ}/initial-admin-service-key.json}"
 umask 077
 prepare_occ_service_key() {
   local working_directory

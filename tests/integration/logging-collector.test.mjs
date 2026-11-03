@@ -56,7 +56,7 @@ async function waitFor(outcome, check, fixture) {
 
 function attributes(entries = []) {
   return Object.fromEntries(
-    entries.map(({ key, value }) => [key, value.stringValue ?? value.intValue]),
+    entries.map(({ key, value }) => [key, value.stringValue ?? value.intValue ?? value.boolValue]),
   );
 }
 
@@ -339,7 +339,10 @@ test("the Collector exports every OCC API and worker event the docs name", async
   ]) {
     // The Kubernetes Compute Driver renders this file's events into Gateway and Codex
     // Pods; the Collector classifies those runtime wrapper diagnostics separately.
-    if (path.endsWith("drivers/compute/kubernetes/runtime-entrypoints.ts")) {
+    if (
+      path.endsWith("drivers/compute/kubernetes/runtime-entrypoints.ts") ||
+      path.endsWith("drivers/compute/harness-egress-enrollment.ts")
+    ) {
       continue;
     }
     const text = await readFile(join(root, path), "utf8");
@@ -1264,6 +1267,9 @@ test(
               }),
               line(phase("agent", "codex-login", "ok")),
               line(phase("agent", "codex-login", "ok"), "stdout"),
+              line({ event: "runtime.protected_startup", startupHash: "b".repeat(64) }),
+              line({ event: "runtime.protected_startup", startupHash: canary }),
+              line({ event: "runtime.protected_startup", startupHash: "b".repeat(64) }, "stdout"),
               // A failed phase keeps a bounded cause code; an unbounded one is dropped.
               line({
                 ...phase("agent", "plugin-install", "failed"),
@@ -1321,6 +1327,11 @@ test(
         gateway("WARN", phaseEvent),
         codex("WARN", { "event.name": "codex.model_probe", "occ.code": "AUTHENTICATION_FAILED" }),
         codex("INFO", { ...phaseEvent, "occ.startup.phase": "codex-login" }),
+        codex("INFO", {
+          "event.name": "runtime.protected_startup",
+          "occ.startup.hash": "b".repeat(64),
+        }),
+        codex("INFO", { "event.name": "runtime.protected_startup" }),
         codex("WARN", {
           ...phaseEvent,
           "occ.startup.phase": "plugin-install",
@@ -1689,6 +1700,39 @@ function codeFieldCases({ canary, identity, exportedIdentity }) {
   const kept = [
     {
       record: {
+        event: "worker.openshell-git-continuity-refused",
+        check: "held-startup-recorded",
+        keyHash: "a".repeat(64),
+      },
+      exported: { "occ.check": "held-startup-recorded", "occ.continuity.key_hash": "a".repeat(64) },
+    },
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        check: "sandbox-restart-count",
+        result: 7,
+      },
+      exported: { "occ.check": "sandbox-restart-count", "occ.continuity.result": "7" },
+    },
+    {
+      record: { event: "worker.openshell-git-continuity-refused", result: false, keyHash: canary },
+      exported: { "occ.continuity.result": false },
+    },
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        result: canary,
+        keyHash: "A".repeat(64),
+      },
+      exported: {},
+    },
+    { record: { event: "worker.openshell-git-continuity-refused", result: 7.5 }, exported: {} },
+    {
+      record: { event: "worker.openshell-git-continuity-refused", result: 2147483648 },
+      exported: {},
+    },
+    {
+      record: {
         event: "worker.openshell-git-expiry",
         ...identity,
         outcome: "pending",
@@ -1914,7 +1958,7 @@ test(
         record.attributes.map(({ key, value }) => [
           key,
           // OTLP JSON carries an int64 as a string; a JSON number may arrive as either.
-          value.stringValue ?? String(value.intValue ?? value.doubleValue),
+          value.stringValue ?? value.boolValue ?? String(value.intValue ?? value.doubleValue),
         ]),
       ),
     }));

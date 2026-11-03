@@ -312,11 +312,15 @@ export function failureTail(output, limit = failureOutputLimit) {
   return `[... ${output.length - tail.length} earlier chars omitted ...]\n${tail}`;
 }
 
-export async function temporaryGatewayConfiguration(t, harnessId) {
+export async function temporaryGatewayConfiguration(
+  t,
+  harnessId,
+  configuration = createAdmittedRuntimeImageConfiguration(harnessId),
+) {
   const directory = await temporaryDirectory(t, "oce-runtime-image-config-");
 
   const path = join(directory, "openclaw.json");
-  await writeFile(path, JSON.stringify(createAdmittedRuntimeImageConfiguration(harnessId)));
+  await writeFile(path, JSON.stringify(configuration));
   return path;
 }
 
@@ -791,7 +795,8 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
 
 const manualReviewedCodexSeccompProfileSha256 =
   "71a2871a066a696a171049a15db3f065122c153cd11ef451cee3341ddbd9697f";
-const reviewedCodexSeccompProfileFilePattern = /^codex-0\.163\.0-alpha\.2-([a-f0-9]{64})\.json$/;
+const reviewedCodexSeccompProfileFilePattern =
+  /^codex-(0\.164\.0|0\.163\.0-alpha\.2)-([a-f0-9]{64})\.json$/;
 
 async function ciPreparedCodexSeccompProfile(ciStatePath) {
   if (ciStatePath === undefined || ciStatePath.length === 0) {
@@ -834,11 +839,16 @@ export async function reviewedCodexSeccompSecurityOptions({
   profile = process.env.OCC_TEST_CODEX_SECCOMP_PROFILE,
   ciStatePath = process.env.OPENCLAW_ENTERPRISE_CI_STATE,
   ci = process.env.CI,
+  codexVersion = "0.164.0",
 } = {}) {
   const securityOptions = ["--security-opt", "no-new-privileges"];
   if (profile === undefined || profile.length === 0) {
     const inCi = ci !== undefined && ci !== "" && ci !== "false" && ci !== "0";
-    if (inCi || (ciStatePath !== undefined && ciStatePath.length > 0)) {
+    if (
+      inCi ||
+      codexVersion !== "0.164.0" ||
+      (ciStatePath !== undefined && ciStatePath.length > 0)
+    ) {
       throw new Error(
         "OCC_TEST_CODEX_SECCOMP_PROFILE is required in CI: this case runs the Codex sandbox, so its lane must prepare the reviewed profile (prepare.codexSeccomp and requiredEnv in scripts/ci/test-suites).",
       );
@@ -851,11 +861,12 @@ export async function reviewedCodexSeccompSecurityOptions({
     false,
     "OCC_TEST_CODEX_SECCOMP_PROFILE must not select an unconfined seccomp profile.",
   );
-  const expected = basename(profile).match(reviewedCodexSeccompProfileFilePattern)?.[1];
+  const match = basename(profile).match(reviewedCodexSeccompProfileFilePattern);
   assert.ok(
-    expected,
-    "OCC_TEST_CODEX_SECCOMP_PROFILE must point to codex-0.163.0-alpha.2-<profile-sha256>.json.",
+    match?.[1] === codexVersion,
+    `OCC_TEST_CODEX_SECCOMP_PROFILE must point to codex-${codexVersion}-<profile-sha256>.json.`,
   );
+  const expected = match[2];
 
   let contents;
   try {
@@ -871,11 +882,16 @@ export async function reviewedCodexSeccompSecurityOptions({
   assert.equal(
     actual,
     expected,
-    `OCC_TEST_CODEX_SECCOMP_PROFILE digest ${actual} did not match the Codex 0.163.0-alpha.2 profile filename digest ${expected}.`,
+    `OCC_TEST_CODEX_SECCOMP_PROFILE digest ${actual} did not match the Codex ${codexVersion} profile filename digest ${expected}.`,
   );
 
   const prepared = await ciPreparedCodexSeccompProfile(ciStatePath);
   if (prepared === undefined) {
+    assert.equal(
+      codexVersion,
+      "0.164.0",
+      "A historical Codex seccomp profile must be prepared by image CI state.",
+    );
     assert.equal(
       expected,
       manualReviewedCodexSeccompProfileSha256,

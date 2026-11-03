@@ -43,7 +43,7 @@ owns their deployment, workspace resource rendering, and image import.
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `apps/controller/plugins/`                                | Checked-in managed plugin marketplace, portable packages, skills and OCE deployment rules.                   |
 | `apps/controller/src/`                                    | HTTP API, console serving, and API/worker entrypoints. `server.mjs` and `worker.mjs` start the processes.    |
-| `apps/controller/src/admission/`                          | Request admission and resource validation at the API boundary.                                               |
+| `apps/controller/src/admission/`                          | Request admission, resource validation and write deadlines at the API boundary.                              |
 | `apps/controller/src/http/`                               | Resource HTTP handlers and response projection, grouped by platform primitive.                               |
 | `apps/controller/src/auth/`                               | Authentication integrations.                                                                                 |
 | `apps/controller/src/composition/`                        | Runtime assembly and wiring of selected implementations.                                                     |
@@ -106,6 +106,8 @@ The common engine's `RepositoryBackend` protocol is separate from these interfac
 The worker Token Service owns GitHub App signing and provider-token custody.
 The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).
+
+The quickstart’s shared operator-session helpers, Agent onboarding, cluster installation fragments and executable examples live under `docs/snippets/openshell-quickstart/`. Platform setup and cleanup pages remain under `docs/guides/deploy/`; Add Git and Add Plugin each have one guide for all supported quickstart platforms.
 
 ## Deployment, tooling, and checks
 
@@ -181,6 +183,7 @@ use formatting, builds, and link checks; do not add or run tests solely for pros
 | `specs/README.md`                     | RFC index with linked numbers, names, and implementation statuses.                                 |
 | `specs/rfcs/`                         | Architectural proposals and decisions.                                                             |
 | `specs/plans/`                        | All implementation plans and historical delivery records; relevant RFCs are linked in frontmatter. |
+| `docs/snippets/`                      | Reusable Markdown and code examples embedded with `Snippet`; Markdown uses `published: false`.     |
 | `docs/assets/`                        | Documentation images and other shared assets.                                                      |
 
 Use stable feature names for living references. Follow

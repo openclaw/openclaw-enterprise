@@ -80,6 +80,7 @@ import {
   StoredCredentialSourceConfigError,
 } from "../../packages/occ/src/index.ts";
 import {
+  AGENT_DELETING,
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
   AUTHORIZATION_HEADER_REFUSED,
@@ -100,6 +101,7 @@ import {
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
   serviceKeyOutsideNamespace,
   storedCredentialSourceConfig,
+  dedicatedOpenClawSandboxRefusal,
 } from "../helpers/refusal-text.mjs";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
@@ -165,7 +167,7 @@ const cases = [
   [
     "an Agent being deleted",
     new AgentDeletingError(INTERNAL),
-    { status: 409, code: "AGENT_DELETING", message: "The requested Agent is being deleted." },
+    { status: 409, code: "AGENT_DELETING", message: AGENT_DELETING },
   ],
   [
     "a Namespace that is not ready",
@@ -269,13 +271,23 @@ const cases = [
     },
   ],
   [
-    "a repository profile a Credential Proxy cannot deliver names the supported profiles",
-    new RepositoryGitProfileUnsupportedError(),
+    "several repository bindings a Credential Proxy cannot deliver name the fix for all of them",
+    new RepositoryGitProfileUnsupportedError(2),
     {
       status: 409,
       code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
       message:
-        "A Credential Proxy delivers repository Git only for one git-write or github-installation binding, so this Agent's repository access cannot start. Keep one such binding, remove them, or use native prepared Git without a Sandbox or Proxy, then deploy again.",
+        "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+    },
+  ],
+  [
+    "one repository binding a Credential Proxy cannot deliver names the supported profiles",
+    new RepositoryGitProfileUnsupportedError(1),
+    {
+      status: 409,
+      code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+      message:
+        "A Credential Proxy cannot deliver this repository's Git access level. Use `github-repository` or `git-write` for it, or ask an administrator to use native prepared Git without a Sandbox or Proxy, then deploy again.",
     },
   ],
   [
@@ -474,15 +486,14 @@ const cases = [
     { status: 400, code: "INVALID_REQUEST", message: new NativeWorkerSupportError().message },
   ],
   [
-    // A fixed Installation shape: a permanent conflict naming the missing Driver, not an
-    // outage with generic text (finding 1609).
+    // A fixed Installation shape: a permanent conflict naming the missing Driver and the next
+    // step, not an outage with generic text (findings 1609, 3036).
     "an Installation without a Sandbox Driver that provisions dedicated OpenClaw",
-    new DedicatedOpenClawSandboxError(),
+    new DedicatedOpenClawSandboxError(true),
     {
       status: 409,
       code: "RESOURCE_CONFLICT",
-      message:
-        "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+      message: dedicatedOpenClawSandboxRefusal(true),
     },
   ],
   [
