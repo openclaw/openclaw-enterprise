@@ -116,7 +116,7 @@ bound or deployed.
 
 For manual sources, list up to eight distinct `{ "sourceId": "cs_…" }` entries in `credentialSources`. Omit the list to keep bindings or send `[]` to clear them.
 
-| When                       | Manual source permissions                                                                                                                                                                |
+| When                       | Manual source permissions                                                                                                                                                                  |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Create or update the Agent | The caller needs the corresponding `agent:create` or `agent:update` and `credential_source:operate` on each current and requested source, including removals.                              |
 | Deploy                     | The caller needs `agent:deploy`. Both the caller and the Agent service principal need `credential_source:operate` on each listed source. The worker checks both again before provisioning. |
