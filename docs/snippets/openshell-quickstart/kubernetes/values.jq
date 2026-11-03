@@ -23,7 +23,7 @@
     "secretName": "occ-database",
     "appUrlKey": "application-url",
     "migrationUrlKey": "migration-url",
-    "caSecretName": "occ-rds-ca",
+    "caSecretName": "occ-database-ca",
     "caKey": "ca.pem",
     "caMountPath": "/etc/openclaw/database-ca",
     "cidrs": $databaseCidrs,

@@ -107,6 +107,8 @@ The worker Token Service owns GitHub App signing and provider-token custody.
 The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).
 
+The quickstart’s shared operator-session helpers, Agent onboarding, cluster installation fragments and executable examples live under `docs/snippets/openshell-quickstart/`. Platform setup and cleanup pages remain under `docs/guides/deploy/`; Add Git and Add Plugin each have one guide for all supported quickstart platforms.
+
 ## Deployment, tooling, and checks
 
 | Path                                                     | Responsibility                                                                                   |

@@ -7,7 +7,6 @@ to deploy; while it provisions, drafts needing no new Secret or sign-in still sa
 [adopts](../namespaces.md#lifecycle) an existing namespace. Creating tokens requires Secret creation permission. Provisioning grants accepted
 Secret access; drafts also need Installation `administer` to grant Agent key access; members without it save drafts an administrator finishes. After deployment, [verify the same
 Agent and version](../../guides/deploy/production-agents.md#verify-production-workloads).
-The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
 
 ## Create an Agent
 

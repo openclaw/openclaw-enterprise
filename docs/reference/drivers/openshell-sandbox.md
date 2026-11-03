@@ -1,12 +1,12 @@
 # OpenShell SandboxDriver
 
-Use dedicated Codex/native OpenClaw with
-[Kubernetes Compute](kubernetes-compute.md) and the selected
-[Credential Gateway](openshell-credential-gateway.md). Development uses
-[`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6); APIs are
-unqualified for production. The pinned runtime declares native Dedicated support;
-see [qualification](#qualification-contract).
-Embedded OpenClaw is unsupported.
+Development uses [`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6) for dedicated Codex/native
+OpenClaw with [Kubernetes Compute](kubernetes-compute.md) and the
+[Credential Gateway](openshell-credential-gateway.md). OCC owns Agents, revisions,
+Namespaces, routing, credentials and authorization. The pinned runtime declares
+native Dedicated support. Embedded OpenClaw is unsupported; these APIs remain
+unqualified for production. See [containment](#openshell-containment-facets) and
+[qualification](#qualification-contract).
 
 ## Ownership model
 
@@ -22,14 +22,16 @@ routing, and the per-Agent Gateway. Sandbox owns:
   app-server containment policy.
 - `validateWorkspaceSetup` admits initial files for the projected workspace and
   a single main Agent or omitted roster; Compute retains storage/identity checks.
-- `ensureNamespace` saves preparation intent and immutable identities through
-  Compute's Namespace journal before reporting ready.
-- `provisionHarness` creates one Workspace Sandbox with its
-  [credential attachments and runtime provider](openshell-sandbox/harness-providers.md).
-  Dedicated Codex exposes its app-server; native OpenClaw connects outbound and
-  temporarily exposes status until node enrollment.
-  [Private workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution)
+- `ensureNamespace` binds the exact active Workspace and configured-resource
+  identities through Compute's Namespace journal before reporting ready.
+- `provisionHarness` creates one Workspace Sandbox, adds each Agent revision's
+  [credential attachments and runtime provider](openshell-sandbox/harness-providers.md),
+  validates any Codex route, and returns the stable Sandbox reference.
+  Codex exposes its app-server; native OpenClaw connects outbound and temporarily
+  exposes status until node enrollment. Private
+  [workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution)
   precedes execution.
+
 - OpenShell's controller creates and owns the Sandbox's Harness Pod.
 - `cleanup` derives the Agent revision's Sandbox identity even without its Pod.
   [Namespace cleanup](#namespace-cleanup) saves provider confirmation before teardown.
@@ -55,12 +57,12 @@ No `exec` facet or per-tool sandbox exists; Harness `exec` authorization is defe
 
 ## Configuration
 
-Select `drivers.sandbox` in Installation YAML with bundled Kubernetes Compute;
-installed Compute Drivers fail startup. Its [`openshell` Backend](../backends.md#openshell-gateway)
-must match this ID and the [Credential Gateway](openshell-credential-gateway.md#configure-the-driver).
-Backend `rootCertificatePath` supplies public CA trust for the Agent Gateway's WSS
-endpoint. Sandbox `gateway` rejects connection fields: `endpoint`, `scheme`,
-`serviceName`, `port`, `auth`, `requestTimeoutMs`, and `rootCertificatePath`.
+Select `drivers.sandbox` with bundled Kubernetes Compute; installed Compute
+Drivers fail startup. One [`openshell` Backend](../backends.md#openshell-gateway)
+must pair this ID and the [Credential Gateway](openshell-credential-gateway.md#configure-the-driver).
+Backend `rootCertificatePath` supplies WSS CA trust. Sandbox `gateway` rejects
+connection fields: `endpoint`, `scheme`, `serviceName`, `port`, `auth`,
+`requestTimeoutMs`, and `rootCertificatePath`.
 
 ```yaml
 drivers:
@@ -180,15 +182,16 @@ Gateway access. Its shared port exposes both control-plane RPCs and Harness traf
 NetworkPolicies cannot give Agent Gateways service-only authority. Use that mode
 only in owned disposable development clusters, never production.
 
-`gateway.operatorWorkspaceResources` takes the ServiceAccount, Role,
-RoleBinding, and NetworkPolicy manifests the workspace chart renders;
+`gateway.operatorWorkspaceResources` takes workspace-chart ServiceAccount, Role,
+RoleBinding, and NetworkPolicy manifests;
 `gateway.networkPolicyResources` takes namespaced provider networking manifests.
 In `operator` mode, `ensureNamespace` adds the Compute-owned namespace, OCC
 ownership metadata and a saved creation nonce. It binds each created UID before
 ready; later server-side apply uses UID and `resourceVersion` preconditions.
+With [preprovisioned placement](kubernetes-compute/preprovisioned-namespace.md),
+it compares declared resources and binds their UIDs without changing them.
 Startup rejects Secrets, ingress `_from` (write `from`), and fields the Kubernetes
-client would drop or change, such as a misspelled selector key or LimitRange
-`default`. Keep credentials and cluster-scoped objects out of both lists.
+client drops or changes, such as misspelled selector keys or LimitRange `default`. Keep credentials and cluster-scoped objects out of both lists.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount
@@ -321,7 +324,7 @@ instead of launching a weakened Harness.
 
 ## Namespace cleanup
 
-Compute's journal binds the selected Driver/Backend, endpoint/server trust,
+Compute's journal binds Driver/Backend, endpoint/server trust,
 Namespace UID, Workspace ID, and configured resource UIDs. Missing or changed
 bindings refuse cleanup. Operator resources use
 [preprovisioned binding authority](compute-namespace-lifecycle.md#driver-owned-data)
@@ -329,7 +332,7 @@ and remain retained.
 
 Cleanup checks ownership/UIDs before removing owned providers/profiles from the
 original Workspace. It confirms fresh `DeleteWorkspace` completion and removal,
-then commits its checkpoint before configured-resource or gateway teardown.
+then commits its checkpoint before resource or gateway teardown.
 No attempt or confirmed creation refusal needs no provider call. Accepted deletion,
 `ALREADY_ABSENT`, and `NOT_FOUND` are not completion receipts.
 
@@ -387,9 +390,8 @@ For `SANDBOX_GATEWAY_UNAUTHORIZED`, check `sandbox-gateway-identity`. Restore
 the Workspace role, controller authentication or gateway signing-key refresh
 before retrying. Transient failures retry within the worker's attempt budget.
 
-OpenShell can return `NOT_FOUND` for a resource hidden from the caller. To
-confirm absence, the Driver reads the Workspace with the controller's identity
-and reads the resource again. If a delete returns `NOT_FOUND` immediately after
+OpenShell can return `NOT_FOUND` for hidden resources. Confirming absence requires
+a controller-authorized Workspace read and another resource read. If a delete returns `NOT_FOUND` immediately after
 a read found the target, removal is unconfirmed (`SANDBOX_DELETION_UNCONFIRMED`).
 The worker logs `worker.harness-exposure-withdrawal-unconfirmed` during the
 exposure sweep and retries.
@@ -398,13 +400,12 @@ Revision cleanup checks the returned Sandbox name, Workspace, and Namespace,
 Agent, and revision annotations before deleting it. A same-name Sandbox assigned
 to another owner is refused; do not relabel it to force cleanup.
 
-If both Sandbox and Workspace records are missing, revision cleanup cannot confirm
-removal: stop, retirement and Agent deletion remain incomplete, including permanent
-provider loss. Unknown Workspace creation/deletion responses also remain blocked.
-Restore authoritative provider state/access before retrying; recreating an empty
-Workspace, relabeling a replacement, or deploying again does not prove earlier
-removal. There is no force-completion operation; retain the incomplete work for
-investigation.
+Missing Sandbox and Workspace records cannot confirm revision cleanup, even after
+permanent provider loss: stop, retirement and Agent deletion stay incomplete.
+Unknown Workspace creation/deletion also blocks. Restore authoritative state/access
+before retrying. Empty replacement Workspaces, relabeling or redeployment cannot
+prove prior removal. No force-completion operation exists; retain incomplete work
+for investigation.
 
 Namespace setup/cleanup `PERMISSION_DENIED` or `UNAUTHENTICATED` raises
 `SandboxNamespaceRefusedError`; Compute marks it permanent. Setup records the

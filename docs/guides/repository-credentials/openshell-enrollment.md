@@ -170,7 +170,7 @@ bodyless installation GET. It creates no admission and requests no token.
 
 Set `ISSUER_CA_PATH` to `repository.preparedGitHub.issuerCaPath`, or leave it
 empty if that setting is absent. The example uses the fragment's standard mount
-paths and GitHub.com. Set `NAMESPACE_ID` to the OCE Namespace ID approved in the
+paths and GitHub.com. Use `namespace` from the quickstart session for the OCE Namespace ID approved in the
 registry. Set `WORKER_POD` to the current worker Pod and `PLATFORM_NS`
 to its Kubernetes namespace, then run from the matching release checkout:
 
@@ -179,7 +179,7 @@ kubectl --context "$CONTEXT" -n "$PLATFORM_NS" get pod "$WORKER_POD" \
   -o jsonpath='{.metadata.uid}{"\n"}{.spec.containers[?(@.name=="worker")].image}{"\n"}{.status.containerStatuses[?(@.name=="worker")].imageID}{"\n"}'
 
 kubectl --context "$CONTEXT" -n "$PLATFORM_NS" exec -i "$WORKER_POD" -c worker -- \
-  node --input-type=module - "$NAMESPACE_ID" application "${ISSUER_CA_PATH:-}" \
+  node --input-type=module - "$namespace" "${ref:-application}" "${ISSUER_CA_PATH:-}" \
   < docs/assets/openshell-quickstart/verify-github-installation.mjs
 ```
 

@@ -10,7 +10,7 @@ const server = createServer(
     minVersion: "TLSv1.2",
   },
   (client) => {
-    const upstream = connect(8080, "openclaw-enterprise-api.oce-system.svc.cluster.local");
+    const upstream = connect(8080, "openclaw-enterprise-api");
     const close = () => {
       client.destroy();
       upstream.destroy();
