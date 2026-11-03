@@ -1,10 +1,12 @@
 import type { Preview } from "@storybook/html-vite";
 
-const sectionOrder: string[] = ["Overview", "Pages", "Components", "Flows"];
+type ConsolePreview = Preview & {
+  parameters: { options: { storySort: { order: string[] } } };
+};
 
 export default {
   parameters: {
     layout: "fullscreen",
-    options: { storySort: { order: sectionOrder } },
+    options: { storySort: { order: ["Overview", "Pages", "Components", "Flows"] } },
   },
-} satisfies Preview;
+} satisfies ConsolePreview;
