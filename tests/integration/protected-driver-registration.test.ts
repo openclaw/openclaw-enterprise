@@ -20,9 +20,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
-import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import type { RepositorySelectionMode } from "../helpers/repository-selection-load.ts";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:https";
@@ -445,25 +443,24 @@ test("protected Git resolves repository and installation grants without granting
   const directory = await temporaryDirectory(t, "repository-delivery-");
   const registryPath = join(directory, "registry.json");
   await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
-  const compose = () =>
+  const compose = (sessionDurationSeconds: unknown = 600, selectedRegistryPath = registryPath) =>
     loadRepositoryPolicy({
       backend: {
         id: registry.backendId,
         type: "github",
-        configuration: { registryPath },
+        configuration: { registryPath: selectedRegistryPath },
         drivers: { repo: "repo" },
       },
       selection: {
         id: "repo",
         implementation: "github",
-        definition: GitHubRepositoryPolicy,
-        configuration: { sessionDurationSeconds: 600 },
+        configuration: { sessionDurationSeconds },
       },
-      policyConfiguration: requireConfiguration<{ readonly sessionDurationSeconds: number }>(
-        GitHubRepositoryPolicy,
-        { sessionDurationSeconds: 600 },
-      ),
     });
+  // Invalid selected policy must fail before an inaccessible registry can hide the error.
+  await assert.rejects(compose("600", join(registryPath, "inaccessible")), {
+    name: "ConfigurationValidationError",
+  });
   const access = await compose();
   const resolve = access.resolveRepositoryDelivery;
   assert.deepEqual(

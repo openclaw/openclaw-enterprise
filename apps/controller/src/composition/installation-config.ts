@@ -1222,10 +1222,6 @@ export async function loadInstallationConfiguration(options: {
       const policy = await loadRepositoryPolicy({
         backend: repositoryBackend,
         selection: repoSelection,
-        policyConfiguration: requireConfiguration<{ readonly sessionDurationSeconds: number }>(
-          GitHubRepositoryPolicy,
-          repoSelection.configuration,
-        ),
       });
       repositoryRuntime = Object.freeze({
         ...policy,

@@ -14,7 +14,10 @@ import { createPostgresControllerAuth } from "../../apps/controller/src/auth/ind
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { composeRepositoryPolicy } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
+import {
+  composeRepositoryPolicy,
+  repositoryPolicyOwner,
+} from "../../apps/controller/src/composition/repository-credentials/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -132,17 +135,16 @@ test(
         drivers: { repo: "standing-repo-driver" },
       };
       const composed = composeRepositoryPolicy(
-        {
+        repositoryPolicyOwner({
           backend,
           selection: {
             id: "standing-repo-driver",
             implementation: "github",
             configuration: {},
-            definition: GitHubRepositoryPolicy,
           },
-          policyConfiguration: { sessionDurationSeconds: 3600 },
-        },
+        }),
         validateGitHubRepositoryRegistry(input),
+        3600,
       );
       const options = {
         state,
