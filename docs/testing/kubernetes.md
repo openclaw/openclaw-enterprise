@@ -212,7 +212,7 @@ unavailable, add this line yourself before preparation and remove it afterward:
 echo '127.0.0.1 keycloak.oce.localhost keycloak.oce.test' | sudo tee -a /etc/hosts
 ```
 
-Both names must resolve to exactly `127.0.0.1`, not `::1`. Token requests use
+Both names must resolve to `127.0.0.1`. Token requests use
 `keycloak.oce.test` because OpenShell refuses `localhost` token hosts. For
 preparation errors, check the named step: image pull, port availability,
 placeholders, hosts resolution, or the printed Keycloak log for readiness errors.

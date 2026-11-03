@@ -545,6 +545,14 @@
       "tag": "0068_agent_connections",
       "breakpoints": true,
       "sha256": "17db0511c74fe8d73c6b24822ec706b5c9d5342d7e9814fd79670c53a84f991a"
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787000000069,
+      "tag": "0069_connection_revocations",
+      "breakpoints": true,
+      "sha256": "027474f9f1de239e93adb393731123b0d0152581535b76eff9009ccdc6a344ff"
     }
   ],
   "initialSchemaStates": {
@@ -602,6 +610,10 @@
     "2bb029e0d030370e862524573b07648f0cf864934d96ee6b7432c405375dda0e": [
       "c58120c65213c60573176d3fa814e43d0faac23b0eb3188a92ace1596fba84f3",
       "d98fe97cd47f936b2c3515d7f72bb20904a5a9538fd9658a01c17c0c9a9bc7bb"
+    ],
+    "04f001f8584b25271e4c0fc86786b8f8f3a05bc89e26ac72c996bddfc85d1dc0": [
+      "ff0f9d57feac74d5a920860b755b1ce2930e17e4396c7a9bc81593dc0e2c8bf2",
+      "7e2aa1e9b26bf66c2370f591eab7ce3d76b7c69b80f885a789485ec7d2c41bce"
     ]
   },
   "catalogs": {
@@ -610,7 +622,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "2bb029e0d030370e862524573b07648f0cf864934d96ee6b7432c405375dda0e",
+    "completed": "04f001f8584b25271e4c0fc86786b8f8f3a05bc89e26ac72c996bddfc85d1dc0",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -648,7 +660,8 @@
     "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
     "preInstallationAccessBindings": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40",
     "preConnectionTemplates": "b1784893788a082a9ef792b11d3695e36234b211cfc56168e19f739607092257",
-    "preAgentConnections": "16aae9888a38f320ae3301f8d80cd52ecabb20c3770ef166b4acaae884a2735f"
+    "preAgentConnections": "16aae9888a38f320ae3301f8d80cd52ecabb20c3770ef166b4acaae884a2735f",
+    "preConnectionRevocations": "2bb029e0d030370e862524573b07648f0cf864934d96ee6b7432c405375dda0e"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

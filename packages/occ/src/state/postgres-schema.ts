@@ -2384,6 +2384,8 @@ export const agentConnections = occSchema.table(
     namespaceId: text("namespace_id").notNull(),
     credentialSourceId: text("credential_source_id").notNull(),
     agentId: text("agent_id"),
+    revocationRequestedBy: text("revocation_requested_by"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     ownerPrincipalId: text("owner_principal_id")
       .notNull()
       .references(() => iamIdentities.id, { onDelete: "restrict", onUpdate: "restrict" }),
@@ -2407,6 +2409,13 @@ export const agentConnections = occSchema.table(
     })
       .onDelete("restrict")
       .onUpdate("restrict"),
+    check(
+      "agent_connections_revocation_requested",
+      sql`${table.revokedAt} IS NULL OR ${table.revocationRequestedBy} IS NOT NULL`,
+    ),
+    index("agent_connections_revoking_idx")
+      .on(table.credentialSourceId)
+      .where(sql`${table.revocationRequestedBy} IS NOT NULL`),
     index("agent_connections_namespace_owner_idx").on(table.namespaceId, table.ownerPrincipalId),
     index("agent_connections_template_idx").on(
       table.connectionTemplateId,

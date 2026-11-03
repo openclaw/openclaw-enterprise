@@ -268,6 +268,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 67) {
     return "preAgentConnections";
   }
+  if (count === 68) {
+    return "preConnectionRevocations";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

@@ -1726,7 +1726,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/connection-templates`](#get-namespacesnamespaceidconnectiontemplates) | List connection templates the caller may connect in this Namespace |
 | [`GET /namespaces/{namespaceId}/connections`](#get-namespacesnamespaceidconnections) | List completed connections the caller owns or can use in this Namespace |
 | [`POST /namespaces/{namespaceId}/connections`](#post-namespacesnamespaceidconnections) | Start consent for a reusable account in this Namespace |
-| [`DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidconnectionscredentialsourceid) | Disconnect an unused saved account from this Namespace |
+| [`DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidconnectionscredentialsourceid) | Revoke a saved account and withdraw access from every Agent |
 | [`GET /oauth/callback`](#get-oauthcallback) | Complete a browser connection for the signed-in person who started it |
 
 #### `GET /connection-templates`
@@ -2418,11 +2418,13 @@ Start consent for a reusable account from this Agent
 
 **Operation ID:** `startAgentConnection`
 
-**Permissions:** Requires update permission on the requested Agent.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires use permission on the requested ConnectionTemplate.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
+| `read` | `agent` | `requested` |
+| `use` | `connection_template` | `request_body` |
 
 ##### Parameters
 
@@ -2497,11 +2499,12 @@ Detach an account from this Agent and withdraw its access
 
 **Operation ID:** `disconnectAgentConnection`
 
-**Permissions:** Requires update permission on the requested Agent.
+**Permissions:** Requires update permission on the requested Agent. Requires operate permission on the requested Agent when a revision must withdraw the source.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
+| `operate` | `agent` | `requested` |
 
 ##### Parameters
 
@@ -2555,11 +2558,12 @@ Attach a completed account and grant this Agent access to its source
 
 **Operation ID:** `attachAgentConnection`
 
-**Permissions:** Requires update permission on the requested Agent.
+**Permissions:** Requires update permission on the requested Agent. Requires operate permission on this CredentialSource unless the caller owns the consent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
+| `operate` | `credential_source` | `requested` |
 
 ##### Parameters
 
@@ -2772,11 +2776,12 @@ Start consent for a reusable account in this Namespace
 
 **Operation ID:** `startNamespaceConnection`
 
-**Permissions:** Requires read permission on the requested Namespace.
+**Permissions:** Requires read permission on the requested Namespace. Requires use permission on the requested ConnectionTemplate.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `read` | `namespace` | `requested` |
+| `use` | `connection_template` | `request_body` |
 
 ##### Parameters
 
@@ -2846,15 +2851,15 @@ Example response
 
 <span id="delete-namespacesnamespaceidconnectionscredentialsourceid"></span>
 
-Disconnect an unused saved account from this Namespace
+Revoke a saved account and withdraw access from every Agent
 
 **Operation ID:** `disconnectNamespaceConnection`
 
-**Permissions:** Requires read permission on the requested Namespace.
+**Permissions:** Requires delete permission on this CredentialSource unless the caller owns the consent.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `read` | `namespace` | `requested` |
+| `delete` | `credential_source` | `requested` |
 
 ##### Parameters
 

@@ -2014,6 +2014,7 @@ test(
       [65, "preInstallationAccessBindings"],
       [66, "preConnectionTemplates"],
       [67, "preAgentConnections"],
+      [68, "preConnectionRevocations"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

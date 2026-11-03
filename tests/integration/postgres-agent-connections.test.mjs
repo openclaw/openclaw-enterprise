@@ -11,6 +11,8 @@ import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/d
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -76,6 +78,8 @@ async function createConnectionClient(secrets, realm, clientId) {
     publicClient: false,
     secret,
     standardFlowEnabled: true,
+    // This template requests only openid. Suppress the realm-wide default profile/email grants.
+    defaultClientScopes: [],
     directAccessGrantsEnabled: false,
     redirectUris: [redirectUri],
     attributes: { "pkce.code.challenge.method": "S256" },
@@ -569,6 +573,16 @@ test(
       });
       assert.equal(permission.statusCode, 201, permission.body);
     }
+    const bypassAttach = await inject("PATCH", agentPath(agentC), {
+      configurationId: agentC.configurationId,
+      credentialSources: [{ sourceId: credentialSourceId }],
+    });
+    assert.equal(bypassAttach.statusCode, 409, bypassAttach.body);
+    const bypassDetach = await inject("PATCH", agentPath(agentB), {
+      configurationId: agentB.configurationId,
+      credentialSources: [],
+    });
+    assert.equal(bypassDetach.statusCode, 409, bypassDetach.body);
     const readOnlyAttach = await carol.request("POST", attachment(agentC));
     assert.equal(readOnlyAttach.statusCode, 403, readOnlyAttach.body);
     const foreign = await inject(
@@ -638,12 +652,115 @@ test(
     );
     const readOnlyDelete = await carol.request("DELETE", account);
     assert.equal(readOnlyDelete.statusCode, 403, readOnlyDelete.body);
-    const inUse = await bob.request("DELETE", account);
-    assert.equal(inUse.statusCode, 409, inUse.body);
-    assert.equal((await inject("DELETE", attachment(agentB))).statusCode, 200);
+    const sandbox = {
+      id: "openshell-sandbox",
+      capability: "sandbox",
+      implementation: "openshell",
+      displayName: "OpenShell test Sandbox",
+      facets: ["networking"],
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+      async cleanup() {},
+    };
+    controller.registerDriver(sandbox);
+    controller.selectDriver("sandbox", sandbox.id);
+    const config = await inject("POST", `/namespaces/${namespace.id}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-4.1"),
+    });
+    assert.equal(config.statusCode, 201, config.body);
+    const prepareB = await inject("PATCH", agentPath(agentB), {
+      configurationId: config.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "runtime" },
+    });
+    assert.equal(prepareB.statusCode, 200, prepareB.body);
+    const admission = await inject("POST", `${agentPath(agentB)}/deploy`);
+    assert.ok([201, 202].includes(admission.statusCode), admission.body);
+    const bRevision = admission.json().data;
+    const readWithdrawal = () =>
+      state.read((view) =>
+        view.credentialSources.findCredentialWithdrawal(
+          namespace.id,
+          bRevision.id,
+          credentialSourceId,
+        ),
+      );
+    assert.deepEqual(
+      bRevision.credentialSources.map((binding) => binding.sourceId),
+      [credentialSourceId],
+    );
+    assert.equal(await readWithdrawal(), undefined);
+    const selected = await inject("DELETE", attachment(agentB));
+    assert.equal(selected.statusCode, 200, selected.body);
+    assert.equal(selected.json().data.withdrawalRequested, true);
+    assert.equal((await readWithdrawal()).state, "pending");
+    assert.equal((await inject("POST", attachment(agentB))).statusCode, 204);
+
+    // The owner can globally revoke the grant even while B has a pending revision and Bob
+    // cannot edit B. Fail its first external removal after the durable revocation commits.
+    const originalRemoval = openShell.client.deleteProviderRefresh;
+    openShell.client.deleteProviderRefresh = async () => {
+      throw new Error("injected gateway outage");
+    };
+    const interrupted = await bob.request("DELETE", account);
+    assert.ok(interrupted.statusCode >= 500, interrupted.body);
+    openShell.client.deleteProviderRefresh = originalRemoval;
+    const retired = () =>
+      state.read((view) =>
+        view.agentConnections.findAgentConnection(namespace.id, credentialSourceId),
+      );
+    const startedRetirement = await retired();
+    assert.equal(startedRetirement.revocationRequestedBy, bob.principalId);
+    assert.equal(startedRetirement.revokedAt, undefined);
+    assert.deepEqual(await attachedTo(agentB), []);
+    assert.deepEqual((await bob.request("GET", namespaceConnections)).json().data, []);
+    const stillBlocked = await inject("POST", attachment(agentB));
+    assert.equal(stillBlocked.statusCode, 409, stillBlocked.body);
+    const ordinaryDelete = await inject(
+      "DELETE",
+      `/namespaces/${namespace.id}/credential-sources/${credentialSourceId}`,
+    );
+    assert.equal(ordinaryDelete.statusCode, 409, ordinaryDelete.body);
     const revoked = await bob.request("DELETE", account);
     assert.equal(revoked.statusCode, 204, revoked.body);
-    assert.deepEqual((await bob.request("GET", namespaceConnections)).json().data, []);
+    assert.ok(
+      (await retired()).revokedAt,
+      "retain the confirmed revocation for the pending revision",
+    );
+    assert.equal((await readWithdrawal()).requestedBy, bob.principalId);
+    assert.equal(
+      [...openShell.refresh.values()].some((entry) => entry.provider === configured.provider),
+      false,
+    );
+    assert.ok(
+      !(await state.read((view) => view.iamPolicy.listAccessBindings(namespace.id))).some(
+        (binding) =>
+          binding.resourceId === credentialSourceId &&
+          binding.subjectId === agentB.servicePrincipalId,
+      ),
+    );
+    // Replaying maintenance for a retired account is safe while withdrawal still holds it.
+    await controller.finishConnectionRevocation(namespace.id, credentialSourceId);
+    assert.equal((await readWithdrawal()).state, "pending");
+
+    // Model the worker's persisted confirmation. Its provider enforcement and retry
+    // paths are exercised in postgres-worker-agent-revision-credential-sources.test.mjs.
+    await controller.transact((unit) =>
+      unit.credentialSources.markCredentialWithdrawalRevoked(
+        namespace.id,
+        bRevision.id,
+        credentialSourceId,
+        new Date().toISOString(),
+      ),
+    );
+    await controller.finishConnectionRevocation(namespace.id, credentialSourceId);
+    assert.equal(await retired(), undefined);
+    assert.equal(
+      await state.read((view) =>
+        view.credentialSources.findCredentialSource(namespace.id, credentialSourceId),
+      ),
+      undefined,
+    );
 
     // The Agent-scoped start route keeps its browser return context. Even that route
     // cannot attach an account when the provider reports that consent was denied.

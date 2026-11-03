@@ -53,6 +53,7 @@ import type {
   SandboxDriver,
   SandboxHarnessObservation,
   CredentialGatewayDriver,
+  CredentialRefreshDriver,
   SecretBindings,
   SecretDriver,
   ResolvedHarnessAuth,
@@ -1179,6 +1180,9 @@ export class ControllerWorker {
   private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
   private readonly credentialGateway: CredentialGatewayDriver | undefined;
+  private readonly credentialRefresh: CredentialRefreshDriver | undefined;
+  private connectionRevocationCursor: string | undefined;
+  private connectionRevocationScanAfter = 0;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly preparedTokens:
@@ -1329,6 +1333,7 @@ export class ControllerWorker {
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
+    this.credentialRefresh = drivers?.credentialRefreshDriver;
     this.proxyDriver =
       this.protectedDriver?.require("credential_proxy") ??
       drivers?.proxyDriver ??
@@ -1451,6 +1456,7 @@ export class ControllerWorker {
       this.configuration,
       ...(protectedDriver ? [] : [this.sandbox, this.proxyDriver]),
       this.credentialGateway,
+      this.credentialRefresh,
       this.iam,
       this.secretDriver,
       this.repositoryPolicy,
@@ -1534,6 +1540,7 @@ export class ControllerWorker {
         ) {
           this.claimedPassesSinceSweep = 0;
           await this.withdrawPendingHarnessExposure();
+          await this.sweepConnectionRevocation();
         }
         const claim = await this.queue.claim();
         this.claimedLastPass = claim !== undefined;
@@ -1649,6 +1656,38 @@ export class ControllerWorker {
       .finally(() => {
         this.pendingProgress = false;
       });
+  }
+
+  /** Retire one account per maintenance pass, then wait before rescanning the same IDs. */
+  private async sweepConnectionRevocation(): Promise<void> {
+    if (
+      !this.credentialRefresh?.completeBrowserAuthorization ||
+      !this.provisioningController ||
+      this.connectionRevocationScanAfter > Date.now()
+    ) {
+      return;
+    }
+    try {
+      const [account] = await this.state.read((view) =>
+        view.agentConnections.listRevokingConnections(
+          this.installation!.id,
+          1,
+          this.connectionRevocationCursor,
+        ),
+      );
+      if (!account) {
+        this.connectionRevocationCursor = undefined;
+        this.connectionRevocationScanAfter = Date.now() + 30_000;
+        return;
+      }
+      this.connectionRevocationCursor = account.credentialSourceId;
+      await this.provisioningController.finishConnectionRevocation(
+        account.namespaceId,
+        account.credentialSourceId,
+      );
+    } catch {
+      this.emit({ event: "worker.error", code: "CONNECTION_REVOCATION_PENDING" });
+    }
   }
 
   private async health(force: boolean): Promise<void> {
@@ -3296,6 +3335,7 @@ export class ControllerWorker {
         const pendingWithdrawals: {
           readonly withdrawal: Readonly<CredentialWithdrawal>;
           readonly source: Readonly<CredentialSource>;
+          readonly retiringAccount: boolean;
         }[] = [];
         for (const sourceId of revisionCredentialSourceIds(found)) {
           const withdrawal = await view.credentialSources.findCredentialWithdrawal(
@@ -3309,7 +3349,15 @@ export class ControllerWorker {
           );
           // A source's deletion removes its withdrawals, so it has nothing left to revoke.
           if (withdrawal?.state === "pending" && source !== undefined) {
-            pendingWithdrawals.push({ withdrawal, source });
+            const retiring =
+              source.state === "deleting"
+                ? await view.agentConnections.findAgentConnection(source.namespaceId, source.id)
+                : undefined;
+            pendingWithdrawals.push({
+              withdrawal,
+              source,
+              retiringAccount: retiring?.revocationRequestedBy !== undefined,
+            });
           }
         }
         return { revision: found, pending: pendingWithdrawals };
@@ -3332,17 +3380,14 @@ export class ControllerWorker {
         });
         return;
       }
-      // Requests for different sources share this claim, so each withdrawal's own requester
-      // must still operate the Agent before its source is detached. The claim actor's
-      // authority never stands in for another requester's.
+      // The completed account's durable, exact-source disconnect intent authorizes
+      // its own withdrawal across Agents. Every other requester still needs Agent operate.
       const allowed: typeof pending = [];
       for (const entry of pending) {
-        const denial = await this.authorizeAgentAction(
-          claim,
-          agent,
-          "operate",
-          entry.withdrawal.requestedBy,
-        );
+        const requester = entry.withdrawal.requestedBy;
+        const denial = entry.retiringAccount
+          ? undefined
+          : await this.authorizeAgentAction(claim, agent, "operate", requester);
         if (denial === undefined) {
           allowed.push(entry);
         } else {
@@ -5174,26 +5219,60 @@ export class ControllerWorker {
     // (`resolveRevisionSecretContext`), so a grant removed from it must not fail maintenance
     // before maintenance re-queues the withdrawal itself.
     const sourceIds = revisionCredentialSourceIds(revision);
-    const { withdrawn, connected, attached } = await this.state.read(async view => {
-      const withdrawals = await view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id);
-      const connected = new Set<string>();
-      for (const id of sourceIds) {
-        if (await view.agentConnections.findAgentConnection(revision.namespaceId, id)) connected.add(id);
+    const { withdrawn, connections } = await this.state.read(async (view) => {
+      const withdrawals = await view.credentialSources.listCredentialWithdrawals(
+        revision.namespaceId,
+        revision.id,
+      );
+      // Browser connections are refresh-token sources. Other types keep their existing
+      // caller and Agent authorization without reading any account metadata.
+      const snapshots = revision.credentialSources ?? [];
+      const oauthIds = new Set(
+        snapshots
+          .filter((snapshot) => snapshot.sourceType === "oauth2-refresh-token")
+          .map((snapshot) => snapshot.sourceId),
+      );
+      if (
+        revision.harnessAuth.method === "credential_source" &&
+        revision.harnessAuth.sourceType === "oauth2-refresh-token"
+      ) {
+        oauthIds.add(revision.harnessAuth.sourceId);
       }
-      const current = connected.size ? await view.agents.findAgent(agent.namespaceId, agent.id) : undefined;
+      const connections = new Map<string, boolean>();
+      if (oauthIds.size > 0) {
+        const current = await view.agents.findAgent(agent.namespaceId, agent.id);
+        const attached = new Set(current?.credentialSources?.map((binding) => binding.sourceId));
+        for (const id of oauthIds) {
+          const account = await view.agentConnections.findAgentConnection(revision.namespaceId, id);
+          if (account) {
+            const source = await view.credentialSources.findCredentialSource(
+              revision.namespaceId,
+              id,
+            );
+            connections.set(
+              id,
+              attached.has(id) &&
+                account.revocationRequestedBy === undefined &&
+                source?.state === "ready",
+            );
+          }
+        }
+      }
       return {
-        withdrawn: new Set(withdrawals.map(item => item.credentialSourceId)),
-        connected,
-        attached: new Set(current?.credentialSources?.map(item => item.sourceId)),
+        withdrawn: new Set(withdrawals.map((item) => item.credentialSourceId)),
+        connections,
       };
     });
     for (const sourceId of sourceIds) {
-      if (withdrawn.has(sourceId)) continue;
-      if (connected.has(sourceId) && !attached.has(sourceId)) {
-        return {outcome:"permanent", code:"CONNECTION_DETACHED"};
+      if (withdrawn.has(sourceId)) {
+        continue;
       }
-      const principals = connected.has(sourceId)
-        ? [revision.servicePrincipalId] : [claim.actorId, revision.servicePrincipalId];
+      if (connections.get(sourceId) === false) {
+        return { outcome: "permanent", code: "CONNECTION_DETACHED" };
+      }
+      const principals = connections.has(sourceId)
+        ? [revision.servicePrincipalId]
+        : [claim.actorId, revision.servicePrincipalId];
       for (const principalId of principals) {
         const sourceAuthorization: AuthorizationRequest = {
           principalId,

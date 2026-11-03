@@ -97,7 +97,8 @@ var commandPermissions = map[string]commandPermission{
 	"connection-template bindings":             {[]string{"listInstallationAccessBindings"}, []string{"installation.administer"}, ""},
 	"connection-template unbind":               {[]string{"deleteInstallationAccessBinding"}, []string{"installation.administer"}, ""},
 	"agent connection list":                    {[]string{"listAgentConnections"}, []string{"agent.read"}, ""},
-	"agent connection disconnect":              {[]string{"disconnectAgentConnection"}, []string{"agent.update"}, "Agent operate to withdraw it from a serving revision"},
+	"agent connection attach":                  {[]string{"attachAgentConnection"}, []string{"agent.update"}, "ownership of the saved account or operate on its credential source"},
+	"agent connection detach":                  {[]string{"disconnectAgentConnection"}, []string{"agent.update"}, "Agent operate to withdraw it from an admitted revision"},
 }
 
 // permissionKinds names OCC resource kinds as the console and docs do.

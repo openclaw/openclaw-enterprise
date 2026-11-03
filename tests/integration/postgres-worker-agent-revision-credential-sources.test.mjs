@@ -1163,6 +1163,118 @@ revisionTest(
 );
 
 revisionTest(
+  "a delegated account is dispatched for an Agent and its owner can retire only that account",
+  async (f) => {
+    const deployer = `deployer-${randomUUID()}`;
+    const accountOwner = `account-owner-${randomUUID()}`;
+    const operator = `operator-${randomUUID()}`;
+    const agent = await f.agent("connected", {
+      auth: "runtime",
+      nonModelSources: 1,
+      toolSourceType: "oauth2-refresh-token",
+    });
+    const other = await f.agent("independent", { auth: "runtime", nonModelSources: 1 });
+    const connected = toolSources(agent)[0].sourceId;
+    const ordinary = toolSources(other)[0].sourceId;
+    await f.copyActorGrants(deployer, { withoutActions: ["administer", "operate"] });
+    await f.copyActorGrants(accountOwner);
+    await f.copyActorGrants(operator);
+    // Reproduce the completed OAuth callback's durable rows without replaying browser consent.
+    await f.state.transact(async (unit) => {
+      const templateId = `ctp_${randomUUID()}`;
+      const clientRegistrationId = `ccr_${randomUUID()}`;
+      const issuer = "https://issuer.example.test";
+      const createdAt = new Date().toISOString();
+      await unit.connectionTemplates.createClientRegistration({
+        id: clientRegistrationId,
+        issuer,
+        clientId: "worker",
+        credentialRefreshDriverId: "refresh",
+        createdAt,
+      });
+      await unit.connectionTemplates.createConnectionTemplate({
+        id: templateId,
+        displayName: "Worker connection",
+        createdAt,
+        current: {
+          templateId,
+          version: 1,
+          clientRegistrationId,
+          createdAt,
+          issuer,
+          clientId: "worker",
+          authorizationUrl: issuer + "/authorize",
+          tokenUrl: issuer + "/token",
+          scopes: ["read"],
+          authorizationParameters: {},
+          endpoint: { host: "api-0.example.com", port: 443, path: "/**", access: "full" },
+          envVar: "TOOL_TOKEN_0",
+        },
+      });
+      await unit.agentConnections.createAgentConnection({
+        namespaceId: f.namespace.id,
+        credentialSourceId: connected,
+        ownerPrincipalId: accountOwner,
+        connectionTemplateId: templateId,
+        connectionTemplateVersion: 1,
+        createdAt,
+      });
+    });
+    const connectedRevision = await f.revision(agent, 1, { actorId: deployer });
+    const otherRevision = await f.revision(other, 1);
+    const dispatched = new Map();
+    const withdrawn = [];
+    const compute = {
+      ...revokingCompute(f, withdrawn),
+      async prepareRevision(revision, context) {
+        dispatched.set(
+          revision.id,
+          context.credentialSources.map(({ id }) => id),
+        );
+        return f.compute.prepareRevision(revision, context);
+      },
+    };
+    await startWithGateway(f, compute);
+    await f.work(connectedRevision, "succeeded");
+    await f.work(otherRevision, "succeeded");
+    assert.deepEqual(dispatched.get(connectedRevision.id), [connected]);
+    assert.deepEqual(dispatched.get(otherRevision.id), [ordinary]);
+    await f.stop();
+
+    await removeAccessBindings(f, accountOwner);
+    const gateway = withCredentialGateway({
+      installation: { drivers: {} },
+    }).credentialGatewayDriver;
+    f.controller.registerDriver(gateway);
+    f.controller.selectDriver("credential_gateway", gateway.id);
+    const placement = f.controller.registerDriver({
+      ...f.compute,
+      id: "connected-account-compute",
+      resolveSandboxNamespace: async (namespace) => namespace,
+    });
+    f.controller.selectDriver("compute", placement.id);
+    await f.controller.disconnectNamespaceConnection(accountOwner, f.namespace.id, connected);
+    // A later operator replays the account withdrawal, also requests an ordinary withdrawal,
+    // and then loses access. Only the owner's durable account revocation still authorizes cleanup.
+    await requestWithdrawal(f, agent, connected, operator);
+    await requestWithdrawal(f, other, ordinary, operator);
+    assert.equal((await findWithdrawal(f, connectedRevision, connected)).requestedBy, operator);
+    await removeAccessBindings(f, operator);
+    const [retirement] = await withdrawalAttempts(f, connectedRevision);
+    const [independent] = await withdrawalAttempts(f, otherRevision);
+    await startWithGateway(f, compute);
+    await f.work(retirement, "succeeded");
+    await f.work(independent, "failed_permanent");
+    assert.deepEqual(withdrawn, [[connectedRevision.id, connected]]);
+    assert.equal((await findWithdrawal(f, connectedRevision, connected)).state, "revoked");
+    assert.equal(
+      (await findWithdrawal(f, otherRevision, ordinary)).lastReason,
+      "AUTHORIZATION_DENIED",
+    );
+  },
+);
+
+revisionTest(
   "non-model sources reach Compute at dispatch and a retry omits the ones withdrawn meanwhile",
   async (fixture) => {
     const owner = await agentWithHarnessAndToolSources(fixture, "withdraw-tool-sources", 2);

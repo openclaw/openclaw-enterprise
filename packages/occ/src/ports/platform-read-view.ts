@@ -39,6 +39,8 @@ export function createPlatformReadView(
     agentConnections: bindRepository(repositories.agentConnections, lifetime, [
       "findAgentConnection",
       "listNamespaceConnections",
+      "listRevokingConnections",
+      "hasPendingConnectionWithdrawals",
       "listAgentConnections",
       "findConnectionSession",
     ]),

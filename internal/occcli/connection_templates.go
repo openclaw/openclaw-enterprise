@@ -19,9 +19,11 @@ func (app *application) connectionTemplateCommand() *cobra.Command {
 	columns := []column{
 		{title: "ID", key: "id"},
 		{title: "NAME", key: "displayName"},
+		{title: "CALLBACK URI", key: "redirectUri"},
 		{title: "CREATED", key: "createdAt"},
 	}
 
+	detailColumns := append(columns, column{title: "APPROVED VERSION", key: "current"})
 	list := &cobra.Command{
 		Use:   "list",
 		Short: "List connection templates",
@@ -52,7 +54,7 @@ func (app *application) connectionTemplateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printStructured(template)
+			return app.printItems(template, false, detailColumns)
 		},
 	}
 
@@ -76,7 +78,7 @@ func (app *application) connectionTemplateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printStructured(template)
+			return app.printItems(template, false, detailColumns)
 		},
 	}
 	create.Flags().StringVar(&createFile, "file", "", "JSON document path")
@@ -102,7 +104,7 @@ func (app *application) connectionTemplateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printStructured(template)
+			return app.printItems(template, false, detailColumns)
 		},
 	}
 	update.Flags().StringVar(&updateFile, "file", "", "JSON document path")
@@ -141,7 +143,7 @@ func (app *application) connectionTemplateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printStructured(template)
+			return app.printItems(template, false, detailColumns)
 		},
 	}
 	rotate.Flags().StringVar(&secretFile, "file", "", "JSON document with clientSecret")
@@ -150,7 +152,7 @@ func (app *application) connectionTemplateCommand() *cobra.Command {
 	var person, namespace string
 	bind := &cobra.Command{
 		Use:   "bind ID (--person PRINCIPAL_ID | --namespace NAMESPACE_ID)",
-		Short: "Let a person, or anyone connecting an Agent in a Namespace, use this template",
+		Short: "Let a person or members of a Namespace use this template",
 		Args:  idArgs(connectionTemplateIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if (person == "") == (namespace == "") {
@@ -181,7 +183,7 @@ func (app *application) connectionTemplateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printStructured(binding)
+			return app.printIAMAccessBinding(binding, false)
 		},
 	}
 	bind.Flags().StringVar(&person, "person", "", "Principal ID of the person")
@@ -226,8 +228,7 @@ func (app *application) connectionTemplateCommand() *cobra.Command {
 	return command
 }
 
-// agentConnectionCommand lists and disconnects connected accounts. Connecting needs the
-// person's signed-in console session, which service keys never provide.
+// Browser consent saves an account. The CLI manages which Agents may use it.
 func (app *application) agentConnectionCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "connection",
@@ -255,10 +256,23 @@ func (app *application) agentConnectionCommand() *cobra.Command {
 			})
 		},
 	}
-	disconnect := &cobra.Command{
-		Use:   "disconnect AGENT_ID SOURCE_ID",
-		Short: "Detach a saved account from this Agent and request withdrawal",
+	attach := &cobra.Command{
+		Use:   "attach AGENT_ID SOURCE_ID",
+		Short: "Grant this Agent access to a saved account in its Namespace",
 		Args:  idArgs(agentIDArg, credentialSourceIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, client, err := app.namespaceClient()
+			if err != nil {
+				return err
+			}
+			return client.AttachAgentConnection(namespace, args[0], args[1])
+		},
+	}
+	detach := &cobra.Command{
+		Use:     "detach AGENT_ID SOURCE_ID",
+		Aliases: []string{"disconnect"},
+		Short:   "Withdraw this Agent's access and keep the saved account",
+		Args:    idArgs(agentIDArg, credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
@@ -268,10 +282,10 @@ func (app *application) agentConnectionCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printStructured(value)
+			return app.printItems(value, false, []column{{title: "WITHDRAWAL REQUESTED", key: "withdrawalRequested"}})
 		},
 	}
-	command.AddCommand(list, disconnect)
+	command.AddCommand(list, attach, detach)
 	return command
 }
 

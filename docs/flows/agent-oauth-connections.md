@@ -57,8 +57,9 @@ sequenceDiagram
    individually. New deployments and queued work check the Agent's authority.
 4. `disconnectAgentConnection` detaches the source from that Agent and requests
    withdrawal from revisions holding the credential. Other attached Agents keep
-   their grants. To retire the saved connection itself, detach it from its
-   Agents and disconnect it at the Namespace endpoint.
+   their grants. Disconnecting the saved account at the Namespace endpoint
+   instead withdraws it from every Agent. OCC records the intent before retiring
+   the stored refresh material so a worker can resume interrupted cleanup.
 
 ## Debugging and Verification
 

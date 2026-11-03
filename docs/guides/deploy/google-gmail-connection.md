@@ -123,5 +123,4 @@ the variable: OpenShell refuses model requests that carry the placeholder.
 - **Other reasons:** see
   [callback failures](../../reference/connection-templates.md#callback-failures).
 
-To remove access, [disconnect](../../reference/connection-templates.md#detach-or-disconnect)
-the connection. Revoking the app in the Google account also stops refresh.
+To remove access from one Agent, detach its connection. To revoke it from every Agent, [disconnect the saved account](../../reference/connection-templates.md#detach-or-disconnect). Revoking the app in the Google account also stops refresh.

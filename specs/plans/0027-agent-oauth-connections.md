@@ -5,7 +5,7 @@ rfc: ../rfcs/0027-agent-oauth-connections/index.md
 # Implementation plan: Connect an OAuth account and grant individual Agents access
 
 - **ID:** RFC-0027
-- **Delivery status:** Planned
+- **Delivery status:** In progress
 - **Owner:** mrunalp
 - **Authority:** [RFC-0027](../rfcs/0027-agent-oauth-connections/index.md)
   and its [contracts companion](../rfcs/0027-agent-oauth-connections/contracts.md).
@@ -47,7 +47,8 @@ endpoint, effective provider scopes, and Installation policy.
 
 ## Delivery record
 
-Not started.
+[The backend PR](https://github.com/openclaw/openclaw-enterprise/pull/3098)
+implements browser consent, Agent attachment, and withdrawal.
 
 ## Manual Notes
 

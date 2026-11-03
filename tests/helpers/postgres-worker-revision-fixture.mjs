@@ -370,6 +370,7 @@ export function createWorkerRevisionFixtures(
         grantHarnessSecret = true,
         auth = "secret",
         nonModelSources = 0,
+        toolSourceType = "bearer-token",
         modelConfig = {},
       } = {},
     ) {
@@ -381,8 +382,16 @@ export function createWorkerRevisionFixtures(
           id: `cs_${randomUUID()}`,
           namespaceId: namespace.id,
           name: `${label}-tool-${index}-${randomUUID()}`,
-          type: "bearer-token",
-          config: { host: `api-${index}.example.com`, env_var: `TOOL_TOKEN_${index}` },
+          type: toolSourceType,
+          config: {
+            host: `api-${index}.example.com`,
+            env_var: `TOOL_TOKEN_${index}`,
+            ...(toolSourceType === "oauth2-refresh-token" && {
+              token_url: "https://issuer.example.test/token",
+              client_id: "worker",
+              scope: "read",
+            }),
+          },
           secrets: {},
           ownerCapability: "credential_gateway",
           driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,

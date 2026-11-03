@@ -238,6 +238,8 @@ interface RequiredPermission {
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
+    | "unless_consent_owner"
+    | "withdrawal_required"
     | "bound_credential_source"
     | "saved_sandbox_policy_additions";
 }
@@ -562,6 +564,43 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     resourceKind: operation.resourceKind,
   };
 
+  if (operation.operationId === "attachAgentConnection") {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+        condition: "unless_consent_owner",
+      },
+    ];
+  }
+  if (operation.operationId === "disconnectNamespaceConnection") {
+    return [{ ...permission, scope: "requested", condition: "unless_consent_owner" }];
+  }
+  if (operation.operationId === "disconnectAgentConnection") {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: "operate",
+        resourceKind: "agent",
+        scope: "requested",
+        condition: "withdrawal_required",
+      },
+    ];
+  }
+  if (
+    operation.operationId === "startAgentConnection" ||
+    operation.operationId === "startNamespaceConnection"
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      ...(operation.operationId === "startAgentConnection"
+        ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
+        : []),
+      { action: "use", resourceKind: "connection_template", scope: "request_body" },
+    ];
+  }
   if (
     [
       "getAgentSandboxPolicy",
@@ -1040,6 +1079,12 @@ function permissionDescription(
   const description = permissions
     .map(({ action, resourceKind, scope, condition }) => {
       const name = names[resourceKind];
+      if (condition === "unless_consent_owner") {
+        return `Requires ${action} permission on this CredentialSource unless the caller owns the consent.`;
+      }
+      if (condition === "withdrawal_required") {
+        return "Requires operate permission on the requested Agent when a revision must withdraw the source.";
+      }
       if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
       }
@@ -2317,7 +2362,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     // A connection is consent by one person: only their signed-in session may start it.
-    if (operation.operationId === "startAgentConnection" || operation.operationId === "startNamespaceConnection") {
+    if (
+      operation.operationId === "startAgentConnection" ||
+      operation.operationId === "startNamespaceConnection"
+    ) {
       if (admissions.get(request)?.method !== "session") {
         throw failure(
           403,

@@ -181,6 +181,42 @@ func TestAgentGetShowsTheObservedHarnessSandbox(t *testing.T) {
 	}
 }
 
+func TestConnectionTemplateGetShowsCallbackAndApprovedVersion(t *testing.T) {
+	const templateID = "ctp_55555555-5555-4555-8555-555555555555"
+	const callback = "https://oce.example/oauth/callback"
+	want := "GET /connection-templates/" + templateID
+	response := `{"id":"` + templateID + `","displayName":"Projects","current":{"version":2},"redirectUri":"` + callback + `"}`
+	out, requests, err := runOCC(t, map[string]string{want: response}, "connection-template", "get", templateID)
+	if err != nil || !slices.Equal(requests, []string{want}) {
+		t.Fatalf("requests = %q, err = %v", requests, err)
+	}
+	if !strings.Contains(out, callback) || !strings.Contains(out, `"version":2`) {
+		t.Fatalf("missing consent details in %q", out)
+	}
+}
+
+func TestAgentConnectionGrantAndWithdrawalUseTheExactAccount(t *testing.T) {
+	const sourceID = "cs_55555555-5555-4555-8555-555555555555"
+	path := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/connections/" + sourceID
+	for _, tc := range []struct{ command, method, response string }{
+		{"attach", "POST", ""},
+		{"detach", "DELETE", `{"withdrawalRequested":true,"deleted":false}`},
+		{"disconnect", "DELETE", `{"withdrawalRequested":true,"deleted":false}`},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			want := tc.method + " " + path
+			out, requests, err := runOCC(t, map[string]string{want: tc.response},
+				"--namespace", testNamespaceID, "agent", "connection", tc.command, testAgentID, sourceID)
+			if err != nil || !slices.Equal(requests, []string{want}) {
+				t.Fatalf("requests = %q, err = %v", requests, err)
+			}
+			if tc.method == "DELETE" && !strings.Contains(out, "true") {
+				t.Fatalf("missing withdrawal status in %q", out)
+			}
+		})
+	}
+}
+
 func TestResourceCommandsRejectNamesWithAHintBeforeCallingOCC(t *testing.T) {
 	inNamespace := "occ --namespace " + testNamespaceID
 	cases := []struct {

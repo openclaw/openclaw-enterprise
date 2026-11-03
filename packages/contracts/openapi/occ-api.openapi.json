@@ -22667,7 +22667,7 @@
         ]
       },
       "post": {
-        "description": "Requires update permission on the requested Agent.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires use permission on the requested ConnectionTemplate.",
         "operationId": "startAgentConnection",
         "parameters": [
           {
@@ -22875,13 +22875,15 @@
         "summary": "Start consent for a reusable account from this Agent",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
-          { "action": "update", "resourceKind": "agent", "scope": "requested" }
+          { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          { "action": "use", "resourceKind": "connection_template", "scope": "request_body" }
         ]
       }
     },
     "/namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}": {
       "delete": {
-        "description": "Requires update permission on the requested Agent.",
+        "description": "Requires update permission on the requested Agent. Requires operate permission on the requested Agent when a revision must withdraw the source.",
         "operationId": "disconnectAgentConnection",
         "parameters": [
           {
@@ -23043,11 +23045,17 @@
         "summary": "Detach an account from this Agent and withdraw its access",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
-          { "action": "update", "resourceKind": "agent", "scope": "requested" }
+          { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "operate",
+            "condition": "withdrawal_required",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
         ]
       },
       "post": {
-        "description": "Requires update permission on the requested Agent.",
+        "description": "Requires update permission on the requested Agent. Requires operate permission on this CredentialSource unless the caller owns the consent.",
         "operationId": "attachAgentConnection",
         "parameters": [
           {
@@ -23167,7 +23175,13 @@
         "summary": "Attach a completed account and grant this Agent access to its source",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
-          { "action": "update", "resourceKind": "agent", "scope": "requested" }
+          { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "operate",
+            "condition": "unless_consent_owner",
+            "resourceKind": "credential_source",
+            "scope": "requested"
+          }
         ]
       }
     },
@@ -35998,7 +36012,7 @@
         ]
       },
       "post": {
-        "description": "Requires read permission on the requested Namespace.",
+        "description": "Requires read permission on the requested Namespace. Requires use permission on the requested ConnectionTemplate.",
         "operationId": "startNamespaceConnection",
         "parameters": [
           {
@@ -36191,13 +36205,14 @@
         "summary": "Start consent for a reusable account in this Namespace",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
-          { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" },
+          { "action": "use", "resourceKind": "connection_template", "scope": "request_body" }
         ]
       }
     },
     "/namespaces/{namespaceId}/connections/{credentialSourceId}": {
       "delete": {
-        "description": "Requires read permission on the requested Namespace.",
+        "description": "Requires delete permission on this CredentialSource unless the caller owns the consent.",
         "operationId": "disconnectNamespaceConnection",
         "parameters": [
           {
@@ -36299,10 +36314,15 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Disconnect an unused saved account from this Namespace",
+        "summary": "Revoke a saved account and withdraw access from every Agent",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
-          { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+          {
+            "action": "delete",
+            "condition": "unless_consent_owner",
+            "resourceKind": "credential_source",
+            "scope": "requested"
+          }
         ]
       }
     },

@@ -85,6 +85,9 @@ export interface AgentConnection {
   readonly credentialSourceId: string;
   /** Agent from which consent started, when present. Attachment is a separate Agent binding. */
   readonly agentId?: string;
+  /** Internal revocation state. The owner row remains until all runtime references retire. */
+  readonly revocationRequestedBy?: string;
+  readonly revokedAt?: string;
   readonly ownerPrincipalId: string;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;

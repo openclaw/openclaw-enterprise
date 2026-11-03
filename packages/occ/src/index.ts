@@ -1034,7 +1034,12 @@ export interface ConnectionTemplateInput {
   readonly clientId: string;
   readonly scopes: readonly string[];
   readonly authorizationParameters?: Readonly<Record<string, string>>;
-  readonly endpoint: { readonly host: string; readonly port?: number; readonly path?: string; readonly access?: "read-only" | "full" };
+  readonly endpoint: {
+    readonly host: string;
+    readonly port?: number;
+    readonly path?: string;
+    readonly access?: "read-only" | "full";
+  };
   readonly envVar: string;
 }
 
@@ -1394,7 +1399,12 @@ function connectionTemplateValues(input: {
   readonly clientId: string;
   readonly scopes: readonly string[];
   readonly authorizationParameters?: Readonly<Record<string, string>>;
-  readonly endpoint: { readonly host: string; readonly port?: number; readonly path?: string; readonly access?: "read-only" | "full" };
+  readonly endpoint: {
+    readonly host: string;
+    readonly port?: number;
+    readonly path?: string;
+    readonly access?: "read-only" | "full";
+  };
   readonly envVar: string;
 }): ConnectionTemplateValues {
   return Object.freeze({
@@ -1429,7 +1439,7 @@ function connectionSourceConfig(
     host: version.endpoint.host,
     port: String(version.endpoint.port),
     path: version.endpoint.path,
-    ...(version.endpoint.access === "read-only" && {access: version.endpoint.access}),
+    ...(version.endpoint.access === "read-only" && { access: version.endpoint.access }),
     env_var: version.envVar,
     token_url: version.tokenUrl,
     client_id: version.clientId,
@@ -6722,11 +6732,11 @@ export class OpenClawController {
     this.namespaceIdentity(input.namespaceId);
     const registration = await this.mutate(async (state) => {
       if (connection !== CONNECTION_AUTHORIZED) {
-      await this.authorize(principalId, "create", {
-        kind: "credential_source",
-        id: input.namespaceId,
-        namespaceId: input.namespaceId,
-      });
+        await this.authorize(principalId, "create", {
+          kind: "credential_source",
+          id: input.namespaceId,
+          namespaceId: input.namespaceId,
+        });
       }
       const locked = await this.lockNamespace(state, input.namespaceId);
       // An Installation property, so it is reported before any Namespace state.
@@ -6740,7 +6750,9 @@ export class OpenClawController {
       credentialSourceFieldsMatch(type, "config", written);
       if (connection === CONNECTION_AUTHORIZED) {
         if (protectedType || type.rotation !== "refresh" || Object.keys(secretRefs).length > 0) {
-          throw new ScopeViolationError("Browser authorization requires a Gateway refresh source without stored secrets.");
+          throw new ScopeViolationError(
+            "Browser authorization requires a Gateway refresh source without stored secrets.",
+          );
         }
       } else {
         credentialSourceFieldsMatch(type, "secrets", secretRefs);
@@ -7388,28 +7400,19 @@ export class OpenClawController {
     namespaceId: string,
     credentialSourceId: string,
     audit?: (removedAccessBindings: readonly RemovedAccessBinding[]) => AuditEvent,
-    connection?: typeof CONNECTION_AUTHORIZED | "disconnect_saved_connection",
+    connection?: typeof CONNECTION_AUTHORIZED,
   ): Promise<void> {
     this.assertCredentialSourceTransactionBoundary();
     this.namespaceIdentity(namespaceId);
     const { namespace, source, gateway } = await this.mutate(async (state) => {
       const locked =
-        connection !== undefined
+        connection === CONNECTION_AUTHORIZED
           ? await this.lockNamespace(state, namespaceId)
           : await this.lockNamespaceForPolicyDelete(state, principalId, {
               kind: "credential_source",
               id: credentialSourceId,
               namespaceId,
             });
-      if (connection === "disconnect_saved_connection") {
-        const account = await state.agentConnections.findAgentConnection(namespaceId, credentialSourceId);
-        if (account?.ownerPrincipalId !== principalId) {
-          await this.authorize(principalId, "delete", {kind:"credential_source", namespaceId, id:credentialSourceId});
-        }
-        if (!account) {
-          throw new ScopeViolationError("The Namespace has no such connection.");
-        }
-      }
       // An Installation property, so it is reported before any source lookup.
       this.assertCredentialSourceOwnerSelected();
       const found = await state.credentialSources.lockCredentialSource(
@@ -7420,6 +7423,20 @@ export class OpenClawController {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
+      }
+      if (connection === CONNECTION_AUTHORIZED || found.state === "deleting") {
+        const account = await state.agentConnections.findAgentConnection(
+          namespaceId,
+          credentialSourceId,
+        );
+        if (connection === CONNECTION_AUTHORIZED && (found.state === "ready" || account)) {
+          throw new ResourceStateConflictError("A completed account requires explicit disconnect.");
+        }
+        if (account?.revocationRequestedBy !== undefined) {
+          throw new ResourceStateConflictError(
+            "This account is already disconnecting. Its source is retained until the credential and all Agent access have been withdrawn.",
+          );
+        }
       }
       const blocking = await state.credentialSources.findBlockingReference(locked.id, found.id);
       if (blocking === "reference") {
@@ -7445,6 +7462,47 @@ export class OpenClawController {
         gateway: owner.kind === "gateway" ? owner.driver : undefined,
       };
     });
+    await this.retireCredentialSourceMaterial(namespace, source, gateway);
+    const fenceMs =
+      Date.parse(source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS - this.clock().getTime();
+    if (fenceMs > 0) {
+      // After the delete grant and lookup; the text names only the wait (finding 2536).
+      throw new RetryLaterError("registrationFence", fenceMs / 1000);
+    }
+    // The success event commits with the final removal, so a completed deletion is always audited.
+    await this.mutate(async (state) => {
+      await this.lockNamespace(state, namespace.id);
+      if (source.type === "oauth2-refresh-token") {
+        const account = await state.agentConnections.findAgentConnection(namespace.id, source.id);
+        if (
+          account?.revocationRequestedBy !== undefined &&
+          (await state.agentConnections.hasPendingConnectionWithdrawals(namespace.id, source.id))
+        ) {
+          throw new ResourceStateConflictError(
+            "The connected account still has outstanding Agent withdrawals.",
+          );
+        }
+      }
+      const removed = await accessBindingsTargeting(
+        state,
+        namespace.id,
+        "credential_source",
+        source.id,
+      );
+      if (!(await state.credentialSources.deleteCredentialSource(namespace.id, source.id))) {
+        throw new ResourceStateConflictError("The credential source changed during deletion.");
+      }
+      if (audit !== undefined) {
+        await state.audit.append(audit(removed));
+      }
+    });
+  }
+
+  private async retireCredentialSourceMaterial(
+    namespace: Readonly<Namespace>,
+    source: Readonly<CredentialSource>,
+    gateway: CredentialGatewayDriver | undefined,
+  ): Promise<void> {
     const placed = gateway ? await this.credentialNamespace(namespace) : namespace;
     const context = () => ({
       namespace: placed,
@@ -7463,28 +7521,6 @@ export class OpenClawController {
       }
       await this.credentialGatewayOperation(() => gateway.removeSource(context()));
     }
-    const fenceMs =
-      Date.parse(source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS - this.clock().getTime();
-    if (fenceMs > 0) {
-      // After the delete grant and lookup; the text names only the wait (finding 2536).
-      throw new RetryLaterError("registrationFence", fenceMs / 1000);
-    }
-    // The success event commits with the final removal, so a completed deletion is always audited.
-    await this.mutate(async (state) => {
-      await this.lockNamespace(state, namespace.id);
-      const removed = await accessBindingsTargeting(
-        state,
-        namespace.id,
-        "credential_source",
-        source.id,
-      );
-      if (!(await state.credentialSources.deleteCredentialSource(namespace.id, source.id))) {
-        throw new ResourceStateConflictError("The credential source changed during deletion.");
-      }
-      if (audit !== undefined) {
-        await state.audit.append(audit(removed));
-      }
-    });
   }
 
   async createConfiguration(
@@ -8068,7 +8104,9 @@ export class OpenClawController {
         principalId,
         "use",
         this.connectionTemplateRef(template.id),
-        undefined, undefined, namespaceId,
+        undefined,
+        undefined,
+        namespaceId,
       );
       if (decision.decision.allowed) {
         usable.push(template);
@@ -8130,7 +8168,9 @@ export class OpenClawController {
             createdAt,
           },
         });
-        if (audit) await state.audit.append(audit(created.id));
+        if (audit) {
+          await state.audit.append(audit(created.id));
+        }
         return created;
       });
     } catch (error) {
@@ -8149,7 +8189,11 @@ export class OpenClawController {
   ): Promise<Readonly<ConnectionTemplate>> {
     await this.authorize(principalId, "update", this.connectionTemplateRef(templateId));
     const current = await this.getConnectionTemplate(principalId, templateId);
-    const values = connectionTemplateValues({ ...current.current, ...input });
+    const values = connectionTemplateValues({
+      ...current.current,
+      ...input,
+      endpoint: { ...current.current.endpoint, ...input.endpoint },
+    });
     const changed = connectionValuesChanged(current.current, values);
     if (changed) {
       await this.assertConnectionSourceConfig(values);
@@ -8200,7 +8244,9 @@ export class OpenClawController {
                 },
               }),
         });
-        if (result && audit) await state.audit.append(audit);
+        if (result && audit) {
+          await state.audit.append(audit);
+        }
         return result;
       });
       if (updated === undefined) {
@@ -8219,19 +8265,27 @@ export class OpenClawController {
    * Refuses values the Credential Gateway would refuse at connect time, such as a token host
    * its gateway cannot reach, so administrators see the error instead of the connecting person.
    */
-  private async assertConnectionSourceConfig(values: Readonly<ConnectionTemplateValues>): Promise<void> {
+  private async assertConnectionSourceConfig(
+    values: Readonly<ConnectionTemplateValues>,
+  ): Promise<void> {
     this.assertCredentialGatewaySelected();
     const gateway = this.credentialGatewayDriver();
     const config = connectionSourceConfig(values);
     if (values.endpoint.access === "read-only") {
       const type = await this.credentialSourceType(gateway, "oauth2-refresh-token");
-      if (!type.config.some(field=>field.name === "access")) {
-        throw new CredentialSourceConfigError("access", "The selected Credential Gateway does not support read-only OAuth connections.");
+      if (!type.config.some((field) => field.name === "access")) {
+        throw new CredentialSourceConfigError(
+          "access",
+          "The selected Credential Gateway does not support read-only OAuth connections.",
+        );
       }
     }
-    const normalized = gateway.validateSourceConfig({type:"oauth2-refresh-token", config});
+    const normalized = gateway.validateSourceConfig({ type: "oauth2-refresh-token", config });
     if (values.endpoint.access === "read-only" && normalized && normalized.access !== "read-only") {
-      throw new CredentialSourceConfigError("access", "The selected Credential Gateway cannot enforce read-only access.");
+      throw new CredentialSourceConfigError(
+        "access",
+        "The selected Credential Gateway cannot enforce read-only access.",
+      );
     }
   }
 
@@ -8256,7 +8310,11 @@ export class OpenClawController {
     return template;
   }
 
-  async deleteConnectionTemplate(principalId: string, templateId: string, audit?: AuditEvent): Promise<void> {
+  async deleteConnectionTemplate(
+    principalId: string,
+    templateId: string,
+    audit?: AuditEvent,
+  ): Promise<void> {
     await this.authorize(principalId, "delete", this.connectionTemplateRef(templateId));
     const refresh = this.connectionRefreshDriver();
     const unused = await this.mutate(async (state) => {
@@ -8287,7 +8345,9 @@ export class OpenClawController {
           removable.push(record);
         }
       }
-      if (audit) await state.audit.append(audit);
+      if (audit) {
+        await state.audit.append(audit);
+      }
       return removable;
     });
     for (const registration of unused) {
@@ -8520,7 +8580,9 @@ export class OpenClawController {
           throw new ScopeViolationError("The Agent is unavailable in this Namespace.");
         }
       }
-      const found = await state.connectionTemplates.findConnectionTemplate(input.connectionTemplateId);
+      const found = await state.connectionTemplates.findConnectionTemplate(
+        input.connectionTemplateId,
+      );
       if (found === undefined) {
         throw new ScopeViolationError("The connection template does not exist.");
       }
@@ -8584,7 +8646,9 @@ export class OpenClawController {
         createdAt,
         expiresAt,
       });
-      if (audit) await state.audit.append(audit(source.id));
+      if (audit) {
+        await state.audit.append(audit(source.id));
+      }
     });
     return { credentialSourceId: source.id, authorizationUrl: started.authorizationUrl, expiresAt };
   }
@@ -8655,48 +8719,92 @@ export class OpenClawController {
       }
       throw error;
     }
-    return this.mutate(async (state) => {
-      await this.lockNamespace(state, namespaceId);
-      await this.authorizeConnectionTarget(principalId, namespaceId, agentId);
-      await this.authorizeConnectionTemplateUse(principalId, session.connectionTemplateId, namespaceId);
-      const ready = await state.credentialSources.markCredentialSourceReady(namespaceId, credentialSourceId);
-      if (!ready) throw new ResourceStateConflictError("The pending connection changed. Connect again.");
-      const connection = await state.agentConnections.createAgentConnection({
+    try {
+      return await this.mutate(async (state) => {
+        await this.lockNamespace(state, namespaceId);
+        await this.authorizeConnectionTarget(principalId, namespaceId, agentId);
+        await this.authorizeConnectionTemplateUse(
+          principalId,
+          session.connectionTemplateId,
+          namespaceId,
+        );
+        const ready = await state.credentialSources.markCredentialSourceReady(
+          namespaceId,
+          credentialSourceId,
+        );
+        if (!ready) {
+          throw new ResourceStateConflictError("The pending connection changed. Connect again.");
+        }
+        const connection = await state.agentConnections.createAgentConnection({
+          namespaceId,
+          credentialSourceId,
+          ...(agentId === undefined ? {} : { agentId }),
+          ownerPrincipalId: principalId,
+          connectionTemplateId: session.connectionTemplateId,
+          connectionTemplateVersion: session.connectionTemplateVersion,
+          createdAt: this.timestamp(),
+        });
+        if (audit) {
+          await state.audit.append(audit(connection));
+        }
+        return connection;
+      });
+    } catch (error) {
+      // A driver may already have installed the usable grant. A commit with an uncertain
+      // outcome is safe to retry: the internal pending-source delete refuses a ready account.
+      await this.deleteCredentialSource(
+        principalId,
         namespaceId,
         credentialSourceId,
-        ...(agentId === undefined ? {} : { agentId }),
-        ownerPrincipalId: principalId,
-        connectionTemplateId: session.connectionTemplateId,
-        connectionTemplateVersion: session.connectionTemplateVersion,
-        createdAt: this.timestamp(),
-      });
-      if (audit) await state.audit.append(audit(connection));
-      return connection;
-    });
+        undefined,
+        CONNECTION_AUTHORIZED,
+      ).catch(() => undefined);
+      throw error;
+    }
   }
 
-  private async authorizeConnectionTarget(principalId: string, namespaceId: string, agentId?: string): Promise<void> {
+  private async authorizeConnectionTarget(
+    principalId: string,
+    namespaceId: string,
+    agentId?: string,
+  ): Promise<void> {
     if (agentId === undefined) {
-      await this.authorize(principalId, "read", {kind:"namespace", id:namespaceId, namespaceId});
+      await this.authorize(principalId, "read", {
+        kind: "namespace",
+        id: namespaceId,
+        namespaceId,
+      });
     } else {
-      const target = {kind:"agent" as const, id:agentId, namespaceId};
+      const target = { kind: "agent" as const, id: agentId, namespaceId };
       await this.authorize(principalId, "read", target);
       await this.authorize(principalId, "update", target);
     }
   }
 
-  async listAgentConnections(principalId: string, namespaceId: string, agentId?: string): Promise<readonly Readonly<AgentConnection>[]> {
+  async listAgentConnections(
+    principalId: string,
+    namespaceId: string,
+    agentId?: string,
+  ): Promise<readonly Readonly<AgentConnection>[]> {
     if (agentId !== undefined) {
-      await this.authorize(principalId, "read", {kind:"agent", id:agentId, namespaceId});
-      return this.read(state => state.agentConnections.listAgentConnections(namespaceId, agentId));
+      await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+      return this.read((state) =>
+        state.agentConnections.listAgentConnections(namespaceId, agentId),
+      );
     }
     await this.authorizeConnectionTarget(principalId, namespaceId);
-    return this.read(async state => {
+    return this.read(async (state) => {
       const visible: Readonly<AgentConnection>[] = [];
       for (const connection of await state.agentConnections.listNamespaceConnections(namespaceId)) {
-        const resource = {kind:"credential_source" as const, namespaceId, id:connection.credentialSourceId};
-        if (connection.ownerPrincipalId === principalId ||
-            (await this.authorizationDecision(principalId, "operate", resource)).decision.allowed) {
+        const resource = {
+          kind: "credential_source" as const,
+          namespaceId,
+          id: connection.credentialSourceId,
+        };
+        if (
+          connection.ownerPrincipalId === principalId ||
+          (await this.authorizationDecision(principalId, "operate", resource)).decision.allowed
+        ) {
           visible.push(connection);
         }
       }
@@ -8705,56 +8813,199 @@ export class OpenClawController {
   }
 
   /** Explicitly delegate one completed connection to the target Agent's own principal. */
-  async attachAgentConnection(principalId:string, input:AgentCredentialSourceInput, audit?:AuditEvent):Promise<void> {
-    const {namespaceId, agentId, credentialSourceId} = input;
-    await this.mutate(async state => {
+  async attachAgentConnection(
+    principalId: string,
+    input: AgentCredentialSourceInput,
+    audit?: AuditEvent,
+  ): Promise<void> {
+    const { namespaceId, agentId, credentialSourceId } = input;
+    await this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
-      await this.authorize(principalId, "update", { kind:"agent", id:agentId, namespaceId });
-      const account = await state.agentConnections.findAgentConnection(namespaceId, credentialSourceId);
-      const resource = {kind:"credential_source" as const, id:credentialSourceId, namespaceId};
-      if (account?.ownerPrincipalId !== principalId) await this.authorize(principalId, "operate", resource);
-      const source = await state.credentialSources.lockCredentialSource(namespaceId, credentialSourceId);
+      await this.authorize(principalId, "update", { kind: "agent", id: agentId, namespaceId });
+      const account = await state.agentConnections.findAgentConnection(
+        namespaceId,
+        credentialSourceId,
+      );
+      const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
+      if (account?.ownerPrincipalId !== principalId) {
+        await this.authorize(principalId, "operate", resource);
+      }
+      const source = await state.credentialSources.lockCredentialSource(
+        namespaceId,
+        credentialSourceId,
+      );
       if (account === undefined || source?.state !== "ready") {
         throw new ResourceStateConflictError("Choose a completed connection in this Namespace.");
       }
       const agent = await state.agents.lockAgent(namespaceId, agentId);
-      if (agent?.status !== "active") throw new ScopeViolationError("The Agent is unavailable in this Namespace.");
+      if (agent?.status !== "active") {
+        throw new ScopeViolationError("The Agent is unavailable in this Namespace.");
+      }
+      await this.guardAgentProvisioning(state, namespaceId, agentId);
       const bindings = agent.credentialSources ?? [];
-      if (!bindings.some(({sourceId})=>sourceId===credentialSourceId)) {
+      if (!bindings.some(({ sourceId }) => sourceId === credentialSourceId)) {
         if (bindings.length >= MAX_AGENT_CREDENTIAL_SOURCES) {
           throw new ResourceStateConflictError("The Agent already lists eight credential sources.");
         }
-        const resultingSources = [...bindings, {sourceId: credentialSourceId}];
-        const delegated = new Set((await state.agentConnections.listAgentConnections(namespaceId, agentId))
-          .map(({credentialSourceId}) => credentialSourceId));
+        const resultingSources = [...bindings, { sourceId: credentialSourceId }];
+        const delegated = new Set(
+          (await state.agentConnections.listAgentConnections(namespaceId, agentId)).map(
+            ({ credentialSourceId }) => credentialSourceId,
+          ),
+        );
         delegated.add(source.id);
-        await this.authorizeAgentCredentialSources(state, principalId, namespaceId, resultingSources, agent.harnessAuth, agent.plugins, delegated);
-        await state.agents.updateConfiguration(namespaceId, agentId, agent.configurationId,
-          undefined, undefined, undefined, undefined, undefined, undefined, undefined, resultingSources);
+        await this.authorizeAgentCredentialSources(
+          state,
+          principalId,
+          namespaceId,
+          resultingSources,
+          agent.harnessAuth,
+          agent.plugins,
+          delegated,
+        );
+        await state.agents.updateConfiguration(
+          namespaceId,
+          agentId,
+          agent.configurationId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          resultingSources,
+        );
       }
       await this.ensureAgentOperateGrants(state, namespaceId, agent, [resource]);
-      if (audit) await state.audit.append(audit);
+      if (audit) {
+        await state.audit.append(audit);
+      }
     });
   }
 
   /** Detaching revokes this Agent's access and leaves the reusable connection intact. */
-  async disconnectAgentConnection(principalId: string, input: AgentCredentialSourceInput, audit?: AuditEvent): Promise<{readonly withdrawalRequested:boolean; readonly deleted:boolean}> {
+  async disconnectAgentConnection(
+    principalId: string,
+    input: AgentCredentialSourceInput,
+    audit?: AuditEvent,
+  ): Promise<{ readonly withdrawalRequested: boolean; readonly deleted: boolean }> {
     const { namespaceId, agentId, credentialSourceId } = input;
-    return this.mutate(async state => {
+    return this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
-      await this.authorize(principalId, "update", {kind:"agent", id:agentId, namespaceId});
-      const agent=await state.agents.lockAgent(namespaceId,agentId);
-      const connection=await state.agentConnections.findAgentConnection(namespaceId,credentialSourceId);
-      if (agent === undefined || connection === undefined) throw new ScopeViolationError("The Agent has no such connection.");
-      const withdrawalRequested=await this.detachAgentConnectionSource(state,principalId,agent,credentialSourceId);
-      if (audit) await state.audit.append(audit);
-      return {withdrawalRequested, deleted:false};
+      await this.authorize(principalId, "update", { kind: "agent", id: agentId, namespaceId });
+      const agent = await state.agents.lockAgent(namespaceId, agentId);
+      const connection = await state.agentConnections.findAgentConnection(
+        namespaceId,
+        credentialSourceId,
+      );
+      if (agent === undefined || connection === undefined) {
+        throw new ScopeViolationError("The Agent has no such connection.");
+      }
+      const withdrawalRequested = await this.detachAgentConnectionSource(
+        state,
+        principalId,
+        agent,
+        credentialSourceId,
+      );
+      if (audit) {
+        await state.audit.append(audit);
+      }
+      return { withdrawalRequested, deleted: false };
     });
   }
 
-  /** Global disconnect uses ordinary reference checks so callers must first detach every Agent. */
-  async disconnectNamespaceConnection(principalId:string, namespaceId:string, credentialSourceId:string, audit?:AuditEvent):Promise<void> {
-    await this.deleteCredentialSource(principalId,namespaceId,credentialSourceId,audit ? () => audit : undefined,"disconnect_saved_connection");
+  /** Revoke at the provider and withdraw every Agent copy on the consent owner’s authority. */
+  async disconnectNamespaceConnection(
+    principalId: string,
+    namespaceId: string,
+    sourceId: string,
+    audit?: AuditEvent,
+  ): Promise<void> {
+    await this.mutate(async (state) => {
+      await this.lockNamespace(state, namespaceId);
+      const connection = await state.agentConnections.findAgentConnection(namespaceId, sourceId);
+      if (connection?.ownerPrincipalId !== principalId) {
+        await this.authorize(principalId, "delete", {
+          kind: "credential_source",
+          namespaceId,
+          id: sourceId,
+        });
+      }
+      if (!connection) {
+        throw new ScopeViolationError("The Namespace has no such connection.");
+      }
+      if (connection.revocationRequestedBy !== undefined) {
+        return;
+      }
+      const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (!source) {
+        throw new ScopeViolationError("The connected source no longer exists.");
+      }
+      if (
+        source.state !== "deleting" &&
+        !(await state.credentialSources.markCredentialSourceDeleting(namespaceId, sourceId))
+      ) {
+        throw new ResourceStateConflictError("The connected source changed during revocation.");
+      }
+      await state.agentConnections.requestConnectionRevocation(namespaceId, sourceId, principalId);
+      for (const agent of await state.agents.listAgents(namespaceId)) {
+        await this.detachAgentConnectionSource(state, principalId, agent, sourceId, true);
+      }
+      if (audit) {
+        await state.audit.append(audit);
+      }
+    });
+    await this.finishConnectionRevocation(namespaceId, sourceId);
+  }
+
+  /** Replay the recorded revocation after an interrupted request. Retain its ownership row
+   * until the gateway confirms retirement and no deployment or withdrawal still needs it. */
+  async finishConnectionRevocation(namespaceId: string, sourceId: string): Promise<void> {
+    const pending = await this.read(async (state) => {
+      const account = await state.agentConnections.findAgentConnection(namespaceId, sourceId);
+      if (account?.revocationRequestedBy === undefined) {
+        return undefined;
+      }
+      const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
+      if (source?.state !== "deleting") {
+        throw new ResourceStateConflictError("The connected source has no pending retirement.");
+      }
+      return { account, source, namespace: await this.exactNamespace(state, namespaceId) };
+    });
+    if (!pending) {
+      return;
+    }
+    if (pending.account.revokedAt === undefined) {
+      await this.retireCredentialSourceMaterial(
+        pending.namespace,
+        pending.source,
+        this.ownedCredentialGatewayDriver(pending.source),
+      );
+    }
+    await this.mutate(async (state) => {
+      await this.lockNamespace(state, namespaceId);
+      const account = await state.agentConnections.findAgentConnection(namespaceId, sourceId);
+      if (account?.revocationRequestedBy === undefined) {
+        return;
+      }
+      if (!account.revokedAt) {
+        await state.agentConnections.confirmConnectionRevocation(
+          namespaceId,
+          sourceId,
+          this.timestamp(),
+        );
+      }
+      if (
+        this.clock().getTime() <
+          Date.parse(pending.source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS ||
+        (await state.agentConnections.hasPendingConnectionWithdrawals(namespaceId, sourceId)) ||
+        (await state.credentialSources.hasReferences(namespaceId, sourceId))
+      ) {
+        return;
+      }
+      await state.credentialSources.deleteCredentialSource(namespaceId, sourceId);
+    });
   }
 
   private async authorizeConnectionTemplateUse(
@@ -8766,7 +9017,9 @@ export class OpenClawController {
       principalId,
       "use",
       this.connectionTemplateRef(templateId),
-      undefined, undefined, namespaceId,
+      undefined,
+      undefined,
+      namespaceId,
     );
     if (!decision.decision.allowed) {
       throw new AuthorizationDeniedError(
@@ -8840,7 +9093,10 @@ export class OpenClawController {
     const { namespace, source } = await this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
-      if (namespace.status !== "ready" || source?.state !== (connection === CONNECTION_AUTHORIZED ? "registering" : "ready")) {
+      if (
+        namespace.status !== "ready" ||
+        source?.state !== (connection === CONNECTION_AUTHORIZED ? "registering" : "ready")
+      ) {
         throw new ResourceStateConflictError(
           "The credential source is unavailable. Connect again.",
         );
@@ -11073,8 +11329,13 @@ export class OpenClawController {
         namespace.id,
         (agent.credentialSources ?? []).filter(({ sourceId }) => !attached.has(sourceId)),
       );
-      if (requestedSources && connections.some(({ credentialSourceId }) =>
-        !requestedSources.some(({ sourceId }) => sourceId === credentialSourceId))) {
+      if (
+        requestedSources &&
+        connections.some(
+          ({ credentialSourceId }) =>
+            !requestedSources.some(({ sourceId }) => sourceId === credentialSourceId),
+        )
+      ) {
         throw new ResourceStateConflictError("Detach the connected account from the Agent first.");
       }
       if (requestedAuth !== undefined) {
@@ -13203,7 +13464,11 @@ export class OpenClawController {
     const sources: CredentialSource[] = [];
     for (const { sourceId } of bindings) {
       if (!attached.has(sourceId)) {
-        await this.authorize(principalId, "operate", {kind:"credential_source", namespaceId, id:sourceId});
+        await this.authorize(principalId, "operate", {
+          kind: "credential_source",
+          namespaceId,
+          id: sourceId,
+        });
         if (await state.agentConnections.findAgentConnection(namespaceId, sourceId)) {
           throw new ResourceStateConflictError("Attach the connected account to this Agent first.");
         }
@@ -13273,8 +13538,11 @@ export class OpenClawController {
       bindings,
       agent.harnessAuth,
       agent.plugins,
-      new Set((await state.agentConnections.listAgentConnections(agent.namespaceId, agent.id))
-        .map(({credentialSourceId}) => credentialSourceId)),
+      new Set(
+        (await state.agentConnections.listAgentConnections(agent.namespaceId, agent.id)).map(
+          ({ credentialSourceId }) => credentialSourceId,
+        ),
+      ),
     );
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const { sourceId } of bindings) {
@@ -14497,44 +14765,98 @@ export class OpenClawController {
 
   /** The caller holds the Namespace and Agent locks. Only withdraw this Agent's copies. */
   private async detachAgentConnectionSource(
-    state: PlatformUnitOfWork, principalId: string, agent: Readonly<Agent>, sourceId: string,
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    revokeForAllAgents = false,
   ): Promise<boolean> {
     const { namespaceId, id: agentId } = agent;
     const bindings = agent.credentialSources ?? [];
-    if (!bindings.some(binding => binding.sourceId === sourceId)) {
+    const attached = bindings.some((binding) => binding.sourceId === sourceId);
+    if (!attached && !revokeForAllAgents) {
       throw new ScopeViolationError("The connection is not attached to this Agent.");
     }
-    const remaining = bindings.filter(binding => binding.sourceId !== sourceId);
-    this.assertHarnessSourceListed(remaining, agent.harnessAuth);
-    const remainingSources: CredentialSource[] = [];
-    for (const binding of remaining) {
-      const source = await state.credentialSources.findCredentialSource(namespaceId, binding.sourceId);
-      if (source) remainingSources.push(source);
+    const remaining = bindings.filter((binding) => binding.sourceId !== sourceId);
+    if (!revokeForAllAgents) {
+      await this.guardAgentProvisioning(state, namespaceId, agentId);
+      this.assertHarnessSourceListed(remaining, agent.harnessAuth);
+      const remainingSources: CredentialSource[] = [];
+      for (const binding of remaining) {
+        const source = await state.credentialSources.findCredentialSource(
+          namespaceId,
+          binding.sourceId,
+        );
+        if (source) {
+          remainingSources.push(source);
+        }
+      }
+      this.validatePluginCredentialSources(agent.plugins, remainingSources, agent.harnessAuth);
     }
-    this.validatePluginCredentialSources(agent.plugins, remainingSources, agent.harnessAuth);
     const revisions = await state.revisions.listRevisions(namespaceId, agentId);
-    const active = revisions.find(revision => revision.id === agent.activeRevisionId);
-    const serving = active ? [active, ...await credentialWithdrawalCompanionRevisions(
-      state, revisions, active, this.clock())] : revisions;
-    let withdrawalRequested = false;
-    for (const revision of serving.filter(revision => revisionHoldsCredentialSource(revision, sourceId))) {
-      await this.authorize(principalId, "operate", { kind:"agent", namespaceId, id:agentId });
-      const withdrawal = await this.requestRevisionCredentialWithdrawal(state, principalId, revision, sourceId);
-      if (withdrawal.state === "pending") withdrawalRequested = true;
+    if (
+      !attached &&
+      !revisions.some((revision) => revisionHoldsCredentialSource(revision, sourceId))
+    ) {
+      return false;
     }
-    await state.agents.updateConfiguration(namespaceId, agentId, agent.configurationId,
-      undefined, undefined, undefined, undefined, undefined, undefined, undefined, remaining);
+    const active = revisions.find((revision) => revision.id === agent.activeRevisionId);
+    const serving = active
+      ? [
+          active,
+          ...(await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock())),
+        ]
+      : revisions;
+    let withdrawalRequested = false;
+    for (const revision of serving.filter((revision) =>
+      revisionHoldsCredentialSource(revision, sourceId),
+    )) {
+      if (!revokeForAllAgents) {
+        await this.authorize(principalId, "operate", { kind: "agent", namespaceId, id: agentId });
+      }
+      const withdrawal = await this.requestRevisionCredentialWithdrawal(
+        state,
+        principalId,
+        revision,
+        sourceId,
+      );
+      if (withdrawal.state === "pending") {
+        withdrawalRequested = true;
+      }
+    }
+    if (attached) {
+      await state.agents.updateConfiguration(
+        namespaceId,
+        agentId,
+        agent.configurationId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        remaining,
+      );
+    }
     const bindingId = `binding_${agentId}_${sourceId}_operate`;
     const grant = await state.iamPolicy.getAccessBinding(namespaceId, bindingId);
-    if (grant?.subjectKind === "identity" && grant.subjectId === agent.servicePrincipalId &&
-        grant.resourceKind === "credential_source" && grant.resourceId === sourceId &&
-        grant.roleId === `role_${namespaceId}_agent_credential_source_operate`) {
+    if (
+      grant?.subjectKind === "identity" &&
+      grant.subjectId === agent.servicePrincipalId &&
+      grant.resourceKind === "credential_source" &&
+      grant.resourceId === sourceId &&
+      grant.roleId === `role_${namespaceId}_agent_credential_source_operate`
+    ) {
       const driver = this.iamPolicyDriver("deleteNamespaceAccessBinding");
       if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
-        throw new DependencyUnavailableError("The IAM Driver cannot withdraw the Agent grant transactionally.");
+        throw new DependencyUnavailableError(
+          "The IAM Driver cannot withdraw the Agent grant transactionally.",
+        );
       }
-      await this.iamPolicyOperation(() => driver.deleteNamespaceAccessBinding!(
-        {policy: state.iamPolicy}, namespaceId, bindingId));
+      await this.iamPolicyOperation(() =>
+        driver.deleteNamespaceAccessBinding!({ policy: state.iamPolicy }, namespaceId, bindingId),
+      );
     }
     return withdrawalRequested;
   }

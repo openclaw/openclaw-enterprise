@@ -588,6 +588,11 @@ func (client *Client) ListAgentConnections(namespaceID, agentID string) (any, er
 	return client.get("namespaces", namespaceID, "agents", agentID, "connections")
 }
 
+// AttachAgentConnection grants an Agent access to a saved account in its Namespace.
+func (client *Client) AttachAgentConnection(namespaceID, agentID, sourceID string) error {
+	return client.sendEmpty(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "connections", sourceID})
+}
+
 // DisconnectAgentConnection detaches the account from this Agent and requests withdrawal.
 func (client *Client) DisconnectAgentConnection(namespaceID, agentID, sourceID string) (any, error) {
 	return client.send(

@@ -225,7 +225,7 @@
 - [`startNamespaceConnection`](../api.md#post-namespacesnamespaceidconnections): Start consent for a reusable account in this Namespace.
 - [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template that no connection uses.
 - [`disconnectAgentConnection`](../api.md#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Detach an account from this Agent and withdraw its access.
-- [`disconnectNamespaceConnection`](../api.md#delete-namespacesnamespaceidconnectionscredentialsourceid): Disconnect an unused saved account from this Namespace.
+- [`disconnectNamespaceConnection`](../api.md#delete-namespacesnamespaceidconnectionscredentialsourceid): Revoke a saved account and withdraw access from every Agent.
 
 ### Credential sources
 

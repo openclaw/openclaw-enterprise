@@ -180,7 +180,26 @@ export function connectionHandlers(redirectUri: () => string | undefined): Resou
     namespaceId,
   }) => {
     reply.send({
-      data: await controller.listAgentConnections(context.actorId, namespaceId, params.agentId),
+      data: (
+        await controller.listAgentConnections(context.actorId, namespaceId, params.agentId)
+      ).map(
+        ({
+          namespaceId,
+          credentialSourceId,
+          ownerPrincipalId,
+          connectionTemplateId,
+          connectionTemplateVersion,
+          createdAt,
+        }) => ({
+          namespaceId,
+          credentialSourceId,
+          ownerPrincipalId,
+          connectionTemplateId,
+          connectionTemplateVersion,
+          createdAt,
+          ...(params.agentId === undefined ? {} : { agentId: params.agentId }),
+        }),
+      ),
       meta: { requestId: request.id },
     });
   };

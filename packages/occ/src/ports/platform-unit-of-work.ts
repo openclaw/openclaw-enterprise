@@ -70,9 +70,13 @@ export function bindPlatformUnitOfWork(
     agentConnections: bindRepository(repositories.agentConnections, lifetime, [
       "findAgentConnection",
       "listNamespaceConnections",
+      "listRevokingConnections",
+      "hasPendingConnectionWithdrawals",
       "listAgentConnections",
       "findConnectionSession",
       "createAgentConnection",
+      "requestConnectionRevocation",
+      "confirmConnectionRevocation",
       "deleteAgentConnection",
       "createConnectionSession",
       "consumeConnectionSession",

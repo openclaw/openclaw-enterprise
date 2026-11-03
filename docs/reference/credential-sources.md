@@ -29,8 +29,6 @@ OpenShell is a development integration. See the
 [Credential Proxy overview](../design/credential-proxy.md) and
 [threat model](security/credential-proxy.md).
 
-A [browser connection](connection-templates.md) saves the approved OAuth account as a Namespace source. Attach that completed account to give an Agent its own grant.
-
 ## Register a source
 
 1. Wait for the Namespace to become `ready`.
@@ -114,11 +112,11 @@ bound or deployed.
 
 ## Bind a source to an Agent
 
-Set `credentialSources` to a list of up to eight distinct
-`{ "sourceId": "cs_…" }` entries. On update, the list replaces the draft's
-bindings. Omit it to keep them or send `[]` to remove them all.
+[Attach a saved OAuth account](connection-templates.md#grant-an-agent-access).
 
-| When                       | Required source permissions                                                                                                                                                                |
+For manual sources, list up to eight distinct `{ "sourceId": "cs_…" }` entries in `credentialSources`. Omit the list to keep bindings or send `[]` to clear them.
+
+| When                       | Manual source permissions                                                                                                                                                                |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Create or update the Agent | The caller needs the corresponding `agent:create` or `agent:update` and `credential_source:operate` on each current and requested source, including removals.                              |
 | Deploy                     | The caller needs `agent:deploy`. Both the caller and the Agent service principal need `credential_source:operate` on each listed source. The worker checks both again before provisioning. |

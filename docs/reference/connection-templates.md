@@ -121,24 +121,33 @@ Deploy the Agent to use the account. Its authorized execution can send requests 
 
 `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}` removes that Agent's saved binding and its connection grant. If its active revision holds the source, OCC also requests [withdrawal](credential-sources/withdrawal.md), which requires `agent:operate`. Other Agents with access can continue to use the account.
 
-To disconnect the saved account, the consent owner or a caller with `delete` on the source calls `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`. First detach it from all Agents and let pending deployments or withdrawals release their references. OCC then removes the refresh material and source through the Credential Gateway. A source created recently may require a retry after its registration fence expires.
+The consent owner can revoke the account everywhere by calling `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`. A caller with `delete` on the source can do the same. OCC closes the source to new deployments, removes its Agent bindings and grants, and requests withdrawal for revisions already holding it. OpenShell removes the refresh material and provider. If that call fails, the worker retries using the recorded revocation. OCC retains the internal record until the outstanding references clear. Agent editors can select a replacement for any plugin or Harness that relied on the retired source.
+
+Use the credential source ID from the Namespace connections list to manage a saved account with the CLI.
+
+```sh
+occ --namespace "$NAMESPACE_ID" agent connection attach "$AGENT_ID" "$SOURCE_ID"
+occ --namespace "$NAMESPACE_ID" agent connection list "$AGENT_ID"
+occ --namespace "$NAMESPACE_ID" agent connection detach "$AGENT_ID" "$SOURCE_ID"
+```
 
 ## Callback failures
 
 A failed callback redirects to `/console/?connection=failed&reason=<code>`.
 
-| Reason                                   | Cause                                                                               | Recovery                                                   |
-| ---------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `session_required`                       | No signed-in session, or a service key.                                             | Sign in and connect again.                                 |
-| `missing_state`, `unknown_session`       | No session for this `state`, or another person's session. The session stays unused. | The owner opens the link in their session.                 |
-| `session_used_or_expired`                | A replay, or more than ten minutes passed.                                          | Connect again.                                             |
-| `consent_denied`, `provider_error`       | The provider reported `access_denied` or another error.                             | Connect again.                                             |
-| `state_mismatch`, `invalid_session`      | The callback does not match the stored session.                                     | Connect again.                                             |
-| `grant_refused`                          | The issuer refused the code.                                                        | Connect again.                                             |
-| `client_refused`                         | The issuer refused the client ID or secret.                                         | An administrator fixes the template or rotates the secret. |
-| `no_refresh_token`                       | The issuer returned no refresh token.                                               | An administrator adds offline access parameters.           |
-| `exchange_refused`, `issuer_unavailable` | The token endpoint failed.                                                          | Fix the template, or retry later.                          |
-| `unavailable`                            | Any other failure, such as a lost grant or a timeout.                               | Check the source; delete it if unbound.                    |
+| Reason                                   | Cause                                                                               | Recovery                                                             |
+| ---------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `session_required`                       | No signed-in session, or a service key.                                             | Sign in and connect again.                                           |
+| `missing_state`, `unknown_session`       | No session for this `state`, or another person's session. The session stays unused. | The owner opens the link in their session.                           |
+| `session_used_or_expired`                | A replay, or more than ten minutes passed.                                          | Connect again.                                                       |
+| `consent_denied`, `provider_error`       | The provider reported `access_denied` or another error.                             | Connect again.                                                       |
+| `state_mismatch`, `invalid_session`      | The callback does not match the stored session.                                     | Connect again.                                                       |
+| `grant_refused`                          | The issuer refused the code.                                                        | Connect again.                                                       |
+| `client_refused`                         | The issuer refused the client ID or secret.                                         | An administrator fixes the template or rotates the secret.           |
+| `grant_scope_mismatch`                   | The issuer returned scopes outside the approved template.                           | Check the OAuth client's provider-side default scopes and reconnect. |
+| `no_refresh_token`                       | The issuer returned no refresh token.                                               | An administrator adds offline access parameters.                     |
+| `exchange_refused`, `issuer_unavailable` | The token endpoint failed.                                                          | Fix the template, or retry later.                                    |
+| `unavailable`                            | Any other failure, such as a lost grant or a timeout.                               | Check the source; delete it if unbound.                              |
 
 From `consent_denied` through `issuer_unavailable`, OCC requests deletion of the pending
 source. After `session_used_or_expired`, a timeout, or another uncertain failure,
@@ -150,8 +159,7 @@ replays a code.
 - The console has no connection controls yet; use the HTTP API.
 - Presets cannot reference connection templates yet, and OCC does not hold back
   deployment for missing connections.
-- The credential is released to every `toolBinaries` entry and every HTTP method
-  on the endpoint; per-template binaries and read-only access are not available.
+- OpenShell lets the Installation’s admitted binaries use its approved endpoint. The template’s `full` access allows the route’s supported HTTP methods. Provider scopes may restrict the operations further.
 - OCC does not show which provider account was connected.
 - OpenShell remains an unsupported production path; see its
   [qualification contract](drivers/openshell-sandbox.md#qualification-contract).

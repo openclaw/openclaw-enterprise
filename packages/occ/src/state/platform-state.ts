@@ -405,6 +405,12 @@ export interface AgentConnectionReadRepository {
     namespaceId: string,
     credentialSourceId: string,
   ): Promise<Readonly<AgentConnection> | undefined>;
+  hasPendingConnectionWithdrawals(namespaceId: string, sourceId: string): Promise<boolean>;
+  listRevokingConnections(
+    installationId: string,
+    limit: number,
+    afterSourceId?: string,
+  ): Promise<readonly Readonly<AgentConnection>[]>;
   listNamespaceConnections(namespaceId: string): Promise<readonly Readonly<AgentConnection>[]>;
   listAgentConnections(
     namespaceId: string,
@@ -414,6 +420,12 @@ export interface AgentConnectionReadRepository {
 }
 
 export interface AgentConnectionRepository extends AgentConnectionReadRepository {
+  requestConnectionRevocation(
+    namespaceId: string,
+    sourceId: string,
+    principalId: string,
+  ): Promise<void>;
+  confirmConnectionRevocation(namespaceId: string, sourceId: string, at: string): Promise<void>;
   createAgentConnection(connection: AgentConnection): Promise<Readonly<AgentConnection>>;
   deleteAgentConnection(namespaceId: string, credentialSourceId: string): Promise<boolean>;
   createConnectionSession(session: ConnectionSession): Promise<Readonly<ConnectionSession>>;
@@ -2007,10 +2019,54 @@ function repositories(
       const found = snapshot.agentConnections.get(agentKey(namespaceId, credentialSourceId));
       return found === undefined ? undefined : immutableCopy(found);
     },
+    hasPendingConnectionWithdrawals: async (namespaceId, sourceId) =>
+      Array.from(snapshot.credentialWithdrawals.values()).some(
+        (withdrawal) =>
+          withdrawal.namespaceId === namespaceId &&
+          withdrawal.credentialSourceId === sourceId &&
+          withdrawal.state === "pending",
+      ),
+    listRevokingConnections: async (installationId, limit, afterSourceId) => {
+      if (snapshot.installation?.id !== installationId) {
+        return [];
+      }
+      return Object.freeze(
+        Array.from(snapshot.agentConnections.values())
+          .filter(
+            (account) =>
+              account.revocationRequestedBy !== undefined &&
+              (afterSourceId === undefined || account.credentialSourceId > afterSourceId),
+          )
+          .sort((a, b) => a.credentialSourceId.localeCompare(b.credentialSourceId))
+          .slice(0, limit)
+          .map((account) => immutableCopy(account)),
+      );
+    },
+    requestConnectionRevocation: async (namespaceId, sourceId, principalId) => {
+      const key = agentKey(namespaceId, sourceId);
+      const current = snapshot.agentConnections.get(key);
+      if (current && current.revocationRequestedBy === undefined) {
+        snapshot.agentConnections.set(
+          key,
+          storedCopy({ ...current, revocationRequestedBy: principalId }),
+        );
+      }
+    },
+    confirmConnectionRevocation: async (namespaceId, sourceId, at) => {
+      const key = agentKey(namespaceId, sourceId);
+      const current = snapshot.agentConnections.get(key);
+      if (current?.revocationRequestedBy !== undefined && current.revokedAt === undefined) {
+        snapshot.agentConnections.set(key, storedCopy({ ...current, revokedAt: at }));
+      }
+    },
     listNamespaceConnections: async (namespaceId) =>
       Object.freeze(
         Array.from(snapshot.agentConnections.values())
-          .filter((connection) => connection.namespaceId === namespaceId)
+          .filter(
+            (connection) =>
+              connection.namespaceId === namespaceId &&
+              connection.revocationRequestedBy === undefined,
+          )
           .sort((a, b) => a.credentialSourceId.localeCompare(b.credentialSourceId))
           .map((connection) => immutableCopy(connection)),
       ),
@@ -2021,6 +2077,7 @@ function repositories(
         Array.from(snapshot.agentConnections.values())
           .filter(
             (connection) =>
+              connection.revocationRequestedBy === undefined &&
               connection.namespaceId === namespaceId &&
               sourceIds.has(connection.credentialSourceId),
           )

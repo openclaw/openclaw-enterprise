@@ -153,7 +153,13 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
         (typeof record.clientWorkspace !== "string" ||
           !WORKSPACE_NAME.test(record.clientWorkspace)))
     ) {
-      return [{path: "/clientWorkspace", code: "INVALID_VALUE", message: "clientWorkspace must name an OpenShell Workspace."}];
+      return [
+        {
+          path: "/clientWorkspace",
+          code: "INVALID_VALUE",
+          message: "clientWorkspace must name an OpenShell Workspace.",
+        },
+      ];
     }
     return [];
   }
