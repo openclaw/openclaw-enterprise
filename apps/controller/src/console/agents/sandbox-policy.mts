@@ -935,7 +935,9 @@ export function renderAgentSandboxPolicy(
       truncatedWindow = (restart ? false : truncatedWindow) || page.truncated;
       logWarnings.hidden = withheldRecords === 0 && !truncatedWindow;
       logWarnings.textContent = [
-        withheldRecords ? `${withheldRecords} records withheld since the last refresh.` : "",
+        withheldRecords
+          ? `${withheldRecords} ${withheldRecords === 1 ? "record" : "records"} withheld since the last refresh.`
+          : "",
         truncatedWindow ? "Some log output was truncated. This window is incomplete." : "",
       ]
         .filter(Boolean)

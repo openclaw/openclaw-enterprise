@@ -263,6 +263,8 @@ export const PolicyDenialsReadDenied = story("policyDenialsReadDenied");
 export const PolicyDenialsLoading = story("policyDenialsLoading");
 export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");
 export const PolicyDenialsProtected = story("policyDenialsProtected");
+export const PolicyDenialsWithheldOne = story("policyDenialsWithheldOne");
+export const PolicyDenialsWithheldMany = story("policyDenialsWithheldMany");
 
 export const ConfigurationInvalid = story("policyConfigurationInvalid");
 export const ConfigurationConflict = story("policyConfigurationConflict");
