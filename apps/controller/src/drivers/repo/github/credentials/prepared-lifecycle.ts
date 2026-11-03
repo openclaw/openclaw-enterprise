@@ -24,7 +24,7 @@ import { createSystemClock } from "../../credentials/clock.ts";
 import { createGitHubKeyOwner } from "./material.ts";
 import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
 import { createGitHubPreparationOwner } from "./prepared-owner.ts";
-import { createGitHubWarmReader } from "./prepared-reader.ts";
+import { createWarmTokenReader } from "../../../../backends/token-service/warm-reader.ts";
 import { retirePreparedGitHubToken } from "./prepared-retirement.ts";
 
 function grantId({ grant: g }: Source) {
@@ -297,7 +297,7 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     if (!active(effectiveUntil)) {
       return;
     }
-    const reader = createGitHubWarmReader(
+    const reader = createWarmTokenReader(
       this.db.store(source, {
         deadlineAt: new Date(effectiveUntil).toISOString(),
         attemptId: m.id,
