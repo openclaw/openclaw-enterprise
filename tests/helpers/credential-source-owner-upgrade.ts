@@ -38,7 +38,7 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
   async function sources(omitAnnotations: boolean) {
     return (
       await app.query(
-        `SELECT to_jsonb(s) ${omitAnnotations ? "- 'owner_capability' - 'egress'" : ""} AS source
+        `SELECT to_jsonb(s) ${omitAnnotations ? "- 'owner_capability' - 'egress' - 'update_attempt_id'" : ""} AS source
          FROM occ.credential_sources s WHERE id=ANY($1) ORDER BY id`,
         [ids],
       )

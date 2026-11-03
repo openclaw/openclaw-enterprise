@@ -231,6 +231,16 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
       heldCommit = undefined;
       held.upstream.write(held.frame);
     },
+    // Close the connection whose COMMIT is paused before PostgreSQL receives it: the server
+    // rolls the transaction back, and the client sees its COMMIT fail.
+    dropPausedCommit() {
+      if (heldCommit === undefined) {
+        throw new Error("No COMMIT request is paused.");
+      }
+      const held = heldCommit;
+      heldCommit = undefined;
+      held.upstream.destroy();
+    },
     async close() {
       for (const socket of sockets) {
         socket.destroy();

@@ -43,9 +43,9 @@ before withdrawing access. Selecting Credential Proxy alone does not provide one
 ### Keep schema histories separate
 
 The migrator recognizes the 59-receipt history before Credential Proxy and the
-62-receipt history through `0062_credential_delivery_custody`. The 63-receipt
-history through `0063_prepared_attempt_settlement` is `preGatewayManagedMode`;
-it still needs `0064_gateway_managed_mode`. The
+62- through 65-receipt histories, from `0062_credential_delivery_custody` to
+`0065_selected_repository_set`. Each upgrades to 66 receipts, ending at
+`0066_credential_source_retained_secrets`. The
 [migration reference](../../reference/settings/operations.md) lists the supported
 histories. The migrator checks receipt hashes, timestamps, and the database
 catalog; a count alone does not establish compatibility.
@@ -73,9 +73,9 @@ migrator credential and the database CA.
 
 If the check fails, stop. Exit 0 and `migration.checked` with
 `history: "completed"` mean no migration is pending for that release.
-From `preCredentialProxy`, the release applies `0060` through `0064`; from
-`prePreparedAttemptSettlement`, it applies `0063` and `0064`. From
-`preGatewayManagedMode`, only `0064` remains in this release.
+From `preCredentialProxy`, the release applies `0060` through `0066`; from
+`prePreparedAttemptSettlement`, `0063` through `0066`; from
+`preGatewayManagedMode`, `0064` through `0066`.
 Confirm the target and authorization before running the migration and checking again:
 
 ```bash
