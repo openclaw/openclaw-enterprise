@@ -298,18 +298,10 @@ function integrationEnvironment(patch = {}) {
   return {
     name: "integration",
     protection_rules: [],
-    deployment_branch_policy: {
-      custom_branch_policies: true,
-      protected_branches: false,
-    },
+    deployment_branch_policy: null,
     ...patch,
   };
 }
-
-const mainOnlyPolicies = Object.freeze({
-  total_count: 1,
-  branch_policies: [{ name: "main", type: "branch" }],
-});
 
 const credentialedLanes = [
   "qa-matrix",
@@ -341,10 +333,8 @@ test("full integration preflight selects only manual workflow lanes", () => {
   }
 });
 
-test("integration environment policy is exactly main-only without required reviewers", () => {
-  assert.doesNotThrow(() =>
-    validateEnvironmentPolicy("integration", integrationEnvironment(), mainOnlyPolicies),
-  );
+test("integration permits manual branch dispatch without required reviewers", () => {
+  assert.doesNotThrow(() => validateEnvironmentPolicy("integration", integrationEnvironment()));
   assert.throws(
     () =>
       validateEnvironmentPolicy(
@@ -352,84 +342,57 @@ test("integration environment policy is exactly main-only without required revie
         integrationEnvironment({
           protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User" }] }],
         }),
-        mainOnlyPolicies,
       ),
     /must not require reviewers/,
   );
   for (const deployment_branch_policy of [
-    null,
     { custom_branch_policies: false, protected_branches: true },
-    { custom_branch_policies: true, protected_branches: true },
+    { custom_branch_policies: true, protected_branches: false },
   ]) {
     assert.throws(
       () =>
         validateEnvironmentPolicy(
           "integration",
           integrationEnvironment({ deployment_branch_policy }),
-          mainOnlyPolicies,
         ),
-      /custom main-only policy/,
-    );
-  }
-  // A shared admin/model environment must reject extra refs and incomplete API results.
-  for (const policies of [
-    undefined,
-    { total_count: 0, branch_policies: [] },
-    { total_count: 2, branch_policies: [{ name: "main", type: "branch" }] },
-    ...["release", "*", "refs/pull/*/merge"].map((name) => ({
-      total_count: 2,
-      branch_policies: [...mainOnlyPolicies.branch_policies, { name, type: "branch" }],
-    })),
-    { total_count: 1, branch_policies: [{ name: "main" }] },
-    { total_count: 1, branch_policies: [{ name: "main", type: "tag" }] },
-    { branch_policies: mainOnlyPolicies.branch_policies },
-  ]) {
-    assert.throws(
-      () => validateEnvironmentPolicy("integration", integrationEnvironment(), policies),
-      /must allow only the main branch/,
+      /must permit all repository branches/,
     );
   }
 });
 
 test("preflight fetches the shared environment once for selected manual integration runs", async () => {
   for (const lane of [...credentialedLanes, "all"]) {
-    const fetched = [];
-    const result = await validateFullIntegrationPreflight({
-      env: {
-        GITHUB_REF: "refs/heads/main",
-        GITHUB_EVENT_NAME: "workflow_dispatch",
-        INPUT_LANE: lane,
-        GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
-        GITHUB_TOKEN: "token",
-      },
-      github: async ({ repository, path }) => {
-        fetched.push({ repository, path });
-        if (path === "/environments/integration") {
-          return integrationEnvironment();
-        }
-        if (path === "/environments/integration/deployment-branch-policies") {
-          return mainOnlyPolicies;
-        }
-        throw new Error(`unexpected path ${path}`);
-      },
-    });
+    for (const ref of ["refs/heads/main", "refs/heads/dev/kevinlin/reviewed-change"]) {
+      const fetched = [];
+      const result = await validateFullIntegrationPreflight({
+        env: {
+          GITHUB_REF: ref,
+          GITHUB_EVENT_NAME: "workflow_dispatch",
+          INPUT_LANE: lane,
+          GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
+          GITHUB_TOKEN: "token",
+        },
+        github: async ({ repository, path }) => {
+          fetched.push({ repository, path });
+          if (path === "/environments/integration") {
+            return integrationEnvironment();
+          }
+          throw new Error(`unexpected path ${path}`);
+        },
+      });
 
-    assert.deepEqual(result, { selectedLane: lane, runAll: lane === "all" });
-    assert.deepEqual(fetched, [
-      { repository: "openclaw/openclaw-enterprise", path: "/environments/integration" },
-      {
-        repository: "openclaw/openclaw-enterprise",
-        path: "/environments/integration/deployment-branch-policies",
-      },
-    ]);
+      assert.deepEqual(result, { selectedLane: lane, runAll: lane === "all" });
+      assert.deepEqual(fetched, [
+        { repository: "openclaw/openclaw-enterprise", path: "/environments/integration" },
+      ]);
+    }
   }
 });
 
-test("preflight rejects non-main credentialed sources before fetching environment metadata", async () => {
+test("preflight rejects tags and PR refs before fetching environment metadata", async () => {
   const fetched = [];
-  // Model and OpenShell no longer get temporary branch grants to the combined secrets.
   for (const lane of [...credentialedLanes, "all"]) {
-    for (const ref of ["refs/heads/reviewed-change", "refs/tags/main", "refs/pull/1/merge"]) {
+    for (const ref of ["refs/tags/main", "refs/pull/1/merge", undefined]) {
       await assert.rejects(
         () =>
           validateFullIntegrationPreflight({
@@ -445,7 +408,7 @@ test("preflight rejects non-main credentialed sources before fetching environmen
               throw new Error(`unexpected path ${path}`);
             },
           }),
-        /must run from main/,
+        /must run from a repository branch/,
       );
     }
   }
@@ -470,7 +433,7 @@ for (const lane of ["dev-up-k3d", "skipper-prepared-git-installed"]) {
     for (const ref of ["refs/tags/reviewed-keycloak", "refs/pull/1138/merge"]) {
       await assert.rejects(
         validateFullIntegrationPreflight({ env: { ...env, GITHUB_REF: ref }, github }),
-        /must run from main/,
+        /must run from a repository branch/,
       );
     }
     for (const event of ["push", "pull_request"]) {
@@ -480,7 +443,7 @@ for (const lane of ["dev-up-k3d", "skipper-prepared-git-installed"]) {
       );
     }
     for (const lane of ["all", "docker-model", "provider-account", "qa-matrix"]) {
-      assert.throws(() => assertSourceRef(env.GITHUB_REF, lane), /must run from main/);
+      assert.doesNotThrow(() => assertSourceRef(env.GITHUB_REF, lane));
     }
   });
 }

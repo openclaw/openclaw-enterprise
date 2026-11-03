@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-02
-last_updated_session: authoring-run/af85064b-4dc8-4fc5-b59d-b55efb3321a5
+last_updated_session: authoring-run/69a634bd-8971-4b09-8874-c449a237d117
 ---
 
 # GitHub Actions testing flow
@@ -14,7 +14,7 @@ last_updated_session: authoring-run/af85064b-4dc8-4fc5-b59d-b55efb3321a5
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci.md#qa-matrix).
-- `.github/workflows/full-integration.yml:jobs`: manual credentialed integrations from `main`, or environment-free installation lanes from reviewed branches.
+- `.github/workflows/full-integration.yml:jobs`: manual integrations from reviewed repository branches.
 
 ## Flow
 
@@ -39,7 +39,7 @@ graph TD
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
   C["Manual integration dispatch"] --> P["Source and environment preflight"]
-  P -->|main and exact main-only integration policy| E["Protected test jobs"]
+  P -->|manual repository branch and environment policy| E["Protected test jobs"]
   P -->|all or selected installation lane| U["Credential-free installation jobs"]
   U --> T
   P -->|missing protection| X["Failed check"]
@@ -94,9 +94,9 @@ policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
 Full Integration pins `github.sha`; `all` selects every lane. Credentialed jobs
-use `integration` on `main`; preflight requires one custom `main` branch rule
-without reviewers. QA waits for Slack; cancellation stops QA. Aggregation requires
-QA and installation results.
+use unrestricted `integration` without reviewers. Dispatchers review commits;
+preflight requires manual branch dispatch. QA waits for Slack; cancellation stops
+QA. Aggregation requires QA and installation results.
 
 Environment-free `dev-up-k3d` and `skipper-prepared-git-installed` accept reviewed
 branches and serialize per branch. Others share `full-integration`; none cancel.
@@ -259,6 +259,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-02 18:03: Allow branch dispatch. (authoring-run/69a634bd-8971-4b09-8874-c449a237d117 - d415b949e58f9def9824188f17313c925d5a270e)
 
 - 2026-11-02 17:43: Load QA registries from files. (authoring-run/af85064b-4dc8-4fc5-b59d-b55efb3321a5 - f1c4746031c95fb863f02e17537e67c09d0d1ba3)
 

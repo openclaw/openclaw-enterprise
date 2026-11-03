@@ -60,10 +60,12 @@ permissions are set in the [workflow files](../../.github/workflows);
 
 ### Environments
 
-All credentialed Full Integration jobs use `integration`. Its custom deployment
-policy must contain exactly one rule: branch `main`. Disable admin bypass and do
-not configure required reviewers. Preflight rejects protected-branches mode,
-additional branches, wildcard grants, and tags, including a tag named `main`.
+All credentialed Full Integration jobs use `integration`. Set its deployment
+branch policy to unrestricted and do not configure required reviewers. Full
+Integration requires manual dispatch from a repository branch; preflight rejects
+tags and PR merge refs. The dispatcher must review the selected commit before
+running code with the integration credentials. GitHub requires repository write
+access to dispatch; no separate team-membership check is configured.
 
 QA Matrix Advisory uses the separate `integration-qa-pr` environment, which
 permits `main` and GitHub's `refs/pull/*/merge` branches. Keep its
@@ -74,13 +76,13 @@ preflight does not govern this environment.
 
 Full Integration rejects tags. Before dispatch, confirm the branch points to
 the reviewed commit; rely on the run only if its `headSha` matches that commit.
-Credentialed lanes, including `k3d-model` and `openshell`, require `main`.
+All lanes accept reviewed repository branches for manual dispatch.
 
 `dev-up-k3d` and `skipper-prepared-git-installed` accept branches without a
 GitHub environment. The Skipper job uses synthetic, job-local model and Git credentials for the
 [installed private Git fixture](repository-credentials.md#verify-prepared-native-git)
 and a GitHub Actions cache token to build images. `helper-timeout` and standalone
-`logging-collector` also need no environment, but both require `main`.
+`logging-collector` also need no environment.
 
 The table distinguishes secret names from variable names. The common runtime
 image variables are optional `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
@@ -111,7 +113,7 @@ When replacing environments, load secrets from their original approved sources;
 GitHub returns stored secret names, not values. Resolve repeated
 `OPENAI_API_KEY` names explicitly rather than assuming the old credentials
 match. Preserve the old environments until credentials are populated and the
-new setup is verified with the selected main-only lanes.
+new setup is verified with the selected manually dispatched lanes.
 
 `NODE_BASE_IMAGE` is a separate variable consumed by older Full Integration
 jobs; it is not an alias for `CONTAINER_NODE_BASE_IMAGE`. Model/image requirements
@@ -435,13 +437,13 @@ tool setup or preparation; an unknown path, path alias, or another lane's file f
 ### Run a protected integration lane
 
 Configure [integration environments](#environments), inspect the
-commit, then dispatch the selected lane or `all` on `main`:
+commit, then dispatch the selected lane or `all` on the reviewed branch:
 
 ```sh
-gh workflow run full-integration.yml --ref main -f lane=all
+gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=all
 ```
 
-Branch exceptions are listed above. `qa_repository_fixture` applies to both
+`qa_repository_fixture` applies to both
 `qa-matrix` and `all`; QA and focused Slack share a serial execution path.
 
 ### Run the hosted local installation lane

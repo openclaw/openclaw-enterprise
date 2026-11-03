@@ -18,7 +18,6 @@ export const fullIntegrationLanes = Object.freeze([
 ]);
 
 const lanes = new Set(fullIntegrationLanes);
-const branchEligibleLanes = new Set(["dev-up-k3d", "skipper-prepared-git-installed"]);
 const credentialedLanes = new Set([
   "qa-matrix",
   "docker-model",
@@ -38,12 +37,11 @@ export function selectLane({ eventName, inputLane }) {
   throw new Error(`Unsupported full integration event: ${eventName}`);
 }
 
-export function assertSourceRef(ref, lane) {
-  if (branchEligibleLanes.has(lane) && /^refs\/heads\/.+/.test(ref ?? "")) {
-    return;
-  }
-  if (ref !== "refs/heads/main") {
-    throw new Error("Full integration must run from main at the approved github.sha.");
+export function assertSourceRef(ref) {
+  if (!/^refs\/heads\/.+/.test(ref ?? "")) {
+    throw new Error(
+      "Full integration must run from a repository branch at the approved github.sha.",
+    );
   }
 }
 
@@ -58,32 +56,14 @@ function requiredReviewersRule(environment) {
   return environment.protection_rules?.find((rule) => rule.type === "required_reviewers");
 }
 
-function branchPolicies(policies) {
-  return policies?.branch_policies ?? [];
-}
-
-function assertCustomMainOnlyPolicy(environmentName, environment, policies) {
-  const policy = environment.deployment_branch_policy;
-  if (policy?.custom_branch_policies !== true || policy?.protected_branches !== false) {
-    throw new Error(`Protected environment ${environmentName} must use custom main-only policy.`);
-  }
-  const branches = branchPolicies(policies);
-  if (
-    policies?.total_count !== branches.length ||
-    branches.length !== 1 ||
-    branches[0]?.name !== "main" ||
-    branches[0]?.type !== "branch"
-  ) {
-    throw new Error(`Protected environment ${environmentName} must allow only the main branch.`);
-  }
-}
-
-export function validateEnvironmentPolicy(environmentName, environment, policies) {
+export function validateEnvironmentPolicy(environmentName, environment) {
   const reviewers = requiredReviewersRule(environment);
   if ((reviewers?.reviewers ?? []).length > 0) {
     throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
   }
-  assertCustomMainOnlyPolicy(environmentName, environment, policies);
+  if (environment.deployment_branch_policy !== null) {
+    throw new Error(`Environment ${environmentName} must permit all repository branches.`);
+  }
 }
 
 async function fetchGithubJson({ repository, token, path }) {
@@ -105,7 +85,7 @@ export async function validateFullIntegrationPreflight({
   env = process.env,
   github = fetchGithubJson,
 } = {}) {
-  assertSourceRef(env.GITHUB_REF, env.INPUT_LANE);
+  assertSourceRef(env.GITHUB_REF);
   const selected = selectLane({ eventName: env.GITHUB_EVENT_NAME, inputLane: env.INPUT_LANE });
   const required = requiredEnvironmentsForLane(selected);
   for (const environmentName of required) {
@@ -114,12 +94,7 @@ export async function validateFullIntegrationPreflight({
       token: env.GITHUB_TOKEN,
       path: `/environments/${environmentName}`,
     });
-    const policies = await github({
-      repository: env.GITHUB_REPOSITORY,
-      token: env.GITHUB_TOKEN,
-      path: `/environments/${environmentName}/deployment-branch-policies`,
-    });
-    validateEnvironmentPolicy(environmentName, environment, policies);
+    validateEnvironmentPolicy(environmentName, environment);
   }
   return { selectedLane: selected, runAll: selected === "all" };
 }
