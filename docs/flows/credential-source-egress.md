@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-10-30
-last_updated_session: authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008
+updated: "2026-11-03"
+last_updated_session: authoring-run/128dac9e-ea62-4cfa-9b62-86dda8b2d743
 ---
 
 # Protected credential request flow
@@ -75,21 +75,21 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-OCC checks source and Secret permissions at admission. Existing sources need
-explicit opt-in. Version 3 binds Sandbox and Credential Proxy to one registered
-Driver. The plan identifies the Driver, configuration digest, execution, source
-generation, grant and routes. Empty routes deny all. The API checks registration.
-The worker compares the stored reference.
+OCC checks source and Secret permissions. Supporting Drivers require opt-in for
+live reads. Bundled OpenShell's static OpenAI provider refuses source creation
+and live adoption through `normalizeConfig`. Its `routes` rejects new protected
+revisions using that source. Both return `409 RESOURCE_CONFLICT` before
+preparation. Admitted revisions keep request checks, withdrawal and cleanup
+with their original owners.
 
-For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` rejects
-a Driver grant that differs from the source. Equivalent grants have the same
-digest across property orders. Unprotected revisions remain v2. Only the bundled
-Driver recognizes historical protected plans by original capability IDs for stored
-release or custody settlement.
-
-Compute rechecks admission with the worker before launch. PostgreSQL rejects
-unknown decisions and mixed v2/v3 fields. Older workers refuse v3. Upgrade
-all writers before admitting it.
+Version 3 pairs Sandbox and Proxy in one registration. The API checks it; the
+worker matches the stored reference. Plans pin Driver, configuration digest,
+execution, source generation, grant and routes. Empty routes deny all.
+For credential-free metadata, `packages/occ/src/index.ts:admitProxyPlan` requires
+the Driver grant to match the source. Key order does not change the digest. Unprotected revisions remain v2. Only
+the bundled Driver recognizes old capability IDs for stored release or settlement.
+Compute rechecks admission before launch. PostgreSQL rejects unknown decisions
+and mixed versions. Upgrade all writers: older workers reject v3.
 
 For each prepared route, `apps/controller/src/drivers/compute/kubernetes/index.ts:preparedEgressReady`
 selects the current issuer, projects the admitted source and checks readiness. Compute retains
@@ -103,38 +103,35 @@ a Git-only Proxy, and Installation limits. Preparation repeats both Git refusals
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
-Compute passes Credential Proxy wiring to Sandbox provisioning. Protected sources
-require admission, API-key login, an exact plan source-key match and no Gateway
-attachment; they receive no Gateway authentication environment. Gateway-owned sources
-require their exact attachment. The egress Driver compares the Sandbox's complete
-prepared source policy and protected routes with the plan. Authenticated
-`LoadedPolicyObservationV1` binds source and effective policies to the Sandbox,
-instance, policy version, configuration/environment revisions and capabilities.
-Installation and revalidation enforce the
-[V1 contract](../reference/credential-sources/protected-inference.md#loaded-enforcement),
-including its exact name-only rule exception. Missing evidence, widening or a changed
-fence refuses; legacy observations cannot substitute. The gateway compares unknown
-fields too. The local fingerprint covers both hashes and full policies, but is neither
-a canonical supplier hash nor supervisor attestation.
+Compute passes the Proxy wiring to Sandbox provisioning. Protected sources need
+admission, API-key login, a matching plan source key, and no Gateway attachment
+or authentication environment. Gateway sources need their exact attachment.
+The egress Driver matches the complete prepared source policy and protected routes to the plan.
+Authenticated `LoadedPolicyObservationV1` binds source and effective policies
+to the Sandbox, instance, policy and configuration/environment revisions, and
+capabilities. Install and revalidation enforce the
+[V1 contract](../reference/credential-sources/protected-inference.md#loaded-enforcement)
+and its exact name-only rule exception. Unknown fields are compared. Missing,
+widened or stale evidence refuses; legacy observations cannot substitute.
+The local fingerprint covers both hashes and policies; it is no supplier hash
+or supervisor attestation.
 
 Compute adds `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from the immutable admitted
-revision only to protected provider Harness requirements. Before opening its authenticated
-listener on the existing service port, the generated helper requires the literal to equal
-the manifest's enrollment execution revision; missing or mismatched values refuse.
-Compute suppresses its private status revision, port, container name and Pod UID; the
-provider receives the transport verifier, not the raw transport token.
+revision only for protected Harness requirements. The helper opens its authenticated
+listener only if this matches the manifest's enrollment execution revision. Compute
+hides status revision, port, container name and Pod UID; the provider gets the
+transport verifier, not its token.
 
-Before the first model probe, the Harness waits on this listener. Compute awaits the
-installation commit, requeries current evidence and calls the selected Sandbox Driver,
-which checks the exact Sandbox and service and reads the execution/plan challenge.
-Compute signs its fresh process nonce and current installation with a control-plane-only
-key. The listener closes before Codex starts. Restart creates a new challenge; stale
-release cannot unlock the replacement. After 180 seconds, startup fails closed and remains held.
-Reconciliation may repeat readiness exchanges, but enrollment neither
-resolves material nor retries business requests. The worker's active-revision branch can
-repeat this sequence when work is queued. Default Kubernetes has no periodic maintenance
-interval, so Harness-only restart recovery is not automatic;
-see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
+Before probing the model, the Harness waits. Compute waits for the installation
+commit, checks current evidence, then asks the Sandbox Driver to verify the
+Sandbox and service and read the challenge. Compute signs the fresh process nonce
+and installation with its control-plane key. The listener closes before Codex
+starts. Restart needs a fresh challenge; a prior release cannot unlock the new
+process. At 180 seconds, startup fails closed
+and stays held. Reconciliation may repeat readiness, without reading material or
+retrying requests. Queued work can repeat enrollment on the active revision.
+Default Kubernetes has no periodic maintenance, so Harness-only recovery is not
+automatic; see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -335,6 +332,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-03 04:46: Distinguish retired bundled static admission from retained request and cleanup authority. (authoring-run/128dac9e-ea62-4cfa-9b62-86dda8b2d743 - bf014bd41757057a05caf26efae6b6d8bac9696b)
 
 - 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
