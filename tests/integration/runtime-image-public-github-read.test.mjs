@@ -216,21 +216,39 @@ async function readWithStockCodex() {
   try {
     // Read the endpoint from the projected managed skill, exactly as an Agent can.
     // The random title is present only at the provider, never in this command or its environment.
+    // Fixed stage names locate silent test/set -u exits without logging values,
+    // paths, headers or commands. Some shells report status 0 to EXIT on set -u;
+    // keep that premature exit a failure and remove the trap only after success.
     const shell = [
+      "stage=proxy-active",
+      `trap 'status=$?; printf "public-git-stage-failed:%s\\n" "$stage" >&2; if [ "$status" -eq 0 ]; then status=1; fi; exit "$status"' EXIT`,
       'test "$CODEX_NETWORK_PROXY_ACTIVE" = 1',
+      "stage=local-binding",
       'test "$CODEX_NETWORK_ALLOW_LOCAL_BINDING" = 0',
+      "stage=ca-readable",
       'test -r "$OCE_PUBLIC_GITHUB_READ_CA_FILE"',
+      "stage=config-readable",
       'test -r "$OCE_PUBLIC_GITHUB_READ_CONFIG"',
+      "stage=helper-executable",
       'test -x "$GIT_EXEC_PATH/git-remote-https"',
+      "stage=helper-source-readable",
       'test -r "$GIT_EXEC_PATH/transport.mjs"',
+      "stage=clone",
       "git clone --depth=1 https://github.com/Example/Public-Project.git clone",
+      "stage=skill-origin",
       'origin=$(grep -Eo "https://[0-9.]+:8080" "$1" | head -1)',
+      "stage=api-read",
       'curl -q --proxy "$HTTP_PROXY" --noproxy "" --cacert "$OCE_PUBLIC_GITHUB_READ_CA_FILE" -H "Authorization: Bearer $OCE_PUBLIC_GITHUB_READ_CAPABILITY" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
       "printf '\\n'",
+      "stage=fetch",
       "git -C clone fetch origin",
+      "stage=clone-object",
       "git -C clone show HEAD:readme.txt",
+      "stage=fetched-object",
       "git -C clone show origin/main:readme.txt",
+      "stage=remote-url",
       "git -C clone remote get-url origin",
+      "trap - EXIT",
     ].join("\n");
     const result = await client.request("command/exec", {
       permissionProfile: profileName,
