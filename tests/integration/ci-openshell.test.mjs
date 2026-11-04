@@ -685,11 +685,16 @@ test("a turn the model answered at capacity runs again only for its own final er
   // Each turn/start answers with the next script's events; "close" closes the socket.
   let scripts = [];
   let threadStarts = 0;
+  let connections = 0;
   peer.on("connection", (socket) => {
+    connections += 1;
     socket.on("message", (data) => {
       const { method, id } = JSON.parse(data);
       const send = (message) => socket.send(JSON.stringify(message));
       if (method === undefined || method === "initialized") {
+        return;
+      }
+      if (scripts[0] === `stall ${method}`) {
         return;
       }
       if (method === "initialize") {
@@ -720,6 +725,9 @@ test("a turn the model answered at capacity runs again only for its own final er
         return send({ id, result: { turn } });
       }
       send({ id, result: { turn } });
+      if (script === "stall turn") {
+        return;
+      }
       const at = { threadId, turnId: turn.id };
       const command = { id: "command", type: "commandExecution", command: "true" };
       const started = {
@@ -814,11 +822,15 @@ test("a turn the model answered at capacity runs again only for its own final er
     codexCommandGraceMs: graceMs,
     modelAtCapacityRetry: { sleep: async (ms) => sleeps.push(ms), log: () => {} },
   });
-  const turn = async (turnScripts) => {
+  const turn = async (turnScripts, timeoutMs = 300_000) => {
     scripts = [...turnScripts];
     threadStarts = 0;
     sleeps.length = 0;
-    return requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" });
+    return requestCodexTurnFromGatewayPod({
+      namespace: "fixture",
+      gatewayPod: "fixture",
+      timeoutMs,
+    });
   };
   const failure = (promise) =>
     promise.then(
@@ -877,6 +889,8 @@ test("a turn the model answered at capacity runs again only for its own final er
   assert.doesNotMatch(ended.stderr, /Codex command outcome is unknown/);
   const endedSummary = summaryOf(ended);
   assert.equal(endedSummary.failedCommands, 1);
+  assert.equal(endedSummary.completedCommands, 1);
+  assert.equal(endedSummary.actionSeen, true);
   assert.deepEqual(endedSummary.pendingCommands, []);
 
   // A command whose terminal never arrives, or whose socket closes: the outcome is unknown.
@@ -922,6 +936,22 @@ test("a turn the model answered at capacity runs again only for its own final er
   assert.equal(cutReceipt.message.split("\n")[0], notRetried);
   assert.equal(cutReceipt.code, 75);
   await writeFile(mode, "");
+
+  // A silent peer can stop at any RPC or after accepting a turn. The same deadline must
+  // fail once, without retrying an unknown outcome, and identify that stage without payloads.
+  for (const phase of ["initialize", "thread/start", "turn/start", "turn"]) {
+    const before = connections;
+    const error = await failure(turn([`stall ${phase}`, "reply"], 1_000));
+    assert.match(error.stderr, /Codex harness turn timed out/, phase);
+    assert.equal(connections, before + 1, phase);
+    assert.deepEqual(sleeps, [], phase);
+    const summary = summaryOf(error);
+    assert.equal(summary.phase, phase);
+    assert.deepEqual(summary.pendingRequests, phase === "turn" ? [] : [phase]);
+    assert.equal(summary.completedCommands, 0, phase);
+    assert.equal(summary.actionSeen, false, phase);
+    assert.equal(summary.retrySafe, false, phase);
+  }
 });
 
 test("OpenShell fixture networking admits the supervisor callback without granting tenant Pods", () => {

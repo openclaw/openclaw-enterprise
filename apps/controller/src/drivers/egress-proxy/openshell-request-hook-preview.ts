@@ -283,11 +283,14 @@ export class ObservedHookPreview {
     this.workspace = workspace;
     this.bindingId = bindingId;
   }
-  arm(startupId: string) {
+  arm(startupId: string, repository?: string) {
     if (this.armed || !this.recipient || !this.bootstrapRevision) {
       throw new Error("Preview challenge is not fresh.");
     }
-    const path = observedHookPath + randomBytes(16).toString("hex") + ".git/info/refs";
+    // git-write has an exact repository endpoint; installation-shaped providers
+    // admit the root discovery probe. Both check policy before invoking the hook.
+    const prefix = repository === undefined ? "" : `/${repository}.git`;
+    const path = prefix + observedHookPath + randomBytes(16).toString("hex") + ".git/info/refs";
     this.armed = {
       startupId,
       path,

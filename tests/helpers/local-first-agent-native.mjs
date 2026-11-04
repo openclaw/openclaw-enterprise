@@ -1171,6 +1171,18 @@ async function nativeWorkerProof({
             .filter((part) => part?.type === "text" && typeof part.text === "string")
             .map((part) => part.text)
             .join("\n");
+    const execOutput = (content) => {
+      const output = text(content);
+      try {
+        const result = JSON.parse(output);
+        if (typeof result?.value?.aggregated === "string") {
+          return result.value.aggregated;
+        }
+      } catch {
+        // Plain exec output is already the recorded tool result.
+      }
+      return output;
+    };
     while (!signal.aborted) {
       stage = "model-history";
       const history = await call("chat.history", { sessionKey: key, limit: 30 });
@@ -1182,7 +1194,11 @@ async function nativeWorkerProof({
           message.role === "toolResult" &&
           message.toolName === "exec" &&
           message.isError === false &&
-          text(message.content).includes(toolPrefix),
+          // A failed command can echo the marker in its source. Only a
+          // standalone proof line identifies the command's actual output.
+          execOutput(message.content)
+            .split(/\r?\n/)
+            .some((line) => line.startsWith(toolPrefix)),
       );
       const final = messages.find(
         (message) =>
@@ -1196,15 +1212,7 @@ async function nativeWorkerProof({
       );
       if (tool && final) {
         stage = "exec-proof";
-        let output = text(tool.content);
-        try {
-          const result = JSON.parse(output);
-          if (typeof result?.value?.aggregated === "string") {
-            output = result.value.aggregated;
-          }
-        } catch {
-          // Plain exec output already has the diagnostic line.
-        }
+        const output = execOutput(tool.content);
         const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
         assert.ok(line);
         const proof = JSON.parse(line.slice(toolPrefix.length));

@@ -7,7 +7,7 @@ cannot choose their own Drivers.
 Start with [Kubernetes Compute](../../reference/drivers/kubernetes-compute.md)
 and the [Kubernetes Secret Driver](../../reference/drivers/kubernetes-secret.md)
 for a new Installation. They support the Agent model-credential paths
-documented in [Deploy your first Agent](../first-agent.md). Use the
+documented in [Deploy and verify Agents](../deploy/production-agents.md). Use the
 [Drivers quickstart](../../reference/drivers/selection.md#choose-a-bundled-driver)
 to find the required settings.
 

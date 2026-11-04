@@ -254,13 +254,12 @@ read observes expiry without starting cleanup or cancellation. Clock rollback
 cannot restore even a reserved exchange. The bearer requires a live broker
 and upstream authorization.
 
-An exchange keeps its original credential through replacement. The replacement
-must cover the remaining exchange budget and safety margin. After verifying TLS,
-the sender runs any configured standing callback before its first write. For
-prepared Git, it checks the original one-use permit, cancellation and send
-deadline. Withdrawal blocks new permits. A permitted send can still start
-within its deadline. If a push or API mutation may have reached GitHub,
-inspect the outcome. Never replay it automatically.
+An exchange retains its original credential through replacement. Replacement
+must cover the remaining budget and safety margin. After TLS verification, the
+sender rechecks the owned lease before writing. Prepared sends instead check the
+original one-use permit, cancellation and deadline. Withdrawal blocks new
+permits; an issued permit can still start one send before its deadline.
+Reconcile uncertain GitHub writes without replaying them.
 
 Authentication and cleanup have separate monotonic deadlines from capture.
 Delayed settlement extends neither. Authentication stops 60 seconds before

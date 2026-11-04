@@ -1,5 +1,5 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";
@@ -2123,6 +2123,12 @@ async function prepareProductionInstallation(
   // The Codex scenario runs a second Agent beside the first. Each Agent holds about 7 GiB of
   // limits: its 4 GiB Gateway, its Harness and the 1 GiB OpenShell supervisor. A rolling
   // replacement of a Gateway briefly holds another 4 GiB.
+  if (modelSourceType === "openai") {
+    configuration.drivers.compute.configuration.runtime.modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: modelBaseUrl,
+    };
+  }
   configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "20Gi";
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     await apiServerPodProxySourceCidrs();
@@ -2460,7 +2466,9 @@ async function prepareProductionInstallation(
   const modelSource = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-${randomUUID()}`,
     type: modelSourceType,
-    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
+    ...(openShellModelBaseUrl === undefined
+      ? {}
+      : { config: { authorized_base_url: openShellModelBaseUrl } }),
     secrets: { [modelSecretField]: modelSecret.data.ref },
   });
   assert.equal(modelSource.status, 201, JSON.stringify(modelSource.error));
@@ -3861,7 +3869,9 @@ async function assertNonModelCredentialSource(topology) {
   const secondModel = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-second-${randomUUID()}`,
     type: modelSourceType,
-    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
+    ...(openShellModelBaseUrl === undefined
+      ? {}
+      : { config: { authorized_base_url: openShellModelBaseUrl } }),
     secrets: { [modelSecretField]: secondModelSecret.data.ref },
   });
   assert.equal(secondModel.status, 201, JSON.stringify(secondModel.error));

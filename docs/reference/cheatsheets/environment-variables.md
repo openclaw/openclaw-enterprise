@@ -15,7 +15,7 @@ Command-line flags override these variables. See the [CLI reference](../cli.md).
 - `OCC_SERVICE_KEY_FILE` — Path to a service-key JSON response; required for resource commands.
 - `OCC_NAMESPACE` — Namespace ID for scoped resource commands.
 - `OCC_CA_BUNDLE` — Additional PEM certificate-authority bundle for HTTPS.
-- `OCC_TIMEOUT_SECONDS` — Request timeout in whole seconds; default: `30`.
+- `OCC_TIMEOUT_SECONDS` — OCC request or installation handoff timeout in whole seconds; default: `30`.
 
 ## Controller and authentication
 
@@ -52,6 +52,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required when the pilot is enabled.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
+- `OCC_PREPROVISIONED_NAMESPACE` — API/worker JSON `{"namespaceId", "uid"}` binding one operator-created tenant namespace; set by Helm `preprovisionedNamespace`. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).
 - `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
 - `OCC_API_HTTPS_EGRESS_OPEN` — `true` when API egress allows TCP 443 to any address, so a Slack check without a proxy can succeed; default: `false`. Set by the chart from sign-in `egressCidrs`.
 - `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
@@ -59,6 +60,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_GATEWAY_CA_PATH` — API-only path to the Gateway-only CA bundle that dedicated Harness nodes trust; empty means none. Unset, node enrollment uses `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.
 - `OCC_EGRESS_AUTHORITY_PORT`, `OCC_OPENSHELL_GIT_PORT` — Chart-set port of its `egressAuthority` and `openshellGit` listeners, or `disabled`. API and worker startup and the upgrade check refuse `CHART_LISTENER_MISMATCH` when the Installation authority uses another port, a host other than `0.0.0.0` or `::`, a disabled listener, or TLS or issuer file paths other than the chart's mounts. Not operator inputs.
 - `OCC_CA_SOURCES`, `OCC_DATABASE_CA_SOURCE` — Chart-set labels (value, Secret and key) that the OIDC CA startup checks print in their errors instead of mount paths. Helm sets them with OIDC CA values; not operator inputs.
+- `OCC_CHART_GATEWAY_ROUTING` — Chart-set private Gateway identity and hostnames. Startup refuses conflicting bundled Kubernetes Compute routing; not an operator input. See [production settings](../settings/production.md).
 
 ## PostgreSQL and migrations
 
@@ -97,7 +99,7 @@ the API. It does not use API listener or session-authentication settings. See
 - `OCC_WORKER_POLL_INTERVAL_MS` — Idle polling delay; default: `250` ms; at most `2147483647`.
 - `OCC_WORKER_LEASE_DURATION_MS` — Claim lease; default: `5000` ms; at most `2147483647`.
 - `OCC_WORKER_MAX_ATTEMPTS` — Maximum work attempts; default: `5`.
-- `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` — Namespace convergence timeout; default: `900000` ms.
+- `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` — Pending Namespace convergence, Agent deployment and live SandboxPolicy application timeout, including queue time; default: `900000` ms.
 - `OCC_WORKER_DATABASE_TIMEOUT_MS` — Client-side bound on each worker database query; default: `60000` ms; at most `2147483647`.
 - `OCC_WORKER_READINESS_PATH` — Optional absolute path for the readiness marker; packaged probes require it.
 - `OCC_WORKER_LIVENESS_PATH` — Optional absolute path for the run-loop progress marker; the packaged liveness probe checks its age.
@@ -111,8 +113,8 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; the Docker preview cannot deploy Agents.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
 - `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` (default) or `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
-- `OCC_DEVELOPMENT_PROTECTED_EGRESS` — `0` or unset by default; `1` selects the [protected Kubernetes OpenShell profile](../../guides/deploy/local-openshell-images.md#select-the-protected-profile) with explicit candidate images and charts.
-- `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` — Optional verified private host IPv4 for the protected profile’s native OpenShell host alias; see [development settings](../settings/development.md).
+- `OCC_DEVELOPMENT_PROTECTED_EGRESS` — Unset, empty or `0` preserves ordinary startup; `1` is retired and rejected before effects, including with Kubernetes/OpenShell. Other values are invalid. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Gateway authentication remains enabled independently.
+- `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` — Retired; any presence, including an empty value, is rejected. Remove it from the environment; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_DATABASE_NAME` — Optional disposable `openclaw_k8s_` database for the Kubernetes control plane; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_CONTAINER_ENGINE` — `auto` (default), `docker`, or `podman`; Kubernetes-only mode uses it for k3d and image operations, while Compose mode also requires its Compose provider.
 - `OPENCLAW_DEV_PORT` — Published API port on host loopback; default: `3000`.
@@ -125,6 +127,7 @@ for supported engines, images, and security restrictions.
 - `OCC_DOCKER_GATEWAY_IMAGE` — Docker gateway image when a shared image is not used.
 - `OCC_DOCKER_AGENT_IMAGE` — Docker Codex Agent image when a shared image is not used.
 - `OCC_KUBERNETES_RUNTIME_IMAGE` — Existing local or loopback-registry Kubernetes runtime image; Kubernetes-only startup requires a matching controller digest and checkout commit.
+- `OCC_DEVELOPMENT_BUILD_CA_FILE` — Optional host PEM trust bundle for HTTPS downloads during the local Kubernetes runtime image build.
 - `OCC_DEVELOPMENT_CONTROLLER_IMAGE` — Existing local or loopback-registry OCE controller digest matching the runtime and checkout commit for the Kubernetes-only profile.
 - `OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY` — Private local repository registry, App key, and approved upstream IPv4 `/32` endpoint inputs.
 - `OCC_DEVELOPMENT_REPOSITORY_IMAGE` — Optional matching immutable repository service image for the Kubernetes-only profile.
@@ -152,7 +155,7 @@ for supported engines, images, and security restrictions.
 
 ### First Agent and local model credentials
 
-For a local model turn, see [Deploy your first Agent](../../guides/first-agent.md).
+These inputs belong to the [local first-Agent helper](../../../scripts/first-agent.mjs).
 Use only one of the two credential inputs. In production, use
 [platform Secret bindings](../configuration/secrets.md) instead of setting the
 credential on the controller.

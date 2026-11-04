@@ -1,13 +1,15 @@
 # Render installation profiles
 
-Installation profiles generate the two trusted files used by a production
-OpenClaw Enterprise install: a Helm values overlay and the Installation startup
-YAML mounted into the controller. Use a profile when you want the standard
-OpenClaw or Codex defaults without editing the production examples by hand.
+For a [custom production installation](production-installation.md), choose a
+profile and [render Helm values and Installation YAML](#render-files) from JSON.
+For OpenShell, use [Kubernetes setup](kubernetes-setup.md) or
+[EKS setup](eks-openshell-setup.md) and its first-Agent session.
 
-Profiles only render configuration for an already prepared environment. They do
-not create clusters, Secrets, databases, DNS, certificates, hosted plugin
+Profiles render configuration; they do not create clusters, Secrets, databases,
+DNS, certificates, hosted plugin
 credentials, ChatGPT service accounts, repository registries, or Slack consumers.
+Prepare [routing prerequisites](workspace-routing.md#requirements) before installation;
+rendering does not verify cluster readiness.
 
 ## Choose a profile
 
@@ -149,8 +151,8 @@ For the `codex` profile, add the reviewed Codex seccomp profile to the base inpu
 }
 ```
 
-The `codex` profile also accepts `runtime.codexModelBaseUrl` for `api_key` Agents;
-preflight applies [Compute's endpoint rule](../../reference/drivers/kubernetes-compute.md#configuration).
+Both profiles accept [`runtime.modelProvider`](../../reference/drivers/kubernetes-compute/model-provider.md)
+for API-key inference. Preflight validates its endpoint.
 
 To have OCE issue managed ChatGPT service-account runtime credentials, add the
 optional managed ServiceAccount binding. Do this only after you qualify the
@@ -402,7 +404,7 @@ the install as ready:
 ## Related
 
 - [Production installation](production-installation.md)
-- [Amazon EKS](eks.md)
+- [Amazon EKS](eks-openshell-setup.md)
 - [Codex sandbox setup](codex-sandbox.md)
 - [ChatGPT Backend](../integrations/chatgpt.md)
 - [Repository credential installation](../repository-credentials/installation.md)

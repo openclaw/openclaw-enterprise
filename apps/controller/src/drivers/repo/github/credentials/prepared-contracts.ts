@@ -4,8 +4,6 @@ import type {
   TokenAdmission,
   TokenAttempt,
   TokenFamily,
-  TokenMaterial,
-  TokenReadPort,
   TokenPreparationStore,
 } from "../../../../backends/token-service/custody.ts";
 
@@ -36,6 +34,4 @@ export interface GitHubPreparationAdmission extends TokenAdmission {
 
 export type GitHubPreparationAttempt = TokenAttempt<GitHubPreparationAdmission>;
 export type GitHubPreparationFamily = TokenFamily<GitHubPreparationAdmission>;
-export type GitHubPreparedMaterial = TokenMaterial<GitHubPreparationAdmission>;
-export type GitHubPreparedReadPort = TokenReadPort<GitHubPreparationAdmission>;
 export type GitHubPreparationStore = TokenPreparationStore<GitHubPreparationAdmission>;

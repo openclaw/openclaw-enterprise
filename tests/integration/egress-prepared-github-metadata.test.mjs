@@ -20,7 +20,7 @@ import {
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts";
 import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/origin.ts";
-import { createGitHubWarmReader } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-reader.ts";
+import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 
 // Real source/Agent/binding/deployment APIs, IAM, protected forwarder, preparation owner,
@@ -70,7 +70,7 @@ test("consented protected repository read uses only exact, already prepared meta
           grant: { ...grant, id },
         };
         store = createPreparedStore(admission).connect();
-        reader = createGitHubWarmReader(store, clock.wallNow);
+        reader = createWarmTokenReader(store, clock.wallNow);
         owner = createGitHubPreparationOwner({
           admission,
           store,
@@ -269,9 +269,13 @@ test("consented protected repository read uses only exact, already prepared meta
 test("prepared GitHub metadata preserves the acquisition wire credential envelope", () => {
   const observedWallMs = Date.parse("2026-10-15T12:00:00Z");
   const policy = {
+    id: "metadata-grant",
+    isolationId: "namespace",
+    appId: fixtureAppId,
+    installationId: fixtureInstallationId,
+    profile: "metadata-read",
     repositoryId: fixtureRepositoryId,
     repository: fixtureRepository,
-    permissions: { metadata: "read" },
     minimumValidityMs: 10000,
   };
   const cases = [
@@ -298,7 +302,7 @@ test("prepared GitHub metadata preserves the acquisition wire credential envelop
       {
         token: value,
         expires_at: "2026-10-15T13:00:00Z",
-        permissions: policy.permissions,
+        permissions: { metadata: "read" },
         repositories: [{ id: Number(fixtureRepositoryId), full_name: fixtureRepository }],
       },
       "synthetic-custody-reference",
