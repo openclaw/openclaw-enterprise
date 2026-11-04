@@ -2764,7 +2764,7 @@ async function malformedLogsJourney(t: TestContext, following: boolean) {
     assert.ok("cursor" in data && typeof data.cursor === "string" && data.cursor.length > 0);
     assert.ok("revisionId" in data && data.revisionId === revisionId);
     const records: readonly unknown[] = data.records;
-    return { ...data, records };
+    return { ...data, records, cursor: data.cursor };
   }
   const baseline = await first;
   assert.equal(baseline.status(), 200);
