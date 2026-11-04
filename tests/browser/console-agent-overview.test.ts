@@ -55,7 +55,7 @@ import {
   openDeploymentActivity as legacyOpenDeploymentActivity,
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.ts";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 
 import {
   CONFIGURATION_EDITS_PENDING,

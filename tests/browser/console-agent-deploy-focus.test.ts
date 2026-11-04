@@ -10,7 +10,7 @@ import {
   stopFocusTrail,
 } from "./console-agents-browser-helpers.mjs";
 import { focusedText } from "./console-agents-test-support.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 
 // After an admitted deployment the held draft page's heading keeps focus, and the loading page's
 // heading takes it over only while the held heading still has it (finding 1626). A reader who

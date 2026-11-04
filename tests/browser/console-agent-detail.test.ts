@@ -66,7 +66,7 @@ import {
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   LIVE_BUTTON,
   openAdvancedSettings,
