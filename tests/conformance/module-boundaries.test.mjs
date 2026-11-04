@@ -277,11 +277,11 @@ describe("module boundaries", { concurrency: true }, () => {
     }
     const rows = [
       { rule: "r", line: 1, from: null },
-      { rule: "r", line: 1, from: "n" },
+      { rule: "r", line: 1, from: "o" },
     ];
     assert.deepEqual(
       applyExceptions(rows, { version: 1, exceptions: [] }).violations.map((item) => item.from),
-      ["n", null],
+      [null, "o"],
     );
   });
   test("CLI usage names the TypeScript entrypoint", async () => {
