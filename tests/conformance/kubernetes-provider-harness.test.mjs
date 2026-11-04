@@ -164,9 +164,19 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
 test("provider Harness endpoint preparation re-observes the same revision across Pod transitions", async (t) => {
   const fixture = await endpointWithGateway();
   const starting = fixture.pod("starting", "False");
+  const pulling = fixture.pod("pulling", "False");
+  pulling.status.containerStatuses = [
+    { name: "agent", state: { waiting: { reason: "ImagePullBackOff" } } },
+  ];
   const ready = fixture.pod("ready");
   const stages = [
     { name: "starting Pod is not ready", pods: [starting], ready: false },
+    {
+      name: "image pull failure explains the pending provider Pod",
+      pods: [pulling],
+      ready: false,
+      pendingReason: "WORKLOAD_IMAGE_PULL_FAILED",
+    },
     { name: "ambiguous Pods are not ready", pods: [ready, starting], ready: false },
     { name: "unique ready Pod becomes ready", pods: [ready], ready: true },
     { name: "Ready back to Starting clears readiness", pods: [starting], ready: false },
@@ -182,7 +192,9 @@ test("provider Harness endpoint preparation re-observes the same revision across
       assert.deepEqual(await fixture.prepare(), {
         ...expectedRevision(fixture),
         ready: stage.ready,
-        ...(stage.ready ? {} : { pendingReason: "PROVIDER_HARNESS_POD_PENDING" }),
+        ...(stage.ready
+          ? {}
+          : { pendingReason: stage.pendingReason ?? "PROVIDER_HARNESS_POD_PENDING" }),
       });
       assert.deepEqual(fixture.hooks.slice(hooksBefore), ["start"]);
       assert.equal(fixture.provisions.length, provisionsBefore + 1);
@@ -592,9 +604,25 @@ test("provider Harness reads a supervisor's held failure while its workspace nod
   // Codex and the workspace node start, so the node never connects. Compute reads the hold
   // through the provider and fails the revision with it instead of waiting for the
   // deadline as WORKSPACE_NODE_PENDING (finding 2686).
-  const fixture = await endpointWithGateway();
+  let disconnected = false;
+  const fixture = await endpointWithGateway(
+    providerEndpointFixture({
+      async isConnected() {
+        disconnected = true;
+        return false;
+      },
+    }),
+  );
   fixture.observePods([fixture.pod("ready")]);
-  fixture.driver.nodeEnrollment.isConnected = async () => false;
+  const { apps } = fixture.clients;
+  const readDeployment = apps.readNamespacedDeployment;
+  let deploymentReads = 0;
+  apps.readNamespacedDeployment = (request) => {
+    if (disconnected) {
+      deploymentReads++;
+    }
+    return readDeployment(request);
+  };
   const observations = [];
   let answer = { state: "serving" };
   fixture.sandbox.harnessStatus = async (context) => {
@@ -609,6 +637,7 @@ test("provider Harness reads a supervisor's held failure while its workspace nod
   });
   assert.equal(observations.length, 1);
   assert.equal(observations[0].transportToken, "test-transport");
+  assert.ok(deploymentReads <= 1, "only the Gateway rollout can require a Deployment read here");
   for (const check of ["state-migration", "workspace-baseline"]) {
     const runtimeFailure = { ...withoutCause, check, code: "UNAVAILABLE" };
     answer = { state: "failed", runtimeFailure };

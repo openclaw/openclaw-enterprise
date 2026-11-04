@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
 updated: 2026-11-04
-last_updated_session: authoring-run/38f0c093-ae45-4c93-bbea-b1294fa052ca
+last_updated_session: authoring-run/a50d8b79-64c9-43ae-bbe5-ed090f78637c
 ---
 
 # Controller Worker Flow
@@ -87,16 +87,12 @@ follow finalization independently of logging.
 `packages/occ/src/index.ts:OpenClawController`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
-Authorized operations call `operations.append`, which verifies exact ownership
-and invokes `PostgresWorkQueue.enqueue`. State, admission audit and work commit or roll back
-together.
-
-Agent deployment keeps the validated `deploy` request and decision with the
-saved version; the API's audit event uses that decision's IAM Driver, principal,
-exact Agent target and evidence even if Driver selection changes first, without
-reauthorizing or relabeling. Audit
-failure rolls back the version, desired runtime state and queued work; an
-unknown PostgreSQL commit outcome remains unknown and is not retried.
+`operations.append` verifies ownership and calls `PostgresWorkQueue.enqueue`.
+State, admission audit and work commit together. Deployment saves the validated
+`deploy` request and decision with the version. Even if Driver selection changes,
+the audit uses the original IAM Driver, principal, Agent target and evidence.
+Audit failure rolls back the version, desired state and work. An unknown commit
+outcome prevents automatic retry.
 
 For work on an Agent revision, the queue records the original actor, Namespace
 owner, lifecycle target, Agent ID, and revision ID. Agent lifecycle work identifies its
@@ -295,13 +291,11 @@ same metrics contract.
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.defer`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.retry`
 
-Pending convergence refunds the attempt. Unready revisions follow the
-[pending recheck cadence](../reference/agents/deployment.md#pending-deployment-progress);
-others back off. Provider Pod, workspace node and attachment waits retain
-`REVISION_INCOMPLETE` to preserve progress past OAuth bootstrap.
-`defer` records changes in outcome, code or `pendingReason`. Dependency failures
-consume attempts. Permanent failure, exhaustion, deadline or `AUTHENTICATION_FAILED`
-ends work. See [outcomes](../reference/controller.md) and
+Pending convergence refunds the attempt. Unready revisions and transient
+dependency outages follow the [recheck cadence](../reference/agents/deployment.md#pending-deployment-progress).
+For provider Pod, node and attachment waits, `defer` keeps `REVISION_INCOMPLETE`
+as evidence of progress past OAuth bootstrap. It records changes in outcome,
+code or `pendingReason`. Retries consume attempts. See [terminal outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
 Before publishing a permanent refusal (not a held runtime failure, the deadline
@@ -342,10 +336,9 @@ live claim; [deployment status](../reference/agents.md#deployment-status) derive
 `error` and `warnings` from that result. Completion needs no acknowledgment or
 post-commit cleanup; maintenance cannot rewrite deployment warnings.
 
-Indexed `workId` scopes progress to work; maintenance and unbound history cannot
-supply it. `getDeploymentStatus` reads
-`findWorkAttempt` with the work row in one State snapshot and projects fixed
-public explanations. Memory State has no attempt.
+`getDeploymentStatus` reads work and its latest recorded attempt in one State
+snapshot. The indexed `workId` excludes maintenance and unbound history.
+Memory State has no attempt.
 
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
@@ -422,6 +415,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 23:04: Clarify deferral and recorded progress. (authoring-run/a50d8b79-64c9-43ae-bbe5-ed090f78637c - 3a52a15c46fbc8e992d5c8d92b1ca99cfea9d0c0)
 
 - 2026-11-04 22:57: Record the first pending provider readiness check without changing convergence or bootstrap decisions. (authoring-run/38f0c093-ae45-4c93-bbea-b1294fa052ca - 3751aa94c7b7352f5ffa2ac8b7c95859982d3754)
 

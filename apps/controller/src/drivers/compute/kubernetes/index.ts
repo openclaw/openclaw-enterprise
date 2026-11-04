@@ -6537,11 +6537,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ? { name: gatewayName, namespace: gatewayNamespace, ownership: gatewayOwnership }
           : { name: revisionName, namespace, ownership: revisionOwnership },
       );
-    const observedPendingReason = async (): Promise<ComputePendingReason | undefined> => {
+    const observedPendingReason = async (
+      fallbackReason?: ComputePendingReason,
+    ): Promise<ComputePendingReason | undefined> => {
+      // The caller just verified the provider Pod and Gateway before naming the
+      // disconnected node. That wait needs no second workload or quota check.
+      if (fallbackReason === "PROVIDER_WORKSPACE_NODE_PENDING") {
+        return fallbackReason;
+      }
       if (await this.safePodQuotaObservation(workloadDeployments)) {
         return "NAMESPACE_POD_QUOTA_EXCEEDED";
       }
-      return await this.safePodPendingObservation(revision, namespace);
+      return (await this.safePodPendingObservation(revision, namespace)) ?? fallbackReason;
     };
     const incomplete = async ({
       pendingReason,
@@ -6559,7 +6566,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       const reason =
         pendingReason ??
         (runtimeFailure === undefined
-          ? ((await observedPendingReason()) ?? fallbackReason)
+          ? await observedPendingReason(fallbackReason)
           : runtimeFailure.code === "WORKSPACE_SETUP_FAILED"
             ? "WORKSPACE_SETUP_RETRYING"
             : undefined);
