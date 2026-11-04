@@ -1712,6 +1712,17 @@ function validateResources(value: V1ResourceRequirements, description: string, p
       `${description} ${kind} limit`,
       `${path}.limits.${resource}`,
     );
+    for (const [kind, quantity] of [
+      ["requests", request],
+      ["limits", limit],
+    ] as const) {
+      if ((compareResourceQuantities(quantity, "0") ?? 0) < 0) {
+        throw configurationConstraintFailure(
+          "Resource quantities must be non-negative Kubernetes quantity strings.",
+          `/${path.replaceAll(".", "/")}/${kind}/${resource}`,
+        );
+      }
+    }
     const compared = compareResourceQuantities(request, limit);
     if (compared === undefined) {
       throw configurationConstraintFailure(

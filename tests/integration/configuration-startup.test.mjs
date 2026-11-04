@@ -364,6 +364,24 @@ test("Installation startup validates the optional external observability URL", a
 
 test("API, worker, and Helm hook report safe field diagnostics before persistence", async (t) => {
   const cases = [
+    // These all passed pair ordering but Kubernetes refuses their negative quantities.
+    ...["gateway", "agent", "namespace.containerDefaults"].map((role) => [
+      (configuration) => {
+        const resources = configuration.drivers.compute.configuration.resources;
+        const selected =
+          role === "namespace.containerDefaults"
+            ? resources.namespace.containerDefaults
+            : resources[role];
+        selected.requests.cpu = "-1";
+      },
+      [
+        {
+          path: `/resources/${role.replaceAll(".", "/")}/requests/cpu`,
+          code: "INVALID_FORMAT",
+          message: "Resource quantities must be non-negative Kubernetes quantity strings.",
+        },
+      ],
+    ]),
     [
       (configuration) => {
         configuration.drivers.compute.configuration.authentication = {
@@ -425,7 +443,7 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
     ],
   ];
   // All three entrypoints map a ConfigurationValidationError to the code and its details with
-  // the same function, so, as in the observability test, the last case boots them for real.
+  // the same function. The negative-resource and last ceiling cases boot them for real.
   // The others reach the loader all three call with the file (production mode) and get that
   // function's one-line diagnostic.
   for (const [index, [mutate, details]] of cases.entries()) {
@@ -433,7 +451,7 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
     configuration.occ.cluster = "production-west";
     mutate(configuration);
     const path = await fixture(t, configuration);
-    if (index < cases.length - 1) {
+    if (index !== 0 && index < cases.length - 1) {
       await assert.rejects(
         loadInstallationConfiguration({
           mode: "production",

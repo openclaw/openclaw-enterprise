@@ -16486,6 +16486,44 @@ test("resource quantities reject bare numbers with structured field diagnostics"
       },
     );
   }
+  // A negative request can be below a valid limit; ordering alone does not make it valid.
+  // Exercise each workload role, both quantity fields, and signed zero separately.
+  for (const role of ["gateway", "agent", "defaults"]) {
+    for (const field of ["cpu", "memory"]) {
+      for (const kind of ["requests", "limits"]) {
+        const configured = separateResources();
+        const resources =
+          role === "defaults"
+            ? configured.resources.namespace.containerDefaults
+            : configured.resources[role];
+        resources[kind][field] = "-1";
+        if (kind === "limits") {
+          resources.requests[field] = "0";
+        }
+        assert.throws(
+          () => requireConfiguration(KubernetesComputeDriver, configured),
+          (error) => {
+            assert.ok(error instanceof SharedConfigurationValidationError);
+            const prefix = role === "defaults" ? "namespace/containerDefaults" : role;
+            assert.ok(
+              error.error.details.some(
+                (detail) =>
+                  detail.path === `/resources/${prefix}/${kind}/${field}` &&
+                  /non-negative Kubernetes quantity/.test(detail.message),
+              ),
+            );
+            return true;
+          },
+        );
+      }
+      const zero = separateResources();
+      const resources =
+        role === "defaults" ? zero.resources.namespace.containerDefaults : zero.resources[role];
+      resources.requests[field] = "-0";
+      resources.limits[field] = "0";
+      assert.doesNotThrow(() => requireConfiguration(KubernetesComputeDriver, zero));
+    }
+  }
   const defaults = separateResources();
   defaults.resources.namespace.containerDefaults.limits.cpu = 4;
   assert.throws(
