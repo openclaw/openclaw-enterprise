@@ -556,6 +556,127 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     },
   );
 
+  await t.test("version lookups and deployment polls stay with their owning Agent", async () => {
+    const { Check }: { Check(schema: unknown, value: unknown): boolean } =
+      controller("typebox/value");
+    const agentA = id("agt", 100);
+    const revisionA = id("rev", 101);
+    const agentB = id("agt", 102);
+    const revisionB = id("rev", 103);
+    installFixture(
+      {
+        rules: [
+          {
+            method: "GET",
+            suffix: `/agents/${agentB}/revisions/${revisionA}`,
+            status: 403,
+            code: "FORBIDDEN",
+            once: true,
+          },
+        ],
+      },
+      evidence(),
+    );
+    for (const agentId of [agentA, agentB]) {
+      assert.equal(
+        (
+          await request("agents", "POST", {
+            name: agentId,
+            configurationId: id("cfg", 1),
+            executionMode: "dedicated",
+          })
+        ).status,
+        201,
+      );
+      assert.equal((await request(`agents/${agentId}/deploy`, "POST", {})).status, 202);
+    }
+    // An authored denial still wins before the ownership check.
+    assert.equal((await request(`agents/${agentB}/revisions/${revisionA}`)).status, 403);
+    const notFound = {
+      error: { code: "NOT_FOUND", message: "The requested platform resource was not found." },
+      meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+    };
+    for (const [agentId, ownRevision, otherRevision] of [
+      [agentA, revisionA, revisionB],
+      [agentB, revisionB, revisionA],
+    ]) {
+      for (const revisionId of [otherRevision, id("rev", 999)]) {
+        for (const [suffix, method] of [
+          [`revisions/${revisionId}`, "GET"],
+          [`deployments/${revisionId}`, "GET"],
+          [`deployments/${revisionId}/runtime`, "GET"],
+          [`deployments/${revisionId}/diagnostics`, "POST"],
+        ]) {
+          const reply = await request(`agents/${agentId}/${suffix}`, method);
+          assert.equal(reply.status, 404, `${agentId}/${suffix}`);
+          const body: unknown = await reply.json();
+          assert.equal(Check(ErrorResponse, body), true);
+          assert.deepEqual(body, notFound);
+        }
+      }
+      const collection: unknown = await (await request(`agents/${agentId}/revisions`)).json();
+      assert.ok(
+        collection &&
+          typeof collection === "object" &&
+          "data" in collection &&
+          Array.isArray(collection.data),
+      );
+      assert.equal(collection.data.length, 1);
+      assert.partialDeepStrictEqual(collection, { data: [{ id: ownRevision, agentId }] });
+      assert.partialDeepStrictEqual(
+        await (await request(`agents/${agentId}/revisions/${ownRevision}`)).json(),
+        {
+          data: { id: ownRevision, agentId },
+        },
+      );
+      assert.equal(
+        (await request(`agents/${agentId}/deployments/${ownRevision}/runtime`)).status,
+        200,
+      );
+      assert.equal(
+        (await request(`agents/${agentId}/deployments/${ownRevision}/diagnostics`, "POST")).status,
+        200,
+      );
+    }
+    // Neither rejected lookups nor runtime/diagnostic reads may poll a deployment
+    // or select a version. Each owner's first actual poll must still be queued.
+    for (const [agentId, revisionId] of [
+      [agentA, revisionA],
+      [agentB, revisionB],
+    ]) {
+      assert.partialDeepStrictEqual(await (await request(`agents/${agentId}`)).json(), {
+        data: { activeRevisionId: null },
+      });
+      assert.partialDeepStrictEqual(
+        await (await request(`agents/${agentId}/deployments/${revisionId}`)).json(),
+        {
+          data: { status: "queued", agentId },
+        },
+      );
+    }
+    assert.partialDeepStrictEqual(
+      await (await request(`agents/${agentA}/deployments/${revisionA}`)).json(),
+      {
+        data: { status: "succeeded" },
+      },
+    );
+    assert.partialDeepStrictEqual(await (await request(`agents/${agentA}`)).json(), {
+      data: { activeRevisionId: revisionA },
+    });
+    assert.partialDeepStrictEqual(await (await request(`agents/${agentB}`)).json(), {
+      data: { activeRevisionId: null },
+    });
+    assert.partialDeepStrictEqual(
+      await (await request(`agents/${agentB}/deployments/${revisionB}`)).json(),
+      {
+        data: { status: "succeeded" },
+      },
+    );
+    assert.partialDeepStrictEqual(await (await request(`agents/${agentB}`)).json(), {
+      data: { activeRevisionId: revisionB },
+    });
+  });
+
   await t.test(
     "seeded revision pagination and runtime reads drive the failed redeploy race",
     async () => {
@@ -592,7 +713,22 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         data: { desiredRuntimeState: "stopped" },
       });
       assert.doesNotMatch(await stopped.text(), /"activeRevisionId"/);
+      // Rejected runtime reads must not contribute to the two-read redeploy race.
+      assert.equal(
+        (await request(`${agentPath}/deployments/${id("rev", 999)}/runtime`)).status,
+        404,
+      );
+      assert.equal(
+        (await request(`agents/${id("agt", 2)}/deployments/${id("rev", 1)}/runtime`)).status,
+        404,
+      );
+      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
+        data: { desiredRuntimeState: "stopped" },
+      });
       await request(runtime);
+      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
+        data: { desiredRuntimeState: "stopped" },
+      });
       await request(runtime);
       const restarted = await request(agentPath);
       assert.partialDeepStrictEqual(await restarted.clone().json(), {

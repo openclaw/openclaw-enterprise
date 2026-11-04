@@ -640,9 +640,11 @@ export function createAgentLifecycle(
       );
     }
     if (suffix.startsWith("/revisions/") && method === "GET") {
-      return revisions.has(suffix.split("/")[2] ?? "")
-        ? response(revisions.get(suffix.split("/")[2] ?? ""))
-        : error(404);
+      const revision = revisions.get(suffix.split("/")[2] ?? "");
+      if (!revision || revision.agentId !== id) {
+        return error(404, "NOT_FOUND", "The requested platform resource was not found.");
+      }
+      return response(revision);
     }
     if (
       suffix.startsWith("/deployments/") &&
@@ -651,8 +653,8 @@ export function createAgentLifecycle(
       method === "GET"
     ) {
       const deployment = deployments.get(suffix.split("/")[2] ?? "");
-      if (!deployment) {
-        return error(404);
+      if (!deployment || deployment.agentId !== id) {
+        return error(404, "NOT_FOUND", "The requested platform resource was not found.");
       }
       if (scenario.cleanupCompletes && deployment.cleanup) {
         deployment.cleanupReads = (deployment.cleanupReads ?? 0) + 1;
@@ -694,7 +696,8 @@ export function createAgentLifecycle(
       const saved = agents.get(id);
       return saved === undefined ? undefined : { activeRevisionId: saved.activeRevisionId };
     },
-    hasRevision: (id: string) => revisions.has(id),
+    hasAgentRevision: (agentId: string, revisionId: string) =>
+      revisions.get(revisionId)?.agentId === agentId,
     recordRuntimeStatusRead: () => {
       runtimeStatusReads += 1;
     },

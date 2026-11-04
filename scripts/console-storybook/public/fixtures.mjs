@@ -1161,11 +1161,11 @@ export function installFixture(scenario, evidence) {
           }
         }
         if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime") && method === "GET") {
-          lifecycle.recordRuntimeStatusRead();
           const revisionId = suffix.split("/")[2];
-          if (!lifecycle.hasRevision(revisionId)) {
-            return error(404);
+          if (!lifecycle.hasAgentRevision(id, revisionId)) {
+            return error(404, "NOT_FOUND", "The requested platform resource was not found.");
           }
+          lifecycle.recordRuntimeStatusRead();
           if (scenario.bootstrapRuntime) {
             const terminated = (name, reason, exitCode) => ({
               name,
@@ -1503,8 +1503,8 @@ export function installFixture(scenario, evidence) {
           method === "POST"
         ) {
           const revisionId = suffix.split("/")[2];
-          if (!lifecycle.hasRevision(revisionId)) {
-            return error(404);
+          if (!lifecycle.hasAgentRevision(id, revisionId)) {
+            return error(404, "NOT_FOUND", "The requested platform resource was not found.");
           }
           if (scenario.diagnosticsState === "noSlack") {
             // The gateway's answer for a version with no Slack channel.
