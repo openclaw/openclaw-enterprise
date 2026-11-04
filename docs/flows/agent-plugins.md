@@ -38,7 +38,12 @@ graph TD
   D1 -->|token or none| D6
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
-  D6 -->|stored| D3["Use stored credential"] --> E3["Recheck source authority"] --> D4
+  D6 -->|Secret| D3["Read Secret"] --> E3["Recheck source authority"] --> D4
+  D6 -->|CredentialSource| D9["Read token: timeout + disconnect"]
+  D9 -->|canceled| D12["Stop"]
+  D9 -->|token| D10["Recheck authority"] --> D11{"Disconnected?"}
+  D11 -->|yes| D12
+  D11 -->|no| D4
   D4 -->|disconnect| D8["Cancel hosted reads"]
   D4 --> D5["Return safe catalog metadata"]
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
@@ -70,7 +75,7 @@ graph TD
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) checks
 Agent `create`. Stored credentials must share the Namespace. OCC checks caller
-source `operate` before use. Cross-Namespace references return `400`, missing
+source `operate` and rechecks both permissions before Driver use. Cross-Namespace references return `400`, missing
 Secrets `404`, and unavailable explicit CredentialSources `409`. Unsupported
 discovery reads no credential.
 
@@ -79,6 +84,9 @@ offers only plugins it would admit on save. For bound credentials OCC rechecks
 the attachment and both caller and Agent `operate`. For explicit sources it
 rechecks caller `operate`. Missing or non-ready bound sources return `404`.
 Credential Gateway supplies the current bearer. Curated discovery uses no credential.
+For CredentialSource reads, OCC combines the source timeout with HTTP disconnect
+before `withSourceToken`. It skips canceled reads. After rechecking authority, OCC
+rejects tokens returned after disconnect before calling the PluginDriver.
 
 Console cancels hosted reads when a picker or view closes. Changing the account
 clears results. Hosted reads reject redirects and credential echoes, bound
