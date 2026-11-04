@@ -1,11 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readWorkspace, freezeRecord, parseJSON } from "./module-boundaries/workspace.mjs";
-import { collectSourceImports } from "./module-boundaries/source-imports.mjs";
-import { resolveImports } from "./module-boundaries/resolve-import.mjs";
-import { evaluatePolicy, validatePolicy } from "./module-boundaries/evaluate-policy.mjs";
-import { applyExceptions, validateExceptions } from "./module-boundaries/exceptions.mjs";
+import { readWorkspace, parseJSON } from "./module-boundaries/workspace.ts";
+import { freezeRecord } from "./module-boundaries/freeze-record.ts";
+import { collectSourceImports } from "./module-boundaries/source-imports.ts";
+import { resolveImports } from "./module-boundaries/resolve-import.ts";
+import { evaluatePolicy, validatePolicy } from "./module-boundaries/evaluate-policy.ts";
+import { applyExceptions, validateExceptions } from "./module-boundaries/exceptions.ts";
 
 const defaultRoot = fileURLToPath(new URL("../", import.meta.url));
 
@@ -14,7 +15,7 @@ export async function verifyModuleBoundaries({
   root = defaultRoot,
   policy,
   exceptions = { version: 1, exceptions: [] },
-} = {}) {
+}: { root?: string; policy?: unknown; exceptions?: unknown } = {}) {
   if (!policy) {
     throw new Error("An explicit module-boundary policy is required.");
   }
@@ -76,9 +77,10 @@ export async function verifyModuleBoundaries({
 }
 
 const usage =
-  "Usage: node scripts/verify-module-boundaries.mjs --policy file [--root directory] [--exceptions file] [--json]";
-async function main(args, stdout, stderr) {
-  const options = {};
+  "Usage: node scripts/verify-module-boundaries.ts --policy file [--root directory] [--exceptions file] [--json]";
+type Writer = { write(text: string): unknown };
+async function main(args: readonly string[], stdout: Writer, stderr: Writer) {
+  const options: { root?: string; policy?: string; exceptions?: string; json?: boolean } = {};
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
     if (argument === "--help" && args.length === 1) {
@@ -88,12 +90,28 @@ async function main(args, stdout, stderr) {
     if (argument === "--json" && !options.json) {
       options.json = true;
     } else if (
-      ["--root", "--policy", "--exceptions"].includes(argument) &&
+      (argument === "--root" || argument === "--policy" || argument === "--exceptions") &&
       args[index + 1] &&
-      !args[index + 1].startsWith("--") &&
-      !options[argument.slice(2)]
+      !args[index + 1]?.startsWith("--") &&
+      !options[
+        argument.slice(2) === "root"
+          ? "root"
+          : argument.slice(2) === "policy"
+            ? "policy"
+            : "exceptions"
+      ]
     ) {
-      options[argument.slice(2)] = args[++index];
+      const value = args[++index];
+      if (value === undefined) {
+        throw new Error(usage);
+      }
+      if (argument === "--root") {
+        options.root = value;
+      } else if (argument === "--policy") {
+        options.policy = value;
+      } else {
+        options.exceptions = value;
+      }
     } else {
       throw new Error(usage);
     }
@@ -107,6 +125,7 @@ async function main(args, stdout, stderr) {
     ? parseJSON(await readFile(resolve(root, options.exceptions), "utf8"), "exceptions")
     : undefined;
   const result = await verifyModuleBoundaries({ root, policy, exceptions });
+  validatePolicy(policy);
   if (options.json) {
     stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } else {
@@ -134,20 +153,21 @@ async function main(args, stdout, stderr) {
  * verified, 1 violations, 2 configuration failure.
  */
 export async function runModuleBoundaryCli(
-  args,
-  { stdout = process.stdout, stderr = process.stderr } = {},
+  args: readonly string[],
+  { stdout = process.stdout, stderr = process.stderr }: { stdout?: Writer; stderr?: Writer } = {},
 ) {
   try {
     return await main(args, stdout, stderr);
   } catch (error) {
+    const details: object | undefined = error == null ? undefined : Object(error);
+    const rawCode: unknown = details === undefined ? undefined : Reflect.get(details, "code");
+    const message: unknown = details === undefined ? undefined : Reflect.get(details, "message");
     const code =
-      typeof error.code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)
-        ? error.code
-        : null;
+      typeof rawCode === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(rawCode) ? rawCode : null;
     stderr.write(
       code
         ? `Module boundary configuration failed (${code}).\n`
-        : `Module boundary configuration failed: ${error.message}\n`,
+        : `Module boundary configuration failed: ${message}\n`,
     );
     return 2;
   }
