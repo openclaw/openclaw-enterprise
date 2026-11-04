@@ -1,15 +1,63 @@
 import { posix } from "node:path";
-import { classifyCycles, cycleDiagnostic } from "./cycles.mjs";
-import { diagnosticIdentity } from "./exceptions.mjs";
+import { classifyCycles, cycleDiagnostic } from "./cycles.ts";
+import { diagnosticIdentity } from "./exceptions.ts";
+import type { SourceReference } from "./source-imports.ts";
+import type { Resolution } from "./resolve-import.ts";
 
-const inside = (path, root) => path === root || path.startsWith(`${root}/`);
-const matches = (path, patterns = []) =>
+type Snapshot = Awaited<ReturnType<typeof import("./workspace.ts").readWorkspace>>;
+type Boundary = {
+  rule: string;
+  message: string;
+  from: string[];
+  to?: string[];
+  exceptFrom?: string[];
+  exceptTo?: string[];
+  specifiers?: string[];
+  kinds?: string[];
+};
+export type Policy = {
+  version: 1;
+  sourceRoots: string[];
+  packages: string[];
+  rootBarrels?: string[];
+  workspaceNamespaces?: string[];
+  diagnosticLimit?: number;
+  boundaries?: Boundary[];
+  packageImports?: { sourcePaths?: "allow" | "error"; internalRoot?: "allow" | "error" };
+  cycles?: { runtime?: "error" | "report"; typeOnly?: "error" | "report" };
+};
+type Edge = {
+  from: string;
+  to: string;
+  specifier: string;
+  kind: SourceReference["kind"];
+  typeOnly: boolean;
+  bindings: readonly string[];
+  line: number;
+  loaderIdentity?: string;
+};
+type PolicyDiagnostic =
+  | (Edge & { category: "policy"; rule: string; message: string })
+  | ReturnType<typeof cycleDiagnostic>;
+function field(value: unknown, key: string): unknown {
+  return value == null ? undefined : Reflect.get(Object(value), key);
+}
+function stringArray(value: unknown, valid: (value: unknown) => boolean): value is string[] {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  const entries: unknown[] = value;
+  return entries.every(valid);
+}
+
+const inside = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
+const matches = (path: string, patterns: readonly string[] = []) =>
   patterns.some(
     (pattern) =>
       pattern === "**" ||
       (pattern.endsWith("/**") ? inside(path, pattern.slice(0, -3)) : path === pattern),
   );
-const pathValid = (value) =>
+const pathValid = (value: unknown): value is string =>
   typeof value === "string" &&
   value.length > 0 &&
   !value.includes("\\") &&
@@ -18,7 +66,7 @@ const pathValid = (value) =>
   !value.includes("*") &&
   !value.startsWith("/") &&
   value.split("/").every((part) => part && part !== "." && part !== "..");
-const patternValid = (value) =>
+const patternValid = (value: unknown): value is string =>
   value === "**" ||
   pathValid(typeof value === "string" && value.endsWith("/**") ? value.slice(0, -3) : value);
 const kinds = new Set([
@@ -31,8 +79,8 @@ const kinds = new Set([
   "path",
 ]);
 
-export function validatePolicy(policy) {
-  if (!policy || policy.version !== 1) {
+export function validatePolicy(policy: unknown): asserts policy is Policy {
+  if (!policy || field(policy, "version") !== 1) {
     throw new Error("Unsupported module-boundary policy version.");
   }
   const policyFields = new Set([
@@ -46,45 +94,47 @@ export function validatePolicy(policy) {
     "packageImports",
     "cycles",
   ]);
-  if (Object.keys(policy).some((key) => !policyFields.has(key))) {
+  if (Object.keys(Object(policy)).some((key) => !policyFields.has(key))) {
     throw new Error("Unknown policy field.");
   }
-  for (const field of ["sourceRoots", "packages"]) {
-    if (!Array.isArray(policy[field]) || policy[field].some((entry) => !pathValid(entry))) {
-      throw new Error(`Invalid policy field: ${field}`);
+  for (const name of ["sourceRoots", "packages"]) {
+    const value = field(policy, name);
+    if (!stringArray(value, pathValid)) {
+      throw new Error(`Invalid policy field: ${name}`);
     }
   }
-  if (
-    policy.rootBarrels !== undefined &&
-    (!Array.isArray(policy.rootBarrels) || policy.rootBarrels.some((entry) => !pathValid(entry)))
-  ) {
+  const rootBarrels = field(policy, "rootBarrels");
+  if (rootBarrels !== undefined && !stringArray(rootBarrels, pathValid)) {
     throw new Error("Invalid policy field: rootBarrels");
   }
+  const namespaces = field(policy, "workspaceNamespaces");
   if (
-    policy.workspaceNamespaces !== undefined &&
-    (!Array.isArray(policy.workspaceNamespaces) ||
-      policy.workspaceNamespaces.some(
-        (entry) => typeof entry !== "string" || !/^@[^/\\\s]+\/$/.test(entry),
-      ))
+    namespaces !== undefined &&
+    !stringArray(namespaces, (entry) => typeof entry === "string" && /^@[^/\\\s]+\/$/.test(entry))
   ) {
     throw new Error("Invalid policy field: workspaceNamespaces");
   }
+  const limit = field(policy, "diagnosticLimit");
   if (
-    policy.diagnosticLimit !== undefined &&
-    (!Number.isSafeInteger(policy.diagnosticLimit) || policy.diagnosticLimit < 1)
+    limit !== undefined &&
+    (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1)
   ) {
     throw new Error("Invalid policy diagnostic limit.");
   }
-  if (policy.boundaries !== undefined && !Array.isArray(policy.boundaries)) {
+  const boundaries: unknown = field(policy, "boundaries");
+  if (boundaries !== undefined && !Array.isArray(boundaries)) {
     throw new Error("Invalid policy field: boundaries");
   }
-  for (const boundary of policy.boundaries ?? []) {
+  const boundaryEntries: unknown[] = boundaries ?? [];
+  for (const boundary of boundaryEntries) {
+    const rule = field(boundary, "rule");
+    const message = field(boundary, "message");
     if (
       !boundary ||
-      typeof boundary.rule !== "string" ||
-      !boundary.rule.trim() ||
-      typeof boundary.message !== "string" ||
-      !boundary.message.trim()
+      typeof rule !== "string" ||
+      !rule.trim() ||
+      typeof message !== "string" ||
+      !message.trim()
     ) {
       throw new Error("Boundaries require a rule and message.");
     }
@@ -98,72 +148,86 @@ export function validatePolicy(policy) {
       "specifiers",
       "kinds",
     ]);
-    if (Object.keys(boundary).some((key) => !boundaryFields.has(key))) {
+    if (Object.keys(Object(boundary)).some((key) => !boundaryFields.has(key))) {
       throw new Error("Unknown boundary field.");
     }
-    for (const field of ["from", "to", "exceptFrom", "exceptTo"]) {
-      if (field !== "from" && boundary[field] === undefined) {
+    for (const name of ["from", "to", "exceptFrom", "exceptTo"]) {
+      const value = field(boundary, name);
+      if (name !== "from" && value === undefined) {
         continue;
       }
-      if (
-        !Array.isArray(boundary[field]) ||
-        boundary[field].some((entry) => !patternValid(entry))
-      ) {
-        throw new Error(`Invalid boundary field: ${field}`);
+      if (!stringArray(value, patternValid)) {
+        throw new Error(`Invalid boundary field: ${name}`);
       }
     }
+    const specifiers = field(boundary, "specifiers");
     if (
-      boundary.specifiers !== undefined &&
-      (!Array.isArray(boundary.specifiers) ||
-        boundary.specifiers.some(
-          (entry) =>
-            typeof entry !== "string" ||
-            !entry.trim() ||
-            (entry.includes("*") &&
-              entry !== "**" &&
-              (!entry.endsWith("/**") || entry.slice(0, -3).includes("*"))),
-        ))
+      specifiers !== undefined &&
+      !stringArray(
+        specifiers,
+        (entry) =>
+          typeof entry === "string" &&
+          Boolean(entry.trim()) &&
+          !(
+            entry.includes("*") &&
+            entry !== "**" &&
+            (!entry.endsWith("/**") || entry.slice(0, -3).includes("*"))
+          ),
+      )
     ) {
       throw new Error("Invalid boundary field: specifiers");
     }
-    if (!boundary.from.length || !(boundary.to?.length || boundary.specifiers?.length)) {
+    const from = field(boundary, "from");
+    const to = field(boundary, "to");
+    if (
+      !Array.isArray(from) ||
+      !from.length ||
+      !((Array.isArray(to) && to.length) || (Array.isArray(specifiers) && specifiers.length))
+    ) {
       throw new Error("Boundaries require source patterns and target paths or specifiers.");
     }
+    const boundaryKinds = field(boundary, "kinds");
     if (
-      boundary.kinds !== undefined &&
-      (!Array.isArray(boundary.kinds) || boundary.kinds.some((kind) => !kinds.has(kind)))
+      boundaryKinds !== undefined &&
+      !stringArray(boundaryKinds, (kind) => typeof kind === "string" && kinds.has(kind))
     ) {
       throw new Error("Invalid boundary field: kinds");
     }
   }
-  for (const [field, entries] of [
+  for (const [name, entries] of [
     ["packageImports", ["sourcePaths", "internalRoot"]],
     ["cycles", ["runtime", "typeOnly"]],
-  ]) {
-    if (policy[field] === undefined) {
+  ] as const) {
+    const value = field(policy, name);
+    if (value === undefined) {
       continue;
     }
-    if (!policy[field] || typeof policy[field] !== "object" || Array.isArray(policy[field])) {
-      throw new Error(`Invalid policy field: ${field}`);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`Invalid policy field: ${name}`);
     }
-    const allowed = field === "cycles" ? ["error", "report"] : ["allow", "error"];
-    for (const key of Object.keys(policy[field])) {
-      if (!entries.includes(key) || !allowed.includes(policy[field][key])) {
-        throw new Error(`Invalid policy field: ${field}.${key}`);
+    const allowed: readonly string[] = name === "cycles" ? ["error", "report"] : ["allow", "error"];
+    for (const key of Object.keys(value)) {
+      const item = field(value, key);
+      if (
+        !entries.some((entry) => entry === key) ||
+        typeof item !== "string" ||
+        !allowed.includes(item)
+      ) {
+        throw new Error(`Invalid policy field: ${name}.${key}`);
       }
     }
   }
 }
 
-function rootBarrels(snapshot, policy) {
+function rootBarrels(snapshot: Snapshot, policy: Policy) {
   if (policy.rootBarrels !== undefined) {
     return new Set(policy.rootBarrels);
   }
   const files = new Set(snapshot.files.map((file) => file.path));
   const barrels = new Set();
   for (const pkg of snapshot.packages) {
-    const exports = pkg.manifest.exports;
-    const target = typeof exports === "string" ? exports : exports?.["."];
+    const exports: unknown = field(pkg.manifest, "exports");
+    const target = typeof exports === "string" ? exports : field(exports, ".");
     if (typeof target !== "string" || !target.startsWith("./")) {
       continue;
     }
@@ -187,11 +251,15 @@ function rootBarrels(snapshot, policy) {
 }
 
 /** Evaluate immutable resolved references without touching the filesystem or compiler. */
-export function evaluatePolicy(snapshot, resolutions, policy) {
+export function evaluatePolicy(
+  snapshot: Snapshot,
+  resolutions: readonly Resolution[],
+  policy: unknown,
+) {
   validatePolicy(policy);
   const packages = [...snapshot.packages].sort((a, b) => b.path.length - a.path.length);
-  const owners = new Map();
-  const owner = (file) => {
+  const owners = new Map<string, Snapshot["packages"][number] | undefined>();
+  const owner = (file: string) => {
     if (!owners.has(file)) {
       owners.set(
         file,
@@ -201,11 +269,11 @@ export function evaluatePolicy(snapshot, resolutions, policy) {
     return owners.get(file);
   };
   const barrels = rootBarrels(snapshot, policy);
-  const edges = [];
-  const diagnostics = [];
+  const edges: Edge[] = [];
+  const diagnostics: PolicyDiagnostic[] = [];
   const seenEdges = new Set();
   const seenDiagnostics = new Set();
-  const add = (rule, edge, message) => {
+  const add = (rule: string, edge: Edge, message: string) => {
     const diagnostic = Object.freeze({ category: "policy", rule, ...edge, message });
     const identity = diagnosticIdentity(diagnostic);
     if (!seenDiagnostics.has(identity)) {

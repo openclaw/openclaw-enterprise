@@ -6862,12 +6862,13 @@ export class OpenClawController {
           "The Credential Gateway did not describe a credential destination.",
         );
       }
+      // The source's own immutable destination authorizes a Secret without endpoint metadata;
+      // metadata, when present, must still name this destination.
       if (
-        secret.authorizedEndpoint === undefined
-          ? destination.isDefault !== true
-          : [destination.endpoint, ...(destination.additionalEndpoints ?? [])].every(
-              (endpoint) => endpoint !== secret.authorizedEndpoint,
-            )
+        secret.authorizedEndpoint !== undefined &&
+        [destination.endpoint, ...(destination.additionalEndpoints ?? [])].every(
+          (endpoint) => endpoint !== secret.authorizedEndpoint,
+        )
       ) {
         throw new SecretBindingValidationError(
           "The credential source Secret does not authorize its destination. Supply an endpoint-specific key.",
@@ -10329,12 +10330,11 @@ export class OpenClawController {
       input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
-        kind: "agent",
-        id: input.agentId,
-        namespaceId: input.namespaceId,
-      });
+      const target = { kind: "agent", id: input.agentId, namespaceId: input.namespaceId } as const;
+      await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // Namespace IAM writes share this lock. Use the policy after any writer ahead of us.
+      await this.authorize(principalId, "update", target);
       const agent = await state.agents.lockAgent(namespace.id, input.agentId);
       if (!agent) {
         throw new ScopeViolationError(
@@ -10924,10 +10924,12 @@ export class OpenClawController {
           binding.repositoryRef,
         );
         if (approval) {
+          const admission = this.installationRepositoryAdmission;
           const resolved = this.resolveRepositoryBindings(
             namespace.id,
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
+            admission?.policy === this.selections.get("repo")?.driver ? admission : undefined,
           )!;
           const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,

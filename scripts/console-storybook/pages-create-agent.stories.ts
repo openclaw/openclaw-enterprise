@@ -387,3 +387,13 @@ export const CustomResponsesInvalid = story("createCustomResponsesInvalid");
 export const CustomResponsesSource = story("createCustomResponsesSource");
 export const CustomResponsesSourcesEmpty = story("createCustomResponsesSourcesEmpty");
 export const CustomResponsesSourcesDenied = story("createCustomResponsesSourcesDenied");
+
+export const SharedModelDestination = {
+  ...story("createSharedModelProviderSource"),
+  name: "Authorize shared model destination",
+};
+
+export const SharedModelDestinationRefusal = {
+  ...story("createSharedModelProviderRefusal"),
+  name: "Destination authorization refusal",
+};

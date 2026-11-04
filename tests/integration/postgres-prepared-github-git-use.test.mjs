@@ -14,7 +14,10 @@ import {
   prepare,
   startProtectedOwner,
 } from "../fixtures/prepared-repository-git.mjs";
-import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
+import {
+  fixtureInstallationId,
+  fixtureRepository,
+} from "../fixtures/repository-credentials/github.mjs";
 import { clockBehind } from "../helpers/prepared-standing-git-peer.ts";
 
 // Refusal must come from the durable admission guard, before any issuer or retirement call.
@@ -39,8 +42,36 @@ async function nativeReceipts(f) {
   ).rows;
 }
 
+// Capture the expected version before use, without opening custody or authorizing an exchange.
+async function currentNativeMetadata(f, { draftPull = false } = {}) {
+  const { rows } = await f.pool.query(
+    `SELECT a.id, a.material_version, a.usable_until, a.admission, f.source
+     FROM occ.prepared_github_attempts a
+     JOIN occ.prepared_github_families f USING (source_id)
+     WHERE a.source_id=$1 AND a.state='committed' AND a.custody='current'
+       AND f.enabled AND a.admission=f.admission`,
+    [f.familyId],
+  );
+  assert.equal(rows.length, 1);
+  const [row] = rows;
+  assert.equal(row.source.session.sessionId, f.sessionId);
+  assert.equal(row.source.session.admissionId, f.admissionId);
+  assert.deepEqual(row.source.session.binding.grant, f.binding.grant);
+  assert.equal(row.admission.grant.repository, fixtureRepository);
+  assert.equal(row.admission.grant.pushRef, "refs/heads/prepared-fixture");
+  if (draftPull) {
+    assert.equal(row.admission.grant.pullRequestBase, "main");
+  }
+  return {
+    preparationAttemptId: row.id,
+    materialVersion: row.material_version,
+    expiresAt: row.usable_until.toISOString(),
+  };
+}
+
 async function assertNativeReceipt(f, request, material, used) {
-  assert.equal(used.value, material.value);
+  assert.equal(typeof used.value, "string");
+  assert.ok(used.value.length > 0);
   assert.equal(used.exchangeId, request.exchangeId);
   assert.equal(used.preparationAttemptId, material.preparationAttemptId);
   assert.equal(used.materialVersion, material.materialVersion);
@@ -66,79 +97,6 @@ async function assertNativeReceipt(f, request, material, used) {
 }
 
 test(
-  "OpenShell material delivery reads only an existing live revision token without issuing or authorizing use",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (t) => {
-    const f = await fixture(t, { draftPull: true, sessionLifetimeMs: 120_000 });
-    const signal = new AbortController().signal;
-    const read = (revisionId = f.revision.id) => f.owner.readOpenShellMaterial(revisionId, signal);
-    // Absent material says why (finding 2149): a live session with nothing prepared yet.
-    assert.deepEqual(await read(), { absent: "unprepared" });
-    assert.equal(f.gh.issuesOfTokens.length, 0, "cold material reads must not issue");
-    assert.deepEqual(
-      (
-        await f.pool.query(
-          "SELECT source_id FROM occ.prepared_github_families WHERE source_id=$1",
-          [f.familyId],
-        )
-      ).rows,
-      [],
-      "cold material reads must not enroll a family",
-    );
-    await prepare(f);
-    const before = f.gh.trace.length;
-    assert.deepEqual(await read("rev_" + randomUUID()), { absent: "withdrawn" });
-    await assert.rejects(f.owner.readOpenShellMaterial(f.revision.id, AbortSignal.abort()), {
-      name: "AbortError",
-    });
-    const material = await read();
-    assert.ok(material?.value);
-    assert.equal(material.sessionId, f.sessionId);
-    for (const key of ["providerInstanceId", "repositoryId", "grantId"]) {
-      assert.equal(material[key], f.binding.grant[key]);
-    }
-    assert.equal(material.pushRef, f.request().pushRef);
-    assert.equal(material.pullRequestBase, "main");
-    assert.equal(material.apiOrigin, f.gh.origin);
-    assert.equal(Date.parse(material.expiresAt), f.deadlineWallMs);
-    const {
-      rows: [row],
-    } = await f.pool.query(
-      "SELECT id, material_version, admission FROM occ.prepared_github_attempts WHERE source_id=$1 AND custody='current'",
-      [f.familyId],
-    );
-    assert.equal(material.preparationAttemptId, row.id);
-    assert.equal(material.materialVersion, row.material_version);
-    assert.equal(material.repository, row.admission.grant.repository);
-    assert.deepEqual(await read(), material, "reading does not rotate material");
-    assert.equal(f.gh.trace.length, before, "material read must not contact the provider");
-    assert.equal(
-      (
-        await f.pool.query(
-          "SELECT count(*)::integer AS count FROM occ.prepared_repository_git_uses WHERE admission_id=$1",
-          [f.admissionId],
-        )
-      ).rows[0].count,
-      0,
-      "material delivery is not request authorization",
-    );
-    assert.equal(await f.providerStatus(material.value), 200);
-    const request = f.request();
-    const beforeUse = f.gh.trace.length;
-    const used = await f.owner.use(request, signal);
-    await assertNativeReceipt(f, request, material, used);
-    assert.equal(f.gh.trace.length, beforeUse, "native use must not contact the provider");
-    await f.withdraw();
-    assert.deepEqual(
-      await read(),
-      { absent: "withdrawn" },
-      "withdrawal denies before background retirement",
-    );
-    assert.equal(await f.providerStatus(material.value), 200);
-  },
-);
-
-test(
   "prepared Git use binds durable admission, exact ref, session and one exchange before retirement",
   {
     ...requiresPostgres,
@@ -158,6 +116,15 @@ test(
     await prepare(f);
     const request = f.request({ operation: "receive-pack" });
     const beforeUse = f.gh.trace.length;
+    const prepared = await currentNativeMetadata(f);
+    // An already-aborted request leaves this fresh exchange available for its first use.
+    await assert.rejects(f.owner.use(request, AbortSignal.abort()), {
+      message: "Prepared GitHub custody transaction did not complete (guard).",
+    });
+    assert.deepEqual(await nativeReceipts(f), [], "aborted use must not record authorization");
+    assert.deepEqual(await currentNativeMetadata(f), prepared);
+    assert.equal(f.gh.issuesOfTokens.length, 1, "aborted use must not rotate material");
+    assert.equal(f.gh.trace.length, beforeUse, "aborted use must not contact the provider");
     const used = await f.owner.use(request);
     assert.equal(used.exchangeId, request.exchangeId);
     assert.equal(typeof used.value, "string");
@@ -275,14 +242,14 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
     async (t) => {
       const f = await fixture(t, change === "session expired" ? { sessionLifetimeMs: 4200 } : {});
       await prepare(f);
-      const material = await f.owner.readOpenShellMaterial(f.revision.id, t.signal);
-      assert.ok(material?.value);
-      assert.equal(await f.providerStatus(material.value), 200);
+      const material = await currentNativeMetadata(f);
       const request = f.request();
       const beforeUse = f.gh.trace.length;
       const installed = await f.owner.use(request);
       const expected = await assertNativeReceipt(f, request, material, installed);
       assert.equal(f.gh.trace.length, beforeUse, "native use must not contact the provider");
+      assert.equal(f.gh.issuesOfTokens.length, 1);
+      assert.equal(await f.providerStatus(installed.value), 200);
       const { agent, revision, sessionId } = f;
       if (change === "session expired") {
         await new Promise((resolve) =>
@@ -320,11 +287,6 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
         });
       }
       await assertUseGuarded(f);
-      // The OpenShell route tells the Agent its access ended (finding 2149).
-      assert.deepEqual(
-        await f.owner.readOpenShellMaterial(f.revision.id, new AbortController().signal),
-        { absent: "withdrawn" },
-      );
       assert.deepEqual(await nativeReceipts(f), expected, "denial must preserve the use receipt");
       assert.equal(
         await f.providerStatus(installed.value),
@@ -336,6 +298,7 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
         [sessionId],
       );
       assert.equal(receipt.rows[0].state, "active");
+      assert.equal(f.gh.issuesOfTokens.length, 1, "denial must not issue a replacement");
       await f.owner.maintain();
       await assertUseGuarded(f);
       assert.deepEqual(
@@ -347,6 +310,7 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
         "SELECT enabled FROM occ.prepared_github_families WHERE source_id=$1",
         [f.familyId],
       );
+      assert.equal(f.gh.issuesOfTokens.length, 1, "maintenance must not replace the old token");
       assert.equal(
         family.rows[0].enabled,
         false,
@@ -374,16 +338,15 @@ for (const draftPullLimit of [undefined, "none"]) {
           [{ draft_pull_limit: "none" }],
         );
       }
-      const material = await f.owner.readOpenShellMaterial(f.revision.id, t.signal);
-      assert.ok(material?.value);
+      const material = await currentNativeMetadata(f, { draftPull: true });
       const request = f.request({
         operation: "create-draft-pull",
         pull: {
           operationId: randomUUID(),
           apiOrigin: f.gh.origin,
-          repository: material.repository,
-          head: material.pushRef.slice("refs/heads/".length),
-          base: material.pullRequestBase,
+          repository: fixtureRepository,
+          head: "prepared-fixture",
+          base: "main",
         },
       });
       const before = f.gh.trace.length;
@@ -448,6 +411,9 @@ for (const draftPullLimit of [undefined, "none"]) {
       assert.deepEqual(await claims(), receipt, "replay cannot claim a second draft");
       assert.deepEqual(await nativeReceipts(f), expectedUses);
       assert.equal(f.gh.trace.length, before, "native draft use must not contact the provider");
+      assert.equal(f.gh.issuesOfTokens.length, 1, "replay must not issue again");
+      assert.equal(await f.providerStatus(used.value), 200);
+      // This proves provider acceptance, not a Git subprocess push or a draft creation.
     },
   );
 }
@@ -590,8 +556,16 @@ test(
     assert.equal(await issued.owner.revisionMaterial(issued.revision.id), "pending");
     await prepare(issued);
     assert.equal(await issued.owner.revisionMaterial(issued.revision.id), "ready");
+    const prepared = await currentNativeMetadata(issued);
+    const calls = issued.gh.trace.length;
+    const tokens = issued.gh.issuesOfTokens.length;
+    assert.equal(await issued.owner.revisionMaterial(issued.revision.id), "ready");
     // Another revision has no open session of this owner: nothing is ready for it.
     assert.equal(await issued.owner.revisionMaterial("rev_" + randomUUID()), "pending");
+    assert.deepEqual(await currentNativeMetadata(issued), prepared);
+    assert.equal(issued.gh.trace.length, calls, "status must not contact the provider");
+    assert.equal(issued.gh.issuesOfTokens.length, tokens, "status must not rotate material");
+    assert.deepEqual(await nativeReceipts(issued), [], "status must not authorize use");
 
     // A rejected App key: GitHub answers 401 and mints nothing.
     const refused = await fixture(t);

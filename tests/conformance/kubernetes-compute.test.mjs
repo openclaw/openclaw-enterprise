@@ -1040,6 +1040,7 @@ function dedicatedFirstDeployFixture({
   statusProxy = true,
   clock,
   modelEndpoint,
+  modelProtocol = "openai-responses",
   standaloneWebSearch,
   sandboxDriver,
   openShellGit,
@@ -1074,10 +1075,17 @@ function dedicatedFirstDeployFixture({
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        ...(modelEndpoint === undefined ? {} : { codexModelBaseUrl: modelEndpoint }),
-        ...(standaloneWebSearch === undefined
+        ...(modelEndpoint === undefined
           ? {}
-          : { codexModelSupportsStandaloneWebSearch: standaloneWebSearch }),
+          : {
+              modelProvider: {
+                protocol: modelProtocol,
+                baseUrl: modelEndpoint,
+                ...(standaloneWebSearch === undefined
+                  ? {}
+                  : { supportsStandaloneWebSearch: standaloneWebSearch }),
+              },
+            }),
       },
       // The API server proxy can reach private status, so activation reads the
       // node OpenClaw applied.
@@ -1500,6 +1508,160 @@ function dedicatedFirstDeployFixture({
   };
 }
 
+test("shared providers render OpenClaw adapters and refuse unsupported Codex protocols", async () => {
+  for (const protocol of ["openai-responses", "openai-completions"]) {
+    const configuration = createHarnessConfiguration("openclaw", "gpt-5");
+    configuration.models.providers.openai.api = protocol;
+    const fixture = dedicatedFirstDeployFixture({
+      modelEndpoint: "https://models.example.test/v1",
+      modelProtocol: protocol,
+      revision: {
+        harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        configuration,
+        plugins: undefined,
+      },
+    });
+    await fixture.prepare();
+    const rendered = [...fixture.objects.values()].filter(
+      (object) => object.kind === "ConfigMap" && object.data?.["openclaw.json"] !== undefined,
+    );
+    assert.equal(rendered.length, 1);
+    const provider = JSON.parse(rendered[0].data["openclaw.json"]).models.providers.openai;
+    assert.equal(provider.baseUrl, "https://models.example.test/v1");
+    assert.equal(provider.api, protocol);
+    assert.equal(
+      fixture.revision.configuration.models.providers.openai.baseUrl,
+      "https://api.openai.com/v1",
+    );
+  }
+  const codex = dedicatedFirstDeployFixture({
+    modelEndpoint: "https://models.example.test/v1",
+    modelProtocol: "openai-completions",
+  });
+  const before = structuredClone([...codex.objects]);
+  await assert.rejects(
+    codex.prepare(),
+    /Codex requires runtime.modelProvider.protocol to be openai-responses/,
+  );
+  assert.deepEqual([...codex.objects], before);
+});
+
+test("embedded subagent model rows cannot override the shared provider destination", async () => {
+  const configuration = createHarnessConfiguration("openclaw", "gpt-5");
+  configuration.agents.defaults.subagents = { model: "openai/gpt-4.1" };
+  configuration.agents.defaults.models["openai/gpt-4.1"] = { agentRuntime: { id: "openclaw" } };
+  configuration.models.providers.openai.models.push({
+    ...configuration.models.providers.openai.models[0],
+    id: "gpt-4.1",
+    baseUrl: "https://other.example.test/v1",
+  });
+  const fixture = dedicatedFirstDeployFixture({
+    modelEndpoint: "https://models.example.test/v1",
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      configuration,
+      plugins: undefined,
+    },
+  });
+  const before = structuredClone([...fixture.objects]);
+  await assert.rejects(fixture.prepare(), /OpenAI model baseUrl must match the Installation/);
+  assert.deepEqual([...fixture.objects], before, "refuse before credential or workload writes");
+});
+
+test("shared OpenAI provider leaves a roster-selected Anthropic provider unchanged", async () => {
+  const configuration = createHarnessConfiguration("openclaw", "gpt-5");
+  delete configuration.agents.defaults.model;
+  configuration.agents.defaults.models = {
+    "anthropic/claude-fixture": { agentRuntime: { id: "openclaw" } },
+  };
+  configuration.agents.entries = { main: { model: "anthropic/claude-fixture" } };
+  configuration.models.providers.openai.baseUrl = "https://unselected.example.test/v1";
+  configuration.models.providers.anthropic = {
+    baseUrl: "https://api.anthropic.com",
+    api: "anthropic-messages",
+    models: [{ id: "claude-fixture", name: "Fixture" }],
+  };
+  const fixture = dedicatedFirstDeployFixture({
+    modelEndpoint: "https://models.example.test/v1",
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      configuration,
+      plugins: undefined,
+    },
+  });
+  await fixture.prepare();
+  const document = [...fixture.objects.values()].find(
+    (object) => object.kind === "ConfigMap" && object.data?.["openclaw.json"] !== undefined,
+  );
+  assert.ok(document);
+  const providers = JSON.parse(document.data["openclaw.json"]).models.providers;
+  assert.equal(providers.anthropic.baseUrl, "https://api.anthropic.com");
+  assert.equal(providers.openai.baseUrl, "https://unselected.example.test/v1");
+  assert.equal(fixture.revision.compute.admission, undefined);
+});
+
+test("prepared direct-Secret workloads refuse provider changes before either activation path delivers credentials", async (t) => {
+  for (const harness of ["openclaw", "codex"]) {
+    const fixture = dedicatedFirstDeployFixture({
+      modelEndpoint: "https://models.example.test/v1",
+      revision:
+        harness === "openclaw"
+          ? {
+              harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+              configuration: createHarnessConfiguration("openclaw", "gpt-5"),
+              plugins: undefined,
+            }
+          : {},
+    });
+    // Prepare the real manifests and Secret projections before simulating an operator reload.
+    await fixture.prepare();
+    fixture.markReady(fixture.gatewayName);
+    await fixture.prepare();
+    if (harness === "codex") {
+      fixture.markReady(fixture.agentName);
+      fixture.state.connected = true;
+    }
+    assert.equal((await fixture.prepare()).ready, true);
+    const before = structuredClone([...fixture.objects]);
+    const secretReads = t.mock.method(fixture.clients.core, "readNamespacedSecret");
+    for (const replacement of [
+      { protocol: "openai-responses", baseUrl: "https://other.example.test/v1" },
+      undefined,
+    ]) {
+      const { modelProvider: _previous, ...runtime } = fixture.driver.options.runtime;
+      const reloaded = new KubernetesComputeDriver(
+        {
+          ...fixture.driver.options,
+          runtime: {
+            ...runtime,
+            ...(replacement === undefined ? {} : { modelProvider: replacement }),
+          },
+        },
+        { nodeEnrollment: fixture.driver.nodeEnrollment },
+      );
+      reloaded.apiClients = Promise.resolve(fixture.clients);
+      const failure = await reloaded
+        .activateRevision(fixture.revision, authContext(fixture.revision))
+        .then(
+          () => undefined,
+          (error) => error,
+        );
+      assert.equal(
+        secretReads.mock.callCount(),
+        0,
+        "activation must refuse before direct-Secret reads",
+      );
+      assert.deepEqual(
+        [...fixture.objects],
+        before,
+        "activation must not replace manifests or credential projections",
+      );
+      assert.match(failure?.message ?? "activation succeeded", /model provider changed/);
+    }
+    secretReads.mock.restore();
+  }
+});
+
 test("custom Codex endpoints compile explicit providers without changing the admitted model IDs", async () => {
   for (const sourceProvider of ["codex", "openai"]) {
     const fixture = dedicatedFirstDeployFixture({
@@ -1684,51 +1846,24 @@ test("custom endpoint search declarations do not change Codex account-login prov
   assert.equal(runtime.data["config.toml"].includes("model_provider"), false);
 });
 
-test("standalone Codex search requires an explicit model endpoint and a boolean declaration", () => {
+test("shared provider rejects removed Codex options and malformed declarations", () => {
   const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
-  for (const value of [undefined, false]) {
-    assert.doesNotThrow(() =>
-      createKubernetesComputeDriver(
-        options({
-          runtime: {
-            ...runtime,
-            ...(value === undefined ? {} : { codexModelSupportsStandaloneWebSearch: value }),
-          },
-        }),
-      ),
-    );
-  }
-  assert.throws(
-    () =>
-      createKubernetesComputeDriver(
-        options({
-          runtime: { ...runtime, codexModelSupportsStandaloneWebSearch: true },
-        }),
-      ),
-    (error) => {
-      assert.ok(error instanceof SharedConfigurationValidationError);
-      assert.equal(error.error.details[0].path, "/runtime/codexModelSupportsStandaloneWebSearch");
-      assert.match(error.error.details[0].message, /explicit.*Codex model endpoint/);
-      return true;
-    },
-  );
-  for (const value of ["true", 1, null]) {
-    assert.throws(
-      () =>
-        createKubernetesComputeDriver(
-          options({
-            runtime: {
-              ...runtime,
-              codexModelBaseUrl: "https://models.example.test/v1",
-              codexModelSupportsStandaloneWebSearch: value,
-            },
-          }),
-        ),
-      (error) => {
-        assert.ok(error instanceof SharedConfigurationValidationError);
-        assert.equal(error.error.details[0].path, "/runtime/codexModelSupportsStandaloneWebSearch");
-        return true;
+  for (const extra of [
+    { codexModelBaseUrl: "https://models.example.test/v1" },
+    { codexModelSupportsStandaloneWebSearch: true },
+    { modelProvider: { protocol: "openai-responses" } },
+    { modelProvider: { baseUrl: "https://models.example.test/v1" } },
+    ...["true", 1, null].map((value) => ({
+      modelProvider: {
+        protocol: "openai-responses",
+        baseUrl: "https://models.example.test/v1",
+        supportsStandaloneWebSearch: value,
       },
+    })),
+  ]) {
+    assert.throws(
+      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, ...extra } })),
+      SharedConfigurationValidationError,
     );
   }
 });
@@ -1897,10 +2032,10 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   const withdrawals = [];
   let withdrawalFailure;
   const nativeConfiguration = createHarnessConfiguration("openclaw", "team/model");
-  nativeConfiguration.models.providers.openai.baseUrl = "https://provider.example.test/v1";
+  nativeConfiguration.models.providers.openai.baseUrl = "https://models.example.test/inference/v1";
   nativeConfiguration.models.providers.openai.models[0].baseUrl =
     "https://models.example.test:443/inference/v1/";
-  nativeConfiguration.models.providers.openai.api = "openai-completions";
+  nativeConfiguration.models.providers.openai.api = "openai-responses";
   const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
   // The primary row names its own API; the worker and the startup probe use it, not the
   // provider's.
@@ -1926,7 +2061,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     ...selectedEntry,
     id: "team/fallback",
     name: "team/fallback",
-    baseUrl: "https://fallback.example.test/v1",
+    baseUrl: "https://models.example.test/inference/v1",
   };
   delete fallbackEntry.api;
   nativeConfiguration.models.providers.openai.models.unshift(fallbackEntry);
@@ -1956,11 +2091,12 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     ownerCapability: "credential_gateway",
     driverId: snapshot.credentialGatewayId,
     type: "openai",
-    config: { base_url: "https://models.example.test/inference/v1" },
+    config: { authorized_base_url: "https://models.example.test/inference/v1" },
     secrets: {},
     state: "ready",
   };
   const fixture = dedicatedFirstDeployFixture({
+    modelEndpoint: "https://models.example.test/inference/v1",
     sandboxDriver,
     credentialGatewayDriver: {
       id: snapshot.credentialGatewayId,
@@ -2063,7 +2199,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     nativeConfig.models.providers.openai.models.map(({ id, api, baseUrl }) => [id, api, baseUrl]),
     [
       ["team/model", "openai-responses", "https://models.example.test/inference/v1"],
-      ["team/fallback", "openai-completions", "https://fallback.example.test/v1"],
+      ["team/fallback", "openai-responses", "https://models.example.test/inference/v1"],
     ],
   );
   // The startup probe gets only the primary model's entry (OpenClaw merges entries whose ids
@@ -7230,7 +7366,7 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
             runtime: {
               transportSecretPrefix: "transport",
               gatewayStorageClassName: "local-path",
-              codexModelBaseUrl: modelEndpoint,
+              modelProvider: { protocol: "openai-responses", baseUrl: modelEndpoint },
             },
           }),
     };
@@ -7829,7 +7965,12 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
   };
   const started = (codexModelBaseUrl) => {
     const driver = createKubernetesComputeDriver(
-      options({ runtime: { ...runtime, codexModelBaseUrl } }),
+      options({
+        runtime: {
+          ...runtime,
+          modelProvider: { protocol: "openai-responses", baseUrl: codexModelBaseUrl },
+        },
+      }),
     );
     driver.apiClients = Promise.resolve(clients);
     return driver;
@@ -7884,7 +8025,7 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     ["https://192.168.0.10/v1", excluded("192.168.0.0/16")],
     ["https://169.254.169.254/v1", excluded("169.254.0.0/16")],
   ]) {
-    const message = `Codex model endpoint ${blocked}: the generated policy will not admit it unless another NetworkPolicy does.`;
+    const message = `Model provider endpoint ${blocked}: the generated policy will not admit it unless another NetworkPolicy does.`;
     const result = await started(codexModelBaseUrl).preflight();
     assert.deepEqual(
       result,
@@ -7944,7 +8085,15 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     "https://models.example.test/v1#fragment",
   ]) {
     assert.throws(
-      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
+      () =>
+        createKubernetesComputeDriver(
+          options({
+            runtime: {
+              ...runtime,
+              modelProvider: { protocol: "openai-responses", baseUrl: codexModelBaseUrl },
+            },
+          }),
+        ),
       SharedConfigurationValidationError,
     );
   }
@@ -7956,7 +8105,15 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     "https://127.1/v1",
   ]) {
     assert.throws(
-      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
+      () =>
+        createKubernetesComputeDriver(
+          options({
+            runtime: {
+              ...runtime,
+              modelProvider: { protocol: "openai-responses", baseUrl: codexModelBaseUrl },
+            },
+          }),
+        ),
       SharedConfigurationValidationError,
       codexModelBaseUrl,
     );
@@ -7975,7 +8132,15 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     ["https://models.example.test/v1\u0000", /must not contain spaces or control characters/],
   ]) {
     assert.throws(
-      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
+      () =>
+        createKubernetesComputeDriver(
+          options({
+            runtime: {
+              ...runtime,
+              modelProvider: { protocol: "openai-responses", baseUrl: codexModelBaseUrl },
+            },
+          }),
+        ),
       SharedConfigurationValidationError,
       String(message),
       JSON.stringify(codexModelBaseUrl),
@@ -10592,8 +10757,6 @@ test("credential-source authentication renders no model Secret and requires the 
     harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
     configuration: createHarnessConfiguration("openclaw", "team/model"),
   };
-  nativeRevision.configuration.models.providers.openai.baseUrl =
-    "https://models.example.test/inference/v1";
   nativeRevision.configuration.models.providers.openai.api = "openai-completions";
   driver.validateHarnessAuth(
     nativeRevision.harness,
@@ -16037,8 +16200,7 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       ),
     {
       name: "ConfigurationHarnessError",
-      message:
-        "Configuration setting models.providers.openai.models.0.baseUrl (or models.providers.openai.baseUrl) must be https://api.openai.com/v1 unless harnessAuth.method is credential_source.",
+      message: "OpenAI model baseUrl must match the Installation runtime.modelProvider.baseUrl.",
     },
   );
   // Each dedicated OpenClaw catalog refusal names the setting the caller fixes (finding 1116);
@@ -16141,7 +16303,9 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
         ),
       {
         name: "ConfigurationHarnessError",
-        message: `Configuration setting ${setting} ${requirement}.`,
+        message: setting.endsWith(".baseUrl")
+          ? "OpenAI model baseUrl must match the Installation runtime.modelProvider.baseUrl."
+          : `Configuration setting ${setting} ${requirement}.`,
       },
       setting,
     );

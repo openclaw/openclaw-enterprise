@@ -1241,7 +1241,7 @@ export class OpenShellGitRuntime {
         return;
       }
       try {
-        const path = preview.arm(startupId);
+        const path = preview.arm(startupId, entry.authorization.delivery.repository);
         preview.confirm(await probe(path));
         await this.fenced(entry, signal);
       } catch (error) {
@@ -1632,6 +1632,8 @@ export class OpenShellGitRuntime {
           reason: "environment_not_installed",
           ...this.identity(entry),
         }),
+      reportSupervisorChange: (check) =>
+        this.reportContinuity(entry, [{ check, result: "changed" }]),
       reportExecutionChange: ({ restartCount, neverRestartPolicy, sandboxIdChanged }) =>
         this.reportContinuity(entry, [
           { check: "sandbox-restart-count", result: restartCount ?? "invalid" },
