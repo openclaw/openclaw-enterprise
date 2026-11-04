@@ -513,6 +513,8 @@ const devdayCreateCheckpoint = [
   { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
   click("Apply channel settings"),
   click("Create Agent"),
+  { text: "devday claw" },
+  { selector: '.agent-tabs button[role="tab"][aria-controls$="-deployment-panel"]', click: true },
   { selector: ".deployment-status" },
 ];
 const devdayAdminCheckpoint = [
@@ -10310,7 +10312,7 @@ export const scenarios = {
   },
   devdayCreateCheckpoint: {
     group: "Flows",
-    name: "DevDay segment 1 checkpoint: deployed devday claw",
+    name: "DevDay segment 1 checkpoint: first deployment queued",
     path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
     agentName: "oceclaw",
     deployed: true,
