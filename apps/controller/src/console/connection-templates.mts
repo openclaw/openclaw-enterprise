@@ -70,10 +70,9 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       clients = clientList.data;
       redirectUri = clientList.meta?.redirectUri;
       for (const template of templates as ConnectionTemplate[]) {
-        const scope =
-          namespaces.find((item) => item.id === template.namespaceId)?.name ??
-          template.namespaceId ??
-          "Installation";
+        const scope = template.namespaceId
+          ? `Namespace · ${namespaces.find((item) => item.id === template.namespaceId)?.name ?? template.namespaceId}`
+          : "Installation-wide";
         const client = clients.find((item) => item.id === template.current.oauthClientId);
         catalog.append(
           element(
@@ -123,7 +122,7 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       "select",
       { disabled: !!template },
       option("", "Installation-wide"),
-      ...namespaces.map((item) => option(item.id, item.name)),
+      ...namespaces.map((item) => option(item.id, `Namespace · ${item.name}`)),
     );
     if (template?.namespaceId && !namespaces.some((item) => item.id === template.namespaceId)) {
       scope.append(option(template.namespaceId, template.namespaceId));

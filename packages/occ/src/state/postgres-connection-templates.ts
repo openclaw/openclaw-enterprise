@@ -97,9 +97,6 @@ function registrationFromRow(row: Row): Readonly<OAuthClient> {
     issuer: text(row, "issuer"),
     clientId: text(row, "client_id"),
     displayName: text(row, "display_name"),
-    ...(row.secret_registration_id === null
-      ? {}
-      : { secretRegistrationId: text(row, "secret_registration_id") }),
     tokenUrl: text(row, "token_url"),
     ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     tokenEndpointAuthMethod:
@@ -188,9 +185,12 @@ export function postgresConnectionTemplates(
     },
     listOAuthClients: async () =>
       Object.freeze(
-        (await client.query("SELECT * FROM occ.oauth_clients ORDER BY id", [])).rows.map((row) =>
-          registrationFromRow(row as Row),
-        ),
+        (
+          await client.query(
+            "SELECT * FROM occ.oauth_clients WHERE cleanup_after IS NULL ORDER BY id",
+            [],
+          )
+        ).rows.map((row) => registrationFromRow(row as Row)),
       ),
     countNamespaceOAuthClients: async (namespaceId) =>
       integer(
@@ -203,56 +203,43 @@ export function postgresConnectionTemplates(
       ),
     findOAuthClient: async (registrationId) => {
       const [row] = (
-        await client.query(`SELECT * FROM occ.oauth_clients WHERE id = $1`, [registrationId])
+        await client.query(
+          `SELECT * FROM occ.oauth_clients WHERE id = $1 AND cleanup_after IS NULL`,
+          [registrationId],
+        )
       ).rows;
       return row === undefined ? undefined : registrationFromRow(row as Row);
     },
     lockOAuthClient: async (id) => {
       const [row] = (
-        await client.query("SELECT * FROM occ.oauth_clients WHERE id=$1 FOR UPDATE", [id])
+        await client.query(
+          "SELECT * FROM occ.oauth_clients WHERE id=$1 AND cleanup_after IS NULL FOR UPDATE",
+          [id],
+        )
       ).rows;
       return row === undefined ? undefined : registrationFromRow(row as Row);
     },
-    setOAuthClientSecret: async (id, handle) => {
-      await client.query("UPDATE occ.oauth_clients SET secret_registration_id=$2 WHERE id=$1", [
-        id,
-        handle,
-      ]);
-    },
-    listRetiredOAuthClientSecrets: async (limit) =>
+    listOAuthClientCleanups: async (limit) =>
       (
         await client.query(
-          "SELECT * FROM occ.retired_oauth_client_secrets WHERE retry_at <= now() ORDER BY retry_at,id LIMIT $1",
+          "SELECT id FROM occ.oauth_clients WHERE cleanup_after<=now() ORDER BY cleanup_after,id LIMIT $1",
           [limit],
         )
-      ).rows.map((row) => ({
-        id: text(row as Row, "id"),
-        issuer: text(row as Row, "issuer"),
-        clientId: text(row as Row, "client_id"),
-        credentialRefreshDriverId: text(row as Row, "credential_refresh_driver_id"),
-      })),
-    queueOAuthClientSecretCleanup: async (ref, phase) => {
-      await client.query(
-        `INSERT INTO occ.retired_oauth_client_secrets(id,issuer,client_id,credential_refresh_driver_id,retry_at)
-         VALUES ($1,$2,$3,$4,CASE WHEN $5='staging' THEN now()+interval '5 minutes' ELSE now() END)`,
-        [ref.id, ref.issuer, ref.clientId, ref.credentialRefreshDriverId, phase],
-      );
-    },
-    lockOAuthClientSecretCleanup: async (id, dueOnly) =>
-      (
+      ).rows.map((row) => text(row as Row, "id")),
+    lockOAuthClientForCleanup: async (id, dueOnly) => {
+      const [row] = (
         await client.query(
-          `SELECT id FROM occ.retired_oauth_client_secrets WHERE id=$1 AND (NOT $2::boolean OR retry_at <= now()) FOR UPDATE SKIP LOCKED`,
+          "SELECT * FROM occ.oauth_clients WHERE id=$1 AND cleanup_after IS NOT NULL AND (NOT $2::boolean OR cleanup_after<=now()) FOR UPDATE SKIP LOCKED",
           [id, dueOnly],
         )
-      ).rowCount === 1,
-    deferRetiredOAuthClientSecret: async (id) => {
-      await client.query(
-        "UPDATE occ.retired_oauth_client_secrets SET retry_at=now()+INTERVAL '1 minute' WHERE id=$1",
-        [id],
-      );
+      ).rows;
+      return row === undefined ? undefined : registrationFromRow(row as Row);
     },
-    forgetRetiredOAuthClientSecret: async (id) => {
-      await client.query("DELETE FROM occ.retired_oauth_client_secrets WHERE id=$1", [id]);
+    setOAuthClientCleanup: async (id, cleanupAfter) => {
+      await client.query("UPDATE occ.oauth_clients SET cleanup_after=$2 WHERE id=$1", [
+        id,
+        cleanupAfter,
+      ]);
     },
     lockConnectionTemplate: async (templateId) => {
       await client.query("SELECT id FROM occ.connection_templates WHERE id = $1 FOR UPDATE", [
@@ -261,11 +248,11 @@ export function postgresConnectionTemplates(
       // A concurrent editor may have committed a new current version while we waited.
       return (await selectTemplates("WHERE t.id = $1", [templateId]))[0];
     },
-    createOAuthClient: async (registration) => {
+    createOAuthClient: async (registration, cleanupAfter) => {
       await requireInitialized();
       await client.query(
         `INSERT INTO occ.oauth_clients
-         (id, namespace_id, issuer, client_id, credential_refresh_driver_id, created_at, display_name, token_url, revocation_url, token_endpoint_auth_method, secret_registration_id)
+         (id, namespace_id, issuer, client_id, credential_refresh_driver_id, created_at, display_name, token_url, revocation_url, token_endpoint_auth_method, cleanup_after)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           registration.id,
@@ -278,27 +265,20 @@ export function postgresConnectionTemplates(
           registration.tokenUrl,
           registration.revocationUrl ?? null,
           registration.tokenEndpointAuthMethod,
-          registration.secretRegistrationId ?? null,
+          cleanupAfter ?? null,
         ],
       );
       return immutableCopy(registration);
     },
-    deleteOAuthClient: async (registrationId) => {
-      // Concurrent deletions of templates sharing a client must check the last reference
-      // one at a time. A separate statement sees commits made while the lock was pending.
-      await client.query(
-        "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
-        [`occ.oauth_clients:${registrationId}`],
+    deleteOAuthClient: async (id, retainForCleanup) => {
+      const mutation = retainForCleanup
+        ? "UPDATE occ.oauth_clients r SET cleanup_after=now()"
+        : "DELETE FROM occ.oauth_clients r";
+      const result = await client.query(
+        `${mutation} WHERE r.id=$1 AND NOT EXISTS(SELECT 1 FROM occ.oauth_connection_template_versions v WHERE v.oauth_client_id=r.id)`,
+        [id],
       );
-      const deleted = await client.query(
-        `DELETE FROM occ.oauth_clients r WHERE r.id = $1
-         AND NOT EXISTS (
-           SELECT 1 FROM occ.oauth_connection_template_versions v
-           WHERE v.oauth_client_id = r.id
-         )`,
-        [registrationId],
-      );
-      return deleted.rowCount === 1;
+      return result.rowCount === 1;
     },
     createConnectionTemplate: async (template) => {
       await requireInitialized();

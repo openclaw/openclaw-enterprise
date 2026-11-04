@@ -285,7 +285,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     }
   }
 
-  /** New connections read the replaced secret; existing connections keep the old one. */
+  /** Replace the client secret that all new exchanges and saved grants use. */
   async rotateClientSecret(
     context: CredentialClientRegistrationContext,
     clientSecret: string,
@@ -337,13 +337,15 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   ): Promise<void> {
     this.requireBrowserSource(context);
     const state = browserAuthorizationState(context.source.id, privateState, callback);
-    let clientSecret: string | undefined;
-    if (request.tokenEndpointAuthMethod !== "none") {
-      if (!request.secretRegistrationId) {
-        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
-      }
-      clientSecret = await this.readClientSecret(request.secretRegistrationId, context.signal);
-    }
+    const clientSecret =
+      request.tokenEndpointAuthMethod === "none"
+        ? undefined
+        : await this.readClientSecret({
+            registrationId: request.oauthClientId,
+            issuer: request.issuer,
+            clientId: request.clientId,
+            signal: context.signal,
+          });
     const grant = await exchangeAuthorizationCode(
       request,
       state.verifier,
@@ -491,16 +493,19 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   }
 
   /** Only the operator channel can export a stored credential. */
-  private async readClientSecret(registrationId: string, signal: AbortSignal): Promise<string> {
+  async readClientSecret(context: CredentialClientRegistrationContext): Promise<string> {
     const workspace = this.requireClientWorkspace();
+    const name = clientProviderName(context.registrationId);
+    const provider = await this.backend.client
+      .clientForNamespace(workspace)
+      .getProvider(workspace, name, context.signal);
+    if (!provider) {
+      throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+    }
+    this.assertClientProvider(provider, context.registrationId);
     const secret = await this.backend.client
       .credentialClientForNamespace(workspace)
-      .getProviderCredential(
-        workspace,
-        clientProviderName(registrationId),
-        CLIENT_SECRET_KEY,
-        signal,
-      );
+      .getProviderCredential(workspace, name, CLIENT_SECRET_KEY, context.signal);
     return secret.value;
   }
 

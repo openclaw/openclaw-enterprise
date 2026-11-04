@@ -76,19 +76,18 @@ within an authorization server. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/
   and any secret in the Driver's protected store. A public MCP client can omit the secret.
   Templates with the same pair share the returned `clientRegistrationId`. The
   same `clientId` at another issuer gets a separate registration.
-- For clients with a secret, `rotateClientSecret(clientRegistrationId, clientSecret)`
-  sets the version for new connections. Each connection pins the version used
-  for its exchange. Existing connections continue refreshing
-  with that version until the provider disables it, then report `reauthorize`.
-- `removeClient(clientRegistrationId)` removes the stored registration and any
-  secret it holds. OCC calls it only when no template version or source uses it.
+- `rotateClientSecret(clientRegistrationId, clientSecret)` replaces the secret
+  at the same private reference. An exchange, refresh or revocation that
+  authenticates the client resolves its current secret before the request.
+- `removeClient(clientRegistrationId)` removes the private registration once
+  its template versions and saved accounts have been released. OCC retries
+  unfinished creation or deletion after a restart.
 
-Each connection template version and credential source records its
-`clientRegistrationId`. The Driver keeps referenced client secret versions
-available across replicas and restarts. The Token Service can use the exact
-registration and secret version bound to the source for refresh. OCC stores
-the registration reference. Client secrets and refresh grants stay out of the
-worker's OpenShell attachment.
+Each saved grant records the registration reference. The selected Driver
+supplies its current client authentication for the pinned issuer, client ID
+and provider endpoints. The Token Service keeps the user's refresh token.
+A rejected client secret requires an administrator to fix the registration.
+A revoked user grant requires the user to reconnect.
 
 ### Client authentication and account custody
 
@@ -232,7 +231,7 @@ If the selected route cannot enforce a promised restriction, refuse deployment.
 | ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`              | Administrator checks the provider; reconnect   |
 | Connection template edited after consent                    | Source unchanged; **Reconnect to apply changes** | Owner reconnects; administrator can disconnect |
 | Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use            | Retry withdrawal, or stop the affected Agent   |
-| Provider disables a rotated-out client secret               | Older connections report `reauthorize`           | Owners **Reconnect**                           |
+| Provider rejects the current client secret                  | Client authentication fails                     | Admin corrects secret, then refresh retries   |
 
 The operator guide documents provider rules. Google requires verification for
 public applications requesting `gmail.readonly`, and External Testing applications
@@ -283,9 +282,8 @@ issue seven-day refresh tokens.
   write fails under `read-only`; a tool and a script get the same allow and deny
   decisions from the protected sender on the same requests;
   rotate, revoke, and reconnect work; an edited `tokenUrl` or endpoint leaves an
-  existing source unchanged; after client secret rotation, existing sources keep
-  refreshing until the old secret is disabled, then report `reauthorize`, and new
-  connections use the new secret.
+  existing source unchanged. Connect with A, rotate to B, disable A, then refresh
+  the same saved account and use its new access token without another consent flow.
 - **Live Google proof.** Run manually with an authorized account: `gog` reads Gmail
   through a dedicated Codex Agent, and a write method is denied. This proof is
   outside CI.

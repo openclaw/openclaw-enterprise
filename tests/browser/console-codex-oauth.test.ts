@@ -750,7 +750,7 @@ for (const savedAgent of [false, true]) {
       (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${sessionId}`)).status,
       200,
     );
-    await page.getByRole("link", { name: "Secrets", exact: true }).click();
+    await page.getByRole("link", { name: "Credentials", exact: true }).click();
     await page.waitForURL("**/console/secrets?**");
     release.resolve();
     await waitForSettledFetches(page, beginPath, 1);

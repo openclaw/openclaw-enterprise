@@ -2,11 +2,13 @@
 
 Installation administrators can publish a connection template for the Installation or one Namespace. They can also register an OAuth client in either scope. The administrator who configures the client must approve its exact issuer, token URL and optional revocation URL. A Namespace template can use an Installation client or a client in the same Namespace.
 
+In Console, open **Credentials → Connection templates**. Choose **Create connection template** and set **Template availability** to the whole Installation or a particular Namespace. Select a compatible OAuth client in the editor or expand **Register a new OAuth client**.
+
 ## Register a client
 
 Use `POST /oauth-clients` to register a provider client ID and its token endpoint authentication method. A public client uses `none`. Confidential clients use `client_secret_basic` or `client_secret_post` and require a write-only client secret. The selected Refresh Driver stores each confidential secret. OCC records the owning Driver ID and its private handle so that rotation uses the same store. The API rejects `private_key_jwt`; this integration supports client secrets and public clients. Register the callback URI returned in the response metadata with the provider.
 
-List clients with `GET /oauth-clients`. Use `POST /oauth-clients/{oauthClientId}/rotate-secret` to stage a new secret. OCC switches to the new secret when the database commits the change and its audit. The worker retries retirement of the old secret. Use `DELETE /oauth-clients/{oauthClientId}` after deleting the templates whose versions reference the client.
+List clients with `GET /oauth-clients`. Use `POST /oauth-clients/{oauthClientId}/rotate-secret` to replace the current secret. OCC replaces the secret at the same private reference. New code exchanges and later refreshes for existing accounts use the current secret. If the response is lost, retry with the same secret. Use `DELETE /oauth-clients/{oauthClientId}` after deleting the templates whose versions reference the client.
 
 When starting consent for an MCP template, send the nonempty `selectedScopes` the account owner chose. The choice must come from the approved version and include each scope in its resource challenge. Configured manual OAuth uses its fixed scopes. OCC keeps the selection with the private attempt and records it with the resulting grant.
 
@@ -44,8 +46,9 @@ administrators can connect with the built-in administrator role. See
 
 A pending request expires after ten minutes. Restart consent if it expires,
 the provider denies it, or the browser session changes. The server handles each
-code once. A connection requires renewed consent if the provider rejects its
-refresh grant.
+code once. If the provider rejects the client secret, an administrator can correct it and
+the Token Service retries the same grant. If the provider rejects the user’s
+refresh grant, the user reconnects.
 
 Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
 disconnect the account. OCC records the request before retiring the credential

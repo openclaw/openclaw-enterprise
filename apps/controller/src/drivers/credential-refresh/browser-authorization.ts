@@ -126,7 +126,6 @@ export async function exchangeAuthorizationCode(
     tokenEndpointAuthMethod: request.tokenEndpointAuthMethod,
     ...(request.resource === undefined ? {} : { resource: request.resource }),
     clientId: request.clientId,
-    ...(clientSecret === undefined ? {} : { clientSecret }),
     scope: tokens.scope,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,

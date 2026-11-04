@@ -40,7 +40,9 @@ export interface CredentialRefreshDriver extends Driver {
     context: CredentialClientRegistrationContext,
     clientSecret: string,
   ): Promise<void>;
-  /** Replaces the stored client secret for new connections; existing ones keep theirs. */
+  /** Trusted Token Service access to the current confidential registration credential. */
+  readClientSecret?(context: CredentialClientRegistrationContext): Promise<string>;
+  /** Replaces the stored credential for operations that authenticate this client. */
   rotateClientSecret?(
     context: CredentialClientRegistrationContext,
     clientSecret: string,
@@ -88,6 +90,7 @@ export type CredentialSourceDeviceAuthorizationResult = { readonly status: "pend
 
 /** One OAuth client at one authorization server, whose secret the Refresh Driver keeps. */
 export interface CredentialClientRegistrationContext {
+  /** Stable OAuthClient ID. All grants for this client use its current private material. */
   readonly registrationId: string;
   readonly issuer: string;
   readonly clientId: string;
@@ -97,7 +100,6 @@ export interface CredentialClientRegistrationContext {
 /** The approved values of one connection template version that the browser flow uses. */
 export interface CredentialBrowserAuthorizationRequest {
   readonly oauthClientId: string;
-  readonly secretRegistrationId?: string;
   readonly tokenEndpointAuthMethod: "none" | "client_secret_post" | "client_secret_basic";
   readonly resource?: string;
   readonly issuer: string;

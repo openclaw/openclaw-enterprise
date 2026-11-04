@@ -1575,7 +1575,7 @@ export class ControllerWorker {
           await this.sweepConnectionRevocation();
           if (this.credentialRefresh && Date.now() >= this.nextClientCleanup) {
             this.nextClientCleanup = Date.now() + 30_000;
-            await this.provisioningController?.cleanupRetiredOAuthClientSecrets();
+            await this.provisioningController?.cleanupOAuthClients();
           }
         }
         const claim = await this.queue.claim();

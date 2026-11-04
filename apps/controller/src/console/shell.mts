@@ -1,7 +1,7 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
 import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
-import type { createNavigation, pages } from "./navigation.mjs";
+import { connectionTemplatesPage, type createNavigation, type pages } from "./navigation.mjs";
 
 interface Account {
   name: string;
@@ -13,6 +13,7 @@ export interface ShellState {
   namespaces: readonly Namespace[];
   namespaceId: string | null;
   observabilityUrl: string | null;
+  installationAdmin: boolean;
   namespaceAdmissionPending?: boolean;
   recovery?: boolean;
   page?: { agentId: string; creating?: never } | { creating: true; agentId?: never } | null;
@@ -566,18 +567,7 @@ export function createShell({
     // usable. Navigation, publicPanel() and a render without a session start with closed menus.
     menuControls = session ? (menuControls ?? createAccountMenus(session.user)) : null;
     const nav = element("nav", { className: "nav", "aria-label": "Main navigation" });
-    const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
-    for (const name of ["agents", "secrets", "namespaces"] as const) {
-      const link = element(
-        "a",
-        {
-          href: pageUrl(name),
-          "data-nav": name,
-          ...(feature === name ? { "aria-current": "page" } : {}),
-        },
-        element("span", { className: "nav-icon", "aria-hidden": "true" }, icons[name]),
-        pages[name],
-      );
+    function followPage(link: HTMLAnchorElement, name: keyof typeof pages) {
       link.addEventListener("click", (event) => {
         if (
           event.button !== 0 ||
@@ -599,6 +589,23 @@ export function createShell({
         }
         navigate(name);
       });
+    }
+    const templates = feature === connectionTemplatesPage;
+    const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
+    for (const name of ["agents", "secrets", "namespaces"] as const) {
+      const link = element(
+        "a",
+        {
+          href: pageUrl(name),
+          "data-nav": name,
+          ...(feature === name || (templates && name === "secrets")
+            ? { "aria-current": "page" }
+            : {}),
+        },
+        element("span", { className: "nav-icon", "aria-hidden": "true" }, icons[name]),
+        pages[name],
+      );
+      followPage(link, name);
       nav.append(link);
     }
     observabilityLink = null;
@@ -659,16 +666,18 @@ export function createShell({
     );
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
-    const scope = ["agents", "secrets"].includes(feature)
-      ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
-      : feature === "settings"
-        ? "Your account"
-        : feature === "backends"
-          ? "Installation-wide · Experimental"
-          : "Installation-wide";
+    const scope = templates
+      ? "Installation and Namespace templates"
+      : ["agents", "secrets"].includes(feature)
+        ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
+        : feature === "settings"
+          ? "Your account"
+          : feature === "backends"
+            ? "Installation-wide · Experimental"
+            : "Installation-wide";
     // Settings is about the account, and Namespaces lists them: neither has a Namespace scope.
     const scopeSelector =
-      feature === "namespaces" || feature === "settings"
+      feature === "namespaces" || feature === "settings" || templates
         ? null
         : namespaceSelector("Namespace", { compact: true });
     // Refresh rebuilds the page: one whose write must finish here stays and says why.
@@ -717,6 +726,32 @@ export function createShell({
         );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
+    if (feature === "secrets" || templates) {
+      const sections = element("nav", {
+        className: "credential-tabs",
+        "aria-label": "Credential sections",
+      });
+      for (const [name, label] of [
+        ["secrets", "Secrets"],
+        [connectionTemplatesPage, "Connection templates"],
+      ] as const) {
+        if (name === connectionTemplatesPage && !state.installationAdmin) {
+          continue;
+        }
+        const link = element(
+          "a",
+          {
+            href: pageUrl(name),
+            "data-nav": name,
+            ...(feature === name ? { "aria-current": "page" } : {}),
+          },
+          label,
+        );
+        followPage(link, name);
+        sections.append(link);
+      }
+      main.append(sections);
+    }
     if (
       recovery &&
       session &&
@@ -994,7 +1029,8 @@ export function createShell({
     },
     // The shown page learned that the caller does not administer the Installation, whose
     // administrators alone get the link (finding D760).
-    dropObservabilityLink() {
+    dropAdministrationLinks() {
+      app.querySelector(`.credential-tabs [data-nav="${connectionTemplatesPage}"]`)?.remove();
       observabilityUrl = null;
       observabilityLink?.remove();
       observabilityLink = null;

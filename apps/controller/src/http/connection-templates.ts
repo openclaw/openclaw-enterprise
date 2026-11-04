@@ -11,11 +11,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { discoverMcpAuthorization } from "../connections/mcp-discovery.ts";
 
 function presentClient(client: OAuthClient) {
-  const {
-    secretRegistrationId: _secret,
-    credentialRefreshDriverId: _driver,
-    ...publicClient
-  } = client;
+  const { credentialRefreshDriverId: _driver, ...publicClient } = client;
   return publicClient;
 }
 

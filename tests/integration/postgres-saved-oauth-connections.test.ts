@@ -19,7 +19,7 @@ import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
-import { keycloakRealmAdmin } from "../helpers/ci-keycloak-realm.mjs";
+import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { createProviderSandboxDriver } from "../helpers/runtime-logs.mjs";
@@ -323,6 +323,30 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     providers,
     refresh,
     transport,
+    rotateClientSecret: async (source: string) => {
+      const replacement = await rotateKeycloakClientSecret(
+        issuer!,
+        secrets.admin,
+        clientId,
+        clientSecret,
+        tokenUrl,
+      );
+      // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
+      const refused = await owner("POST", source + "/rotate");
+      assert.equal(refused.statusCode, 503);
+      const repair = await owner("GET", source);
+      assert.equal(repair.statusCode, 200, repair.body);
+      const clientFailure = repair.json().data.status.refresh;
+      assert.deepEqual(
+        [clientFailure.state, clientFailure.failureCode, clientFailure.recoveryAction],
+        ["failed", "client_refused", "fix_configuration"],
+      );
+      const updatedClient = await inject("POST", `/oauth-clients/${oauthClientId}/rotate-secret`, {
+        clientSecret: replacement,
+      });
+      assert.equal(updatedClient.statusCode, 200);
+      assert.equal(updatedClient.json().data.id, oauthClientId);
+    },
     setOptionalScopeVisible: async (visible: boolean) => {
       assert.ok(optionalScopeId);
       const path = "/client-scopes/" + optionalScopeId;
@@ -365,6 +389,7 @@ test(
       inject,
       providers,
       preparedTokens,
+      rotateClientSecret,
       oauthClientId,
       tokenUrl,
       clientId,
@@ -512,11 +537,21 @@ test(
     const original = await prepared();
     const alice = await subject(original);
     assert.ok(alice);
+    // The original grant must refresh after the provider and the OCE administrator rotate the client.
+    await rotateClientSecret(source);
     const rotated = await inject("POST", `${source}/rotate`, undefined);
     assert.equal(rotated.statusCode, 200, rotated.body);
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
+    const afterRotation = await owner("GET", connections);
+    assert.equal(afterRotation.statusCode, 200, afterRotation.body);
+    assert.deepEqual(
+      afterRotation
+        .json()
+        .data.map((saved: { credentialSourceId: string }) => saved.credentialSourceId),
+      [id],
+    );
     // Advancing OCC's clock clears the credential registration fence without delaying the test.
     advanceRegistrationFence();
     assert.equal((await owner("DELETE", `${connections}/${id}`)).statusCode, 204);
@@ -576,6 +611,7 @@ test(
       state,
       transport,
       providers,
+      rotateClientSecret,
       setOptionalScopeVisible,
       pool,
       inject,
@@ -971,8 +1007,19 @@ test(
     const original = await usable(primarySender);
     assert.ok((await usable(secondarySender)) === original);
     const rotate = () => owner("POST", base + "/credential-sources/" + shared.id + "/rotate");
+    // Both Agents already use this account. Rotate the OAuth client before refreshing their existing grant.
+    await rotateClientSecret(base + "/credential-sources/" + shared.id);
     const rotated = await rotate();
     assert.equal(rotated.statusCode, 200, rotated.body);
+    const grants = await owner("GET", path(b) + "/connections");
+    assert.equal(grants.statusCode, 200, grants.body);
+    assert.ok(
+      grants
+        .json()
+        .data.some(
+          (account: { credentialSourceId: string }) => account.credentialSourceId === shared.id,
+        ),
+    );
     // Keep the secondary sender unavailable throughout both operations. The primary
     // sender receives the renewed token while the failed sender keeps the old receipt.
     const write = transport.updateProviderCredentialsConditionally.bind(transport);

@@ -2315,9 +2315,7 @@ export const oauthClients = occSchema.table(
     issuer: collatedText("issuer").notNull(),
     displayName: text("display_name").notNull(),
     clientId: collatedText("client_id").notNull(),
-    secretRegistrationId: text("secret_registration_id").unique(
-      "oauth_clients_secret_registration_id_key",
-    ),
+    cleanupAfter: timestamp("cleanup_after", { withTimezone: true }),
     tokenEndpointAuthMethod: text("token_endpoint_auth_method")
       .$type<import("@openclaw-enterprise/contracts").OAuthClientAuthMethod>()
       .notNull(),
@@ -2356,9 +2354,8 @@ export const oauthClients = occSchema.table(
       sql`${table.issuer} ~ '^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$' AND length(${table.issuer}) <= 2048`,
     ),
     check(
-      "oauth_clients_private_material",
-      sql`(${table.tokenEndpointAuthMethod}='none' AND ${table.secretRegistrationId} IS NULL) OR
-    (${table.tokenEndpointAuthMethod}<>'none' AND ${table.secretRegistrationId} IS NOT NULL)`,
+      "oauth_clients_cleanup_confidential",
+      sql`${table.cleanupAfter} IS NULL OR ${table.tokenEndpointAuthMethod} <> 'none'`,
     ),
     check(
       "oauth_clients_client_id_valid",
@@ -2481,14 +2478,6 @@ export const oauthConnectionTemplateVersions = occSchema.table(
     ),
   ],
 );
-
-export const retiredOAuthClientSecrets = occSchema.table("retired_oauth_client_secrets", {
-  id: text("id").primaryKey(),
-  issuer: text("issuer").notNull(),
-  clientId: text("client_id").notNull(),
-  credentialRefreshDriverId: text("credential_refresh_driver_id").notNull(),
-  retryAt: timestamp("retry_at", { withTimezone: true }).notNull().defaultNow(),
-});
 
 export const connectionTokenCustody = occSchema.table(
   "connection_token_custody",

@@ -67,6 +67,35 @@ async function createFromConsole(page: Page, name: string, value: string) {
   await dialog(page, "Secret created").getByRole("button", { name: "Close" }).click();
 }
 
+test("Credentials opens Secrets and lets an Installation administrator manage shared templates", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Template editors");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/settings");
+  await page.getByRole("heading", { name: "Signed-in account" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Create connection template" }).count(), 0);
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  await sections
+    .getByRole("link", { name: "Secrets", exact: true })
+    .and(page.locator('[aria-current="page"]'))
+    .waitFor();
+  await sections.getByRole("link", { name: "Connection templates" }).click();
+  await page.getByRole("button", { name: "Create connection template" }).click();
+  const editor = dialog(page, "Create connection template");
+  const availability = editor.getByLabel("Template availability");
+  assert.equal(await availability.inputValue(), "");
+  await availability.selectOption(namespace.id);
+  await editor.getByLabel("OAuth client", { exact: true }).waitFor();
+  await editor.getByText("Register a new OAuth client", { exact: true }).click();
+  await editor.getByLabel("Provider client ID").waitFor();
+  await editor.getByRole("button", { name: "Cancel" }).click();
+  await page.goBack();
+  await sections
+    .getByRole("link", { name: "Secrets", exact: true })
+    .and(page.locator('[aria-current="page"]'))
+    .waitFor();
+});
+
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
   const audit = new InMemoryAuditSink();
   const storage = createTestSecretDriver();
@@ -150,7 +179,7 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     body: { configurationId: agent.configurationId, harnessAuth: null } satisfies UpdateAgentBody,
   });
   assert.equal(unbound.status, 200);
-  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
   await page.getByRole("button", { name: "Shared model", exact: true }).click();
   await dialog(page, "Shared model")
     .getByRole("button", { name: "Delete Secret", exact: true })
@@ -844,7 +873,7 @@ test("pending Secret creation blocks navigation and replay, then session loss cl
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
   const held = await holdRequests(t, page, `${fixture.origin}${secretPath(namespace)}`, {
     method: "POST",
     afterServer: true,

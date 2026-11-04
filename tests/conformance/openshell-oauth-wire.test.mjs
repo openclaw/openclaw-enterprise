@@ -141,6 +141,7 @@ test("the Token Service keeps the first access token in custody and serializes r
   const respond = Promise.withResolvers();
   const nonce = randomUUID();
   const clientSecret = "test :+" + nonce;
+  const rotatedClientSecret = randomUUID();
   const server = createServer(async (req, res) => {
     const body = [];
     for await (const chunk of req) {
@@ -148,7 +149,11 @@ test("the Token Service keeps the first access token in custody and serializes r
     }
     const parameters = new URLSearchParams(Buffer.concat(body).toString());
     assert.equal(parameters.get("resource"), "https://mcp.example.test/mcp");
-    const expected = Buffer.from("test%3Aclient:test+%3A%2B" + nonce).toString("base64");
+    const expected = Buffer.from(
+      requests.length === 0
+        ? "test%3Aclient:test+%3A%2B" + nonce
+        : "test%3Aclient:" + rotatedClientSecret,
+    ).toString("base64");
     assert.ok(
       req.headers.authorization === "Basic " + expected,
       "OAuth Basic encodes both client credentials",
@@ -190,6 +195,13 @@ test("the Token Service keeps the first access token in custody and serializes r
     t.signal,
   );
   await service.accept(custody, grant, t.signal);
+  const resolveClient = async () => ({
+    registration: request,
+    readSecret: async () => rotatedClientSecret,
+  });
+  const stored = driver.valueFor(custody.secret);
+  assert.ok(!stored.includes(clientSecret));
+  assert.equal(Object.hasOwn(JSON.parse(stored), "clientSecret"), false);
   const accepted = await worker.warm(custody, t.signal);
   assert.equal(accepted.accessToken, first);
   assert.deepEqual(Object.keys(accepted).sort(), [
@@ -218,10 +230,10 @@ test("the Token Service keeps the first access token in custody and serializes r
     },
     { times: 1 },
   );
-  const renewing = service.renew(custody, t.signal);
+  const renewing = service.renew(custody, t.signal, resolveClient);
   await renewalSent.promise;
   t.mock.timers.tick(12_000);
-  assert.equal((await worker.renew(custody, t.signal)).state, "pending");
+  assert.equal((await worker.renew(custody, t.signal, resolveClient)).state, "pending");
   respond.resolve();
   assert.equal((await renewing).state, "ready");
   assert.equal(requests.length, 2);
@@ -234,14 +246,20 @@ test("the Token Service keeps the first access token in custody and serializes r
   // The sender recovers after the successor's scheduled renewal time. Its earlier published
   // version still identifies a delivery retry, so the worker can project the unexpired successor.
   t.mock.timers.tick(65_000);
-  assert.equal((await worker.renew(custody, t.signal, accepted.version)).state, "ready");
+  assert.equal(
+    (await worker.renew(custody, t.signal, resolveClient, accepted.version)).state,
+    "ready",
+  );
   assert.equal((await worker.warm(custody, t.signal)).version, renewed.version);
   assert.equal(requests.length, 2);
 
   // A grant rotation persists across service instances. The issuer tries to add write back on the next refresh.
   t.mock.timers.tick(60_000);
   assert.equal(await worker.warm(custody, t.signal), undefined);
-  assert.equal((await worker.renew(custody, t.signal)).failureCode, "grant_scope_mismatch");
+  assert.equal(
+    (await worker.renew(custody, t.signal, resolveClient)).failureCode,
+    "grant_scope_mismatch",
+  );
   assert.equal(requests[2].get("refresh_token"), rotatedGrant);
   assert.equal(requests[2].get("scope"), "read");
   assert.equal(await service.warm(custody, t.signal), undefined);
@@ -250,7 +268,7 @@ test("the Token Service keeps the first access token in custody and serializes r
     failureCode: "grant_scope_mismatch",
     recoveryAction: "fix_configuration",
   });
-  await worker.renew(custody, t.signal, renewed.version);
+  await worker.renew(custody, t.signal, resolveClient, renewed.version);
   assert.equal(requests.length, 3, "even an operator rotation cannot replay a refused grant");
   await service.retire(custody, t.signal);
   assert.equal(driver.has(custody.secret), false);
@@ -263,8 +281,7 @@ function connectionGrant(issuer) {
     clientId: "test-client",
     oauthClientId: "registration",
     requestedScopes: ["read", "write"],
-    tokenEndpointAuthMethod: "client_secret_post",
-    clientSecret: randomUUID(),
+    tokenEndpointAuthMethod: "none",
     refreshToken: randomUUID(),
     accessToken: randomUUID(),
     scope: "read",
@@ -289,6 +306,10 @@ test("OAuth renewal retries cancellation before dispatch and quarantines a lost 
   t.after(() => server.close());
   const grant = connectionGrant("http://127.0.0.1:" + server.address().port);
   const { driver, custody, service, worker } = await oauthCustody();
+  const resolveClient = async () => ({
+    registration: grant,
+    readSecret: async () => assert.fail("public clients have no secret"),
+  });
   await service.accept(custody, grant, t.signal);
   const accepted = await service.warm(custody, t.signal);
   t.mock.timers.setTime(Date.parse(accepted.nextRefreshAt));
@@ -304,52 +325,101 @@ test("OAuth renewal retries cancellation before dispatch and quarantines a lost 
     },
     { times: 1 },
   );
-  await assert.rejects(worker.renew(custody, stop.signal), {
+  await assert.rejects(worker.renew(custody, stop.signal, resolveClient), {
     message: "Worker stopped during the custody claim.",
   });
   assert.deepEqual(requests, []);
   assert.deepEqual(await service.warm(custody, t.signal), accepted);
 
-  const failed = await worker.renew(custody, t.signal);
+  const failed = await worker.renew(custody, t.signal, resolveClient);
   assert.equal(failed.failureCode, "refresh_outcome_unknown");
-  assert.deepEqual(await service.renew(custody, t.signal), failed);
+  assert.deepEqual(await service.renew(custody, t.signal, resolveClient), failed);
   assert.deepEqual(
     requests.map((body) => body.get("refresh_token")),
     [grant.refreshToken],
   );
 });
 
-test("a retired OAuth client secret requires fresh consent for an existing connection", async (t) => {
-  const issuer = "https://issuer.example.test";
-  const { custody, service } = await oauthCustody();
-  const grant = connectionGrant(issuer);
+test("client authentication can recover with the same grant and a repaired registration", async (t) => {
+  const currentSecret = randomUUID();
+  let storedSecret = randomUUID();
+  let revoked = false;
+  let requests = 0;
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const part of req) {
+      chunks.push(part);
+    }
+    const form = new URLSearchParams(Buffer.concat(chunks).toString());
+    requests++;
+    assert.equal(form.get("grant_type"), "refresh_token");
+    assert.ok(form.get("refresh_token") === grant.refreshToken);
+    assert.equal(form.get("client_id"), "test-client");
+    assert.equal(req.headers.authorization, undefined);
+    const wrongClient = form.get("client_secret") !== currentSecret;
+    res.writeHead(wrongClient ? 401 : revoked ? 400 : 200, { "Content-Type": "application/json" });
+    if (wrongClient) {
+      res.end(JSON.stringify({ error: requests === 1 ? "invalid_client" : "unauthorized_client" }));
+    } else if (revoked) {
+      res.end(JSON.stringify({ error: "invalid_grant" }));
+    } else {
+      res.end(
+        JSON.stringify({ access_token: randomUUID(), token_type: "Bearer", expires_in: 120 }),
+      );
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const grant = {
+    ...connectionGrant("http://127.0.0.1:" + server.address().port),
+    tokenEndpointAuthMethod: "client_secret_post",
+  };
+  const { custody, driver, service, worker } = await oauthCustody();
   await service.accept(custody, grant, t.signal);
-  t.mock.method(globalThis, "fetch", async () =>
-    Response.json({ error: "invalid_client" }, { status: 401 }),
-  );
-  const failed = await service.renew(
+  const material = driver.valueFor(custody.secret);
+  const { version } = await service.warm(custody, t.signal);
+  const readSecret = t.mock.fn(async () => storedSecret);
+  const resolveClient = async () => ({ registration: grant, readSecret });
+  // Changing the private custody reference cannot export another client's secret or redirect
+  // the issuer request. The controller supplies an independent registration for this source.
+  for (const edited of [
+    { oauthClientId: "another-registration" },
+    { tokenUrl: grant.tokenUrl + "/unapproved" },
+    { resource: "https://unapproved.test" },
+  ]) {
+    await driver.update(custody.secret, JSON.stringify({ ...JSON.parse(material), ...edited }));
+    await assert.rejects(service.renew(custody, t.signal, resolveClient, version), {
+      code: "client_unavailable",
+    });
+  }
+  assert.equal(requests, 0);
+  assert.equal(readSecret.mock.callCount(), 0);
+  await driver.update(custody.secret, material);
+  const refused = await service.renew(custody, t.signal, resolveClient, version);
+  assert.equal(refused.state, "failed");
+  assert.equal(refused.failureCode, "client_refused");
+  assert.equal(refused.recoveryAction, "fix_configuration");
+  assert.ok(refused.schedule.nextRefreshAt);
+  assert.equal(await service.warm(custody, t.signal), undefined);
+  const refusedAgain = await worker.renew(custody, t.signal, resolveClient, version);
+  assert.equal(refusedAgain.failureCode, "client_refused");
+  assert.equal(refusedAgain.recoveryAction, "fix_configuration");
+  storedSecret = currentSecret;
+  assert.equal((await worker.renew(custody, t.signal, resolveClient, version)).state, "ready");
+  assert.ok(!driver.valueFor(custody.secret).includes(currentSecret));
+  // A definitive grant refusal is terminal, even with a working client credential.
+  revoked = true;
+  const result = await worker.renew(
     custody,
     t.signal,
-    (await service.warm(custody, t.signal)).version,
+    resolveClient,
+    (await worker.warm(custody, t.signal)).version,
   );
-  assert.deepEqual(failed, {
-    state: "failed",
-    failureCode: "client_refused",
-    recoveryAction: "reauthorize",
-  });
-  assert.deepEqual(await service.status(custody, t.signal), failed);
-  assert.equal(await service.warm(custody, t.signal), undefined);
-  // During a new exchange the same refusal concerns the configured registration instead.
-  await assert.rejects(
-    exchangeAuthorizationCode(
-      { ...grant, scopes: ["read"], redirectUri: "https://oce.example.test/callback" },
-      "verifier",
-      "code",
-      grant.clientSecret,
-      t.signal,
-    ),
-    { code: "client_refused", recoveryAction: "fix_configuration" },
-  );
+  assert.equal(result.failureCode, "grant_refused");
+  assert.equal(result.recoveryAction, "reauthorize");
+  assert.deepEqual(await service.renew(custody, t.signal, resolveClient, version), result);
+  assert.equal(requests, 4);
 });
 
 test("disconnect fences an in-flight OAuth refresh response", async (t) => {
@@ -376,11 +446,14 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
   });
   const issuer = "http://127.0.0.1:" + server.address().port;
   const { driver, custody, service, worker } = await oauthCustody();
-  await service.accept(custody, connectionGrant(issuer), t.signal);
+  const grant = connectionGrant(issuer);
+  const resolveClient = async () => ({ registration: grant });
+  await service.accept(custody, grant, t.signal);
   assert.equal((await worker.status(custody, t.signal)).state, "ready");
   const refreshing = worker.renew(
     custody,
     t.signal,
+    resolveClient,
     (await worker.warm(custody, t.signal)).version,
   );
   await received.promise;
