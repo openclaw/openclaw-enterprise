@@ -184,7 +184,10 @@ binding (Agent save and deploy refuse it next to another). No default or wildcar
 Repository grants require authenticated `allowlist`/`exact` with only `pre_credentials`.
 Opted-in installation preview also accepts both binding fields absent; partial,
 malformed or explicit optional/wrong values fail. Both paths retain policy,
-recipient, isolation and authenticated launcher-denial checks.
+recipient, isolation and authenticated launcher-denial checks. For `git-write`,
+startup probes stay within the selected repository endpoint without broadening
+grants, accessing credentials or releasing the Harness. `github-repository` and
+`github-installation` providers retain their discovery-path probe.
 
 Absence grants only observed assurance: 0.1.5 and 0.1.6 default dynamic registrations
 emit identical absence, without a distinct advertised support signal. Before

@@ -138,10 +138,10 @@ test(
                   assert.ok(f, "blocked by installation startup failure");
                   await prepareQaPreset(f, preset);
                   if (selectedCell.scenarios.includes("codex-search-config")) {
-                    f.configuration.drivers.compute.configuration.runtime.codexModelBaseUrl =
-                      process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL;
-                    delete f.configuration.drivers.compute.configuration.runtime
-                      .codexModelSupportsStandaloneWebSearch;
+                    f.configuration.drivers.compute.configuration.runtime.modelProvider = {
+                      protocol: "openai-responses",
+                      baseUrl: process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL,
+                    };
                     await f.saveInstallation(f.configuration);
                   }
                   return true;
@@ -411,7 +411,7 @@ test(
                             `search declaration ${enabled} through supported stop and deploy`,
                             async () => {
                               await stopQaAgent(f, agent);
-                              f.configuration.drivers.compute.configuration.runtime.codexModelSupportsStandaloneWebSearch =
+                              f.configuration.drivers.compute.configuration.runtime.modelProvider.supportsStandaloneWebSearch =
                                 enabled;
                               await f.saveInstallation(f.configuration);
                               await f.deployAndWait(agent);

@@ -2,10 +2,33 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript-compiler-api";
 
-const known = (value, resolution = {}) => Object.freeze({ status: "known", value, ...resolution });
-const unknown = (reason) => Object.freeze({ status: "unknown", reason });
-const isConcretePath = (result) => result.status === "known" && !result.mode;
-export function unwrap(node) {
+type Resolution = { mode?: "require"; anchor?: string | null };
+export type Value =
+  | { status: "known"; value: string; mode?: "require"; anchor?: string | null }
+  | { status: "unknown"; reason: string; value?: undefined; mode?: undefined; anchor?: undefined };
+type Reference =
+  | { kind: "module" | "foreign-path"; module: string }
+  | { kind: "builtin"; module: string; name: string | undefined }
+  | { kind: "require" | "require-resolve"; anchor: string | null }
+  | { kind: "commonjs-module" }
+  | { kind: "unknown-loader" | "unknown-factory" | "unknown-builtin"; reason: string };
+type Assigned = {
+  symbols: Set<ts.Symbol | undefined>;
+  unbound: Set<string>;
+  objectWrites: Set<ts.Symbol | string>;
+  objectWriteNodes: Set<ts.Node>;
+  importMetaMutable: boolean;
+  globalURLMutable: boolean;
+};
+
+const known = (value: string, resolution: Resolution = {}): Value =>
+  Object.freeze({ status: "known", value, ...resolution });
+const unknown = (reason: string): Value => Object.freeze({ status: "unknown", reason });
+const isConcretePath = (result: Value): result is Extract<Value, { status: "known" }> =>
+  result.status === "known" && !result.mode;
+export function unwrap(node: ts.Node): ts.Node;
+export function unwrap(node: ts.Node | undefined): ts.Node | undefined;
+export function unwrap(node: ts.Node | undefined): ts.Node | undefined {
   while (
     node &&
     (ts.isParenthesizedExpression(node) ||
@@ -19,7 +42,7 @@ export function unwrap(node) {
   return node;
 }
 
-export function outerExpression(node) {
+export function outerExpression(node: ts.Node): ts.Node {
   while (node.parent && unwrap(node.parent) === node) {
     node = node.parent;
   }
@@ -27,7 +50,7 @@ export function outerExpression(node) {
 }
 
 // TypeScript may synthesize an Identifier declaration for CommonJS property writes.
-export function implicitWrapperSymbol(symbol) {
+export function implicitWrapperSymbol(symbol: ts.Symbol | undefined): boolean {
   return (
     !symbol?.declarations?.length ||
     symbol.declarations.every(
@@ -40,17 +63,29 @@ export function implicitWrapperSymbol(symbol) {
 }
 
 /** Bounded lexical provenance, not JavaScript evaluation. No filesystem or policy access. */
-export function createLoaderAnalysis({ checker, path, commonjs, assigned, source }) {
-  const symbol = (node) =>
+export function createLoaderAnalysis({
+  checker,
+  path,
+  commonjs,
+  assigned,
+  source,
+}: {
+  checker: ts.TypeChecker;
+  path: string;
+  commonjs: boolean;
+  assigned: Assigned;
+  source: ts.SourceFile;
+}) {
+  const symbol = (node: ts.Node) =>
     ts.isShorthandPropertyAssignment(node.parent)
       ? checker.getShorthandAssignmentValueSymbol(node.parent)
       : checker.getSymbolAtLocation(node);
-  const declaration = (node) => symbol(node)?.declarations?.[0];
-  const mutableModules = new Set();
+  const declaration = (node: ts.Node) => symbol(node)?.declarations?.[0];
+  const mutableModules = new Set<string>();
   let mutableRequireResolve = assigned.unbound.has("require.resolve");
   let mutableGlobalURL = false;
   let mutableCommonjsModule = false;
-  function markMutable(module) {
+  function markMutable(module: string) {
     mutableModules.add(module);
     // The node:url module exposes the same constructor as the global URL.
     if (module === "node:url") {
@@ -61,11 +96,11 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
       mutableCommonjsModule = true;
     }
   }
-  const moduleValue = (name) =>
-    ["module", "url", "path"].includes(name?.replace(/^node:/, ""))
+  const moduleValue = (name: string | undefined): Reference | undefined =>
+    name !== undefined && ["module", "url", "path"].includes(name.replace(/^node:/, ""))
       ? { kind: "module", module: `node:${name.replace(/^node:/, "")}` }
       : undefined;
-  function member(base, name) {
+  function member(base: Reference | undefined, name: string | undefined): Reference | undefined {
     if (base?.kind === "module") {
       if (mutableModules.has(base.module)) {
         return {
@@ -76,7 +111,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
           reason: "A modeled Node helper may have been changed in this source.",
         };
       }
-      if (base.module === "node:path" && ["posix", "win32"].includes(name)) {
+      if (base.module === "node:path" && name !== undefined && ["posix", "win32"].includes(name)) {
         // The other flavor has different path semantics and can also expose
         // the native path object through its own properties.
         return name === (process.platform === "win32" ? "win32" : "posix")
@@ -99,18 +134,25 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
         ? { kind: "unknown-loader", reason: "The implicit module loader may have changed." }
         : { kind: "require", anchor: path };
     }
-    if (base?.kind === "unknown-loader" && ["resolve", "require"].includes(name)) {
+    if (
+      base?.kind === "unknown-loader" &&
+      name !== undefined &&
+      ["resolve", "require"].includes(name)
+    ) {
       return base;
     }
     return undefined;
   }
-  function property(node, seen) {
+  function property(node: ts.Node, seen: Set<ts.Node>): string | undefined {
     if (ts.isComputedPropertyName(node)) {
       return value(node.expression, seen).value;
     }
     return ts.isIdentifier(node) || ts.isStringLiteralLike(node) ? node.text : undefined;
   }
-  function reference(input, seen = new Set()) {
+  function specifierText(node: ts.Expression): string | undefined {
+    return "text" in node && typeof node.text === "string" ? node.text : undefined;
+  }
+  function reference(input: ts.Node | undefined, seen = new Set<ts.Node>()): Reference | undefined {
     const node = unwrap(input);
     if (!node || seen.has(node) || seen.size >= 64) {
       return undefined;
@@ -141,15 +183,15 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
         return undefined;
       }
       if (ts.isImportSpecifier(declared)) {
-        const base = moduleValue(declared.parent.parent.parent.moduleSpecifier.text);
+        const base = moduleValue(specifierText(declared.parent.parent.parent.moduleSpecifier));
         const name = (declared.propertyName ?? declared.name).text;
         return name === "default" ? base : member(base, name);
       }
       if (ts.isNamespaceImport(declared)) {
-        return moduleValue(declared.parent.parent.moduleSpecifier.text);
+        return moduleValue(specifierText(declared.parent.parent.moduleSpecifier));
       }
       if (ts.isImportClause(declared)) {
-        return moduleValue(declared.parent.moduleSpecifier.text);
+        return moduleValue(specifierText(declared.parent.moduleSpecifier));
       }
       if (
         ts.isImportEqualsDeclaration(declared) &&
@@ -195,11 +237,15 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
       if (callee?.kind === "unknown-factory") {
         return { kind: "unknown-loader", reason: callee.reason };
       }
-      if (callee?.module === "node:module" && callee.name === "createRequire") {
+      if (
+        callee?.kind === "builtin" &&
+        callee.module === "node:module" &&
+        callee.name === "createRequire"
+      ) {
         const target = value(node.arguments[0], seen);
         let anchor;
         try {
-          if (/^file:/i.test(target.value)) {
+          if (target.value !== undefined && /^file:/i.test(target.value)) {
             anchor = fileURLToPath(target.value);
           } else if (target.value && isAbsolute(target.value)) {
             anchor = target.value;
@@ -221,7 +267,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
   // These builtins are mutable objects in CommonJS. Follow local aliases and
   // stop evaluating a helper if its module object is written or escapes to
   // code whose effects are not modeled.
-  function exposedOrWritten(node) {
+  function exposedOrWritten(node: ts.Node): boolean {
     let current = node;
     let member = false;
     for (;;) {
@@ -272,7 +318,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
     }
     return true;
   }
-  function inspectExposure(node) {
+  function inspectExposure(node: ts.Node): void {
     if (
       (ts.isIdentifier(node) ||
         ts.isCallExpression(node) ||
@@ -292,7 +338,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
       }
       if (origin?.kind === "commonjs-module") {
         const parent = outer.parent;
-        let observed = node;
+        let observed: ts.Node = node;
         while (observed.parent && unwrap(observed.parent) === unwrap(observed)) {
           observed = observed.parent;
         }
@@ -339,15 +385,19 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
     ts.forEachChild(node, inspectExposure);
   }
   inspectExposure(source);
-  function builtin(node, module, seen) {
+  function builtin(
+    node: ts.Node | undefined,
+    module: string,
+    seen?: Set<ts.Node>,
+  ): string | undefined {
     const origin = reference(node, seen);
     return origin?.kind === "builtin" && origin.module === module ? origin.name : undefined;
   }
-  function isURL(input, seen) {
+  function isURL(input: ts.Node | undefined, seen?: Set<ts.Node>): boolean {
     const node = unwrap(input);
     return (
       builtin(node, "node:url", seen) === "URL" ||
-      (node &&
+      (node !== undefined &&
         ts.isIdentifier(node) &&
         node.text === "URL" &&
         !symbol(node) &&
@@ -356,7 +406,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
         !mutableGlobalURL)
     );
   }
-  function value(input, seen = new Set()) {
+  function value(input: ts.Node | undefined, seen = new Set<ts.Node>()): Value {
     const node = unwrap(input);
     if (!node || seen.has(node) || seen.size >= 64) {
       return unknown("Expression is absent, cyclic, or exceeds the 64-node analysis bound.");
@@ -418,7 +468,11 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
           : known(pathToFileURL(path).href);
       }
       const base = value(node.expression, seen);
-      if (/^file:/i.test(base.value) && ["href", "pathname"].includes(node.name.text)) {
+      if (
+        base.value !== undefined &&
+        /^file:/i.test(base.value) &&
+        ["href", "pathname"].includes(node.name.text)
+      ) {
         try {
           return known(node.name.text === "href" ? base.value : new URL(base.value).pathname);
         } catch {
@@ -468,7 +522,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
         if (name === "dirname" && isAbsolute(first.value)) {
           return known(dirname(first.value));
         }
-        if (["join", "resolve"].includes(name) && isAbsolute(first.value)) {
+        if (name !== undefined && ["join", "resolve"].includes(name) && isAbsolute(first.value)) {
           const parts = node.arguments.map((argument) => value(argument, seen));
           if (parts.every(isConcretePath)) {
             return known((name === "join" ? join : resolve)(...parts.map((part) => part.value)));

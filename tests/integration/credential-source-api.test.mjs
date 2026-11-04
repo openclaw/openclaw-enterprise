@@ -78,7 +78,12 @@ const checkedAt = (rows, point) =>
 // Fastify app, authentication, IAM, OCC transactions, and OpenShell Driver.
 async function fixture(
   t,
-  { toolSources = false, persistedIam = false, gateway = { endpoint: "http://127.0.0.1:1" } } = {},
+  {
+    toolSources = false,
+    persistedIam = false,
+    gateway = { endpoint: "http://127.0.0.1:1" },
+    modelProvider,
+  } = {},
 ) {
   const providers = new Map();
   const profiles = new Map();
@@ -142,6 +147,7 @@ async function fixture(
     {
       id: "openshell-credentials",
       backend,
+      ...(modelProvider === undefined ? {} : { modelProvider }),
     },
   );
   let now = Date.parse("2026-10-05T12:00:00Z");
@@ -172,23 +178,10 @@ async function fixture(
   const toolSecret = toolSources
     ? await app.createSecret(namespace.id, "tool-material", "synthetic-tool-material")
     : undefined;
-  const create = async (name, config = {}, authorizedEndpoint) => {
-    const selected =
-      authorizedEndpoint === undefined
-        ? secret
-        : (
-            await app.request("POST", `/namespaces/${namespace.id}/secrets`, {
-              body: {
-                name: `endpoint-key-${randomUUID()}`,
-                value: "synthetic-model-key",
-                authorizedEndpoint,
-              },
-            })
-          ).data;
-    return app.request("POST", path, {
-      body: { name, type: "openai", config, secrets: { api_key: selected.ref } },
+  const create = (name, config = {}) =>
+    app.request("POST", path, {
+      body: { name, type: "openai", config, secrets: { api_key: secret.ref } },
     });
-  };
   return {
     ...app,
     driver,
@@ -211,7 +204,7 @@ async function fixture(
         namespaceId: namespace.id,
         name: "invalid-" + randomUUID(),
         type,
-        config: { base_url: baseUrl },
+        config: { authorized_base_url: baseUrl },
         secrets: { api_key: secret.ref },
         ownerCapability: "credential_gateway",
         driverId: driver.id,
@@ -264,7 +257,7 @@ async function fixture(
         ownerCapability: "credential_gateway",
         driverId: driver.id,
         state: "ready",
-        createdAt: new Date().toISOString(),
+        createdAt: new Date(now - 71_000).toISOString(),
       };
       const workspace = openShellWorkspaceName(namespace);
       const name = openShellProviderName(stored.id);
@@ -308,6 +301,45 @@ async function fixture(
     },
   };
 }
+
+test("source API rejects routing inputs and mismatched destination authorization before registration", async (t) => {
+  const endpoint = "https://models.example.test/v1";
+  const f = await fixture(t, {
+    modelProvider: { protocol: "openai-responses", baseUrl: endpoint },
+  });
+  // Neither an old routing field nor permission to use a default-provider key selects a route.
+  assertRefused(await f.create("routing", { base_url: endpoint }), "base_url", /has no field/);
+  assertRefused(await f.create("default"), "authorized_base_url", /must match/);
+  assertRefused(
+    await f.create("other", { authorized_base_url: "https://other.example.test/v1" }),
+    "authorized_base_url",
+    /must match/,
+  );
+  await f.assertNothingSaved();
+  const created = await f.create("authorized", { authorized_base_url: endpoint });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const profile = [...f.profiles.values()][0];
+  assert.deepEqual(profile.endpoints, [
+    { host: "models.example.test", port: 443, protocol: "rest", path: "/v1/**" },
+  ]);
+});
+
+test("old source routing records cannot deliver credentials and remain readable and removable", async (t) => {
+  const endpoint = "https://models.example.test/v1";
+  const f = await fixture(t, {
+    modelProvider: { protocol: "openai-responses", baseUrl: endpoint },
+  });
+  // Matching the new route does not implicitly authorize converting an old source record.
+  const { stored } = await f.seedStoredRecord("openai", { base_url: endpoint });
+  const before = [...f.mutations];
+  await assert.rejects(f.attach(stored), { name: "StoredCredentialSourceConfigError" });
+  const replacement = await f.replaceSecret(stored);
+  assert.equal(replacement.status, 409);
+  assert.deepEqual(f.mutations, before);
+  assert.equal((await f.request("GET", f.path + "/" + stored.id)).status, 200);
+  f.passRegistrationFence();
+  assert.equal((await f.request("DELETE", f.path + "/" + stored.id)).status, 204);
+});
 
 test("the saved Agent picker and binding use the granted source and the same reviewed release", async (t) => {
   const f = await fixture(t, { toolSources: true, persistedIam: true });
@@ -460,7 +492,7 @@ test("Installation discovery serializes OpenShell model authentication and refre
 
 test("credential source HTTP admission rejects invalid endpoints without retaining records", async (t) => {
   const f = await fixture(t);
-  for (const base_url of [
+  for (const authorized_base_url of [
     "http://",
     "https://models.example.test",
     "http://models.example.test/v1",
@@ -486,11 +518,11 @@ test("credential source HTTP admission rejects invalid endpoints without retaini
     "https://models.example.test/v1?option=value",
     "https://models.example.test/v1#fragment",
   ]) {
-    const response = await f.create("invalid", { base_url });
+    const response = await f.create("invalid", { authorized_base_url });
     // Assert absence independently of the status: the original bug left a deleting row.
-    assert.deepEqual((await f.request("GET", f.path)).data, [], base_url);
-    assertRefused(response, "base_url", /HTTPS.*\/v1/, base_url);
-    if (base_url.startsWith("https://[")) {
+    assert.deepEqual((await f.request("GET", f.path)).data, [], authorized_base_url);
+    assertRefused(response, "authorized_base_url", /HTTPS.*\/v1/, authorized_base_url);
+    if (authorized_base_url.startsWith("https://[")) {
       assert.match(response.body.error.message, /bracketed IPv6 hosts.*unsupported/);
     }
   }
@@ -537,19 +569,18 @@ test("credential source HTTP deletion uses source ownership even with an invalid
   assert.equal((await f.request("GET", f.path + "/" + unknown.id)).data.state, "deleting");
 });
 
-test("OpenShell custom and default credential profiles keep independent ownership and lifecycle", async (t) => {
-  const f = await fixture(t);
-  const standard = await f.create("default");
-  const custom = await f.create(
-    "custom",
-    { base_url: "https://MODELS.example.test:8443/api/v1/" },
-    "https://models.example.test:8443/api/v1",
-  );
-  const shared = await f.create(
-    "shared",
-    { base_url: "https://models.example.test:8443/api/v1" },
-    "https://models.example.test:8443/api/v1",
-  );
+test("OpenShell credentials authorized for one provider keep independent ownership and lifecycle", async (t) => {
+  const endpoint = "https://models.example.test:8443/api/v1";
+  const f = await fixture(t, {
+    modelProvider: { protocol: "openai-responses", baseUrl: endpoint },
+  });
+  const standard = await f.create("first", { authorized_base_url: endpoint });
+  const custom = await f.create("custom", {
+    authorized_base_url: "https://MODELS.example.test:8443/api/v1/",
+  });
+  const shared = await f.create("shared", {
+    authorized_base_url: "https://models.example.test:8443/api/v1",
+  });
   for (const result of [standard, custom, shared]) {
     assert.equal(result.status, 201, JSON.stringify(result.body));
     assert.equal(result.data.status.state, "ready");
@@ -585,7 +616,7 @@ test("OpenShell custom and default credential profiles keep independent ownershi
       agents: { defaults: { model: "openai/model" } },
       models: {
         providers: {
-          openai: { baseUrl: custom.data.config.base_url, models: [{ id: "model" }] },
+          openai: { baseUrl: custom.data.config.authorized_base_url, models: [{ id: "model" }] },
         },
       },
     },
@@ -617,60 +648,44 @@ test("OpenShell custom and default credential profiles keep independent ownershi
     }),
     [{ sourceId: custom.data.id, ref: provider.name }],
   );
-  // A selected model on another endpoint, its own or the provider's, is refused by setting
-  // and both hosts, never the source ID or key. Fallbacks and roster entries are selected too.
-  const sourceHost = "source host models.example.test:8443";
-  for (const [change, refusal] of [
-    [
-      (configuration) => {
-        configuration.models.providers.openai.models[0].baseUrl = "https://other.example.test/v1";
-      },
-      `Configuration setting models.providers.openai.models.0.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host other.example.test).`,
-    ],
-    [
-      (configuration) => {
-        configuration.models.providers.openai.baseUrl = "https://models.example.test:8443/v1";
-      },
-      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host models.example.test:8443).`,
-    ],
-    // A port mismatch shows in the hosts.
-    [
-      (configuration) => {
-        configuration.models.providers.openai.baseUrl = "https://models.example.test/api/v1";
-      },
-      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host models.example.test).`,
-    ],
-    [
-      (configuration) => {
-        delete configuration.models.providers.openai.baseUrl;
-      },
-      `Configuration setting models.providers.openai.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host none).`,
-    ],
-    [
-      (configuration) => {
-        configuration.agents.defaults.model = {
-          primary: "openai/model",
-          fallbacks: ["openai/fallback"],
-        };
-        configuration.models.providers.openai.models.push({
-          id: "fallback",
-          baseUrl: "https://api.openai.com/v1",
-        });
-      },
-      `Configuration setting models.providers.openai.models.1.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host api.openai.com).`,
-    ],
-    [
-      (configuration) => {
-        configuration.agents.entries = { helper: { model: "openai/helper" } };
-        configuration.models.providers.openai.models.push({
-          id: "helper",
-          baseUrl: "https://other.example.test/v1",
-        });
-      },
-      `Configuration setting models.providers.openai.models.1.baseUrl must be the bound credential source endpoint, path included (${sourceHost}, written host other.example.test).`,
-    ],
+  // Default provider metadata is translated, including model-level default URLs.
+  assert.deepEqual(
+    await attachNative((configuration) => {
+      configuration.models.providers.openai.baseUrl = "https://api.openai.com/v1";
+      configuration.models.providers.openai.models[0].baseUrl = "https://api.openai.com/v1";
+    }),
+    [{ sourceId: custom.data.id, ref: provider.name }],
+  );
+  // Selected model, provider, fallback and roster destinations cannot override the shared route.
+  for (const change of [
+    (configuration) => {
+      configuration.models.providers.openai.models[0].baseUrl = "https://other.example.test/v1";
+    },
+    (configuration) => {
+      configuration.models.providers.openai.baseUrl = "https://models.example.test:8443/v1";
+    },
+    (configuration) => {
+      configuration.models.providers.openai.baseUrl = "https://models.example.test/api/v1";
+    },
+    (configuration) => {
+      configuration.agents.defaults.model = {
+        primary: "openai/model",
+        fallbacks: ["openai/fallback"],
+      };
+      configuration.models.providers.openai.models.push({
+        id: "fallback",
+        baseUrl: "https://other.example.test/v1",
+      });
+    },
+    (configuration) => {
+      configuration.agents.entries = { helper: { model: "openai/helper" } };
+      configuration.models.providers.openai.models.push({
+        id: "helper",
+        baseUrl: "https://other.example.test/v1",
+      });
+    },
   ]) {
-    await assert.rejects(attachNative(change), { name: "ScopeViolationError", message: refusal });
+    await assert.rejects(attachNative(change), /OpenAI model baseUrl must match the Installation/);
   }
   // A shape Compute refuses before deployment stays refused here, without naming a setting.
   for (const change of [
@@ -737,8 +752,7 @@ test("OpenShell custom and default credential profiles keep independent ownershi
   assert.equal(f.providers.size, 0);
 });
 
-test("concrete credential source endpoints retain normalized profile scope", async (t) => {
-  const f = await fixture(t);
+test("concrete credential authorizations retain normalized profile scope", async (t) => {
   const cases = [
     ["https://models.example.test/v1", "models.example.test", 443, "/v1/**"],
     ["https://MODELS.example.test:443/api/./v1/", "models.example.test", 443, "/api/v1/**"],
@@ -750,17 +764,19 @@ test("concrete credential source endpoints retain normalized profile scope", asy
     ["https://ｍｏｄｅｌｓ.example.test/v1", "models.example.test", 443, "/v1/**"],
     ["https:\\\\models.example.test/v1", "models.example.test", 443, "/v1/**"],
   ];
-  for (const [base_url, host, port, path] of cases) {
-    const authorized = `https://${host}${port === 443 ? "" : ":" + port}${path.slice(0, -3)}`;
-    const created = await f.create("concrete endpoint", { base_url }, authorized);
+  for (const [authorized_base_url, host, port, path] of cases) {
+    const f = await fixture(t, {
+      modelProvider: { protocol: "openai-responses", baseUrl: authorized_base_url },
+    });
+    const created = await f.create("concrete endpoint", { authorized_base_url });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     // The stored endpoint is the one the profile uses, not the written spelling (finding 1292).
     const stored = `https://${host}${port === 443 ? "" : ":" + port}${path.slice(0, -3)}`;
-    assert.deepEqual(created.data.config, { base_url: stored }, base_url);
+    assert.deepEqual(created.data.config, { authorized_base_url: stored }, authorized_base_url);
     assert.deepEqual(
       (await f.request("GET", f.path + "/" + created.data.id)).data.config,
-      { base_url: stored },
-      base_url,
+      { authorized_base_url: stored },
+      authorized_base_url,
     );
     // Assert the profile produced through HTTP/OCC, not a copied normalizer.
     const profile = [...f.profiles.values()][0];
@@ -781,7 +797,7 @@ test("credential source endpoints refuse spellings the URL parser would rewrite"
   const f = await fixture(t);
   // Each parses as https://models.example.test/v1, so it used to be stored as written while the
   // profile used another URL (finding 1292). The shared baseUrl rules refuse these spellings.
-  for (const [base_url, message] of [
+  for (const [authorized_base_url, message] of [
     ["https://@models.example.test/v1", /must not contain user info or an @ before the host/],
     ["https://:@models.example.test/v1", /must not contain user info or an @ before the host/],
     ["https:models.example.test/v1", /must start with https:\/\/ \(the \/\/ after the scheme/],
@@ -792,9 +808,13 @@ test("credential source endpoints refuse spellings the URL parser would rewrite"
     ["https://models.exam\nple.test/v1", /must not contain spaces or control characters/],
     // The API schema already refuses a NUL in any string (INVALID_FORMAT).
   ]) {
-    const response = await f.create("rewritten", { base_url });
-    assertRefused(response, "base_url", message, JSON.stringify(base_url));
-    assert.deepEqual((await f.request("GET", f.path)).data, [], JSON.stringify(base_url));
+    const response = await f.create("rewritten", { authorized_base_url });
+    assertRefused(response, "authorized_base_url", message, JSON.stringify(authorized_base_url));
+    assert.deepEqual(
+      (await f.request("GET", f.path)).data,
+      [],
+      JSON.stringify(authorized_base_url),
+    );
   }
   await f.assertNothingSaved();
 });
@@ -815,11 +835,11 @@ test("credential source endpoints require an exact DNS host name", async (t) => 
     "-models.example.test",
     "models-.example.test",
   ]) {
-    const response = await f.create("ip", { base_url: `https://${host}/v1` });
+    const response = await f.create("ip", { authorized_base_url: `https://${host}/v1` });
     assertRefused(
       response,
-      "base_url",
-      "The openai base_url host must be an exact DNS name.",
+      "authorized_base_url",
+      "The openai authorized_base_url host must be an exact DNS name.",
       host,
     );
   }
@@ -827,16 +847,16 @@ test("credential source endpoints require an exact DNS host name", async (t) => 
   // A source stored before the rule, with its provider, cannot be attached to a new revision,
   // nor can its value be replaced: a 409 that names the replacement, not a 404 (finding 2536).
   const { stored } = await f.seedStoredRecord("openai", {
-    base_url: "https://169.254.169.254/v1",
+    authorized_base_url: "https://169.254.169.254/v1",
   });
   await assert.rejects(f.attach(stored), {
     name: "StoredCredentialSourceConfigError",
-    message: storedCredentialSourceConfig("base_url"),
+    message: storedCredentialSourceConfig("authorized_base_url"),
   });
   const replaced = await f.replaceSecret(stored);
   assert.equal(replaced.status, 409, JSON.stringify(replaced.body));
   assert.equal(replaced.body.error.code, "RESOURCE_CONFLICT");
-  assert.equal(replaced.body.error.message, storedCredentialSourceConfig("base_url"));
+  assert.equal(replaced.body.error.message, storedCredentialSourceConfig("authorized_base_url"));
   // Only a caller who may update the source meets that 409. One who may read it but not update
   // it gets the same denial for it and for an ID that names no source (finding 2624).
   const reader = await f.createNamespaceMember("stored-source-reader", f.namespace.id, [
@@ -1273,36 +1293,4 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
   });
   assert.equal(unavailable.status, 409, JSON.stringify(unavailable.body));
   await f.assertNothingSaved();
-});
-
-test("Gateway destination authorization refuses shared-key redirection before value reads", async (t) => {
-  const f = await fixture(t);
-  const endpoint = "https://models.example.test/v1";
-  const refused = await f.create("unauthorized", { base_url: endpoint });
-  assert.equal(refused.status, 400, JSON.stringify(refused.body));
-  assert.match(refused.body.error.message, /does not authorize its destination/);
-  await f.assertNothingSaved();
-  // The real OpenShell Driver normalizes the destination; OCC compares its result before reading the key.
-  assert.deepEqual(
-    f.driver.describeSourceDestinations({
-      type: "openai",
-      config: { base_url: "https://MODELS.example.test:443/v1/" },
-    }),
-    {
-      api_key: { endpoint, isDefault: false },
-    },
-  );
-  assert.deepEqual(f.driver.describeSourceDestinations({ type: "openai", config: {} }), {
-    api_key: { endpoint: "https://api.openai.com/v1", isDefault: true },
-  });
-  const mismatch = await f.create(
-    "mismatched",
-    { base_url: endpoint },
-    "https://other.example.test/v1",
-  );
-  assert.equal(mismatch.status, 400, JSON.stringify(mismatch.body));
-  await f.assertNothingSaved();
-  const accepted = await f.create("authorized", { base_url: endpoint }, endpoint);
-  assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
-  assert.equal(accepted.data.status.state, "ready");
 });
