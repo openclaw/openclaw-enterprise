@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-04"
-last_updated_session: authoring-run/f1b8b374-d669-461b-a493-778b826cdcd7
+last_updated_session: authoring-run/fafbdaa9-0149-45da-b434-59f2f68b1950
 ---
 
 # Console sign-in and destination recovery
@@ -14,8 +14,8 @@ only after session admission and ends at ordinary Agent detail.
 
 ## Entry Points
 
-- `apps/controller/src/console/console.mjs:loadPage` checks the browser session.
-- `apps/controller/src/console/console.mjs:showLogin` offers available sign-in methods.
+- `apps/controller/src/console/console.mts:loadPage` checks the browser session.
+- `apps/controller/src/console/console.mts:showLogin` offers available sign-in methods.
 - `apps/controller/src/console/navigation.mts:createNavigation` validates page intents.
 
 ## Flow
@@ -37,7 +37,7 @@ graph TD
 
 ### 1. Discover sign-in and bind the session
 
-`apps/controller/src/console/console.mjs:showLogin`, `loadPage`
+`apps/controller/src/console/console.mts:showLogin`, `loadPage`
 
 On a cold visit, the shell's static “Loading OpenClaw Enterprise…” status paints
 before any script runs; CSS shows it only after 400 ms, so a fast load never
@@ -104,7 +104,7 @@ CLI requests remain supported. The browser stores no credentials.
 
 ### 2. Authorize the destination
 
-`apps/controller/src/console/console.mjs:loadPage` checks the session and loads
+`apps/controller/src/console/console.mts:loadPage` checks the session and loads
 readable Namespaces before rendering the requested page. The Agent and Namespace
 reads use their usual authorization; an inaccessible resource remains unavailable.
 When the Namespace read fails after the session resolved, the page offers **Sign
@@ -132,6 +132,8 @@ native-gateway integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 04:08: Follow the Console entry source pointers after its TypeScript conversion. (authoring-run/fafbdaa9-0149-45da-b434-59f2f68b1950 - 72f7f2b807d635edb1653cfbf0a8ad7e7e2ab49f)
 
 - 2026-11-04 03:17: Follow the origin-refusal recovery message into the typed sign-in presentation module. (authoring-run/f1b8b374-d669-461b-a493-778b826cdcd7 - 5049dfd3c02d7084e9ee20af58ff749ed7d1a76c)
 

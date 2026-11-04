@@ -33,7 +33,7 @@ import {
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { responseTo } from "./console-action-helpers.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import {
   expectCreateAccess,
   expectCreateRefused,

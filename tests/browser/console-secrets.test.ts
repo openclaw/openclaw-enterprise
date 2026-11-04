@@ -47,7 +47,7 @@ import {
   pathRequests,
   settledView,
 } from "./console-agents-browser-helpers.mjs";
-import { responseTo } from "./console-action-helpers.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 
 const browser = fileBrowser();
 type Namespace = Pick<NamespaceWire, "id">;

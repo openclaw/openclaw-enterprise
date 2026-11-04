@@ -7,9 +7,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "prepare:assets": "node prepare-assets.mjs",
-    "dev": "node prepare-assets.mjs && storybook dev --host 127.0.0.1 -p 6006 --no-open --disable-telemetry",
-    "build": "node prepare-assets.mjs && storybook build --output-dir dist/site --disable-telemetry"
+    "prepare:assets": "node prepare-assets.ts",
+    "dev": "node prepare-assets.ts && storybook dev --host 127.0.0.1 -p 6006 --no-open --disable-telemetry",
+    "build": "node prepare-assets.ts && storybook build --output-dir dist/site --disable-telemetry"
   },
   "devDependencies": {
     "@storybook/html-vite": "10.6.0",

@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { BrowserContextOptions } from "playwright";
+
+import type {
+  HarnessAuthBinding,
+  HarnessExecutionMode,
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
+  Restriction,
+  SecretBinding,
+  SecretBindings,
+  SecretMetadata,
+} from "../../packages/contracts/src/index.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -46,6 +59,80 @@ import {
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
+type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type Requests = ReturnType<typeof apiRequests>;
+type Viewport = NonNullable<BrowserContextOptions["viewport"]>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function record(value: unknown, message: string): Record<string, unknown> {
+  assert.ok(isRecord(value), message);
+  return value;
+}
+
+function records(value: unknown, message: string): Record<string, unknown>[] {
+  assert.ok(Array.isArray(value) && value.every(isRecord), message);
+  return value;
+}
+
+function stringField(value: unknown, message: string): string {
+  assert.ok(typeof value === "string", message);
+  return value;
+}
+
+async function createNamespace(fixture: Fixture, name: string) {
+  const namespace = record(await fixture.createNamespace(name, { ready: true }), "Namespace");
+  return { id: stringField(namespace.id, "Namespace ID") };
+}
+
+async function createAgent(
+  fixture: Fixture,
+  namespaceId: string,
+  name: string,
+  values: OpenClawConfigurationDocument,
+  options: {
+    executionMode?: HarnessExecutionMode;
+    harnessAuth?: HarnessAuthBinding | null;
+    secretBindings?: SecretBindings;
+  },
+) {
+  const agent = record(await fixture.createAgent(namespaceId, name, values, options), "Agent");
+  return {
+    id: stringField(agent.id, "Agent ID"),
+    namespaceId: stringField(agent.namespaceId, "Agent Namespace ID"),
+    configurationId: stringField(agent.configurationId, "Agent Configuration ID"),
+    servicePrincipalId: stringField(agent.servicePrincipalId, "Agent service principal ID"),
+    harnessAuth: agent.harnessAuth,
+  };
+}
+
+async function createSecret(
+  fixture: Fixture,
+  namespaceId: string,
+  name: string,
+  value: string,
+): Promise<SecretMetadata> {
+  const secret = record(await fixture.createSecret(namespaceId, name, value), "Secret");
+  const ref = record(secret.ref, "Secret reference");
+  assert.equal(ref.kind, "secret");
+  return {
+    id: stringField(secret.id, "Secret ID"),
+    name: stringField(secret.name, "Secret name"),
+    namespaceId: stringField(secret.namespaceId, "Secret Namespace ID"),
+    ref: {
+      kind: ref.kind,
+      namespaceId: stringField(ref.namespaceId, "Secret reference Namespace ID"),
+      id: stringField(ref.id, "Secret reference ID"),
+    },
+  };
+}
+
+function responseData(payload: unknown): Record<string, unknown> {
+  return record(record(payload, "Response envelope").data, "Response data");
+}
+
 const slack = {
   enabled: true,
   mode: "socket",
@@ -57,49 +144,65 @@ const slack = {
   channels: { C123: { requireMention: true } },
 };
 
-function secretWrites(requests, namespaceId) {
+function secretWrites(requests: Requests, namespaceId: string) {
   return requests.filter(
     ({ method, path }) => method !== "GET" && path.startsWith(`/namespaces/${namespaceId}/secrets`),
   );
 }
 
 // Secret IDs granted to the Agent's ServicePrincipal with an operate-only Role, in request order.
-async function secretGrants(fixture, requests, namespaceId, agent) {
-  const roles = await fixture.request("GET", `/namespaces/${namespaceId}/iam/roles`);
-  return accessBindingPostRequests(requests, namespaceId).map(({ body }) => {
+async function secretGrants(
+  fixture: Fixture,
+  requests: Requests,
+  namespaceId: string,
+  agent: { servicePrincipalId: string },
+) {
+  const result = await fixture.request("GET", `/namespaces/${namespaceId}/iam/roles`);
+  assert.equal(result.status, 200);
+  const roles = records(result.data, "IAM roles");
+  return accessBindingPostRequests(requests, namespaceId).map(({ body: requestBody }) => {
+    const body = record(requestBody, "Access binding request");
     assert.equal(body.subjectKind, "identity");
     assert.equal(body.subjectId, agent.servicePrincipalId);
     assert.equal(body.resourceKind, "secret");
-    const role = roles.data.find(({ id }) => id === body.roleId);
+    const role = roles.find(({ id }) => id === body.roleId);
     assert.deepEqual(role?.permissions, [{ action: "operate", resourceKind: "secret" }]);
-    return body.resourceId;
+    return stringField(body.resourceId, "Granted Secret ID");
   });
 }
 
 // The Socket Mode binding the console saves for a Slack token Secret.
-const envBinding = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
+const envBinding = (secret: SecretMetadata): SecretBinding => ({
+  source: secret.ref,
+  delivery: { type: "env" },
+});
 
 // The app and bot token Secrets an Agent was already bound to.
-async function existingSlackSecrets(fixture, namespaceId) {
+async function existingSlackSecrets(
+  fixture: Fixture,
+  namespaceId: string,
+): Promise<[SecretMetadata, SecretMetadata]> {
   return [
-    await fixture.createSecret(namespaceId, "Existing Slack app token", "xapp-old"),
-    await fixture.createSecret(namespaceId, "Existing Slack bot token", "xoxb-old"),
+    await createSecret(fixture, namespaceId, "Existing Slack app token", "xapp-old"),
+    await createSecret(fixture, namespaceId, "Existing Slack bot token", "xoxb-old"),
   ];
 }
 
-async function savedSecretBindings(fixture, namespaceId, configurationId) {
+async function savedSecretBindings(fixture: Fixture, namespaceId: string, configurationId: string) {
   const saved = await fixture.request(
     "GET",
     `/namespaces/${namespaceId}/configurations/${configurationId}`,
   );
-  return saved.data.secretBindings;
+  assert.equal(saved.status, 200);
+  return record(saved.data, "Saved Configuration").secretBindings;
 }
 
 test("draft Agent offers deployment without a generated-credential step", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Runtime credential gate", { ready: true });
-  const agent = await fixture.createAgent(
+  const namespace = await createNamespace(fixture, "Runtime credential gate");
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Credential-gated Agent",
     nativeValues("gate", { harnessId: "codex" }),
@@ -139,10 +242,15 @@ test("draft Agent offers deployment without a generated-credential step", async 
   assert.equal((await deniedDeployment).status(), 403);
   // The API names the grant the Agent's own principal lacks and who gives it; the console shows
   // that. The administrator may read the model Secret, so it is named (finding 2592).
+  const source = record(
+    record(agent.harnessAuth, "Agent harness authentication").source,
+    "Model Secret reference",
+  );
+  const sourceId = stringField(source.id, "Model Secret ID");
   await page
     .getByRole("alert")
     .filter({
-      hasText: agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${agent.harnessAuth.source.id}`),
+      hasText: agentPrincipalDenied(`Agent ${agent.id}`, `Secret ${sourceId}`),
     })
     .waitFor();
   await waitForEnabled(deploy);
@@ -185,8 +293,9 @@ test("draft Agent offers deployment without a generated-credential step", async 
 test("Deploy names a 503 refused before admission and keeps Deploy available", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Deploy refusals", { ready: true });
-  const agent = await fixture.createAgent(
+  const namespace = await createNamespace(fixture, "Deploy refusals");
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Deploy refusal Agent",
     nativeValues("refusal", { harnessId: "codex" }),
@@ -197,10 +306,16 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   const deployUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
-  let answer;
+  let answer:
+    | {
+        status: number;
+        error: { message: string; code?: string; details?: { path: string; code: string }[] };
+      }
+    | undefined;
   let deployRequests = 0;
   await page.route(deployUrl, (route) => {
     deployRequests += 1;
+    assert.ok(answer, "Deploy must not reach admission before a reply is configured");
     return route.fulfill({
       status: answer.status,
       contentType: "application/json",
@@ -303,15 +418,16 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
   );
-  assert.equal(revisions.data.length, 0);
+  assert.equal(records(revisions.data, "Agent revisions").length, 0);
 });
 
 test("active Agent can deploy the current saved draft as a new version", async (t) => {
   // The draft enables Slack, which deployment admits only with an Installation channel runtime.
   const fixture = await createConsoleAppFixture(t, { channelRuntime: true });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Agent redeployment", { ready: true });
-  const agent = await fixture.createAgent(
+  const namespace = await createNamespace(fixture, "Agent redeployment");
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Redeployable Agent",
     nativeValues("first", { harnessId: "codex" }),
@@ -320,6 +436,8 @@ test("active Agent can deploy the current saved draft as a new version", async (
     },
   );
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const firstRevision = record(first.revision, "Seeded revision");
+  const firstRevisionId = stringField(firstRevision.id, "Seeded revision ID");
   await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
@@ -350,17 +468,20 @@ test("active Agent can deploy the current saved draft as a new version", async (
     .waitFor();
   assert.deepEqual(deploymentRequests(), []);
 
-  const secretBindings = {};
+  const secretBindings: Record<string, SecretBinding> = {};
   for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
-    const secret = await fixture.createSecret(namespace.id, key, `test-${key}`);
+    const secret = await createSecret(fixture, namespace.id, key, `test-${key}`);
     secretBindings[key] = envBinding(secret);
     await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
-  const currentDraft = await fixture.updateConfiguration(
-    namespace.id,
-    agent.configurationId,
-    nativeValues("current-draft", { harnessId: "codex", channels: { slack } }),
-    { secretBindings },
+  const currentDraft = record(
+    await fixture.updateConfiguration(
+      namespace.id,
+      agent.configurationId,
+      nativeValues("current-draft", { harnessId: "codex", channels: { slack } }),
+      { secretBindings },
+    ),
+    "Current draft",
   );
   await page.reload();
   const deployResponse = page.waitForResponse(
@@ -372,10 +493,11 @@ test("active Agent can deploy the current saved draft as a new version", async (
   const response = await deployResponse;
   assert.equal(response.status(), 202);
   assert.equal(deploymentRequests().length, 1);
-  const deployed = (await response.json()).data;
+  const deployed = responseData(await response.json());
+  const deployedId = stringField(deployed.id, "Deployed revision ID");
   await page.waitForURL(
     (url) =>
-      url.searchParams.get("revision") === deployed.id &&
+      url.searchParams.get("revision") === deployedId &&
       url.searchParams.get("tab") === "configuration",
   );
 
@@ -388,31 +510,37 @@ test("active Agent can deploy the current saved draft as a new version", async (
   assert.equal(revisions.status, 200);
   // Revision summaries list newest first; each saved Configuration is on its exact read.
   assert.deepEqual(
-    revisions.data.map(({ id, configurationGeneration }) => [id, configurationGeneration]),
+    records(revisions.data, "Agent revisions").map(({ id, configurationGeneration }) => [
+      id,
+      configurationGeneration,
+    ]),
     [
-      [deployed.id, currentDraft.generation],
-      [first.revision.id, 1],
+      [deployedId, currentDraft.generation],
+      [firstRevisionId, 1],
     ],
   );
-  const savedConfiguration = async (id) =>
-    (
-      await fixture.request(
-        "GET",
-        `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${encodeURIComponent(id)}`,
-      )
-    ).data.configuration;
-  assert.deepEqual(await savedConfiguration(first.revision.id), first.revision.configuration);
-  assert.equal(
-    (await savedConfiguration(deployed.id)).plugins.entries.knowledge.config.marker,
-    "current-draft",
-  );
+  const savedConfiguration = async (id: string) => {
+    const result = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${encodeURIComponent(id)}`,
+    );
+    assert.equal(result.status, 200);
+    return record(result.data, "Saved revision").configuration;
+  };
+  assert.deepEqual(await savedConfiguration(firstRevisionId), firstRevision.configuration);
+  const configuration = record(await savedConfiguration(deployedId), "Deployed Configuration");
+  const plugins = record(configuration.plugins, "Plugins");
+  const entries = record(plugins.entries, "Plugin entries");
+  const knowledge = record(entries.knowledge, "Knowledge plugin");
+  assert.equal(record(knowledge.config, "Knowledge plugin configuration").marker, "current-draft");
 });
 
 test("unsaved Configuration blocks deployment from an admitted revision", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Revision draft guard", { ready: true });
-  const agent = await fixture.createAgent(
+  const namespace = await createNamespace(fixture, "Revision draft guard");
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Guarded Agent",
     nativeValues("saved", { harnessId: "codex" }),
@@ -441,8 +569,9 @@ test("unsaved Configuration blocks deployment from an admitted revision", async 
 test("revision deployment blocks unavailable reads and does not replay a lost response", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Revision deployment recovery", { ready: true });
-  const agent = await fixture.createAgent(
+  const namespace = await createNamespace(fixture, "Revision deployment recovery");
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Recovery Agent",
     nativeValues("recovery", { harnessId: "codex" }),
@@ -492,17 +621,16 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
   );
   assert.equal(revisions.status, 200);
-  assert.equal(revisions.data.length, 2);
+  assert.equal(records(revisions.data, "Agent revisions").length, 2);
 });
 
 test("Slack credential gate treats omitted enabled as enabled", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Implicit Slack credential gate", {
-    ready: true,
-  });
+  const namespace = await createNamespace(fixture, "Implicit Slack credential gate");
   const { enabled, ...implicitSlack } = slack;
-  const agent = await fixture.createAgent(
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Implicit Slack Credential Agent",
     nativeValues("implicit-slack", { harnessId: "codex", channels: { slack: implicitSlack } }),
@@ -528,10 +656,11 @@ test("Slack credential gate treats omitted enabled as enabled", async (t) => {
 test("Slack credential gate reads whole ${NAME} tokens beside named accounts", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Named Slack token gate", { ready: true });
+  const namespace = await createNamespace(fixture, "Named Slack token gate");
   const [appSecret] = await existingSlackSecrets(fixture, namespace.id);
   const { appToken, botToken, ...shared } = slack;
-  const agent = await fixture.createAgent(
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Named Slack Token Agent",
     nativeValues("named-slack-tokens", {
@@ -585,9 +714,10 @@ test("Slack credential gate reads whole ${NAME} tokens beside named accounts", a
 test("Slack credential gate reads the keys the default account's tokens name", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Default Slack token gate", { ready: true });
+  const namespace = await createNamespace(fixture, "Default Slack token gate");
   const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const agent = await fixture.createAgent(
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Default Slack Token Agent",
     nativeValues("default-slack-tokens", {
@@ -627,9 +757,10 @@ test("Slack credential gate reads the keys the default account's tokens name", a
 test("swapped standard Slack token keys get the list, not role-labelled pickers", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Swapped Slack token gate", { ready: true });
+  const namespace = await createNamespace(fixture, "Swapped Slack token gate");
   const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const agent = await fixture.createAgent(
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Swapped Slack Token Agent",
     nativeValues("swapped-slack-tokens", {
@@ -665,17 +796,36 @@ test("swapped standard Slack token keys get the list, not role-labelled pickers"
 // the Slack settings read. An Installation administrator's console reads that grant for each: a
 // missing one marks its row, holds Deploy and offers Retry Secret access, which grants exactly that
 // Secret without saving bindings.
-async function agentWithoutGrant(t, { name, slackValues, bindings, ungranted, fixtureOptions }) {
+type GrantFixtureOptions = {
+  name: string;
+  slackValues: Record<string, OpenClawConfigurationValue | undefined>;
+  bindings: readonly string[];
+  ungranted: string | null;
+  fixtureOptions?: { provisionedPeople?: readonly string[]; channelRuntime?: boolean } | undefined;
+};
+
+function boundSecret(secrets: ReadonlyMap<string, SecretMetadata>, key: string): SecretMetadata {
+  const secret = secrets.get(key);
+  assert.ok(secret, `Fixture Secret bound to ${key}`);
+  return secret;
+}
+
+async function agentWithoutGrant(
+  t: TestContext,
+  { name, slackValues, bindings, ungranted, fixtureOptions }: GrantFixtureOptions,
+) {
   const fixture = await createConsoleAppFixture(t, fixtureOptions);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(`${name} grant`, { ready: true });
-  const secrets = {};
-  const secretBindings = {};
+  const namespace = await createNamespace(fixture, `${name} grant`);
+  const secrets = new Map<string, SecretMetadata>();
+  const secretBindings: Record<string, SecretBinding> = {};
   for (const key of bindings) {
-    secrets[key] = await fixture.createSecret(namespace.id, `Bound ${key}`, `value-${key}`);
-    secretBindings[key] = envBinding(secrets[key]);
+    const secret = await createSecret(fixture, namespace.id, `Bound ${key}`, `value-${key}`);
+    secrets.set(key, secret);
+    secretBindings[key] = envBinding(secret);
   }
-  const agent = await fixture.createAgent(
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     `${name} Grant Agent`,
     nativeValues(`${name.toLowerCase().replaceAll(" ", "-")}-grant`, {
@@ -690,13 +840,17 @@ async function agentWithoutGrant(t, { name, slackValues, bindings, ungranted, fi
   // Remove that Secret's grant, as an administrator revoking it would.
   const policyPath = `/namespaces/${namespace.id}/iam`;
   const listed = await fixture.request("GET", `${policyPath}/access-bindings`);
-  const grant = listed.data.find(
+  assert.equal(listed.status, 200);
+  const grant = records(listed.data, "IAM access bindings").find(
     (binding) =>
       binding.subjectId === agent.servicePrincipalId &&
-      binding.resourceId === secrets[ungranted].id,
+      binding.resourceId === boundSecret(secrets, ungranted).id,
   );
   assert.ok(grant, `createAgent grants the Secret bound to ${ungranted}`);
-  const removed = await fixture.request("DELETE", `${policyPath}/access-bindings/${grant.id}`);
+  const removed = await fixture.request(
+    "DELETE",
+    `${policyPath}/access-bindings/${stringField(grant.id, "Access binding ID")}`,
+  );
   assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
   return { fixture, namespace, agent, secrets };
 }
@@ -707,8 +861,23 @@ const SLACK_RETRY_UNCONFIRMED =
   "Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator.";
 
 async function ungrantedBoundSecret(
-  t,
-  { name, slackValues, bindings, ungranted, rows, badges, viewport, retried = SLACK_RETRY_GRANTED },
+  t: TestContext,
+  {
+    name,
+    slackValues,
+    bindings,
+    ungranted,
+    rows,
+    badges,
+    viewport,
+    retried = SLACK_RETRY_GRANTED,
+  }: Omit<GrantFixtureOptions, "ungranted"> & {
+    ungranted: string;
+    rows: readonly string[];
+    badges: readonly string[];
+    viewport?: Viewport;
+    retried?: string;
+  },
 ) {
   const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
     name,
@@ -729,10 +898,14 @@ async function ungrantedBoundSecret(
     assert.deepEqual(
       await list.evaluate((node) => {
         const page = globalThis.document.documentElement;
-        const card = node.closest("section").getBoundingClientRect();
+        const section = node.closest("section");
+        if (!section) {
+          throw new Error("Channel Secret statuses must be in their section");
+        }
+        const card = section.getBoundingClientRect();
         return {
           sideways: Math.max(0, page.scrollWidth - page.clientWidth),
-          outsideCard: [...node.querySelectorAll(".badge")]
+          outsideCard: Array.from(node.querySelectorAll(".badge"))
             .filter((badge) => badge.getBoundingClientRect().right > card.right)
             .map((badge) => badge.textContent),
         };
@@ -743,6 +916,7 @@ async function ungrantedBoundSecret(
   // Deploy names the binding whose Secret waits, as the list does, and where to grant it (finding
   // 3017).
   const waiting = rows[badges.findIndex((badge) => badge.endsWith("· Agent access not confirmed"))];
+  assert.ok(waiting, "Expected a row for the unconfirmed grant");
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   const reason = secretGrantDeployReason([waiting], { missing: true });
   await page.getByText(reason, { exact: true }).waitFor();
@@ -755,7 +929,7 @@ async function ungrantedBoundSecret(
     badges.map((badge) => badge.replace(" · Agent access not confirmed", "")),
   );
   assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
-    secrets[ungranted].id,
+    boundSecret(secrets, ungranted).id,
   ]);
   // Retry writes no Configuration.
   assert.deepEqual(
@@ -836,7 +1010,10 @@ for (const { lost, slackOn } of [
   }
 }
 
-async function retryConflictReload(t, { lost, slackOn, viewport }) {
+async function retryConflictReload(
+  t: TestContext,
+  { lost, slackOn, viewport }: { lost: boolean; slackOn: boolean; viewport: Viewport },
+) {
   const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
     name: `Slack ${slackOn ? "on" : "off"} conflict`,
     slackValues: { enabled: slackOn },
@@ -883,21 +1060,28 @@ async function retryConflictReload(t, { lost, slackOn, viewport }) {
   await retry.click();
   await section.getByText(SLACK_RETRY_UNCONFIRMED, { exact: true }).waitFor();
   await expectNoText(page, /Configuration saved/);
-  if (lost) {
+  if (lostGrant) {
     // The API made the grant; only its answer never reached the console.
-    assert.equal((await lostGrant.requested).status(), 201);
+    const granted = await lostGrant.requested;
+    assert.ok(granted, "The lost response must have reached the test server");
+    assert.equal(granted.status(), 201);
   } else {
     await page.unroute(`**${bindingsPath}`);
   }
   // Another browser saves the Configuration, Slack unchanged and its bindings kept.
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const current = (await fixture.request("GET", configurationPath)).data;
+  const result = await fixture.request("GET", configurationPath);
+  assert.equal(result.status, 200);
+  const current = record(result.data, "Current Configuration");
+  const values = record(current.values, "Current Configuration values");
+  const channels = record(values.channels, "Channels");
+  const currentSlack = record(channels.slack, "Slack configuration");
   await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
     {
-      ...current.values,
-      channels: { slack: { ...current.values.channels.slack, allowFrom: ["U456"] } },
+      ...values,
+      channels: { slack: { ...currentSlack, allowFrom: ["U456"] } },
     },
     { secretBindings: current.secretBindings },
   );
@@ -940,7 +1124,7 @@ async function retryConflictReload(t, { lost, slackOn, viewport }) {
     await expectNoText(page, /could not be confirmed|Agent access not confirmed/);
     // Only the lost Retry sent a grant: the read confirmed it, nothing granted it again.
     assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
-      secrets.SLACK_APP_TOKEN.id,
+      boundSecret(secrets, "SLACK_APP_TOKEN").id,
     ]);
     await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
     return;
@@ -958,8 +1142,8 @@ async function retryConflictReload(t, { lost, slackOn, viewport }) {
   await page.keyboard.press("Enter");
   await section.getByText(SLACK_OFF_RETRY_GRANTED, { exact: true }).waitFor();
   assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
-    secrets.SLACK_APP_TOKEN.id,
-    secrets.SLACK_APP_TOKEN.id,
+    boundSecret(secrets, "SLACK_APP_TOKEN").id,
+    boundSecret(secrets, "SLACK_APP_TOKEN").id,
   ]);
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 }
@@ -987,15 +1171,16 @@ test("a standard Slack key left bound beside other token keys needs the Agent's 
 test("an HTTP-mode Slack account keeps the bot token picker alone", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("HTTP Slack token gate", { ready: true });
+  const namespace = await createNamespace(fixture, "HTTP Slack token gate");
   const [, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const replacement = await fixture.createSecret(namespace.id, "Rotated bot", "xoxb-rotated");
-  const signingSecret = await fixture.createSecret(namespace.id, "Signing secret", "signing");
+  const replacement = await createSecret(fixture, namespace.id, "Rotated bot", "xoxb-rotated");
+  const signingSecret = await createSecret(fixture, namespace.id, "Signing secret", "signing");
   const secretBindings = {
     SLACK_BOT_TOKEN: envBinding(botSecret),
     SLACK_SIGNING_SECRET: envBinding(signingSecret),
   };
-  const agent = await fixture.createAgent(
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "HTTP Slack Token Agent",
     nativeValues("http-slack-tokens", {
@@ -1151,7 +1336,10 @@ test("Deploy's grant reason names the administrator once Configuration update is
 // deploy with AUTHORIZATION_DENIED (finding 2575). `readLandsDuringSave` releases the held read
 // while the save's Configuration write is held instead of after the save ends. With `appGranted`,
 // the same save leaves nothing ungranted: Deploy submits once and stores one version.
-async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
+async function saveOvertakesGrantRead(
+  t: TestContext,
+  { readLandsDuringSave, appGranted }: { readLandsDuringSave: boolean; appGranted: boolean },
+) {
   const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
     name: `${readLandsDuringSave ? "Read during save" : "Read after save"}${appGranted ? " granted" : ""}`,
     slackValues: {},
@@ -1162,7 +1350,12 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     // Installation channel runtime.
     fixtureOptions: appGranted ? { provisionedPeople: [], channelRuntime: true } : undefined,
   });
-  const replacement = await fixture.createSecret(namespace.id, "Replacement bot token", "xoxb-new");
+  const replacement = await createSecret(
+    fixture,
+    namespace.id,
+    "Replacement bot token",
+    "xoxb-new",
+  );
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
@@ -1188,7 +1381,7 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await selectSecret(page, "Slack bot token", replacement);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  if (readLandsDuringSave) {
+  if (write) {
     await write.requested;
     read.release();
     // The page takes the read's answer while the save's Configuration write is still held.
@@ -1197,9 +1390,11 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   }
   // The save ends with a grant read still to come, so it does not point to Deploy yet. With the
   // app grant present, the save's own unheld recheck may already have settled and named Deploy.
+  const saved = page.getByText(CHANNEL_SECRETS_SAVED, { exact: true });
+  const savedWithDeploy = page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY, { exact: true });
   const saveStatus = page
     .locator("section.channel-secrets p.hint[role=status]")
-    .filter({ hasText: new RegExp(`^${RegExp.escape(CHANNEL_SECRETS_SAVED)}`) });
+    .and(saved.or(savedWithDeploy));
   await saveStatus.waitFor();
   if (!appGranted) {
     assert.equal(await saveStatus.textContent(), CHANNEL_SECRETS_SAVED);
@@ -1215,14 +1410,13 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     // Positive control: every bound Secret is granted, so Deploy submits once and the API
     // stores one new version.
     const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
-    const before = (await fixture.request("GET", revisionsPath)).data;
+    const beforeRead = await fixture.request("GET", revisionsPath);
+    assert.equal(beforeRead.status, 200);
+    const before = records(beforeRead.data, "Agent revisions before deploy");
     assert.equal(await deployStatus.textContent(), "Ready to deploy.");
     // With nothing left to hold Deploy, the save outcome names it as the next step.
-    await saveStatus
-      .filter({
-        hasText: new RegExp(`^${RegExp.escape(CHANNEL_SECRETS_SAVED_DEPLOY)}$`),
-      })
-      .waitFor();
+    await saveStatus.and(savedWithDeploy).waitFor();
+    assert.equal(await saveStatus.textContent(), CHANNEL_SECRETS_SAVED_DEPLOY);
     const deployResponse = page.waitForResponse(
       (response) =>
         response.url() ===
@@ -1232,11 +1426,14 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
     await deploy.click();
     const response = await deployResponse;
     assert.equal(response.status(), 202, await response.text());
-    const deployed = (await response.json()).data;
-    const after = (await fixture.request("GET", revisionsPath)).data;
+    const deployed = responseData(await response.json());
+    const deployedId = stringField(deployed.id, "Deployed revision ID");
+    const afterRead = await fixture.request("GET", revisionsPath);
+    assert.equal(afterRead.status, 200);
+    const after = records(afterRead.data, "Agent revisions after deploy");
     assert.deepEqual(
       after.map(({ id }) => id).filter((id) => !before.some((revision) => revision.id === id)),
-      [deployed.id],
+      [deployedId],
     );
     assert.equal(deployRequests(), 1);
     return;
@@ -1264,7 +1461,7 @@ async function saveOvertakesGrantRead(t, { readLandsDuringSave, appGranted }) {
   await page.getByText(SLACK_RETRY_GRANTED, { exact: true }).waitFor();
   assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
     replacement.id,
-    secrets.SLACK_APP_TOKEN.id,
+    boundSecret(secrets, "SLACK_APP_TOKEN").id,
   ]);
   await waitForEnabled(deploy);
   assert.equal(deployRequests(), 0);
@@ -1288,9 +1485,10 @@ test("a granted read that lands during a channel Secrets save deploys once", (t)
 test("a Slack signing secret without a binding holds Deploy", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Slack signing secret gate", { ready: true });
+  const namespace = await createNamespace(fixture, "Slack signing secret gate");
   const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const agent = await fixture.createAgent(
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Slack Signing Secret Agent",
     nativeValues("slack-signing-secret", {
@@ -1330,7 +1528,10 @@ test("a Slack signing secret without a binding holds Deploy", async (t) => {
 // Secret choice or reload fixes (finding 2529); it now shows the API's sentence and where to fix
 // it: the Configuration JSON for a form save refuses, and where the console binds a name for a
 // reference without a binding, which that editor cannot save (finding 2542).
-async function refusedStoredSlackSave(t, { store, refusal }) {
+async function refusedStoredSlackSave(
+  t: TestContext,
+  { store, refusal }: { store: (slackChannel: Record<string, unknown>) => void; refusal: string },
+) {
   // The bundled Kubernetes Compute's rule refuses the setting; the storage Driver keeps the row an
   // earlier build saved, which this test writes through the Driver as that build did.
   const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
@@ -1339,10 +1540,11 @@ async function refusedStoredSlackSave(t, { store, refusal }) {
     configurationDriver,
   });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Stored Slack form", { ready: true });
+  const namespace = await createNamespace(fixture, "Stored Slack form");
   const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const replacement = await fixture.createSecret(namespace.id, "Replacement bot", "xoxb-new");
-  const agent = await fixture.createAgent(
+  const replacement = await createSecret(fixture, namespace.id, "Replacement bot", "xoxb-new");
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Stored Slack Form Agent",
     nativeValues("stored-slack-form", { harnessId: "codex", channels: { slack } }),
@@ -1355,8 +1557,10 @@ async function refusedStoredSlackSave(t, { store, refusal }) {
     },
   );
   const reference = { namespaceId: namespace.id, id: agent.configurationId };
-  const stored = configurationDriver.stored(reference);
-  store(stored.values.channels.slack);
+  const stored = record(configurationDriver.stored(reference), "Stored Configuration");
+  const values = record(stored.values, "Stored Configuration values");
+  const channels = record(values.channels, "Stored channels");
+  store(record(channels.slack, "Stored Slack configuration"));
   await configurationDriver.update(stored);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
@@ -1400,10 +1604,9 @@ test("a channel Secret save refused for a missing binding says where to bind it"
 test("Teams-enabled drafts keep console deploy blocked", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Teams credential gate", {
-    ready: true,
-  });
-  const agent = await fixture.createAgent(
+  const namespace = await createNamespace(fixture, "Teams credential gate");
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Teams Credential Agent",
     nativeValues("implicit-teams", {
@@ -1435,14 +1638,14 @@ test("Teams-enabled drafts keep console deploy blocked", async (t) => {
 test("bound Slack credential fields show Secret references without reading values", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Bound Slack credential gate", { ready: true });
+  const namespace = await createNamespace(fixture, "Bound Slack credential gate");
   const values = nativeValues("slack-bound", { harnessId: "codex", channels: { slack } });
   const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
   const secretBindings = {
     SLACK_APP_TOKEN: envBinding(appSecret),
     SLACK_BOT_TOKEN: envBinding(botSecret),
   };
-  const agent = await fixture.createAgent(namespace.id, "Bound Slack Agent", values, {
+  const agent = await createAgent(fixture, namespace.id, "Bound Slack Agent", values, {
     executionMode: "dedicated",
     secretBindings,
   });
@@ -1471,12 +1674,11 @@ test("bound Slack credential fields show Secret references without reading value
 test("Slack credential replacement switches only selected Secret references", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Replacement Slack credential gate", {
-    ready: true,
-  });
+  const namespace = await createNamespace(fixture, "Replacement Slack credential gate");
   const values = nativeValues("slack-replacement", { harnessId: "codex", channels: { slack } });
   const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const replacementAppSecret = await fixture.createSecret(
+  const replacementAppSecret = await createSecret(
+    fixture,
     namespace.id,
     "Replacement Slack app token",
     "xapp-replacement",
@@ -1485,7 +1687,7 @@ test("Slack credential replacement switches only selected Secret references", as
     SLACK_APP_TOKEN: envBinding(appSecret),
     SLACK_BOT_TOKEN: envBinding(botSecret),
   };
-  const agent = await fixture.createAgent(namespace.id, "Replacement Slack Agent", values, {
+  const agent = await createAgent(fixture, namespace.id, "Replacement Slack Agent", values, {
     executionMode: "dedicated",
     secretBindings,
   });
@@ -1528,26 +1730,30 @@ test("Slack credential replacement switches only selected Secret references", as
 test("partially bound Slack credentials save only the missing token", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Partial Slack credential gate", {
-    ready: true,
-  });
+  const namespace = await createNamespace(fixture, "Partial Slack credential gate");
   const values = nativeValues("slack-partial", { harnessId: "codex", channels: { slack } });
-  const appSecret = await fixture.createSecret(
+  const appSecret = await createSecret(
+    fixture,
     namespace.id,
     "Existing Slack app token",
     "xapp-old",
   );
-  const botSecret = await fixture.createSecret(namespace.id, "New Slack bot token", "xoxb-new-bot");
+  const botSecret = await createSecret(
+    fixture,
+    namespace.id,
+    "New Slack bot token",
+    "xoxb-new-bot",
+  );
   const secretBindings = {
     SLACK_APP_TOKEN: envBinding(appSecret),
   };
-  const agent = await fixture.createAgent(namespace.id, "Partial Slack Agent", values, {
+  const agent = await createAgent(fixture, namespace.id, "Partial Slack Agent", values, {
     executionMode: "dedicated",
     secretBindings,
   });
   // Near-miss bindings on the bot Secret: another Agent holds the exact operate Role, and
   // this Agent holds only a read Role. Neither is this Agent's operate grant.
-  const otherAgent = await fixture.createAgent(namespace.id, "Other Slack Agent", values, {
+  const otherAgent = await createAgent(fixture, namespace.id, "Other Slack Agent", values, {
     executionMode: "dedicated",
   });
   const policyPath = `/namespaces/${namespace.id}/iam`;
@@ -1563,7 +1769,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
       body: {
         subjectKind: "identity",
         subjectId,
-        roleId: role.data.id,
+        roleId: stringField(record(role.data, "Created Role").id, "Role ID"),
         resourceKind: "secret",
         resourceId: botSecret.id,
       },
@@ -1576,7 +1782,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
   await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
-  assert.equal(await page.getByLabel("Slack bot token").evaluate((node) => node.value), "");
+  assert.equal(await page.getByLabel("Slack bot token").inputValue(), "");
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
   await selectSecret(page, "Slack bot token", botSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
@@ -1594,19 +1800,21 @@ test("partially bound Slack credentials save only the missing token", async (t) 
 test("missing Slack credential fields require both Secret references before saving", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Slack credential gate", { ready: true });
+  const namespace = await createNamespace(fixture, "Slack credential gate");
   const values = nativeValues("slack", { harnessId: "codex", channels: { slack } });
-  const appSecret = await fixture.createSecret(
+  const appSecret = await createSecret(
+    fixture,
     namespace.id,
     "Slack Credential Agent Slack app token",
     "xapp-console-secret",
   );
-  const botSecret = await fixture.createSecret(
+  const botSecret = await createSecret(
+    fixture,
     namespace.id,
     "Slack Credential Agent Slack bot token",
     "xoxb-console-secret",
   );
-  const agent = await fixture.createAgent(namespace.id, "Slack Credential Agent", values, {
+  const agent = await createAgent(fixture, namespace.id, "Slack Credential Agent", values, {
     executionMode: "dedicated",
   });
   // Roles that resemble secret operate but are not exactly it; grants must create their own.
@@ -1631,8 +1839,8 @@ test("missing Slack credential fields require both Secret references before savi
   await page
     .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
     .waitFor();
-  assert.equal(await page.getByLabel("Slack app token").evaluate((node) => node.value), "");
-  assert.equal(await page.getByLabel("Slack bot token").evaluate((node) => node.value), "");
+  assert.equal(await page.getByLabel("Slack app token").inputValue(), "");
+  assert.equal(await page.getByLabel("Slack bot token").inputValue(), "");
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
   await selectSecret(page, "Slack bot token", botSecret);
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
@@ -1648,6 +1856,7 @@ test("missing Slack credential fields require both Secret references before savi
     botSecret.id,
   ]);
   const pageText = await page.locator("body").textContent();
+  assert.ok(pageText !== null);
   assert.equal(pageText.includes("xapp-console-secret"), false);
   assert.equal(pageText.includes("xoxb-console-secret"), false);
   const saved = await savedSecretBindings(fixture, namespace.id, agent.configurationId);
@@ -1661,23 +1870,30 @@ test("missing Slack credential fields require both Secret references before savi
 // A codex Agent bound to an issued account, on a Credentials tab whose Service Account list is
 // denied after Console admission. With `heldList`, the list waits for `list.release()`, so a test
 // can change the method while it is in flight. `denied()` checks the refusal and lifts the denial.
-async function deniedIssuedAccountList(t, { heldList = false } = {}) {
+async function deniedIssuedAccountList(t: TestContext, { heldList = false } = {}) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Issued-account feedback", { ready: true });
+  const namespace = await createNamespace(fixture, "Issued-account feedback");
   // Seed an issued account's stored result; listing and source selection still use the real app.
-  const account = await fixture.controller.transact(async (state) => {
-    const created = await state.serviceAccounts.createServiceAccount({
-      id: `sa_${randomUUID()}`,
-      namespaceId: namespace.id,
-      name: "Saved issued account",
-    });
-    return state.serviceAccounts.updateCredential(namespace.id, created.id, {
-      kind: "access_token",
-      secretRef: { name: "issued-account-feedback-fixture", key: "token" },
-    });
-  });
-  const agent = await fixture.createAgent(
+  assert.ok(fixture.controller, "Fixture Controller must be bootstrapped");
+  const storedAccount: unknown = await fixture.controller.transact(
+    async (state: PlatformUnitOfWork) => {
+      const created = await state.serviceAccounts.createServiceAccount({
+        id: `sa_${randomUUID()}`,
+        namespaceId: namespace.id,
+        name: "Saved issued account",
+      });
+      return state.serviceAccounts.updateCredential(namespace.id, created.id, {
+        kind: "access_token",
+        secretRef: { name: "issued-account-feedback-fixture", key: "token" },
+      });
+    },
+  );
+  const account = {
+    id: stringField(record(storedAccount, "Issued account").id, "Issued account ID"),
+  };
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Issued-account Agent",
     nativeValues("issued-account-feedback", { harnessId: "codex" }),
@@ -1692,7 +1908,7 @@ async function deniedIssuedAccountList(t, { heldList = false } = {}) {
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const accountsPath = `/namespaces/${namespace.id}/service-accounts`;
-  const restriction = {
+  const restriction: Restriction = {
     id: "deny-issued-account-namespace-read",
     namespaceId: namespace.id,
     resourceKind: "namespace",
@@ -1770,6 +1986,7 @@ test("an issued-account denial read under ChatGPT OAuth is reachable after switc
     await deniedIssuedAccountList(t, { heldList: true });
   // The list fails while the codex Agent's ChatGPT OAuth method hides its feedback, so the select
   // has no reason to read and is natively disabled.
+  assert.ok(list, "The issued-account request must be held");
   await list.requested();
   await method.selectOption("credential_source");
   list.release();
@@ -1777,7 +1994,10 @@ test("an issued-account denial read under ChatGPT OAuth is reachable after switc
   await feedback.waitFor({ state: "attached" });
   assert.equal(await feedback.isVisible(), false);
   assert.equal(
-    await issuedAccount.evaluate((node) => node.disabled && !node.hasAttribute("aria-disabled")),
+    await issuedAccount.evaluate(
+      (node) =>
+        node instanceof HTMLSelectElement && node.disabled && !node.hasAttribute("aria-disabled"),
+    ),
     true,
   );
   // Switching to the issued account source shows the failed read's reason, so a keyboard reader
@@ -1789,8 +2009,11 @@ test("an issued-account denial read under ChatGPT OAuth is reachable after switc
 });
 
 test("operator-managed console binding saves and deploys without a managed credential gate", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "runtime");
-  const agent = await fixture.createAgent(
+  const runtime = await createRuntimeAuthFixture(t, "runtime");
+  const { fixture } = runtime;
+  const namespace = { id: stringField(record(runtime.namespace, "Namespace").id, "Namespace ID") };
+  const agent = await createAgent(
+    fixture,
     namespace.id,
     "Operator-managed Agent",
     createHarnessConfiguration("openclaw", "gpt-5.1"),
@@ -1809,7 +2032,9 @@ test("operator-managed console binding saves and deploys without a managed crede
     (r) => r.url().endsWith(`/agents/${agent.id}`) && r.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save authentication source" }).click();
-  assert.deepEqual((await (await save).json()).data.harnessAuth, { method: "runtime" });
+  const saved = await save;
+  assert.equal(saved.status(), 200);
+  assert.deepEqual(responseData(await saved.json()).harnessAuth, { method: "runtime" });
   await page.getByRole("button", { name: "Deploy new version" }).waitFor();
   await page.getByText(/Gateway readiness does not confirm model access/).waitFor();
   // Runtime removes only the credential gate, not failed-history protection.
@@ -1836,7 +2061,7 @@ test("operator-managed console binding saves and deploys without a managed crede
   await page.getByRole("button", { name: "Deploy new version" }).click();
   const response = await deployed;
   assert.equal(response.status(), 202);
-  assert.deepEqual((await response.json()).data.harnessAuth, { method: "runtime" });
+  assert.deepEqual(responseData(await response.json()).harnessAuth, { method: "runtime" });
   assert.deepEqual(
     afterReload.filter(({ path }) => path.includes("/runtime-credentials")),
     [],

@@ -54,6 +54,9 @@ const theme = await loadConsoleTheme(
   process.env.OCC_CONSOLE_THEME_DIR ??
     fileURLToPath(new URL("../../deploy/examples/console-theme/", import.meta.url)),
 );
+if (theme === undefined) {
+  throw new Error("Storybook requires a Console theme.");
+}
 const frame = await readFile(new URL("frame.html", fixtureAssets), "utf8");
 await mkdir(new URL("theme/", assets), { recursive: true });
 for (const path of theme.assets.keys()) {
@@ -68,17 +71,24 @@ await writeFile(
     displayName: "Example Agents for the shared research and engineering workspace",
   }),
 );
-const files = (await readdir(new URL("./dist/assets/", import.meta.url), { recursive: true }))
+const assetRoot = new URL("./dist/assets/", import.meta.url);
+const paths = (await readdir(assetRoot, { recursive: true }))
   .filter((path) => /\.(mjs|html|css)$/.test(path))
   .sort();
-const contents = await Promise.all(
-  files.map((path) => readFile(new URL(`./dist/assets/${path}`, import.meta.url), "utf8")),
+const files = await Promise.all(
+  paths.map(async (path) => ({
+    path,
+    content: await readFile(new URL(`./${path}`, assetRoot), "utf8"),
+  })),
 );
 const hash = createHash("sha256");
-files.forEach((path, index) => hash.update(path).update(contents[index]));
+for (const { path, content } of files) {
+  hash.update(path).update(content);
+}
 const version = hash.digest("hex").slice(0, 16);
-for (const [index, path] of files.entries()) {
-  let content = contents[index];
+for (const file of files) {
+  const { path } = file;
+  let { content } = file;
   if (path.endsWith(".mjs") && !path.endsWith("-preset.mjs")) {
     content = content.replace(
       /((?:from\s*|import\s*\(\s*|import\s*)["'])([./][^"']+\.mjs)(["'])/g,
@@ -87,6 +97,6 @@ for (const [index, path] of files.entries()) {
   } else if (path.endsWith(".html")) {
     content = content.replace(/((?:src|href)="[^"?]+\.(?:mjs|css))"/g, `$1?v=${version}"`);
   }
-  await writeFile(new URL(`./dist/assets/${path}`, import.meta.url), content);
+  await writeFile(new URL(`./${path}`, assetRoot), content);
 }
 await writeFile(new URL("./dist/asset-version.json", import.meta.url), JSON.stringify(version));
