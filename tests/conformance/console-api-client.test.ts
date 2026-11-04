@@ -1,12 +1,26 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import test from "node:test";
+import { createServer, type Server, type ServerResponse } from "node:http";
+import test, { type TestContext } from "node:test";
 import { message } from "../../apps/controller/src/console/agents/list.mts";
-import { createApiClient } from "../../apps/controller/src/console/api-client.mts";
+import {
+  createApiClient,
+  responseFields,
+  type RequestOptions,
+} from "../../apps/controller/src/console/api-client.mts";
 import { createViewLifetime } from "../../apps/controller/src/console/view-lifetime.mts";
 import { listen } from "../helpers/listen.mjs";
 
-async function interruptedResponse(t, interrupt, responseType = "json") {
+async function namespaceUrl(t: TestContext, server: Server) {
+  const port: unknown = await listen(t, server);
+  assert.ok(typeof port === "number");
+  return `http://127.0.0.1:${port}/namespaces`;
+}
+
+async function interruptedResponse(
+  t: TestContext,
+  interrupt: (response: ServerResponse, controller: AbortController) => void,
+  responseType: RequestOptions["responseType"] = "json",
+) {
   const controller = new AbortController();
   let calls = 0;
   const server = createServer((_request, response) => {
@@ -21,14 +35,14 @@ async function interruptedResponse(t, interrupt, responseType = "json") {
     const timer = setTimeout(() => interrupt(response, controller), 100);
     response.on("close", () => clearTimeout(timer));
   });
-  const port = await listen(t, server);
+  const url = await namespaceUrl(t, server);
   const request = createApiClient({
     lifetime: createViewLifetime(),
     hasSession: () => true,
     onExpired() {},
   });
   return {
-    result: request(`http://127.0.0.1:${port}/namespaces`, {
+    result: request(url, {
       signal: controller.signal,
       responseType,
     }),
@@ -43,6 +57,7 @@ test("a timed-out text download remains an interrupted read instead of a view ca
     "text",
   );
   await assert.rejects(result, (error) => {
+    assert.ok(error instanceof Error);
     assert.equal(error.name, "TimeoutError");
     assert.equal(
       message(error),
@@ -52,18 +67,106 @@ test("a timed-out text download remains an interrupted read instead of a view ca
   });
 });
 
+for (const { name, status = 200, contentType, body, expectedStatus, succeeds = false } of [
+  { name: "plain text", contentType: "text/plain", body: "synthetic log\n", succeeds: true },
+  {
+    name: "parameterized mixed-case plain text",
+    contentType: "Text/Plain; Charset=UTF-8",
+    body: "synthetic log\n",
+    expectedStatus: 200,
+    succeeds: true,
+  },
+  { name: "JSON string data", contentType: "application/json", body: '{"data":"not a log"}' },
+  { name: "near-match media type", contentType: "text/plainish", body: "not a log" },
+  {
+    name: "nonmatching expected status",
+    contentType: "text/plain",
+    body: "synthetic log\n",
+    expectedStatus: 201,
+  },
+  {
+    name: "non-200 plain text",
+    status: 201,
+    contentType: "text/plain",
+    body: "synthetic log\n",
+  },
+]) {
+  test(`text downloads enforce the attachment response boundary: ${name}`, async (t) => {
+    const fetch = t.mock.method(
+      globalThis,
+      "fetch",
+      async () => new Response(body, { status, headers: { "content-type": contentType } }),
+    );
+    const request = createApiClient({
+      lifetime: createViewLifetime(),
+      hasSession: () => true,
+      onExpired() {},
+    });
+    const result = request("/logs?download=true", {
+      responseType: "text",
+      ...(expectedStatus === undefined ? {} : { expectedStatus }),
+    });
+    if (succeeds) {
+      assert.equal(await result, body);
+    } else {
+      await assert.rejects(result, { status, message: "The request could not be completed." });
+    }
+    assert.equal(fetch.mock.callCount(), 1);
+  });
+}
+
+for (const status of [403, 401]) {
+  test(`text downloads retain JSON error metadata and session expiry for ${status}`, async (t) => {
+    const code = status === 401 ? "UNAUTHORIZED" : "FORBIDDEN";
+    const details = [{ path: "/source", code: "DENIED", message: "Synthetic denial" }];
+    const requestId = "req_12345678-1234-1234-1234-123456789abc";
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: { code, message: "Synthetic request refusal", details },
+            meta: { requestId },
+          }),
+          { status, headers: { "content-type": "application/json", "retry-after": "3" } },
+        ),
+    );
+    let expired = 0;
+    const request = createApiClient({
+      lifetime: createViewLifetime(),
+      hasSession: () => true,
+      onExpired() {
+        expired += 1;
+      },
+    });
+    await assert.rejects(request("/logs?download=true", { responseType: "text" }), (error) => {
+      const fields = responseFields(error);
+      assert.equal(fields.status, status);
+      assert.equal(fields.code, code);
+      assert.equal(fields.serverMessage, "Synthetic request refusal");
+      assert.deepEqual(fields.details, details);
+      assert.deepEqual(fields.detailPaths, ["/source"]);
+      assert.equal(fields.requestId, requestId);
+      assert.equal(fields.retryAfterSeconds, 3);
+      return true;
+    });
+    assert.equal(expired, status === 401 ? 1 : 0);
+  });
+}
+
 test("a complete malformed JSON body retains the invalid-response error", async (t) => {
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
     response.end("not JSON");
   });
-  const port = await listen(t, server);
+  const url = await namespaceUrl(t, server);
   const request = createApiClient({
     lifetime: createViewLifetime(),
     hasSession: () => true,
     onExpired() {},
   });
-  await assert.rejects(request(`http://127.0.0.1:${port}/namespaces`), {
+  await assert.rejects(request(url), {
     name: "Error",
     status: 200,
     message: "The request could not be completed.",
@@ -73,6 +176,7 @@ test("a complete malformed JSON body retains the invalid-response error", async 
 test("a disconnected JSON body reaches the caller's interrupted-read recovery", async (t) => {
   const { result, calls } = await interruptedResponse(t, (response) => response.destroy());
   await assert.rejects(result, (error) => {
+    assert.ok(error instanceof Error);
     assert.equal(error.name, "TypeError");
     assert.equal(
       message(error),
@@ -107,6 +211,10 @@ test("empty 204 responses honor an explicit expected status", async (t) => {
   const request = createApiClient({ lifetime, hasSession: () => true, onExpired() {} });
 
   assert.equal(await request("/resource", { expectedStatus: 204 }), undefined);
+  assert.equal(
+    await request("/resource", { responseType: "text", expectedStatus: 204 }),
+    undefined,
+  );
   for (const method of ["GET", "POST", "PUT", "DELETE"]) {
     await assert.rejects(request("/resource", { method }), { status: 204 });
   }
@@ -114,7 +222,7 @@ test("empty 204 responses honor an explicit expected status", async (t) => {
 });
 
 test("sharing mutations reject unexpected success statuses without replay", async (t) => {
-  let response;
+  let response: Response;
   const fetch = t.mock.method(globalThis, "fetch", async () => response);
   const lifetime = {
     signal: new AbortController().signal,
@@ -169,8 +277,9 @@ test("a lost sharing response remains an error and never retries the write", asy
 });
 
 test("only a read that outlives the view survives the view's reset", async (t) => {
-  const signals = [];
-  t.mock.method(globalThis, "fetch", async (_path, init) => {
+  const signals: AbortSignal[] = [];
+  t.mock.method(globalThis, "fetch", async (_path: RequestInfo | URL, init?: RequestInit) => {
+    assert.ok(init?.signal);
     signals.push(init.signal);
     return new Response(JSON.stringify({ data: {} }), { status: 200 });
   });
