@@ -1433,6 +1433,7 @@ async function topologyPods(topology) {
 const productionTopologyCleanupOrder = Object.freeze([
   "gatewayForward",
   "worker",
+  "agentWorkloads",
   "productionApp",
   "observerPool",
   "postgresNetwork",
@@ -1652,6 +1653,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   let worker;
   let productionApp;
   let controllerApiPod;
+  let namespaceId;
   let placement;
   let gatewayRuntimeNamespace;
   let gatewayPlacement;
@@ -1663,6 +1665,44 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         await worker.stop();
       } else if (workerPool !== undefined) {
         await workerPool.end();
+      }
+    },
+    agentWorkloads: async () => {
+      if (namespaceId === undefined) {
+        return;
+      }
+      const selector = `app.kubernetes.io/managed-by=openclaw-enterprise,openclaw.dev/namespace=${namespaceId},openclaw.dev/agent`;
+      const namespaces = [...new Set([placement, gatewayPlacement].filter(Boolean))];
+      const deadline = Date.now() + 120_000;
+      for (const namespace of namespaces) {
+        // Namespace deletion can defer other resources for half the Gateway's
+        // 330s grace, even when it exits promptly. Stop owned Deployments first
+        // so namespace deletion starts with no Agent or Gateway Pods remaining.
+        const remainingMs = deadline - Date.now();
+        assert.ok(remainingMs > 0, "owned workload cleanup must finish within 120s");
+        await kubectl(
+          "delete",
+          "deployment",
+          "--namespace",
+          namespace,
+          "--selector",
+          selector,
+          "--ignore-not-found=true",
+          "--cascade=foreground",
+          "--wait=true",
+          `--timeout=${remainingMs}ms`,
+        );
+        const pods = await resources(
+          "pods",
+          namespace,
+          "-l",
+          `${selector},openclaw.dev/workload-role in (gateway,agent)`,
+        );
+        assert.deepEqual(
+          pods.map(({ metadata }) => metadata.name),
+          [],
+          "owned Agent and Gateway Pods must stop before namespace cleanup",
+        );
       }
     },
     productionApp: () => productionApp?.close(),
@@ -1791,7 +1831,6 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   let adminRequest = await requestFactory(credentials);
   let request = adminRequest;
   let secretAssignmentPrincipalId;
-  let namespaceId;
   if (createdFreshInstallation) {
     const namespaces = await adminRequest("GET", "/namespaces");
     assert.equal(namespaces.status, 200, JSON.stringify(namespaces.error));

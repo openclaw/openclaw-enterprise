@@ -1353,6 +1353,7 @@ test(
         ...[
           "gatewayForward",
           "worker",
+          "agentWorkloads",
           "productionApp",
           "observerPool",
           "postgresNetwork",
@@ -1458,6 +1459,7 @@ test(
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted gatewayForward",
       "attempted worker",
+      "attempted agentWorkloads",
       "attempted productionApp",
       "attempted observerPool",
       "attempted postgresNetwork",
