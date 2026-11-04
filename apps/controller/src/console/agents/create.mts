@@ -1116,11 +1116,17 @@ function renderAgentForm(
   );
   const toggleModel = button("Enter model ID manually", () => {
     if (manualModel) {
-      resetModelChoices(false, model.value);
+      if (!resetModelChoices(false, model.value)) {
+        return;
+      }
     } else {
+      const values = readModelConfiguration();
+      if (values === "invalid-allow") {
+        return;
+      }
       manualModel = true;
       modelChoice.value = "";
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
       updateControls();
     }
     (manualModel ? model : modelChoice).focus();
@@ -1138,6 +1144,10 @@ function renderAgentForm(
     modelField,
   );
   function resetModelChoices(resetTransport = false, selectedModel = "") {
+    const values = readModelConfiguration();
+    if (values === "invalid-allow") {
+      return false;
+    }
     manualModel = !useModelChoices;
     model.value = modelChoices().includes(selectedModel) ? selectedModel : "";
     modelChoice.replaceChildren(
@@ -1145,14 +1155,21 @@ function renderAgentForm(
       ...modelChoices().map((id) => element("option", { value: id }, id)),
     );
     modelChoice.value = model.value;
-    updateModelConfiguration(resetTransport);
+    updateModelConfiguration(resetTransport, values);
     updateControls();
+    return true;
   }
   if (useModelChoices) {
     modelChoice.addEventListener("change", () => {
+      const values = readModelConfiguration();
+      if (values === "invalid-allow") {
+        // The native select has already changed; keep the last applied choice visible.
+        modelChoice.value = model.value;
+        return;
+      }
       manualModel = false;
       model.value = modelChoice.value;
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
     });
   }
   const modelCredentialPicker = createSecretReferenceField({
@@ -1350,9 +1367,28 @@ function renderAgentForm(
     feedback.textContent = "";
     renderChannelEditor();
   });
-  function updateModelConfiguration(resetTransport = false) {
+  function readModelConfiguration(): LaunchValues | "invalid-json" | "invalid-allow" {
     const values = parseObject(configuration);
+    // Keep the existing control transitions for invalid JSON; only the merge is skipped.
     if (values === undefined) {
+      return "invalid-json";
+    }
+    // Only the Codex template merges this field. Do not validate unrelated draft settings.
+    if (harness.value !== "codex" || !Object.hasOwn(values.plugins ?? {}, "allow")) {
+      return values;
+    }
+    const allow = values.plugins?.allow;
+    if (Array.isArray(allow) && allow.every((id) => typeof id === "string")) {
+      return values;
+    }
+    configurationError.show(
+      'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+    );
+    focusConfiguration();
+    return "invalid-allow";
+  }
+  function updateModelConfiguration(resetTransport = false, values = readModelConfiguration()) {
+    if (typeof values === "string") {
       return;
     }
     retainPendingModel(values);

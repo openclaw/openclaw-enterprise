@@ -27,6 +27,7 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   apiRequests,
@@ -2038,6 +2039,128 @@ test("Static model selection survives credential edits and resets for provider o
     0,
   );
 });
+
+// Exercise the real draft editor without submitting or providing model credentials.
+for (const width of [1440, 390]) {
+  test(`Create preserves invalid plugins.allow through model changes at ${width}px`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Model JSON correction");
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 } },
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    const requests = apiRequests(page, fixture.origin);
+    await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const choice = page.getByLabel("Model", { exact: true });
+    const manual = page.getByLabel("Model ID", { exact: true });
+    const chooseList = page.getByRole("button", {
+      name: "Choose a model from the list",
+      exact: true,
+    });
+    const template = await configuration.inputValue();
+    const record = (value: unknown): Record<string, unknown> => {
+      assert.ok(value && typeof value === "object" && !Array.isArray(value));
+      return Object.fromEntries(Object.entries(value));
+    };
+    const readValues = async () => record(JSON.parse(await configuration.inputValue()));
+    const primary = (values: Record<string, unknown>) =>
+      record(record(values.agents).defaults).model;
+    const editAllow = async (allow: unknown, base?: string) => {
+      const values = record(JSON.parse(base ?? (await configuration.inputValue())));
+      values.plugins = { ...record(values.plugins ?? {}), allow };
+      const raw = JSON.stringify(values, null, 2) + "\n";
+      await configuration.fill(raw);
+      return raw;
+    };
+    const assertBlocked = async (raw: string) => {
+      assert.equal(await configuration.inputValue(), raw, "the raw draft must remain exact");
+      assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+      const feedback = await configuration.evaluate((node) => ({
+        focused: node.ownerDocument.activeElement === node,
+        messages: (node.getAttribute("aria-describedby") ?? "")
+          .split(" ")
+          .map((id) => node.ownerDocument.getElementById(id)?.textContent ?? ""),
+      }));
+      assert.equal(feedback.focused, true);
+      assert.ok(
+        feedback.messages.includes(
+          'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+        ),
+      );
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+    };
+
+    // With no primary in JSON, the list remains visible. Native change must be rolled back.
+    for (const allow of ["codex", 7, null, ["keep-plugin", 7]]) {
+      assert.equal(await choice.inputValue(), "");
+      const raw = await editAllow(allow, template);
+      await choice.selectOption("gpt-6-luna");
+      await assertBlocked(raw);
+      assert.equal(await choice.inputValue(), "");
+      assert.equal(await manual.isVisible(), false);
+    }
+    await editAllow([], template);
+    await choice.selectOption("gpt-6-luna");
+    assert.equal(primary(await readValues()), "codex/gpt-6-luna");
+
+    // A selected model must also roll back, then accept a genuine change after correction.
+    const raw = await editAllow(7, template);
+    await choice.selectOption("gpt-6-sol");
+    await assertBlocked(raw);
+    assert.equal(await choice.inputValue(), "gpt-6-luna");
+    await editAllow([], template);
+    await choice.selectOption("gpt-6-sol");
+    assert.equal(await choice.inputValue(), "gpt-6-sol");
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+
+    // A blocked return to the list must keep the manual choice, including noncatalog IDs.
+    for (const allow of ["codex", 7, null, ["keep-plugin", 7]]) {
+      const raw = await editAllow(allow);
+      assert.equal(await manual.inputValue(), "gpt-6-sol");
+      await chooseList.click();
+      await assertBlocked(raw);
+      assert.equal(await manual.isVisible(), true);
+      assert.equal(await manual.inputValue(), "gpt-6-sol");
+      await manual.fill("custom-model-id");
+      await manual.press("Tab");
+      await assertBlocked(raw);
+      assert.equal(await manual.inputValue(), "custom-model-id", "keep the manual draft for retry");
+      await chooseList.click();
+      await assertBlocked(raw);
+      assert.equal(await manual.inputValue(), "custom-model-id");
+      await editAllow(["keep-plugin"]);
+      await chooseList.click();
+      await choice.selectOption("gpt-6-sol");
+      assert.deepEqual(record((await readValues()).plugins).allow, ["keep-plugin", "codex"]);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    }
+
+    // Absence, an empty array, and whole string entries all permit the same merge and retry.
+    for (const allow of [undefined, [], ["keep-plugin", "codex"]]) {
+      await editAllow(allow);
+      await chooseList.click();
+      await choice.selectOption("gpt-6-luna");
+      const values = await readValues();
+      assert.equal(primary(values), "codex/gpt-6-luna");
+      assert.deepEqual(record(values.plugins).allow, allow?.length ? allow : ["codex"]);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    }
+
+    // Switching to Anthropic does not merge this field and must not acquire this validation.
+    await editAllow(7);
+    await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+    assert.equal(await choice.isVisible(), true);
+    assert.equal(await choice.inputValue(), "");
+    assert.equal(record((await readValues()).plugins).allow, 7);
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+  });
+}
 
 test("Agent creation can return from manual model entry to the list and save the selected model", async (t) => {
   const fixture = await createConsoleAppFixture(t);
