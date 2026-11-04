@@ -358,6 +358,21 @@ model execution, native redeployment, resumed model execution, and cleanup.
 Each record contains only a fixed stage, outcome, and elapsed milliseconds.
 The parent test duration includes its native subtest; do not add them together.
 
+First-Agent command profiles summarize the Local Setup CLI timing records for
+setup and cleanup. The CLI times
+real Docker builds, Compose builds/startup, image pulls/exports/imports, cluster
+creation, Helm installation, and Kubernetes readiness commands. Records contain
+fixed categories, counts, elapsed milliseconds, and nonzero exit counts. Retry
+attempts are counted individually; failure handling stays unchanged. Arguments, output, environment values, and
+resource names are excluded. Concurrent or nested commands can overlap, so do
+not sum these durations as wall time. Fixed setup milestones record offsets from
+startup to place these operations on the wall-clock timeline. Native Pod profiles
+report time from the
+deploy request to Pod creation and time from creation to scheduling,
+initialization, running, readiness, and observation. They retain no Pod identity
+or configuration. Pod readiness timing does not replace the model and required
+worker proof.
+
 The credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
 
 Codex timeout diagnostics from `tests/helpers/openshell-kubernetes-real.mjs` report the client phase, pending method names, message and command counts, and whether an action started. They exclude prompts, request identifiers, and payloads. A timeout does not authorize another turn; only the existing final capacity receipt before any action permits a retry.

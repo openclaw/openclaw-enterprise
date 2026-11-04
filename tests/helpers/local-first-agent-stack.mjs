@@ -15,6 +15,21 @@ const phases = [
   ["OpenClaw Enterprise development stack is ready.", "ready"],
 ];
 
+const setupPoints = [
+  ["Starting the Compose database, migration, and bootstrap services", "database-start"],
+  ["Creating k3d cluster", "cluster-start"],
+  ["Creating Kubernetes-only k3d cluster", "cluster-start"],
+  ["Importing the controller and PostgreSQL images", "controller-images-start"],
+  ["Installing pinned private routing", "routing-start"],
+  ["Verifying Kubernetes network isolation", "network-check-start"],
+  ["Preparing pinned OpenShell development assets", "openshell-assets-start"],
+  ["Installing the deployment OpenShell gateway", "openshell-gateway-start"],
+  ["Installing OpenShell Gateway and OCE in Namespace", "platform-start"],
+  ["Starting the Compose controller and Kubernetes worker", "controller-start"],
+  ["Verifying the initial gateway Namespace network isolation", "namespace-check-start"],
+  ["OpenClaw Enterprise development stack is ready.", "ready"],
+];
+
 // The reporter retains only fixed stage names, outcome and elapsed time.
 export async function measureFirstAgentStage(context, stage, operation) {
   const started = performance.now();
@@ -56,7 +71,19 @@ function killGroup(child, signal) {
   child.kill(signal);
 }
 
-function run(command, args, environment, label, timeout, collect = false) {
+function run(
+  command,
+  args,
+  environment,
+  label,
+  timeout,
+  collect = false,
+  context,
+  timingPhase = "setup",
+) {
+  const started = performance.now();
+  const observed = new Set();
+  const commands = new Map();
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: root,
@@ -90,9 +117,33 @@ function run(command, args, environment, label, timeout, collect = false) {
         const lines = partial.split("\n");
         partial = lines.pop().slice(-4_096);
         for (const line of lines) {
+          const timing =
+            context &&
+            /^\[occ-dev-timing\] stage=([a-z-]+) elapsed_ms=([0-9]+) failed=(true|false)$/.exec(
+              line,
+            );
+          if (timing) {
+            const total = commands.get(timing[1]) ?? { count: 0, elapsedMs: 0, failed: 0 };
+            total.count++;
+            total.elapsedMs += Number(timing[2]);
+            total.failed += Number(timing[3] === "true");
+            commands.set(timing[1], total);
+          }
           const known = phases.find(([prefix]) => line.startsWith(prefix));
           if (known) {
             phase = known[1];
+          }
+          const point = context && setupPoints.find(([prefix]) => line.startsWith(prefix));
+          if (point && !observed.has(point[1])) {
+            observed.add(point[1]);
+            context.diagnostic(
+              "openclaw-ci-measurement " +
+                JSON.stringify({
+                  kind: "local-first-agent-setup-point",
+                  stage: point[1],
+                  elapsedMs: Math.round(performance.now() - started),
+                }),
+            );
           }
         }
       });
@@ -105,6 +156,17 @@ function run(command, args, environment, label, timeout, collect = false) {
       }
     });
     child.once("close", (code, signal) => {
+      for (const [stage, total] of commands) {
+        context.diagnostic(
+          "openclaw-ci-measurement " +
+            JSON.stringify({
+              kind: "local-first-agent-command",
+              phase: timingPhase,
+              stage,
+              ...total,
+            }),
+        );
+      }
       clearTimeout(timer);
       if (!timedOut && killTimer) {
         clearTimeout(killTimer);
@@ -371,7 +433,16 @@ export async function localFirstAgentStack(context) {
     }
     try {
       await measureFirstAgentStage(context, "cleanup", () =>
-        run(cli, ["dev", "down"], subprocessEnvironment, "Stop Local Setup", 4 * minute),
+        run(
+          cli,
+          ["dev", "down"],
+          subprocessEnvironment,
+          "Stop Local Setup",
+          4 * minute,
+          false,
+          context,
+          "cleanup",
+        ),
       );
     } catch (error) {
       try {
@@ -386,7 +457,15 @@ export async function localFirstAgentStack(context) {
   });
   initializationAttempted = true;
   await measureFirstAgentStage(context, "setup", () =>
-    run(cli, startupArguments, subprocessEnvironment, "Start Local Setup", 18 * minute),
+    run(
+      cli,
+      startupArguments,
+      subprocessEnvironment,
+      "Start Local Setup",
+      18 * minute,
+      false,
+      context,
+    ),
   );
   return { directory, environment };
 }

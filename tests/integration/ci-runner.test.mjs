@@ -5167,6 +5167,43 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       'test("measures", (t) => {',
       ...[
         measurement({
+          kind: "local-first-agent-command",
+          phase: "setup",
+          stage: "runtime-build",
+          count: 1,
+          failed: 0,
+          elapsedMs: 100,
+          args: "secretauthvalue-args",
+        }),
+        measurement({
+          kind: "local-first-agent-command",
+          phase: "setup",
+          stage: "secretauthvalue-stage",
+          count: 1,
+          failed: 0,
+          elapsedMs: 100,
+        }),
+        measurement({
+          kind: "local-first-agent-pod",
+          stage: "native-initial",
+          role: "harness",
+          restarts: 0,
+          createdAfterRequestMs: 100,
+          scheduledMs: 100,
+          initializedMs: 200,
+          runningMs: 200,
+          readyMs: 300,
+          observedMs: 400,
+          environment: "secretauthvalue-env",
+        }),
+        measurement({
+          kind: "local-first-agent-pod",
+          stage: "native-initial",
+          role: "secretauthvalue-role",
+          restarts: 0,
+        }),
+
+        measurement({
           kind: "local-first-agent",
           stage: "setup",
           outcome: "passed",
@@ -5328,6 +5365,27 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(summary.files[0].measurements, [
+    {
+      kind: "local-first-agent-command",
+      phase: "setup",
+      stage: "runtime-build",
+      count: 1,
+      failed: 0,
+      elapsedMs: 100,
+    },
+    {
+      kind: "local-first-agent-pod",
+      stage: "native-initial",
+      role: "harness",
+      restarts: 0,
+      createdAfterRequestMs: 100,
+      scheduledMs: 100,
+      initializedMs: 200,
+      runningMs: 200,
+      readyMs: 300,
+      observedMs: 400,
+    },
+
     { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
     {
       kind: "kubelet-volume-refresh",

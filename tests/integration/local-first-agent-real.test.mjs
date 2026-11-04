@@ -29,6 +29,7 @@ import {
   localFirstAgentStack,
   measureFirstAgentStage,
 } from "../helpers/local-first-agent-stack.mjs";
+import { recordFirstAgentPodTiming } from "../helpers/local-first-agent-profile.mjs";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
@@ -1515,6 +1516,7 @@ test(
           // The regular Console API creates the Configuration, Agent, source
           // grant, transport and revision; the Agent receives no Secret grant.
           const kube = { stateDirectory, cluster: recorded.cluster, env };
+          const nativeRequestedAt = Date.now();
           const { provisioned, nativeAgent } = await measureFirstAgentStage(
             nativeContext,
             "native-deploy",
@@ -1659,7 +1661,7 @@ test(
             agentId: nativeAgent.id,
             workspaceFile,
           };
-          const readProviderRevision = async (revisionId) => {
+          const readProviderRevision = async (revisionId, stage, requestedAt) => {
             const pods = await readKubernetesJson(
               kube,
               [
@@ -1735,9 +1737,15 @@ test(
               typeof nodeIds[0] === "string" && /^[a-f0-9]{64}$/.test(nodeIds[0]),
               "The native Gateway must name its exact workspace node",
             );
+            recordFirstAgentPodTiming(nativeContext, stage, "harness", pod, requestedAt);
+            recordFirstAgentPodTiming(nativeContext, stage, "gateway", gateways[0], requestedAt);
             return { pod, sandbox, workspaceStorage, expectedNodeId: nodeIds[0] };
           };
-          const initialProvider = await readProviderRevision(provisioned.revisionId);
+          const initialProvider = await readProviderRevision(
+            provisioned.revisionId,
+            "native-initial",
+            nativeRequestedAt,
+          );
           const firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
             assertNativeWorkerProofInController(nativeContext, {
               ...proofOptions,
@@ -1752,6 +1760,7 @@ test(
 
           // A new revision replaces the provider-owned workload while retaining
           // Agent storage.
+          const replacementRequestedAt = Date.now();
           const replacement = await measureFirstAgentStage(
             nativeContext,
             "native-redeploy",
@@ -1773,7 +1782,11 @@ test(
               return replacement;
             },
           );
-          const replacementProvider = await readProviderRevision(replacement.id);
+          const replacementProvider = await readProviderRevision(
+            replacement.id,
+            "native-replacement",
+            replacementRequestedAt,
+          );
           assert.notEqual(replacementProvider.pod.metadata.uid, initialProvider.pod.metadata.uid);
           assert.notEqual(
             replacementProvider.sandbox.metadata.uid,

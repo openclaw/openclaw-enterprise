@@ -93,6 +93,11 @@ is unsafe; other services retain SELinux confinement. One development image
 covers migration, bootstrap, API, and worker, so `dev-up` builds it once through
 migration and starts with `--no-build`; Docker uses `up --build`. Expanded
 configuration and credentials are never printed.
+`internal/occdev/command.go` and `k3d_import.go` measure the existing command
+execution with Go's monotonic clock and report fixed timing categories through
+`timing.go`. They keep the same subprocess and cancellation context. See
+[local command diagnostics](../../reference/cli/local-development.md) for the
+output scope; concurrent durations can overlap.
 
 For unselected runtime images, `dev-up` builds missing
 `openclaw-enterprise-runtime:quickstart` from `deploy/runtime/Dockerfile` at
