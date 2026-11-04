@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Locator, Page, Route } from "playwright";
 
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
@@ -12,7 +13,10 @@ import {
 } from "../../apps/controller/src/console/deployment-failure-steps.mjs";
 import { AgentProvisioningStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { fileConsoleApp } from "../helpers/console-app.mjs";
+import {
+  createConsoleAppFixture as legacyConsoleAppFixture,
+  fileConsoleApp,
+} from "../helpers/console-app.mjs";
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
@@ -23,7 +27,7 @@ import {
   asksBeforeUnload,
   consoleViewports,
   denyRevisionRead,
-  deploymentStatusResponse,
+  deploymentStatusResponse as legacyDeploymentStatusResponse,
   detailUrl,
   fileBrowser,
   grantSecretOperate,
@@ -32,16 +36,14 @@ import {
   nativeValues,
   newPage,
   nextFrames,
-  persistedDeploymentError,
+  persistedDeploymentError as legacyPersistedDeploymentError,
   recordLayoutShifts,
   routeFailedDeployment,
   routeOneVersionPerPage,
-  settledFetches,
+  settledFetches as legacySettledFetches,
   settledView,
   takeLayoutShifts,
   trackSettledFetches,
-  versionChooser,
-  versionOption,
   waitForChosenVersion,
   waitForCondition,
   waitForEnabled,
@@ -49,16 +51,15 @@ import {
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
-  deploymentActivity,
-  deploymentDetailsOpen,
+  deploymentDetailsOpen as legacyDeploymentDetailsOpen,
   deploymentRecordUrl,
   expectDeploymentOutcome,
-  expectVersionRecord,
-  openDeploymentActivity,
+  expectVersionRecord as legacyExpectVersionRecord,
+  openDeploymentActivity as legacyOpenDeploymentActivity,
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-import { fileReadyNamespace } from "./console-ready-namespace.mjs";
+import { createRuntimeAuthFixture as legacyRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+
 import {
   CONFIGURATION_EDITS_PENDING,
   LOG_TEXT_DENIED,
@@ -72,6 +73,247 @@ import {
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
 
+type DeploymentResponseOptions = {
+  status: string;
+  error?: ReturnType<typeof persistedDeploymentError> | null;
+  attempt?: { at: Date; code: string };
+  nextAttemptAt?: string;
+};
+function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
+  return typeof value === "function";
+}
+function deploymentStatusResponse(
+  revision: ReturnType<typeof revisionRecord>,
+  options: DeploymentResponseOptions,
+) {
+  const respond: unknown = legacyDeploymentStatusResponse;
+  assert.ok(isCallable(respond));
+  const response = record(respond(revision, options));
+  return { json: record(response.json) };
+}
+
+const versionChooser = (scope: Page | Locator) =>
+  scope.getByLabel("Viewing version", { exact: true });
+const versionOption = (scope: Page | Locator, n: number) =>
+  versionChooser(scope).getByRole("option", { name: new RegExp(`^v${n}(?: ·|$)`) });
+const deploymentActivity = (page: Page) => page.locator(".deployment-status");
+async function deploymentDetailsOpen(page: Page) {
+  const open: unknown = await legacyDeploymentDetailsOpen(page);
+  assert.ok(typeof open === "boolean");
+  return open;
+}
+async function settledFetches(page: Page, path: string) {
+  const count: unknown = await legacySettledFetches(page, path);
+  assert.ok(typeof count === "number");
+  return count;
+}
+async function openDeploymentActivity(page: Page) {
+  await legacyOpenDeploymentActivity(page);
+  return deploymentActivity(page);
+}
+async function expectVersionRecord(page: Page, label: string) {
+  await legacyExpectVersionRecord(page, label);
+  return page.locator(".version-deployment-record");
+}
+
+declare global {
+  var deletionChanges: string[];
+  var pollChanges: string[];
+  var refreshDisabledChanges: (string | null)[];
+}
+
+async function requiredAnswer(answer: Promise<Parameters<Route["fulfill"]>[0]> | null) {
+  assert.ok(answer);
+  return answer;
+}
+
+function persistedDeploymentError(...args: Parameters<typeof legacyPersistedDeploymentError>) {
+  const error = legacyPersistedDeploymentError(...args);
+  assert.ok(error);
+  return error;
+}
+
+// Narrow the legacy fixture's JSON results at this suite's boundary.
+function required<T>(value: T | null | undefined): T {
+  assert.ok(value !== null && value !== undefined);
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function identified(value: unknown): Record<string, unknown> & { id: string } {
+  const item = record(value);
+  assert.ok(typeof item.id === "string");
+  return { ...item, id: item.id };
+}
+
+function agentRecord(value: unknown) {
+  const item = identified(value);
+  assert.ok(typeof item.name === "string");
+  assert.ok(typeof item.configurationId === "string");
+  return {
+    ...item,
+    name: item.name,
+    configurationId: item.configurationId,
+    harnessAuth: item.harnessAuth,
+  };
+}
+
+function secretRecord(value: unknown) {
+  const item = identified(value);
+  const ref = record(item.ref);
+  assert.ok(ref.kind === "secret");
+  assert.ok(typeof ref.id === "string" && typeof ref.namespaceId === "string");
+  return { ...item, ref: { kind: ref.kind, id: ref.id, namespaceId: ref.namespaceId } };
+}
+
+function revisionRecord(value: unknown) {
+  const item = identified(value);
+  assert.ok(typeof item.agentId === "string" && typeof item.namespaceId === "string");
+  assert.ok(typeof item.createdAt === "string");
+  return {
+    ...item,
+    agentId: item.agentId,
+    namespaceId: item.namespaceId,
+    createdAt: item.createdAt,
+  };
+}
+
+function unknownArray(value: unknown): unknown[] {
+  assert.ok(Array.isArray(value));
+  return value;
+}
+
+function records(value: unknown): Record<string, unknown>[] {
+  assert.ok(Array.isArray(value));
+  return value.map(record);
+}
+
+type FixtureRole = Record<string, unknown> & {
+  id: string;
+  permissions: { action: string; resourceKind: string }[];
+};
+function isRole(value: unknown): value is FixtureRole {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    Array.isArray(value.permissions) &&
+    value.permissions.every(
+      (permission: unknown) =>
+        isRecord(permission) &&
+        typeof permission.action === "string" &&
+        typeof permission.resourceKind === "string",
+    )
+  );
+}
+function account(value: unknown) {
+  const item = record(value);
+  const credentials = record(item.credentials);
+  assert.ok(typeof credentials.email === "string" && typeof credentials.password === "string");
+  return {
+    principal: identified(item.principal),
+    credentials: { ...credentials, email: credentials.email, password: credentials.password },
+  };
+}
+function adaptFixture(value: unknown) {
+  const fixture = record(value);
+  assert.ok(typeof fixture.origin === "string");
+  const policy = record(fixture.policy);
+  const roles = policy.roles;
+  assert.ok(Array.isArray(roles) && roles.every(isRole));
+  const bindings = policy.bindings;
+  const restrictions = policy.restrictions;
+  assert.ok(Array.isArray(bindings) && Array.isArray(restrictions));
+  const provisionedAccounts = records(fixture.provisionedAccounts).map(account);
+  async function invoke(name: string, ...args: unknown[]): Promise<unknown> {
+    const method = fixture[name];
+    assert.ok(isCallable(method), `Expected fixture method ${name}`);
+    return method.apply(value, args);
+  }
+  return {
+    ...fixture,
+    origin: fixture.origin,
+    policy: {
+      ...policy,
+      roles,
+      bindings: unknownArray(bindings),
+      restrictions: unknownArray(restrictions),
+    },
+    provisionedAccounts,
+    bootstrap: () => invoke("bootstrap"),
+    signIn: (credentials: unknown) => invoke("signIn", credentials),
+    activateRevision: (namespaceId: string, agentId: string, revisionId: string) =>
+      invoke("activateRevision", namespaceId, agentId, revisionId),
+    async createNamespaceMember(
+      label: string,
+      namespaceId: string,
+      grants: readonly (readonly [string, string])[],
+    ) {
+      return account(await invoke("createNamespaceMember", label, namespaceId, grants));
+    },
+    async createAgent(namespaceId: string, name: string, values: object = {}, options = {}) {
+      return agentRecord(await invoke("createAgent", namespaceId, name, values, options));
+    },
+    async updateAgent(namespaceId: string, agentId: string, body: unknown) {
+      return agentRecord(await invoke("updateAgent", namespaceId, agentId, body));
+    },
+    async createNamespace(name: string, options = {}) {
+      return identified(await invoke("createNamespace", name, options));
+    },
+    async createSecret(namespaceId: string, name: string, value: string) {
+      return secretRecord(await invoke("createSecret", namespaceId, name, value));
+    },
+    async deployAgent(namespaceId: string, agentId: string) {
+      return revisionRecord(await invoke("deployAgent", namespaceId, agentId));
+    },
+    async seedActiveAgentRevision(
+      namespaceId: string,
+      agentId: string,
+      expectedRevisionId?: string,
+    ) {
+      const result = record(
+        await invoke("seedActiveAgentRevision", namespaceId, agentId, expectedRevisionId),
+      );
+      return { agent: agentRecord(result.agent), revision: revisionRecord(result.revision) };
+    },
+    async request(method: string, path: string, options = {}) {
+      const result = record(await invoke("request", method, path, options));
+      assert.ok(typeof result.status === "number");
+      return { ...result, status: result.status, data: result.data, body: result.body };
+    },
+  };
+}
+
+type Fixture = ReturnType<typeof adaptFixture>;
+const fixtureAdapters = new WeakMap<object, Fixture>();
+function typedFixture(value: unknown): Fixture {
+  const source = record(value);
+  const existing = fixtureAdapters.get(source);
+  if (existing) {
+    return existing;
+  }
+  const fixture = adaptFixture(source);
+  fixtureAdapters.set(source, fixture);
+  return fixture;
+}
+type Identified = ReturnType<typeof identified>;
+
+async function createRuntimeAuthFixture(t: TestContext, name: string, options = {}) {
+  const result = await legacyRuntimeAuthFixture(t, name, options);
+  return {
+    ...result,
+    fixture: typedFixture(result.fixture),
+    namespace: identified(result.namespace),
+  };
+}
+
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
 // polls, a steady layout, and failed-version recovery scoped to the caller.
 
@@ -79,9 +321,23 @@ import {
 const browser = fileBrowser();
 // One app for the tests that pass no fixture options; each makes its own Namespace.
 const overviewApp = fileConsoleApp();
-const readyNamespace = fileReadyNamespace(overviewApp);
+async function readyNamespace(t: TestContext, name: string, options?: object) {
+  const fixture = typedFixture(
+    options === undefined ? await overviewApp(t) : await legacyConsoleAppFixture(t, options),
+  );
+  if (options !== undefined) {
+    await fixture.bootstrap();
+  }
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  return { fixture, namespace };
+}
 
-async function agentPage(t, namespaceName, agentName, fixtureOptions) {
+async function agentPage(
+  t: TestContext,
+  namespaceName: string,
+  agentName: string,
+  fixtureOptions?: object,
+) {
   const { fixture, namespace } = await readyNamespace(t, namespaceName, fixtureOptions);
   const agent = await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
   const { page } = await newPage(t, fixture, { browser });
@@ -90,8 +346,12 @@ async function agentPage(t, namespaceName, agentName, fixtureOptions) {
 
 // A runtime log Compute Driver with the Agent runtime log API enabled.
 function runtimeLogs() {
+  const computeDriver = createRuntimeLogComputeDriver();
+  assert.ok("state" in computeDriver);
+  const state = record(computeDriver.state);
+  assert.ok(Array.isArray(state.lines));
   return {
-    computeDriver: createRuntimeLogComputeDriver(),
+    computeDriver: Object.assign(computeDriver, { state }),
     agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
   };
 }
@@ -100,11 +360,11 @@ function runtimeLogs() {
 const PROBE_FAILED_MESSAGE = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED").message;
 
 function routeFailedRecord(
-  page,
-  fixture,
-  namespace,
-  agent,
-  revision,
+  page: Page,
+  fixture: Fixture,
+  namespace: Identified,
+  agent: Identified,
+  revision: ReturnType<typeof revisionRecord>,
   code = "RUNTIME_MODEL_PROBE_FAILED",
 ) {
   return routeFailedDeployment(page, fixture, {
@@ -120,11 +380,11 @@ function routeFailedRecord(
 // ended that way (finding 2422; postgres-agent-provisioning.test.mjs and
 // postgres-worker-agent-revision.test.mjs list real stopped and superseded work).
 async function routeFailedListing(
-  page,
-  fixture,
-  namespace,
-  agent,
-  revision,
+  page: Page,
+  fixture: Fixture,
+  namespace: Identified,
+  agent: Identified,
+  revision: ReturnType<typeof revisionRecord>,
   code = "RUNTIME_MODEL_PROBE_FAILED",
 ) {
   const listPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
@@ -132,8 +392,8 @@ async function routeFailedListing(
     (url) => url.origin === fixture.origin && url.pathname === listPath,
     async (route) => {
       const response = await route.fetch();
-      const body = await response.json();
-      for (const item of body.data ?? []) {
+      const body = record(await response.json());
+      for (const item of records(body.data ?? [])) {
         if (item.id === revision.id) {
           item.deploymentStatus = "failed";
           item.deploymentErrorCode = code;
@@ -171,9 +431,9 @@ test("the Agent summary's loading text follows the 250 ms rule", async (t) => {
   // rather than wait for it.
   await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
   // The version shows at once; only the loading word waits, hidden by a 250 ms animation.
-  const delayed = (node) =>
+  const delayed = (node: Element) =>
     [...node.querySelectorAll("*")].map((child) => {
-      const style = child.ownerDocument.defaultView.getComputedStyle(child);
+      const style = globalThis.getComputedStyle(child);
       return {
         text: child.textContent,
         animation: `${style.animationName} ${style.animationDuration}`,
@@ -220,16 +480,26 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   const refresh = page.getByRole("button", { name: "Refresh deletion status" });
   await refresh.focus();
   await page.evaluate(() => {
+    function html(value: unknown): HTMLElement {
+      if (!(value instanceof HTMLElement)) {
+        throw new Error("Expected an HTML element");
+      }
+      return value;
+    }
+
     globalThis.deletionChanges = [];
     new globalThis.MutationObserver((records) => {
       for (const record of records) {
+        if (record.target.textContent === null) {
+          throw new Error("Expected mutation text");
+        }
         globalThis.deletionChanges.push(
           record.type === "attributes"
             ? `${record.target.textContent}: ${record.attributeName}`
             : `${record.type}: ${record.target.textContent.slice(0, 40)}`,
         );
       }
-    }).observe(globalThis.document.querySelector(".deletion-note"), {
+    }).observe(html(globalThis.document.querySelector(".deletion-note")), {
       attributes: true,
       characterData: true,
       childList: true,
@@ -298,6 +568,7 @@ test("the Share Agent form shows disabled while the sharing policy loads", async
   await waitForEnabled(principal);
   // The read's placeholder held the line its result takes, so nothing below moved.
   const after = await grants.boundingBox();
+  assert.ok(before && after);
   assert.ok(Math.abs(after.y - before.y) < 1, `the grants moved ${after.y - before.y}px`);
 });
 
@@ -366,7 +637,7 @@ test("The Versions list keeps an earlier failed version's mark after a newer dep
     .filter({ hasText: /^v2(?: ·|$)/ })
     .waitFor({ state: "attached" });
   // The reloaded list marks v1 from its own outcome, before v1 or its record is opened.
-  const v1RecordReads = [];
+  const v1RecordReads: string[] = [];
   page.on("request", (request) => {
     if (request.url() === deploymentRecordUrl(fixture, namespace.id, agent.id, first.id)) {
       v1RecordReads.push(request.url());
@@ -420,7 +691,7 @@ for (const [code, outcome, notice] of [
     "Stopped",
     "Stopped version · read-only admitted snapshot. The Agent was stopped before its deployment finished.",
   ],
-]) {
+] satisfies [string, string, string][]) {
   test(`The Versions list and the version page name a version that ended with ${code}`, async (t) => {
     const { fixture, namespace, agent, page } = await agentPage(t, `Neutral ${outcome}`, "Neutral");
     const first = await fixture.deployAgent(namespace.id, agent.id);
@@ -512,7 +783,7 @@ for (const surface of ["list", "detail"]) {
     const second = await fixture.deployAgent(namespace.id, agent.id);
     const queued = await fixture.request("GET", `${path}/deployments/${second.id}`);
     assert.equal(queued.status, 200);
-    assert.equal(queued.data.status, "queued");
+    assert.equal(record(queued.data).status, "queued");
 
     const member = await fixture.createNamespaceMember("mixed-operator", namespace.id, [
       ["read", "namespace"],
@@ -538,8 +809,8 @@ for (const surface of ["list", "detail"]) {
     const session = await fixture.signIn(member.credentials);
     const before = await fixture.request("GET", path, { session });
     assert.equal(before.status, 200);
-    assert.equal(before.data.desiredRuntimeState, "running");
-    assert.equal(before.data.activeRevisionId ?? null, null);
+    assert.equal(record(before.data).desiredRuntimeState, "running");
+    assert.equal(record(before.data).activeRevisionId ?? null, null);
     // A reader sees the same failed v1 but cannot stop, even though hidden v2 is queued.
     const reader = await fixture.createNamespaceMember("mixed-reader", namespace.id, [
       ["read", "namespace"],
@@ -570,7 +841,7 @@ for (const surface of ["list", "detail"]) {
       .waitFor();
     await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Stop Agent", exact: true }).count(), 0);
-    assert.equal((await fixture.request("GET", path)).data.desiredRuntimeState, "running");
+    assert.equal(record((await fixture.request("GET", path)).data).desiredRuntimeState, "running");
     await page.context().clearCookies();
     const requests = apiRequests(page, fixture.origin);
     const listing = page.waitForResponse((r) => new URL(r.url()).pathname === `${path}/revisions`);
@@ -584,12 +855,12 @@ for (const surface of ["list", "detail"]) {
     );
     const response = await listing;
     assert.equal(response.status(), 200);
-    const body = await response.json();
+    const body = record(await response.json());
     assert.deepEqual(
-      body.data.map((revision) => revision.id),
+      records(body.data).map((revision) => revision.id),
       [first.id],
     );
-    assert.equal(body.meta.nextCursor, null);
+    assert.equal(record(body.meta).nextCursor, null);
     const row =
       surface === "list"
         ? page.getByRole("row").filter({ hasText: agent.name })
@@ -636,9 +907,9 @@ for (const surface of ["list", "detail"]) {
     await dialog.getByRole("button", { name: "Stop Agent", exact: true }).click();
     const stopped = await stopResponse;
     assert.equal(stopped.status(), 202);
-    const stoppedBody = await stopped.json();
-    assert.equal(stoppedBody.data.id, agent.id);
-    assert.equal(stoppedBody.data.desiredRuntimeState, "stopped");
+    const stoppedBody = record(await stopped.json());
+    assert.equal(record(stoppedBody.data).id, agent.id);
+    assert.equal(record(stoppedBody.data).desiredRuntimeState, "stopped");
     await dialog.waitFor({ state: "hidden" });
     if (surface === "detail") {
       const region = page.getByRole("region", { name: "Stop Agent", exact: true });
@@ -659,7 +930,7 @@ for (const surface of ["list", "detail"]) {
     );
     const after = await fixture.request("GET", path, { session });
     assert.equal(after.status, 200);
-    assert.equal(after.data.desiredRuntimeState, "stopped");
+    assert.equal(record(after.data).desiredRuntimeState, "stopped");
     assert.equal(
       requests.filter((r) => r.method === "POST" && r.path === `${path}/stop`).length,
       1,
@@ -912,7 +1183,14 @@ test("A failed first version's page says nothing runs and offers one Open draft"
 // Sandbox read that lands after the page shows moves nothing. A healthy Sandbox carries no
 // warning, and a Sandbox the Driver cannot read is unknown, never lost.
 test("Live serving shows a lost Sandbox and its next step without moving the page", async (t) => {
-  const { driver: sandboxDriver, state } = createProviderSandboxDriver();
+  const sandbox = createProviderSandboxDriver();
+  const sandboxDriver: Omit<typeof sandbox.driver, "observeHarness"> & {
+    observeHarness?: typeof sandbox.driver.observeHarness;
+  } = sandbox.driver;
+  const state: {
+    harness: { state: string; code?: string } | undefined;
+    harnessError: Error | undefined;
+  } = sandbox.state;
   const { fixture, namespace } = await readyNamespace(t, "Lost Sandbox", {
     computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" }),
     sandboxDriver,
@@ -924,14 +1202,17 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     { executionMode: "dedicated" },
   );
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const liveServing = (page) =>
+  const liveServing = (page: Page) =>
     page
       .getByRole("region", { name: "Agent state at a glance" })
       .locator(".stat")
       .filter({ hasText: "Live serving" });
-  async function openOverview(viewport, { statusFailure = false } = {}) {
+  async function openOverview(
+    viewport: { width: number; height: number },
+    { statusFailure = false } = {},
+  ) {
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    const harnessReads = [];
+    const harnessReads: string[] = [];
     page.on("request", (request) => {
       if (request.url().endsWith("/harness-status")) {
         harnessReads.push(request.url());
@@ -971,7 +1252,7 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     await nextFrames(page);
     sandboxRead.release();
     // The answer renders before any click below, which would excuse a shift it causes.
-    await waitForSettledFetches(page, new URL(harnessReads[0]).pathname, 1);
+    await waitForSettledFetches(page, new URL(required<string>(harnessReads[0])).pathname, 1);
     await nextFrames(page);
     await expectDeploymentOutcome(page, "Completed");
     return { page, harnessReads };
@@ -1012,10 +1293,15 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
       "Sandbox status unknown.",
     ],
     [{ state: "lost", code: "SANDBOX_STOPPED" }, undefined, true, "Sandbox status unknown."],
-  ]) {
+  ] satisfies [
+    { state: string; code?: string } | undefined,
+    Error | undefined,
+    boolean,
+    string,
+  ][]) {
     state.harness = harness;
     state.harnessError = harnessError;
-    const { page } = await openOverview(consoleViewports[0], { statusFailure });
+    const { page } = await openOverview(required(consoleViewports[0]), { statusFailure });
     await liveServing(page).getByText(note, { exact: true }).waitFor();
     const badge = liveServing(page).locator(".badge");
     assert.equal(await badge.textContent(), "Not verified");
@@ -1028,9 +1314,10 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
   // the note says why serving is not verified (finding 2367).
   {
     const { observeHarness } = sandboxDriver;
+    assert.ok(observeHarness);
     delete sandboxDriver.observeHarness;
     try {
-      const { page } = await openOverview(consoleViewports[0]);
+      const { page } = await openOverview(required(consoleViewports[0]));
       await liveServing(page).getByText(NO_TEST_REQUEST, { exact: true }).waitFor();
       assert.equal(await liveServing(page).locator(".badge").textContent(), "Not verified");
     } finally {
@@ -1043,7 +1330,7 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
   {
     state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
     state.harnessError = undefined;
-    const { page, harnessReads } = await openOverview(consoleViewports[0]);
+    const { page, harnessReads } = await openOverview(required(consoleViewports[0]));
     await liveServing(page).getByText("Sandbox lost", { exact: true }).waitFor();
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page.getByRole("button", { name: "Stop Agent" }).click();
@@ -1083,7 +1370,9 @@ test("An older failed version's record keeps its own error under a newer failure
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
   const record = await expectVersionRecord(page, "Failed");
-  await record.getByText(`${firstError.code}: ${firstError.message}`, { exact: true }).waitFor();
+  await record
+    .getByText(`${required(firstError).code}: ${required(firstError).message}`, { exact: true })
+    .waitFor();
   assert.equal(
     await record.getByText("The error and its next step are at the top of this page.").count(),
     0,
@@ -1123,7 +1412,7 @@ test("Recovery offers no Credentials link for operator-managed harness credentia
 test("Recovery offers Open Credentials only when an Agent update would pass its source checks", async (t) => {
   const { fixture, namespace } = await readyNamespace(t, "Credentials recovery", runtimeLogs());
   const agent = await fixture.createAgent(namespace.id, "Credentials Recovery", nativeValues("v1"));
-  assert.equal(agent.harnessAuth.method, "api_key");
+  assert.equal(record(agent.harnessAuth).method, "api_key");
   const failed = await fixture.deployAgent(namespace.id, agent.id);
   const member = await fixture.createNamespaceMember("credentials-recovery", namespace.id, [
     ...AGENT_READ,
@@ -1140,7 +1429,7 @@ test("Recovery offers Open Credentials only when an Agent update would pass its 
     detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
     member.credentials,
   );
-  const answer = (await (await permissions).json()).data;
+  const answer = record(record(await (await permissions).json()).data);
   assert.equal(answer.update, true);
   assert.equal(answer.agentSourcesOperate, false);
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
@@ -1153,9 +1442,9 @@ test("Recovery offers Open Credentials only when an Agent update would pass its 
   assert.equal(await recovery.getByRole("link", { name: "Open Credentials" }).count(), 0);
 
   // With operate on the Harness authentication Secret the same member gets the link.
-  fixture.policy.roles
-    .find((role) => role.id === "role-credentials-recovery")
-    .permissions.push({ action: "operate", resourceKind: "secret" });
+  const role = fixture.policy.roles.find((role) => role.id === "role-credentials-recovery");
+  assert.ok(role);
+  role.permissions.push({ action: "operate", resourceKind: "secret" });
   await page.reload();
   await recovery.getByRole("link", { name: "Open Credentials", exact: true }).waitFor();
 });
@@ -1173,7 +1462,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
     nativeValues("v1"),
     { secretBindings: { EXTERNAL_API_TOKEN: { source: bound.ref, delivery: { type: "env" } } } },
   );
-  assert.equal(agent.harnessAuth.method, "api_key");
+  assert.equal(record(agent.harnessAuth).method, "api_key");
   const failed = await fixture.deployAgent(namespace.id, agent.id);
   // Configuration read and update, and operate on the one Secret the Configuration binds, so a
   // Configuration save would pass; an Agent update would fail on the Harness API key Secret.
@@ -1183,6 +1472,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
     ["update", "configuration"],
   ]);
   const role = fixture.policy.roles.find(({ id }) => id === "role-configuration-recovery");
+  assert.ok(role);
   const boundOperate = grantSecretOperate(fixture, namespace.id, member.principal, [bound.id]);
   const { page } = await newPage(t, fixture, { browser });
   const error = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
@@ -1215,7 +1505,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
     } else {
       await page.reload();
     }
-    const answer = (await (await permissions).json()).data;
+    const answer = record(record(await (await permissions).json()).data);
     await recovery
       .getByText("v1 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", {
         exact: false,
@@ -1225,7 +1515,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
     return answer;
   };
   const links = () => recovery.getByRole("link").allTextContents();
-  const without = (action, resourceKind) =>
+  const without = (action: string, resourceKind: string) =>
     role.permissions.filter(
       (grant) => grant.action !== action || grant.resourceKind !== resourceKind,
     );
@@ -1301,16 +1591,17 @@ test("A failed version raises no recovery while the current version is on no loa
   await routeFailedRecord(page, fixture, namespace, agent, second.revision);
   // The older page is held until the test releases it.
   let olderRequests = 0;
-  let olderRequested;
-  const requested = new Promise((resolve) => {
+  let olderRequested: (() => void) | undefined;
+  const requested = new Promise<void>((resolve) => {
     olderRequested = resolve;
   });
-  let releaseOlder;
-  const olderGate = new Promise((resolve) => {
+  let releaseOlder: (() => void) | undefined;
+  const olderGate = new Promise<void>((resolve) => {
     releaseOlder = resolve;
   });
   await routeOneVersionPerPage(page, fixture, namespace, agent, () => {
     olderRequests += 1;
+    assert.ok(olderRequested);
     olderRequested();
     return olderGate;
   });
@@ -1342,6 +1633,7 @@ test("A failed version raises no recovery while the current version is on no loa
   assert.equal(await loading.evaluate((node) => node === globalThis.document.activeElement), true);
   assert.equal(await loading.getAttribute("aria-disabled"), "true");
   await page.keyboard.press("Enter");
+  assert.ok(releaseOlder);
   releaseOlder();
   await chooser
     .locator("option")
@@ -1727,7 +2019,7 @@ for (const c of [
       await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
       assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
       // The step and its link are on the first screen.
-      const inView = (node) =>
+      const inView = (node: Locator) =>
         node.evaluate((element) => {
           const box = element.getBoundingClientRect();
           return { top: box.top, bottom: box.bottom, innerHeight: globalThis.innerHeight };
@@ -1754,7 +2046,13 @@ for (const c of [
       assert.equal(await recovery.locator(".status-body code").textContent(), c.code);
       const actions = await recovery.locator(".status-actions a").evaluateAll((links) =>
         links.map((link) => {
+          if (!(link instanceof HTMLAnchorElement)) {
+            throw new Error("Expected an action link");
+          }
           const box = link.getBoundingClientRect();
+          if (!link.parentElement) {
+            throw new Error("Expected action row");
+          }
           const row = link.parentElement.getBoundingClientRect();
           return {
             name: link.textContent,
@@ -1814,6 +2112,7 @@ for (const c of [
           const box = active?.getBoundingClientRect();
           return (
             active?.textContent === "Deploy new version" &&
+            box !== undefined &&
             box.top >= 0 &&
             box.bottom <= globalThis.innerHeight
           );
@@ -1939,7 +2238,7 @@ test("Every failed deployment code has its own message and next step", async () 
   );
   const start = source.indexOf("function deploymentErrorMessage(");
   const body = source.slice(start, source.indexOf("    default:", start));
-  const handled = [...body.matchAll(/case "([A-Z0-9_]+)":/gu)].map((match) => match[1]);
+  const handled = [...body.matchAll(/case "([A-Z0-9_]+)":/gu)].map((match) => required(match[1]));
   assert.ok(handled.length > NEUTRAL_DEPLOYMENT_CODES.length, "message switch found");
   assert.deepEqual(
     handled.filter((code) => !NEUTRAL_DEPLOYMENT_CODES.includes(code)).sort(),
@@ -1947,7 +2246,9 @@ test("Every failed deployment code has its own message and next step", async () 
   );
   // A failed first deployment copies its message into the provisioning status, whose schema caps
   // error.message (finding 2571).
-  const cap = AgentProvisioningStatusSchema.properties.error.properties.message.maxLength;
+  const messageSchema = record(AgentProvisioningStatusSchema.properties.error.properties.message);
+  const cap = messageSchema.maxLength;
+  assert.ok(typeof cap === "number");
   const fallback = persistedDeploymentError("UNLISTED_FAILURE_CODE").message;
   for (const [step, codes] of Object.entries(steps)) {
     for (const code of codes) {
@@ -2082,6 +2383,7 @@ test("A failed deployment's Deploy again opens the draft's deploy step from anot
     const box = active?.getBoundingClientRect();
     return (
       active?.textContent === "Deploy new version" &&
+      box !== undefined &&
       box.top >= 0 &&
       box.bottom <= globalThis.innerHeight
     );
@@ -2123,7 +2425,7 @@ test("A failed deployment's banner offers Deploy again only with deploy permissi
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
 });
 
-function line(second, raw) {
+function line(second: number, raw: string) {
   return { time: `2026-09-30T12:00:${String(second).padStart(2, "0")}.000000001Z`, raw };
 }
 
@@ -2279,12 +2581,19 @@ test("a failed version's banner does not move the overview on a slow link", asyn
     // only a card that lands later), and a later render of the shown card, as a tab change
     // makes, leaves it there.
     const leadsOverview = () =>
-      recovery.evaluate((card) =>
-        Boolean(
-          card.compareDocumentPosition(card.ownerDocument.querySelector(".agent-overview-status")) &
-          globalThis.Node.DOCUMENT_POSITION_FOLLOWING,
-        ),
-      );
+      recovery.evaluate((card) => {
+        function html(value: unknown): HTMLElement {
+          if (!(value instanceof HTMLElement)) {
+            throw new Error("Expected an HTML element");
+          }
+          return value;
+        }
+        return Boolean(
+          card.compareDocumentPosition(
+            html(card.ownerDocument.querySelector(".agent-overview-status")),
+          ) & globalThis.Node.DOCUMENT_POSITION_FOLLOWING,
+        );
+      });
     assert.equal(await leadsOverview(), true);
     const plugins = page.locator(".agent-tabs").getByRole("tab", { name: "Plugins", exact: true });
     await plugins.click();
@@ -2309,14 +2618,14 @@ test("a late first deployment read moves nothing above the version tabs", async 
     context: { viewport: consoleViewports[0] },
   });
   // Each load's first read of the record waits for the case's answer.
-  let answer = null;
-  let requested = null;
+  let answer: Promise<Parameters<Route["fulfill"]>[0]> | null = null;
+  let requested: (() => void) | null = null;
   await page.route(
     deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id),
     async (route) => {
       requested?.();
       // A poll from the page a later goto replaced is answered into nothing.
-      await route.fulfill(await answer).catch(() => {});
+      await route.fulfill(await requiredAnswer(answer)).catch(() => {});
     },
   );
   await trackSettledFetches(page);
@@ -2334,13 +2643,13 @@ test("a late first deployment read moves nothing above the version tabs", async 
       await nextFrames(page);
       sizes.push(
         await page.evaluate(() => {
-          const box = (selector) => {
+          const box = (selector: string) => {
             const node = globalThis.document.querySelector(selector);
             const rect = node?.getBoundingClientRect();
-            return node ? { top: rect.top + globalThis.scrollY, height: rect.height } : null;
+            return rect ? { top: rect.top + globalThis.scrollY, height: rect.height } : null;
           };
           return {
-            tabs: box(".agent-tabs").top,
+            tabs: box(".agent-tabs")?.top,
             overview: box(".agent-overview-status"),
             record: box(".version-deployment-record")?.height ?? 0,
             diagnostics: box(".version-diagnostics")?.height ?? 0,
@@ -2348,7 +2657,7 @@ test("a late first deployment read moves nothing above the version tabs", async 
         }),
       );
     }
-    await page.setViewportSize(consoleViewports[0]);
+    await page.setViewportSize(required(consoleViewports[0]));
     return sizes;
   };
   // Control: a pending record read before the page shows opens its details as before, and the
@@ -2370,11 +2679,11 @@ test("a late first deployment read moves nothing above the version tabs", async 
   ]) {
     for (const view of ["draft", "version"]) {
       const name = `${c.status} on the ${view}`;
-      let respond;
-      answer = new Promise((resolve) => {
+      let respond: ((value: Parameters<Route["fulfill"]>[0]) => void) | undefined;
+      answer = new Promise<Parameters<Route["fulfill"]>[0]>((resolve) => {
         respond = resolve;
       });
-      const read = new Promise((resolve) => {
+      const read = new Promise<void>((resolve) => {
         requested = resolve;
       });
       const selected = view === "draft" ? "draft" : revision.id;
@@ -2395,6 +2704,7 @@ test("a late first deployment read moves nothing above the version tabs", async 
       assert.equal(await activity.getByRole("button").count(), 0);
       const before = await measure();
 
+      assert.ok(respond);
       respond(
         c.status === "read error"
           ? unavailable
@@ -2431,9 +2741,11 @@ test("a late first deployment read moves nothing above the version tabs", async 
       t.diagnostic(`${name}: ${JSON.stringify({ before, after })}`);
       for (const [index, { width }] of consoleViewports.entries()) {
         const [was, is] = [before[index], after[index]];
+        assert.ok(was && is && was.overview && is.overview);
+        assert.ok(typeof was.tabs === "number" && typeof is.tabs === "number");
         // The overview keeps its height; the tabs move only as far as a card above it pushes it
         // and the viewed version's record grows.
-        const near = (actual, expected, what) =>
+        const near = (actual: number, expected: number, what: string) =>
           assert.ok(Math.abs(actual - expected) < 1, `${name} at ${width}: ${what}`);
         near(is.overview.height, was.overview.height, "the overview keeps its height");
         near(
@@ -2452,13 +2764,20 @@ test("a late first deployment read moves nothing above the version tabs", async 
 // The version's detail is in view: its top edge at (or, where the page cannot scroll that far,
 // below) the window's top, inside the upper half of the window.
 function versionDetailInView() {
-  const top = globalThis.document
-    .querySelector(".agent-version-detail")
-    .getBoundingClientRect().top;
+  function html(value: unknown): HTMLElement {
+    if (!(value instanceof HTMLElement)) {
+      throw new Error("Expected an HTML element");
+    }
+    return value;
+  }
+
+  const top = html(
+    globalThis.document.querySelector(".agent-version-detail"),
+  ).getBoundingClientRect().top;
   return globalThis.scrollY > 0 && top >= -1 && top < globalThis.innerHeight / 2;
 }
 
-const focusedTab = (page) =>
+const focusedTab = (page: Page) =>
   page.evaluate(() => {
     const active = globalThis.document.activeElement;
     return active?.closest(".agent-tabs") && active.getAttribute("aria-selected") === "true"
@@ -2512,7 +2831,7 @@ for (const c of [
       }
       const url =
         c.entry === "active"
-          ? detailUrl(fixture, namespace.id, agent.id, active.revision.id, c.tab)
+          ? detailUrl(fixture, namespace.id, agent.id, required(active).revision.id, c.tab)
           : c.tab === "configuration"
             ? // The Agent's own address: a never-deployed Agent opens its draft.
               new URL(`/console/agents/${agent.id}?namespace=${namespace.id}`, fixture.origin)
@@ -2525,11 +2844,18 @@ for (const c of [
       assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
       // The detail starts low in the first screen or below it: with the Deployment details folded
       // under the card (finding 2094), it can start above the fold at 1440.
-      const start = await page.evaluate(
-        () =>
-          globalThis.document.querySelector(".agent-version-detail").getBoundingClientRect().top /
-          globalThis.innerHeight,
-      );
+      const start = await page.evaluate(() => {
+        function html(value: unknown): HTMLElement {
+          if (!(value instanceof HTMLElement)) {
+            throw new Error("Expected an HTML element");
+          }
+          return value;
+        }
+        return (
+          html(globalThis.document.querySelector(".agent-version-detail")).getBoundingClientRect()
+            .top / globalThis.innerHeight
+        );
+      });
       assert.ok(start >= 0.5, `the version's detail starts ${start} windows down`);
 
       await open.click();
@@ -2587,8 +2913,19 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
   assert.deepEqual(taken, [false, false, false, false, false]);
   // Click and read the position in one task: an instant scroll has already landed.
   const top = await open.evaluate((link) => {
+    function html(value: unknown): HTMLElement {
+      if (!(value instanceof HTMLElement)) {
+        throw new Error("Expected an HTML element");
+      }
+      return value;
+    }
+
+    if (!(link instanceof HTMLElement)) {
+      throw new Error("Expected an HTML link");
+    }
     link.click();
-    return globalThis.document.querySelector(".agent-version-detail").getBoundingClientRect().top;
+    return html(globalThis.document.querySelector(".agent-version-detail")).getBoundingClientRect()
+      .top;
   });
   assert.ok(Math.abs(top) <= 1, `the version's detail is at ${top} px right after the click`);
   assert.equal(await focusedTab(page), "Configuration");
@@ -2597,7 +2934,12 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
 // A version whose deploy is running, and a page at `viewport` for it. Once the test routes its
 // record, open() signs in to its Access tab (where Share Agent is), or to `tab`, under a fake clock
 // and waits for it to settle.
-async function pendingDeploy(t, viewport, name, fixtureOptions) {
+async function pendingDeploy(
+  t: TestContext,
+  viewport: { width: number; height: number },
+  name: string,
+  fixtureOptions?: object,
+) {
   const size = `${viewport.width}x${viewport.height}`;
   const { fixture, namespace } = await readyNamespace(t, `${name} deploy ${size}`, fixtureOptions);
   const agent = await fixture.createAgent(namespace.id, `${name} Deploy`, nativeValues("v1"));
@@ -2633,9 +2975,9 @@ for (const viewport of [
   test(`deployment polls touch only what changed and keep Share Agent in place at ${size}`, async (t) => {
     const { page, recordUrl, pending, open } = await pendingDeploy(t, viewport, "Quiet");
     // The fixture has no deployment worker: serve the record a deploy reports as it runs.
-    let record = { status: "running" };
+    let record: DeploymentResponseOptions = { status: "running" };
     // Set to hold the record's reads until the test releases them.
-    let recordGate = null;
+    let recordGate: Promise<void> | null = null;
     await page.route(recordUrl, async (route) => {
       await recordGate;
       await route.fulfill(deploymentStatusResponse(pending, record));
@@ -2649,7 +2991,11 @@ for (const viewport of [
       globalThis.pollChanges = [];
       new globalThis.MutationObserver((records) => {
         for (const change of records) {
-          const where = change.target.nodeType === 1 ? change.target : change.target.parentNode;
+          const where =
+            change.target instanceof Element ? change.target : change.target.parentElement;
+          if (!where) {
+            throw new Error("Expected a mutation element");
+          }
           const region = where.closest(
             ".version-diagnostics, .version-deployment-record, .deployment-evidence, .agent-overview-status",
           );
@@ -2665,11 +3011,18 @@ for (const viewport of [
       });
     });
     const shareTop = () =>
-      page.evaluate(
-        () =>
-          globalThis.document.querySelector(".agent-access").getBoundingClientRect().top +
-          globalThis.scrollY,
-      );
+      page.evaluate(() => {
+        function html(value: unknown): HTMLElement {
+          if (!(value instanceof HTMLElement)) {
+            throw new Error("Expected an HTML element");
+          }
+          return value;
+        }
+        return (
+          html(globalThis.document.querySelector(".agent-access")).getBoundingClientRect().top +
+          globalThis.scrollY
+        );
+      });
     const firstTop = await shareTop();
     const poll = async () => {
       const read = page.waitForResponse(recordUrl);
@@ -2706,8 +3059,8 @@ for (const viewport of [
     await showDeploymentTab(page);
 
     // Refresh pressed during a poll shows busy and reads once the poll lands.
-    let releaseRecord;
-    recordGate = new Promise((resolve) => {
+    let releaseRecord: (() => void) | undefined;
+    recordGate = new Promise<void>((resolve) => {
       releaseRecord = resolve;
     });
     const held = page.waitForRequest(recordUrl);
@@ -2718,6 +3071,7 @@ for (const viewport of [
     assert.equal(await refresh.getAttribute("aria-disabled"), "true");
     const queued = page.waitForRequest(recordUrl);
     recordGate = null;
+    assert.ok(releaseRecord);
     releaseRecord();
     await queued;
     await waitForIdleFetches(page);
@@ -2731,8 +3085,15 @@ for (const viewport of [
     // The settled details end just under the outcome, their last line: only the details' own
     // padding is left, not the reserved band of about 150 px.
     const band = await page.evaluate(() => {
-      const content = globalThis.document.querySelector(".deployment-evidence-content");
-      const outcome = content.querySelector(".deployment-outcome");
+      function html(value: unknown): HTMLElement {
+        if (!(value instanceof HTMLElement)) {
+          throw new Error("Expected an HTML element");
+        }
+        return value;
+      }
+
+      const content = html(globalThis.document.querySelector(".deployment-evidence-content"));
+      const outcome = html(content.querySelector(".deployment-outcome"));
       return {
         minHeight: content.style.minHeight,
         below: content.getBoundingClientRect().bottom - outcome.getBoundingClientRect().bottom,
@@ -2763,16 +3124,20 @@ for (const refreshDuring of ["terminal poll", "automatic overview reread"]) {
         { recordOperations: true },
       );
       const agentUrl = recordUrl.split("/deployments/")[0];
+      assert.ok(agentUrl);
       const revisionsUrl = `${agentUrl}/revisions`;
       let terminal = false;
       let terminalReads = 0;
-      let release;
-      const gate = new Promise((resolve) => {
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
-      t.after(() => release());
-      let held;
-      const holding = new Promise((resolve) => {
+      t.after(() => {
+        assert.ok(release);
+        release();
+      });
+      let held: (() => void) | undefined;
+      const holding = new Promise<void>((resolve) => {
         held = resolve;
       });
       // Completion now reuses the verified record; hold the actual overview read.
@@ -2783,6 +3148,7 @@ for (const refreshDuring of ["terminal poll", "automatic overview reread"]) {
             return;
           }
           const response = await route.fetch();
+          assert.ok(held);
           held();
           await gate;
           await route.fulfill({ response });
@@ -2791,12 +3157,13 @@ for (const refreshDuring of ["terminal poll", "automatic overview reread"]) {
       await page.route(recordUrl, async (route) => {
         const response = await route.fetch();
         assert.equal(response.status(), 200);
-        const body = await response.json();
-        assert.equal(body.data.deploymentId, pending.id);
-        assert.equal(body.data.status, "queued");
-        body.data.status = terminal ? "succeeded" : "running";
-        body.data.progress = null;
+        const body = record(await response.json());
+        assert.equal(record(body.data).deploymentId, pending.id);
+        assert.equal(record(body.data).status, "queued");
+        record(body.data).status = terminal ? "succeeded" : "running";
+        record(body.data).progress = null;
         if (terminal && ++terminalReads === 1 && refreshDuring === "terminal poll") {
+          assert.ok(held);
           held();
           await gate;
         }
@@ -2870,8 +3237,14 @@ for (const refreshDuring of ["terminal poll", "automatic overview reread"]) {
       // activation cannot queue another full batch, even when the poll also found completion.
       await refresh.click();
       assert.equal(await refresh.getAttribute("aria-disabled"), "true");
-      await original.evaluate((button) => button.click());
+      await original.evaluate((button) => {
+        if (!(button instanceof HTMLElement)) {
+          throw new Error("Expected an HTML button");
+        }
+        button.click();
+      });
       const manual = await holdRequests(t, page, agentUrl, { once: true, afterServer: true });
+      assert.ok(release);
       release();
       await manual.requested;
       assert.equal(await refresh.getAttribute("aria-disabled"), "true");
@@ -2908,14 +3281,22 @@ test("a deploy's details keep their queued height when its first claim starts", 
   await page.clock.pauseAt(new Date(now + 1000));
   await page.evaluate(() => globalThis.document.fonts.ready);
   const measure = () =>
-    page.evaluate(() => ({
-      details: globalThis.document
-        .querySelector(".deployment-evidence-content")
-        .getBoundingClientRect().height,
-      tabs:
-        globalThis.document.querySelector(".agent-tabs").getBoundingClientRect().top +
-        globalThis.scrollY,
-    }));
+    page.evaluate(() => {
+      function html(value: unknown): HTMLElement {
+        if (!(value instanceof HTMLElement)) {
+          throw new Error("Expected an HTML element");
+        }
+        return value;
+      }
+      return {
+        details: html(
+          globalThis.document.querySelector(".deployment-evidence-content"),
+        ).getBoundingClientRect().height,
+        tabs:
+          html(globalThis.document.querySelector(".agent-tabs")).getBoundingClientRect().top +
+          globalThis.scrollY,
+      };
+    });
   await page.getByRole("tab", { name: "Deployment", exact: true }).click();
   const queued = await measure();
   await page.getByText(/^Eligible for next attempt:/).waitFor();
@@ -2952,7 +3333,7 @@ for (const viewport of [
   test(`a settling deploy keeps the version's record in place on the Deployment tab at ${size}`, async (t) => {
     const { page, recordUrl, pending, open } = await pendingDeploy(t, viewport, "Anchored");
     // A started deploy waiting for its next attempt shows every pending row.
-    let record = {
+    let record: DeploymentResponseOptions = {
       status: "running",
       attempt: { at: new Date("2026-10-16T12:00:20.000Z"), code: "REVISION_INCOMPLETE" },
       nextAttemptAt: "2026-10-16T12:00:45.000Z",
@@ -2990,7 +3371,12 @@ for (const viewport of [
     // The details gave their reserved space back (finding 2369)...
     assert.equal(await page.getByText(/^Eligible for next attempt:/).count(), 0);
     assert.equal(
-      await page.locator(".deployment-evidence-content").evaluate((node) => node.style.minHeight),
+      await page.locator(".deployment-evidence-content").evaluate((node) => {
+        if (!(node instanceof HTMLElement)) {
+          throw new Error("Expected HTML element");
+        }
+        return node.style.minHeight;
+      }),
       "",
     );
     // ...and the page scrolled by it, so the record did not move.
@@ -3036,7 +3422,7 @@ for (const viewport of [
     assert.equal(await recovery.isVisible(), false);
     // open() left the running deploy's details open, as the reader sees them before it fails.
     assert.equal(await deploymentDetailsOpen(page), true);
-    const background = (locator) =>
+    const background = (locator: Locator) =>
       locator.evaluate((node) => globalThis.getComputedStyle(node).backgroundColor);
     const admin = page.getByRole("link", { name: "Open Agent UI" });
     const adminBefore = await background(admin);
@@ -3055,18 +3441,31 @@ for (const viewport of [
     // Where the card sits, whether the details are open, and how often the error shows.
     const layout = () =>
       page.evaluate((message) => {
+        function html(value: unknown): HTMLElement {
+          if (!(value instanceof HTMLElement)) {
+            throw new Error("Expected an HTML element");
+          }
+          return value;
+        }
+
         const document = globalThis.document;
-        const card = document.querySelector(".deployment-recovery");
+        const card = html(document.querySelector(".deployment-recovery"));
         const shown = [...document.querySelectorAll("p, li, dd")].filter(
           (node) => node.checkVisibility() && node.textContent.includes(message),
         );
         return {
           leadsOverview: Boolean(
-            card.compareDocumentPosition(document.querySelector(".agent-overview-status")) &
+            card.compareDocumentPosition(html(document.querySelector(".agent-overview-status"))) &
             globalThis.Node.DOCUMENT_POSITION_FOLLOWING,
           ),
           top: Math.round(card.getBoundingClientRect().top + globalThis.scrollY),
-          detailsOpen: document.querySelector(".deployment-status > details").open,
+          detailsOpen: (() => {
+            const details = document.querySelector(".deployment-status > details");
+            if (!(details instanceof HTMLDetailsElement)) {
+              throw new Error("Expected details");
+            }
+            return details.open;
+          })(),
           errorShown: shown.length,
         };
       }, PROBE_FAILED_MESSAGE);
@@ -3095,7 +3494,7 @@ for (const viewport of [
     assert.equal(watched.detailsOpen, false);
     assert.equal(watched.errorShown, 1);
     assert.ok(
-      (await logs.boundingBox()).y + 40 < viewport.height,
+      required(await logs.boundingBox()).y + 40 < viewport.height,
       "the card's action is above the fold",
     );
     // The version's Configuration tab shows its deployment record too: it names the outcome and
@@ -3116,21 +3515,52 @@ for (const viewport of [
 // children a shorter render no longer has, and replaces a node whose role (or role node kind)
 // changes, since a live region or alert announces reliably only when it is inserted.
 test("deployment poll patches rewrite only changed text and replace a node whose role changes", async (t) => {
-  const fixture = await overviewApp(t);
+  const fixture = typedFixture(await overviewApp(t));
   const { page } = await newPage(t, fixture, { browser });
   await page.goto(new URL("/console/", fixture.origin).href);
   const outcome = await page.evaluate(async () => {
-    const { element, patchChildren } = await import("/console/dom.mjs");
+    const modulePath = "/console/dom.mjs";
+    const loaded: unknown = await import(modulePath);
+    if (
+      typeof loaded !== "object" ||
+      loaded === null ||
+      !("element" in loaded) ||
+      !("patchChildren" in loaded)
+    ) {
+      throw new Error("Expected DOM exports");
+    }
+    function callable(value: unknown): value is (...args: unknown[]) => unknown {
+      return typeof value === "function";
+    }
+    const makeElement = loaded.element;
+    const patch = loaded.patchChildren;
+    if (!callable(makeElement) || !callable(patch)) {
+      throw new Error("Expected DOM functions");
+    }
+    const element = (...args: unknown[]) => {
+      const node = makeElement(...args);
+      if (!(node instanceof HTMLElement)) {
+        throw new Error("Expected rendered HTML element");
+      }
+      return node;
+    };
+    const patchChildren = (parent: HTMLElement, children: HTMLElement[]) => {
+      const changed = patch(parent, children);
+      if (typeof changed !== "boolean") {
+        throw new Error("Expected patch result");
+      }
+      return changed;
+    };
     const parent = globalThis.document.createElement("div");
     globalThis.document.body.append(parent);
-    const render = (state, role, className) => [
+    const render = (state: string, role: string, className: string) => [
       element("p", {}, "Recorded status: ", element("b", {}, state)),
       element("p", { role, className }, "Deploying"),
       ...(state === "running" ? [element("p", {}, "Not recorded yet")] : []),
     ];
     patchChildren(parent, render("running", "status", "hint"));
     const [label, region] = parent.children;
-    const records = [];
+    const records: string[] = [];
     new globalThis.MutationObserver((list) => {
       records.push(...list.map((record) => record.type));
     }).observe(parent, { attributes: true, characterData: true, childList: true, subtree: true });
@@ -3243,7 +3673,14 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
   await settled.waitFor();
   await waitForIdleFetches(page);
   await page.evaluate(() => {
-    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.retainedTag =
+    function html(value: unknown): HTMLElement {
+      if (!(value instanceof HTMLElement)) {
+        throw new Error("Expected an HTML element");
+      }
+      return value;
+    }
+
+    html(globalThis.document.querySelector('.content [aria-live="polite"]')).dataset.retainedTag =
       "draft";
   });
   await versionChooser(page).selectOption(revision.id);
@@ -3260,9 +3697,16 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
   assert.equal(await focusedTab(page), "Configuration");
   // The retained page, not a rebuilt one.
   assert.equal(
-    await page.evaluate(
-      () => globalThis.document.querySelector('.content [aria-live="polite"]').dataset.retainedTag,
-    ),
+    await page.evaluate(() => {
+      function html(value: unknown): HTMLElement {
+        if (!(value instanceof HTMLElement)) {
+          throw new Error("Expected an HTML element");
+        }
+        return value;
+      }
+      return html(globalThis.document.querySelector('.content [aria-live="polite"]')).dataset
+        .retainedTag;
+    }),
     "draft",
   );
 });
@@ -3305,7 +3749,10 @@ for (const viewport of [
     const facts = await summary.evaluate((node) =>
       [...node.children].map((stat) => {
         const [label, value] = stat.children;
-        const box = (element) => {
+        if (!label || !value || !node.parentElement) {
+          throw new Error("Expected stat label, value and card");
+        }
+        const box = (element: Element) => {
           const rect = element.getBoundingClientRect();
           return { top: Math.round(rect.top), left: Math.round(rect.left), bottom: rect.bottom };
         };
@@ -3315,7 +3762,7 @@ for (const viewport of [
           label: label.textContent,
           value: value.textContent,
           valueSize: globalThis.getComputedStyle(value).fontSize,
-          badge: badge ? [badge.textContent, badge.dataset.tone ?? null] : null,
+          badge: badge ? [badge.textContent, badge.getAttribute("data-tone") ?? null] : null,
           labelBox: box(label),
           valueBox: box(value),
           card: node.parentElement.classList.contains("card"),
@@ -3334,6 +3781,7 @@ for (const viewport of [
       facts.every((fact) => fact.card),
       "the facts sit inside a card",
     );
+    assert.ok(facts[0] && facts[1] && facts[2]);
     if (viewport.width > 760) {
       // Three columns side by side.
       assert.equal(new Set(facts.map((fact) => fact.labelBox.top)).size, 1, JSON.stringify(facts));
@@ -3361,11 +3809,26 @@ for (const viewport of [
     // Each guarantee appears once on the page, inside the one closed disclosure.
     const disclosure = page.locator("details.disclosure");
     assert.equal(await disclosure.count(), 1);
-    assert.equal(await disclosure.evaluate((node) => node.open), false);
+    assert.equal(
+      await disclosure.evaluate((node) => {
+        if (!(node instanceof HTMLDetailsElement)) {
+          throw new Error("Expected details");
+        }
+        return node.open;
+      }),
+      false,
+    );
     const placement = () =>
       page.evaluate((sentences) => {
+        function html(value: unknown): HTMLElement {
+          if (!(value instanceof HTMLElement)) {
+            throw new Error("Expected an HTML element");
+          }
+          return value;
+        }
+
         const text = globalThis.document.body.textContent;
-        const details = globalThis.document.querySelector("details.disclosure");
+        const details = html(globalThis.document.querySelector("details.disclosure"));
         return sentences.map((sentence) => [
           text.split(sentence).length - 1,
           details.textContent.split(sentence).length - 1,
@@ -3441,10 +3904,13 @@ test("The page's disclosure names listed bindings only beside the sharing panel"
   await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   const disclosure = page.locator("details.disclosure");
   await disclosure.getByText("What this page can tell you", { exact: true }).click();
-  await disclosure.getByText(GUARANTEES[0], { exact: true }).waitFor();
-  await disclosure.getByText(GUARANTEES[1], { exact: true }).waitFor();
+  await disclosure.getByText(required(GUARANTEES[0]), { exact: true }).waitFor();
+  await disclosure.getByText(required(GUARANTEES[1]), { exact: true }).waitFor();
   assert.equal(await page.getByRole("region", { name: "Share Agent", exact: true }).count(), 0);
-  assert.equal(await disclosure.getByText(GUARANTEES[2], { exact: true }).isVisible(), false);
+  assert.equal(
+    await disclosure.getByText(required(GUARANTEES[2]), { exact: true }).isVisible(),
+    false,
+  );
   // Each policy read was asked once: the denial is not retried on Configuration.
   assert.deepEqual(
     requests
@@ -3523,6 +3989,7 @@ test("A share in flight finishes across a tab switch", async (t) => {
   });
   const agent = await fixture.createAgent(namespace.id, "Flight Agent", nativeValues("v1"));
   const person = fixture.provisionedAccounts[0];
+  assert.ok(person);
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   const write = await holdRequests(
@@ -3548,15 +4015,15 @@ test("A share in flight finishes across a tab switch", async (t) => {
     (request) => request.method === "POST" && request.path.endsWith("/iam/access-bindings"),
   );
   assert.deepEqual(
-    writes.map((request) => [request.body.resourceKind, request.body.subjectId]),
+    writes.map((request) => [record(request.body).resourceKind, record(request.body).subjectId]),
     [
       ["namespace", person.principal.id],
       ["agent", person.principal.id],
     ],
   );
-  const bindings = (
-    await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
-  ).data.filter((binding) => binding.subjectId === person.principal.id);
+  const bindings = records(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+  ).filter((binding) => binding.subjectId === person.principal.id);
   assert.equal(bindings.length, 2);
 });
 
@@ -3571,6 +4038,7 @@ test("A share in flight holds version and page changes until it finishes", async
   const agent = await fixture.createAgent(namespace.id, "Hold Agent", nativeValues("v1"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const person = fixture.provisionedAccounts[0];
+  assert.ok(person);
   const { page } = await newPage(t, fixture, { browser });
   const write = await holdRequests(
     t,
@@ -3582,7 +4050,8 @@ test("A share in flight holds version and page changes until it finishes", async
   await login(page, fixture, url);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
-  const version = page.getByLabel("Viewing version", { exact: true, includeHidden: true });
+  const versionOptions = { exact: true, includeHidden: true };
+  const version = page.getByLabel("Viewing version", versionOptions);
   await waitForEnabled(version);
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
@@ -3620,9 +4089,9 @@ test("A share in flight holds version and page changes until it finishes", async
   await held.waitFor({ state: "detached" });
   await waitForEnabled(version);
   assert.equal(await asksBeforeUnload(page), false);
-  const bindings = (
-    await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
-  ).data.filter((binding) => binding.subjectId === person.principal.id);
+  const bindings = records(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+  ).filter((binding) => binding.subjectId === person.principal.id);
   assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
 });
 
@@ -3634,6 +4103,7 @@ test("A share in flight holds a Retry that would rebuild the page", async (t) =>
   });
   const agent = await fixture.createAgent(namespace.id, "Retry Hold Agent", nativeValues("v1"));
   const person = fixture.provisionedAccounts[0];
+  assert.ok(person);
   const { page } = await newPage(t, fixture, { browser });
   // The draft's Configuration read fails, so its tab offers Retry.
   await page.route(
@@ -3682,9 +4152,9 @@ test("A share in flight holds a Retry that would rebuild the page", async (t) =>
 
   write.release();
   await held.waitFor({ state: "detached" });
-  const bindings = (
-    await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
-  ).data.filter((binding) => binding.subjectId === person.principal.id);
+  const bindings = records(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+  ).filter((binding) => binding.subjectId === person.principal.id);
   assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
 });
 
@@ -3696,6 +4166,7 @@ test("Delete during a share in flight keeps saying why the page stays open", asy
   });
   const agent = await fixture.createAgent(namespace.id, "Delete Hold Agent", nativeValues("v1"));
   const person = fixture.provisionedAccounts[0];
+  assert.ok(person);
   const { page } = await newPage(t, fixture, { browser });
   const write = await holdRequests(
     t,
@@ -3791,7 +4262,7 @@ test("A page that opens on a deleting Agent can still be left", async (t) => {
   );
   assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
   const { page } = await newPage(t, fixture, { browser });
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "workspace"));
   await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
@@ -3812,6 +4283,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   const agent = await fixture.createAgent(namespace.id, "Hold Version Agent", nativeValues("v1"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const person = fixture.provisionedAccounts[0];
+  assert.ok(person);
   const { page } = await newPage(t, fixture, { browser });
   const write = await holdRequests(
     t,
@@ -3869,9 +4341,9 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
 
   write.release();
   await held.waitFor({ state: "detached" });
-  const bindings = (
-    await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
-  ).data.filter((binding) => binding.subjectId === person.principal.id);
+  const bindings = records(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+  ).filter((binding) => binding.subjectId === person.principal.id);
   assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
 
   // A held Back used to overwrite the draft entry. Visit the actual destinations in both
@@ -3910,15 +4382,21 @@ for (const viewport of [
     assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
 
     await card.getByRole("heading", { level: 2, name: "Prepare this version" }).waitFor();
-    const steps = await card
-      .getByRole("listitem")
-      .evaluateAll((items) =>
-        items.map((item) => [
+    const steps = await card.getByRole("listitem").evaluateAll((items) =>
+      items.map((item) => {
+        function html(value: unknown): HTMLElement {
+          if (!(value instanceof HTMLElement)) {
+            throw new Error("Expected an HTML element");
+          }
+          return value;
+        }
+        return [
           item.dataset.state,
-          item.querySelector(".visually-hidden").textContent,
-          item.querySelector(".checklist-detail").textContent,
-        ]),
-      );
+          html(item.querySelector(".visually-hidden")).textContent,
+          html(item.querySelector(".checklist-detail")).textContent,
+        ];
+      }),
+    );
     assert.deepEqual(steps, [
       ["done", "Done: ", `Saved · Configuration ${agent.configurationId} · generation 1`],
       ["done", "Done: ", "Saved · API key · Secret configured"],
@@ -3929,20 +4407,32 @@ for (const viewport of [
     const deploy = card.getByRole("button", { name: "Deploy new version" });
     await waitForEnabled(deploy);
     const layout = await page.evaluate(() => {
+      function html(value: unknown): HTMLElement {
+        if (!(value instanceof HTMLElement)) {
+          throw new Error("Expected an HTML element");
+        }
+        return value;
+      }
+
       const doc = globalThis.document;
-      const box = (node) => node.getBoundingClientRect();
-      const deployBox = box(doc.querySelector(".agent-draft-actions .primary"));
-      const status = box(doc.querySelector('.agent-draft-actions [role="status"]'));
+      const box = (node: Element | null) => {
+        if (!node) {
+          throw new Error("Expected layout element");
+        }
+        return node.getBoundingClientRect();
+      };
+      const deployBox = box(html(doc.querySelector(".agent-draft-actions .primary")));
+      const status = box(html(doc.querySelector('.agent-draft-actions [role="status"]')));
       return {
         deployTop: deployBox.top,
         deployBottom: deployBox.bottom,
         sameLine: status.top < deployBox.bottom && deployBox.top < status.bottom,
-        cardTop: box(doc.querySelector(".agent-draft-actions")).top,
-        cardBottom: box(doc.querySelector(".agent-draft-actions")).bottom,
-        railTop: box(doc.querySelector(".revision-selector")).top,
-        tabsTop: box(doc.querySelector(".agent-tabs")).top,
-        tabsWidth: box(doc.querySelector(".agent-tabs")).width,
-        layoutWidth: box(doc.querySelector(".agent-version-layout")).width,
+        cardTop: box(html(doc.querySelector(".agent-draft-actions"))).top,
+        cardBottom: box(html(doc.querySelector(".agent-draft-actions"))).bottom,
+        railTop: box(html(doc.querySelector(".revision-selector"))).top,
+        tabsTop: box(html(doc.querySelector(".agent-tabs"))).top,
+        tabsWidth: box(html(doc.querySelector(".agent-tabs"))).width,
+        layoutWidth: box(html(doc.querySelector(".agent-version-layout"))).width,
         // An unavailable control (aria-disabled, such as Open Agent UI) is not a live primary.
         primaries: doc.querySelectorAll(
           '.content .button--primary:not(:disabled, [aria-disabled="true"])',
@@ -4033,7 +4523,7 @@ test("Version picker retains selection and focus while deployment outcomes chang
   // Polling must update the newest version without browsing away from v1 or taking focus.
   record = deploymentStatusResponse(latest, { status: "running" });
   await poll();
-  assert.match(await latestOption.textContent(), /In progress/);
+  assert.match(required(await latestOption.textContent()), /In progress/);
   assert.equal(await chooser.inputValue(), active.revision.id);
   assert.equal(await chooser.evaluate((node) => node === globalThis.document.activeElement), true);
   record = deploymentStatusResponse(latest, {
@@ -4041,7 +4531,7 @@ test("Version picker retains selection and focus while deployment outcomes chang
     error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
   });
   await poll();
-  assert.match(await latestOption.textContent(), /Failed/);
+  assert.match(required(await latestOption.textContent()), /Failed/);
   assert.equal(await chooser.inputValue(), active.revision.id);
   assert.equal(await chooser.evaluate((node) => node === globalThis.document.activeElement), true);
   await page.clock.resume();
