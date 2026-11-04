@@ -265,9 +265,57 @@ container `gateway`, and `/home/node/.openclaw/workspace`. If the
 dedicated Codex seccomp profile is in use, also record its file hash on every
 eligible node, as the [Codex sandbox procedure](codex-sandbox.md) shows.
 
+## Compare the candidate with the installed manifest
+
+Before the upgrade, compare the candidate chart render with the manifest Helm
+saved for the revision recorded by a successful
+[upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window).
+Use its `UPGRADE_EVIDENCE` directory and the same release, namespace and context.
+Keep shell tracing off and keep the comparison files private because manifests
+can contain Secrets.
+
+```bash
+(
+  set +x
+  set -euo pipefail
+  umask 077
+  comparison=$(mktemp -d "$UPGRADE_EVIDENCE/manifest-comparison.XXXXXXXX")
+  revision=$(jq -er '.version | select(type == "number" and . >= 1)' \
+    "$UPGRADE_EVIDENCE/before-helm-status.json")
+  helm get manifest oce --revision "$revision" \
+    --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
+    --namespace openclaw-system >"$comparison/installed.yaml" 2>"$comparison/helm.err"
+  test -s "$comparison/installed.yaml"
+  test -s "$UPGRADE_EVIDENCE/rendered.yaml"
+  diff -u "$comparison/installed.yaml" "$UPGRADE_EVIDENCE/rendered.yaml" \
+    >"$comparison/manifest.diff" || test "$?" -eq 1
+  printf 'Review the private comparison in %s\n' "$comparison"
+)
+```
+
+Stop if the comparison cannot run. Use the diff to locate changes, then check
+the required objects and fields in both files. Account for intended changes
+such as the selected image digests. Review `server-dry-run.txt` for Helm's
+upgrade-mode output and hooks. Helm history omits later live patches. Check
+affected objects against the [live Kubernetes records](#record-images-and-kubernetes-state)
+as well. Read the live object for any required field that the baseline does
+not record.
+
+If a required setting is missing, put it in supported chart values or
+Installation settings. For example, retain a required placement label in
+`controlPlane.nodeSelector` in the protected Helm values and in the
+[profile input](installation-profiles.md#use-rendered-files) if you generate
+those values. Reconcile protected settings with the installed release in a
+separate reviewed configuration change. Use the candidate file flags only for
+the [settings they support](production-upgrade.md#include-reviewed-settings).
+Rerun the preflight and comparison after a change to the release or inputs.
+The helper uses the stock chart without a post-renderer. Stop if a required
+change still depends on a live patch or a post-renderer that the helper does
+not run.
+
 ## Compare after the upgrade
 
-Rerun the same commands into a new directory and compare. Expect new image
+Record the baseline again in a new directory and compare. Expect new image
 digests and Pod names, new Helm revisions, the new controller image and
 Installation checksum in the live values, receipts appended by the release's
 migrations and, after a runtime release, new selected Agent revision IDs. Several of an
