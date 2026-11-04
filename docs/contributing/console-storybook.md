@@ -232,8 +232,10 @@ seven-day release-age policy, independently of root dependencies.
   `public/network-policy-fixture.mts` owns simulated policy saves and application polls.
   The router emits as `/storybook-fixtures/fixtures.mjs`. It checks the names and
   policy fields it consumes before changing fixture state and returns
-  `400 INVALID_REQUEST` for malformed input. Authored rules and scenario refusals
-  run first. IAM payloads and unused registration fields remain opaque.
+  `400 INVALID_REQUEST` for malformed writes or validation request envelopes.
+  Network validation returns HTTP 200 with `data.success: false` and field details
+  for malformed additions inside a valid envelope. Authored rules and scenario
+  refusals run first. IAM payloads and unused registration fields remain opaque.
 - `public/frame.mts` starts the production console and opens configured controls.
   The asset builder emits it as `/storybook-fixtures/frame.mjs` with an asset
   version in the URL.

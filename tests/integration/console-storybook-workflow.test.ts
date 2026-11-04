@@ -11,7 +11,13 @@ import {
 } from "../../packages/contracts/src/api/common.ts";
 import { ChannelDirectoryLookupResponse } from "../../packages/contracts/src/api/resources.ts";
 import { serveChannelDirectory } from "../../scripts/console-storybook/public/channel-directory-fixture.mts";
-import { SandboxNetworkPolicyConfiguration } from "../../packages/contracts/src/sandbox-policy.ts";
+import {
+  SandboxNetworkPolicyConfiguration,
+  validateSandboxNetworkGrants,
+} from "../../packages/contracts/src/sandbox-policy.ts";
+import { ConfigurationValidationError } from "../../packages/contracts/src/configuration-definition.ts";
+import { SandboxPolicyValidateBody } from "../../packages/contracts/src/api/sandbox-policy.ts";
+import { ConfigurationValidationResponse } from "../../packages/contracts/src/api/driver-configurations.ts";
 import networkPolicySchema from "../../scripts/console-storybook/public/network-policy-schema.mts";
 import { createFixtureFetch } from "../../scripts/console-storybook/public/preview-rules.mts";
 
@@ -661,6 +667,102 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     });
   });
 
+  await t.test(
+    "Policy validation distinguishes request envelopes from rejected additions",
+    async () => {
+      const { Check }: { Check(schema: unknown, value: unknown): boolean } =
+        controller("typebox/value");
+      installFixture({ policyState: "ready" }, evidence());
+      const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
+      const before = await (await request(policyPath)).text();
+      const grant = {
+        id: "python-web",
+        binary: "/usr/bin/python3.11",
+        host: "example.org",
+        ports: [{ from: 443, to: 443 }],
+      };
+      // The HTTP body accepts unknown additions. Admission reports field errors inside 200 data.
+      for (const [additions, field, required] of [
+        [null, "/additions", false],
+        [{}, "/additions", false],
+        ["invalid", "/additions", false],
+        [[null], "/additions/0", false],
+        [[[]], "/additions/0", false],
+        [[{ ...grant, ports: [null] }], "/additions/0/ports/0", false],
+        [[{ ...grant, ports: [[]] }], "/additions/0/ports/0", false],
+        [[{ ...grant, host: 42 }], "/additions/0/host", false],
+        [[{ ...grant, ports: [{ from: "443", to: 443 }] }], "/additions/0/ports/0/from", false],
+        [[{ binary: grant.binary, host: grant.host, ports: grant.ports }], "/additions/0/id", true],
+        [[{ ...grant, ports: [{ from: 443 }] }], "/additions/0/ports/0/to", true],
+      ] as const) {
+        const body = { expectedVersion: 1, additions };
+        assert.equal(Check(SandboxPolicyValidateBody, body), true);
+        const detail = {
+          path: field,
+          code: required ? "REQUIRED" : "INVALID_TYPE",
+          message: required
+            ? "This configuration field is required."
+            : "Configuration does not satisfy type.",
+        };
+        // Verify the fixture's bounded detail against the actual shared admission validator.
+        assert.throws(
+          () => validateSandboxNetworkGrants(additions),
+          (error: unknown) => {
+            assert.ok(error instanceof ConfigurationValidationError);
+            assert.ok(
+              error.error.details.some(
+                (actual) =>
+                  actual.path === detail.path &&
+                  actual.code === detail.code &&
+                  actual.message === detail.message,
+              ),
+            );
+            return true;
+          },
+        );
+        const result = await request(`${policyPath}/validate`, "POST", body);
+        assert.equal(result.status, 200);
+        const envelope = await result.json();
+        assert.equal(Check(ConfigurationValidationResponse, envelope), true);
+        assert.deepEqual(envelope, {
+          data: { success: false, error: { details: [detail] } },
+          meta: { requestId: id("req", 1) },
+        });
+      }
+      for (const body of [
+        null,
+        [],
+        {},
+        { expectedVersion: 1 },
+        { additions: [] },
+        { expectedVersion: 1, additions: [], extra: true },
+        ...[null, "1", 0, -1, 1.5, 2147483648].map((expectedVersion) => ({
+          expectedVersion,
+          additions: [],
+        })),
+      ]) {
+        assert.equal(Check(SandboxPolicyValidateBody, body), false);
+        await invalidRequest(`${policyPath}/validate`, "POST", body);
+      }
+      for (const additions of [[], [grant]]) {
+        const body = { expectedVersion: 1, additions };
+        assert.equal(Check(SandboxPolicyValidateBody, body), true);
+        const result = await request(`${policyPath}/validate`, "POST", body);
+        assert.equal(result.status, 200);
+        const wire = await result.text();
+        assert.equal(Check(ConfigurationValidationResponse, JSON.parse(wire)), true);
+        assert.equal(
+          wire,
+          JSON.stringify({
+            data: { success: true, data: { additions } },
+            meta: { requestId: id("req", 1) },
+          }),
+        );
+      }
+      assert.equal(await (await request(policyPath)).text(), before);
+    },
+  );
+
   await t.test("Malformed network additions return 400 before saving", async () => {
     installFixture({ policyState: "ready" }, evidence());
     const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
@@ -680,7 +782,6 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
       [{ ...grant, ports: [{ from: "443", to: 443 }] }],
     ]) {
       const body = { expectedVersion: 1, additions };
-      await invalidRequest(`${policyPath}/validate`, "POST", body);
       await invalidRequest(policyPath, "PUT", body);
     }
     await invalidRequest(policyPath, "PUT", null);
@@ -719,6 +820,44 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     installFixture({ policyState: "editDenied" }, evidence());
     assert.equal((await request(policyPath, "PUT", null)).status, 403);
     assert.equal((await request(`${policyPath}/validate`, "POST", null)).status, 403);
+    installFixture({ policyState: "conflict" }, evidence());
+    assert.equal((await request(`${policyPath}/validate`, "POST", null)).status, 409);
+    for (const policyState of ["ceilingDenied", "invalid"]) {
+      installFixture({ policyState }, evidence());
+      const reply = await request(`${policyPath}/validate`, "POST", null);
+      assert.equal(reply.status, 200);
+      assert.partialDeepStrictEqual(await reply.json(), {
+        data: {
+          success: false,
+          error: {
+            details: [
+              {
+                path: "/additions/0/host",
+                code: "OUTSIDE_CEILING",
+                message: "The grant exceeds the Installation delegation ceiling.",
+              },
+            ],
+          },
+        },
+      });
+    }
+    // Authored replies remain ahead of both envelope checks and scenario refusals.
+    installFixture(
+      {
+        policyState: "editDenied",
+        rules: [
+          {
+            method: "POST",
+            suffix: "/sandbox-policy/networking/validate",
+            data: { success: true, data: {} },
+          },
+        ],
+      },
+      evidence(),
+    );
+    const authored = await request(`${policyPath}/validate`, "POST", null);
+    assert.equal(authored.status, 200);
+    assert.partialDeepStrictEqual(await authored.json(), { data: { success: true, data: {} } });
     installFixture({ policyState: "ready", policyAdminDenied: true }, evidence());
     assert.equal((await request(`${policyPath}/editing`, "PATCH", null)).status, 403);
     installFixture({ policyState: "applyRejected" }, evidence());

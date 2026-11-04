@@ -1,5 +1,6 @@
 import type {
   SandboxNetworkGrant,
+  ConfigurationResult,
   SandboxPolicy,
   SandboxPolicyApplication,
   OpenClawConfigurationValue,
@@ -53,38 +54,80 @@ type PolicySchema = {
 
 // Check the grant fields the Console consumes, not the full admission schema.
 // Syntax, limits and delegation failures remain the authored scenario's answers.
-function hasNetworkAdditions(body: unknown): body is { additions: SandboxNetworkGrant[] } {
-  if (
-    body === null ||
-    typeof body !== "object" ||
-    !("additions" in body) ||
-    !Array.isArray(body.additions)
-  ) {
+function checkNetworkAdditions(
+  additions: unknown,
+): ConfigurationResult<{ additions: SandboxNetworkGrant[] }> {
+  let path = "/additions";
+  let missing = false;
+  function reject(field: string, required = false): false {
+    path = field;
+    missing = required;
     return false;
   }
-  return body.additions.every(
-    (grant: unknown) =>
-      grant !== null &&
-      typeof grant === "object" &&
-      "id" in grant &&
-      typeof grant.id === "string" &&
-      "binary" in grant &&
-      typeof grant.binary === "string" &&
-      "host" in grant &&
-      typeof grant.host === "string" &&
-      "ports" in grant &&
-      Array.isArray(grant.ports) &&
-      grant.ports.every(
-        (port: unknown) =>
-          port !== null &&
-          typeof port === "object" &&
-          "from" in port &&
-          typeof port.from === "number" &&
-          "to" in port &&
-          typeof port.to === "number",
-      ),
+  const valid =
+    Array.isArray(additions) &&
+    additions.every((grant: unknown, index): grant is SandboxNetworkGrant => {
+      const field = `/additions/${index}`;
+      if (grant === null || typeof grant !== "object" || Array.isArray(grant)) {
+        return reject(field);
+      }
+      if (!("id" in grant) || typeof grant.id !== "string") {
+        return reject(`${field}/id`, !("id" in grant));
+      }
+      if (!("binary" in grant) || typeof grant.binary !== "string") {
+        return reject(`${field}/binary`, !("binary" in grant));
+      }
+      if (!("host" in grant) || typeof grant.host !== "string") {
+        return reject(`${field}/host`, !("host" in grant));
+      }
+      if (!("ports" in grant)) {
+        return reject(`${field}/ports`, true);
+      }
+      if (!Array.isArray(grant.ports)) {
+        return reject(`${field}/ports`);
+      }
+      return grant.ports.every((port: unknown, portIndex) => {
+        const portField = `${field}/ports/${portIndex}`;
+        if (port === null || typeof port !== "object" || Array.isArray(port)) {
+          return reject(portField);
+        }
+        if (!("from" in port) || typeof port.from !== "number") {
+          return reject(`${portField}/from`, !("from" in port));
+        }
+        if (!("to" in port) || typeof port.to !== "number") {
+          return reject(`${portField}/to`, !("to" in port));
+        }
+        return true;
+      });
+    });
+  if (valid) {
+    return { success: true, data: { additions } };
+  }
+  return {
+    success: false,
+    error: {
+      details: [
+        {
+          path,
+          code: missing ? "REQUIRED" : "INVALID_TYPE",
+          message: missing
+            ? "This configuration field is required."
+            : "Configuration does not satisfy type.",
+        },
+      ],
+    },
+  };
+}
+
+function hasNetworkAdditions(body: unknown): body is { additions: SandboxNetworkGrant[] } {
+  return (
+    body !== null &&
+    typeof body === "object" &&
+    "additions" in body &&
+    checkNetworkAdditions(body.additions).success
   );
 }
+
 export function createNetworkPolicyFixture(
   scenario: NetworkPolicyScenario,
   {
@@ -254,14 +297,28 @@ export function createNetworkPolicyFixture(
       if (scenario.policyState === "incompletePreview") {
         return response({ success: true, data: {} });
       }
-      if (!hasNetworkAdditions(body)) {
+      // SandboxPolicyValidateBody validates the envelope, but additions is Type.Unknown.
+      if (
+        body === null ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        Object.keys(body).length !== 2 ||
+        !Object.hasOwn(body, "expectedVersion") ||
+        !Object.hasOwn(body, "additions") ||
+        !("expectedVersion" in body) ||
+        !("additions" in body) ||
+        typeof body.expectedVersion !== "number" ||
+        !Number.isInteger(body.expectedVersion) ||
+        body.expectedVersion < 1 ||
+        body.expectedVersion > 2147483647
+      ) {
         return error(
           400,
           "INVALID_REQUEST",
-          "The preview requires network additions with string identities and numeric port ranges.",
+          "The preview requires an integer policy version and additions, with no extra fields.",
         );
       }
-      return response({ success: true, data: { additions: body.additions } });
+      return response(checkNetworkAdditions(body.additions));
     }
     if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "GET") {
       if (scenario.policyState === "ownerDenied") {
