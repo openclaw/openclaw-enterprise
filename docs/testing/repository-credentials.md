@@ -13,9 +13,10 @@ The controlled tests use disposable fixtures and do not use ambient GitHub crede
 
 ## GitLab client checks
 
-Run the component checks with `node --test tests/conformance/gitlab-repository-client.test.mjs tests/conformance/gitlab-repository-config.test.mjs`.
-Both files run in `checks-baseline-1`. They cover request restrictions, draft
-confirmation, uncertain response-body outcomes, and Backend validation ownership.
+Run the component checks with `node --test tests/conformance/gitlab-repository-{client,config,policy,credentials}.test.mjs`.
+All four files run in `checks-baseline-1`. They cover request restrictions, Namespace
+policy, draft confirmation, uncertain response-body outcomes, token ownership, and
+Backend validation ownership.
 
 The `gitlab-repository-live` lane registers the client and Agent-session tests.
 It requires these explicit inputs:

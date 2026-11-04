@@ -14,7 +14,13 @@ export interface GitLabRepositoryRegistration {
   readonly projectId: string;
   readonly path: string;
   readonly displayName?: string;
+  readonly namespaces: readonly GitLabRepositoryNamespacePolicy[];
+}
+
+export interface GitLabRepositoryNamespacePolicy {
+  readonly namespaceId: string;
   readonly profiles: readonly GitLabProfile[];
+  readonly allowStandingApproval?: true;
 }
 
 export interface GitLabRepositoryRegistry {
@@ -22,13 +28,12 @@ export interface GitLabRepositoryRegistry {
   readonly backendId: string;
   readonly providerInstanceId: string;
   readonly maximumDurationSeconds: number;
-  readonly allowStandingApprovals?: true;
   readonly projects: readonly GitLabRepositoryRegistration[];
 }
 
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const numericIdPattern = /^[1-9][0-9]{0,15}$/u;
-const profiles: readonly GitLabProfile[] = ["git-read", "git-write", "git-full"];
+const allowedProfiles: readonly GitLabProfile[] = ["git-read", "git-write", "git-full"];
 
 function invalid(): never {
   throw new Error("invalid-repository-registry");
@@ -60,13 +65,13 @@ function numericId(value: unknown): string {
   return id;
 }
 
-function projectProfiles(value: unknown): readonly GitLabProfile[] {
-  if (!Array.isArray(value) || value.length === 0 || value.length > profiles.length) {
+function parseProfiles(value: unknown): readonly GitLabProfile[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > allowedProfiles.length) {
     invalid();
   }
   const unique = new Set<GitLabProfile>();
   for (const entry of value) {
-    if (typeof entry !== "string" || !profiles.includes(entry as GitLabProfile)) {
+    if (typeof entry !== "string" || !allowedProfiles.includes(entry as GitLabProfile)) {
       invalid();
     }
     unique.add(entry as GitLabProfile);
@@ -75,6 +80,31 @@ function projectProfiles(value: unknown): readonly GitLabProfile[] {
     invalid();
   }
   return Object.freeze([...unique]);
+}
+
+function namespacePolicies(value: unknown): readonly GitLabRepositoryNamespacePolicy[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 128) {
+    invalid();
+  }
+  const namespaceIds = new Set<string>();
+  return Object.freeze(
+    value.map((candidate) => {
+      const policy = asRecord(candidate, ["namespaceId", "profiles", "allowStandingApproval"]);
+      const namespaceId = text(policy.namespaceId);
+      if (namespaceIds.has(namespaceId)) {
+        invalid();
+      }
+      namespaceIds.add(namespaceId);
+      if (policy.allowStandingApproval !== undefined && policy.allowStandingApproval !== true) {
+        invalid();
+      }
+      return Object.freeze({
+        namespaceId,
+        profiles: parseProfiles(policy.profiles),
+        ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
+      });
+    }),
+  );
 }
 
 export function validateGitLabRepositoryRegistry(
@@ -86,7 +116,6 @@ export function validateGitLabRepositoryRegistry(
     "backendId",
     "providerInstanceId",
     "maximumDurationSeconds",
-    "allowStandingApprovals",
     "projects",
   ]);
   const backendId = text(root.backendId);
@@ -106,18 +135,18 @@ export function validateGitLabRepositoryRegistry(
   ) {
     invalid();
   }
-  if (root.allowStandingApprovals !== undefined && root.allowStandingApprovals !== true) {
-    invalid();
-  }
   if (!Array.isArray(root.projects) || root.projects.length === 0 || root.projects.length > 1024) {
     invalid();
   }
   const paths = new Set<string>();
   const ids = new Set<string>();
+  let namespaceRows = 0;
   const projects = root.projects.map((entry) => {
-    const project = asRecord(entry, ["projectId", "path", "displayName", "profiles"]);
+    const project = asRecord(entry, ["projectId", "path", "displayName", "namespaces"]);
     const projectId = numericId(project.projectId);
     const path = text(project.path);
+    const namespaces = namespacePolicies(project.namespaces);
+    namespaceRows += namespaces.length;
     let normalized: string;
     try {
       normalized = normalizeGitLabProjectPath(path);
@@ -133,15 +162,17 @@ export function validateGitLabRepositoryRegistry(
       projectId,
       path,
       ...(project.displayName === undefined ? {} : { displayName: text(project.displayName) }),
-      profiles: projectProfiles(project.profiles),
+      namespaces,
     });
   });
+  if (namespaceRows > 4096) {
+    invalid();
+  }
   return Object.freeze({
     version: 1,
     backendId,
     providerInstanceId,
     maximumDurationSeconds,
-    ...(root.allowStandingApprovals === true ? { allowStandingApprovals: true as const } : {}),
     projects: Object.freeze(projects),
   });
 }
@@ -151,13 +182,18 @@ export function resolveGitLabRepositoryBinding(
   input: RepositoryBindingRequest & { readonly namespaceId: string },
 ): AdmittedRepositoryBinding {
   const request = asRecord(input, ["namespaceId", "repositoryRef", "profile"]);
+  const namespaceId = text(request.namespaceId);
   const repositoryRef = text(request.repositoryRef);
   const profile = request.profile;
   if (typeof profile !== "string") {
     invalid();
   }
   const project = registry.projects.find((candidate) => candidate.path === repositoryRef);
-  if (project === undefined || !project.profiles.includes(profile as GitLabProfile)) {
+  if (project === undefined) {
+    invalid();
+  }
+  const policy = project.namespaces.find((candidate) => candidate.namespaceId === namespaceId);
+  if (policy === undefined || !policy.profiles.includes(profile as GitLabProfile)) {
     invalid();
   }
   return Object.freeze({
@@ -180,13 +216,18 @@ export function resolveGitLabStandingApprovalScope(
     readonly binding: AdmittedRepositoryBinding;
   },
 ): RepositoryApprovalScope | undefined {
-  if (registry.allowStandingApprovals !== true) {
-    return undefined;
-  }
+  const namespaceId = text(input.namespaceId);
   const project = registry.projects.find(
     (candidate) => candidate.path === input.binding.repositoryRef,
   );
-  if (project === undefined || !project.profiles.includes(input.binding.profile as GitLabProfile)) {
+  if (project === undefined) {
+    return undefined;
+  }
+  const policy = project.namespaces.find((candidate) => candidate.namespaceId === namespaceId);
+  if (
+    policy?.allowStandingApproval !== true ||
+    !policy.profiles.includes(input.binding.profile as GitLabProfile)
+  ) {
     return undefined;
   }
   return Object.freeze({

@@ -8,41 +8,60 @@ import {
 } from "../../apps/controller/src/drivers/repo/gitlab/credentials/registry.ts";
 import { GitLabRepositoryPolicy } from "../../apps/controller/src/drivers/repo/gitlab/policy.ts";
 
-// Computed so the source does not pair a 22-character token-shaped name with the GitLab host,
-// which the review input scanner (TruffleHog) reports as a credential.
-const STANDING_APPROVALS = ["allow", "Standing", "Approvals"].join("");
-
 const registry = {
   version: 1,
   backendId: "gitlab",
   providerInstanceId: "acme-repo",
   maximumDurationSeconds: 3600,
-  [STANDING_APPROVALS]: true,
   projects: [
     {
       projectId: "88516404",
       path: "rmcook84/test",
       displayName: "rmcook84/test",
-      profiles: ["git-read", "git-write"],
+      namespaces: [
+        {
+          namespaceId: "ns_1",
+          profiles: ["git-read", "git-write"],
+          allowStandingApproval: true,
+        },
+      ],
     },
     {
       projectId: "88516405",
       path: "rmcook84/other",
-      profiles: ["git-read"],
+      namespaces: [{ namespaceId: "ns_2", profiles: ["git-read"] }],
     },
   ],
 };
 
-test("a GitLab registry is canonical, numeric, and profile bounded", () => {
+test("a GitLab registry is canonical, numeric, and Namespace bounded", () => {
   const validated = validateGitLabRepositoryRegistry(registry, "gitlab");
   assert.equal(validated.projects.length, 2);
-  assert.deepEqual(validated.projects[0].profiles, ["git-read", "git-write"]);
+  assert.deepEqual(validated.projects[0].namespaces[0].profiles, ["git-read", "git-write"]);
   for (const refused of [
     { ...registry, backendId: "other" },
     { ...registry, projects: [] },
     { ...registry, projects: [{ ...registry.projects[0], path: "rmcook84/test/" }] },
     { ...registry, projects: [{ ...registry.projects[0], projectId: "0" }] },
-    { ...registry, projects: [{ ...registry.projects[0], profiles: ["merge"] }] },
+    { ...registry, projects: [{ ...registry.projects[0], namespaces: [] }] },
+    {
+      ...registry,
+      projects: [
+        {
+          ...registry.projects[0],
+          namespaces: [{ ...registry.projects[0].namespaces[0], profiles: ["merge"] }],
+        },
+      ],
+    },
+    {
+      ...registry,
+      projects: [
+        {
+          ...registry.projects[0],
+          namespaces: [registry.projects[0].namespaces[0], registry.projects[0].namespaces[0]],
+        },
+      ],
+    },
     { ...registry, projects: [registry.projects[0], registry.projects[0]] },
     { ...registry, host: "gitlab.com" },
     { ...registry, maximumDurationSeconds: 0 },
@@ -55,7 +74,7 @@ test("a GitLab registry is canonical, numeric, and profile bounded", () => {
   }
 });
 
-test("binding resolution admits only approved projects and profiles", () => {
+test("binding resolution admits only approved Namespace projects and profiles", () => {
   const validated = validateGitLabRepositoryRegistry(registry, "gitlab");
   const binding = resolveGitLabRepositoryBinding(validated, {
     namespaceId: "ns_1",
@@ -72,9 +91,9 @@ test("binding resolution admits only approved projects and profiles", () => {
   assert.throws(
     () =>
       resolveGitLabRepositoryBinding(validated, {
-        namespaceId: "ns_1",
-        repositoryRef: "rmcook84/other",
-        profile: "git-write",
+        namespaceId: "ns_2",
+        repositoryRef: "rmcook84/test",
+        profile: "git-read",
       }),
     /invalid-repository-registry/,
   );
@@ -82,14 +101,23 @@ test("binding resolution admits only approved projects and profiles", () => {
     () =>
       resolveGitLabRepositoryBinding(validated, {
         namespaceId: "ns_1",
-        repositoryRef: "rmcook84/missing",
+        repositoryRef: "rmcook84/other",
         profile: "git-read",
+      }),
+    /invalid-repository-registry/,
+  );
+  assert.throws(
+    () =>
+      resolveGitLabRepositoryBinding(validated, {
+        namespaceId: "ns_2",
+        repositoryRef: "rmcook84/other",
+        profile: "git-write",
       }),
     /invalid-repository-registry/,
   );
 });
 
-test("the policy lists the registry projects and resolves bindings for the session", async () => {
+test("the policy lists and resolves only the Namespace's projects", async () => {
   const policy = new GitLabRepositoryPolicy({ driverId: "gitlab", backendId: "gitlab" }, registry, {
     sessionDurationSeconds: 1800,
   });
@@ -100,6 +128,9 @@ test("the policy lists the registry projects and resolves bindings for the sessi
       displayName: "rmcook84/test",
       allowedProfiles: ["git-read", "git-write"],
     },
+  ]);
+  const otherOptions = await policy.listOptions({ namespaceId: "ns_2" });
+  assert.deepEqual(otherOptions.options, [
     {
       repositoryRef: "rmcook84/other",
       displayName: "rmcook84/other",
@@ -115,6 +146,14 @@ test("the policy lists the registry projects and resolves bindings for the sessi
   assert.throws(
     () =>
       policy.resolve({
+        namespaceId: "ns_2",
+        bindings: [{ repositoryRef: "rmcook84/test", profile: "git-read" }],
+      }),
+    (error) => error.name === "ScopeViolationError",
+  );
+  assert.throws(
+    () =>
+      policy.resolve({
         namespaceId: "ns_1",
         bindings: [
           { repositoryRef: "rmcook84/test", profile: "git-read" },
@@ -123,17 +162,9 @@ test("the policy lists the registry projects and resolves bindings for the sessi
       }),
     (error) => error.name === "ScopeViolationError",
   );
-  assert.throws(
-    () =>
-      policy.resolve({
-        namespaceId: "ns_1",
-        bindings: [{ repositoryRef: "rmcook84/other", profile: "git-full" }],
-      }),
-    (error) => error.name === "ScopeViolationError",
-  );
 });
 
-test("standing approvals follow the registry opt-in and the approved binding", () => {
+test("standing approvals follow the Namespace opt-in and approved binding", () => {
   const validated = validateGitLabRepositoryRegistry(registry, "gitlab");
   const binding = resolveGitLabRepositoryBinding(validated, {
     namespaceId: "ns_1",
@@ -150,11 +181,32 @@ test("standing approvals follow the registry opt-in and the approved binding", (
     },
   );
   const withoutOptIn = validateGitLabRepositoryRegistry(
-    { ...registry, [STANDING_APPROVALS]: undefined },
+    {
+      ...registry,
+      projects: [
+        {
+          ...registry.projects[0],
+          namespaces: [{ ...registry.projects[0].namespaces[0], allowStandingApproval: undefined }],
+        },
+        registry.projects[1],
+      ],
+    },
     "gitlab",
   );
   assert.equal(
     resolveGitLabStandingApprovalScope(withoutOptIn, { namespaceId: "ns_1", binding }),
+    undefined,
+  );
+  const otherBinding = resolveGitLabRepositoryBinding(withoutOptIn, {
+    namespaceId: "ns_2",
+    repositoryRef: "rmcook84/other",
+    profile: "git-read",
+  });
+  assert.equal(
+    resolveGitLabStandingApprovalScope(withoutOptIn, {
+      namespaceId: "ns_2",
+      binding: otherBinding,
+    }),
     undefined,
   );
 });

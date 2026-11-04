@@ -95,10 +95,10 @@ for what the original broker can confirm.
 
 ## GitLab development workflow
 
-GitLab.com uses registry-backed Repo policy, the repository credential service,
-and an operator-supplied project PAT. Native Agent sessions can read, push
-approved refs, and create draft merge requests. OpenShell delivery and durable
-operation receipts remain outside this milestone. See the
+GitLab.com uses registry-backed Repo policy, the credential service, and an
+operator-supplied PAT; registry entries bind projects to Namespaces and profiles.
+Native Agent sessions can read, push approved refs, and create drafts.
+OpenShell delivery and durable receipts are excluded. See the
 [proposal](../../specs/rfcs/0029-gitlab-repository-credentials.md) and
 [checks](../testing/repository-credentials.md#gitlab-client-checks).
 
@@ -302,7 +302,7 @@ metadata pass through.
 
 ### Git and GitHub CLI
 
-The client runs `/usr/bin/git` with the user's arguments, HOME, identity, hooks,
+The client runs `/usr/bin/git` with user arguments, HOME, identity, hooks,
 aliases, remotes and worktrees. Git and gh preserve exit codes or return
 `128 + signal number`.
 

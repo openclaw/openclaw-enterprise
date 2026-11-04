@@ -90,14 +90,22 @@ export class GitLabRepositoryPolicy implements RepositoryPolicyDriver {
   }
 
   /** Provider catalog shared by the Installation picker and the Driver adapter. */
-  async listCatalog(_input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
-    const options: RepositoryOption[] = this.#registry.projects.map((project) =>
-      Object.freeze({
-        repositoryRef: project.path,
-        displayName: project.displayName ?? project.path,
-        allowedProfiles: Object.freeze([...project.profiles]),
-      }),
-    );
+  async listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
+    const options: RepositoryOption[] = this.#registry.projects.flatMap((project) => {
+      const policy = project.namespaces.find(
+        (candidate) => candidate.namespaceId === input.namespaceId,
+      );
+      if (policy === undefined) {
+        return [];
+      }
+      return [
+        Object.freeze({
+          repositoryRef: project.path,
+          displayName: project.displayName ?? project.path,
+          allowedProfiles: Object.freeze([...policy.profiles]),
+        }),
+      ];
+    });
     return Object.freeze({ options: Object.freeze(options) });
   }
 
