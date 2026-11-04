@@ -5,7 +5,7 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/browser/console.test.mjs",
-    "tests/browser/console-retained-revalidation.test.mjs",
+    "tests/browser/console-retained-revalidation.test.ts",
     "tests/browser/console-namespace-recheck.test.ts",
     "tests/browser/console-namespace-create.test.ts",
     "tests/browser/console-create-agent-member.test.ts",
@@ -68,7 +68,7 @@
       "path": "tests/browser/console.test.mjs"
     },
     {
-      "path": "tests/browser/console-retained-revalidation.test.mjs"
+      "path": "tests/browser/console-retained-revalidation.test.ts"
     },
     {
       "path": "tests/browser/console-namespace-recheck.test.ts"
