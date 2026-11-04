@@ -339,7 +339,7 @@ bundled skills directory into `/home/node/openclaw-runtime-assets`. These checks
 run without external network access or provider credentials. The smoke also
 enrolls a real restricted workspace node under the production supervisor with an
 inert Codex sibling. It requires exactly seven commands, retained identity across
-redeemed/expired-code restarts and live Secret/provider setup replacement, and one
+redeemed/expired-code restarts and file/envelope setup replacement, and one
 completion per setup. These checks do not exercise
 all workspace command payloads, make a model call, or establish a Slack connection.
 When running this suite from inside another container that talks to a host Docker

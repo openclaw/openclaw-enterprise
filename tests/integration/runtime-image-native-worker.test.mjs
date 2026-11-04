@@ -480,8 +480,8 @@ process.exit(r.status);`,
       // and the exported production supervisor all execute without interception.
       const supervisor = `
 const cp = require("node:child_process");
-const spawn = cp.spawn;
-cp.spawn = (command, args, options) => spawn(command,
+const originalSpawn = cp.spawn;
+cp.spawn = (command, args, options) => originalSpawn(command,
   args[0] === "-e" ? ["-e", "setInterval(() => {}, 1000)"] : args, options);
 ${AGENT_WITH_NODE_ENTRYPOINT}`;
       await runDocker(
