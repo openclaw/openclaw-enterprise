@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { writeSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -1003,7 +1004,7 @@ async function runNativeWorker(
                 .toString("base64url"),
               NODE_EXTRA_CA_CERTS: previewCa,
               GITHUB_TOKEN: "openshell:resolve:env:s" + "a".repeat(64) + "_GITHUB_TOKEN",
-              GIT_CONFIG_KEY_1: "credential.https://github.com/example/project.git.helper",
+              GIT_CONFIG_KEY_1: "credential.https://github.com.helper",
             }
           : {}),
         OPENCLAW_HARNESS_MODEL: "openai/fixture",
@@ -1387,8 +1388,9 @@ test("Native worker without Git retains fatal startup errors without a repositor
   assert.equal(outcome.servers.length, 0);
 });
 
-test("Native preview connects after release when both Git and worker setup succeed", async (t) => {
-  const outcome = await runNativeWorker(await harnessDirectory(t), undefined, {
+test("Native preview connects after release with a GitHub-scoped Git shim", async (t) => {
+  const directory = await harnessDirectory(t);
+  const outcome = await runNativeWorker(directory, undefined, {
     env: PROVIDER_TRANSPORT_ENV,
     preview: true,
   });
@@ -1398,4 +1400,51 @@ test("Native preview connects after release when both Git and worker setup succe
     outcome.spawned.map(({ name }) => name),
     ["connect"],
   );
+
+  // Execute the initializer's actual generated shell script with real Git. The
+  // fixture supplies external release/model responses; this proves local Git
+  // setup and credential scope, not live OpenShell authorization or model use.
+  const globalConfig = join(directory, "gitconfig");
+  await writeFile(
+    globalConfig,
+    "[http]\nsslVerify = false\nfollowRedirects = true\n[credential]\nuseHttpPath = false\n",
+  );
+  const shim = join(directory, "tmp", "oce-native-git", "git");
+  const git = (args, input) =>
+    spawnSync(shim, args, {
+      input,
+      encoding: "utf8",
+      timeout: 5000,
+      env: {
+        HOME: directory,
+        PATH: "/usr/bin",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+        GIT_CONFIG_GLOBAL: globalConfig,
+      },
+    });
+  const credentials = git(
+    ["credential", "fill"],
+    "protocol=https\nhost=github.com\npath=fixture/repository.git\n\n",
+  );
+  assert.equal(credentials.status, 0, credentials.stderr);
+  assert.match(credentials.stdout, /^username=x-access-token$/m);
+  assert.match(
+    credentials.stdout,
+    new RegExp("^password=openshell:resolve:env:s" + "a".repeat(64) + "_GITHUB_TOKEN$", "m"),
+  );
+  const foreign = git(
+    ["credential", "fill"],
+    "protocol=https\nhost=not-github.example\npath=fixture/repository.git\n\n",
+  );
+  assert.notEqual(foreign.status, 0, "another host cannot receive the GitHub alias");
+  assert.equal(foreign.stdout, "");
+  for (const [key, expected] of [
+    ["http.sslVerify", "true"],
+    ["http.followRedirects", "false"],
+    ["credential.useHttpPath", "true"],
+  ]) {
+    const configured = git(["config", "--get", key]);
+    assert.equal(configured.status, 0, configured.stderr);
+    assert.equal(configured.stdout.trim(), expected, "the shim overrides inherited unsafe " + key);
+  }
 });
