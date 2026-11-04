@@ -191,8 +191,8 @@ Stores the private, single-use OAuth attempt for the initiating principal and br
 - `state_hash`
 - `namespace_id`
 - `credential_source_id`
-- `pkce_verifier`
-- `selected_scopes`
+- `private_state`
+- `attachment_intent`
 - `issuer_required`
 - `session_id`
 - `redirect_uri`

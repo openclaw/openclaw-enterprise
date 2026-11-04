@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { PluginDriver } from "@openclaw-enterprise/contracts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
-import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
-import {
-  DependencyUnavailableError,
-  PostgresHumanAuthentication,
-} from "../../packages/occ/src/index.ts";
+import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
+import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
@@ -58,12 +58,11 @@ async function accountSession(
     { origin: "http://127.0.0.1" },
   );
   return (
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "DELETE" | "PATCH",
     url: string,
     body?: Record<string, unknown>,
-    target = app,
   ) =>
-    target.inject({
+    app.inject({
       method,
       url,
       headers: { host: "127.0.0.1", ...authenticatedHeaders(session) },
@@ -71,212 +70,167 @@ async function accountSession(
     });
 }
 
-test(
-  "OAuth consent saves the account for its owner and refreshes it through the Token Service",
-  {
-    skip:
-      requiresPostgres.skip ||
-      (!(issuer && tokenOrigin && secretsFile) && "Prepare the keycloak-oidc CI lane."),
-  },
-  async (t) => {
-    assert.ok(issuer && tokenOrigin && secretsFile);
-    const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
-    const clientId = `oce-saved-${randomUUID()}`;
-    const clientSecret = randomUUID();
-    await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/clients", {
-      clientId,
-      secret: clientSecret,
-      enabled: true,
-      publicClient: false,
-      standardFlowEnabled: true,
-      defaultClientScopes: [],
-      directAccessGrantsEnabled: false,
-      redirectUris: [redirectUri],
-      attributes: {
-        "pkce.code.challenge.method": "S256",
-        "exclude.issuer.from.auth.response": "true",
-        "access.token.lifespan": "90",
+const lane = {
+  skip:
+    requiresPostgres.skip ||
+    (!(issuer && tokenOrigin && secretsFile) && "Prepare the keycloak-oidc CI lane."),
+};
+async function oauthAccounts(t: TestContext) {
+  assert.ok(issuer && tokenOrigin && secretsFile);
+  const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
+  const clientId = `oce-saved-${randomUUID()}`;
+  const clientSecret = randomUUID();
+  await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/clients", {
+    clientId,
+    secret: clientSecret,
+    enabled: true,
+    publicClient: false,
+    standardFlowEnabled: true,
+    defaultClientScopes: [],
+    directAccessGrantsEnabled: false,
+    redirectUris: [redirectUri],
+    attributes: { "pkce.code.challenge.method": "S256" },
+  });
+  t.after(async () => {
+    const [client] = await keycloakRealmAdmin(
+      issuer,
+      secrets.admin,
+      "GET",
+      `/clients?clientId=${clientId}`,
+    );
+    if (client) {
+      await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/clients/${client.id}`);
+    }
+  });
+
+  // The real Token Service and OpenShell Drivers run against recording Secret/OpenShell stores.
+  // Only Keycloak issues and validates access tokens.
+  const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
+  const preparedTokens = new TokenService(
+    new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
+  );
+  let skew = 0;
+  const { app, controller, state, principal, computeDriver, inject, pool, adminAccount } =
+    await createPostgresAgentApp(t, {
+      label: "saved-account",
+      authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
+      secretDriver,
+      controllerOptions: { preparedTokens, now: () => new Date(Date.now() + skew) },
+      appOptions: {
+        publicOrigin,
+        provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
       },
     });
-    t.after(async () => {
-      const [client] = await keycloakRealmAdmin(
-        issuer,
-        secrets.admin,
-        "GET",
-        `/clients?clientId=${clientId}`,
-      );
-      if (client) {
-        await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/clients/${client.id}`);
-      }
-    });
-
-    // The API and Token Service use the fixture Secret store. Keycloak authenticates the
-    // registration and issues actual tokens without OpenShell or a Credential Refresh Driver.
-    const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
-    const preparedTokens = new TokenService();
-    const serverUrl = "https://api.connections.test/mcp";
-    let discoveredResource = serverUrl;
-    const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
-    const { app, controller, state, principal, inject, pool, adminAccount } =
-      await createPostgresAgentApp(t, {
-        label: "saved-account",
-        poolOptions: { max: 1, connectionTimeoutMillis: 5000 },
-        authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
-        secretDriver,
-        controllerOptions: { preparedTokens },
-        appOptions: {
-          // Discovery metadata is controlled; authorization, consent and token exchange reach Keycloak.
-          discoverMcpAuthorization: async (discoveredUrl: string) => ({
-            serverUrl: discoveredUrl,
-            resource: discoveredResource,
-            issuers: [issuer],
-            issuer,
-            authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
-            tokenUrl,
-            requestedScopes: ["openid"],
-            resourceScopes: ["openid", "profile"],
-            supportedScopes: ["openid", "profile"],
-            tokenEndpointAuthMethods: ["client_secret_basic", "client_secret_post"],
-          }),
-          publicOrigin,
-          provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
-        },
-      });
-    const resolveClient = controller.resolveConnectionClient.bind(controller);
-    preparedTokens.registerIssuer(new OAuthAccountTokens(state, secretDriver, resolveClient));
-    // A second issuer must not take custody of grants assigned to the installed one.
-    assert.throws(
-      () =>
-        preparedTokens.registerIssuer(
-          new OAuthAccountTokens(state, createTestSecretDriver(), resolveClient),
-        ),
-      /already owns this registration/,
-    );
-    const auth = new PostgresHumanAuthentication(
-      state,
-      controller.installation.id,
-      betterAuthIssuer(controller.installation.id),
-    );
-    const provision: NonNullable<ControllerAppOptions["provisionAuthAccount"]> = async (
+  const auth = new PostgresHumanAuthentication(
+    state,
+    controller.installation.id,
+    betterAuthIssuer(controller.installation.id),
+  );
+  const provision: NonNullable<ControllerAppOptions["provisionAuthAccount"]> = async (
+    seed,
+    audit,
+    prepared,
+    external,
+  ) => {
+    validateAuthAccountPrincipalSeed(
       seed,
-      audit,
-      prepared,
-      external,
-    ) => {
-      validateAuthAccountPrincipalSeed(
-        seed,
-        await state.loadNativeIAMState(controller.installation.id),
-        controller.installation.id,
-      );
-      await auth.provisionPasswordAccount(prepared, seed, audit, external);
+      await state.loadNativeIAMState(controller.installation.id),
+      controller.installation.id,
+    );
+    await auth.provisionPasswordAccount(prepared, seed, audit, external);
+  };
+  Object.assign(computeDriver, {
+    resolveSandboxNamespace: async (namespace: { id: string }) => ({
+      ...namespace,
+      name: `oce-${namespace.id.slice(3, 11)}`,
+    }),
+  });
+  const { providers } = selectTemplateDrivers(controller);
+  const makeNamespace = async () => {
+    const result = await inject("POST", "/namespaces", { name: `Accounts ${randomUUID()}` });
+    assert.equal(result.statusCode, 201, result.body);
+    const id: string = result.json().data.id;
+    await controller.handleNamespaceLifecycle(principal.id, id, "ready");
+    return id;
+  };
+  const namespaceId = await makeNamespace();
+  const base = `/namespaces/${namespaceId}`;
+  const connections = `${base}/connections`;
+  const template = await inject("POST", "/connection-templates", {
+    displayName: "Keycloak",
+    namespaceId,
+    clientId,
+    clientSecret,
+    issuer,
+    authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
+    tokenUrl: `${tokenOrigin}/realms/oce/protocol/openid-connect/token`,
+    scopes: ["openid"],
+    envVar: "CONNECTION_TOKEN",
+    endpoint: { host: "api.connections.test", port: 443, path: "/**" },
+  });
+  assert.equal(template.statusCode, 201, template.body);
+  const input = { connectionTemplateId: template.json().data.id };
+  const ownerId = principal.id;
+  const owner = await accountSession(app, adminAccount.email, adminAccount.password);
+  async function begin(path = connections, body: Record<string, unknown> = input) {
+    const response = await owner("POST", path, body);
+    assert.equal(response.statusCode, 201, response.body);
+    return {
+      id: response.json().data.credentialSourceId as string,
+      callback: await consentRedirect(
+        response.json().data.authorizationUrl,
+        secrets.users.alice.password,
+      ),
     };
-    const makeNamespace = async () => {
-      const result = await inject("POST", "/namespaces", { name: `Accounts ${randomUUID()}` });
-      assert.equal(result.statusCode, 201, result.body);
-      const id: string = result.json().data.id;
-      await controller.handleNamespaceLifecycle(principal.id, id, "ready");
-      return id;
-    };
-    const namespaceId = await makeNamespace();
+  }
+  return {
+    app,
+    controller,
+    state,
+    principal,
+    pool,
+    adminAccount,
+    inject,
+    providers,
+    makeNamespace,
+    secretDriver,
+    namespaceId,
+    base,
+    connections,
+    input,
+    owner,
+    ownerId,
+    begin,
+    advanceRegistrationFence() {
+      skew = 120_000;
+    },
+  };
+}
+
+test(
+  "OAuth consent saves the account for its owner and refreshes it through the Token Service",
+  lane,
+  async (t) => {
+    const {
+      app,
+      state,
+      controller,
+      pool,
+      adminAccount,
+      inject,
+      providers,
+      makeNamespace,
+      secretDriver,
+      namespaceId,
+      base,
+      connections,
+      input,
+      owner,
+      ownerId,
+      begin,
+      advanceRegistrationFence,
+    } = await oauthAccounts(t);
     const otherId = await makeNamespace();
-    const base = `/namespaces/${namespaceId}`;
-    const connections = `${base}/connections`;
-    const recipient = { host: "api.connections.test", port: 443, path: "/mcp" };
-    const manualDestinations = [
-      recipient,
-      { host: "files.connections.test", port: 443, path: "/exports/**" },
-    ];
-    const manualConfig = {
-      mode: "manual",
-      issuer,
-      authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
-      tokenUrl,
-      destinations: manualDestinations,
-      scopes: ["openid"],
-    };
-    const template = await inject("POST", "/connection-templates", {
-      ...manualConfig,
-      namespaceId,
-      displayName: "Keycloak",
-      revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
-    });
-    assert.equal(template.statusCode, 201, template.body);
-    const manual = { connectionTemplateId: template.json().data.id };
-    const listsManualTemplate = async (path: string) => {
-      const result = await inject("GET", path);
-      assert.equal(result.statusCode, 200, result.body);
-      return result
-        .json()
-        .data.some((entry: { id: string }) => entry.id === manual.connectionTemplateId);
-    };
-    // Admins can configure a saved template before a person can use it to start consent.
-    assert.equal(await listsManualTemplate("/connection-templates"), true);
-    assert.equal(await listsManualTemplate(`${base}/connection-templates`), false);
-    assert.equal((await inject("POST", connections, manual)).statusCode, 409);
-    const registered = await inject("POST", "/oauth-clients", {
-      connectionTemplateId: manual.connectionTemplateId,
-      connectionTemplateVersion: template.json().data.current.version,
-      displayName: "Saved accounts",
-      clientId,
-      clientSecret,
-      tokenEndpointAuthMethod: "client_secret_basic",
-    });
-    assert.equal(registered.statusCode, 201, registered.body);
-    const oauthClientId = registered.json().data.id;
-    // Registering the first client makes the current template ready for consent.
-    assert.equal(await listsManualTemplate(`${base}/connection-templates`), true);
-    const manualStart = await inject("POST", connections, manual);
-    assert.equal(manualStart.statusCode, 201, manualStart.body);
-    // A cancelled browser attempt has no outstanding gateway write. An admin can retire it immediately.
-    const pendingId = manualStart.json().data.credentialSourceId;
-    const removed = await inject("DELETE", `${base}/credential-sources/${pendingId}`);
-    assert.equal(removed.statusCode, 204, removed.body);
-    const pendingSession = await pool.query(
-      "SELECT 1 FROM occ.connection_sessions WHERE credential_source_id=$1",
-      [pendingId],
-    );
-    assert.equal(pendingSession.rowCount, 0);
-    const mcpConfig = {
-      displayName: "Scope selection",
-      mode: "mcp_discovery",
-      issuer,
-      serverUrl,
-      scopes: ["openid", "profile"],
-      oauthClientId,
-    };
-    const mcp = await inject("POST", "/connection-templates", { ...mcpConfig, namespaceId });
-    assert.equal(mcp.statusCode, 201, mcp.body);
-    const input = { connectionTemplateId: mcp.json().data.id, selectedScopes: ["openid"] };
-    for (const selectedScopes of [undefined, ["profile"], ["openid", "other"]]) {
-      const refused = await inject("POST", connections, {
-        connectionTemplateId: input.connectionTemplateId,
-        ...(selectedScopes && { selectedScopes }),
-      });
-      assert.equal(refused.statusCode, 400, refused.body);
-    }
-    // With no configured scope list, discovery suggests scopes and its challenge still requires openid.
-    const unrestrictedMcp = await inject("POST", "/connection-templates", {
-      ...mcpConfig,
-      namespaceId,
-      scopes: [],
-      displayName: "Open MCP scope selection",
-    });
-    assert.equal(unrestrictedMcp.statusCode, 201, unrestrictedMcp.body);
-    const unrestrictedId = unrestrictedMcp.json().data.id;
-    assert.equal(
-      (await inject("POST", connections, { connectionTemplateId: unrestrictedId })).statusCode,
-      400,
-    );
-    const manyScopes = ["openid", ...Array.from({ length: 32 }, (_, i) => "custom." + i)];
-    const freeStart = await inject("POST", connections, {
-      connectionTemplateId: unrestrictedId,
-      selectedScopes: manyScopes,
-    });
-    assert.equal(freeStart.statusCode, 201, freeStart.body);
-    assert.equal(
-      new URL(freeStart.json().data.authorizationUrl).searchParams.get("scope"),
-      manyScopes.join(" "),
-    );
     // Even an Installation administrator cannot use a Namespace-scoped template elsewhere.
     const wrongScope = await inject("POST", `/namespaces/${otherId}/connections`, input);
     assert.equal(wrongScope.statusCode, 404, wrongScope.body);
@@ -302,160 +256,12 @@ test(
     });
     assert.equal(binding.statusCode, 201, binding.body);
     assert.equal((await reader("POST", connections, input)).statusCode, 403);
-    const ownerId = principal.id;
-    const owner = await accountSession(app, adminAccount.email, adminAccount.password);
     const secondSession = await accountSession(app, adminAccount.email, adminAccount.password);
     const visible = await owner("GET", `${base}/connection-templates`);
     assert.equal(visible.statusCode, 200, visible.body);
     assert.ok(
       visible.json().data.some((value: { id: string }) => value.id === input.connectionTemplateId),
     );
-    // Let Keycloak choose a default on this isolated registration. The account must record it
-    // as a provider grant while preserving that the person did not request an explicit scope.
-    const unrestrictedManual = await inject("POST", "/connection-templates", {
-      ...manualConfig,
-      namespaceId,
-      oauthClientId,
-      scopes: [],
-      displayName: "Provider defaults",
-    });
-    assert.equal(unrestrictedManual.statusCode, 201, unrestrictedManual.body);
-    const [keycloakClient] = await keycloakRealmAdmin(
-      issuer,
-      secrets.admin,
-      "GET",
-      "/clients?clientId=" + clientId,
-    );
-    const realmScopes = await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes");
-    const profile = realmScopes.find((scope: { name: string }) => scope.name === "profile");
-    assert.ok(profile);
-    const defaultPath = "/clients/" + keycloakClient.id + "/default-client-scopes/" + profile.id;
-    await keycloakRealmAdmin(issuer, secrets.admin, "PUT", defaultPath);
-    const defaults = await owner("POST", connections, {
-      connectionTemplateId: unrestrictedManual.json().data.id,
-      selectedScopes: [],
-    });
-    assert.equal(defaults.statusCode, 201, defaults.body);
-    const defaultsUrl = defaults.json().data.authorizationUrl;
-    assert.equal(new URL(defaultsUrl).searchParams.has("scope"), false);
-    assert.equal(new URL(defaultsUrl).searchParams.has("resource"), false);
-    const defaultCallback = await owner(
-      "GET",
-      await consentRedirect(defaultsUrl, secrets.users.alice.password),
-    );
-    assert.match(String(defaultCallback.headers.location), /connection=connected/);
-    const defaultsId = defaults.json().data.credentialSourceId;
-    const defaultAccounts = await owner("GET", connections);
-    const defaultAccount = defaultAccounts
-      .json()
-      .data.find(
-        (account: { credentialSourceId: string }) => account.credentialSourceId === defaultsId,
-      );
-    assert.deepEqual(defaultAccount.requestedScopes, []);
-    assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
-    assert.deepEqual(defaultAccount.destinations, manualDestinations);
-    // Administrators change delivery for existing accounts without rewriting the consent receipt.
-    const widened = [
-      ...manualDestinations,
-      { host: "other.connections.test", port: 443, path: "/**" },
-    ];
-    const updated = await inject(
-      "PATCH",
-      "/connection-templates/" + defaultAccount.connectionTemplateId,
-      {
-        ...manualConfig,
-        oauthClientId,
-        scopes: [],
-        destinations: widened,
-      },
-    );
-    assert.equal(updated.statusCode, 200, updated.body);
-    assert.deepEqual(updated.json().data.current.destinations, widened);
-    const savedAgain = await owner("GET", connections);
-    assert.equal(savedAgain.statusCode, 200, savedAgain.body);
-    const approved = savedAgain
-      .json()
-      .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
-    assert.deepEqual(approved.destinations, widened);
-    assert.ok(approved.connectionTemplateVersion < updated.json().data.current.version);
-    await assert.rejects(
-      pool.query(
-        `INSERT INTO occ.saved_connections
-         SELECT (jsonb_populate_record(NULL::occ.saved_connections,
-           to_jsonb(s) || jsonb_build_object('destinations', $2::jsonb))).*
-         FROM occ.saved_connections s WHERE credential_source_id = $1`,
-        [defaultsId, JSON.stringify(widened)],
-      ),
-      { code: "23514", message: /approved template version/ },
-    );
-    // Replacing and removing rows take effect through the same public account response.
-    const changedDestinations = [{ host: recipient.host, port: 8443, path: "/reports/**" }];
-    const templatePath = "/connection-templates/" + defaultAccount.connectionTemplateId;
-    const changed = await inject("PATCH", templatePath, {
-      ...manualConfig,
-      scopes: [],
-      oauthClientId,
-      destinations: changedDestinations,
-    });
-    assert.equal(changed.statusCode, 200, changed.body);
-    const effectiveDefault = async () => {
-      const result = await owner("GET", connections);
-      assert.equal(result.statusCode, 200, result.body);
-      return result
-        .json()
-        .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
-    };
-    assert.deepEqual((await effectiveDefault()).destinations, changedDestinations);
-    // Delivery stops on an issuer or mode change, while the provider grant remains usable.
-    const incompatible = await inject("PATCH", templatePath, {
-      ...manualConfig,
-      issuer: issuer + "/different",
-      scopes: [],
-    });
-    assert.equal(incompatible.statusCode, 200, incompatible.body);
-    assert.deepEqual((await effectiveDefault()).destinations, []);
-    const modeChanged = await inject("PATCH", templatePath, mcpConfig);
-    assert.equal(modeChanged.statusCode, 200, modeChanged.body);
-    assert.deepEqual((await effectiveDefault()).destinations, []);
-    const originalReceipt = await pool.query(
-      `SELECT destinations, oauth_client_id, client_id, issuer, token_url,
-              connection_template_version, requested_scopes, granted_scopes
-       FROM occ.saved_connections WHERE credential_source_id=$1`,
-      [defaultsId],
-    );
-    assert.deepEqual(originalReceipt.rows[0], {
-      destinations: manualDestinations,
-      oauth_client_id: oauthClientId,
-      client_id: clientId,
-      issuer,
-      token_url: tokenUrl,
-      connection_template_version: defaultAccount.connectionTemplateVersion,
-      requested_scopes: [],
-      granted_scopes: ["profile"],
-    });
-    const refreshIncompatible = await owner(
-      "POST",
-      `${base}/credential-sources/${defaultsId}/rotate`,
-    );
-    assert.equal(refreshIncompatible.statusCode, 200, refreshIncompatible.body);
-    await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
-    const disconnected = await owner("DELETE", connections + "/" + defaultsId);
-    assert.equal(disconnected.statusCode, 204, disconnected.body);
-    async function begin() {
-      const response = await owner("POST", connections, input);
-      assert.equal(response.statusCode, 201, response.body);
-      assert.equal(
-        new URL(response.json().data.authorizationUrl).searchParams.get("scope"),
-        "openid",
-      );
-      return {
-        id: response.json().data.credentialSourceId as string,
-        callback: await consentRedirect(
-          response.json().data.authorizationUrl,
-          secrets.users.alice.password,
-        ),
-      };
-    }
     // The same user in a second browser cannot spend the first browser's state or code.
     const { id, callback } = await begin();
     // Both templates select this client in the same Namespace, but the person approved the MCP
@@ -747,112 +553,9 @@ test(
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
-    // Let this short-lived token actually expire before any worker starts. A normal resolve
-    // must obtain its replacement with the current client secret and the original user's grant.
-    await setIssuedLifetime(300);
-    const oauth = preparedTokens.issuer("oauth_refresh_token");
-    assert.ok(oauth);
-    const expiring = await oauth.status(
-      { kind: "oauth_refresh_token", namespaceId, sourceId: id },
-      t.signal,
-    );
-    await waitFor(
-      "Keycloak's access token to expire",
-      async () => (Date.now() >= Date.parse(expiring.expiresAt!) ? true : undefined),
-      { timeoutMs: 20_000, intervalMs: 100 },
-    );
-    const afterExpiry = await prepared();
-    assert.notEqual(afterExpiry, renewed);
-    assert.equal(await subject(afterExpiry), alice);
-    const afterRotation = await owner("GET", connections);
-    assert.equal(afterRotation.statusCode, 200, afterRotation.body);
-    assert.deepEqual(
-      afterRotation
-        .json()
-        .data.map((saved: { credentialSourceId: string }) => saved.credentialSourceId),
-      [id],
-    );
-    const restoreMcp = await inject(
-      "PATCH",
-      "/connection-templates/" + mcp.json().data.id,
-      mcpConfig,
-    );
-    assert.equal(restoreMcp.statusCode, 200, restoreMcp.body);
-    // Publish the due schedule used for rotation but make no resolve request. A separate worker
-    // must use the saved account's refresh grant and publish a new version before it is read.
-    const prior = await state.read((view) =>
-      view.savedConnections.findTokenCustody(namespaceId, id),
-    );
-    await state.transact((unit) =>
-      unit.savedConnections.recordTokenSchedule(namespaceId, id, "due"),
-    );
-    async function startAccountWorker() {
-      const fixture = await createBackendFixture(t);
-      const { worker } = fixture.startWorker({
-        backends: [],
-        secretDriver,
-        tokenService: new TokenService(),
-      });
-      await worker.start();
-      return worker;
-    }
-    const worker = await startAccountWorker();
-    await waitFor("background renewal to publish a new scheduled version", async () => {
-      const current = await state.read((view) =>
-        view.savedConnections.findTokenCustody(namespaceId, id),
-      );
-      return current?.scheduledVersion && current.scheduledVersion !== prior?.scheduledVersion
-        ? true
-        : undefined;
-    });
-    const background = await prepared();
-    assert.notEqual(background, afterExpiry);
-    assert.equal(await subject(background), alice);
-    await worker.stop();
-    const observed = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const read = secretDriver.withValue.bind(secretDriver);
-    const slowRead = t.mock.method(
-      secretDriver,
-      "withValue",
-      async (...args: Parameters<typeof read>) => {
-        const selected = await read(...args);
-        observed.resolve();
-        await release.promise;
-        return selected;
-      },
-      { times: 1 },
-    );
-    const resolving = preparedTokens.resolve(
-      { kind: "oauth_refresh_token", namespaceId, sourceId: id },
-      {
-        signal: t.signal,
-        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
-        minimumValidityMs: 0,
-      },
-    );
-    await observed.promise;
-    // The SQL revocation survives a transient custody failure. A worker with the same
-    // Secret store and Token Service finishes it after the API request has returned.
-    const unavailableDelete = t.mock.method(secretDriver, "delete", async () => {
-      throw new DependencyUnavailableError("Secret store unavailable");
-    });
-    const interrupted = await owner("DELETE", `${connections}/${id}`);
-    assert.equal(interrupted.statusCode, 503, interrupted.body);
-    assert.ok(secretDriver.has(privateRef));
-    // Releasing a read after OCC committed revocation must withhold the already-read bearer.
-    release.resolve();
-    assert.equal(await resolving, undefined);
-    slowRead.mock.restore();
-    unavailableDelete.mock.restore();
-    await startAccountWorker();
-
-    await waitFor("the worker to retire the disconnected account", async () => {
-      const remaining = await state.read((view) =>
-        view.savedConnections.findSavedConnection(namespaceId, id),
-      );
-      return remaining === undefined ? true : undefined;
-    });
+    // Advancing OCC's clock clears the credential registration fence without delaying the test.
+    advanceRegistrationFence();
+    assert.equal((await owner("DELETE", `${connections}/${id}`)).statusCode, 204);
     assert.equal(
       (
         await pool.query(
@@ -946,5 +649,174 @@ test(
     });
     await unspent.body?.cancel();
     assert.equal(unspent.status, 200, "logout prevents OCE from redeeming the authorization code");
+  },
+);
+
+test(
+  "Plugin consent attaches its saved account only while the Agent still permits the requested binding",
+  lane,
+  async (t) => {
+    const { controller, state, namespaceId, base, connections, input, pool, owner, begin } =
+      await oauthAccounts(t);
+    const pluginId = "test-keycloak";
+    const slotId = "account";
+    const releaseSha256 = "a".repeat(64);
+    // The selected test plugin describes the fixture issuer. OCC handles the real intent,
+    // callback, grant and draft. The managed Google release has separate Driver conformance.
+    const plugin: PluginDriver = {
+      id: "keycloak-plugin-driver",
+      capability: "plugin",
+      implementation: "keycloak-fixture",
+      policyCapabilities: new OCCPluginDriver().policyCapabilities,
+      validatePolicies() {},
+      async listCatalog() {
+        return [];
+      },
+      credentials: {
+        choices() {
+          return [];
+        },
+        validate() {},
+        connectionSlot(selections, requestedPlugin, requestedSlot) {
+          const selected = selections[requestedPlugin];
+          if (requestedPlugin !== pluginId || requestedSlot !== slotId || !selected?.enabled) {
+            return undefined;
+          }
+          const bound = selected.driverPolicy?.credentials as { account?: string } | undefined;
+          return {
+            releaseSha256,
+            credentialSourceId: bound?.account ?? null,
+            acceptsTemplate(version) {
+              return version.issuer === issuer && version.envVar === "CONNECTION_TOKEN";
+            },
+            bind(source) {
+              return {
+                ...selected,
+                driverPolicy: { releaseSha256, credentials: { account: source.id } },
+              };
+            },
+          };
+        },
+      },
+    };
+    controller.registerDriver(plugin);
+    controller.selectDriver("plugin", plugin.id);
+    const config = await owner("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-5.1"),
+    });
+    assert.equal(config.statusCode, 201, config.body);
+    const agents = `${base}/agents`;
+    const agent = async (name: string) => {
+      const created = await owner("POST", agents, {
+        name,
+        configurationId: config.json().data.id,
+        plugins: { [pluginId]: { enabled: true } },
+      });
+      assert.equal(created.statusCode, 201, created.body);
+      return created.json().data.id as string;
+    };
+    const a = await agent("Primary");
+    const b = await agent("Second");
+    const path = (id: string) => `${agents}/${id}`;
+    const draft = async (id: string) => {
+      const response = await owner("GET", path(id));
+      assert.equal(response.statusCode, 200, response.body);
+      return response.json().data;
+    };
+    const attached = async (id: string) =>
+      (await draft(id)).credentialSources?.map((ref: { sourceId: string }) => ref.sourceId) ?? [];
+    const authority = new NativeIAMDriver(state);
+    const canUse = async (agentId: string, sourceId: string) => {
+      const agent = await state.read((view) => view.agents.findAgent(namespaceId, agentId));
+      assert.ok(agent);
+      return (
+        await authority.authorize({
+          principalId: agent.servicePrincipalId,
+          action: "operate",
+          resource: { kind: "credential_source", namespaceId, id: sourceId },
+        })
+      ).allowed;
+    };
+    const grant = await begin();
+    assert.equal((await owner("GET", grant.callback)).statusCode, 303);
+    assert.deepEqual(await attached(a), []);
+    assert.deepEqual(await attached(b), []);
+    const scoped = await owner(
+      "GET",
+      `${path(a)}/plugins/${pluginId}/credentials/${slotId}/connection-templates`,
+    );
+    assert.equal(scoped.statusCode, 200, scoped.body);
+    assert.deepEqual(
+      scoped.json().data.map((row: { id: string }) => row.id),
+      [input.connectionTemplateId],
+    );
+    const pluginConsent = (expected: string | null) =>
+      begin(`${path(a)}/connections`, {
+        ...input,
+        connectionTemplateVersion: 1,
+        pluginId,
+        slotId,
+        releaseSha256,
+        expectedCredentialSourceId: expected,
+      });
+    const first = await pluginConsent(null);
+    const competing = await pluginConsent(null);
+    async function finish(callback: string, outcome: "attached" | "saved") {
+      const response = await owner("GET", callback);
+      assert.equal(response.statusCode, 303, response.body);
+      const location = new URL(String(response.headers.location), publicOrigin);
+      assert.equal(location.pathname, `/console/agents/${a}`);
+      assert.equal(location.searchParams.get("connection"), outcome);
+    }
+    await finish(first.callback, "attached");
+    assert.deepEqual(await attached(a), [first.id]);
+    assert.equal(await canUse(a, first.id), true);
+    await finish(competing.callback, "saved");
+    assert.equal(await canUse(a, competing.id), false);
+    assert.equal((await draft(a)).plugins[pluginId].driverPolicy.credentials.account, first.id);
+    assert.deepEqual(await attached(a), [first.id]);
+    // The native IAM authority adds an exact Agent restriction while Keycloak consent is open.
+    // The valid account remains the user's even though changing this Agent now fails.
+    const denied = await pluginConsent(first.id);
+    const restrictionId = `restriction_${randomUUID()}`;
+    await pool.query(
+      "INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id) VALUES ($1,$2,'update','agent',$3)",
+      [restrictionId, namespaceId, a],
+    );
+    const verifyRefusal = await owner("POST", `${path(a)}/connections/${grant.id}`);
+    assert.equal(verifyRefusal.statusCode, 403, verifyRefusal.body);
+    await finish(denied.callback, "saved");
+    assert.equal(await canUse(a, denied.id), false);
+    assert.deepEqual(await attached(a), [first.id]);
+    assert.equal((await draft(a)).plugins[pluginId].driverPolicy.credentials.account, first.id);
+    const accounts = await owner("GET", connections);
+    assert.equal(accounts.statusCode, 200, accounts.body);
+    assert.deepEqual(
+      accounts
+        .json()
+        .data.map((row: { credentialSourceId: string }) => row.credentialSourceId)
+        .sort(),
+      [grant.id, first.id, competing.id, denied.id].sort(),
+    );
+    // The restriction on A stays in force. Two independently authorized Agents share the
+    // standalone account. Detaching from C leaves B's operate decision and the account intact.
+    const c = await agent("Third");
+    for (const target of [b, c]) {
+      const updated = await owner("POST", `${path(target)}/connections/${grant.id}`);
+      assert.equal(updated.statusCode, 204, updated.body);
+    }
+    const detached = await owner("DELETE", `${path(c)}/connections/${grant.id}`);
+    assert.equal(detached.statusCode, 200, detached.body);
+    assert.deepEqual(await attached(c), []);
+    assert.deepEqual(await attached(b), [grant.id]);
+    assert.equal(await canUse(c, grant.id), false);
+    assert.equal(await canUse(b, grant.id), true);
+    const stillSaved = await owner("GET", connections);
+    assert.ok(
+      stillSaved
+        .json()
+        .data.some((row: { credentialSourceId: string }) => row.credentialSourceId === grant.id),
+    );
   },
 );

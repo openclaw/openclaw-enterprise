@@ -1998,10 +1998,9 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [66, "preAgentCredentialSourceLimit"],
-      [67, "preAgentPluginDriver"],
-      [68, "preConnectionTemplates"],
-      [69, "preSavedConnections"],
+      [66, "preConnectionTemplates"],
+      [67, "preSavedConnections"],
+      [68, "preConnectionAttachmentIntent"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

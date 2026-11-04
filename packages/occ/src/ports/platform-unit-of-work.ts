@@ -80,6 +80,8 @@ export function bindPlatformUnitOfWork(
       "createTokenCustody",
       "recordTokenSchedule",
       "findSavedConnection",
+      "hasPendingConnectionWithdrawals",
+      "listAgentConnections",
       "listNamespaceConnections",
       "listRevokingConnections",
       "createSavedConnection",
