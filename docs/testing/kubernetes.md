@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Kubernetes tests
 
 ## Overview
