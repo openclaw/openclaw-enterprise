@@ -8,7 +8,7 @@ author: cooktheryan
 
 - **ID:** RFC-0029
 - **Created:** 2026-10-20
-- **Last updated:** 2026-11-03
+- **Last updated:** 2026-11-04
 - **Implementation plan:** [RFC-0029 implementation plan](../plans/0029-openai-compatible-model-endpoints.md)
 - **Related:** [PR #913: Support OpenAI-compatible Codex model endpoints](https://github.com/openclaw/openclaw-enterprise/pull/913), [Create Agent reference](../../docs/reference/console/create-and-deploy.md), [Compute Driver contract](../../docs/reference/drivers/compute.md), [Harness execution](../../docs/reference/harness-execution.md)
 
@@ -16,13 +16,13 @@ author: cooktheryan
 
 Add a fixed **Custom (Responses API)** provider to Create Agent. The provider requires an HTTPS Responses endpoint, a model API key, and a manual model ID. OCE stores the credential reference and authorized endpoint together, and checks that pair when it admits and provisions an Agent.
 
-Permission to operate a shared Secret does not authorize sending that key to a different destination. An existing shared Secret may be used with a custom endpoint only when its persisted binding authorizes that endpoint. An arbitrary custom endpoint requires a separately supplied endpoint-specific key or an existing Credential Source whose immutable `authorized_base_url` owns that endpoint. Reject a mismatch during Agent admission and again during provisioning. Do not infer destination consent from `secret:operate` or a browser confirmation.
+Permission to operate a shared Secret does not authorize sending that key to a different destination. An existing shared Secret may be used with a custom endpoint only when its persisted binding authorizes that endpoint. An arbitrary custom endpoint requires a separately supplied endpoint-specific key or an existing Credential Source whose immutable `authorized_base_url` authorizes that endpoint. Reject a mismatch during Agent admission and again during provisioning. Do not infer destination consent from `secret:operate` or a browser confirmation.
 
-The custom choice is a provider selection, not a provider registry. OpenAI remains the default. Dedicated Codex routing is Installation-owned: `runtime.modelProvider`, then OpenAI; an Agent endpoint authorizes the credential but does not redirect that routing. Directly delivered keys are not hostname-confined; the current Agent NetworkPolicy permits broad public HTTPS. Gateway-owned credentials retain their source profile’s host and base-path restrictions.
+The custom choice is a provider selection, not a provider registry. OpenAI remains the default. Dedicated Codex routing is Installation-owned: `runtime.modelProvider`, then OpenAI; an Agent endpoint authorizes the credential but does not redirect that routing. Dedicated native OpenClaw likewise uses a source whose endpoint matches that Installation endpoint; selecting a source authorizes the credential, not a different route. Directly delivered keys are not hostname-confined; the current Agent NetworkPolicy permits broad public HTTPS. Gateway-owned credentials retain their source profile’s host and base-path restrictions.
 
 ## Current behavior
 
-The runtime transports are already present. PR #913 added the Dedicated Codex API-key Responses path and the `runtime.modelProvider` Installation default. Current Compute also reads a bound Credential Source’s `authorized_base_url` before that Installation default. OpenShell Credential Sources accept an optional OpenAI-compatible `authorized_base_url` and bind their profiles to that host and base path. Embedded OpenClaw supports custom providers through Configuration and `OCE_MODEL_API_KEY`, and Dedicated native OpenClaw retains source-owned custom endpoints.
+The runtime transports are already present. PR #913 added the Dedicated Codex API-key Responses path and the `runtime.modelProvider` Installation default. OpenShell Credential Sources accept an optional OpenAI-compatible `authorized_base_url` and bind their profiles to that host and base path. Current Compute requires a bound source’s `authorized_base_url` to equal the Installation model endpoint: `runtime.modelProvider`, otherwise the OpenAI default. It refuses a source that authorizes a different destination during registration and provisioning. Authorization can refuse a destination; it cannot select a different route. Embedded OpenClaw supports custom providers through Configuration and `OCE_MODEL_API_KEY`, and Gateway-backed Dedicated Codex and Dedicated native OpenClaw accept an OpenAI-compatible source only when its endpoint matches the Installation endpoint.
 
 Create Agent does not expose this path as a first-class workflow. Its provider selector offers only OpenAI and Anthropic. Its manual model-ID control exists, but the form does not collect or authorize a custom endpoint. `ComputeAgentProvisioningCapabilities` advertises execution modes but not the Installation’s Codex API-key endpoint. The `harnessAuth` binding records a Secret or Credential Source reference, not the authorized endpoint for a directly delivered key.
 
@@ -31,7 +31,7 @@ Create Agent does not expose this path as a first-class workflow. Its provider s
 - Add the custom provider choice, endpoint field, generic API-key label, and required manual model-ID entry to Create Agent.
 - Persist and enforce the credential-endpoint pair for direct Secret delivery.
 - Keep provider-specific destination parsing and normalization inside the selected Credential Gateway Driver. OCC compares normalized Gateway destinations with Secret authorization and does not interpret OpenShell configuration itself.
-- Let Gateway-backed Dedicated Codex and Dedicated native OpenClaw use an existing Credential Source whose immutable `authorized_base_url` is authoritative and read-only.
+- Let Gateway-backed Dedicated Codex and Dedicated native OpenClaw use an existing Credential Source whose immutable `authorized_base_url` authorizes the Installation endpoint and is read-only.
 - Preserve the OpenAI provider, its existing authentication choices, and Installation-owned Dedicated Codex routing through `runtime.modelProvider`, then OpenAI.
 - Expose `runtime.modelProvider` as `agentProvisioning.codexApiKeyBaseUrl` to authorized Installation readers.
 - Qualify the workflow with real streaming Agent turns and a tool call in Embedded OpenClaw, Dedicated Codex, and Dedicated native OpenClaw.
@@ -61,7 +61,7 @@ Embedded OpenClaw uses a fixed internal `custom` provider with `api: "openai-res
 
 Dedicated Codex compiles the Installation model endpoint and model ID into its existing `openai-compatible` provider with `wire_api = "responses"`. The Agent's endpoint authorization must match that effective destination; it does not take precedence over `runtime.modelProvider`.
 
-Dedicated native OpenClaw selects an existing OpenShell API-key Credential Source. Its immutable `authorized_base_url` owns the endpoint, and the form shows it as read-only. The creator supplies the model metadata Compute requires for that topology; OCE does not invent defaults or bypass admission.
+Dedicated native OpenClaw selects an existing OpenShell API-key Credential Source. Its immutable `authorized_base_url` must match the Installation model endpoint, and the form shows it as read-only; it authorizes the credential but does not redirect routing. The creator supplies the model metadata Compute requires for that topology; OCE does not invent defaults or bypass admission.
 
 ### Capability and authorization
 
@@ -85,7 +85,7 @@ The [implementation plan](../plans/0029-openai-compatible-model-endpoints.md) ow
 
 1. Browser coverage for provider and endpoint changes, manual model entry, validation, credential clearing, persisted Configuration, and authorization refusals, with matching Storybook scenarios and visual evidence.
 2. OpenAPI checks showing that `GET /installation` returns `agentProvisioning.codexApiKeyBaseUrl` when configured and omits it otherwise.
-3. Integration coverage proving admission and provisioning reject shared Secret and endpoint mismatches.
+3. Integration coverage proving admission and provisioning reject shared Secret and Credential Source endpoint mismatches.
 4. Integration coverage proving the Credential Gateway reports normalized destinations and OCC refuses a shared Secret whose authorization does not match every destination.
 5. Real streaming Agent turns with a tool call for OpenAI and one qualified custom endpoint in all three supported topologies.
 6. Updated Create Agent, Compute, OpenShell, and execution-flow documentation.
