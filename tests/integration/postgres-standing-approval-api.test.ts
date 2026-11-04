@@ -955,18 +955,24 @@ test(
         ),
       );
       const policy = selectedPolicy;
-      const original = policy.resolve.bind(policy);
-      let rechecks = 0;
-      let permitted = true;
       assert.ok(policy instanceof GitHubRepositoryPolicy);
+      const original = policy.resolveBindings.bind(policy);
+      let resolutions = 0;
+      let permitted = true;
       t.mock.method(policy, "allowsStandingApproval", () => permitted);
-      t.mock.method(policy, "resolve", (input: Parameters<typeof policy.resolve>[0]) => {
-        // This legacy call occurs only after OCC reads the stored approval. Initial
-        // admission has already succeeded through the bound provider resolver.
-        rechecks++;
-        permitted = false;
-        return original(input);
-      });
+      const legacy = t.mock.method(policy, "resolve");
+      const bound = t.mock.method(
+        policy,
+        "resolveBindings",
+        (input: Parameters<typeof policy.resolveBindings>[0]) => {
+          // Initial admission succeeds; revoke permission on the resolution after
+          // approval lookup, whether called directly or through the legacy adapter.
+          if (++resolutions === 2) {
+            permitted = false;
+          }
+          return original(input);
+        },
+      );
       const before = await state.read((v) => v.revisions.listRevisions(namespaceId, agent.id));
       const beforeWork = await state.read((v) =>
         Promise.all(
@@ -978,7 +984,6 @@ test(
       statusCalls.length = 0;
       provisionCalls.length = 0;
       const denied = await request("POST", path + "/deploy");
-      assert.equal(rechecks, 1);
       assert.deepEqual(statusCalls, [], "late veto precedes credential status inspection");
       assert.deepEqual(provisionCalls, [], "late veto precedes credential provisioning");
       assert.deepEqual(await operations(), beforeOperations, "no work added in this Namespace");
@@ -1001,6 +1006,12 @@ test(
         before,
       );
       assert.deepEqual(await read(), [first]);
+      assert.equal(bound.mock.callCount(), 2, "initial admission and post-approval resolution");
+      assert.equal(
+        legacy.mock.callCount(),
+        0,
+        "bundled standing recheck must not use legacy resolve",
+      );
     });
     await selectRepo(registry, true);
     const currentGeneration = async () =>
