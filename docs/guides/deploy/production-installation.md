@@ -482,8 +482,25 @@ export READER_DIRECTORY="${READER_DIRECTORY:-/secure/occ}"
 )
 ```
 
-The block stops before it replaces a retained file or keeps a failed read; delete
-the reader Pod before you retry. The files use the default names;
+The block preserves completed copies, but a failed read can leave an incomplete
+`.tmp` file. If either read fails, delete this attempt's reader Pod using the
+command above. Keep the retrieved files private and in place; do not use `.tmp`
+files as credentials. Select a fresh directory before repeating the block:
+
+```bash
+umask 077
+READER_DIRECTORY="$(mktemp -d /secure/occ/bootstrap-reader.XXXXXXXX)" && export READER_DIRECTORY
+```
+
+Stop if directory creation fails. The retry reads both files from the same PVC
+without overwriting the earlier copies or rerunning bootstrap. After it succeeds,
+select the newly retrieved key, replacing any earlier path in this shell:
+
+```bash
+export OCC_BOOTSTRAP_KEY_FILE="${READER_DIRECTORY:?}/initial-admin-service-key.json"
+```
+
+Use the new directory for the credentials below. The files use the default names;
 `bootstrap.password.fileName` and `bootstrap.serviceKey.fileName` override them. Sign in to the Console with
 `bootstrap.adminEmail` and `initial-admin-password`. The service key file
 authenticates the CLI and REST calls below. This example works on a session copy:
