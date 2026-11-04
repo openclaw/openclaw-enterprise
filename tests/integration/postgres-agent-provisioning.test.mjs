@@ -1134,13 +1134,13 @@ test(
     );
     assert.equal(bound.mock.callCount(), 1, "replay does not repeat repository planning");
     assert.equal(legacy.mock.callCount(), 0, "replay does not use the legacy resolver");
-    bound.mock.restore();
-    legacy.mock.restore();
     const changed = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: { ...body, repositoryAccess: { ...repositoryAccess, defaultProfile: "git-write" } },
     });
     assert.equal(changed.status, 409, JSON.stringify(changed.body));
 
+    const boundCallsBeforeWorker = bound.mock.callCount();
+    const legacyCallsBeforeWorker = legacy.mock.callCount();
     await fixture.startWorker();
     const status = await waitFor(
       "Agent provisioning to queue its initial deployment wait",
@@ -1156,6 +1156,21 @@ test(
       },
     );
     await fixture.stopWorker();
+    const workerBoundCalls = bound.mock.calls.slice(boundCallsBeforeWorker);
+    assert.ok(workerBoundCalls.length > 0, "Worker directly resolves the bound repository policy");
+    for (const call of workerBoundCalls) {
+      assert.equal(call.this, repoDriver);
+      assert.deepEqual(call.arguments, [
+        { namespaceId: namespace.id, bindings: queued.plan.repositoryBindings },
+      ]);
+    }
+    assert.equal(
+      legacy.mock.callCount() - legacyCallsBeforeWorker,
+      0,
+      "Worker bypasses the legacy resolver even when it delegates to resolveBindings",
+    );
+    bound.mock.restore();
+    legacy.mock.restore();
     assert.equal(status.status, "queued");
     assert.match(status.agentId, identifier("agt"));
     assert.match(status.configurationId, identifier("cfg"));
@@ -1275,6 +1290,7 @@ test(
     const { namespace, repoDriver, computeDriver, fixture, secrets } =
       await repositoryProvisioningFixture(context, "provisioning-saved-access");
     const validateRepositoryCredentials = computeDriver.validateRepositoryCredentials;
+    let policyRefusal;
     for (const { change, refuse, message, retry } of [
       {
         change: "compute",
@@ -1287,9 +1303,9 @@ test(
         // An Installation administrator withdrew the approval after the request was accepted.
         // The policy refuses the selection as the Driver contract allows: without a reason.
         refuse: () => {
-          repoDriver.resolve = () => {
+          policyRefusal = context.mock.method(repoDriver, "resolveBindings", () => {
             throw new Error("synthetic withdrawn approval");
-          };
+          });
         },
         message: SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
       },
@@ -1307,7 +1323,6 @@ test(
     ]) {
       // Each case starts from an Installation that delivers the access.
       computeDriver.validateRepositoryCredentials = validateRepositoryCredentials;
-      delete repoDriver.resolve;
       const body = repositoryProvisioningBody(namespace.id, secrets);
       const admitted = await fixture.request(
         "POST",
@@ -1315,18 +1330,29 @@ test(
         { body },
       );
       assert.equal(admitted.status, 202, `${change}: ${JSON.stringify(admitted.body)}`);
-      refuse();
-      const failed = await workerFailure(fixture, namespace.id, body.requestId, change);
-      assert.equal(failed.status, "failed", change);
-      assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
-      assert.equal(failed.agent_id, null, `${change}: refused before the work creates its Agent`);
-      const status = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(status.status, 200, `${change}: ${JSON.stringify(status.body)}`);
-      assert.deepEqual(status.data.error, { code: "PROVISIONING_REJECTED", message }, change);
-      if (retry !== undefined) {
-        const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
-        assertApiError(retried, 409, "RESOURCE_CONFLICT");
-        assert.equal(retried.body.error.message, retry);
+      try {
+        refuse();
+        const failed = await workerFailure(fixture, namespace.id, body.requestId, change);
+        assert.equal(failed.status, "failed", change);
+        assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
+        assert.equal(failed.agent_id, null, `${change}: refused before the work creates its Agent`);
+        assert.equal(
+          failed.revision_id,
+          null,
+          `${change}: refused before the work creates a revision`,
+        );
+        const status = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(status.status, 200, `${change}: ${JSON.stringify(status.body)}`);
+        assert.deepEqual(status.data.error, { code: "PROVISIONING_REJECTED", message }, change);
+        if (retry !== undefined) {
+          const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+          assertApiError(retried, 409, "RESOURCE_CONFLICT");
+          assert.equal(retried.body.error.message, retry);
+        }
+      } finally {
+        policyRefusal?.mock.restore();
+        policyRefusal = undefined;
+        computeDriver.validateRepositoryCredentials = validateRepositoryCredentials;
       }
     }
   },

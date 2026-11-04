@@ -19,6 +19,7 @@ import {
 } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
+  apiRequests,
   authorizationDenials,
   denyRevisionRead,
   detailUrl,
@@ -513,6 +514,7 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
     // The first page lists v1 and says older versions exist; nothing here loads the older page.
     await routeOneVersionPerPage(page, fixture, namespace, agent);
   }
+  await trackSettledFetches(page);
   await login(
     page,
     fixture,
@@ -521,8 +523,37 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
   );
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.waitFor();
-  // A failed first deployment leaves nothing to stop (finding D691).
-  assert.equal(await stopAgentButton(page).count(), 0);
+  // A readable failure cannot rule out newer unreadable work. Agent-level Stop stays
+  // available, but opening and cancelling its uncertain confirmation must not send Stop.
+  const requests = apiRequests(page, fixture.origin);
+  const stop = stopAgentButton(page);
+  await waitForEnabled(stop);
+  await stop.click();
+  const dialog = page.getByRole("dialog", { name: "Stop this Agent?", exact: true });
+  await dialog.getByText(`Agent: ${agent.name}`, { exact: true }).waitFor();
+  await dialog
+    .getByText(
+      "This cancels a deployment in progress or, if a version already started, interrupts its runtime gateway and ends any reply in progress. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
+      { exact: true },
+    )
+    .waitFor();
+  await waitForEnabled(dialog.getByRole("button", { name: "Stop Agent", exact: true }));
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  await waitForIdleFetches(page);
+  assert.equal(
+    requests.filter(
+      ({ method, path }) =>
+        method === "POST" && path === `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
+    ).length,
+    0,
+  );
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
+      .desiredRuntimeState,
+    "running",
+  );
+  await waitForEnabled(stop);
 
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);

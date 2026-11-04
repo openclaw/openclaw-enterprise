@@ -20,9 +20,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
-import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import type { RepositorySelectionMode } from "../helpers/repository-selection-load.ts";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:https";
@@ -445,24 +443,19 @@ test("protected Git resolves repository and installation grants without granting
   const directory = await temporaryDirectory(t, "repository-delivery-");
   const registryPath = join(directory, "registry.json");
   await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
-  const compose = () =>
+  const compose = (sessionDurationSeconds = 600, selectedRegistryPath = registryPath) =>
     loadRepositoryPolicy({
       backend: {
         id: registry.backendId,
         type: "github",
-        configuration: { registryPath },
+        configuration: { registryPath: selectedRegistryPath },
         drivers: { repo: "repo" },
       },
       selection: {
         id: "repo",
         implementation: "github",
-        definition: GitHubRepositoryPolicy,
-        configuration: { sessionDurationSeconds: 600 },
+        configuration: { sessionDurationSeconds },
       },
-      policyConfiguration: requireConfiguration<{ readonly sessionDurationSeconds: number }>(
-        GitHubRepositoryPolicy,
-        { sessionDurationSeconds: 600 },
-      ),
     });
   const access = await compose();
   const resolve = access.resolveRepositoryDelivery;
@@ -788,6 +781,97 @@ test("repository scope changes invalidate the external Driver identity while a r
       },
     },
   };
+  for (const mode of ["protected", "native"] as const) {
+    await t.test(`${mode} validates policy at the production installation entry`, async () => {
+      const selectedPath = join(directory, `${mode}-policy.json`);
+      const loadPolicy = async (
+        policyConfiguration: object,
+        selectedRegistryPath = registryPath,
+        ownerId = "repo",
+        controlSocket = "/unselected/control.sock",
+      ) => {
+        await writeFile(
+          selectedPath,
+          JSON.stringify({
+            ...modes[mode],
+            repository: {
+              ...configuration.repository,
+              ...(mode === "native"
+                ? {
+                    nativeSender: {
+                      controlSocket,
+                      publicCaPath: certFile,
+                    },
+                  }
+                : {}),
+              configuration: policyConfiguration,
+            },
+            backend: [
+              {
+                ...configuration.backend[0],
+                configuration: { registryPath: selectedRegistryPath },
+                drivers: { repo: ownerId },
+              },
+            ],
+          }),
+        );
+        return loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: selectedPath },
+          packageRoot: directory,
+        });
+      };
+      const inaccessible = join(registryPath, "inaccessible");
+      // The same inaccessible registry distinguishes policy refusal from a read failure.
+      for (const sessionDurationSeconds of [
+        undefined,
+        "600",
+        null,
+        0,
+        1.5,
+        Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1,
+      ]) {
+        await assert.rejects(loadPolicy({ sessionDurationSeconds }, inaccessible), {
+          name: "ConfigurationValidationError",
+        });
+      }
+      await assert.rejects(loadPolicy({ sessionDurationSeconds: 601 }, inaccessible), {
+        code: "ENOTDIR",
+      });
+      await assert.rejects(
+        loadPolicy({ sessionDurationSeconds: 601 }, inaccessible, "other-repo"),
+        /must match the selected repository.id/,
+      );
+      await assert.rejects(
+        loadPolicy({ sessionDurationSeconds: registry.maximumDurationSeconds + 1 }),
+        /Repository credential session duration exceeds the registry policy/,
+      );
+      if (mode === "native") {
+        // The native transport rejects overlong socket bytes before it reads the registry.
+        await assert.rejects(
+          loadPolicy({ sessionDurationSeconds: 601 }, inaccessible, "repo", `/${"é".repeat(60)}`),
+          { name: "ConfigurationValidationError" },
+        );
+      }
+      const runtime = (await loadPolicy({ sessionDurationSeconds: 601 }))!;
+      t.after(() => runtime.protectedDriver?.close());
+      assert.equal(
+        (
+          await runtime.repositoryPolicy!.resolve({
+            namespaceId: "namespace-a",
+            bindings: [{ repositoryRef: "application", profile: "git-write" }],
+          })
+        ).sessionDurationSeconds,
+        601,
+      );
+      assert.equal(runtime.repositoryOwner!.driverId, "repo");
+      assert.equal(runtime.repositoryOwner!.backendId, registry.backendId);
+      if (mode === "native") {
+        assert.equal(runtime.repositoryOwner!.controlSocket, "/unselected/control.sock");
+        assert.ok(runtime.nativeRepositorySender);
+      }
+    });
+  }
   const helper = fileURLToPath(new URL("../helpers/repository-selection-load.ts", import.meta.url));
   for (const [mode, value] of Object.entries(modes)) {
     const selectedPath = join(directory, `${mode}.json`);

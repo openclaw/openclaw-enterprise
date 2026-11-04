@@ -23,7 +23,16 @@ OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
 The helper rechecks the pair, nodes and live state against baseline or candidate.
 
 After verified completion, clean up only: no Helm, Agent rollout, Doctor,
-`--resume` or renewed freeze. `prepared` survives success.
+`--resume` or renewed freeze. The helper writes `completed` after its final
+verification and evidence capture. Any `completed` entry makes `--resume` stop
+before cluster or OCC access. Keep the marker with the original evidence; use a
+new evidence directory for a new upgrade.
+
+If the final command output was lost, inspect the completion marker and retained
+evidence before deciding to resume. If writing the marker failed, reconcile the
+live state first: its absence does not prove the upgrade is unfinished.
+`prepared` survives success and alone is not a reason to resume. Older runs may
+have completed without a `completed` marker.
 
 ## Clean up preflight resources
 

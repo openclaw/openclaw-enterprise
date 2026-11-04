@@ -19,6 +19,7 @@ import {
   chartListeners,
   InstallationFieldError,
   type InstallationFieldDetail,
+  requireChartGatewayRouting,
   requireChartListener,
 } from "./installation-fields.ts";
 import {
@@ -103,7 +104,7 @@ import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.t
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
 import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
-import { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
+import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
@@ -802,13 +803,13 @@ export async function loadInstallationConfiguration(options: {
   );
   const repoSelection =
     repositoryConfiguration &&
-    selected(
+    (selected(
       repositoryConfiguration.selection,
       "repo",
       "github",
       GitHubRepositoryPolicy,
       "repository",
-    );
+    ) as SelectedDriverConfiguration<Readonly<{ sessionDurationSeconds: number }>>);
   const nativeRepositorySelection = repositoryConfiguration?.nativeSender;
   const preparedRepositoryGit = repositoryConfiguration?.prepared;
   let repositoryTransportConfiguration = repositoryConfiguration?.transport;
@@ -1020,6 +1021,12 @@ export async function loadInstallationConfiguration(options: {
     computePackage?.implementation ?? (sshCompute ? "occ/ssh" : "occ/kubernetes"),
     computePackage?.module ?? (sshCompute ? SshComputeDriver : KubernetesComputeDriver),
   );
+  if (kubernetesCompute) {
+    requireChartGatewayRouting(
+      (compute.configuration as unknown as KubernetesComputeDriverOptions).gatewayRouting,
+      environment,
+    );
+  }
   const secret = selected(
     secretSelection,
     "secret",
@@ -1222,10 +1229,6 @@ export async function loadInstallationConfiguration(options: {
       const policy = await loadRepositoryPolicy({
         backend: repositoryBackend,
         selection: repoSelection,
-        policyConfiguration: requireConfiguration<{ readonly sessionDurationSeconds: number }>(
-          GitHubRepositoryPolicy,
-          repoSelection.configuration,
-        ),
       });
       repositoryRuntime = Object.freeze({
         ...policy,
@@ -1284,16 +1287,18 @@ export async function loadInstallationConfiguration(options: {
     { id: secret.id, implementation: secret.implementation, preprovisionedNamespace },
   );
   const tokenService = new TokenService();
-  const preparedGitHub =
-    preparedGitHubKeyPath === undefined
-      ? undefined
-      : new PostgresPreparedGitHubLifecycle(
-          preparedGitHubKeyPath,
-          secretDriver,
-          preparedGitHubOrigin,
-          preparedGitHubCa,
-          tokenService,
-        );
+  let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
+  if (preparedGitHubKeyPath !== undefined) {
+    const { PostgresPreparedGitHubLifecycle } =
+      await import("../drivers/repo/github/credentials/prepared-lifecycle.ts");
+    preparedGitHub = new PostgresPreparedGitHubLifecycle(
+      preparedGitHubKeyPath,
+      secretDriver,
+      preparedGitHubOrigin,
+      preparedGitHubCa,
+      tokenService,
+    );
+  }
   let protectedDriver: InstalledDriver | undefined;
   let sandboxDriver: SandboxDriver | undefined;
   if (sandbox !== undefined && proxySelection !== undefined) {

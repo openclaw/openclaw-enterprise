@@ -34,6 +34,7 @@ import {
   type IAMDriver,
   type Installation,
   type OccApiRoute,
+  type DiscoverSavedAgentPluginDetailsBody,
   type PermissionAction,
   type ResourceKind,
   type ResourceRef,
@@ -96,6 +97,7 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
@@ -186,6 +188,7 @@ export interface ControllerAppOptions {
   readonly auth: ControllerAuth;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly workspaceFileRequestTimeoutMs?: number;
+  readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
   /**
@@ -2510,13 +2513,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         context.actorId,
         namespaceId,
         params.agentId as string,
-        {
-          pluginId: body?.pluginId as string,
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-        },
+        body as DiscoverSavedAgentPluginDetailsBody,
         pluginDiscoveryRequestSignal(reply),
+        options.readManagedMcpToolNames ?? listManagedMcpToolNames,
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
 updated: 2026-11-03
-last_updated_session: authoring-run/84f241a8-57a6-4718-b5a4-1d673374440c
+last_updated_session: authoring-run/e4018630-07e7-4296-a60f-d51180ca700d
 ---
 
 # Agent provisioning flow
@@ -28,8 +28,9 @@ graph TD
   Secrets --> API["<b>Provision API</b><br/>Inline config and references"]
   API --> Queue["<b>Existing work queue</b><br/>Return job handle"]
   Queue --> Claim["<b>Worker</b><br/>Claim and authorize"]
-  Claim --> Config["<b>Create Configuration</b><br/>Record completed identity"]
-  Config --> Agent["<b>Create Agent</b><br/>Grant exact credential access"]
+  Claim --> Config["<b>Configuration Driver</b><br/>Write or recover Configuration"]
+  Config -->|Repository selections still valid| Agent["<b>Create Agent</b><br/>Grant exact credential access"]
+  Config -->|Repository selections refused| RepoRefused["<b>Refuse provisioning</b><br/>No new Agent or revision"]
   Agent --> Transport["<b>Compute Driver</b><br/>Trusted-proxy credentials"]
   Transport --> Deploy["<b>Ordinary deploy</b><br/>Record first version"]
   Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe saved version"]
@@ -45,7 +46,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI operation
-  class Failed,Recovery,Terminal,Superseded condition
+  class Failed,Recovery,Terminal,Superseded,RepoRefused condition
 ```
 
 ## Execution Trace
@@ -97,7 +98,7 @@ A selected Credential Gateway requires a supported, ready model Credential Sourc
 
 After an Installation selects another Secret Driver, request, status and retry answer `503` for a Secret owned by the previous Driver, after authorization and lookup. The message asks the caller to save replacement Secrets and submit a new request. The worker fails that attempt with `PROVISIONING_REJECTED`; an unavailable Secret Driver still retries.
 
-Before admission, OCC applies Configuration rules, then the ChannelDriver checks credentials through authorized Secret callbacks. Slack reads a token that is one whole `${NAME}` as the env reference to NAME, and checks token roles and bot authentication without pinning Secret versions or adding worker revalidation. The repository Driver validates Namespace selections before queueing and when creating the Agent. Undeliverable repository bindings, including Sandbox repositories, keep Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup` capability; Compute delegates validation or refuses unsupported placement before staging files. Deployment checks the exact Harness topology.
+Before admission, OCC applies Configuration rules, then the ChannelDriver checks credentials through authorized Secret callbacks. Slack reads a token that is one whole `${NAME}` as the env reference to NAME, and checks token roles and bot authentication without pinning Secret versions or adding worker revalidation. OCC validates repository selections against the Namespace before queueing. Undeliverable repository bindings, including Sandbox repositories, keep Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup` capability; Compute delegates validation or refuses unsupported placement before staging files. Deployment checks the exact Harness topology.
 
 OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
 
@@ -112,6 +113,8 @@ effects and result commits. Retries reuse completed outputs. It creates the Conf
 values and bindings, then creates a stopped Agent, records the auth, provider, plugin, repository and
 workspace selections, and grants its service principal the exact Secret permissions.
 
+The bundled worker uses the Installation's selected repository policy for saved selections and first revision admission. A programmatic controller without this binding uses its registered repository Driver. After fencing the claim and checking that the Namespace is ready, the worker checks the saved selections before creating the Agent. The Configuration Driver may already have written the Configuration. If the check refuses, the worker creates no new Agent or revision and follows the existing Configuration recovery rules.
+
 Source-backed provisioning records the canonical model source and grants only source `operate`.
 Admission, replay, retry and execution recheck caller authority, source readiness and Gateway
 ownership. Queued or running work prevents source deletion.
@@ -124,7 +127,9 @@ admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Confi
 save also refuses both), unknown or padded operator scopes, blank or padded identity keys,
 grants for identities outside `allowUsers`, malformed `requiredHeaders`, and human
 admission with admin device scopes, including whitespace; human allowlists render
-`x-openclaw-scopes` as required. These refusals precede workload replacement.
+`x-openclaw-scopes` as required. With private status, `validateConfiguration`
+also refuses a Codex Configuration without `gateway.auth.password`, which the
+workspace node check signs in with. These refusals precede workload replacement.
 Human ingress and its network policy remain operator-managed; no OCE human
 account is required. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
 Provisioning supplies no Gateway token or trust override. Losing its claim cancels
@@ -200,6 +205,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 20:51: Document the selected repository policy during queued provisioning and the ordering of Configuration writes. (authoring-run/e4018630-07e7-4296-a60f-d51180ca700d - 43485a276ad6891f42ba7e0016ba8d0b3f574ae4)
 
 - 2026-11-03 15:26: Trace custom endpoint authorization in the accompanying implementation. (authoring-run/84f241a8-57a6-4718-b5a4-1d673374440c - b73f9939afe1da527a6ffd89ae048924b71e3ea8)
 

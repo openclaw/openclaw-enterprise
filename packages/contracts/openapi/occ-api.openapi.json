@@ -972,7 +972,7 @@
                   },
                   {
                     "const": "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
-                    "description": "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
+                    "description": "Deploy is refused because the selected Credential Proxy delivers repository Git only for github-repository bindings, or one git-write or github-installation binding; git-read, git-full or several bindings that are not all github-repository could never start.",
                     "type": "string"
                   },
                   {
@@ -25703,7 +25703,8 @@
                                   "type": "object"
                                 },
                                 "type": "array"
-                              }
+                              },
+                              "toolDiscovery": { "const": true, "type": "boolean" }
                             },
                             "required": ["pluginId", "releaseSha256", "id", "label", "sources"],
                             "type": "object"
@@ -25936,29 +25937,53 @@
                 }
               },
               "schema": {
-                "additionalProperties": false,
-                "properties": {
-                  "credentialSource": {
+                "anyOf": [
+                  {
                     "additionalProperties": false,
-                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                     "properties": {
-                      "id": {
-                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
+                      "credentialSource": {
+                        "additionalProperties": false,
+                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                        "properties": {
+                          "id": {
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "kind": { "const": "credential_source", "type": "string" },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": ["kind", "namespaceId", "id"],
+                        "type": "object"
                       },
-                      "kind": { "const": "credential_source", "type": "string" },
-                      "namespaceId": {
-                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
-                      }
+                      "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
-                    "required": ["kind", "namespaceId", "id"],
+                    "required": ["pluginId"],
                     "type": "object"
                   },
-                  "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
-                },
-                "required": ["pluginId"],
-                "type": "object"
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "managedConnection": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "slot": { "maxLength": 64, "minLength": 1, "type": "string" },
+                          "sourceId": {
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": ["slot", "sourceId"],
+                        "type": "object"
+                      },
+                      "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
+                    },
+                    "required": ["pluginId", "managedConnection"],
+                    "type": "object"
+                  }
+                ]
               }
             }
           },
@@ -26160,7 +26185,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants",
+        "summary": "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
