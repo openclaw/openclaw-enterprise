@@ -38,7 +38,7 @@ are created, and deploy writes grants for any Role.
      `role_config_`, `group_config_`, and `binding_config_` rows, updates changed
      Roles, deletes unlisted ones, and refuses to delete a Role that an Owner
      binding uses. A Namespace that a binding names gets it when OCC creates it.
-   - Migration `0066_default_users` lets an Installation Group be bound inside a
+   - Migration `0067_default_users` lets an Installation Group be bound inside a
      Namespace, keeps configured Roles at Installation scope without
      `installation` permissions, and lets OCC update configured Roles and delete
      configured Groups and their memberships.
