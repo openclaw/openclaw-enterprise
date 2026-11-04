@@ -23,8 +23,8 @@ with any replacement refresh token. OpenShell presents an eligible, prepared
 token for the deployed binding or refuses the request. [Credential access and lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
 - `startBrowserAuthorization(context, { connectionTemplateVersion, redirectUri, selectedScopes? })`
-  returns `{ authorizationUrl, privateState }`. MCP requires the owner's validated
-  `selectedScopes`. Configured OAuth uses the version's fixed scopes. The Driver
+  returns `{ authorizationUrl, privateState }`. OCC validates the requested
+  scopes before the Driver starts consent. The Driver
   creates the PKCE verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
   `privateState` is opaque to OCC.
 - `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
@@ -49,16 +49,13 @@ Client ID Metadata Documents (CIMD) are deferred. Supporting CIMD would require
 a stable HTTPS document the issuer can fetch, listing the installation's exact
 callback URI.
 
-At setup, the template version records any selected client, server URL, resource,
-issuer, approved endpoints, and at least one scope approved from the challenge
-and resource metadata.
-
-At **Connect**, the owner chooses from the entire approved scope list.
-OCC validates the nonempty selection and required scopes before creating a
-source. OCE checks the requested scopes, validates the callback issuer, and
-verifies the granted scopes at exchange. The Token Service refreshes with the
-same pinned client, resource, and token endpoint. It checks each renewed grant
-against the connection's selected scopes before use.
+A version pins the server, resource, issuer, endpoints and optional client.
+An administrator can limit requested scopes to a list of any length or choose
+**No template limit**. An empty list records that choice. At consent, the
+user can select individual scopes. OCC enforces any list and required MCP
+challenge scopes. With a fixed manual list, OCC requests those configured
+scopes. Without a limit or requested scopes, it omits `scope` so the provider
+can apply its defaults. Discovery alone requests no optional scopes.
 Changed endpoints require a new version and consent. [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
 At Agent setup, Console uses `tools/list` to show available tools. An authorized
@@ -102,10 +99,11 @@ client and the same protected resource when resource indicators apply.
 
 Connecting an account commits the grant in Token Service custody. The Token
 Service records the requested scopes and the scopes the provider granted.
-An omitted scope in a successful response means the requested scopes. The
-account can remain saved without a runtime provider. The protected sender
-obtains prepared material for an authorized consumer with a compatible
-destination. Local delivery names are properties of that binding.
+When the provider omits `scope`, the Token Service records the requested
+scopes. If both omitted it, it records no known scopes. Explicit requests and
+renewals cannot acquire permissions beyond those requested or previously
+granted. Only an authorized consumer with a compatible destination receives
+prepared material. Its binding supplies local delivery names.
 
 ### Named plugin accounts
 
@@ -192,12 +190,9 @@ Use [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-li
 for the deployed revision. Limit the authorized route to the endpoint the owner
 approved. Attaching a source cannot expand an installation's egress ceiling.
 
-For a configured HTTP template with `read-only` access, the sender permits only
-`GET`, `HEAD`, and `OPTIONS`. MCP clients send both read and write tool calls by
-`POST` to the declared endpoint. OCC rejects an `mcp_oauth` template with
-`read-only` access before saving a version. The supported value, `full`, allows
-the MCP transport at that exact endpoint. The MCP server enforces the owner's
-selected scopes on each call. [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
+The template pins the recipient's host, port and path. The plugin and deployed
+request policy govern allowed operations there. MCP sends both read and write
+tool calls by HTTP POST. [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
 
 Every remote Streamable HTTP plugin uses the same credential policy helper. When
 binding a ready connection, OCE matches its approved server URL and OAuth resource
@@ -279,7 +274,7 @@ issue seven-day refresh tokens.
   claim, verify the source becomes ready without a stored or displayed address.
 - **Real k3d and OpenShell.** Through the regular Agent create path, connect via
   Keycloak and prove: a tool reaches its endpoint with no added network policy; a
-  write fails under `read-only`; a tool and a script get the same allow and deny
+  write fails under the plugin’s read-only request policy; a tool and a script get the same allow and deny
   decisions from the protected sender on the same requests;
   rotate, revoke, and reconnect work; an edited `tokenUrl` or endpoint leaves an
   existing source unchanged. Connect with A, rotate to B, disable A, then refresh
