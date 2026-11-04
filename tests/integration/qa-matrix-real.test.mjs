@@ -19,16 +19,7 @@ test(
   async (context) => {
     const selection = selectQaMatrix();
     validateQaInputs(selection);
-    const { createQaInstallation, prepareQaPreset, createQaAgent } =
-      await import("../helpers/qa-installation.mjs");
-    const { protectedText } = await import("../helpers/qa-secrets.mjs");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
-    const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
-    const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
-      await import("../helpers/qa-repository.mjs");
-    const { verifyCalendarReviewPolicy } = await import("../helpers/calendar-review.mjs");
-    const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
-    const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.mjs");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
       ? resolve(process.env.OCC_TEST_QA_ARTIFACTS)
       : await mkdtemp(join(tmpdir(), "oce-qa-matrix-evidence-"));
@@ -56,6 +47,29 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
+    if (selection.awsDiscovery) {
+      const { verifyAwsSecretDiscovery } = await import("../helpers/aws-secret-discovery.mjs");
+      await stage(
+        context,
+        "prepared Kubernetes/Codex",
+        "saved Agent uses AWS Secret for hosted plugin discovery",
+        async () => {
+          const requestId = await verifyAwsSecretDiscovery();
+          context.diagnostic(`Hosted discovery OCC request ID: ${requestId}`);
+        },
+        "aws-secret-discovery",
+      );
+      return;
+    }
+    const { createQaInstallation, prepareQaPreset, createQaAgent } =
+      await import("../helpers/qa-installation.mjs");
+    const { protectedText } = await import("../helpers/qa-secrets.mjs");
+    const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
+    const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
+      await import("../helpers/qa-repository.mjs");
+    const { verifyCalendarReviewPolicy } = await import("../helpers/calendar-review.mjs");
+    const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
+    const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.mjs");
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

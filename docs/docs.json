@@ -448,6 +448,10 @@
                     "group": "Secrets",
                     "pages": [
                       {
+                        "page": "reference/drivers/aws-secrets-manager",
+                        "label": "AWS Secrets Manager"
+                      },
+                      {
                         "page": "reference/drivers/kubernetes-secret",
                         "label": "Kubernetes"
                       }

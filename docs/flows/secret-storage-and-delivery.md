@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-10-29"
-last_updated_session: "authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42"
+updated: "2026-11-04"
+last_updated_session: "authoring-run/1c3f9403-5e44-4bb1-b837-3f2e2fa9093a"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -41,7 +41,7 @@ Credential issuance and provider internals are outside this flow.
 graph TD
   subgraph Storage["Protected storage request"]
     A["Owner supplies value"] --> B["OCC authorizes Namespace Secret create"]
-    B --> C["KubernetesSecretDriver stores mutable Secret"]
+    B --> C["Selected SecretDriver stores owned Secret"]
     C --> D["OCC stores metadata and returns stable ref"]
   end
   subgraph Admission["Configuration and deployment"]
@@ -80,7 +80,7 @@ nonempty UTF-8 input of at most 65,536 bytes and locks the Namespace. The caller
 on the Namespace's Secret collection. The Namespace must already be ready; an
 Agent record does not need to exist. OCC selects the
 Installation SecretDriver, generates the Secret identity, and prevents the
-caller from choosing Kubernetes backend identity. The value stays in protected
+caller from choosing backend identity. The value stays in protected
 request/driver memory, never in the reconciliation queue or resource metadata.
 
 ### 2. Store material and commit safe identity
@@ -106,6 +106,21 @@ Secret create, update and delete share the 12-second Kubernetes budget of
 write is sent only with at least 2 seconds of it left; otherwise the request fails with
 `503` and the write is not sent. A create that was sent and failed is cleaned up after
 the budget; a create that was not sent stored nothing and gets no cleanup read.
+
+`apps/controller/src/drivers/secret/aws-secrets-manager/index.ts:AwsSecretsManagerSecretDriver.create`
+
+The AWS Driver verifies the account with STS and uses the same credentials to
+create the tagged Secret. It checks the ARN, tags and current version before
+returning a reference to OCC. Each step observes the HTTP write deadline.
+A failed create after submission requires reconciliation. A new API request
+allocates a new Secret ID.
+
+For saved-Agent hosted plugin discovery, OCC calls `withValue`. The Driver
+checks ownership, reads `AWSCURRENT` by version ID and checks ownership and
+version again. OCC rechecks the binding and grants before passing the value
+to the Plugin Driver. This server-side path ends before workload projection.
+See [AWS Secret storage](../reference/drivers/aws-secrets-manager.md) for
+IAM, updates and recoverable deletion.
 
 ### 3. Bind a source, then admit references
 
@@ -320,9 +335,19 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-11-04 23:02: Trace AWS writes under the HTTP deadline and saved-Agent discovery. (authoring-run/1c3f9403-5e44-4bb1-b837-3f2e2fa9093a - d7a2560b8b0fa2cc38b0056cc68f65ceb6f48d0e)
+
 - 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
 
 - 2026-11-01 08:10: Secret create, update and delete send no Kubernetes call after the 12-second write budget. (fix-3106b, finding 3106)
+
+- 2026-10-29 23:30: Resolve and validate signing credentials before every AWS mutation. (authoring-run/9757ef0b-8f07-4e22-8913-5c4db71a4b97 - 07cfbf06dbb0a71eaba2ebc09785de0db3bbc0d9)
+
+- 2026-10-29 23:20: Bound credential acquisition and distinguish pre-submission failures from uncertain mutations. (authoring-run/45b7994a-d011-47e7-a09d-8659942017aa - 0f1d98b89182810f8df4e78bd8f4bad1be296e19)
+
+- 2026-10-29 23:07: Qualify AWS account before creation and document stable identity retries. (authoring-run/d184aaf1-3208-41c4-865e-5333fc3cb38a - b79a194e3256844844c857ac0b6211b989192f78)
+
+- 2026-10-29 22:56: Document AWS Secret storage, ARN binding, and versioned reads. (authoring-run/6b11ce1b-071c-416b-8a6b-5952f131c8c4 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
 
 - 2026-10-29 19:38: Keep local first-Agent records owner-readable under restrictive umasks. (authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42 - cadab7afee966df8ff7a13250df443404ae76314)
 
