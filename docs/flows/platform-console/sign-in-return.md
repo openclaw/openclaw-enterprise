@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-03"
-last_updated_session: authoring-run/ba39ab24-0fa9-473c-a144-634f38a40c46
+updated: "2026-11-04"
+last_updated_session: authoring-run/f1b8b374-d669-461b-a493-778b826cdcd7
 ---
 
 # Console sign-in and destination recovery
@@ -61,7 +61,7 @@ browser-origin check, a provider that the API no longer configures (`403`), or
 an attempt that expired or was replaced (`401`), never a refused identity.
 Password sign-in reports `429` with the `Retry-After` wait. The provider
 budgets send no `Retry-After`, so provider start and the exchange say to wait a
-minute. `console.mjs:untrustedOriginFailure` explains that sign-in requires the
+minute. `sign-in-presentation.mts:requestRefusalMessage` explains that sign-in requires the
 configured scheme, hostname and port, and asks for the administrator's link. It
 does not build a link from the request or error text. Every other password
 `400`, `401` or `403` keeps one message. On the API side, `sendAuthEndpoint`
@@ -132,6 +132,8 @@ native-gateway integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 03:17: Follow the origin-refusal recovery message into the typed sign-in presentation module. (authoring-run/f1b8b374-d669-461b-a493-778b826cdcd7 - 5049dfd3c02d7084e9ee20af58ff749ed7d1a76c)
 
 - 2026-11-03 13:50: Explain recovery from an untrusted sign-in origin. (authoring-run/ba39ab24-0fa9-473c-a144-634f38a40c46 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
 
