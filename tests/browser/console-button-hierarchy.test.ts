@@ -1,3 +1,9 @@
+import {
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -26,12 +32,8 @@ import {
   settledView,
 } from "./console-agents-browser-helpers.mjs";
 import {
-  createModelCredentialSecret,
   createRepositoryLaunchFixture,
-  enterManualModel,
-  openAdvancedSettings,
   routeInstallationWithoutProvisioning,
-  waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 

@@ -1,5 +1,17 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  openCreateSecretDialog,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  assertAgentNameTaken,
+  optionValues,
+  runProvisioningPolls,
+  waitForProvisioningFailure,
+  createAgentThroughForm,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -50,21 +62,11 @@ import {
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
-  openCreateSecretDialog,
-  createModelCredentialSecret,
-  enterManualModel,
-  openAdvancedSettings,
   configurationPostRequests,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
-  assertAgentNameTaken,
-  optionValues,
   raceAgentName,
-  runProvisioningPolls,
-  waitForProvisioningFailure,
-  createAgentThroughForm,
-  submitCreateAgent,
   routeProvisioningJob,
   provisioningJob,
 } from "./console-agents-test-support.mjs";
@@ -1904,6 +1906,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const selectedConfiguration = await page.getByLabel("Configuration JSON").inputValue();
   await page.getByLabel("Agent name").fill("Anthropic Agent");
   const credentialSecret = await createModelCredentialSecret(page, "test-anthropic-api-key");
+  assert.ok(credentialSecret, "Expected the created model credential Secret");
   assert.equal(await choice.inputValue(), "claude-fable-5-1");
   assert.equal(await page.getByLabel("Configuration JSON").inputValue(), selectedConfiguration);
   assert.deepEqual(
@@ -2307,6 +2310,7 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   const secret = await createModelCredentialSecret(page, "round-trip-model-key");
+  assert.ok(secret, "Expected the created model credential Secret");
   await choice.selectOption("gpt-6-astra");
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   assert.equal(await choice.isVisible(), false);
@@ -2418,6 +2422,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
     "manual-model-key",
     "gpt-manual-account-model",
   );
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.deepEqual(
     secretPostRequests(requests, namespace.id).map((request) => request.body),
     [{ name: "Manual model Agent model credential", value: "manual-model-key" }],
@@ -2825,6 +2830,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   requests.length = 0;
   await page.getByLabel("Agent name").fill("Retry Agent");
   const selectedSecret = await createModelCredentialSecret(page, "at-browser-pat");
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.equal(
     await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
     secretOptionLabel(selectedSecret),
@@ -3047,6 +3053,7 @@ for (const swapped of ["Agent", "service principal"]) {
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await page.getByLabel("Agent name").fill("New Agent");
     const secret = await enterManualModel(page, "test-create-response-key");
+    assert.ok(secret, "Expected the created model credential Secret");
     await page.getByRole("button", { name: "Create Agent" }).click();
     const warning = page.getByRole("alert").filter({
       hasText: swapped === "Agent" ? "Outcome unknown" : "service principal could not be confirmed",

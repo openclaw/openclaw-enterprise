@@ -1,3 +1,12 @@
+import {
+  assertAgentNameTaken,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  runProvisioningPolls,
+  waitForProvisioningFailure,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -52,17 +61,10 @@ import {
 import {
   agentPostRequests,
   agentProvisionPostRequests,
-  assertAgentNameTaken,
   configurationPostRequests,
-  createModelCredentialSecret,
-  enterManualModel,
   nativeSandboxDriver,
-  openAdvancedSettings,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
-  runProvisioningPolls,
-  waitForProvisioningFailure,
-  submitCreateAgent,
   routeProvisioningJob,
   provisioningJob,
 } from "./console-agents-test-support.mjs";

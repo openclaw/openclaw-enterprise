@@ -1,3 +1,4 @@
+import { focusedText } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -9,7 +10,6 @@ import {
   recordFocusTrail,
   stopFocusTrail,
 } from "./console-agents-browser-helpers.mjs";
-import { focusedText } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 
 // After an admitted deployment the held draft page's heading keeps focus, and the loading page's

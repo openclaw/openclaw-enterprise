@@ -1,3 +1,4 @@
+import { openAdvancedSettings, LIVE_BUTTON } from "./console-agents-ui-test-support.ts";
 import "./console-agent-detail-deployment.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -68,8 +69,6 @@ import {
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
-  LIVE_BUTTON,
-  openAdvancedSettings,
   withholdPermissionSummary,
   agentStopRequests,
   replyWithDifferentAgentId,

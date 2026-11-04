@@ -1,5 +1,6 @@
 /// <reference lib="es2025.regexp" />
 
+import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -37,7 +38,6 @@ import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
 } from "./console-deployment-activity-helpers.ts";
-import { waitForLiveControls } from "./console-agents-test-support.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   callerDenied,
