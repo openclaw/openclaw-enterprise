@@ -508,7 +508,6 @@ export async function createConsoleAppFixture(t, options = {}) {
     app.addHook("onSend", options.onSend);
   }
   await app.listen({ host: "127.0.0.1", port, reusePort: appPort.reusePort });
-  const fixtureResponse = createFixtureResponse(app.getSchemas());
   await appPort.release();
   const cleanupBeforeAppClose = [];
   let appClosed = false;
@@ -544,6 +543,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   t.after(close);
+  const fixtureResponse = createFixtureResponse(app.getSchemas());
 
   if (options.https === true) {
     // Exercise browser Secure/Domain cookies through a real TLS ingress to the HTTP API.
