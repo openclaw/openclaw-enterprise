@@ -58,6 +58,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * @param [options.controllerOptions]
  * @param [options.stateOptions]
  * @param [options.sandboxDriver]
+ * @param [options.secretDriver] supplies shared secret storage when the Token Service needs it.
  * @param [options.transportDatabaseUrl]
  * @param [options.poolOptions]
  * @returns `{ pool, state, controller, computeDriver, app, principal, inject, deployAgent }`.
@@ -76,6 +77,7 @@ export async function createPostgresAgentApp(
     controllerOptions,
     stateOptions,
     sandboxDriver,
+    secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` }),
     transportDatabaseUrl = databaseUrl,
     poolOptions = {},
   },
@@ -96,7 +98,6 @@ export async function createPostgresAgentApp(
   const iamDriver = new NativeIAMDriver(state, { id: `${label}-pg-iam` });
   const computeDriver = createRuntimeLogComputeDriver({ id: `${label}-pg-compute` });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
-  const secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` });
   const controller = new OpenClawController(installation, {
     state,
     recordOperations: false,
@@ -195,5 +196,17 @@ export async function createPostgresAgentApp(
     return { namespace, secretRef, agent, revision };
   }
 
-  return { pool, state, controller, computeDriver, app, createApp, principal, inject, deployAgent };
+  return {
+    pool,
+    state,
+    controller,
+    computeDriver,
+    configurationDriver,
+    iamDriver,
+    app,
+    createApp,
+    principal,
+    inject,
+    deployAgent,
+  };
 }

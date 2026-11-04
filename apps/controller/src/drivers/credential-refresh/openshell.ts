@@ -8,12 +8,13 @@ import type {
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,
+  OAuthConnectionGrant,
   CredentialSourceContext,
   CredentialSourceDeviceAuthorization,
   CredentialSourceBrowserAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
-import { BrowserAuthorizationError, ScopeViolationError } from "@openclaw-enterprise/occ";
+import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 
 import {
@@ -324,10 +325,6 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     request: CredentialBrowserAuthorizationRequest,
   ): Promise<CredentialSourceBrowserAuthorization> {
     this.requireBrowserSource(context);
-    this.requireClientWorkspace();
-    if ((await this.ownedProvider(context)) === undefined) {
-      throw new ScopeViolationError("The OpenShell provider for this credential source is absent.");
-    }
     return startBrowserAuthorization(context.source.id, request);
   }
 
@@ -335,32 +332,20 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     context: CredentialSourceContext,
     privateState: string,
     callback: CredentialBrowserAuthorizationCallback,
+    request: CredentialBrowserAuthorizationRequest,
+    acceptGrant: (grant: OAuthConnectionGrant) => Promise<void>,
   ): Promise<void> {
     this.requireBrowserSource(context);
-    if ((await this.ownedProvider(context)) === undefined) {
-      throw new ScopeViolationError("The OpenShell provider for this credential source is absent.");
-    }
     const state = browserAuthorizationState(context.source.id, privateState, callback);
-    const clientSecret = await this.readClientSecret(state.clientRegistrationId, context.signal);
-    // Only this role sees the grant: it goes straight into OpenShell's refresh custody.
-    const { refreshToken, scope } = await exchangeAuthorizationCode(
-      state,
+    const clientSecret = await this.readClientSecret(request.clientRegistrationId, context.signal);
+    const grant = await exchangeAuthorizationCode(
+      request,
+      state.verifier,
       callback.code,
       clientSecret,
       context.signal,
     );
-    await this.configureRefresh(context, {
-      config: { client_id: state.clientId, scope },
-      secrets: { refresh_token: refreshToken, client_secret: clientSecret },
-      requestId: state.configureRequestId,
-    });
-    const minted = await this.rotate(context, state.rotateRequestId);
-    if (minted.state !== "ready") {
-      throw new BrowserAuthorizationError(
-        minted.failureCode === undefined ? "first_mint_failed" : "first_mint_refused",
-        minted.recoveryAction === "fix_configuration" ? "fix_configuration" : "retry",
-      );
-    }
+    await acceptGrant(grant);
   }
 
   async configureRefresh(
@@ -478,7 +463,11 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   }
 
   private requireBrowserSource(context: CredentialSourceContext): void {
-    if (context.source.type !== "oauth2-refresh-token") {
+    if (
+      context.source.type !== "oauth2-refresh-token" ||
+      context.source.namespaceId !== context.namespace.id ||
+      context.source.driverId !== this.backend.drivers.credential_gateway
+    ) {
       throw new ScopeViolationError("Browser connections create oauth2-refresh-token sources.");
     }
   }

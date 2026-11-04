@@ -101,12 +101,14 @@ export interface ConnectionSession {
   /** Agent from which consent started, when present. Attachment is a separate Agent binding. */
   readonly agentId?: string;
   readonly credentialSourceId: string;
-  /** The Namespace Secret holding the Refresh Driver's private state. */
-  readonly secretId: string;
+  /** Server-private PKCE state, erased when the callback consumes the attempt. */
+  readonly privateState: string;
+  readonly issuerRequired: boolean;
+  readonly sessionId: string;
+  readonly redirectUri: string;
   readonly actorId: string;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
   readonly createdAt: string;
   readonly expiresAt: string;
-  readonly consumedAt?: string;
 }

@@ -8,7 +8,7 @@ author: mrunalp
 
 - **ID:** RFC-0027
 - **Created:** 2026-10-20
-- **Last updated:** 2026-11-03
+- **Last updated:** 2026-11-04
 - **RFC PR:** [#3068](https://github.com/openclaw/openclaw-enterprise/pull/3068)
 - **Implementation plan:** [Backend implementation and plan, #3098](https://github.com/openclaw/openclaw-enterprise/pull/3098)
 - **Companion:** [Driver contracts, failure, and verification](contracts.md)
@@ -27,8 +27,9 @@ Each Agent gets its own grant on the credential source. Alice can detach the
 Research Agent and keep the second Agent working under the original consent.
 
 The connection records who approved the provider grant and which scopes they
-approved. Namespace IAM governs who can use it. When an Agent sends a request,
-OCE checks that Agent's grant and the actual request before adding a credential.
+approved. Namespace IAM governs who can attach it. OCC checks the Agent's grant
+at deployment. Before adding the credential to a request, the sender checks the
+deployed execution, its installed attachment and the request policy.
 A Gmail policy allowing only message headers applies to both `gog` and a script
 running in the same Agent execution.
 
@@ -154,7 +155,7 @@ it ([client registrations](contracts.md#client-registrations)).
 ### Ownership and Agent attachments
 
 A completed connection records its source, Namespace, consenting identity and
-approved template version. A personal source grants use to its owner. An
+approved template version. OCC grants the owner `read` and `operate` on that source. An
 authorized administrator can share access to that specific source through
 Namespace IAM. Seeing a source in the picker requires read access; choosing it
 requires authority to use it. Membership in the Namespace alone grants neither.
@@ -173,12 +174,14 @@ its channels, may ask it to act with those provider permissions. The owner can
 choose an Agent with a private audience when attaching a personal account.
 [RFC-0010](../0010-agent-access.md#access-contract) governs Agent access.
 
-Detaching removes only the target Agent's authority. OCC prevents new sends
-through that attachment, withdraws it from serving revisions, and tracks cleanup
-until it succeeds or the revision retires. Other Agents' bindings and the
-underlying connection remain usable. Disconnecting the account withdraws every
-attachment and retires the saved grant. A failed withdrawal stays visible and
-can be retried without renewing the Agent's authority.
+Detaching removes the saved binding and the Agent's source grant immediately.
+OCC refuses new deployments with that source and records a withdrawal for each
+revision that can still hold it. A running revision can keep sending approved
+requests until the worker removes its attachment or the revision stops. Operators
+can inspect and retry a pending withdrawal, including before the Agent's first
+activation. Other Agents keep their grants. Disconnecting the saved account
+retires its Token Service grant and sender credentials across all Agents and
+queues cleanup of their attachments.
 
 ### Presets and connection templates
 
@@ -230,7 +233,7 @@ sequenceDiagram
   OAuth-->>API: authorizationUrl, privateState
   API-->>User: Consent warning, then popup to authorizationUrl
   User->>Issuer: Approve the fixed scopes
-  Issuer->>API: GET /oauth/callback with code, state, and optional iss
+  Issuer->>API: GET /oauth/callback with code, state and issuer when required
   API->>OAuth: completeBrowserAuthorization
   OAuth->>Issuer: Exchange code with PKCE verifier
   alt Exchange succeeds
@@ -243,7 +246,7 @@ sequenceDiagram
     API-->>User: Agent binding and exact grant recorded
   else Consent denied, state invalid, or exchange refused
     OAuth-->>API: failure code
-    API-->>User: Show failure after removing the pending source
+    API-->>User: Show failure and recovery action
   end
 ```
 
@@ -256,15 +259,17 @@ selection before the redirect and uses the
    ID and, for MCP, the displayed template version and `selectedScopes`. OCC
    checks access to the Namespace and template `use`, and validates the
    selection. It then registers an empty source as `registering` and calls
-   `startBrowserAuthorization`. It stores `privateState` in a Namespace Secret, as
-   device login does, and returns the source ID and `authorizationUrl`.
+   `startBrowserAuthorization`. It stores the verifier and other private Driver
+   state in a single-use attempt bound to the person's browser session. Only
+   the source ID, expiry and authorization URL go back to the browser.
 2. The console shows the destination and scopes the person will approve, then
    opens the consent URL in a popup. When a browser blocks popups, it redirects
    the page.
 3. `GET /oauth/callback` requires the session that started the connection. OCC
-   finds the session by a hash of `state`, rejects reuse or an age above ten
-   minutes, and calls `completeBrowserAuthorization` once. The response sets
-   `Referrer-Policy: no-referrer` and redirects without the query string. OCC
+   claims the matching unexpired attempt by a hash of `state` before exchanging
+   the code. The worker removes abandoned attempts and their pending sources
+   after ten minutes. Once exchange starts, a timeout requires explicit recovery.
+   The response sets `Referrer-Policy: no-referrer` and redirects without the query string. OCC
    excludes the code from logs and audit.
 4. On `ready`, OCC saves the connection, its owner and the approved access in the
    Namespace. A completed callback grants no Agent access by itself. At Agent

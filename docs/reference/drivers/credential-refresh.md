@@ -19,6 +19,7 @@ authorization. The paired [Credential Gateway](credential-gateway.md) owns the
 source's stored record and applies the current token to the Agent's requests.
 This Driver owns issuer exchange, refresh material, and minted tokens. OCC calls
 it for setup, device authorization, incident rotation, status, and removal.
+Browser connections use the separate [Token Service handoff](#client-registrations-and-browser-authorization).
 Configuration discovery uses the Gateway's [access-token callback](credential-gateway.md#optional-additions);
 OpenShell may refresh during retrieval without an OCC refresh call.
 
@@ -72,13 +73,18 @@ a rotating refresh grant.
 connection template and connect operations unless the selected Driver implements
 all five.
 
-| Method                                                          | Contract                                                                                                                                                                 |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `registerClient(context, clientSecret)`                         | Stores the client secret for one `issuer` and `clientId` pair, named by `context.registrationId`. OCC keeps no copy. Replaying a registration stores the given secret.   |
-| `rotateClientSecret(context, clientSecret)`                     | Replaces the stored secret. New connections use it; refresh already configured for earlier connections keeps its secret.                                                 |
-| `removeClient(context)`                                         | Deletes the stored secret; an absent secret counts as removed. OCC calls it only when no connection template version uses the registration.                              |
-| `startBrowserAuthorization(context, request)`                   | Returns the provider consent URL with an S256 PKCE challenge and random `state`, that `state`, and opaque `privateState` holding the verifier. Never returns a token.    |
-| `completeBrowserAuthorization(context, privateState, callback)` | Verifies `state`, exchanges the code once without following redirects, configures Gateway refresh custody, and mints the first token. Resolves only when a token exists. |
+| Method                                                                                | Contract                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `registerClient(context, clientSecret)`                                               | Stores the client secret for one `issuer` and `clientId` pair, named by `context.registrationId`. OCC keeps no copy. Replaying a registration stores the given secret.         |
+| `rotateClientSecret(context, clientSecret)`                                           | Replaces the stored secret. New connections use it; refresh already configured for earlier connections keeps its secret.                                                       |
+| `removeClient(context)`                                                               | Deletes the stored secret; an absent secret counts as removed. OCC calls it only when no connection template version uses the registration.                                    |
+| `startBrowserAuthorization(context, request)`                                         | Returns the provider consent URL with an S256 PKCE challenge and random `state`, that `state`, and opaque `privateState` holding the verifier. Never returns a token.          |
+| `completeBrowserAuthorization(context, privateState, callback, request, acceptGrant)` | Verifies `state`, exchanges the code once against the pinned template, and passes the grant and first usable access token to `acceptGrant`. Waits for the handoff to complete. |
+
+OCC binds the attempt to the identity and browser session in private PostgreSQL
+storage. The Token Service stores the reusable grant and renews it in the worker.
+OpenShell receives the prepared access token and expiry for the source's
+provider. Agent requests never initiate refresh for a browser connection.
 
 A definite failure throws `BrowserAuthorizationError` with an implementation-owned
 `code` and a `recoveryAction` of `retry` or `fix_configuration`. It carries no
@@ -139,8 +145,8 @@ destructor.
   the selected Credential Gateway's Backend.
 - OCC does not poll refresh status or audit background refresh failures; read
   the source to see them.
-- The experimental `codex-oauth` model source uses device authorization; OAuth2
-  tool sources receive their initial material through Secret references.
+- The experimental `codex-oauth` model source uses device authorization. OAuth2
+  tool sources support [browser consent](../connection-templates.md#connect-an-account) or manual registration with Secret references.
 - Installed Credential Refresh packages are unsupported.
 
 ## Troubleshooting

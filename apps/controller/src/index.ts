@@ -2122,6 +2122,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const context: RequestContext = {
       actorId: identity.id,
+      ...(admitted.method === "session" && { sessionId: admitted.session.id }),
       issuer: admitted.externalIdentity.issuer,
       subject: admitted.externalIdentity.subject,
       admissionDecisionId: admitted.decisionId,
@@ -4510,7 +4511,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       createConnectionCallback({
         getController: () => controller,
         getContext: (request) => contexts.get(request),
-        isSession: (request) => admissions.get(request)?.method === "session",
         auditEvent: (request, context, target) =>
           event(connectionCallbackOperation, request, target, "mutation", context),
         auditFailure: (request, context, reasonCode) =>

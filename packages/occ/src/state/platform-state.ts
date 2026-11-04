@@ -369,6 +369,7 @@ export interface PresetRepository extends PresetReadRepository {
 export interface ConnectionTemplateReadRepository {
   findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
   listConnectionTemplates(): Promise<readonly Readonly<ConnectionTemplate>[]>;
+  hasOtherConnectionIssuer(issuer: string): Promise<boolean>;
   findConnectionTemplateVersion(
     templateId: string,
     version: number,
@@ -400,7 +401,25 @@ export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepo
   deleteConnectionTemplate(templateId: string): Promise<boolean>;
 }
 
+/** Private Secret identity used only by the Token Service. No credential material is stored here. */
+export interface ConnectionTokenCustody {
+  readonly namespaceId: string;
+  readonly sourceId: string;
+  readonly secret: Readonly<Secret>;
+  readonly publishedVersion?: string;
+  readonly nextRefreshAt?: string;
+}
+
 export interface AgentConnectionReadRepository {
+  findTokenCustody(
+    namespaceId: string,
+    sourceId: string,
+  ): Promise<Readonly<ConnectionTokenCustody> | undefined>;
+  listDueConnectionTokens(
+    installationId: string,
+    limit: number,
+    afterSourceId?: string,
+  ): Promise<readonly Readonly<AgentConnection>[]>;
   findAgentConnection(
     namespaceId: string,
     credentialSourceId: string,
@@ -416,10 +435,16 @@ export interface AgentConnectionReadRepository {
     namespaceId: string,
     agentId: string,
   ): Promise<readonly Readonly<AgentConnection>[]>;
-  findConnectionSession(stateHash: string): Promise<Readonly<ConnectionSession> | undefined>;
 }
 
 export interface AgentConnectionRepository extends AgentConnectionReadRepository {
+  createTokenCustody(custody: ConnectionTokenCustody): Promise<void>;
+  recordTokenSchedule(
+    namespaceId: string,
+    sourceId: string,
+    schedule:
+      "due" | "stopped" | { readonly publishedVersion: string; readonly nextRefreshAt: string },
+  ): Promise<void>;
   requestConnectionRevocation(
     namespaceId: string,
     sourceId: string,
@@ -429,8 +454,16 @@ export interface AgentConnectionRepository extends AgentConnectionReadRepository
   createAgentConnection(connection: AgentConnection): Promise<Readonly<AgentConnection>>;
   deleteAgentConnection(namespaceId: string, credentialSourceId: string): Promise<boolean>;
   createConnectionSession(session: ConnectionSession): Promise<Readonly<ConnectionSession>>;
-  /** Marks the session consumed if it is unconsumed and unexpired at `at`; false otherwise. */
-  consumeConnectionSession(stateHash: string, at: string): Promise<boolean>;
+  consumeConnectionSession(
+    stateHash: string,
+    actorId: string,
+    sessionId: string,
+    at: string,
+  ): Promise<Readonly<ConnectionSession> | undefined>;
+  takeExpiredConnectionSessions(
+    at: string,
+    limit: number,
+  ): Promise<readonly Pick<ConnectionSession, "namespaceId" | "credentialSourceId">[]>;
 }
 
 /**
@@ -1185,6 +1218,7 @@ interface PlatformSnapshot {
   /** Every version, keyed by template and version. */
   readonly connectionTemplateVersions: Map<string, Readonly<ConnectionTemplateVersion>>;
   readonly clientRegistrations: Map<string, Readonly<ConnectionClientRegistration>>;
+  readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
   readonly agentConnections: Map<string, Readonly<AgentConnection>>;
   readonly connectionSessions: Map<string, Readonly<ConnectionSession>>;
   readonly secrets: Map<string, Readonly<Secret>>;
@@ -1317,6 +1351,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     connectionTemplates: new Map(snapshot.connectionTemplates),
     connectionTemplateVersions: new Map(snapshot.connectionTemplateVersions),
     clientRegistrations: new Map(snapshot.clientRegistrations),
+    connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     agentConnections: new Map(snapshot.agentConnections),
     connectionSessions: new Map(snapshot.connectionSessions),
     credentialWithdrawals: new Map(
@@ -1914,6 +1949,10 @@ function repositories(
   };
   const connectionTemplates: ConnectionTemplateRepository = {
     findConnectionTemplate,
+    hasOtherConnectionIssuer: async (issuer) =>
+      [...snapshot.clientRegistrations.values()].some(
+        (registration) => registration.issuer !== issuer,
+      ),
     listConnectionTemplates: async () =>
       Object.freeze(
         Array.from(snapshot.connectionTemplates.values())
@@ -2003,6 +2042,13 @@ function repositories(
       if (!snapshot.connectionTemplates.has(templateId)) {
         return false;
       }
+      if (
+        [...snapshot.connectionSessions.values(), ...snapshot.agentConnections.values()].some(
+          (connection) => connection.connectionTemplateId === templateId,
+        )
+      ) {
+        throw new ResourceStateConflictError("The connection template is in use.");
+      }
       snapshot.connectionTemplates.delete(templateId);
       for (const key of Array.from(snapshot.connectionTemplateVersions.keys())) {
         if (key.startsWith(`${templateId}\u0000`)) {
@@ -2015,6 +2061,51 @@ function repositories(
   };
 
   const agentConnections: AgentConnectionRepository = {
+    findTokenCustody: async (ns, id) => snapshot.connectionTokenCustody.get(agentKey(ns, id)),
+    createTokenCustody: async (c) => {
+      const key = agentKey(c.namespaceId, c.sourceId);
+      if (snapshot.connectionTokenCustody.has(key)) {
+        throw new Error("Connection token custody already exists.");
+      }
+      snapshot.connectionTokenCustody.set(key, storedCopy(c));
+    },
+    recordTokenSchedule: async (namespaceId, sourceId, schedule) => {
+      const key = agentKey(namespaceId, sourceId);
+      const custody = snapshot.connectionTokenCustody.get(key);
+      if (!custody) {
+        throw new Error("Connection token custody is missing.");
+      }
+      const { nextRefreshAt: _previous, ...existing } = custody;
+      const next =
+        schedule === "due"
+          ? { nextRefreshAt: new Date().toISOString() }
+          : schedule === "stopped"
+            ? {}
+            : schedule;
+      snapshot.connectionTokenCustody.set(key, storedCopy({ ...existing, ...next }));
+    },
+    listDueConnectionTokens: async (installationId, limit, afterSourceId) => {
+      if (snapshot.installation?.id !== installationId) {
+        return [];
+      }
+      const now = new Date().toISOString();
+      const due = [...snapshot.agentConnections.values()].filter((account) => {
+        const next = snapshot.connectionTokenCustody.get(
+          agentKey(account.namespaceId, account.credentialSourceId),
+        )?.nextRefreshAt;
+        return (
+          !account.revocationRequestedBy &&
+          next !== undefined &&
+          next <= now &&
+          account.credentialSourceId > (afterSourceId ?? "")
+        );
+      });
+      return immutableCopy(
+        due
+          .sort((a, b) => a.credentialSourceId.localeCompare(b.credentialSourceId))
+          .slice(0, limit),
+      );
+    },
     findAgentConnection: async (namespaceId, credentialSourceId) => {
       const found = snapshot.agentConnections.get(agentKey(namespaceId, credentialSourceId));
       return found === undefined ? undefined : immutableCopy(found);
@@ -2085,10 +2176,6 @@ function repositories(
           .map((connection) => immutableCopy(connection)),
       );
     },
-    findConnectionSession: async (stateHash) => {
-      const found = snapshot.connectionSessions.get(stateHash);
-      return found === undefined ? undefined : immutableCopy(found);
-    },
     createAgentConnection: async (connection) => {
       assertInitialized(snapshot);
       const key = agentKey(connection.namespaceId, connection.credentialSourceId);
@@ -2110,18 +2197,31 @@ function repositories(
       snapshot.connectionSessions.set(saved.stateHash, saved);
       return immutableCopy(saved);
     },
-    // Mirrors the database: a session is consumed at most once.
-    consumeConnectionSession: async (stateHash, at) => {
-      const current = snapshot.connectionSessions.get(stateHash);
+    consumeConnectionSession: async (stateHash, actorId, sessionId, at) => {
+      const attempt = snapshot.connectionSessions.get(stateHash);
       if (
-        current === undefined ||
-        current.consumedAt !== undefined ||
-        Date.parse(current.expiresAt) <= Date.parse(at)
+        !attempt ||
+        attempt.actorId !== actorId ||
+        attempt.sessionId !== sessionId ||
+        attempt.expiresAt <= at
       ) {
-        return false;
+        return undefined;
       }
-      snapshot.connectionSessions.set(stateHash, immutableCopy({ ...current, consumedAt: at }));
-      return true;
+      snapshot.connectionSessions.delete(stateHash);
+      return immutableCopy(attempt);
+    },
+    takeExpiredConnectionSessions: async (at, limit) => {
+      const expired = [...snapshot.connectionSessions.values()]
+        .filter((session) => session.expiresAt <= at)
+        .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt))
+        .slice(0, limit);
+      for (const session of expired) {
+        snapshot.connectionSessions.delete(session.stateHash);
+      }
+      return expired.map(({ namespaceId, credentialSourceId }) => ({
+        namespaceId,
+        credentialSourceId,
+      }));
     },
   };
 
@@ -2825,6 +2925,7 @@ function repositories(
       }
       const key = agentKey(namespaceId, credentialSourceId);
       snapshot.credentialSources.delete(key);
+      snapshot.connectionTokenCustody.delete(key);
       snapshot.agentConnections.delete(key);
       for (const [hash, session] of snapshot.connectionSessions) {
         if (
@@ -4220,6 +4321,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     connectionTemplates: new Map(),
     connectionTemplateVersions: new Map(),
     clientRegistrations: new Map(),
+    connectionTokenCustody: new Map(),
     agentConnections: new Map(),
     connectionSessions: new Map(),
     secrets: new Map(),

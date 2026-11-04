@@ -2,8 +2,9 @@
 
 Use Google's `gmail.readonly` OAuth scope to connect a Gmail account once and
 grant selected Agents permission to read mail. Google enforces that scope.
-The template permits requests to `gmail.googleapis.com` through OpenShell, which
-keeps the refresh token and supplies a placeholder as `GOG_ACCESS_TOKEN`.
+The template permits requests to `gmail.googleapis.com` through OpenShell. The
+Token Service keeps the refresh grant. OpenShell presents the prepared access
+token for an authorized request carrying the placeholder in `GOG_ACCESS_TOKEN`.
 See the [connection template reference](../../reference/connection-templates.md).
 
 The console has no connection controls yet, so these steps use the HTTP API.
@@ -18,7 +19,7 @@ The console has no connection controls yet, so these steps use the HTTP API.
   that exact path in the Credential Gateway's Installation-wide `toolBinaries`.
   OpenShell uses this list to admit tools to the protected route. The user's consent applies to the granted Agent and the approved requests.
 - The OCC public origin set. The callback URI is `<public origin>/oauth/callback`.
-- The OCC API and the OpenShell gateway Pod can reach `oauth2.googleapis.com`.
+- The OCC API and worker can reach `oauth2.googleapis.com` for exchange and refresh.
 - An Installation administrator session cookie in `OCC_SESSION_COOKIE_JAR`, with
   `OCC_URL` and `OCC_ORIGIN` set; see
   [sign in as an administrator](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator).
@@ -80,10 +81,10 @@ jq -n --arg ns "$OCC_NAMESPACE" --arg template "$TEMPLATE_ID" '{
 ```
 
 Use `subjectKind: "identity"` with a person's `principalId` to grant one person
-instead. The person also needs exact `read` and `update` on their Agent, plus
-`deploy` and `administer` to deploy and chat with it; see
-[Share an Agent](../console/agent-sharing.md). Grant these only to the Agent's
-owner: a connected Agent cannot have other people's grants.
+instead. Connecting an account requires read access to that Namespace. Anyone
+who can invoke an attached Agent can ask it to use the mailbox within the
+Agent's policy. Check [who has access to the Agent](../console/agent-sharing.md)
+before attaching a personal account.
 
 ## Connect an account
 
@@ -102,7 +103,8 @@ location.assign(data.authorizationUrl);
 ```
 
 After Google redirects back, list `GET /namespaces/:namespaceId/connections` to
-find the completed source ID. A person who owns the connection or can operate its source and can update the target Agent sends `POST /namespaces/:namespaceId/agents/:agentId/connections/:credentialSourceId`
+find the completed source ID. A caller with `credential_source:operate` on the
+source and `agent:update` on the target sends `POST /namespaces/:namespaceId/agents/:agentId/connections/:credentialSourceId`
 for each Agent that should use the account. Deploy each Agent to pick up the source.
 
 ## Check the result
@@ -116,6 +118,7 @@ the variable: OpenShell refuses model requests that carry the placeholder.
 - **`connection=failed&reason=client_refused`:** the client ID or secret is wrong,
   or the redirect URI does not match. Check the Google client, or
   [rotate the secret](../../reference/connection-templates.md#client-registrations).
+- **`reason=issuer_required` or `issuer_mismatch`:** Check whether the provider returns the exact template issuer in the authorization response. OCC requires it when more than one issuer uses the [shared callback](../../reference/connection-templates.md#connect-an-account).
 - **`reason=unknown_session`:** the link opened in a browser without the session
   that started the connection. Start again from the signed-in tab.
 - **The source later reports `reauthorize`:** Google revoked or expired the grant,
@@ -123,4 +126,4 @@ the variable: OpenShell refuses model requests that carry the placeholder.
 - **Other reasons:** see
   [callback failures](../../reference/connection-templates.md#callback-failures).
 
-To remove access from one Agent, detach its connection. To revoke it from every Agent, [disconnect the saved account](../../reference/connection-templates.md#detach-or-disconnect). Revoking the app in the Google account also stops refresh.
+To remove access from one Agent, detach its connection and check that its running revisions have withdrawn the source. To revoke it from every Agent, [disconnect the saved account](../../reference/connection-templates.md#detach-or-disconnect). Revoking the app in the Google account also stops refresh.

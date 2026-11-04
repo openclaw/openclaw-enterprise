@@ -101,6 +101,7 @@ import {
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
+import { OAuthConnectionTokens } from "../backends/token-service/oauth-connection.ts";
 import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
 import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
@@ -1279,7 +1280,7 @@ export async function loadInstallationConfiguration(options: {
     secret.configuration as unknown as KubernetesSecretDriverOptions,
     { id: secret.id, implementation: secret.implementation, preprovisionedNamespace },
   );
-  const tokenService = new TokenService();
+  const tokenService = new TokenService(new OAuthConnectionTokens(secretDriver));
   let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
   if (preparedGitHubKeyPath !== undefined) {
     const { PostgresPreparedGitHubLifecycle } =

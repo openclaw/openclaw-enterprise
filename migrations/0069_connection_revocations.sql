@@ -31,3 +31,19 @@ FOR EACH ROW EXECUTE FUNCTION occ.guard_agent_connection_update();
 REVOKE ALL ON FUNCTION occ.guard_agent_connection_update() FROM PUBLIC;
 --> statement-breakpoint
 GRANT UPDATE (revocation_requested_by, revoked_at) ON occ.agent_connections TO occ_app;
+--> statement-breakpoint
+-- Only the Token Service's opaque SecretDriver reference is stored in OCC.
+CREATE TABLE occ.connection_token_custody (
+  namespace_id text NOT NULL,
+  credential_source_id text NOT NULL,
+  secret_ref jsonb NOT NULL,
+  published_version text,
+  next_refresh_at timestamptz,
+  PRIMARY KEY (namespace_id, credential_source_id),
+  CONSTRAINT connection_token_custody_source FOREIGN KEY (namespace_id, credential_source_id)
+    REFERENCES occ.credential_sources(namespace_id,id) ON DELETE CASCADE ON UPDATE RESTRICT
+);
+--> statement-breakpoint
+CREATE INDEX connection_token_refresh_due ON occ.connection_token_custody(next_refresh_at) WHERE next_refresh_at IS NOT NULL;
+--> statement-breakpoint
+GRANT SELECT, INSERT, UPDATE (published_version, next_refresh_at) ON occ.connection_token_custody TO occ_app;

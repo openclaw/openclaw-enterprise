@@ -1,4 +1,5 @@
 import type { CredentialSourceContext } from "../credential-gateway/index.ts";
+import type { OAuthConnectionGrant } from "../../prepared-token.ts";
 import type { Driver } from "../index.ts";
 
 export interface CredentialRefreshInput {
@@ -52,13 +53,15 @@ export interface CredentialRefreshDriver extends Driver {
     request: CredentialBrowserAuthorizationRequest,
   ): Promise<CredentialSourceBrowserAuthorization>;
   /**
-   * Verifies `state`, exchanges the code once, configures Gateway refresh custody, and mints
-   * the first token. Resolves only when a usable token exists; never returns a token.
+   * Exchanges the code using the immutable template version. Completes only after the Token
+   * Service accepts the reusable grant and first access token in durable custody.
    */
   completeBrowserAuthorization?(
     context: CredentialSourceContext,
     privateState: string,
     callback: CredentialBrowserAuthorizationCallback,
+    request: CredentialBrowserAuthorizationRequest,
+    acceptGrant: (grant: OAuthConnectionGrant) => Promise<void>,
   ): Promise<void>;
   /** Replaces the source's refresh material; replaying a successful `requestId` is a no-op. */
   configureRefresh(

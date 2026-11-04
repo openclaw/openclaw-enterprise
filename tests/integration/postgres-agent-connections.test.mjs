@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { EventEmitter, once } from "node:events";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import pg from "pg";
 
+import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
+import { OAuthConnectionTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
@@ -14,14 +20,13 @@ import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-s
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
-import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 // RFC-0023 connections through the production Fastify app, PostgreSQL State, Native IAM, and
 // the real OpenShell Credential Gateway and Refresh Drivers, against a real Keycloak issuer.
 // The test completes Keycloak's real login form and the Refresh Driver performs a real
-// authorization-code + PKCE exchange. Only the OpenShell gRPC transport is a recording
-// double: it stores providers and refresh material but does not mint tokens, so this test
-// does not prove OpenShell refresh or substitution (the k3d OpenShell suite does).
+// authorization-code + PKCE exchange. Keycloak validates the prepared access token the OCC
+// Token Service sends to the recording OpenShell gRPC transport. Worker substitution needs k3d.
 
 const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
 const secretsFile = process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE;
@@ -82,7 +87,7 @@ async function createConnectionClient(secrets, realm, clientId) {
     defaultClientScopes: [],
     directAccessGrantsEnabled: false,
     redirectUris: [redirectUri],
-    attributes: { "pkce.code.challenge.method": "S256" },
+    attributes: { "pkce.code.challenge.method": "S256", "access.token.lifespan": "12" },
   });
   return secret;
 }
@@ -121,8 +126,8 @@ async function approveConsent(authorizationUrl, username, password) {
 /** Records the OpenShell RPCs the Drivers send; never mints or substitutes credentials. */
 function recordingOpenShell() {
   const providers = new Map();
+  const updates = new EventEmitter();
   const profiles = new Map();
-  const refresh = new Map();
   const key = (workspace, name) => `${workspace}/${name}`;
   const client = {
     async getProviderProfile(workspace, id) {
@@ -142,7 +147,12 @@ function recordingOpenShell() {
       if (providers.has(id)) {
         throw new OpenShellProviderAlreadyExistsError();
       }
-      providers.set(id, { ...structuredClone(input), config: input.config ?? {} });
+      providers.set(id, {
+        ...structuredClone(input),
+        config: input.config ?? {},
+        uid: randomUUID(),
+        resourceVersion: "1",
+      });
       return providers.get(id);
     },
     async getProvider(workspace, name) {
@@ -160,23 +170,21 @@ function recordingOpenShell() {
     async getProviderCredential(workspace, name, credentialKey) {
       return { value: providers.get(key(workspace, name)).credentials[credentialKey] };
     },
-    async configureProviderRefresh(request) {
-      refresh.set(key(request.workspace, request.provider), structuredClone(request));
-      return { status: "configured" };
-    },
-    // The double reports a mint; real minting is out of scope here (see the file header).
-    async rotateProviderCredential() {
-      return { status: "refreshed" };
-    },
-    async getProviderRefreshStatus(workspace, name) {
-      return refresh.has(key(workspace, name)) ? { status: "refreshed" } : undefined;
-    },
-    async deleteProviderRefresh(workspace, name) {
-      refresh.delete(key(workspace, name));
+    async updateProviderCredentialsConditionally(input, expectedResourceVersion) {
+      const provider = providers.get(key(input.workspace, input.name));
+      assert.equal(provider.resourceVersion, expectedResourceVersion);
+      Object.assign(provider, {
+        credentials: structuredClone(input.credentials),
+        credentialExpirationTimes: structuredClone(input.credentialExpirationTimes),
+        config: input.config ?? provider.config,
+        resourceVersion: String(Number(expectedResourceVersion) + 1),
+      });
+      updates.emit(input.name);
+      return provider;
     },
     close() {},
   };
-  return { client, providers, refresh };
+  return { client, providers, updates };
 }
 
 test(
@@ -188,8 +196,14 @@ test(
     // Source deletion waits out the Credential Gateway's registration fence (70 seconds), so
     // the test moves OCC's clock forward instead of sleeping.
     let skewMs = 0;
+    const secretDriver = createTestSecretDriver();
+    const tokenService = new TokenService(new OAuthConnectionTokens(secretDriver));
     const fixture = await createPostgresAgentApp(t, {
-      controllerOptions: { now: () => new Date(Date.now() + skewMs) },
+      secretDriver,
+      controllerOptions: {
+        now: () => new Date(Date.now() + skewMs),
+        preparedTokens: tokenService,
+      },
       label: `connections-${randomUUID().slice(0, 8)}`,
       authSecret: "openclaw-connections-test-auth-secret-minimum-32-bytes",
       appOptions: {
@@ -270,40 +284,43 @@ test(
       const password = `generated-password-${randomUUID()}`;
       const created = await inject("POST", "/api/auth/accounts", { email, password, name });
       assert.equal(created.statusCode, 201, created.body);
-      const session = await signInWithEmailPassword({
-        fetch: async (request) => {
-          const url = new URL(request.url);
-          const headers = Object.fromEntries(request.headers);
-          const body = request.body ? Buffer.from(await request.arrayBuffer()) : undefined;
-          const result = await app.inject({
-            method: request.method,
-            url: `${url.pathname}${url.search}`,
-            headers: { ...headers, host: "127.0.0.1" },
-            ...(body === undefined ? {} : { payload: body }),
-          });
-          return new Response(result.statusCode === 204 ? null : result.rawPayload, {
-            status: result.statusCode,
-            headers: Object.entries(result.headers).flatMap(([name, value]) =>
-              (Array.isArray(value) ? value : [value]).map((entry) => [name, String(entry)]),
-            ),
-          });
-        },
-        email,
-        password,
-      });
+      const signIn = () =>
+        signInWithEmailPassword({
+          fetch: async (request) => {
+            const url = new URL(request.url);
+            const headers = Object.fromEntries(request.headers);
+            const body = request.body ? Buffer.from(await request.arrayBuffer()) : undefined;
+            const result = await app.inject({
+              method: request.method,
+              url: `${url.pathname}${url.search}`,
+              headers: { ...headers, host: "127.0.0.1" },
+              ...(body === undefined ? {} : { payload: body }),
+            });
+            return new Response(result.statusCode === 204 ? null : result.rawPayload, {
+              status: result.statusCode,
+              headers: Object.entries(result.headers).flatMap(([name, value]) =>
+                (Array.isArray(value) ? value : [value]).map((entry) => [name, String(entry)]),
+              ),
+            });
+          },
+          email,
+          password,
+        });
+      const requestAs = (session) => (method, url, body) =>
+        app.inject({
+          method,
+          url,
+          headers: {
+            host: "127.0.0.1",
+            ...authenticatedHeaders(session),
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
+        });
       people[name] = {
         principalId: created.json().data.principalId,
-        request: (method, url, body) =>
-          app.inject({
-            method,
-            url,
-            headers: {
-              host: "127.0.0.1",
-              ...authenticatedHeaders(session),
-              ...(body === undefined ? {} : { "content-type": "application/json" }),
-            },
-            ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
-          }),
+        request: requestAs(await signIn()),
+        signInAgain: async () => requestAs(await signIn()),
       };
     }
     const { bob, carol } = people;
@@ -337,8 +354,7 @@ test(
       endpoint: { host: "api.connections.test", port: 443, path: "/**" },
       envVar: "CONNECTION_TOKEN",
     });
-    // The OpenShell gateway, not OCC, refreshes at the token URL, and a `localhost` name would
-    // reach the gateway itself. The administrator sees that refusal before anyone connects.
+    // The template refuses loopback token URLs before a person can start consent.
     const unreachable = await inject("POST", "/connection-templates", {
       ...templateBody("oce", clientSecretA),
       tokenUrl: `${new URL(issuer).origin}/realms/oce/protocol/openid-connect/token`,
@@ -493,6 +509,9 @@ test(
       "the refused callback is audited with its reason and the person who sent it",
     );
 
+    const otherBob = await bob.signInAgain();
+    const anotherLogin = await otherBob("GET", callbackPath);
+    assert.match(anotherLogin.headers.location, /connection=failed&reason=unknown_session/);
     const completed = await bob.request("GET", callbackPath);
     assert.equal(completed.statusCode, 303, completed.body);
     assert.equal(completed.headers["referrer-policy"], "no-referrer");
@@ -501,26 +520,55 @@ test(
 
     // A replayed callback never exchanges the code twice.
     const replayed = await bob.request("GET", callbackPath);
-    assert.match(replayed.headers.location, /reason=session_used_or_expired/);
+    assert.match(replayed.headers.location, /reason=unknown_session/);
 
-    // OCC handed OpenShell a real Keycloak grant: redeeming the recorded material works.
-    const configured = [...openShell.refresh.values()].find((entry) =>
-      entry.provider.startsWith("oce-cs-"),
+    const prepared = [...openShell.providers.values()].find((entry) =>
+      entry.name.startsWith("oce-cs-"),
     );
-    assert.ok(configured, "the Refresh Driver configured OpenShell refresh custody");
-    // OpenShell mints into this key and substitutes it for the template's variable; the
-    // recording double accepts any key, so the test checks it.
-    assert.equal(configured.credentialKey, "CONNECTION_TOKEN");
-    const redeemed = await fetch(templateBody("oce").tokenUrl, {
-      method: "POST",
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: configured.material.refresh_token,
-        client_id: configured.material.client_id,
-        client_secret: configured.material.client_secret,
-      }),
-    });
-    assert.equal(redeemed.status, 200, "the handed-over refresh token is a usable grant");
+    assert.ok(prepared, "the Token Service installed a worker provider");
+    assert.deepEqual(
+      Object.keys(prepared.credentials),
+      ["CONNECTION_TOKEN"],
+      "the worker receives only its access token",
+    );
+    assert.ok(Date.parse(prepared.credentialExpirationTimes.CONNECTION_TOKEN) > Date.now());
+    const accessToken = prepared.credentials.CONNECTION_TOKEN;
+    const subjectFor = async (bearer) => {
+      const response = await fetch(`${issuer}/protocol/openid-connect/userinfo`, {
+        headers: { Authorization: `Bearer ${bearer}` },
+      });
+      assert.equal(response.status, 200, "Keycloak accepts the prepared bearer from the sender");
+      return (await response.json()).sub;
+    };
+    const subject = await subjectFor(accessToken);
+    assert.ok(subject);
+
+    // Force one exchange through the source's rotation action. Keycloak recognizes the
+    // replacement bearer that OCC conditionally writes to the same worker provider.
+    const resourceVersion = prepared.resourceVersion;
+    const rotateSource = await inject(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources/${credentialSourceId}/rotate`,
+    );
+    assert.equal(rotateSource.statusCode, 200, rotateSource.body);
+    const updatedProvider = openShell.providers.get(`${prepared.workspace}/${prepared.name}`);
+    assert.notEqual(updatedProvider.resourceVersion, resourceVersion);
+    const renewedToken = updatedProvider.credentials.CONNECTION_TOKEN;
+    assert.equal(renewedToken !== accessToken, true, "Keycloak issued a different bearer");
+    assert.ok(Date.parse(updatedProvider.credentialExpirationTimes.CONNECTION_TOKEN) > Date.now());
+    assert.equal(await subjectFor(renewedToken), subject);
+    const privateWrite = secretDriver.calls.find(
+      (entry) => entry.operation === "compareAndSwap" && entry.value.includes('"refreshToken"'),
+    );
+    assert.ok(privateWrite, "the Token Service durably accepted the refresh grant");
+    const { refreshToken } = JSON.parse(privateWrite.value);
+    assert.ok(refreshToken);
+    const providerEvidence = JSON.stringify(prepared);
+    assert.equal(
+      providerEvidence.includes(refreshToken) || providerEvidence.includes(clientSecretA),
+      false,
+      "no refresh grant or client secret reached the worker provider",
+    );
 
     const accounts = await bob.request("GET", namespaceConnections);
     assert.equal(accounts.statusCode, 200, accounts.body);
@@ -573,6 +621,24 @@ test(
       });
       assert.equal(permission.statusCode, 201, permission.body);
     }
+    const carolNs = await inject("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: carol.principalId,
+      roleId: role.json().data.id,
+      resourceKind: "namespace",
+      resourceId: namespace.id,
+    });
+    assert.equal(carolNs.statusCode, 201, carolNs.body);
+    const visibleIds = async (user, path) => {
+      const result = await user.request("GET", path);
+      assert.equal(result.statusCode, 200, result.body);
+      return result.json().data.map((connection) => connection.credentialSourceId);
+    };
+    assert.deepEqual(
+      await visibleIds(carol, namespaceConnections),
+      [credentialSourceId],
+      "source-read makes the saved account visible before it can be attached",
+    );
     const bypassAttach = await inject("PATCH", agentPath(agentC), {
       configurationId: agentC.configurationId,
       credentialSources: [{ sourceId: credentialSourceId }],
@@ -585,6 +651,31 @@ test(
     assert.equal(bypassDetach.statusCode, 409, bypassDetach.body);
     const readOnlyAttach = await carol.request("POST", attachment(agentC));
     assert.equal(readOnlyAttach.statusCode, 403, readOnlyAttach.body);
+    // Operate permits attachment by known ID. Both picker endpoints still require source read.
+    const bindingsApi = `/namespaces/${namespace.id}/iam/access-bindings`;
+    const accessBindings = (await inject("GET", bindingsApi)).json().data;
+    const carolRead = accessBindings.find(
+      (binding) =>
+        binding.subjectId === carol.principalId && binding.roleId === readRole.json().data.id,
+    );
+    assert.equal((await inject("DELETE", `${bindingsApi}/${carolRead.id}`)).statusCode, 204);
+    const useRole = await inject("POST", `/namespaces/${namespace.id}/iam/roles`, {
+      name: "Use saved account",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+    assert.equal(useRole.statusCode, 201, useRole.body);
+    const useOnly = await inject("POST", bindingsApi, {
+      subjectKind: "identity",
+      subjectId: carol.principalId,
+      roleId: useRole.json().data.id,
+      resourceKind: "credential_source",
+      resourceId: credentialSourceId,
+    });
+    assert.equal(useOnly.statusCode, 201, useOnly.body);
+    assert.deepEqual(await visibleIds(carol, namespaceConnections), []);
+    assert.equal((await carol.request("POST", attachment(agentC))).statusCode, 204);
+    assert.deepEqual(await visibleIds(carol, `${agentPath(agentC)}/connections`), []);
+    assert.equal((await carol.request("DELETE", attachment(agentC))).statusCode, 200);
     const foreign = await inject(
       "POST",
       `/namespaces/${other.namespace.id}/agents/${other.agent.id}/connections/${credentialSourceId}`,
@@ -639,6 +730,18 @@ test(
     assert.deepEqual(removed.json().data, { withdrawalRequested: false, deleted: false });
     assert.deepEqual(await attachedTo(agent), []);
     assert.deepEqual(await attachedTo(agentB), [credentialSourceId]);
+    const bobSourceGrant = accessBindings.find(
+      (binding) =>
+        binding.subjectId === bob.principalId && binding.resourceId === credentialSourceId,
+    );
+    assert.ok(bobSourceGrant);
+    assert.equal((await inject("DELETE", `${bindingsApi}/${bobSourceGrant.id}`)).statusCode, 204);
+    assert.equal(
+      (await bob.request("POST", attachment(agent))).statusCode,
+      403,
+      "the original consent owner also needs a current source-use grant to attach",
+    );
+
     const grants = await state.read((view) => view.iamPolicy.listAccessBindings(namespace.id));
     assert.deepEqual(
       grants
@@ -690,21 +793,34 @@ test(
       [credentialSourceId],
     );
     assert.equal(await readWithdrawal(), undefined);
+    const bSource = `${agentPath(agentB)}/credential-sources/${credentialSourceId}`;
+    // A candidate alone cannot start a generic withdrawal. Detach records the request
+    // while B's first deployment is queued, so it can then be inspected and replayed.
+    const firstRequest = await inject("POST", `${bSource}/withdraw`);
+    assert.equal(firstRequest.statusCode, 409, firstRequest.body);
     const selected = await inject("DELETE", attachment(agentB));
     assert.equal(selected.statusCode, 200, selected.body);
     assert.equal(selected.json().data.withdrawalRequested, true);
     assert.equal((await readWithdrawal()).state, "pending");
+    const status = await inject("GET", `${bSource}/withdrawal`);
+    assert.equal(status.statusCode, 200, status.body);
+    assert.equal(status.json().data.revisionId, bRevision.id);
+    assert.equal(status.json().data.state, "pending");
+    const retry = await inject("POST", `${bSource}/withdraw`);
+    assert.equal(retry.statusCode, 202, retry.body);
+    assert.equal(retry.json().data.revisionId, bRevision.id);
+    assert.equal(retry.json().data.withdrawalInProgress, true);
     assert.equal((await inject("POST", attachment(agentB))).statusCode, 204);
 
     // The owner can globally revoke the grant even while B has a pending revision and Bob
     // cannot edit B. Fail its first external removal after the durable revocation commits.
-    const originalRemoval = openShell.client.deleteProviderRefresh;
-    openShell.client.deleteProviderRefresh = async () => {
+    const originalRemoval = openShell.client.deleteProvider;
+    openShell.client.deleteProvider = async () => {
       throw new Error("injected gateway outage");
     };
     const interrupted = await bob.request("DELETE", account);
     assert.ok(interrupted.statusCode >= 500, interrupted.body);
-    openShell.client.deleteProviderRefresh = originalRemoval;
+    openShell.client.deleteProvider = originalRemoval;
     const retired = () =>
       state.read((view) =>
         view.agentConnections.findAgentConnection(namespace.id, credentialSourceId),
@@ -728,10 +844,7 @@ test(
       "retain the confirmed revocation for the pending revision",
     );
     assert.equal((await readWithdrawal()).requestedBy, bob.principalId);
-    assert.equal(
-      [...openShell.refresh.values()].some((entry) => entry.provider === configured.provider),
-      false,
-    );
+    assert.equal(openShell.providers.has(`${prepared.workspace}/${prepared.name}`), false);
     assert.ok(
       !(await state.read((view) => view.iamPolicy.listAccessBindings(namespace.id))).some(
         (binding) =>
@@ -779,12 +892,164 @@ test(
     assert.match(denied.headers.location, /reason=consent_denied/);
     assert.deepEqual(await attachedTo(agent), []);
 
+    const findSource = (id) =>
+      state.read((view) => view.credentialSources.findCredentialSource(namespace.id, id));
+    assert.equal(
+      await findSource(contextualStart.json().data.credentialSourceId),
+      undefined,
+      "denied consent releases the register-only reservation immediately",
+    );
+
+    const beginAttempt = async () => {
+      const started = await bob.request("POST", namespaceConnections, {
+        connectionTemplateId: templateA.id,
+      });
+      assert.equal(started.statusCode, 201, started.body);
+      return started.json().data;
+    };
+    // Even a callback with the correct state cannot exchange against a different issuer.
+    const mixed = await beginAttempt();
+    const mixedState = new URL(mixed.authorizationUrl).searchParams.get("state");
+    const mismatch = await bob.request(
+      "GET",
+      `/oauth/callback?${new URLSearchParams({ state: mixedState, code: "unused", iss: "https://wrong.example" })}`,
+    );
+    assert.match(mismatch.headers.location, /reason=issuer_mismatch/);
+    assert.equal(await findSource(mixed.credentialSourceId), undefined);
+
+    // A closed popup has no callback. The worker expires the attempt and its pending source.
+    const unnamedIssuer = await beginAttempt();
+    const unnamedState = new URL(unnamedIssuer.authorizationUrl).searchParams.get("state");
+    const missingIssuer = await bob.request(
+      "GET",
+      `/oauth/callback?${new URLSearchParams({ state: unnamedState, code: "unused" })}`,
+    );
+    assert.match(missingIssuer.headers.location, /reason=issuer_required/);
+    assert.equal(await findSource(unnamedIssuer.credentialSourceId), undefined);
+    const abandoned = await beginAttempt();
+    skewMs += 11 * 60_000;
+    const late = await bob.request(
+      "GET",
+      `/oauth/callback?${new URLSearchParams({
+        state: new URL(abandoned.authorizationUrl).searchParams.get("state"),
+        code: "unused",
+      })}`,
+    );
+    assert.match(late.headers.location, /reason=unknown_session/);
+    await controller.expireConnectionSessions(10);
+    assert.equal(await findSource(abandoned.credentialSourceId), undefined);
+    const leftover = await pool.query(
+      "SELECT count(*)::int AS count FROM occ.connection_sessions WHERE namespace_id = $1",
+      [namespace.id],
+    );
+    assert.equal(leftover.rows[0].count, 0, "finished and expired attempts leave no PKCE material");
+
+    skewMs = 0;
+    // With a single issuer configured, OCC accepts a legacy callback without iss and
+    // exchanges the code with the issuer and client registration pinned at start.
+    const removeSecondIssuer = await inject("DELETE", `/connection-templates/${templateB.id}`);
+    assert.equal(removeSecondIssuer.statusCode, 204, removeSecondIssuer.body);
+    const legacy = await beginAttempt();
+    const legacyApproval = await approveConsent(
+      legacy.authorizationUrl,
+      "alice",
+      secrets.users.alice.password,
+    );
+    legacyApproval.searchParams.delete("iss");
+    const legacyDone = await bob.request("GET", `/oauth/callback?${legacyApproval.searchParams}`);
+    assert.match(legacyDone.headers.location, /connection=connected$/);
+    // Give the normal worker its own database pool and the same selected senders. Keycloak's
+    // short token lifetime makes this persisted source come due without changing either clock.
+    const sender = [...openShell.providers.values()].find((entry) =>
+      entry.name.startsWith("oce-cs-"),
+    );
+    assert.ok(sender);
+    const previousToken = sender.credentials.CONNECTION_TOKEN;
+    const previousVersion = sender.resourceVersion;
+    const originalUpdate = openShell.client.updateProviderCredentialsConditionally;
+    openShell.client.updateProviderCredentialsConditionally = async () => {
+      throw new Error("injected sender outage");
+    };
+    const failedPublish = await inject(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources/${legacy.credentialSourceId}/rotate`,
+    );
+    openShell.client.updateProviderCredentialsConditionally = originalUpdate;
+    assert.ok(failedPublish.statusCode >= 500, failedPublish.body);
+    assert.equal(previousVersion, sender.resourceVersion, "sender still holds the original bearer");
+    const due = await pool.query(
+      "SELECT next_refresh_at <= now() AS due FROM occ.connection_token_custody WHERE credential_source_id = $1",
+      [legacy.credentialSourceId],
+    );
+    assert.equal(due.rows[0]?.due, true, "failed publication committed an immediate retry");
+
+    const { computeDriver, configurationDriver, iamDriver } = fixture;
+    const workerDrivers = [
+      computeDriver,
+      configurationDriver,
+      iamDriver,
+      secretDriver,
+      gateway,
+      refresh,
+      sandbox,
+    ];
+    const worker = createControllerWorker({
+      pool: new pg.Pool({ connectionString: databaseUrl }),
+      drivers: {
+        installation: {
+          drivers: Object.fromEntries(
+            workerDrivers.map((driver) => [
+              driver.capability,
+              { id: driver.id, configuration: {} },
+            ]),
+          ),
+        },
+        computeDriver,
+        configurationDriver,
+        createIAMDriver: () => iamDriver,
+        secretDriver,
+        sandboxDriver: sandbox,
+        credentialGatewayDriver: gateway,
+        credentialRefreshDriver: refresh,
+        tokenService,
+      },
+      pollIntervalMs: 100,
+      emit() {},
+    });
+    const workerProjection = once(openShell.updates, sender.name, {
+      signal: AbortSignal.timeout(30_000),
+    });
+    try {
+      await Promise.all([worker.start(), workerProjection]);
+      assert.equal(sender.credentials.CONNECTION_TOKEN !== previousToken, true);
+      assert.equal(await subjectFor(sender.credentials.CONNECTION_TOKEN), subject);
+      const recoveredToken = sender.credentials.CONNECTION_TOKEN;
+      // The next publication must come from normal scheduled renewal, with no operator call.
+      await once(openShell.updates, sender.name, { signal: AbortSignal.timeout(30_000) });
+      assert.equal(sender.credentials.CONNECTION_TOKEN !== recoveredToken, true);
+    } finally {
+      await worker.stop();
+    }
+    const scheduledToken = sender.credentials.CONNECTION_TOKEN;
+    assert.equal(scheduledToken !== previousToken, true, "the worker delivered a renewed bearer");
+    assert.notEqual(sender.resourceVersion, previousVersion);
+    assert.ok(Date.parse(sender.credentialExpirationTimes.CONNECTION_TOKEN) > Date.now());
+    assert.equal(await subjectFor(scheduledToken), subject);
+    const retiredLegacy = await bob.request(
+      "DELETE",
+      `${namespaceConnections}/${legacy.credentialSourceId}`,
+    );
+    assert.equal(retiredLegacy.statusCode, 204, retiredLegacy.body);
+
     // No authorization code, refresh token, or client secret reaches the audit log.
     const audit = await pool.query("SELECT details::text AS details FROM occ.audit_events");
     const recorded = audit.rows.map((row) => row.details ?? "").join("\n");
     for (const value of [
       approved.searchParams.get("code"),
-      configured.material.refresh_token,
+      refreshToken,
+      accessToken,
+      renewedToken,
+      scheduledToken,
       clientSecretA,
       clientSecretB,
     ]) {

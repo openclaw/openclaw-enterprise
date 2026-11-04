@@ -1,6 +1,6 @@
 ---
 created: "2026-10-20"
-updated: "2026-11-03"
+updated: "2026-11-04"
 last_updated_session: "01a19e60-87d0-71d0-8c9a-e3e3b33b1676"
 ---
 
@@ -29,11 +29,13 @@ sequenceDiagram
     participant OCC
     participant Provider
     participant Driver as Credential Refresh Driver
+    participant Tokens as Token Service
     Person->>OCC: Start consent in a Namespace
     OCC-->>Person: Authorization URL
     Person->>Provider: Approve requested scopes
     Provider-->>OCC: Redirect browser with code and state
-    OCC->>Driver: Complete exchange into refresh custody
+    OCC->>Driver: Exchange code after claiming the browser attempt
+    Driver->>Tokens: Store grant and first access token
     OCC->>OCC: Save completed connection
     Person->>OCC: Attach source to Agent A
     OCC->>OCC: Bind source and authorize A's service principal
@@ -46,17 +48,21 @@ sequenceDiagram
 1. `startAgentConnection` checks the human session, Namespace access and
    `connection_template:use`. An Agent-originated request also requires access
    to that Agent. OCC pins the approved template version, registers the pending
-   source, and starts the provider's authorization flow.
-2. `completeAgentConnection` consumes the starting person's one-time state,
-   rechecks authorization and calls the selected refresh Driver to exchange the
-   code. OCC marks the source ready and saves its consent record in a transaction.
-   At this point no Agent has received the account.
+   source, and stores the PKCE verifier in a private database row with the
+   identity, browser session and ten-minute expiry.
+2. `completeAgentConnection` consumes the attempt before exchange and rechecks
+   authorization. The Refresh Driver exchanges the code with the provider. The
+   Token Service accepts the grant, and OpenShell receives the access token and
+   expiry. OCC then marks the source ready, records consent and grants the owner
+   exact-source read and operate in one transaction. A worker expires abandoned
+   attempts. An exchange with an uncertain outcome requires explicit recovery.
 3. `attachAgentConnection` checks Agent update permission and the caller's
    authority to use the completed source. It binds the source and grants the
    target service principal exact-source access. Other Agents can be attached
    individually. New deployments and queued work check the Agent's authority.
 4. `disconnectAgentConnection` detaches the source from that Agent and requests
-   withdrawal from revisions holding the credential. Other attached Agents keep
+   withdrawal from revisions holding the credential. Those revisions can still
+   send requests until the worker confirms withdrawal or they stop. Other attached Agents keep
    their grants. Disconnecting the saved account at the Namespace endpoint
    instead withdraws it from every Agent. OCC records the intent before retiring
    the stored refresh material so a worker can resume interrupted cleanup.

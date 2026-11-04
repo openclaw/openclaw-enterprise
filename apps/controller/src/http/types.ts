@@ -15,6 +15,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 
 export interface RequestContext {
   readonly actorId: string;
+  readonly sessionId?: string;
   readonly issuer: string;
   readonly subject: string;
   readonly admissionDecisionId: string;

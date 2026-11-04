@@ -2903,6 +2903,7 @@ Complete a browser connection for the signed-in person who started it
 | `state` | query | `string` | No | max length: 512 | "example-browser-bound-state" |
 | `code` | query | `string` | No | max length: 4096 | "example-provider-code" |
 | `error` | query | `string` | No | max length: 256 | "access_denied" |
+| `iss` | query | `string` | No | max length: 2048 | "https://accounts.example.com" |
 
 ##### Responses
 

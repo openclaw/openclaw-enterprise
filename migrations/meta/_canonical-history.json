@@ -544,7 +544,7 @@
       "when": 1787000000068,
       "tag": "0068_agent_connections",
       "breakpoints": true,
-      "sha256": "17db0511c74fe8d73c6b24822ec706b5c9d5342d7e9814fd79670c53a84f991a"
+      "sha256": "a586c9e021a944214941d60d0a2d931a199b414b3ddb7da58654d5393b193fdc"
     },
     {
       "idx": 69,
@@ -552,7 +552,7 @@
       "when": 1787000000069,
       "tag": "0069_connection_revocations",
       "breakpoints": true,
-      "sha256": "027474f9f1de239e93adb393731123b0d0152581535b76eff9009ccdc6a344ff"
+      "sha256": "dd7b3370ea421ade6cfd3d55fcf39a4f47c87e3e58aecb4a3de3332e8433b23c"
     }
   ],
   "initialSchemaStates": {

@@ -1,5 +1,5 @@
 import { immutableCopy } from "@openclaw-enterprise/utils";
-import type { AgentConnection, ConnectionSession } from "@openclaw-enterprise/contracts";
+import type { AgentConnection, Secret, ConnectionSession } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "../errors.ts";
 import type { AgentConnectionRepository } from "./platform-state.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
@@ -47,15 +47,15 @@ function sessionFromRow(row: Row): Readonly<ConnectionSession> {
     namespaceId: text(row, "namespace_id"),
     ...(row.agent_id === null ? {} : { agentId: text(row, "agent_id") }),
     credentialSourceId: text(row, "credential_source_id"),
-    secretId: text(row, "secret_id"),
+    privateState: text(row, "private_state"),
+    issuerRequired: row.issuer_required === true,
+    sessionId: text(row, "session_id"),
+    redirectUri: text(row, "redirect_uri"),
     actorId: text(row, "actor_id"),
     connectionTemplateId: text(row, "connection_template_id"),
     connectionTemplateVersion: integer(row, "connection_template_version"),
     createdAt: timestamp(row, "created_at"),
     expiresAt: timestamp(row, "expires_at"),
-    ...(row.consumed_at === null || row.consumed_at === undefined
-      ? {}
-      : { consumedAt: timestamp(row, "consumed_at") }),
   });
 }
 
@@ -65,6 +65,71 @@ export function postgresAgentConnections(
   requireInitialized: () => Promise<unknown>,
 ): AgentConnectionRepository {
   return {
+    findTokenCustody: async (namespaceId, sourceId) => {
+      const [row] = (
+        await client.query(
+          "SELECT secret_ref, published_version FROM occ.connection_token_custody WHERE namespace_id=$1 AND credential_source_id=$2",
+          [namespaceId, sourceId],
+        )
+      ).rows;
+      if (!row) {
+        return undefined;
+      }
+      const record = row as Row;
+      const secret = record.secret_ref as Readonly<Secret>;
+      if (
+        secret?.namespaceId !== namespaceId ||
+        !secret.id ||
+        !secret.driverId ||
+        !secret.backendRef?.uid
+      ) {
+        invalid();
+      }
+      return immutableCopy({
+        namespaceId,
+        sourceId,
+        secret,
+        ...(record.published_version === null
+          ? {}
+          : { publishedVersion: text(record, "published_version") }),
+      });
+    },
+    createTokenCustody: async (c) => {
+      await client.query(
+        "INSERT INTO occ.connection_token_custody (namespace_id,credential_source_id,secret_ref) VALUES ($1,$2,$3)",
+        [c.namespaceId, c.sourceId, JSON.stringify(c.secret)],
+      );
+    },
+    recordTokenSchedule: async (namespaceId, sourceId, schedule) => {
+      const published = typeof schedule === "object" ? schedule : undefined;
+      const result = await client.query(
+        `UPDATE occ.connection_token_custody
+         SET published_version = COALESCE($3, published_version),
+             next_refresh_at = CASE WHEN $5 THEN now() ELSE $4::timestamptz END
+         WHERE namespace_id = $1 AND credential_source_id = $2`,
+        [
+          namespaceId,
+          sourceId,
+          published?.publishedVersion ?? null,
+          published?.nextRefreshAt ?? null,
+          schedule === "due",
+        ],
+      );
+      if (!result.rowCount) {
+        invalid();
+      }
+    },
+    listDueConnectionTokens: async (installationId, limit, afterSourceId) =>
+      Object.freeze(
+        (
+          await client.query(
+            `SELECT a.* FROM occ.agent_connections a JOIN occ.connection_token_custody c USING(namespace_id,credential_source_id)
+         WHERE c.next_refresh_at <= now() AND a.revocation_requested_by IS NULL AND a.credential_source_id > $1 AND EXISTS (SELECT 1 FROM occ.installation WHERE id=$2)
+         ORDER BY a.credential_source_id LIMIT $3`,
+            [afterSourceId ?? "", installationId, limit],
+          )
+        ).rows.map((row) => connectionFromRow(row as Row)),
+      ),
     findAgentConnection: async (namespaceId, credentialSourceId) => {
       const [row] = (
         await client.query(
@@ -128,14 +193,6 @@ export function postgresAgentConnections(
           )
         ).rows.map((row) => connectionFromRow(row as Row)),
       ),
-    findConnectionSession: async (stateHash) => {
-      const [row] = (
-        await client.query(`SELECT * FROM occ.connection_sessions WHERE state_hash = $1`, [
-          stateHash,
-        ])
-      ).rows;
-      return row === undefined ? undefined : sessionFromRow(row as Row);
-    },
     createAgentConnection: async (connection) => {
       await requireInitialized();
       await client.query(
@@ -166,31 +223,47 @@ export function postgresAgentConnections(
       await requireInitialized();
       await client.query(
         `INSERT INTO occ.connection_sessions
-         (state_hash, namespace_id, agent_id, credential_source_id, secret_id, actor_id,
-          connection_template_id, connection_template_version, created_at, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+         (state_hash, namespace_id, agent_id, credential_source_id, private_state, actor_id,
+          session_id, redirect_uri, connection_template_id, connection_template_version, created_at, expires_at, issuer_required)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           session.stateHash,
           session.namespaceId,
           session.agentId ?? null,
           session.credentialSourceId,
-          session.secretId,
+          session.privateState,
           session.actorId,
+          session.sessionId,
+          session.redirectUri,
           session.connectionTemplateId,
           session.connectionTemplateVersion,
           session.createdAt,
           session.expiresAt,
+          session.issuerRequired,
         ],
       );
       return immutableCopy(session);
     },
-    consumeConnectionSession: async (stateHash, at) => {
-      const consumed = await client.query(
-        `UPDATE occ.connection_sessions SET consumed_at = $2
-         WHERE state_hash = $1 AND consumed_at IS NULL AND expires_at > $2`,
-        [stateHash, at],
+    consumeConnectionSession: async (stateHash, actorId, sessionId, at) => {
+      const { rows } = await client.query(
+        `DELETE FROM occ.connection_sessions WHERE state_hash = $1 AND actor_id = $2
+         AND session_id = $3 AND expires_at > $4 RETURNING *`,
+        [stateHash, actorId, sessionId, at],
       );
-      return consumed.rowCount === 1;
+      return rows[0] === undefined ? undefined : sessionFromRow(rows[0] as Row);
+    },
+    takeExpiredConnectionSessions: async (at, limit) => {
+      const { rows } = await client.query(
+        `DELETE FROM occ.connection_sessions WHERE state_hash IN (
+          SELECT state_hash FROM occ.connection_sessions WHERE expires_at <= $1
+          ORDER BY expires_at, state_hash LIMIT $2)
+         RETURNING namespace_id, credential_source_id`,
+        [at, limit],
+      );
+      return rows.map((row) => ({
+        namespaceId: text(row as Row, "namespace_id"),
+        credentialSourceId: text(row as Row, "credential_source_id"),
+      }));
     },
   };
 }

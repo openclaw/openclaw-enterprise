@@ -8,9 +8,12 @@ from an Agent's running version without a redeploy.
 Withdrawal revokes a source from an Agent's selected version while the version
 keeps running. Send
 `POST /namespaces/:namespaceId/agents/:agentId/credential-sources/:credentialSourceId/withdraw`.
-The caller needs `agent:operate`, and the selected version must have been
-saved with that source, as its Harness authentication or in
-`credentialSources`. The request returns `202` with the withdrawal in state `pending`.
+The caller needs `agent:operate`. To start a withdrawal, the selected version
+must use the source as its Harness authentication or in `credentialSources`.
+If detaching an account already requested withdrawal from another version that
+could still run, you can inspect and retry that withdrawal here, even before
+the Agent's first version becomes active. The request returns `202` with the
+withdrawal in state `pending`.
 A saved version with the source that is not yet selected gets its own
 withdrawal, so it never attaches the source. A withdrawn Harness source fails
 that deployment with `CREDENTIAL_WITHDRAWN`; otherwise it becomes selected without the

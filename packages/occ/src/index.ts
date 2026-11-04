@@ -1,3 +1,7 @@
+import {
+  PENDING_OAUTH_CONNECTION,
+  type OAuthConnectionGrant,
+} from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 
@@ -106,8 +110,8 @@ import {
 import type {
   AgentConnection,
   ConnectionClientRegistration,
-  ConnectionSession,
   ConnectionTemplate,
+  ConnectionTemplateVersion,
   ConnectionTemplateValues,
   CredentialClientRegistrationContext,
   InstallationResourceKind,
@@ -1060,6 +1064,7 @@ export interface CreateInstallationAccessBindingInput {
 }
 
 export interface StartAgentConnectionInput {
+  readonly sessionId: string;
   readonly namespaceId: string;
   readonly agentId?: string;
   readonly connectionTemplateId: string;
@@ -1068,6 +1073,8 @@ export interface StartAgentConnectionInput {
 }
 
 export interface CompleteAgentConnectionInput {
+  readonly sessionId: string;
+  readonly iss?: string;
   readonly state: string;
   /** Present on approval. */
   readonly code?: string;
@@ -1423,6 +1430,22 @@ function connectionSourceConfig(
     client_id: version.clientId,
     scope: version.scopes.join(" "),
   });
+}
+
+function browserAuthorizationRequest(
+  version: Readonly<ConnectionTemplateVersion>,
+  redirectUri: string,
+) {
+  return {
+    clientRegistrationId: version.clientRegistrationId,
+    issuer: version.issuer,
+    clientId: version.clientId,
+    authorizationUrl: version.authorizationUrl,
+    tokenUrl: version.tokenUrl,
+    scopes: version.scopes,
+    authorizationParameters: version.authorizationParameters,
+    redirectUri,
+  };
 }
 
 /** A name-based (version 5 layout) UUID, so a replayed registration step reuses its request ID. */
@@ -5554,7 +5577,6 @@ export class OpenClawController {
   async createSecret(
     principalId: string,
     input: CreateSecretInput,
-    authorization?: typeof CONNECTION_AUTHORIZED,
   ): Promise<Readonly<SecretMetadata>> {
     this.validateSecretValue(input.value);
     if (!isName(input.name)) {
@@ -5562,13 +5584,11 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      if (authorization !== CONNECTION_AUTHORIZED) {
-        await this.authorize(principalId, "create", {
-          kind: "secret",
-          id: input.namespaceId,
-          namespaceId: input.namespaceId,
-        });
-      }
+      await this.authorize(principalId, "create", {
+        kind: "secret",
+        id: input.namespaceId,
+        namespaceId: input.namespaceId,
+      });
       const namespace = await this.lockNamespace(state, input.namespaceId);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
@@ -6701,7 +6721,6 @@ export class OpenClawController {
     audit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
     registrationAudit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
     // A browser connection registers the source before consent; its callback mints.
-    connection?: typeof CONNECTION_AUTHORIZED,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
     this.assertCredentialSourceTransactionBoundary();
     if (!isName(input.name)) {
@@ -6711,13 +6730,11 @@ export class OpenClawController {
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
     const registration = await this.mutate(async (state) => {
-      if (connection !== CONNECTION_AUTHORIZED) {
-        await this.authorize(principalId, "create", {
-          kind: "credential_source",
-          id: input.namespaceId,
-          namespaceId: input.namespaceId,
-        });
-      }
+      await this.authorize(principalId, "create", {
+        kind: "credential_source",
+        id: input.namespaceId,
+        namespaceId: input.namespaceId,
+      });
       const locked = await this.lockNamespace(state, input.namespaceId);
       // An Installation property, so it is reported before any Namespace state.
       this.assertCredentialSourceOwnerSelected();
@@ -6728,15 +6745,7 @@ export class OpenClawController {
       }
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
       credentialSourceFieldsMatch(type, "config", written);
-      if (connection === CONNECTION_AUTHORIZED) {
-        if (protectedType || type.rotation !== "refresh" || Object.keys(secretRefs).length > 0) {
-          throw new ScopeViolationError(
-            "Browser authorization requires a Gateway refresh source without stored secrets.",
-          );
-        }
-      } else {
-        credentialSourceFieldsMatch(type, "secrets", secretRefs);
-      }
+      credentialSourceFieldsMatch(type, "secrets", secretRefs);
       // The Driver may return the configuration in the form it uses, such as a normalized URL:
       // the stored record, the response and the gateway then agree (finding 1292).
       const config = Object.freeze({
@@ -6811,7 +6820,7 @@ export class OpenClawController {
         namespace: locked,
         gateway: selected,
         refresh: refreshDriver,
-        deferred: type.deviceAuthorization !== undefined || connection === CONNECTION_AUTHORIZED,
+        deferred: type.deviceAuthorization !== undefined,
         source: registering,
         issuer: prepared?.issuer,
         values: read,
@@ -6882,10 +6891,6 @@ export class OpenClawController {
         await this.abandonCredentialRegistration(placed, gateway, source, terminal, refresh);
       }
       throw error;
-    }
-    // Only the OAuth callback can make a browser connection ready, in the transaction that records consent.
-    if (connection === CONNECTION_AUTHORIZED) {
-      return this.credentialSourceMetadata(source);
     }
     // A commit failure leaves the record `registering`; deleting it removes any stored copy.
     const ready = await this.mutate(async (state) => {
@@ -7014,6 +7019,11 @@ export class OpenClawController {
       }
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be updated.");
+      }
+      if (source.config.oauth_owner === "token_service") {
+        throw new ResourceStateConflictError(
+          "Reconnect the account to replace its saved OAuth grant.",
+        );
       }
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         // After the update grant and lookup: the caller may change this source (finding 2536).
@@ -7152,9 +7162,11 @@ export class OpenClawController {
     principalId: string,
     input: RotateCredentialSourceInput,
     failureAudit?: (reasonCode: string) => AuditEvent,
+    audit?: AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
     this.namespaceIdentity(input.namespaceId);
-    return this.mutate(async (state) => {
+    const ownsTransaction = this.transactionContext.getStore() === undefined;
+    const rotation = await this.mutate(async (state) => {
       await this.authorize(principalId, "update", {
         kind: "credential_source",
         id: input.credentialSourceId,
@@ -7177,6 +7189,16 @@ export class OpenClawController {
       }
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be rotated.");
+      }
+      if (source.config.oauth_owner === "token_service") {
+        if (!ownsTransaction) {
+          throw new ResourceConflictError(
+            "Connected-account rotation must own its retry transaction.",
+          );
+        }
+        // Commit the retry before contacting the issuer or gateway. An uncertain write is recoverable.
+        await state.agentConnections.recordTokenSchedule(namespace.id, source.id, "due");
+        return { managedSource: source };
       }
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.rotate);
@@ -7201,8 +7223,27 @@ export class OpenClawController {
       );
       assertRefreshMinted(minted);
       const status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
+      if (audit) {
+        await state.audit.append(audit);
+      }
       return this.credentialSourceMetadata(source, { ...status, refresh: minted });
     });
+    if ("managedSource" in rotation) {
+      const source = rotation.managedSource;
+      return this.transact(async (unit) => {
+        this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_ROTATION_FAILED");
+        const refresh = await this.maintainConnectionToken(source.namespaceId, source.id, true);
+        if (!refresh) {
+          throw new ResourceStateConflictError("The connected account was retired.");
+        }
+        assertRefreshMinted(refresh);
+        if (audit) {
+          await unit.audit.append(audit);
+        }
+        return this.credentialSourceMetadata(source, { state: "ready", refresh });
+      });
+    }
+    return rotation;
   }
 
   /**
@@ -7327,6 +7368,15 @@ export class OpenClawController {
         signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       };
       status = await gateway.sourceStatus(context);
+      if (source.config.oauth_owner === "token_service") {
+        const custody = await this.read((view) =>
+          view.agentConnections.findTokenCustody(namespace.id, source.id),
+        );
+        const refresh = custody
+          ? await this.connectionTokenService().status(custody, context.signal)
+          : { state: "pending" as const };
+        return this.credentialSourceMetadata(source, { ...status, refresh });
+      }
       const refresh =
         status.state === "ready" || status.state === "pending"
           ? await this.refreshDriverForSource(gateway, source.type)
@@ -7495,6 +7545,16 @@ export class OpenClawController {
         AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       );
     } else if (gateway && source.egress?.adoption !== "credential_free") {
+      if (source.config.oauth_owner === "token_service") {
+        const custody = await this.read((view) =>
+          view.agentConnections.findTokenCustody(namespace.id, source.id),
+        );
+        if (custody) {
+          await this.connectionTokenService().retire(custody, context().signal);
+        }
+        await this.credentialGatewayOperation(() => gateway.removeSource(context()));
+        return;
+      }
       const refresh = await this.refreshDriverForSource(gateway, source.type);
       if (refresh !== undefined) {
         await this.credentialGatewayOperation(() => refresh.removeRefresh(context()));
@@ -8335,6 +8395,166 @@ export class OpenClawController {
     }
   }
 
+  private connectionTokenService() {
+    const service = this.preparedTokens?.oauthConnections;
+    if (!service) {
+      throw new NotImplementedError(
+        "connection_templates",
+        "This Installation has no Token Service for browser connections.",
+      );
+    }
+    return service;
+  }
+
+  /** Store a private, UID-bound reference before the Token Service puts any grant into it. */
+  private async acceptConnectionTokens(
+    namespaceId: string,
+    sourceId: string,
+    grant: OAuthConnectionGrant,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const service = this.connectionTokenService();
+    const driver = this.secretDriver();
+    const custody = await this.mutate(async (unit) => {
+      const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (
+        source?.state !== "registering" ||
+        source.config.oauth_owner !== "token_service" ||
+        (await unit.agentConnections.findTokenCustody(namespaceId, sourceId))
+      ) {
+        throw new ResourceStateConflictError(
+          "The pending connection cannot accept an OAuth grant.",
+        );
+      }
+      const identity = {
+        id: this.nextIdentifier("secret"),
+        namespaceId,
+        name: "OAuth connection custody",
+      };
+      const backendRef = await this.secretOperation(() =>
+        driver.create(identity, PENDING_OAUTH_CONNECTION),
+      );
+      const custody = {
+        namespaceId,
+        sourceId,
+        secret: { ...identity, driverId: driver.id, backendRef, createdAt: this.timestamp() },
+      };
+      this.registerRollback(() => this.secretOperation(() => driver.delete(custody.secret)));
+      await unit.agentConnections.createTokenCustody(custody);
+      return custody;
+    });
+    await service.accept(custody, grant, signal);
+    await this.mutate(async (unit) => {
+      const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (source?.state !== "registering") {
+        throw new ResourceStateConflictError("The connection was retired during consent.");
+      }
+      await this.publishConnectionAccessToken(unit, source, signal);
+    });
+  }
+
+  /** The locked source orders publication against retirement; the sender also fences writes by provider version. */
+  private async publishConnectionAccessToken(
+    unit: PlatformUnitOfWork,
+    source: Readonly<CredentialSource>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const { namespaceId, id: sourceId } = source;
+    const custody = await unit.agentConnections.findTokenCustody(namespaceId, sourceId);
+    if (!custody) {
+      throw new ResourceStateConflictError("The connection has no Token Service grant.");
+    }
+    const token = await this.connectionTokenService().warm(custody, signal);
+    if (!token) {
+      throw new ResourceStateConflictError(
+        "No eligible access token is prepared for this connection.",
+      );
+    }
+    if (token.version !== custody.publishedVersion) {
+      const namespace = await this.credentialNamespace(
+        await this.exactNamespace(unit, namespaceId),
+      );
+      const gateway = this.ownedCredentialGatewayDriver(source);
+      if (!gateway.publishConnectionToken) {
+        throw new NotImplementedError(
+          "connection_templates",
+          "The selected sender cannot deliver expiring access tokens.",
+        );
+      }
+      const { accessToken, expiresAt } = token;
+      await this.credentialGatewayOperation(() =>
+        gateway.publishConnectionToken!({ namespace, source, signal }, { accessToken, expiresAt }),
+      );
+    }
+    await unit.agentConnections.recordTokenSchedule(namespaceId, sourceId, {
+      publishedVersion: token.version,
+      nextRefreshAt: token.nextRefreshAt,
+    });
+  }
+
+  /** The trusted worker renews browser connections independently of requests made by Agents. */
+  async maintainConnectionToken(namespaceId: string, sourceId: string, force = false) {
+    const custody = await this.read(async (view) => {
+      const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
+      if (source?.state !== "ready") {
+        return undefined;
+      }
+      return view.agentConnections.findTokenCustody(namespaceId, sourceId);
+    });
+    if (!custody) {
+      return undefined;
+    }
+    const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
+    const refreshed = await this.connectionTokenService().renew(custody, signal, force);
+    if (refreshed.state === "pending") {
+      return refreshed;
+    }
+    await this.mutate(async (unit) => {
+      const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (source?.state !== "ready") {
+        return;
+      }
+      if (refreshed.state === "failed") {
+        const gateway = this.ownedCredentialGatewayDriver(source);
+        if (!gateway.withdrawConnectionToken) {
+          throw new NotImplementedError(
+            "connection_templates",
+            "The selected sender cannot withdraw an access token.",
+          );
+        }
+        const namespace = await this.credentialNamespace(
+          await this.exactNamespace(unit, namespaceId),
+        );
+        await this.credentialGatewayOperation(() =>
+          gateway.withdrawConnectionToken!({ namespace, source, signal }),
+        );
+        // Keep the due time until confirmed withdrawal. A terminal grant requires reconnection.
+        await unit.agentConnections.recordTokenSchedule(namespaceId, sourceId, "stopped");
+      } else {
+        await this.publishConnectionAccessToken(unit, source, signal);
+      }
+    });
+    return refreshed;
+  }
+
+  private browserConnectionDriver(): CredentialRefreshDriver {
+    this.connectionTokenService();
+    const gateway = this.credentialGatewayDriver();
+    const secrets = this.secretDriver();
+    if (
+      !gateway.publishConnectionToken ||
+      !gateway.withdrawConnectionToken ||
+      !secrets.withValue ||
+      !secrets.compareAndSwap
+    ) {
+      throw new NotImplementedError(
+        "connection_templates",
+        "The selected Drivers cannot store an OAuth grant and deliver expiring access tokens.",
+      );
+    }
+    return this.connectionRefreshDriver();
+  }
+
   private connectionRefreshDriver(): CredentialRefreshDriver {
     if (!this.selections.has("credential_gateway") || !this.selections.has("credential_refresh")) {
       throw new NotImplementedError(
@@ -8540,86 +8760,63 @@ export class OpenClawController {
   }> {
     const { namespaceId, agentId } = input;
     await this.authorizeConnectionTarget(principalId, namespaceId, agentId);
-    await this.authorizeConnectionTemplateUse(principalId, input.connectionTemplateId, namespaceId);
-    const refresh = this.connectionRefreshDriver();
-    const secrets = this.secretDriver();
-    if (!secrets.withValue) {
-      throw new NotImplementedError(
-        "connection_templates",
-        "Connections require a Secret Driver that can read stored values.",
-      );
-    }
-    const template = await this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, namespaceId);
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      if (agentId !== undefined) {
-        const agent = await state.agents.findAgent(namespaceId, agentId);
-        if (agent?.status !== "active") {
-          throw new ScopeViolationError("The Agent is unavailable in this Namespace.");
-        }
+      await this.authorizeConnectionTarget(principalId, namespaceId, agentId);
+      await this.authorizeConnectionTemplateUse(
+        principalId,
+        input.connectionTemplateId,
+        namespaceId,
+      );
+      const refresh = this.browserConnectionDriver();
+      if (
+        agentId !== undefined &&
+        (await state.agents.findAgent(namespaceId, agentId))?.status !== "active"
+      ) {
+        throw new ScopeViolationError("The Agent is unavailable in this Namespace.");
       }
-      const found = await state.connectionTemplates.findConnectionTemplate(
+      const template = await state.connectionTemplates.lockConnectionTemplate(
         input.connectionTemplateId,
       );
-      if (found === undefined) {
+      if (!template) {
         throw new ScopeViolationError("The connection template does not exist.");
       }
-      return found;
-    });
-    const version = template.current;
-    await this.assertConnectionSourceConfig(version);
-    // The source is registered before consent with the approved values; its refresh is
-    // configured only when the callback completes, so it is never usable before then.
-    const source = await this.createCredentialSource(
-      principalId,
-      {
+      const version = template.current;
+      await this.assertConnectionSourceConfig(version);
+      const createdAt = this.timestamp();
+      const expiresAt = new Date(Date.parse(createdAt) + CONNECTION_SESSION_TTL_MS).toISOString();
+      // Consent starts with one atomic reservation. There is no grant or worker provider to retire
+      // if the browser closes. Only a successful exchange can hand material to the Token Service.
+      const source = await state.credentialSources.createCredentialSource({
+        id: this.nextIdentifier("credential_source"),
         namespaceId,
         name: `Connection ${crypto.randomUUID()}`,
         type: "oauth2-refresh-token",
-        config: connectionSourceConfig(version),
-      },
-      undefined,
-      undefined,
-      CONNECTION_AUTHORIZED,
-    );
-    const { context } = await this.authorizedCredentialSource(
-      principalId,
-      namespaceId,
-      source.id,
-      CONNECTION_AUTHORIZED,
-    );
-    const started = await this.credentialGatewayOperation(() =>
-      refresh.startBrowserAuthorization!(context, {
-        clientRegistrationId: version.clientRegistrationId,
-        issuer: version.issuer,
-        clientId: version.clientId,
-        authorizationUrl: version.authorizationUrl,
-        tokenUrl: version.tokenUrl,
-        scopes: version.scopes,
-        authorizationParameters: version.authorizationParameters,
-        redirectUri: input.redirectUri,
-      }),
-    );
-    const createdAt = this.timestamp();
-    const expiresAt = new Date(Date.parse(createdAt) + CONNECTION_SESSION_TTL_MS).toISOString();
-    const secret = await this.createSecret(
-      principalId,
-      {
-        namespaceId,
-        name: `Connection session ${crypto.randomUUID()}`,
-        value: started.privateState,
-      },
-      CONNECTION_AUTHORIZED,
-    );
-    await this.mutate(async (state) => {
+        config: { ...connectionSourceConfig(version), oauth_owner: "token_service" },
+        secrets: {},
+        ownerCapability: "credential_gateway",
+        driverId: this.credentialGatewayDriver().id,
+        state: "registering",
+        createdAt,
+      });
+      const started = await this.credentialGatewayOperation(() =>
+        refresh.startBrowserAuthorization!(
+          { namespace, source, signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) },
+          browserAuthorizationRequest(version, input.redirectUri),
+        ),
+      );
       await state.agentConnections.createConnectionSession({
         stateHash: createHash("sha256").update(started.state).digest("hex"),
         namespaceId,
         ...(agentId === undefined ? {} : { agentId }),
         credentialSourceId: source.id,
-        secretId: secret.id,
+        sessionId: input.sessionId,
+        redirectUri: input.redirectUri,
+        privateState: started.privateState,
+        issuerRequired: await state.connectionTemplates.hasOtherConnectionIssuer(version.issuer),
         actorId: principalId,
         connectionTemplateId: template.id,
         connectionTemplateVersion: version.version,
@@ -8629,8 +8826,27 @@ export class OpenClawController {
       if (audit) {
         await state.audit.append(audit(source.id));
       }
+      return {
+        credentialSourceId: source.id,
+        authorizationUrl: started.authorizationUrl,
+        expiresAt,
+      };
     });
-    return { credentialSourceId: source.id, authorizationUrl: started.authorizationUrl, expiresAt };
+  }
+
+  /** Claim only unspent, expired attempts. A callback already exchanging its code has no attempt row. */
+  async expireConnectionSessions(limit: number): Promise<void> {
+    await this.mutate(async (state) => {
+      for (const attempt of await state.agentConnections.takeExpiredConnectionSessions(
+        this.timestamp(),
+        limit,
+      )) {
+        await state.credentialSources.deleteCredentialSource(
+          attempt.namespaceId,
+          attempt.credentialSourceId,
+        );
+      }
+    });
   }
 
   /**
@@ -8646,56 +8862,91 @@ export class OpenClawController {
       throw new BrowserAuthorizationError("missing_state", "retry");
     }
     const stateHash = createHash("sha256").update(input.state).digest("hex");
-    const session = await this.read((state) =>
-      state.agentConnections.findConnectionSession(stateHash),
+    const session = await this.mutate((state) =>
+      state.agentConnections.consumeConnectionSession(
+        stateHash,
+        principalId,
+        input.sessionId,
+        this.timestamp(),
+      ),
     );
-    if (session === undefined || session.actorId !== principalId) {
+    if (!session) {
       throw new BrowserAuthorizationError("unknown_session", "retry");
     }
-    const consumed = await this.mutate((state) =>
-      state.agentConnections.consumeConnectionSession(stateHash, this.timestamp()),
-    );
-    if (!consumed) {
-      throw new BrowserAuthorizationError("session_used_or_expired", "retry");
-    }
     const { namespaceId, agentId, credentialSourceId } = session;
-    const refresh = this.connectionRefreshDriver();
+    let exchangeStarted = false;
+    let handoffStarted = false;
     try {
-      if (input.error !== undefined || !isNonEmptyString(input.code)) {
-        throw new BrowserAuthorizationError(
-          input.error === "access_denied" ? "consent_denied" : "provider_error",
-          "retry",
-        );
-      }
       await this.authorizeConnectionTarget(principalId, namespaceId, agentId);
       await this.authorizeConnectionTemplateUse(
         principalId,
         session.connectionTemplateId,
         namespaceId,
       );
-      const privateState = await this.connectionSessionState(session);
+      const version = await this.read((state) =>
+        state.connectionTemplates.findConnectionTemplateVersion(
+          session.connectionTemplateId,
+          session.connectionTemplateVersion,
+        ),
+      );
+      if (!version || (input.iss !== undefined && input.iss !== version.issuer)) {
+        throw new BrowserAuthorizationError("issuer_mismatch", "fix_configuration");
+      }
+      if (input.error !== undefined || !isNonEmptyString(input.code)) {
+        throw new BrowserAuthorizationError(
+          input.error === "access_denied" ? "consent_denied" : "provider_error",
+          "retry",
+        );
+      }
+      // A shared redirect URI cannot identify the responding authorization server. A legacy
+      // single-issuer deployment may omit iss until a second issuer has been configured.
+      if (
+        input.iss === undefined &&
+        (session.issuerRequired ||
+          (await this.read((state) =>
+            state.connectionTemplates.hasOtherConnectionIssuer(version.issuer),
+          )))
+      ) {
+        throw new BrowserAuthorizationError("issuer_required", "fix_configuration");
+      }
       const { context } = await this.authorizedCredentialSource(
         principalId,
         namespaceId,
         credentialSourceId,
         CONNECTION_AUTHORIZED,
       );
+      const refresh = this.browserConnectionDriver();
+      const request = browserAuthorizationRequest(version, session.redirectUri);
+      exchangeStarted = true;
       await this.credentialGatewayOperation(() =>
-        refresh.completeBrowserAuthorization!(context, privateState, {
-          code: input.code!,
-          state: input.state,
-        }),
+        refresh.completeBrowserAuthorization!(
+          context,
+          session.privateState,
+          { code: input.code!, state: input.state },
+          request,
+          async (grant) => {
+            handoffStarted = true;
+            await this.acceptConnectionTokens(
+              namespaceId,
+              credentialSourceId,
+              grant,
+              context.signal,
+            );
+          },
+        ),
       );
+      if (!handoffStarted) {
+        throw new DependencyUnavailableError(
+          "The Refresh Driver did not hand off the connection grant.",
+        );
+      }
     } catch (error) {
-      if (error instanceof BrowserAuthorizationError) {
-        // A definite failure: nothing usable exists, so the pending source is removed.
-        await this.deleteCredentialSource(
-          principalId,
-          namespaceId,
-          credentialSourceId,
-          undefined,
-          CONNECTION_AUTHORIZED,
-        ).catch(() => undefined);
+      // A network timeout may have spent the code. Keep the pending source for explicit
+      // retirement; never retry that exchange. Definite refusals have no material to retire.
+      if (!exchangeStarted || (!handoffStarted && error instanceof BrowserAuthorizationError)) {
+        await this.mutate((state) =>
+          state.credentialSources.deleteCredentialSource(namespaceId, credentialSourceId),
+        );
       }
       throw error;
     }
@@ -8708,6 +8959,7 @@ export class OpenClawController {
           session.connectionTemplateId,
           namespaceId,
         );
+        await this.grantConnectionOwner(state, namespaceId, principalId, credentialSourceId);
         const ready = await state.credentialSources.markCredentialSourceReady(
           namespaceId,
           credentialSourceId,
@@ -8766,30 +9018,84 @@ export class OpenClawController {
     namespaceId: string,
     agentId?: string,
   ): Promise<readonly Readonly<AgentConnection>[]> {
-    if (agentId !== undefined) {
+    if (agentId === undefined) {
+      await this.authorizeConnectionTarget(principalId, namespaceId);
+    } else {
       await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
-      return this.read((state) =>
-        state.agentConnections.listAgentConnections(namespaceId, agentId),
-      );
     }
-    await this.authorizeConnectionTarget(principalId, namespaceId);
     return this.read(async (state) => {
+      const connections =
+        agentId === undefined
+          ? await state.agentConnections.listNamespaceConnections(namespaceId)
+          : await state.agentConnections.listAgentConnections(namespaceId, agentId);
       const visible: Readonly<AgentConnection>[] = [];
-      for (const connection of await state.agentConnections.listNamespaceConnections(namespaceId)) {
-        const resource = {
-          kind: "credential_source" as const,
-          namespaceId,
-          id: connection.credentialSourceId,
-        };
+      for (const connection of connections) {
         if (
-          connection.ownerPrincipalId === principalId ||
-          (await this.authorizationDecision(principalId, "operate", resource)).decision.allowed
+          await this.canRead(principalId, {
+            kind: "credential_source",
+            namespaceId,
+            id: connection.credentialSourceId,
+          })
         ) {
           visible.push(connection);
         }
       }
       return visible;
     });
+  }
+
+  /** A person can see and use their saved account through the same IAM checks as any grantee. */
+  private async grantConnectionOwner(
+    state: PlatformUnitOfWork,
+    namespaceId: string,
+    principalId: string,
+    sourceId: string,
+  ): Promise<void> {
+    const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
+    if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
+      throw new DependencyUnavailableError(
+        "The IAM Driver cannot grant connection access transactionally.",
+      );
+    }
+    const roleId = `role_${namespaceId}_connection_owner`;
+    const permissions: readonly Permission[] = [
+      { resourceKind: "credential_source", action: "read" },
+      { resourceKind: "credential_source", action: "operate" },
+    ];
+    const role = await state.iamPolicy.getRole(namespaceId, roleId);
+    if (role === undefined) {
+      const roleDriver = this.iamPolicyDriver("createNamespaceRole");
+      await this.iamPolicyOperation(() =>
+        roleDriver.createNamespaceRole!(
+          { policy: state.iamPolicy },
+          { id: roleId, namespaceId, name: "Connected account owner", permissions },
+        ),
+      );
+    } else if (
+      role.namespaceId !== namespaceId ||
+      role.permissions.length !== permissions.length ||
+      !permissions.every((required) =>
+        role.permissions.some((existing) => isDeepStrictEqual(existing, required)),
+      )
+    ) {
+      throw new ResourceConflictError(
+        "The connected account owner Role requires exactly credential source read and operate.",
+      );
+    }
+    await this.iamPolicyOperation(() =>
+      driver.createNamespaceAccessBinding!(
+        { policy: state.iamPolicy },
+        {
+          id: `binding_${sourceId}_connection_owner`,
+          namespaceId,
+          subjectKind: "identity",
+          subjectId: principalId,
+          roleId,
+          resourceKind: "credential_source",
+          resourceId: sourceId,
+        },
+      ),
+    );
   }
 
   /** Explicitly delegate one completed connection to the target Agent's own principal. */
@@ -8807,9 +9113,7 @@ export class OpenClawController {
         credentialSourceId,
       );
       const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
-      if (account?.ownerPrincipalId !== principalId) {
-        await this.authorize(principalId, "operate", resource);
-      }
+      await this.authorize(principalId, "operate", resource);
       const source = await state.credentialSources.lockCredentialSource(
         namespaceId,
         credentialSourceId,
@@ -9008,18 +9312,6 @@ export class OpenClawController {
         { action: "use", resource: this.connectionTemplateRef(templateId) },
       );
     }
-  }
-
-  /** The caller already consumed this session as its starting actor. */
-  private async connectionSessionState(session: Readonly<ConnectionSession>): Promise<string> {
-    const secret = await this.read((state) =>
-      state.secrets.findSecret(session.namespaceId, session.secretId),
-    );
-    if (secret === undefined) {
-      throw new BrowserAuthorizationError("invalid_session", "retry");
-    }
-    const driver = this.secretDriver(secret.driverId);
-    return this.secretOperation(() => driver.withValue!(secret, async (value) => value));
   }
 
   private async authorizeDeviceAuthorizationScope(
@@ -12270,38 +12562,50 @@ export class OpenClawController {
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       }
-      const revision = await this.activeCredentialSourceRevision(state, agent, input);
-      const withdrawal = await this.requestRevisionCredentialWithdrawal(
+      if (agent.status !== "active") {
+        throw new ResourceStateConflictError(
+          "The Agent has no active revision to withdraw the credential source from.",
+        );
+      }
+      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
+      const targets = await this.credentialSourceWithdrawalRevisions(
         state,
-        principalId,
-        revision,
+        revisions,
+        agent.activeRevisionId,
         input.credentialSourceId,
       );
-      const others = (
-        await credentialWithdrawalCompanionRevisions(
-          state,
-          await state.revisions.listRevisions(agent.namespaceId, agent.id),
-          revision,
-          this.clock(),
-        )
-      ).filter((candidate) => revisionHoldsCredentialSource(candidate, input.credentialSourceId));
-      const pendingOthers: Readonly<CredentialWithdrawal>[] = [];
-      for (const other of others) {
-        const recorded = await this.requestRevisionCredentialWithdrawal(
-          state,
-          principalId,
-          other,
-          input.credentialSourceId,
-        );
-        if (recorded.state === "pending") {
-          pendingOthers.push(recorded);
+      const activeHoldsSource = targets.some(({ id }) => id === agent.activeRevisionId);
+      const withdrawals: Readonly<CredentialWithdrawal>[] = [];
+      for (const revision of targets) {
+        // Only a serving Agent binding can start a withdrawal here. A detach may already
+        // have requested one on a candidate before it or any other revision became active.
+        if (!activeHoldsSource) {
+          const previous = await state.credentialSources.findCredentialWithdrawal(
+            agent.namespaceId,
+            revision.id,
+            input.credentialSourceId,
+          );
+          if (previous?.state !== "pending") {
+            continue;
+          }
         }
+        withdrawals.push(
+          await this.requestRevisionCredentialWithdrawal(
+            state,
+            principalId,
+            revision,
+            input.credentialSourceId,
+          ),
+        );
       }
-      // Every pending withdrawal now has an attempt queued or running, either earlier or just
-      // now. Like the read, this reflects the queue at commit: a claim that expired on its last
-      // attempt counts until recoverStale fails it.
-      const reported =
-        withdrawal.state === "pending" ? withdrawal : (pendingOthers[0] ?? withdrawal);
+      const reported = withdrawals.find(({ state }) => state === "pending") ?? withdrawals[0];
+      if (!reported) {
+        throw new ResourceStateConflictError(
+          agent.activeRevisionId === undefined
+            ? "The Agent has no active revision to withdraw the credential source from."
+            : "The Agent's active version does not use this credential source, so there is nothing to withdraw. Withdraw a source that the deployed version uses.",
+        );
+      }
       return credentialWithdrawalStatus(reported, reported.state === "pending");
     });
   }
@@ -12400,38 +12704,29 @@ export class OpenClawController {
       if (agent === undefined) {
         throw new ScopeViolationError("The Agent does not belong to this Namespace.");
       }
-      // After Agent read, these name what the Agent lacks, as the request route's 409 does; they
-      // read only its active version's withdrawals, never the source (finding D762).
-      if (agent.activeRevisionId === undefined) {
-        throw new CredentialWithdrawalNotFoundError("no_active_version");
-      }
-      const withdrawal = await state.credentialSources.findCredentialWithdrawal(
-        agent.namespaceId,
+      const withdrawals: Readonly<CredentialWithdrawal>[] = [];
+      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
+      const targets = await this.credentialSourceWithdrawalRevisions(
+        state,
+        revisions,
         agent.activeRevisionId,
         input.credentialSourceId,
       );
-      if (withdrawal === undefined) {
-        throw new CredentialWithdrawalNotFoundError("not_withdrawn");
-      }
-      const withdrawals = [withdrawal];
-      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
-      const active = revisions.find(({ id }) => id === withdrawal.revisionId);
-      const companions =
-        active === undefined
-          ? []
-          : await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock());
-      for (const companion of companions) {
-        if (!revisionHoldsCredentialSource(companion, input.credentialSourceId)) {
-          continue;
-        }
-        const recorded = await state.credentialSources.findCredentialWithdrawal(
-          companion.namespaceId,
-          companion.id,
+      for (const revision of targets) {
+        const withdrawal = await state.credentialSources.findCredentialWithdrawal(
+          agent.namespaceId,
+          revision.id,
           input.credentialSourceId,
         );
-        if (recorded !== undefined) {
-          withdrawals.push(recorded);
+        if (withdrawal) {
+          withdrawals.push(withdrawal);
         }
+      }
+      const first = withdrawals[0];
+      if (!first) {
+        throw new CredentialWithdrawalNotFoundError(
+          agent.activeRevisionId === undefined ? "no_active_version" : "not_withdrawn",
+        );
       }
       let inProgress: Readonly<CredentialWithdrawalStatus> | undefined;
       for (const candidate of withdrawals) {
@@ -12450,37 +12745,25 @@ export class OpenClawController {
         }
         inProgress ??= status;
       }
-      return inProgress ?? credentialWithdrawalStatus(withdrawal, false);
+      return inProgress ?? credentialWithdrawalStatus(first, false);
     });
   }
 
-  /** The active revision must hold the source as its Harness authentication or a non-model source. */
-  private async activeCredentialSourceRevision(
-    state: PlatformUnitOfWork,
-    agent: Readonly<Agent>,
-    input: AgentCredentialSourceInput,
-  ): Promise<Readonly<AgentRevision>> {
-    if (agent.status !== "active" || agent.activeRevisionId === undefined) {
-      throw new ResourceStateConflictError(
-        "The Agent has no active revision to withdraw the credential source from.",
-      );
-    }
-    const revision = await state.revisions.findRevision(
-      agent.namespaceId,
-      agent.id,
-      agent.activeRevisionId,
-    );
-    if (revision === undefined) {
-      throw new ScopeViolationError("The Agent's active revision is unavailable.");
-    }
-    if (!revisionHoldsCredentialSource(revision, input.credentialSourceId)) {
-      // After the Agent operate grant. The check reads only the revision's bindings, never the
-      // source, so a missing source ID and one the caller cannot read answer alike (finding 2536).
-      throw new ResourceStateConflictError(
-        "The Agent's active version does not use this credential source, so there is nothing to withdraw. Withdraw a source that the deployed version uses.",
-      );
-    }
-    return revision;
+  /** The active revision first, followed by any other revision that may still run with this source. */
+  private async credentialSourceWithdrawalRevisions(
+    state: PlatformUnitOfWork | PlatformReadView,
+    revisions: readonly Readonly<AgentRevision>[],
+    activeRevisionId: string | undefined,
+    sourceId: string,
+  ): Promise<readonly Readonly<AgentRevision>[]> {
+    const active = revisions.find(({ id }) => id === activeRevisionId);
+    const serving = active
+      ? [
+          active,
+          ...(await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock())),
+        ]
+      : revisions;
+    return serving.filter((revision) => revisionHoldsCredentialSource(revision, sourceId));
   }
 
   async stopAgent(
@@ -14932,17 +15215,14 @@ export class OpenClawController {
     ) {
       return false;
     }
-    const active = revisions.find((revision) => revision.id === agent.activeRevisionId);
-    const serving = active
-      ? [
-          active,
-          ...(await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock())),
-        ]
-      : revisions;
+    const targets = await this.credentialSourceWithdrawalRevisions(
+      state,
+      revisions,
+      agent.activeRevisionId,
+      sourceId,
+    );
     let withdrawalRequested = false;
-    for (const revision of serving.filter((revision) =>
-      revisionHoldsCredentialSource(revision, sourceId),
-    )) {
+    for (const revision of targets) {
       if (!revokeForAllAgents) {
         await this.authorize(principalId, "operate", { kind: "agent", namespaceId, id: agentId });
       }

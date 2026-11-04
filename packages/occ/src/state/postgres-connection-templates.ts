@@ -138,6 +138,13 @@ export function postgresConnectionTemplates(
   return {
     findConnectionTemplate: async (templateId) =>
       (await selectTemplates("WHERE t.id = $1", [templateId]))[0],
+    hasOtherConnectionIssuer: async (issuer) =>
+      (
+        await client.query(
+          "SELECT 1 FROM occ.connection_client_registrations WHERE issuer <> $1 LIMIT 1",
+          [issuer],
+        )
+      ).rows.length > 0,
     listConnectionTemplates: async () => Object.freeze(await selectTemplates("", [])),
     findConnectionTemplateVersion: async (templateId, version) => {
       const [row] = (
@@ -229,11 +236,9 @@ export function postgresConnectionTemplates(
         ]);
         return deleted.rowCount === 1;
       } catch (error) {
-        // A connection that still references a version restricts the delete (restrict_violation).
+        // A saved account or an unexpired consent attempt can still reference a version.
         if ((error as { code?: unknown }).code === "23001") {
-          throw new ResourceStateConflictError(
-            "The connection template still has connections; disconnect them first.",
-          );
+          throw new ResourceStateConflictError("The connection template is in use.");
         }
         throw error;
       }

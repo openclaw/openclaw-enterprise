@@ -1,0 +1,292 @@
+import { randomUUID } from "node:crypto";
+import { PENDING_OAUTH_CONNECTION } from "@openclaw-enterprise/contracts";
+import type {
+  CredentialRefreshStatus,
+  OAuthConnectionAccessToken,
+  OAuthConnectionCustody,
+  OAuthConnectionGrant,
+  OAuthConnectionTokenService,
+  SecretDriver,
+} from "@openclaw-enterprise/contracts";
+import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { requestOAuthTokens } from "./oauth-token-response.ts";
+
+type OAuthMaterial = OAuthConnectionGrant & {
+  readonly sourceId: string;
+  readonly namespaceId: string;
+  readonly version: string;
+  readonly renewAt: string;
+} & (
+    { readonly phase: "ready" } | { readonly phase: "renewing"; readonly renewalDeadline: string }
+  );
+
+interface FailedRefresh {
+  readonly phase: "failed";
+  readonly namespaceId: string;
+  readonly sourceId: string;
+  readonly failureCode: string;
+}
+
+// Includes both Secret Driver CAS operations and the issuer exchange. A provider HTTP deadline
+// alone cannot distinguish an abandoned owner from a healthy one still committing a rotated grant.
+const RENEWAL_BUDGET_MS = 5 * 60_000;
+
+type StoredConnection = OAuthMaterial | FailedRefresh | undefined;
+
+function material(value: string, custody: OAuthConnectionCustody): StoredConnection {
+  if (value === PENDING_OAUTH_CONNECTION) {
+    return undefined;
+  }
+  let data: Record<string, unknown> | undefined;
+  try {
+    data = asRecord(JSON.parse(value));
+  } catch {
+    // A JSON parser error can quote private bytes.
+    throw new Error("Invalid OAuth token custody.");
+  }
+  if (data?.sourceId !== custody.sourceId || data.namespaceId !== custody.secret.namespaceId) {
+    throw new Error("OAuth token custody belongs to another source.");
+  }
+  if (data.phase === "failed" && isNonEmptyString(data.failureCode)) {
+    return data as unknown as FailedRefresh;
+  }
+  if (
+    (data.phase !== "ready" && data.phase !== "renewing") ||
+    ![
+      "version",
+      "scope",
+      "issuer",
+      "clientRegistrationId",
+      "clientId",
+      "clientSecret",
+      "tokenUrl",
+      "accessToken",
+      "refreshToken",
+      "expiresAt",
+      "renewAt",
+    ].every((key) => isNonEmptyString(data[key])) ||
+    !Number.isFinite(Date.parse(data.expiresAt as string)) ||
+    !Number.isFinite(Date.parse(data.renewAt as string)) ||
+    (data.phase === "renewing" &&
+      (!isNonEmptyString(data.renewalDeadline) ||
+        !Number.isFinite(Date.parse(data.renewalDeadline))))
+  ) {
+    throw new Error("Invalid OAuth token custody.");
+  }
+  return data as unknown as OAuthMaterial;
+}
+
+function ready(
+  custody: OAuthConnectionCustody,
+  grant: OAuthConnectionGrant,
+  now = Date.now(),
+): OAuthMaterial {
+  const expires = Date.parse(grant.expiresAt);
+  if (!Number.isFinite(expires) || expires <= now) {
+    throw new BrowserAuthorizationError("access_token_expired", "retry");
+  }
+  // Begin renewal a minute before expiry, or halfway through a shorter token's lifetime.
+  const renewAt = expires - Math.min(60_000, Math.ceil((expires - now) / 2));
+  return {
+    ...grant,
+    phase: "ready",
+    sourceId: custody.sourceId,
+    namespaceId: custody.secret.namespaceId,
+    version: randomUUID(),
+    renewAt: new Date(renewAt).toISOString(),
+  };
+}
+
+function status(current: StoredConnection): CredentialRefreshStatus {
+  if (!current) {
+    return { state: "pending" };
+  }
+  if (current.phase === "ready") {
+    return {
+      state: Date.now() < Date.parse(current.expiresAt) ? "ready" : "pending",
+      nextRefreshAt: current.renewAt,
+      expiresAt: current.expiresAt,
+    };
+  }
+  if (current.phase === "renewing") {
+    // Only a persisted terminal CAS can retire downstream delivery and its renewal schedule.
+    return { state: "pending", expiresAt: current.expiresAt };
+  }
+  const failureCode = current.failureCode;
+  const recoveryAction = ["client_refused", "grant_refused", "refresh_outcome_unknown"].includes(
+    failureCode,
+  )
+    ? "reauthorize"
+    : "fix_configuration";
+  return { state: "failed", failureCode, recoveryAction };
+}
+
+function failure(custody: OAuthConnectionCustody, failureCode: string): FailedRefresh {
+  return {
+    phase: "failed",
+    namespaceId: custody.secret.namespaceId,
+    sourceId: custody.sourceId,
+    failureCode,
+  };
+}
+
+/** Only the Token Service holds this private Secret. Its CAS fences refresh across API and worker replicas. */
+export class OAuthConnectionTokens implements OAuthConnectionTokenService {
+  private readonly secrets: SecretDriver;
+
+  constructor(secrets: SecretDriver) {
+    this.secrets = secrets;
+  }
+
+  private driver(custody: OAuthConnectionCustody, signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (
+      custody.secret.driverId !== this.secrets.id ||
+      !this.secrets.withValue ||
+      !this.secrets.compareAndSwap
+    ) {
+      throw new Error(
+        "OAuth token custody requires its original Secret Driver with atomic updates.",
+      );
+    }
+    return this.secrets;
+  }
+
+  async accept(
+    custody: OAuthConnectionCustody,
+    grant: OAuthConnectionGrant,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const driver = this.driver(custody, signal);
+    if (
+      !(await driver.compareAndSwap!(
+        custody.secret,
+        PENDING_OAUTH_CONNECTION,
+        JSON.stringify(ready(custody, grant)),
+      ))
+    ) {
+      throw new Error("The pending OAuth custody changed before the grant was committed.");
+    }
+  }
+
+  async warm(
+    custody: OAuthConnectionCustody,
+    signal: AbortSignal,
+  ): Promise<OAuthConnectionAccessToken | undefined> {
+    return this.driver(custody, signal).withValue!(custody.secret, async (value) => {
+      const stored = material(value, custody);
+      signal.throwIfAborted();
+      if (
+        !stored ||
+        stored.phase === "failed" ||
+        Date.parse(stored.expiresAt) <= Date.now() ||
+        (stored.phase === "renewing" && Date.parse(stored.renewalDeadline) <= Date.now())
+      ) {
+        return undefined;
+      }
+      return {
+        accessToken: stored.accessToken,
+        expiresAt: stored.expiresAt,
+        version: stored.version,
+        nextRefreshAt: stored.renewAt,
+      };
+    });
+  }
+
+  async status(
+    custody: OAuthConnectionCustody,
+    signal: AbortSignal,
+  ): Promise<CredentialRefreshStatus> {
+    return this.driver(custody, signal).withValue!(custody.secret, async (value) =>
+      status(material(value, custody)),
+    );
+  }
+
+  async renew(
+    custody: OAuthConnectionCustody,
+    signal: AbortSignal,
+    force = false,
+  ): Promise<CredentialRefreshStatus> {
+    const driver = this.driver(custody, signal);
+    const previous = await driver.withValue!(custody.secret, async (value) => value);
+    const current = material(previous, custody);
+    const observed = status(current);
+    if (!current || current.phase === "failed") {
+      return observed;
+    }
+    if (current.phase === "renewing") {
+      if (Date.now() < Date.parse(current.renewalDeadline)) {
+        return observed;
+      }
+      // A lost issuer response may have rotated the grant. A final CAS fences the owner and
+      // never replays its request. If its result already won, use that result for scheduling.
+      const unknown = failure(custody, "refresh_outcome_unknown");
+      const fenced = await driver.compareAndSwap!(
+        custody.secret,
+        previous,
+        JSON.stringify(unknown),
+      );
+      return fenced ? status(unknown) : this.status(custody, signal);
+    }
+    if (!force && Date.parse(current.renewAt) > Date.now()) {
+      return observed;
+    }
+    signal.throwIfAborted();
+    const deadline = Date.now() + RENEWAL_BUDGET_MS;
+    const intent = JSON.stringify({
+      ...current,
+      phase: "renewing",
+      renewalDeadline: new Date(deadline).toISOString(),
+    });
+    if (!(await driver.compareAndSwap!(custody.secret, previous, intent))) {
+      return { state: "pending" };
+    }
+    let next: OAuthMaterial | FailedRefresh;
+    try {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error("The OAuth renewal deadline elapsed.");
+      }
+      const issued = await requestOAuthTokens(
+        current.tokenUrl,
+        new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: current.refreshToken,
+          client_id: current.clientId,
+          client_secret: current.clientSecret,
+          scope: current.scope,
+        }),
+        current.scope,
+        AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
+      );
+      next = ready(custody, {
+        issuer: current.issuer,
+        tokenUrl: current.tokenUrl,
+        clientRegistrationId: current.clientRegistrationId,
+        clientId: current.clientId,
+        clientSecret: current.clientSecret,
+        ...issued,
+        refreshToken: issued.refreshToken ?? current.refreshToken,
+      });
+    } catch (error) {
+      next = failure(
+        custody,
+        error instanceof BrowserAuthorizationError ? error.code : "refresh_outcome_unknown",
+      );
+    }
+    if (Date.now() >= deadline) {
+      next = failure(custody, "refresh_outcome_unknown");
+    }
+    // Publish the access token and any rotated refresh token together. Retirement or a new
+    // owner winning this CAS prevents a late issuer response from reinstating its grant.
+    if (!(await driver.compareAndSwap!(custody.secret, intent, JSON.stringify(next)))) {
+      return { state: "pending" };
+    }
+    return status(next);
+  }
+
+  async retire(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void> {
+    await this.driver(custody, signal).delete(custody.secret);
+  }
+}

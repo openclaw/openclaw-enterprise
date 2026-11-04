@@ -165,6 +165,7 @@ export function connectionHandlers(redirectUri: () => string | undefined): Resou
         ...(params.agentId ? { agentId: params.agentId } : {}),
         connectionTemplateId: body?.connectionTemplateId as string,
         redirectUri: redirectUri()!,
+        sessionId: context.sessionId!,
       },
       (id) => mutationEvent({ kind: "credential_source", id, namespaceId }),
     );
@@ -305,6 +306,12 @@ export const connectionCallbackSchema = {
       state: { type: "string", maxLength: 512 },
       code: { type: "string", maxLength: 4096 },
       error: { type: "string", maxLength: 256 },
+      iss: {
+        type: "string",
+        maxLength: 2048,
+        description:
+          "Authorization server issuer. Must match the connection template when present. Required for code exchange if another issuer has a client registration when consent starts or when the callback arrives.",
+      },
     },
   },
 } as const;
@@ -312,7 +319,6 @@ export const connectionCallbackSchema = {
 export interface ConnectionCallbackDependencies {
   readonly getController: () => OpenClawController | undefined;
   readonly getContext: (request: FastifyRequest) => RequestContext | undefined;
-  readonly isSession: (request: FastifyRequest) => boolean;
   readonly auditEvent: (
     request: FastifyRequest,
     context: RequestContext,
@@ -339,7 +345,7 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
     const query = request.query as Record<string, unknown>;
     const fail = (reason: string) =>
       reply.redirect(`/console/?connection=failed&reason=${encodeURIComponent(reason)}`, 303);
-    if (controller === undefined || context === undefined || !dependencies.isSession(request)) {
+    if (controller === undefined || context?.sessionId === undefined) {
       fail("session_required");
       return;
     }
@@ -348,6 +354,8 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
         context.actorId,
         {
           state: typeof query.state === "string" ? query.state : "",
+          sessionId: context.sessionId,
+          ...(typeof query.iss === "string" ? { iss: query.iss } : {}),
           ...(typeof query.code === "string" ? { code: query.code } : {}),
           ...(typeof query.error === "string" ? { error: query.error } : {}),
         },

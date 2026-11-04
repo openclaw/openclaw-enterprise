@@ -259,6 +259,7 @@ export const parameterExamples = {
   cursor: "opaque-cursor-from-the-previous-response",
   code: "example-provider-code",
   state: "example-browser-bound-state",
+  iss: connectionTemplateInput.issuer,
   error: "access_denied",
   error_description: "The user declined sign-in.",
 };

@@ -23,8 +23,10 @@ endpoint, effective provider scopes, and Installation policy.
 1. **Backend connections.** Implement template IAM and versioning, client
    registrations, browser consent with PKCE, and separate operations to attach,
    detach and disconnect a saved source. Keep pending consent unavailable to
-   ordinary source binding. Detach must withdraw that Agent's running and
-   admitted revisions and preserve independent copies on other Agents.
+   ordinary source binding. Store browser grants in the Token Service and
+   deliver expiring access tokens to the sender. Detach removes the Agent's
+   grant and queues withdrawal from its running and admitted revisions.
+   Other Agents with a grant keep their access.
 2. **Console.** Expose template administration, connect/reconnect, the saved
    source picker and per-Agent attach/detach. Show the consequences of both
    detaching one Agent and retiring an account used by several Agents.
@@ -38,8 +40,8 @@ endpoint, effective provider scopes, and Installation policy.
   state replay, a different browser session, revoked access and template version
   changes. Scope client registrations to the issuer and client ID.
 - Attach the same completed source to two Agents. Deny an ungranted Agent and a
-  caller who only edits the target. Detach one, exercise its earlier revision and
-  check the other Agent still has its source and grant.
+  caller who only edits the target. Detach one, verify withdrawal from its
+  earlier revision, and check the other Agent still has its source and grant.
 - Exercise the actual runtime for any claimed endpoint, method or operation
   policy. An Installation can impose its own executable ceiling. For stock
   OpenShell, test refusal of unsupported template-level read-only enforcement.

@@ -43812,6 +43812,19 @@
             "name": "error",
             "required": false,
             "schema": { "maxLength": 256, "type": "string" }
+          },
+          {
+            "description": "Authorization server issuer. Must match the connection template when present. Required for code exchange if another issuer has a client registration when consent starts or when the callback arrives.",
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "https://accounts.example.com"
+              }
+            },
+            "in": "query",
+            "name": "iss",
+            "required": false,
+            "schema": { "maxLength": 2048, "type": "string" }
           }
         ],
         "responses": {

@@ -1,12 +1,14 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type {
   CredentialBrowserAuthorizationCallback,
   CredentialBrowserAuthorizationRequest,
   CredentialSourceBrowserAuthorization,
+  OAuthConnectionGrant,
 } from "@openclaw-enterprise/contracts";
 import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { requestOAuthTokens } from "../../backends/token-service/oauth-token-response.ts";
 
 /** Parameters the flow sets itself; a connection template cannot replace them. */
 const RESERVED_PARAMETERS = new Set([
@@ -18,21 +20,12 @@ const RESERVED_PARAMETERS = new Set([
   "code_challenge",
   "code_challenge_method",
 ]);
-const TOKEN_EXCHANGE_TIMEOUT_MS = 15_000;
 
 interface BrowserAuthorizationState {
   readonly version: 1;
   readonly sourceId: string;
-  readonly clientRegistrationId: string;
-  readonly clientId: string;
-  readonly tokenUrl: string;
-  readonly redirectUri: string;
-  readonly scope: string;
   readonly state: string;
   readonly verifier: string;
-  /** Fixed per session, so replaying a completed step applies nothing new. */
-  readonly configureRequestId: string;
-  readonly rotateRequestId: string;
 }
 
 function randomToken(): string {
@@ -67,15 +60,8 @@ export function startBrowserAuthorization(
   const privateState: BrowserAuthorizationState = {
     version: 1,
     sourceId,
-    clientRegistrationId: request.clientRegistrationId,
-    clientId: request.clientId,
-    tokenUrl: request.tokenUrl,
-    redirectUri: request.redirectUri,
-    scope,
     state,
     verifier,
-    configureRequestId: randomUUID(),
-    rotateRequestId: randomUUID(),
   };
   return { authorizationUrl: url.toString(), state, privateState: JSON.stringify(privateState) };
 }
@@ -92,21 +78,10 @@ export function browserAuthorizationState(
   } catch {
     parsed = undefined;
   }
-  const fields = [
-    "sourceId",
-    "clientRegistrationId",
-    "clientId",
-    "tokenUrl",
-    "redirectUri",
-    "scope",
-    "state",
-    "verifier",
-    "configureRequestId",
-    "rotateRequestId",
-  ] as const;
   if (
     parsed?.version !== 1 ||
-    !fields.every((field) => isNonEmptyString(parsed[field])) ||
+    !isNonEmptyString(parsed.state) ||
+    !isNonEmptyString(parsed.verifier) ||
     parsed.sourceId !== sourceId
   ) {
     throw new BrowserAuthorizationError("invalid_session", "retry");
@@ -124,67 +99,40 @@ export function browserAuthorizationState(
  * is uncertain to the issuer, so a failure here is never retried with the same code.
  */
 export async function exchangeAuthorizationCode(
-  state: BrowserAuthorizationState,
+  request: CredentialBrowserAuthorizationRequest,
+  verifier: string,
   code: string,
   clientSecret: string,
   signal: AbortSignal,
-): Promise<{ readonly refreshToken: string; readonly scope: string }> {
+): Promise<OAuthConnectionGrant> {
   if (!isNonEmptyString(code)) {
     throw new BrowserAuthorizationError("missing_code", "retry");
   }
-  let response: Response;
-  try {
-    response = await fetch(state.tokenUrl, {
-      method: "POST",
-      redirect: "error",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json",
-      },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: state.redirectUri,
-        client_id: state.clientId,
-        client_secret: clientSecret,
-        code_verifier: state.verifier,
-      }),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS)]),
-    });
-  } catch (error) {
-    signal.throwIfAborted();
-    throw error;
-  }
-  let body: Record<string, unknown> | undefined;
-  try {
-    body = asRecord(await response.json());
-  } catch {
-    body = undefined;
-  }
-  if (!response.ok) {
-    // RFC 6749 §5.2: a refused grant or client is a definite outcome; carry only its code.
-    const error = typeof body?.error === "string" ? body.error : undefined;
-    if (error === "invalid_grant" || error === "access_denied") {
-      throw new BrowserAuthorizationError("grant_refused", "retry");
-    }
-    if (error === "invalid_client" || error === "unauthorized_client") {
-      throw new BrowserAuthorizationError("client_refused", "fix_configuration");
-    }
-    throw new BrowserAuthorizationError(
-      response.status >= 500 ? "issuer_unavailable" : "exchange_refused",
-      response.status >= 500 ? "retry" : "fix_configuration",
-    );
-  }
-  if (!isNonEmptyString(body?.refresh_token)) {
-    // Google returns no refresh token without offline access and fresh consent.
+  const tokens = await requestOAuthTokens(
+    request.tokenUrl,
+    new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: request.redirectUri,
+      client_id: request.clientId,
+      client_secret: clientSecret,
+      code_verifier: verifier,
+    }),
+    request.scopes.join(" "),
+    signal,
+  );
+  if (!tokens.refreshToken) {
     throw new BrowserAuthorizationError("no_refresh_token", "fix_configuration");
   }
-  // RFC 6749 §5.1: an omitted scope means the requested scope was granted. When the
-  // issuer returns a subset, use that narrower scope for every subsequent refresh.
-  const scope = body.scope === undefined ? state.scope : body.scope;
-  const requested = new Set(state.scope.split(" "));
-  if (typeof scope !== "string" || scope.split(" ").some((token) => !requested.has(token))) {
-    throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
-  }
-  return { refreshToken: body.refresh_token, scope };
+  return {
+    issuer: request.issuer,
+    tokenUrl: request.tokenUrl,
+    clientRegistrationId: request.clientRegistrationId,
+    clientId: request.clientId,
+    clientSecret,
+    scope: tokens.scope,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt: tokens.expiresAt,
+  };
 }
