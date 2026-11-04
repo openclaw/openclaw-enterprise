@@ -142,6 +142,7 @@ import type {
   AgentHarnessStatusRead,
   ComputeAgentRevisionBinding,
   AgentRevision,
+  FirstDeploymentReceipt,
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
   AccessBinding,
@@ -371,8 +372,6 @@ import {
 } from "./backends.ts";
 import {
   InMemoryPlatformState,
-  type FirstDeploymentReceipt,
-  type ConfigurationOwnership,
   type PlatformReadView,
   type PlatformOperation,
   type PlatformStateStore,
@@ -1088,7 +1087,7 @@ export interface FirstDeploymentIntent {
   readonly expectedGeneration: number;
 }
 
-export type { FirstDeploymentReceipt } from "./state/platform-state.ts";
+export type { FirstDeploymentReceipt } from "@openclaw-enterprise/contracts";
 
 interface PreparedDeploymentChannels {
   readonly configuration: Readonly<Configuration>;
@@ -10617,6 +10616,9 @@ export class OpenClawController {
       if (receipt !== undefined) {
         return { receipt };
       }
+      if (agent.status !== "active") {
+        throw new AgentDeletingError();
+      }
       if (agent.configurationId !== capturedIntent.expectedConfigurationId) {
         throw new ResourceStateConflictError(
           "The Agent uses a different Configuration. Recover the original first-deployment receipt after an uncertain result, then review the current binding before deploying.",
@@ -10695,6 +10697,7 @@ export class OpenClawController {
     configuration: Pick<Configuration, "values" | "secretBindings">,
     driverFailure: () => SecretDriverOwnershipError,
     driver = this.selections.get("channel")?.driver as ChannelDriver | undefined,
+    authorizeUse?: () => Promise<void>,
   ): Promise<void> {
     if (driver?.validateCredentials === undefined) {
       return undefined;
@@ -10725,11 +10728,13 @@ export class OpenClawController {
       if (storage.withValue === undefined) {
         throw new ChannelCredentialError("unavailable", path);
       }
+      await authorizeUse?.();
       await this.authorize(principalId, "operate", source);
       const outcome = await this.secretOperation(() =>
         storage.withValue!(secret, async (value) => {
           // Reauthorize after backend I/O and before sending a credential to its provider.
           try {
+            await authorizeUse?.();
             await this.authorize(principalId, "operate", source);
             await validate(value);
             return undefined;
@@ -10795,11 +10800,21 @@ export class OpenClawController {
   private async prepareDeploymentChannels(
     principalId: string,
     input: DeployAgentInput,
-    metadata: Readonly<ConfigurationOwnership> | undefined,
+    metadata:
+      | Readonly<
+          Pick<
+            Configuration,
+            "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
+          >
+        >
+      | undefined,
   ): Promise<PreparedDeploymentChannels> {
     if (metadata?.kind !== "agent") {
       throw new ScopeViolationError("The Agent Configuration is unavailable.");
     }
+    const namespaceId = input.namespaceId;
+    const agentId = input.agentId;
+    const configurationId = metadata.id;
     const configurationDriver = this.configurationDriver();
     const configuration = this.exactConfiguration(
       await this.driverOperation(() => configurationDriver.read(metadata)),
@@ -10816,10 +10831,22 @@ export class OpenClawController {
     const channelValidator = channel?.validateCredentials;
     await this.validateChannelCredentials(
       principalId,
-      input.namespaceId,
+      namespaceId,
       configuration,
       () => new SecretBindingDriverError(),
       channel,
+      async () => {
+        await this.authorize(principalId, "deploy", {
+          kind: "agent",
+          id: agentId,
+          namespaceId,
+        });
+        await this.authorize(principalId, "read", {
+          kind: "configuration",
+          id: configurationId,
+          namespaceId,
+        });
+      },
     );
     return { configuration, configurationDriver, channel, channelValidator };
   }
@@ -10894,6 +10921,9 @@ export class OpenClawController {
         );
         if (receipt !== undefined) {
           return receipt;
+        }
+        if (lockedAgent.status !== "active") {
+          throw new AgentDeletingError();
         }
         if ("error" in first.preparation) {
           throw first.preparation.error;

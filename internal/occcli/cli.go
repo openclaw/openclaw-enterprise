@@ -845,6 +845,9 @@ func (app *application) agentCommand() *cobra.Command {
 					receipt, err = client.DeployAgentFirst(namespace, args[0], intent)
 				}
 				if err != nil {
+					if !recoverOnly {
+						app.firstDeploymentRecoveryNotice(command.ErrOrStderr(), namespace, args[0], intent, err)
+					}
 					return err
 				}
 				if receipt == nil {
@@ -1012,6 +1015,23 @@ func (app *application) agentCommand() *cobra.Command {
 		app.agentPolicyCommand(),
 	)
 	return command
+}
+
+func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error) {
+	var apiErr *occclient.APIError
+	if errors.As(err, &apiErr) && apiErr.Status < http.StatusInternalServerError && apiErr.Status != http.StatusRequestTimeout {
+		return
+	}
+	// A lost or unreadable reply, timeout, or server failure does not establish
+	// whether admission committed. Never turn this diagnostic into a retry.
+	fmt.Fprintln(notices, "First-deployment outcome is unconfirmed. Before another deployment, read the original receipt with the same caller (the service-key file must still identify that caller):")
+	quote := func(value string) string {
+		return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+	}
+	// Connection settings can contain shell metacharacters; the intent and IDs
+	// have already passed their restricted-ASCII validation. No key value is read.
+	fmt.Fprintf(notices, "  occ --url %s --service-key-file %s --ca-bundle %s --timeout-seconds %s --namespace %s agent recover-first-deployment %s --key %s --configuration %s --generation %d\n",
+		quote(app.url), quote(app.serviceKeyFile), quote(app.caBundle), quote(app.timeoutSeconds), namespace, agentID, intent.Key, intent.ExpectedConfigurationID, intent.ExpectedGeneration)
 }
 
 // defaultDeploymentNotice says which revision deployment-status chose without

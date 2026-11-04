@@ -6,11 +6,13 @@ import { validateModelCredentialReferences } from "../../apps/controller/src/dri
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { realpathSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
@@ -77,6 +79,7 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { availablePort } from "../helpers/available-port.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -1644,6 +1647,27 @@ test("guarded first deployment admits enabled Slack over real HTTP and recovers 
         );
         assert.equal(restored.status, 200, JSON.stringify(restored.body));
         assert.deepEqual(restored.data, result.data);
+
+        // Accepting deletion fences fresh admission, but the original committed receipt
+        // remains readable until teardown removes the Agent and its revisions.
+        const deletion = await request(url, "DELETE", path, { session: app.defaultSession });
+        assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
+        assert.equal(deletion.data.status, "deleting");
+        const deletionWork = controller.fixture.platformState.pendingOperations();
+        const deletionAuditCount = controller.fixture.auditSink.events.length;
+        const afterDeletion = await send(
+          "GET",
+          `deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+        );
+        const afterDeletionReplay = await send("POST", "deploy-first", { body: intent });
+        assert.equal(afterDeletion.status, 200, JSON.stringify(afterDeletion.body));
+        assert.equal(afterDeletionReplay.status, 202, JSON.stringify(afterDeletionReplay.body));
+        assert.deepEqual(afterDeletion.data, result.data);
+        assert.deepEqual(afterDeletionReplay.data, result.data);
+        assert.deepEqual(controller.fixture.platformState.pendingOperations(), deletionWork);
+        assert.equal(controller.fixture.auditSink.events.length, deletionAuditCount);
+        assert.deepEqual(secretDriver.calls, calls);
+        assert.equal(providerCalls(), enabled ? 1 : 0);
       } else {
         assert.equal(result.data.revision, 1);
       }
@@ -1662,6 +1686,206 @@ test("guarded first deployment admits enabled Slack over real HTTP and recovers 
     } finally {
       await app.close();
     }
+  }
+});
+
+test("first-deployment CLI recovers a lost committed response with the original caller and intent", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-first-deployment-cli-");
+  const cli = join(directory, "occ");
+  const execute = promisify(execFile);
+  await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
+  const { controller, namespace, agent, path, intent, work, secretDriver, providerCalls } =
+    await firstDeploymentFixture();
+  const fixture = controller.fixture;
+  // Provision an automation identity in the actual native IAM fixture. The HTTP auth
+  // service issues its key; the CLI never impersonates the administrator's session.
+  const automation = {
+    kind: "service_principal",
+    id: `sp_${randomUUID()}`,
+    namespaceId: namespace.id,
+  };
+  fixture.state.identities.push(automation);
+  fixture.state.bindings.push({
+    id: "first-deployment-cli-automation",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: automation.id,
+    roleId: fixture.state.roles[0].id,
+  });
+  const app = fixture.createApp(undefined, createFastifyApp);
+  let relay;
+  try {
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+    const issued = await request(origin, "POST", "/api/auth/service-keys", {
+      session: app.defaultSession,
+      body: {
+        servicePrincipalId: automation.id,
+        namespaceId: namespace.id,
+        name: "first-deployment-cli",
+      },
+    });
+    assert.equal(issued.status, 201, JSON.stringify(issued.body));
+    const keyFile = join(directory, "caller service-key.json");
+    await writeFile(keyFile, JSON.stringify({ data: issued.data }), { mode: 0o600 });
+    const forwarded = [];
+    const relayErrors = [];
+    let committed;
+    let recovered;
+    relay = createServer(async (incoming, outgoing) => {
+      try {
+        const chunks = [];
+        for await (const chunk of incoming) {
+          chunks.push(chunk);
+        }
+        forwarded.push({ method: incoming.method, path: incoming.url });
+        const response = await fetch(`${origin}${incoming.url}`, {
+          method: incoming.method,
+          headers: {
+            "x-api-key": incoming.headers["x-api-key"],
+            ...(incoming.headers["content-type"] === undefined
+              ? {}
+              : { "content-type": incoming.headers["content-type"] }),
+          },
+          ...(chunks.length === 0 ? {} : { body: Buffer.concat(chunks) }),
+        });
+        const body = await response.text();
+        if (incoming.method === "POST" && response.status === 202) {
+          // OCC really committed. Lose only its response at the transport boundary.
+          committed = JSON.parse(body).data;
+          outgoing.destroy();
+          return;
+        }
+        if (incoming.method === "GET" && response.status === 200) {
+          recovered = JSON.parse(body).data;
+        }
+        outgoing.writeHead(response.status, { "content-type": "application/json" });
+        outgoing.end(body);
+      } catch (error) {
+        relayErrors.push(error);
+        outgoing.destroy();
+      }
+    });
+    relay.listen(0, "127.0.0.1");
+    await once(relay, "listening");
+    const relayOrigin = `http://127.0.0.1:${relay.address().port}`;
+    const args = [
+      "--url",
+      relayOrigin,
+      "--service-key-file",
+      keyFile,
+      "--ca-bundle",
+      "",
+      "--timeout-seconds",
+      "5",
+      "--namespace",
+      namespace.id,
+      "agent",
+      "deploy-first",
+      agent.id,
+      "--key",
+      intent.key,
+      "--configuration",
+      intent.expectedConfigurationId,
+      "--generation",
+      String(intent.expectedGeneration),
+    ];
+    let failure;
+    try {
+      await execute(cli, args);
+      assert.fail("The deliberately lost response must leave the CLI outcome uncertain");
+    } catch (error) {
+      failure = error;
+    }
+    assert.deepEqual(relayErrors, []);
+    assert.ok(committed, "the lost response must follow a real committed admission");
+    assert.equal(failure.code, 1);
+    assert.equal(failure.stdout, "");
+    assert.match(failure.stderr, /EOF/);
+    assert.deepEqual(
+      forwarded,
+      [{ method: "POST", path: `${path}/deploy-first` }],
+      "the CLI must not automatically replay an uncertain mutation",
+    );
+    const revisions = await fixture.platformState.read((unit) =>
+      unit.revisions.listRevisionMetadata(namespace.id, agent.id),
+    );
+    assert.equal(revisions.length, 1);
+    assert.equal(revisions[0].id, committed.revisionId);
+    assert.equal(work().length, 1);
+    const calls = structuredClone(secretDriver.calls);
+    const audit = structuredClone(fixture.auditSink.events);
+    const deployments = audit.filter(
+      (event) => event.action === "openclaw.agents.deploy" && event.outcome === "success",
+    );
+    assert.equal(deployments.length, 1);
+    assert.equal(deployments[0].actor.principalId, automation.id);
+    t.diagnostic(
+      JSON.stringify({
+        lostResponse: true,
+        posts: forwarded.length,
+        revisions: revisions.length,
+        work: work().length,
+        sender: providerCalls(),
+      }),
+    );
+    assert.match(failure.stderr, /same caller/);
+    const recoveryCommand = failure.stderr
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.startsWith("occ "));
+    assert.ok(recoveryCommand, "the uncertain result must print an executable recovery command");
+    for (const expected of [
+      relayOrigin,
+      keyFile,
+      `--namespace ${namespace.id}`,
+      `agent recover-first-deployment ${agent.id}`,
+      `--key ${intent.key}`,
+      `--configuration ${intent.expectedConfigurationId}`,
+      `--generation ${intent.expectedGeneration}`,
+    ]) {
+      assert.ok(recoveryCommand.includes(expected), `recovery command must retain ${expected}`);
+    }
+    // Execute exactly the printed command, including its quoted path with spaces.
+    const recovery = await execute("/bin/sh", ["-c", recoveryCommand], {
+      env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+    });
+    assert.deepEqual(relayErrors, []);
+    assert.deepEqual(recovered, committed);
+    assert.ok(recovery.stdout.includes(committed.revisionId));
+    assert.deepEqual(forwarded, [
+      { method: "POST", path: `${path}/deploy-first` },
+      {
+        method: "GET",
+        path: `${path}/deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+      },
+    ]);
+    assert.equal(work().length, 1);
+    assert.deepEqual(
+      await fixture.platformState.read((unit) =>
+        unit.revisions.listRevisionMetadata(namespace.id, agent.id),
+      ),
+      revisions,
+    );
+    assert.deepEqual(secretDriver.calls, calls);
+    assert.equal(providerCalls(), 0);
+    assert.deepEqual(fixture.auditSink.events, audit);
+    t.diagnostic(
+      JSON.stringify({
+        recovered: true,
+        posts: 1,
+        gets: 1,
+        revisions: revisions.length,
+        work: work().length,
+        deploymentAudits: deployments.length,
+      }),
+    );
+  } finally {
+    if (relay?.listening) {
+      await new Promise((resolve, reject) =>
+        relay.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+    await app.close();
   }
 });
 
@@ -1887,6 +2111,171 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
     t.diagnostic(
       JSON.stringify({ stage, sender: providerCalls(), withValue: reads, work: work().length }),
     );
+  }
+});
+
+test("guarded first deployment rechecks Agent and Configuration authority before credential effects", async (t) => {
+  for (const authority of ["deploy", "read"]) {
+    for (const stage of ["before-backend", "after-backend"]) {
+      await t.test(`${authority} revoked ${stage}`, async (t) => {
+        const {
+          controller,
+          namespace,
+          agent,
+          bot,
+          path,
+          intent,
+          work,
+          secretDriver,
+          providerCalls,
+        } = await slackFirstDeploymentFixture();
+        const fixture = controller.fixture;
+        const revoke = () =>
+          fixture.state.restrictions.push({
+            id: `revoke-${authority}-${stage}`,
+            namespaceId: namespace.id,
+            resourceKind: authority === "deploy" ? "agent" : "configuration",
+            resourceId: authority === "deploy" ? agent.id : intent.expectedConfigurationId,
+            action: authority,
+            effect: "deny",
+          });
+        if (stage === "before-backend") {
+          // The Secret metadata lookup yields to a concurrent policy change. Native IAM
+          // still makes every decision; the wrapper only schedules the restriction.
+          const read = fixture.platformState.read.bind(fixture.platformState);
+          fixture.platformState.read = async (operation) => {
+            const result = await read(operation);
+            if (result?.id === bot.id) {
+              revoke();
+            }
+            return result;
+          };
+        } else {
+          // Model revocation while the backend was reading, before OCC receives its value.
+          const withValue = secretDriver.withValue.bind(secretDriver);
+          secretDriver.withValue = (secret, use) =>
+            withValue(secret, (value) => {
+              revoke();
+              return use(value);
+            });
+        }
+        const app = fixture.createApp(undefined, createFastifyApp);
+        try {
+          const url = await app.listen({ host: "127.0.0.1", port: 0 });
+          const result = await request(url, "POST", `${path}/deploy-first`, {
+            session: app.defaultSession,
+            body: intent,
+          });
+          const revisions = await fixture.platformState.read((unit) =>
+            unit.revisions.listRevisionMetadata(namespace.id, agent.id),
+          );
+          const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
+          t.diagnostic(
+            JSON.stringify({
+              authority,
+              stage,
+              status: result.status,
+              sender: providerCalls(),
+              withValue: reads,
+              revisions: revisions.length,
+              work: work().length,
+            }),
+          );
+          assert.equal(result.status, 403, JSON.stringify(result.body));
+          assert.equal(revisions.length, 0);
+          assert.equal(work().length, 0);
+          assert.equal(
+            providerCalls(),
+            0,
+            "revoked deployment authority must prevent credential dispatch",
+          );
+          assert.equal(
+            reads,
+            stage === "after-backend" ? 1 : 0,
+            "revocation before backend access must prevent the Secret read",
+          );
+          assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 0);
+        } finally {
+          await app.close();
+        }
+      });
+    }
+  }
+});
+
+test("guarded first deployment refuses deleting Agents before validation", async (t) => {
+  for (const stage of ["before-valid-token", "before-wrong-role-token", "after-validation-error"]) {
+    await t.test(stage, async (t) => {
+      const { controller, namespace, agent, bot, path, intent, work, secretDriver, providerCalls } =
+        await slackFirstDeploymentFixture();
+      const fixture = controller.fixture;
+      const app = fixture.createApp(undefined, createFastifyApp);
+      try {
+        const url = await app.listen({ host: "127.0.0.1", port: 0 });
+        if (stage !== "before-valid-token") {
+          // Store a real wrong-role value through the supported Secret mutation route.
+          const changed = await request(
+            url,
+            "PATCH",
+            `/namespaces/${namespace.id}/secrets/${bot.id}`,
+            {
+              session: app.defaultSession,
+              body: { value: "xoxp-synthetic-user" },
+            },
+          );
+          assert.equal(changed.status, 200, JSON.stringify(changed.body));
+        }
+        secretDriver.calls.length = 0;
+        let deletionWork;
+        const remove = async () => {
+          const deleted = await request(url, "DELETE", path, { session: app.defaultSession });
+          assert.equal(deleted.status, 202, JSON.stringify(deleted.body));
+          assert.equal(deleted.data.status, "deleting");
+          assert.equal(deleted.data.desiredRuntimeState, "stopped");
+          deletionWork = fixture.platformState.pendingOperations();
+        };
+        if (stage === "after-validation-error") {
+          const withValue = secretDriver.withValue.bind(secretDriver);
+          secretDriver.withValue = async (secret, use) => {
+            // Let the actual Slack validator reject the stored token, then accept deletion
+            // before OCC carries the saved validation error into locked admission.
+            const outcome = await withValue(secret, use);
+            await remove();
+            return outcome;
+          };
+        } else {
+          await remove();
+        }
+        const result = await request(url, "POST", `${path}/deploy-first`, {
+          session: app.defaultSession,
+          body: intent,
+        });
+        const revisions = await fixture.platformState.read((unit) =>
+          unit.revisions.listRevisionMetadata(namespace.id, agent.id),
+        );
+        const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
+        t.diagnostic(
+          JSON.stringify({
+            stage,
+            status: result.status,
+            code: result.body.error?.code,
+            sender: providerCalls(),
+            withValue: reads,
+            revisions: revisions.length,
+            work: work().length,
+          }),
+        );
+        assertApiError(result, 409, "AGENT_DELETING");
+        assert.equal(revisions.length, 0);
+        assert.equal(work().length, 0);
+        assert.deepEqual(fixture.platformState.pendingOperations(), deletionWork);
+        assert.equal(providerCalls(), 0);
+        assert.equal(reads, stage === "after-validation-error" ? 1 : 0);
+        assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 0);
+      } finally {
+        await app.close();
+      }
+    });
   }
 });
 

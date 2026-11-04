@@ -3,9 +3,13 @@ package occcli
 import (
 	"bytes"
 	"encoding/json/v2"
+	"encoding/pem"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1380,6 +1384,96 @@ func TestFirstDeploymentCommandsUseExplicitRoutes(t *testing.T) {
 			}
 			if strings.Contains(stderr, "No matching admission") {
 				t.Fatalf("receipt reported as a miss: %s", stderr)
+			}
+		})
+	}
+}
+
+func TestFirstDeploymentLostResponsePrintsExactRecoveryCommand(t *testing.T) {
+	calls := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		// Simulate a missing HTTP reply, not server admission. The API integration
+		// test drops a real accepted reply after the regular workflow commits.
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = connection.Close()
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "operator's $(printf injected) key.json")
+	caBundle := filepath.Join(dir, "operator's $(printf injected) ca.pem")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"private-test-credential"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(caBundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configurationID := "cfg_55555555-5555-4555-8555-555555555555"
+	var out, notices bytes.Buffer
+	command := New(&out, &notices)
+	command.SetArgs([]string{"--url", server.URL, "--service-key-file", keyFile, "--ca-bundle", caBundle, "--timeout-seconds", "17", "--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3"})
+	err := command.Execute()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("lost original transport cause: %v", err)
+	}
+	if calls != 1 || out.Len() != 0 {
+		t.Fatalf("requests = %d, stdout = %q; no request or receipt may be invented", calls, out.String())
+	}
+	if !strings.Contains(notices.String(), "same caller") || strings.Contains(notices.String(), "private-test-credential") {
+		t.Fatalf("missing caller reminder or leaked credential: %s", notices.String())
+	}
+	lines := strings.Split(strings.TrimSpace(notices.String()), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "outcome is unconfirmed") {
+		t.Fatalf("missing recovery guidance: %s", notices.String())
+	}
+	// Parse the displayed command with a real POSIX shell, without executing occ.
+	// Paths with quotes and command substitutions must remain literal arguments.
+	parsed, err := exec.Command("sh", "-c", `occ() { printf '%s\0' "$@"; }; `+lines[1]).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(parsed), "\x00"), "\x00")
+	want := []string{"--url", server.URL, "--service-key-file", keyFile, "--ca-bundle", caBundle, "--timeout-seconds", "17", "--namespace", testNamespaceID, "agent", "recover-first-deployment", testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("recovery arguments = %q, want %q", got, want)
+	}
+}
+
+func TestFirstDeploymentRecoveryGuidanceDistinguishesRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		hint   bool
+	}{
+		{"malformed accepted reply", http.StatusAccepted, `{`, true},
+		{"unavailable", http.StatusServiceUnavailable, `{"error":{"code":"UNAVAILABLE","message":"unavailable"}}`, true},
+		{"request timeout", http.StatusRequestTimeout, ``, true},
+		{"forbidden", http.StatusForbidden, `{"error":{"code":"FORBIDDEN","message":"The operation is not permitted."}}`, false},
+		{"precondition", http.StatusConflict, `{"error":{"code":"FIRST_DEPLOYMENT_PRECONDITION_FAILED","message":"review configuration"}}`, false},
+		{"unsupported server", http.StatusNotFound, ``, false},
+		{"redirect", http.StatusTemporaryRedirect, ``, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			out, notices, err := runOCCAgainst(t, handler, "--ca-bundle=", "--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", "1")
+			if err == nil || calls != 1 || out != "" {
+				t.Fatalf("err = %v, requests = %d, stdout = %q", err, calls, out)
+			}
+			if strings.Contains(notices, "agent recover-first-deployment") != tc.hint {
+				t.Fatalf("recovery hint = %q, want present = %t", notices, tc.hint)
+			}
+			if tc.hint && !strings.Contains(notices, "--ca-bundle ''") {
+				t.Fatalf("recovery command must preserve explicit empty trust setting: %s", notices)
 			}
 		})
 	}

@@ -84,7 +84,7 @@ The key must start with a letter or digit and contain 1–128 ASCII letters, dig
 `_`, `~`, or `-`. Write the generation as decimal digits from `1` through
 `9007199254740991`, without leading zeros.
 Keep the nonsecret key with those values, the Namespace and Agent IDs, and the
-caller identity. Fresh admission requires a stopped Agent with no revision history
+caller identity. Fresh admission requires an active, stopped Agent with no revision history
 and the same saved Configuration binding and generation. The
 [deployment reference](../../reference/agents/deployment.md#guarded-first-deployment)
 defines permissions and receipt behavior.
@@ -98,10 +98,17 @@ occ --namespace NAMESPACE_ID agent recover-first-deployment AGENT_ID \
   --configuration CONFIGURATION_ID --generation 1 --key review-1
 ```
 
+If `deploy-first` loses or cannot read its reply, or receives HTTP `408` or `5xx`,
+the CLI keeps the original error and prints a read-only recovery command to stderr.
+It preserves the connection options and original request values; it sends no
+automatic request. Use the same caller: the printed service-key file path must
+still identify that caller. Completed `3xx` and other `4xx` responses omit this
+uncertainty hint; follow the reported refusal or redirect guidance.
+
 A matching receipt identifies the original Agent revision. Check that revision's
 deployment status as described above; a receipt proves admission, not workload
 readiness. Recovery does not start or repeat deployment work and still works after
-a later deployment or a change to the Agent's Configuration.
+a later deployment, a change to the Agent's Configuration, or the start of Agent deletion.
 
 A missing receipt (`null`) does not prove that an in-flight request failed. Do not
 resend, change the key, or use ordinary `deploy` to resolve that uncertainty. Repeat

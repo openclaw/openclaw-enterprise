@@ -1796,7 +1796,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       body: FirstDeploymentIntent,
-      response: { 202: FirstDeploymentReceiptResponse, ...mutationErrors },
+      response: { 202: FirstDeploymentReceiptResponse, ...createErrors },
     },
   },
   {

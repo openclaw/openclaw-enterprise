@@ -275,9 +275,9 @@ are defined by the [API reference](../api.md).
 ## Guarded first deployment
 
 `POST /namespaces/:namespaceId/agents/:agentId/deploy-first` accepts `key`,
-`expectedConfigurationId`, and `expectedGeneration`. Fresh admission requires a
-stopped Agent, empty revision history, the reviewed Configuration, and ordinary
-deployment validation. `202` returns an admission receipt; conflicts create no revision.
+`expectedConfigurationId`, and `expectedGeneration`. Fresh admission requires
+`active` status, stopped desired state, no history, the reviewed Configuration, and
+ordinary deployment validation. `202` returns an admission receipt; conflicts create no revision.
 
 Receipts bind those inputs, Installation, caller, Namespace, Agent, and operation.
 The bodyless `GET /namespaces/:namespaceId/agents/:agentId/deploy-first/:key/:expectedConfigurationId/:expectedGeneration`
@@ -285,7 +285,7 @@ returns the receipt or `null`, with `Cache-Control: no-store`. Recovery requires
 current exact Agent `deploy` and reviewed Configuration `read`.
 
 A matching POST or GET adds no Secret, provider, model, or work calls. Concurrent
-fresh POSTs can repeat channel credential preparation before one commits.
+fresh POSTs can repeat channel credential preparation before committing.
 A miss does not authorize a resend. Follow the
 [recovery procedure](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery).
 

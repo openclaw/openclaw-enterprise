@@ -214,7 +214,7 @@ graph TD
   A["Capture original request<br/>and authorize receipt access"] --> B{"Receipt exists?"}
   B -->|yes| R["Return original receipt<br/>without new work"]
   B -->|no, recovery GET| N["Return null<br/>outcome remains uncertain"]
-  B -->|no, deployment POST| C{"Stopped Agent, no history,<br/>reviewed Configuration?"}
+  B -->|no, deployment POST| C{"Active and stopped Agent,<br/>no history, reviewed Configuration?"}
   C -->|no| X["Refuse fresh admission"]
   C -->|yes| D["Prepare channels<br/>outside transaction"]
   D --> E["Lock Agent, reauthorize,<br/>look up receipt again"]
@@ -230,16 +230,21 @@ generation on entry. They use those values for the digest and each permission ch
 The first admission read checks exact receipt authority through
 `authorizeFirstDeploymentReceipt`, then reads
 the receipt, matching draft metadata, and history in one snapshot. PostgreSQL uses
-REPEATABLE READ. A changed Agent binding refuses fresh admission without reading or
+REPEATABLE READ. On a receipt miss, an Agent without `active` lifecycle status
+returns `409 AGENT_DELETING` before channel preparation. A changed Agent binding
+refuses fresh admission without reading or
 authorizing a different Configuration. A stale tuple, existing history, or read error
 ends the request from that snapshot. Only preparation after a valid fresh tuple can
 fall back to locked recovery.
 
 `prepareDeploymentChannels` shares ordinary deployment's Configuration and Channel
-validation outside the transaction. `validateChannelCredentials` enforces exact
-Secret scope and `operate`, checks again before `withValue`, and reauthorizes before
-the provider callback. Registered Drivers use the same authorized credential reader as ordinary deployment.
-Concurrent fresh submissions can repeat preparation.
+validation outside the transaction. It captures the Namespace, Agent, and reviewed
+Configuration IDs before asynchronous work. `validateChannelCredentials` enforces
+exact Secret scope. Before `withValue` reads the backend and again before its value
+callback dispatches to the provider, OCC rechecks exact Agent `deploy`, reviewed
+Configuration `read`, and Secret `operate`. Revocation at either boundary prevents
+the next credential operation. Ordinary deployment uses the same checks and
+credential reader. Concurrent fresh submissions can repeat preparation.
 
 The private `admitAgentDeployment` reuses ordinary admission's Namespace and Agent
 locks. Under the Agent lock it rechecks current exact receipt permissions and performs
@@ -247,9 +252,10 @@ one receipt lookup, before fresh-only dependencies or a saved preparation error 
 refuse the request. A match returns the minimal receipt without decoding the revision
 or calling Secrets, providers, models, or work. A contender may already have performed
 preparation before this lookup; observing a match adds no fresh work. A different actor
-cannot match.
+cannot match. A match remains recoverable after Agent deletion starts.
 
-On a locked miss, admission checks stopped desired state, empty history, binding,
+On a locked miss, admission checks `active` lifecycle status before propagating a
+saved preparation error; deletion returns `409 AGENT_DELETING`. It then checks stopped desired state, empty history, binding,
 generation, and equality with the validated Configuration. It rechecks Secret and
 other ordinary admission permissions. `assertPreparedDeploymentDrivers` checks the
 actual selected Configuration and Channel instances after locking and immediately
@@ -266,6 +272,12 @@ Absence is an observation, not a cancellation or proof of failure. Conflict
 responses direct the operator to recover the original receipt after uncertainty,
 then inspect current binding, Configuration, or deployment state. Existing history
 requires a deliberate later deployment through ordinary `deploy`, not a blind retry.
+
+`internal/occcli/cli.go:application.firstDeploymentRecoveryNotice` preserves the
+original POST error and prints a read-only recovery command for transport or
+response-decoding failure, HTTP `408`, or `5xx`. The command retains the original
+request and connection options; the service-key file must still identify the
+original caller. The helper sends no request.
 
 ## Related
 

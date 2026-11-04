@@ -38,6 +38,7 @@ import type {
   AgentDesiredRuntimeState,
   AgentStatus,
   AgentRevision,
+  FirstDeploymentReceipt,
   AuditEvent,
   CredentialSource,
   CredentialSourceSnapshot,
@@ -260,16 +261,6 @@ export interface AgentRepository extends AgentReadRepository {
     expected: AgentStatus | readonly AgentStatus[],
     next: AgentStatus,
   ): Promise<Readonly<Agent> | undefined>;
-}
-
-/** Minimal immutable admission receipt; contains no snapshot or caller intent. */
-export interface FirstDeploymentReceipt {
-  readonly revisionId: string;
-  readonly namespaceId: string;
-  readonly agentId: string;
-  readonly configurationId: string;
-  readonly configurationGeneration: number;
-  readonly createdAt: string;
 }
 
 export interface AgentRevisionReadRepository {

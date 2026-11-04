@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
 updated: 2026-11-04
-last_updated_session: authoring-run/06bc63c9-f110-4607-a058-a816a61dd579
+last_updated_session: authoring-run/8886e590-0aa5-4c8a-8665-2e58d1c639cc
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -233,6 +233,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 08:00: Trace deployment grant rechecks at credential use and refuse deleting Agents before fresh preparation while preserving receipt recovery; document uncertain-response CLI hints. (authoring-run/8886e590-0aa5-4c8a-8665-2e58d1c639cc - e3fe8b8f)
 
 - 2026-11-04 07:41: Trace guarded first admission and receipt recovery in the persistence chapter, including locked rechecks and verification boundaries. (authoring-run/06bc63c9-f110-4607-a058-a816a61dd579 - 6371064e)
 
