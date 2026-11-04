@@ -285,6 +285,8 @@ describe("repository credential router", { concurrency: true }, () => {
         "topic",
         undefined,
       ],
+      [ref("missing"), "https://unrelated.example.test/example/project.git", "topic", 0, ""],
+      [ref("missing"), undefined, "topic", 1, guardFailed("conflicting-repository-selection")],
       [ref("restricted"), "/unmanaged/local/repository", "topic", 0],
       [ref("permitted"), undefined, "relativeTopic", 0],
       [ref("permitted"), undefined, "relativeMain", 1, notAllowed],

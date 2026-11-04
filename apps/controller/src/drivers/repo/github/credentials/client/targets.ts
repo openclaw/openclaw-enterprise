@@ -122,13 +122,6 @@ function gitPushDestinations(
   });
 }
 
-export function hasGitPushDestination(
-  manifest: RuntimeRepositoryManifest,
-  destination: string,
-): boolean {
-  return gitPushDestinations(manifest, destination).length > 0;
-}
-
 /**
  * True only when the destination provably names none of `origins`. The authority must
  * be plain (lowercase ASCII host, optional port, optional simple username), where Git's
@@ -151,13 +144,13 @@ export function isUnrelatedPushDestination(
 export function selectGitPushDestination(
   manifest: RuntimeRepositoryManifest,
   destination: string,
-  pinned?: RuntimeRepositoryBinding,
+  resolvePin?: () => RuntimeRepositoryBinding | undefined,
 ): RuntimeRepositoryBinding | undefined {
   const matches = gitPushDestinations(manifest, destination);
   if (matches.length === 0) {
     return undefined;
   }
-  const selected = selectBinding(matches, pinned);
+  const selected = selectBinding(matches, resolvePin?.());
   const username = new URL(destination).username;
   if (username && username !== selected.client.gitUsername) {
     throw new Error("repository-not-admitted");
