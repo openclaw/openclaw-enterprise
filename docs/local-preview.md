@@ -56,7 +56,7 @@ on GitHub. These links require repository access. External URLs are not fetched.
 `docs:check` checks word limits, navigation, and links without writing the site or
 running a test suite.
 The standalone build writes `dist/docs/` without a watcher or live-refresh script.
-To inspect that output without rebuilding, run `node scripts/docs-site/serve.mjs`.
+To inspect that output without rebuilding, run `node scripts/docs-site/serve.ts`.
 Do not add or run tests for documentation changes, including docs-site
 presentation; use the build, formatting, link checks, and visual inspection.
 
