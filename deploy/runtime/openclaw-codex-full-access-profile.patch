@@ -70,7 +70,7 @@ diff --git a/extensions/codex/src/app-server/thread-requests.ts b/extensions/cod
 +    CodexAppServerRuntimeOptions,
 +    "networkProxy" | "providerPermissionProfile" | "sandbox"
 +  >,
-+): Pick<CodexThreadStartParams, "permissions" | "sandbox"> {
++): Pick<CodexThreadStartParams, "sandbox"> & { permissions?: ":danger-full-access" } {
    if (appServer.networkProxy) {
      return {};
    }
