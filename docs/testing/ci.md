@@ -59,12 +59,16 @@ results. For triggers and failure consequences across workflows, use the
 
 <a id="find-test-coverage"></a>
 <a id="results-and-cleanup"></a>
-<a id="no-github-workflow-entrypoint"></a>
-<a id="manually-selected-lanes-without-github-workflows"></a>
 <a id="test-scenarios"></a>
 
 - [Find and run test lanes](ci/run-lanes.md): locate a test's manifest, audit
-  registration, prepare and clean up local runs, and find manually selected lanes.
+  registration, and prepare and clean up local runs.
+
+<a id="no-github-workflow-entrypoint"></a>
+<a id="manually-selected-lanes-without-github-workflows"></a>
+
+- [Manual tests](manual-tests.md): select lanes without GitHub workflows and
+  complete their setup requirements.
 
 <a id="guides"></a>
 <a id="run-a-protected-integration-lane"></a>

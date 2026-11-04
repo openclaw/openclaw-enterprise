@@ -862,6 +862,10 @@
                     "label": "Local Tests"
                   },
                   {
+                    "page": "testing/manual-tests",
+                    "label": "Manual Tests"
+                  },
+                  {
                     "page": "testing/module-boundaries",
                     "label": "Module Boundaries"
                   },

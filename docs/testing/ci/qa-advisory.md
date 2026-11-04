@@ -92,7 +92,7 @@ an extra API rollout.
 The advisory workflow and Full Integration select files from the same
 [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). The Compose-only
 label selects the first row. The separately prepared OAuth and Linear lanes
-[listed in the lane guide](run-lanes.md#manually-selected-lanes-without-github-workflows) are not included.
+[listed under Manual tests](../manual-tests.md) are not included.
 
 | Integration test file                                                                                                     | Coverage                                                                                                                                                                         |
 | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
