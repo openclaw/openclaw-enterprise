@@ -4277,7 +4277,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     // Keep the Driver-owned configuration isolated from its constructor caller.
     this.options = structuredClone(options);
-    const endpoint = options.runtime?.codexModelBaseUrl;
+    const endpoint = options.runtime?.modelProvider?.baseUrl;
     this.agentProvisioning = Object.freeze({
       executionModes: Object.freeze(["dedicated"] as const),
       ...(endpoint === undefined ? {} : { codexApiKeyBaseUrl: normalizeOpenAiBaseUrl(endpoint)! }),
@@ -4876,8 +4876,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (
         codex &&
         endpoint === undefined &&
-        this.options.runtime?.codexModelBaseUrl !== undefined &&
-        normalizeOpenAiBaseUrl(this.options.runtime.codexModelBaseUrl) !==
+        this.options.runtime?.modelProvider?.baseUrl !== undefined &&
+        normalizeOpenAiBaseUrl(this.options.runtime.modelProvider?.baseUrl) !==
           "https://api.openai.com/v1"
       ) {
         throw callerSettingError(
@@ -4909,6 +4909,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           authentication.providerId,
           callerSettingError,
         );
+        // A Secret authorized for the Installation model provider is the installation-wide
+        // destination; per-model rows render their own adapters and are qualified separately.
+        const installationEndpoint = modelProviderBaseUrl(this.options.runtime?.modelProvider);
         const defaultDestination =
           providerAdapter === "anthropic-messages"
             ? "https://api.anthropic.com"
@@ -4916,10 +4919,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
               ? "https://api.openai.com/v1"
               : undefined;
         if (
-          destinations.length === 0 ||
-          destinations.some((destination) =>
-            endpoint === undefined ? destination !== defaultDestination : destination !== endpoint,
-          )
+          endpoint !== installationEndpoint &&
+          (destinations.length === 0 ||
+            destinations.some((destination) =>
+              endpoint === undefined
+                ? destination !== defaultDestination
+                : destination !== endpoint,
+            ))
         ) {
           throw callerSettingError(
             "harnessAuth.authorizedEndpoint",
@@ -14563,20 +14569,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ) {
       openaiBaseUrl = modelProviderBaseUrl(provider);
     }
-    if (
+    const agentAuthorizedEndpoint =
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      revision.harnessAuth?.method === "api_key"
+        ? revision.harnessAuth.authorizedEndpoint
+        : undefined;
+    if (agentAuthorizedEndpoint !== undefined) {
+      // The Agent's endpoint authorization overrides the Installation fallback: the projected key
+      // is bound to that destination, and every request must reach it.
+      openaiBaseUrl = agentAuthorizedEndpoint;
+    } else if (
       openaiBaseUrl === undefined &&
       revision.harness.id === "codex" &&
       revision.harness.mode === "dedicated" &&
       revision.harnessAuth?.method === "api_key"
     ) {
-      // A dedicated Codex Agent using API-key authentication may target the Installation's
-      // custom endpoint; the authorized endpoint is the destination its key is bound to.
-      openaiBaseUrl =
-        revision.harnessAuth.authorizedEndpoint ?? this.options.runtime?.codexModelBaseUrl;
+      openaiBaseUrl = this.options.runtime?.modelProvider?.baseUrl;
     }
+    const installationEndpoint = modelProviderBaseUrl(this.options.runtime?.modelProvider);
     const standaloneWebSearch =
       revision.harness.id === "codex" &&
       revision.harness.mode === "dedicated" &&
+      (agentAuthorizedEndpoint === undefined || agentAuthorizedEndpoint === installationEndpoint) &&
       provider?.supportsStandaloneWebSearch === true;
     if (openaiBaseUrl !== undefined) {
       const normalized = normalizeOpenAiBaseUrl(openaiBaseUrl);

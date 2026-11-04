@@ -1024,9 +1024,14 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       return Object.freeze({});
     }
     if (input.type === "openai") {
-      const endpoint = sourceBaseUrl(config);
+      // Description only: a stored record with an invalid value is refused as a stored-config
+      // conflict (409) by its owning operation, not as a new request's 400.
+      const endpoint = (config.authorized_base_url ?? OPENAI_DEFAULT_BASE_URL).replace(/\/$/u, "");
       return Object.freeze({
-        api_key: Object.freeze({ endpoint, isDefault: endpoint === OPENAI_DEFAULT_BASE_URL }),
+        api_key: Object.freeze({
+          endpoint,
+          isDefault: endpoint === OPENAI_DEFAULT_BASE_URL,
+        }),
       });
     }
     const profile = type.profile(
