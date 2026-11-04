@@ -14,18 +14,17 @@ advanced setup. Native image checks use the [release build settings](../../relea
 Ordinary CI, First Agent Smoke, cache warming, Storybook, and Observability Demo
 need no provider secrets. Runner labels, tool pins, triggers, timeouts, and job
 permissions are set in the [workflow files](../../../.github/workflows);
-[test lane definitions](../../../scripts/ci/test-suites.json) own required inputs.
+[test lane definitions](../../../scripts/ci/test-suites.json) list required inputs.
 
 <a id="integration-environments"></a>
 
 ## Environments
 
-Create only environments needed by selected jobs. Full Integration preflight
-requires no required reviewers. Its environments allow protected branches or a
+Create only environments needed by selected jobs. Full Integration checks that its GitHub environments have no required reviewers. Its environments allow protected branches or a
 custom policy containing `main`; `integration-provider-account` instead requires
 exactly one custom rule: branch `main`. The advisory `integration-qa-pr` environment
 permits `main` and GitHub's `refs/pull/*/merge` branches. The `full-qa` and `qa-openshell-compose` labels select runs within
-that policy. Full Integration preflight does not govern this environment.
+that policy. The Full Integration environment checks do not apply to `integration-qa-pr`.
 
 Full Integration rejects tags. Before dispatch, confirm the branch points
 to the reviewed commit; rely on the run only if its `headSha` matches that commit. Four
@@ -99,7 +98,7 @@ These process environment variables are optional. First Agent Smoke has its own
 | `OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS`    | `300000`                                  | Container-engine/k3d cleanup command limit; database drops use at most 60 seconds. |
 | `OPENCLAW_CI_COMMAND_KILL_GRACE_MS`         | `5000`                                    | TERM-to-KILL and pipe-drain grace during preparation/cleanup.                      |
 | `OPENCLAW_CI_K3S_IMAGE`                     | Immutable pin in `scripts/ci/prepare.mjs` | Approved digest-pinned Kubernetes 1.35.x image; OpenShell has a separate pin.      |
-| `OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` | `1200000`                                 | Bound hosted BuildKit cache export.                                                |
+| `OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` | `1200000`                                 | Maximum time for a hosted BuildKit cache export.                                   |
 | `OPENCLAW_CI_BROWSER_FAILURE_DIR`           | Unset                                     | Retain browser failure evidence locally.                                           |
 | `OPENCLAW_CI_BROWSER_FAILURE_TRACE`         | Unset                                     | Set `1` to include Playwright traces.                                              |
 

@@ -109,17 +109,17 @@ produced. An early preparation failure retains the pull receipt without a
 success receipt or invented suite results.
 
 This is **container startup qualification on amd64**, not an installation or
-rollout. The installed prepared-Git lane builds a separate repository-service
+rollout. The installed private Git test lane builds a separate repository-service
 image and a runtime with a test CA through
 [first-agent-smoke](../../../scripts/ci/first-agent-smoke.mjs); the two-image
 publication receipt cannot supply that installation unchanged. Full Integration
 and QA Advisory retain their existing installation and provider requirements.
 This workflow does not promote to production or prove staging readiness,
-installed Agent journeys, or arm64 behavior.
+installed Agent workflows, or arm64 behavior.
 
 ## Files
 
 - [Workflow](../../../.github/workflows/staging-qualification.yml): trusted source, inputs, and artifact retention.
-- [Qualification command](../../../scripts/ci/staging-qualification.ts): producer validation, image handoff, and startup proof.
+- [Qualification command](../../../scripts/ci/staging-qualification.ts): publication validation, image selection, and startup checks.
 - [Command tests](../../../tests/integration/staging-qualification.test.ts): local Git and transport fixtures.
 - [Packaging manifest](../../../scripts/ci/test-suites/images-packaging.json) and [startup manifest](../../../scripts/ci/test-suites/images-runtime-startup.json): runtime test inventories.

@@ -2,9 +2,9 @@
 
 ## Overview
 
-First Agent Smoke installs the Kubernetes platform from checkout-built images
+First Agent Smoke installs the Kubernetes platform from images built from the checkout
 and exercises embedded OpenClaw and dedicated Codex Agents. It uses a simulated
-model provider, so it proves the installed lifecycle without proving access to a
+model provider, so it tests deployment, chat, logs, and stop/start without proving access to a
 real model service.
 
 ## When it runs
@@ -22,13 +22,13 @@ which require successful CI for their source.
 The [smoke script](../../../scripts/ci/first-agent-smoke.mjs) owns these checks;
 it does not use a suite manifest.
 
-| Setup and action                                                                   | Expected outcome                                                                                                                                | Source                                                                               |
-| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| Build the checkout images and run Kubernetes-only Local Setup.                     | Installation becomes available with the selected images.                                                                                        | Smoke script: `buildImages` and `startLocalSetup`.                                   |
-| Create an embedded OpenClaw Agent and a dedicated Codex Agent; send chat requests. | Both Agents return the expected simulated-provider response.                                                                                    | [First-Agent helper](../../../scripts/first-agent.mjs) and smoke script: `chatTurn`. |
-| Read gateway logs and dedicated Agent logs through the CLI.                        | `occ agent logs` returns nonempty logs for the selected sources.                                                                                | Smoke script: `readLogs`.                                                            |
-| Withdraw public-reader access and deploy an unselected successor.                  | Old workload and policy are removed, held sockets close, retired/unselected readers cause no later reads, and the selected control still works. | Smoke script: `proveRetirement`.                                                     |
-| Stop and start both Agents, then chat again.                                       | Stopped Pods terminate, start admits new revisions, and both chat turns succeed.                                                                | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                            |
+| Setup and action                                                                   | Expected outcome                                                                                                                                                                          | Source                                                                               |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Build the checkout images and run Kubernetes-only Local Setup.                     | Installation becomes available with the selected images.                                                                                                                                  | Smoke script: `buildImages` and `startLocalSetup`.                                   |
+| Create an embedded OpenClaw Agent and a dedicated Codex Agent; send chat requests. | Both Agents return the expected simulated-provider response.                                                                                                                              | [First-Agent helper](../../../scripts/first-agent.mjs) and smoke script: `chatTurn`. |
+| Read gateway logs and dedicated Agent logs through the CLI.                        | `occ agent logs` returns nonempty logs for the selected sources.                                                                                                                          | Smoke script: `readLogs`.                                                            |
+| Withdraw public Git reader access and deploy a revision without that access.       | The old workload and policy are removed and open connections close. The retired revision and the successor without reader access make no further reads; the control Agent retains access. | Smoke script: `proveRetirement`.                                                     |
+| Stop and start both Agents, then chat again.                                       | Stopped Pods terminate, starting the Agents creates new revisions, and both chat turns succeed.                                                                                           | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                            |
 
 ## Run it
 
@@ -55,10 +55,10 @@ substitute a production cluster for the script's disposable installation.
 Keep the same directory and slot for `images` and `run`. Only a distinct slot
 isolates host-wide names; changing the directory alone does not.
 
-| Setting                           | Default                                                       | Purpose                                                                            |
-| --------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `OCC_FIRST_AGENT_SMOKE_DIRECTORY` | `$RUNNER_TEMP/first-agent-smoke`, or `/tmp/first-agent-smoke` | Images, certificates, and Local Setup state.                                       |
-| `OCC_FIRST_AGENT_SMOKE_SLOT`      | `0`                                                           | `0`–`31`; other cluster, registry, model names, port, subnet. Also vary dev ports. |
+| Setting                           | Default                                                       | Purpose                                                                                                       |
+| --------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `OCC_FIRST_AGENT_SMOKE_DIRECTORY` | `$RUNNER_TEMP/first-agent-smoke`, or `/tmp/first-agent-smoke` | Images, certificates, and Local Setup state.                                                                  |
+| `OCC_FIRST_AGENT_SMOKE_SLOT`      | `0`                                                           | `0`–`31`; selects distinct cluster, registry, and model names, port, and subnet. Also vary development ports. |
 
 ## Results and limits
 
@@ -67,8 +67,8 @@ steps. The script prints named stages, timing, assertions, and failure diagnosti
 An image build alone is not a passing lifecycle check. Verify that the run
 completes, including cleanup, before reporting success.
 
-For real-provider and browser journeys, use [QA Matrix Advisory](qa-advisory.md).
-A skipped smoke job provides no installed-lifecycle result.
+For tests with real model providers and browser interaction, use [QA Matrix Advisory](qa-advisory.md).
+A skipped job does not verify the installed Agent workflow.
 
 ## Files
 

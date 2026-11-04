@@ -59,11 +59,27 @@ an unexecuted scenario as passed.
 - Helpers/implementation: link only files needed to trace the behavior.
 ```
 
+## Name the behavior being tested
+
+Use descriptive coverage labels such as **Runtime image metadata** or
+**Worker startup deadline**. Names such as “Fixture” or “Helper Timeout” do not
+explain what a reader can learn from the result. State the expected behavior
+beside the label, and link to the test or manifest that verifies it.
+
+Preserve exact GitHub job names in a separate column or an explicit mapping so
+readers can find the run. For example, **Runtime image metadata** maps to the
+`Runtime Image Fixture` job. Do not rename workflow identifiers, selectors,
+commands, or API fields while editing prose.
+
+Expand unfamiliar abbreviations and replace noun piles with actions. Prefer
+“withdraw access; further reads are denied” to “retirement/isolation.” Keep
+established product and resource names, such as Agent revision and OpenShell.
+
 ## Keep pages useful
 
 Describe scenarios as **given this setup, perform this action, expect this
 outcome**. “Tests deployment” is too broad; “Stop the Agent; its Pods terminate,
-then start admits a new revision and chat succeeds” is verifiable.
+then starting it creates a new revision and chat succeeds” is verifiable.
 
 For large checks, group related cases and link exact manifests rather than
 copying hundreds of test names. Add columns for presets or automatic selection

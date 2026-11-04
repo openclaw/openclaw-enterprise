@@ -2,9 +2,9 @@
 
 ## Overview
 
-Use QA Matrix Advisory to qualify Agent journeys with real provider credentials
+Use QA Matrix Advisory to test Agent workflows with real provider credentials
 on disposable Compose and Kubernetes installations. It also runs the OpenShell
-lane and, for selected triggers, the hosted local installation rehearsal. Its
+lane and, for selected triggers, the hosted local installation tests. Its
 results are advisory; they do not block merge or publication.
 
 ## When it runs
@@ -19,8 +19,8 @@ set the repository variable `QA_ADVISORY_ON_PUSH` to `true`.
 For changes to OpenShell, image pins, Helm installation or another live integration, a maintainer
 can add the `full-qa` label to a reviewed, same-repository pull request. Create that repository
 label once before enabling this workflow. Adding it starts the Compose and Kubernetes QA jobs, all OpenShell file jobs,
-and the hosted local installation rehearsal on GitHub's PR merge commit. A manual dispatch on `main` and the
-schedule (every 6 hours, at minute 17) also run the whole matrix with that rehearsal. Check
+and the hosted local installation tests on GitHub's PR merge commit. A manual dispatch on `main` and the
+schedule (every 6 hours, at minute 17) also run both QA installation jobs, all OpenShell file jobs, and the local installation tests. Check
 the run's commit and results before merging; skipped jobs provide no live QA result.
 As long as the label remains, pushing a new commit replaces the previous run. Removing
 it stops selection on future pushes; cancel an active run separately. Forks and Dependabot PRs are
@@ -33,7 +33,7 @@ uses `integration-qa-pr` and runs only
 worker and redeployment cases. Its control plane runs in Compose; its workloads
 still use Kubernetes Compute. `full-qa` takes precedence when both labels exist.
 The focused run skips the other advisory jobs, keeps manifest case requirements
-and cleanup, and records `scope: focused`. It cannot satisfy full-lane aggregation.
+and cleanup, and records `scope: focused`. It does not count as a complete OpenShell lane run.
 Inspect `qa-advisory-local-first-agent-openshell-real-openshell` and its attempt-specific artifacts.
 
 ## Scenarios
@@ -43,18 +43,18 @@ Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It doe
 not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 
-| Scenario                | In advisory             | Presets         | Checks                                                                                                                                  |
-| ----------------------- | ----------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox-policy`        | Separate OpenShell lane | Codex           | Configuration discovery/preview and the OpenShell network-policy lifecycle; requires a prepared OpenShell environment.                  |
-| `plugin-install`        | Separate OpenShell lane | Codex           | Dedicated Codex plugin installation, discovery after native-process restart, and selection removal.                                     |
-| `model-ui`              | Yes (Codex)             | OpenClaw, Codex | Real model turn and native browser response.                                                                                            |
-| `console-secrets`       | Yes (Codex)             | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation. |
-| `git-write`             | No                      | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                             |
-| `git-push-denied`       | No                      | Codex           | Reject a push to any other branch and dispose credentials.                                                                              |
-| `calendar`              | Yes (Codex)             | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
-| `slack`                 | No                      | Codex           | Threaded reply and new root message.                                                                                                    |
-| `openshell-linear-read` | No                      | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                           |
-| `codex-search-config`   | No                      | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.         |
+| Scenario                | In advisory             | Presets         | Checks                                                                                                                                                     |
+| ----------------------- | ----------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-policy`        | Separate OpenShell lane | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                   |
+| `plugin-install`        | Separate OpenShell lane | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                       |
+| `model-ui`              | Yes (Codex)             | OpenClaw, Codex | Real model turn and native browser response.                                                                                                               |
+| `console-secrets`       | Yes (Codex)             | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls. |
+| `git-write`             | No                      | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                |
+| `git-push-denied`       | No                      | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                 |
+| `calendar`              | Yes (Codex)             | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                                                 |
+| `slack`                 | No                      | Codex           | Threaded reply and new root message.                                                                                                                       |
+| `openshell-linear-read` | No                      | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                              |
+| `codex-search-config`   | No                      | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                            |
 
 The [QA matrix test](../../../tests/integration/qa-matrix-real.test.mjs) implements
 these selections; [scenario selection](../../../tests/helpers/qa-selection.mjs)
@@ -66,8 +66,8 @@ The explicit `sandbox-policy` selector exercises shared configuration discovery,
 preview, and the real OpenShell network-policy lifecycle. It requires a prepared
 OpenShell file environment; see [policy proof setup](../openshell-coverage.md#qa-matrix-selector).
 The OpenShell advisory job covers the same workflow automatically. The separate
-`plugin-install` selector verifies dedicated Codex installation, native-process
-restart discovery, and selection removal through the Agent workflow; see
+`plugin-install` selector installs a dedicated Codex plugin, checks that it is
+available after the Codex process restarts, and removes it from the Agent selection; see
 [plugin installation proof](../openshell.md#codex-plugin-installation).
 
 The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
@@ -110,7 +110,7 @@ needed by its other files. First-Agent files do not request a separate CI databa
 in either mode.
 
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
-initial deployment and model calls, nonce-only reuse, native deployment, native
+initial deployment and model calls, reuse after changing only the request nonce, native deployment, native
 model execution, native redeployment, resumed model execution, and cleanup.
 Each record contains only a fixed stage, outcome, and elapsed milliseconds.
 The parent test duration includes its native subtest; do not add them together.
@@ -119,7 +119,7 @@ Configure the [advisory environment](configuration.md#environments) before selec
 See [CI resource preparation](../../flows/github-actions-testing/preparation.md)
 for the OpenShell browser setting and sandbox checks.
 
-Codex timeout diagnostics from `tests/helpers/openshell-kubernetes-real.mjs` report the client phase, pending method names, message and command counts, and whether an action started. They exclude prompts, request identifiers, and payloads. A timeout does not authorize another turn; only the existing final capacity receipt before any action permits a retry.
+Codex timeout diagnostics from `tests/helpers/openshell-kubernetes-real.mjs` report the client phase, pending method names, message and command counts, and whether an action started. They exclude prompts, request identifiers, and payloads. A timeout does not permit a retry. The client must first report that the model was at capacity and that the turn had not started any action.
 
 ## Run it
 
@@ -210,7 +210,7 @@ outcomes expire after seven days. Local installation results use
 `qa-advisory-local-installation-dev-up-k3d`; each OpenShell shard uses
 `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`).
 
-Cleanup stops run-owned Agents/installations. Uncertain credential disposal retains the installation and reports recovery.
+Cleanup stops the Agents and installations created by the run. If credential disposal is uncertain, cleanup keeps the installation and reports the required recovery.
 Keep its broker until sessions are `DISPOSED` without active uses or pending,
 uncertain or auxiliary cleanup. Preserve other runs' resources. For Git TLS
 errors, compare broker DNS with approved endpoints/NetworkPolicy,
@@ -219,7 +219,7 @@ complete disposal, then recreate only this run's installation.
 
 Add stages in [qa-matrix-real.test.mjs](../../../tests/integration/qa-matrix-real.test.mjs),
 following [fixture conventions](../fixtures-and-scenarios.md); register inputs in
-the manifest and workflow. Workers own Agents/cleanup; keep dependent steps
+the manifest and workflow. Workers create Agents and clean them up; keep dependent steps
 sequential and installation-wide changes outside workers. Preserve failure,
 security and disposal assertions.
 

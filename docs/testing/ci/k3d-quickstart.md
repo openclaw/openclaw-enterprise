@@ -8,7 +8,7 @@ credentials.
 
 ## When it runs
 
-Dispatch manually from protected `main`. The workflow also admits pushes to its
+Dispatch manually from protected `main`. The workflow also accepts pushes to its
 named development branch only by the configured author and when the commit
 matches `OCE_QUICKSTART_REVIEWED_SHA`; see the exact workflow condition. It has
 no scheduled trigger and is not part of `CI Required`.
@@ -54,9 +54,9 @@ The job has a 300-minute timeout. Inspect the
 `k3d-quickstart-<run-id>-<attempt>` artifact, retained for seven days. Its
 `status.json` records the source commit and stage outcomes; successful stages
 also supply browser, Linear, Git, image-digest, and cleanup receipts.
-The receipt collector checks that the successful journey used one Agent and
+The receipt collection script checks that the completed workflow used one Agent and
 the same conversation before and after redeployment. Missing or skipped stages
-do not establish a completed journey.
+do not count as a completed workflow.
 
 If Git cleanup fails, installation teardown is withheld so that credential
 retirement can be investigated. Private input files are removed by an
@@ -68,8 +68,8 @@ It does not establish coverage for every installation type or provider.
 
 ## Files
 
-- [Quickstart workflow](../../../.github/workflows/k3d-quickstart-e2e.yml): eligibility, browser journey, assertions, and recovery evidence. It does not select a test-lane manifest.
-- [Stage wrapper](../../../scripts/ci/k3d-quickstart/private-step.sh): execution with private stage output.
+- [Quickstart workflow](../../../.github/workflows/k3d-quickstart-e2e.yml): eligibility, browser workflow, assertions, and recovery evidence. It does not select a test-lane manifest.
+- [Private stage runner](../../../scripts/ci/k3d-quickstart/private-step.sh): execution with private stage output.
 - [Receipt collector](../../../scripts/ci/k3d-quickstart/receipts.sh): stage outcomes, cross-stage assertions, and upload selection.
 - [Scenario scripts](../../../scripts/ci/k3d-quickstart): setup, browser, Linear, Git, and cleanup implementations linked above.
 - [Local Setup guide](../../guides/deploy/local-setup.md) and [first-Agent guide](../../guides/deploy/deploy-first-agent.md): user procedures exercised by the workflow.
