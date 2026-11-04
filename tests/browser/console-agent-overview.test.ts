@@ -186,115 +186,68 @@ function revisionRecord(value: unknown) {
   };
 }
 
-function unknownArray(value: unknown): unknown[] {
-  assert.ok(Array.isArray(value));
-  return value;
-}
-
 function records(value: unknown): Record<string, unknown>[] {
   assert.ok(Array.isArray(value));
   return value.map(record);
 }
 
-type FixtureRole = Record<string, unknown> & {
-  id: string;
-  permissions: { action: string; resourceKind: string }[];
-};
-function isRole(value: unknown): value is FixtureRole {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    Array.isArray(value.permissions) &&
-    value.permissions.every(
-      (permission: unknown) =>
-        isRecord(permission) &&
-        typeof permission.action === "string" &&
-        typeof permission.resourceKind === "string",
-    )
-  );
-}
-function account(value: unknown) {
-  const item = record(value);
-  const credentials = record(item.credentials);
-  assert.ok(typeof credentials.email === "string" && typeof credentials.password === "string");
-  return {
-    principal: identified(item.principal),
-    credentials: { ...credentials, email: credentials.email, password: credentials.password },
-  };
-}
-function adaptFixture(value: unknown) {
-  const fixture = record(value);
-  assert.ok(typeof fixture.origin === "string");
-  const policy = record(fixture.policy);
-  const roles = policy.roles;
-  assert.ok(Array.isArray(roles) && roles.every(isRole));
-  const bindings = policy.bindings;
-  const restrictions = policy.restrictions;
-  assert.ok(Array.isArray(bindings) && Array.isArray(restrictions));
-  const provisionedAccounts = records(fixture.provisionedAccounts).map(account);
-  async function invoke(name: string, ...args: unknown[]): Promise<unknown> {
-    const method = fixture[name];
-    assert.ok(isCallable(method), `Expected fixture method ${name}`);
-    return method.apply(value, args);
-  }
+type LegacyFixture = Awaited<ReturnType<typeof legacyConsoleAppFixture>>;
+
+function adaptFixture(fixture: LegacyFixture) {
   return {
     ...fixture,
-    origin: fixture.origin,
-    policy: {
-      ...policy,
-      roles,
-      bindings: unknownArray(bindings),
-      restrictions: unknownArray(restrictions),
-    },
-    provisionedAccounts,
-    bootstrap: () => invoke("bootstrap"),
-    signIn: (credentials: unknown) => invoke("signIn", credentials),
-    activateRevision: (namespaceId: string, agentId: string, revisionId: string) =>
-      invoke("activateRevision", namespaceId, agentId, revisionId),
-    async createNamespaceMember(
-      label: string,
+    async createAgent(
       namespaceId: string,
-      grants: readonly (readonly [string, string])[],
+      name: string,
+      values: Parameters<typeof fixture.createAgent>[2] = {},
+      options: Parameters<typeof fixture.createAgent>[3] = {},
     ) {
-      return account(await invoke("createNamespaceMember", label, namespaceId, grants));
-    },
-    async createAgent(namespaceId: string, name: string, values: object = {}, options = {}) {
-      return agentRecord(await invoke("createAgent", namespaceId, name, values, options));
+      return agentRecord(await fixture.createAgent(namespaceId, name, values, options));
     },
     async updateAgent(namespaceId: string, agentId: string, body: unknown) {
-      return agentRecord(await invoke("updateAgent", namespaceId, agentId, body));
+      return agentRecord(await fixture.updateAgent(namespaceId, agentId, body));
     },
-    async createNamespace(name: string, options = {}) {
-      return identified(await invoke("createNamespace", name, options));
+    async createNamespace(
+      name: string,
+      options: Parameters<typeof fixture.createNamespace>[1] = {},
+    ) {
+      return identified(await fixture.createNamespace(name, options));
     },
     async createSecret(namespaceId: string, name: string, value: string) {
-      return secretRecord(await invoke("createSecret", namespaceId, name, value));
+      return secretRecord(await fixture.createSecret(namespaceId, name, value));
     },
     async deployAgent(namespaceId: string, agentId: string) {
-      return revisionRecord(await invoke("deployAgent", namespaceId, agentId));
+      return revisionRecord(await fixture.deployAgent(namespaceId, agentId));
     },
     async seedActiveAgentRevision(
       namespaceId: string,
       agentId: string,
       expectedRevisionId?: string,
     ) {
-      const result = record(
-        await invoke("seedActiveAgentRevision", namespaceId, agentId, expectedRevisionId),
+      const result = await fixture.seedActiveAgentRevision(
+        namespaceId,
+        agentId,
+        expectedRevisionId,
       );
       return { agent: agentRecord(result.agent), revision: revisionRecord(result.revision) };
     },
-    async request(method: string, path: string, options = {}) {
-      const result = record(await invoke("request", method, path, options));
-      assert.ok(typeof result.status === "number");
-      return { ...result, status: result.status, data: result.data, body: result.body };
+    async request(
+      method: string,
+      path: string,
+      options: Parameters<typeof fixture.request>[2] = {},
+    ) {
+      const result = await fixture.request(method, path, options);
+      const data: unknown = result.data;
+      const body: unknown = result.body;
+      return { ...result, data, body };
     },
   };
 }
 
 type Fixture = ReturnType<typeof adaptFixture>;
-const fixtureAdapters = new WeakMap<object, Fixture>();
-function typedFixture(value: unknown): Fixture {
-  const source = record(value);
+// The file app reuses its fixture; login's session cache must see one adapter for it.
+const fixtureAdapters = new WeakMap<LegacyFixture, Fixture>();
+function typedFixture(source: LegacyFixture): Fixture {
   const existing = fixtureAdapters.get(source);
   if (existing) {
     return existing;
@@ -303,6 +256,7 @@ function typedFixture(value: unknown): Fixture {
   fixtureAdapters.set(source, fixture);
   return fixture;
 }
+
 type Identified = ReturnType<typeof identified>;
 
 async function createRuntimeAuthFixture(t: TestContext, name: string, options = {}) {
