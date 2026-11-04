@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { accountDeliveryProfileId } from "../account-delivery.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
@@ -908,20 +908,6 @@ export async function assertHarnessAuthAvailable(
       "The Agent harness authentication references an unavailable ServiceAccount.",
     );
   }
-}
-
-/** A profile is shared only by presentations with the same source, sender, and frozen configuration. */
-export function accountDeliveryProfileId(
-  sourceId: string,
-  gatewayId: string,
-  config: Readonly<Record<string, string>>,
-): string {
-  const identity = JSON.stringify([
-    sourceId,
-    gatewayId,
-    Object.entries(config).sort(([a], [b]) => a.localeCompare(b)),
-  ]);
-  return "account-" + createHash("sha256").update(identity).digest("hex");
 }
 
 /** Validate new snapshots against rows held by the insertion transaction, never archive reads. */

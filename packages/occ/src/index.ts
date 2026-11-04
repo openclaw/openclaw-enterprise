@@ -385,9 +385,9 @@ import {
   validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
+import { accountDeliveryProfileId } from "./account-delivery.ts";
 import {
   InMemoryPlatformState,
-  accountDeliveryProfileId,
   type ConnectionTokenCustody,
   type PlatformReadView,
   type PlatformOperation,
