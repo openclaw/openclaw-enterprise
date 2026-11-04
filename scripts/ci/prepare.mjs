@@ -3021,7 +3021,7 @@ async function prepareLane({ lane, statePath, file }) {
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
         buildController: true,
-        buildRuntime: name !== "slack",
+        buildRuntime: true,
       });
       const routing = await prepareGatewayRouting({ cluster, execFile });
       Object.assign(env, routing.env);

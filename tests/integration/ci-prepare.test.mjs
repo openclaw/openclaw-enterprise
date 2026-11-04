@@ -2697,42 +2697,49 @@ if (args[0] === "pull") {
 
   test("Kubernetes runtime image overrides require a complete pair before preparation", async (t) => {
     const root = await fixture(t);
-    for (const selection of ["gateway", "agent", "both", "neither"]) {
-      await t.test(selection, async () => {
-        const statePath = join(root, `${selection}.json`);
-        const partial = selection === "gateway" || selection === "agent";
-        // Partial overrides must fail before state or infrastructure is created.
-        // Complete/default selections reach the existing prepared-state boundary.
-        const result = await runPrepare(
-          [
-            "--lane",
-            "k3d-model",
-            "--state",
-            statePath,
-            ...(partial ? [] : ["--file", "tests/integration/harness-topology-k3d-real.test.mjs"]),
-          ],
-          {
-            OPENAI_API_KEY: "test-openai-key",
-            OCC_TEST_OPENAI_MODEL: "gpt-test",
-            NODE_BASE_IMAGE: nodeBaseImage,
-            OCC_DOCKER_BIN: join(root, "docker-must-not-run"),
-            OCC_TEST_KUBERNETES_GATEWAY_IMAGE:
-              selection === "gateway" || selection === "both" ? immutableImage : "",
-            OCC_TEST_KUBERNETES_AGENT_IMAGE:
-              selection === "agent" || selection === "both" ? immutableImage : "",
-            OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "",
-            OCC_TEST_KUBERNETES_CODEX_IMAGE: "",
-          },
-        );
-        assert.equal(result.status, 1);
-        assertStderrMatch(
-          result.stderr,
-          partial
-            ? /OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together/
-            : /requires a prior prepareLane/,
-        );
-        await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-      });
+    for (const [lane, file] of [
+      ["k3d-model", "tests/integration/harness-topology-k3d-real.test.mjs"],
+      ["slack", "tests/integration/harness-topology-k3d-slack-real.test.mjs"],
+    ]) {
+      for (const selection of ["gateway", "agent", "both", "neither"]) {
+        await t.test(`${lane}: ${selection}`, async () => {
+          const statePath = join(root, `${lane}-${selection}.json`);
+          const partial = selection === "gateway" || selection === "agent";
+          // Partial overrides must fail before state or infrastructure is created.
+          // Complete/default selections reach the existing prepared-state boundary.
+          const result = await runPrepare(
+            ["--lane", lane, "--state", statePath, ...(partial ? [] : ["--file", file])],
+            {
+              OPENAI_API_KEY: "test-openai-key",
+              OCC_TEST_OPENAI_MODEL: "gpt-test",
+              NODE_BASE_IMAGE: nodeBaseImage,
+              ...(lane === "slack"
+                ? {
+                    OCC_TEST_SLACK_CHANNEL_ID: "C0123456789",
+                    OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",
+                    SLACK_APP_TOKEN: "xapp-test",
+                    SLACK_BOT_TOKEN: "xoxb-test",
+                  }
+                : {}),
+              OCC_DOCKER_BIN: join(root, "docker-must-not-run"),
+              OCC_TEST_KUBERNETES_GATEWAY_IMAGE:
+                selection === "gateway" || selection === "both" ? immutableImage : "",
+              OCC_TEST_KUBERNETES_AGENT_IMAGE:
+                selection === "agent" || selection === "both" ? immutableImage : "",
+              OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "",
+              OCC_TEST_KUBERNETES_CODEX_IMAGE: "",
+            },
+          );
+          assert.equal(result.status, 1);
+          assertStderrMatch(
+            result.stderr,
+            partial
+              ? /OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together/
+              : /requires a prior prepareLane/,
+          );
+          await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+        });
+      }
     }
   });
 

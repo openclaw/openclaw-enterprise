@@ -323,7 +323,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: preflight
     if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack'
-    timeout-minutes: 35
+    timeout-minutes: 50
     environment: integration-main
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -346,7 +346,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
-          job-timeout-minutes: 35
+          job-timeout-minutes: 50
 
   openshell:
     name: OpenShell
