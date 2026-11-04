@@ -45,6 +45,16 @@ projected skill through its limited native proxy, with local binding disabled,
 and returns a random title available only at the TLS provider. This needs no
 model or repository credentials.
 
+`node --test tests/integration/public-github-git-transport.test.mjs` checks the
+actual launcher and Git/API helper with verified loopback TLS. Consecutive peer
+roots introduced after installation prove current-tool trust composition;
+wrong-hostname/unrelated roots, malformed trust, redirects and denied capabilities
+remain failures. Cancellation checks remove private operation bundles. These host
+checks do not prove Codex's interception or its upstream store: require the stock
+Linux native clone/API/fetch test and installed Agent qualification separately.
+The OpenShell QA's raw receive-pack request uses the current tool CA bundle only
+to prove the reader's exact HTTP refusal; it is not the managed API caller.
+
 Full Integration's Gateway Routing journey checks the dedicated Agent, managed
 skill, and native network path with a substituted external provider. The Agent
 must return a pull request title absent from its prompt. Record a pass with no

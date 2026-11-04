@@ -151,7 +151,11 @@ async function readWithStockCodex() {
   );
   const publicEnvironment = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([key]) => key.startsWith("OCE_PUBLIC_GITHUB_") || key === "GIT_EXEC_PATH" || key === "PATH",
+      ([key]) =>
+        key.startsWith("OCE_PUBLIC_GITHUB_") ||
+        key === "CODEX_CA_CERTIFICATE" ||
+        key === "GIT_EXEC_PATH" ||
+        key === "PATH",
     ),
   );
   // Separate outer mount/access failures from the native sandbox checks below.
@@ -235,7 +239,7 @@ async function readWithStockCodex() {
     },
   });
   try {
-    // Read the endpoint from the projected managed skill, exactly as an Agent can.
+    // Discover the managed API operation in the projected skill, as an Agent can.
     // The random title is present only at the provider, never in this command or its environment.
     // Fixed stage names locate silent test/set -u exits without logging values,
     // paths, headers or commands. Some shells report status 0 to EXIT on set -u;
@@ -259,10 +263,10 @@ async function readWithStockCodex() {
       'test -r "$GIT_EXEC_PATH/transport.mjs"',
       "stage=clone",
       "git clone --depth=1 https://github.com/Example/Public-Project.git clone",
-      "stage=skill-origin",
-      'origin=$(grep -Eo "https://[0-9.]+:8080" "$1" | head -1)',
+      "stage=managed-skill",
+      'grep -q -- "--api-get" "$1"',
       "stage=api-read",
-      'curl -q --proxy "$HTTP_PROXY" --noproxy "" --cacert "$OCE_PUBLIC_GITHUB_READ_CA_FILE" -H "Authorization: Bearer $OCE_PUBLIC_GITHUB_READ_CAPABILITY" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
+      'node "$GIT_EXEC_PATH/transport.mjs" --api-get "/repos/example/public-project/pulls/27"',
       "printf '\\n'",
       "stage=fetch",
       "git -C clone fetch origin",

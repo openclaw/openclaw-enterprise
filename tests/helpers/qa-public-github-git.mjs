@@ -102,7 +102,7 @@ const state = process.env.OPENCLAW_STATE_DIR || (typeof home === "string" && pat
 if (typeof state !== "string" || !path.isAbsolute(state)) throw new Error("Native HOME or absolute state directory is required.");
 const skillPath = path.join(state, "skills", "public-github-read", "SKILL.md");
 const text = fs.readFileSync(skillPath, "utf8");
-console.log(JSON.stringify({ node: fs.realpathSync(process.execPath), skillPath, managedSkill: text.includes("name: public-github-read") && text.includes("curl -q") }));
+console.log(JSON.stringify({ node: fs.realpathSync(process.execPath), skillPath, managedSkill: text.includes("name: public-github-read") && text.includes('node "$GIT_EXEC_PATH/transport.mjs" --api-get') }));
 `;
 
 // The stock supervisor loads native system roots. Add only this journey's
@@ -395,9 +395,8 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
       "/bin/sh",
       "-eu",
       "-c",
-      'command -v curl >&2; curl -q -sS --noproxy "" --fail-with-body --cacert "$OCE_PUBLIC_GITHUB_READ_CA_FILE" -H "Authorization: Bearer $OCE_PUBLIC_GITHUB_READ_CAPABILITY" "$1/repos/octocat/Hello-World/contents"',
+      'node "$GIT_EXEC_PATH/transport.mjs" --api-get "/repos/octocat/Hello-World/contents"',
       "public-github-api",
-      `https://${reader.peer.address}:8080`,
     ]);
     assert.equal(
       api.exitCode,
@@ -409,7 +408,6 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
     );
     await f.record("public-git-native-api", {
       node: nativePaths.node,
-      curl: api.stderr.trim().split("\n")[0],
       managedSkill: true,
       skillPath: nativePaths.skillPath,
       knownReadme: true,
@@ -426,11 +424,13 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
     await denied(first, "ls-remote", "https://github.com/github/gitignore.git");
     // Require the reader's own upload-pack-only response, not GitHub's inevitable
     // anonymous-write rejection. Native push failure alone does not identify it.
+    // This raw transport probe requires the current tool CA bundle; managed API
+    // reads above use the shared helper and do not accept this Git route.
     const receivePack = await executeCommand(first, [
       "/bin/sh",
       "-eu",
       "-c",
-      'curl -q -sS --noproxy "" --cacert "$OCE_PUBLIC_GITHUB_READ_CA_FILE" -H "Authorization: Bearer $OCE_PUBLIC_GITHUB_READ_CAPABILITY" --write-out "\\n%{http_code}" "$1/git/octocat/hello-world.git/info/refs?service=git-receive-pack"',
+      'test -n "$CODEX_CA_CERTIFICATE"; test -r "$CODEX_CA_CERTIFICATE"; curl -q -sS --noproxy "" --cacert "$CODEX_CA_CERTIFICATE" -H "Authorization: Bearer $OCE_PUBLIC_GITHUB_READ_CAPABILITY" --write-out "\\n%{http_code}" "$1/git/octocat/hello-world.git/info/refs?service=git-receive-pack"',
       "public-github-write-refusal",
       `https://${reader.peer.address}:8080`,
     ]);

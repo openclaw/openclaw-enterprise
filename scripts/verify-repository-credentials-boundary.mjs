@@ -79,15 +79,24 @@ const reviewedImports = {
   "drivers/repo/github/public-read/git.ts": { "node:https": ["request"] },
   "drivers/repo/github/public-read/transport.mjs": {
     "node:child_process": ["spawn", "spawnSync"],
+    // Parse only public certificates; bounded regular-file reads and operation
+    // cleanup compose tool trust without changing system or installed material.
+    "node:crypto": ["X509Certificate"],
     // Private nonsecret HOME subtree: refuse symlinks and foreign ownership
     // before generating material projected read-only to the native sandbox.
     "node:fs": [
       "chmodSync",
+      "closeSync",
+      "constants",
+      "fstatSync",
       "lstatSync",
       "mkdirSync",
       "mkdtempSync",
+      "openSync",
       "readFileSync",
+      "readSync",
       "realpathSync",
+      "rmSync",
       "writeFileSync",
     ],
   },
@@ -367,6 +376,7 @@ const reviewedProcessMembers = {
     "stderr",
     "exitCode",
     "on",
+    "once",
     "off",
     "kill",
     "pid",

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-04"
-last_updated_session: authoring-run/8b8f9ff8-9b16-4565-95de-0868a92b35d5
+last_updated_session: authoring-run/91dbe88d-f8ca-4112-959d-27f83555e7bb
 ---
 
 # Public GitHub read flow
@@ -31,7 +31,10 @@ graph TD
   Lease --> Runtime["Project public files<br/>Deliver private capability"]
   Runtime --> Git["Ordinary GitHub URL"]
   Git -->|bound repository| Protected["Original authenticated Git"]
-  Git -->|public candidate| Reader["Reader authenticates revision<br/>Checks both scopes"]
+  Git -->|public candidate| Trust["Compose current tool trust<br/>Verify proxy and reader TLS"]
+  Runtime --> API["Managed API GET"]
+  API --> Trust
+  Trust --> Reader["Reader authenticates revision<br/>Checks both scopes"]
   Reader -->|denied| Failure["No provider request"]
   Reader -->|allowed and public| Github["Anonymous GitHub request<br/>Stream result within limits"]
   Lease -->|authorized maintenance| Lease
@@ -101,9 +104,15 @@ The admitted launcher places helper source, combined public CA, transport config
 and Git wrappers below `$HOME/.oce-public-git`, in private generated children.
 It rejects symlinked, foreign-owned or nonprivate material parents. The Gateway's
 runtime translator grants read-only access to that exact parent in ordinary
-Codex's limited filesystem profile; temporary files outside the profile are not
-runtime dependencies. OpenShell keeps its existing outer boundary and uses its
+Codex's limited filesystem profile; startup dependencies do not rely on temporary
+files outside that grant. OpenShell keeps its existing outer boundary and uses its
 relocated HOME. No capability value is written under this parent.
+
+`transport.mjs:installMaterial` preserves inherited public trust and exposes the
+reader CA through `CODEX_CA_CERTIFICATE` before Codex starts. This configures the
+selected process's upstream TLS roots, not system trust or a per-origin CA store.
+Codex later supplies its interception CA to tools through standard CA variables.
+Exact destination policy and hostname verification remain required on both legs.
 
 ### 3. Route ordinary Git URLs and enforce public scope
 
@@ -117,10 +126,25 @@ never falls back to GitHub.
 For public requests, the child clears inherited command-line Git configuration
 and applies settings for the exact rewritten URL. It resets headers, cookies,
 credential helpers and Git-configured proxies; verifies TLS with combined reader
-and inherited trust; disables redirects and interactive credentials; and preserves
+and current tool trust; disables redirects and interactive credentials; and preserves
 the environment proxy route used by OpenShell. An inherited client TLS identity
 causes refusal before contact. Configuration and public material files contain
 no capability value.
+
+`transport.mjs:operationTrust` composes public certificates at each operation,
+including a fresh tool interception CA. Selected CA files are regular files of
+at most 1 MiB each; total input is at most 4 MiB and the deduplicated bundle at
+most 1 MiB. Missing, malformed or oversized trust fails closed. Standard hash
+comments and underlined certificate labels are accepted; keys are rejected.
+The operation uses a private mode-0700 temporary directory and mode-0400 bundle,
+removed on completion, failure or handled cancellation. Uncatchable process
+termination relies on runtime temporary-state removal.
+
+`transport.mjs:apiGet` accepts only reader-relative `/repos/` GET routes. The
+managed skill invokes it without supplying an origin, proxy, credentials or curl
+options. The helper uses configured authorization, ignores curl configuration,
+refuses redirects and buffers responses within the reader's 12 MiB/24-second
+limits. Its capability header goes through child stdin, never a temporary file.
 
 `apps/controller/src/drivers/repo/github/public-read/server.ts:createPublicGithubReadServer`
 authenticates before quota admission, deduplication or provider requests. API and
@@ -162,7 +186,7 @@ that the owning runtime has stopped.
 
 - Compare the saved service descriptor, reader policy, public trust and exact peer before checking runtime files. Never print capability Secrets or provider values.
 - `/healthz` proves readable input; the revision digest proves the mounted authorization row. Neither proves GitHub reachability or a successful Agent clone.
-- Controlled native Git/TLS tests prove clone, fetch, scope denial, withdrawal and transport isolation. Kubernetes store tests prove Secret ownership, restart and permanent withdrawal.
+- Controlled Git/TLS tests prove clone, fetch, scope denial, withdrawal and operation-time trust composition, including consecutive TLS roots and cleanup. They do not prove Codex interception; the stock Linux image and installed Agent gates remain separate. Kubernetes store tests prove Secret ownership, restart and permanent withdrawal.
 - PostgreSQL worker tests prove independent maintenance after Git expiry and refusal after IAM loss. Installed Podman/k3d/OpenShell Agent proof remains required before deployment qualification.
 
 ## Related docs
@@ -175,6 +199,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 10:18: Compose startup and current tool trust for both TLS legs and shared Git/API callers (accompanying correction; authoring-run/91dbe88d-f8ca-4112-959d-27f83555e7bb - 2370e9e3ea36dc1ff5930c0f3538693c6c1aa0ad)
 
 - 2026-11-04 08:23: Preserve generic service snapshots through PostgreSQL admission and reload (authoring-run/8b8f9ff8-9b16-4565-95de-0868a92b35d5 - 8207d68072a390cf615fc2170fe89c8b90c3758e)
 

@@ -192,3 +192,4 @@ appear in Installation startup YAML.
 - `PUBLIC_GITHUB_READ_TLS_CERT_FILE`, `PUBLIC_GITHUB_READ_TLS_KEY_FILE` — Reader leaf certificate and key files. Production startup requires both.
 - `PUBLIC_GITHUB_READ_POLICY_FILE` — Current Installation all/list ceiling JSON file.
 - `PUBLIC_GITHUB_READ_AUTHORIZATIONS_FILE` — Compute-managed authorization registry JSON file, mounted as an updating directory.
+- `CODEX_CA_CERTIFICATE` — The admitted public-reader launcher preserves existing certificate material and adds reader trust for the selected Codex process. Runtime-owned output, not a new operator setting; see [managed read trust](../public-github-reads.md#use-and-troubleshoot).

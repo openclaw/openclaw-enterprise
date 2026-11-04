@@ -103,6 +103,8 @@ The instrumented local run reproduced a startup refusal before Agent creation: t
 
 PostgreSQL admission and reload now preserve generic Compute service descriptors and exact Sandbox acknowledgement. Real database regression cases cover ordinary and protected selected-reader admission, malformed snapshot refusal, and legacy revisions without service grants. This persistence proof does not qualify an installed Agent.
 
+The native TLS correction seeds selected-process Codex upstream trust while preserving inherited roots, then composes current tool trust for each managed Git/API operation. The managed skill and regular callers share the bounded helper. Controlled TLS tests cover fresh roots and refusal/cleanup boundaries; the [read flow](../../docs/flows/public-github-reads.md) owns the current lifecycle. Exact-source Linux native and installed OpenShell qualification remain pending; source checks do not complete Task 4.
+
 ## Manual Notes
 
 ## Changelog

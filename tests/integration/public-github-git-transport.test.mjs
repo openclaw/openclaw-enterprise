@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -43,7 +43,7 @@ const material = JSON.parse(require("node:fs").readFileSync(process.env.OCE_PUBL
 const pluginRuntime = {manifest:{publicGithubRead:material}};
 ${materialSetup}
 console.log(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-  key.startsWith("OCE_PUBLIC_GITHUB_") || key === "GIT_EXEC_PATH" || key === "PATH"))));`;
+  key.startsWith("OCE_PUBLIC_GITHUB_") || key === "CODEX_CA_CERTIFICATE" || key === "GIT_EXEC_PATH" || key === "PATH"))));`;
 
 test("managed Git transport clones and fetches ordinary URLs while the reader enforces revision scope", async (t) => {
   const directory = await temporaryDirectory(t, "public-github-transport-");
@@ -174,6 +174,22 @@ async function materialFixture(t) {
   const directory = await temporaryDirectory(t, "public-github-material-");
   const provider = await startPublicGithubProvider(t, { directory });
   await provider.createRepository("example/project");
+  const apiTls = await selfSigned(directory, { name: "api-provider" });
+  const apiRequests = [];
+  const api = https.createServer(apiTls, (req, res) => {
+    apiRequests.push(req.url);
+    assert.equal(req.headers.authorization, undefined);
+    assert.equal(req.headers.cookie, undefined);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify(
+        req.url.endsWith("/pulls/27")
+          ? { title: "provider-only-pull" }
+          : { full_name: "example/project", private: false },
+      ),
+    );
+  });
+  const apiPort = await listen(t, api);
   const connect = https.Agent.prototype.createConnection;
   t.mock.method(https.Agent.prototype, "createConnection", function (options, callback) {
     return connect.call(
@@ -181,9 +197,9 @@ async function materialFixture(t) {
       {
         ...options,
         host: "127.0.0.1",
-        port: provider.port,
-        servername: "github.com",
-        ca: provider.cert,
+        port: options.host === "api.github.com" ? apiPort : provider.port,
+        servername: options.host === "api.github.com" ? "localhost" : "github.com",
+        ca: options.host === "api.github.com" ? apiTls.cert : provider.cert,
       },
       callback,
     );
@@ -254,6 +270,7 @@ async function materialFixture(t) {
     reader,
     endpoint,
     requests,
+    apiRequests,
     materialPath,
     capabilityPath,
     baseEnv,
@@ -326,6 +343,220 @@ test("launcher material installs real capabilities, inherited trust, and protect
       ).includes(placeholder),
     );
   }
+});
+
+test("managed Git and API compose current tool trust and retain startup proxy roots", async (t) => {
+  const fixture = await materialFixture(t);
+  const startup = await selfSigned(fixture.directory, { name: "startup" });
+  await writeFile(
+    startup.certPath,
+    "# Public CA bundle\nStartup root\n============\n" + startup.cert,
+  );
+  const env = await fixture.install({ CODEX_CA_CERTIFICATE: startup.certPath });
+  const startupBundle = await readFile(env.CODEX_CA_CERTIFICATE, "utf8");
+  assert.ok(startupBundle.includes(startup.cert));
+  assert.ok(startupBundle.includes(fixture.serviceTls.cert));
+  const api = (context, route = "/repos/example/project/pulls/27") =>
+    execute(process.execPath, [path.join(env.GIT_EXEC_PATH, "transport.mjs"), "--api-get", route], {
+      env: context,
+      timeout: 30_000,
+    });
+  // A later tool TLS peer uses a fresh root after installation, as interception
+  // does. This is real caller TLS, not proof of Codex's native proxy lifecycle.
+  for (const name of ["first-tool", "second-tool"]) {
+    const current = await selfSigned(fixture.directory, { name });
+    await writeFile(
+      current.certPath,
+      "## Tool CA bundle\nCurrent peer\n============\n" + current.cert,
+    );
+    fixture.reader.setSecureContext(current);
+    const context = { ...env, GIT_SSL_CAINFO: current.certPath, CURL_CA_BUNDLE: current.certPath };
+    await fixture.git(context, "ls-remote", "https://github.com/example/project.git");
+    assert.equal(JSON.parse((await api(context)).stdout).title, "provider-only-pull");
+    assert.equal(
+      (await readdir(fixture.directory)).some((entry) => entry.startsWith("oce-public-trust-")),
+      false,
+    );
+    const before = fixture.apiRequests.length + fixture.provider.requests.length;
+    await assert.rejects(fixture.git(env, "ls-remote", "https://github.com/example/project.git"), {
+      code: 128,
+    });
+    await assert.rejects(api(env), { code: 60 });
+    assert.equal(fixture.apiRequests.length + fixture.provider.requests.length, before);
+    assert.equal(
+      (await readdir(fixture.directory)).some((entry) => entry.startsWith("oce-public-trust-")),
+      false,
+    );
+  }
+});
+
+test("managed API refuses unsafe routes, TLS peers, redirects and capabilities without provider contact", async (t) => {
+  const fixture = await materialFixture(t);
+  const env = await fixture.install();
+  const api = (route, overrides = {}) =>
+    execute(process.execPath, [path.join(env.GIT_EXEC_PATH, "transport.mjs"), "--api-get", route], {
+      env: { ...env, ...overrides },
+      timeout: 30_000,
+    });
+  const route = "/repos/example/project/pulls/27";
+  for (const invalid of [
+    "https://unrelated.invalid/",
+    "//unrelated.invalid/",
+    "/repos/example/../project",
+    "/repos/example/%2e%2e/project",
+    "/git/example/project.git/info/refs",
+    route + "#fragment",
+    route + "\nHeader: value",
+    "--insecure",
+  ]) {
+    await assert.rejects(api(invalid), { code: 1 });
+  }
+  assert.equal(fixture.requests.length, 0);
+  // Curl's ambient config must not add identities, cookies or weaken verification.
+  await writeFile(
+    path.join(fixture.directory, ".curlrc"),
+    'insecure\nheader = "X-Unrelated: forbidden"\ncookie = "unrelated=forbidden"\n',
+  );
+  assert.equal(JSON.parse((await api(route)).stdout).title, "provider-only-pull");
+  assert.equal(fixture.requests.at(-1).headers["x-unrelated"], undefined);
+  assert.equal(fixture.requests.at(-1).headers.cookie, undefined);
+  const before = fixture.apiRequests.length;
+  await assert.rejects(
+    api(route, {
+      OCE_PUBLIC_GITHUB_READ_CAPABILITY:
+        "revision-material." + Buffer.alloc(32, 7).toString("base64url"),
+    }),
+    { code: 22 },
+  );
+  assert.equal(fixture.apiRequests.length, before);
+  const wrongHost = await selfSigned(fixture.directory, {
+    name: "wrong-host",
+    subjectAltName: "DNS:unrelated.invalid",
+  });
+  fixture.reader.setSecureContext(wrongHost);
+  await assert.rejects(api(route, { CURL_CA_BUNDLE: wrongHost.certPath }), { code: 60 });
+  await assert.rejects(
+    fixture.git(
+      { ...env, GIT_SSL_CAINFO: wrongHost.certPath },
+      "ls-remote",
+      "https://github.com/example/project.git",
+    ),
+    { code: 128 },
+  );
+  assert.equal(fixture.apiRequests.length, before);
+  fixture.reader.setSecureContext(fixture.serviceTls);
+  // Even an otherwise trusted reader cannot redirect the capability elsewhere.
+  let redirected = 0;
+  const destination = https.createServer(fixture.serviceTls, (_req, res) => {
+    redirected++;
+    res.end("forbidden");
+  });
+  const port = await listen(t, destination);
+  fixture.reader.removeAllListeners("request");
+  fixture.reader.on("request", (_req, res) =>
+    res.writeHead(302, { location: `https://127.0.0.1:${port}/destination` }).end(),
+  );
+  await assert.rejects(api(route), { code: 1 });
+  assert.equal(redirected, 0);
+  assert.equal(fixture.apiRequests.length, before);
+});
+
+test("managed trust fails closed on invalid inputs and removes operation files after failure and cancellation", async (t) => {
+  const fixture = await materialFixture(t);
+  const env = await fixture.install();
+  const script = path.join(env.GIT_EXEC_PATH, "transport.mjs");
+  const args = [script, "--api-get", "/repos/example/project/pulls/27"];
+  const invalid = path.join(fixture.directory, "invalid-ca.pem");
+  const clean = async () =>
+    assert.equal(
+      (await readdir(fixture.directory)).some((entry) => entry.startsWith("oce-public-trust-")),
+      false,
+    );
+  for (const contents of [
+    "not a certificate",
+    fixture.serviceTls.cert + fixture.serviceTls.key,
+    Buffer.alloc(1024 * 1024 + 1, 32),
+  ]) {
+    await writeFile(invalid, contents);
+    await assert.rejects(
+      execute(process.execPath, args, { env: { ...env, CURL_CA_BUNDLE: invalid } }),
+      { code: 1 },
+    );
+    await assert.rejects(
+      fixture.git(
+        { ...env, CURL_CA_BUNDLE: invalid },
+        "ls-remote",
+        "https://github.com/example/project.git",
+      ),
+      { code: 128 },
+    );
+    await clean();
+  }
+  for (const file of [path.join(fixture.directory, "absent.pem"), fixture.directory]) {
+    await assert.rejects(
+      execute(process.execPath, args, { env: { ...env, SSL_CERT_FILE: file } }),
+      { code: 1 },
+    );
+  }
+  await writeFile(invalid, fixture.serviceTls.cert);
+  await chmod(invalid, 0o000);
+  await assert.rejects(
+    execute(process.execPath, args, { env: { ...env, CURL_CA_BUNDLE: invalid } }),
+    { code: 1 },
+  );
+  await chmod(invalid, 0o600);
+  // Individually bounded inputs must not evade the combined input budget.
+  const many = {};
+  for (const key of [
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+    "PIP_CERT",
+    "BUNDLE_SSL_CA_CERT",
+    "CARGO_HTTP_CAINFO",
+  ]) {
+    const file = path.join(fixture.directory, key + ".pem");
+    await writeFile(
+      file,
+      fixture.serviceTls.cert.repeat(
+        Math.floor((1024 * 1024) / Buffer.byteLength(fixture.serviceTls.cert)),
+      ),
+    );
+    many[key] = file;
+  }
+  await assert.rejects(execute(process.execPath, args, { env: { ...env, ...many } }), { code: 1 });
+  await clean();
+  assert.equal(fixture.requests.length, 0);
+  await assert.rejects(execute(process.execPath, args, { env: { ...env, PATH: "/nonexistent" } }), {
+    code: 1,
+  });
+  await clean();
+  // Hold a real TLS response, cancel the helper, and observe its private bundle
+  // removed after it terminates the child. No fake command or test-only hook.
+  fixture.reader.removeAllListeners("request");
+  let arrived;
+  const request = new Promise((resolve) => {
+    arrived = resolve;
+  });
+  fixture.reader.on("request", (_req, _res) => arrived());
+  const child = spawn(process.execPath, args, { env, stdio: "ignore" });
+  const closed = new Promise((resolve) =>
+    child.once("close", (code, signal) => resolve({ code, signal })),
+  );
+  t.after(() => child.kill("SIGKILL"));
+  await Promise.race([
+    request,
+    closed.then(() => {
+      throw new Error("API child exited before cancellation");
+    }),
+  ]);
+  assert.equal(
+    (await readdir(fixture.directory)).filter((entry) => entry.startsWith("oce-public-trust-"))
+      .length,
+    1,
+  );
+  child.kill("SIGTERM");
+  assert.equal((await closed).signal, "SIGTERM");
+  await clean();
 });
 
 test("material installation refuses redirected or shared private-home parents", async (t) => {

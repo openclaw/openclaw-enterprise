@@ -184,6 +184,27 @@ contain 1–100 ASCII letters, digits, periods, underscores or hyphens, excludin
 incomplete. Relative pagination links preserve supported filters and cursors;
 unrepresentable links or pages beyond 1000 report an incomplete listing.
 
+Use the skill's managed GET command for API reads:
+
+```sh
+node "$GIT_EXEC_PATH/transport.mjs" --api-get '/repos/OWNER/REPOSITORY/contents'
+```
+
+The helper fixes the reader origin, authorization and proxy route. It combines
+reader trust with the current tool CA files for every Git/API operation. Do not
+replace this with a static curl CA selection: it can omit Codex's later
+interception CA. Selected CA files must contain public PEM certificates, with
+optional hash comments or underlined certificate labels, and be at most 1 MiB
+each. Combined input is limited to 4 MiB; the deduplicated bundle to 1 MiB.
+Missing, malformed or oversized trust fails before contact.
+
+The launcher also supplies reader trust through `CODEX_CA_CERTIFICATE` before
+Codex starts so its proxy can verify the upstream reader. This affects only the
+selected process, but its upstream root store is shared across allowed
+destinations, not cryptographically restricted to one origin. Exact endpoint
+selection, destination policy and hostname verification still apply. System
+trust and the separate OpenShell supervisor trust procedure are unchanged.
+
 A `401` indicates an absent, invalid or expired capability; a scope denial is
 `403`. A `404` can mean missing or private. GitHub visibility is checked for each
 read. Anonymous quota is shared at the egress IP. `429` gives a retry delay; a busy

@@ -3987,12 +3987,21 @@ test("public Git QA uses the provider-prepared OpenShell base token and executio
 test("public Git QA discovers its managed skill beneath native HOME or state directory", async (t) => {
   const { mkdir } = await import("node:fs/promises");
   const { publicGithubManagedSkillScript } = await import("../helpers/qa-public-github-git.mjs");
+  const { publicGithubReadSkill } =
+    await import("../../apps/controller/src/drivers/repo/github/public-read/codex.ts");
   const directory = await temporaryDirectory(t, "qa-openshell-home-");
   const home = join(directory, "sandbox", ".openclaw-runtime", "home");
   for (const state of [join(home, ".openclaw"), join(directory, "configured-state")]) {
     const skill = join(state, "skills", "public-github-read", "SKILL.md");
     await mkdir(join(state, "skills", "public-github-read"), { recursive: true });
-    await writeFile(skill, "name: public-github-read\nUse curl -q for the managed reader.\n");
+    await writeFile(
+      skill,
+      publicGithubReadSkill({
+        address: "127.0.0.1",
+        endpoint: "https://127.0.0.1:8080",
+        skillPath: skill,
+      }),
+    );
     const env = { ...process.env, HOME: home };
     delete env.OPENCLAW_STATE_DIR;
     if (state !== join(home, ".openclaw")) {

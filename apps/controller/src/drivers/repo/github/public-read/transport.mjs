@@ -1,16 +1,239 @@
 import { spawn, spawnSync } from "node:child_process";
+import { X509Certificate } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
+  constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// Codex composes these startup inputs with its process-local interception CA.
+// Read them again inside each tool invocation, before selecting child TLS trust.
+const caEnvironment = [
+  "CODEX_CA_CERTIFICATE",
+  "SSL_CERT_FILE",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "NODE_EXTRA_CA_CERTS",
+  "GIT_SSL_CAINFO",
+  "CARGO_HTTP_CAINFO",
+  "PIP_CERT",
+  "BUNDLE_SSL_CA_CERT",
+  "npm_config_cafile",
+  "NPM_CONFIG_CAFILE",
+];
+const trustLimit = 4 * 1024 * 1024;
+let trustDirectory;
+
+function readTrust(path, limit) {
+  if (!isAbsolute(path ?? "")) {
+    throw new Error("TLS trust requires an absolute file path.");
+  }
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > limit) {
+      throw new Error("TLS trust exceeds its file bound.");
+    }
+    const bytes = Buffer.alloc(limit + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(fd, bytes, length, bytes.length - length, null);
+      if (count === 0) {
+        break;
+      }
+      length += count;
+    }
+    if (length > limit) {
+      throw new Error("TLS trust exceeds its file bound.");
+    }
+    return bytes.subarray(0, length).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function composeTrust(readerTrust) {
+  const certificates = new Map();
+  let size = 0;
+  function append(pem) {
+    size += Buffer.byteLength(pem);
+    if (size > trustLimit) {
+      throw new Error("TLS trust exceeds its aggregate bound.");
+    }
+    // Mozilla/curl and system bundles can carry # comments and underlined
+    // certificate labels. Strip only that metadata; reject all other payloads.
+    const certificatesOnly = pem
+      .replace(/^#[^\r\n]*(?:\r?\n|$)/gm, "")
+      .replace(/^[^\r\n]{1,256}\r?\n={3,}\r?\n/gm, "");
+    const blocks = certificatesOnly.match(
+      /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+    );
+    if (
+      !blocks?.length ||
+      certificatesOnly
+        .replace(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g, "")
+        .trim()
+    ) {
+      throw new Error("TLS trust must contain only public certificates.");
+    }
+    for (const block of blocks) {
+      const certificate = new X509Certificate(block);
+      certificates.set(certificate.raw.toString("base64"), certificate.toString());
+    }
+  }
+  append(readerTrust);
+  for (const file of new Set(caEnvironment.map((key) => process.env[key]).filter(Boolean))) {
+    append(readTrust(file, 1024 * 1024));
+  }
+  const bundle = [...certificates.values()].join("\n");
+  if (Buffer.byteLength(bundle) > 1024 * 1024) {
+    throw new Error("TLS trust exceeds its bundle bound.");
+  }
+  return bundle;
+}
+
+function operationTrust(config) {
+  const bundle = composeTrust(readTrust(config.caPath, 1024 * 1024));
+  trustDirectory = mkdtempSync(join(tmpdir(), "oce-public-trust-"));
+  chmodSync(trustDirectory, 0o700);
+  const file = join(trustDirectory, "ca.pem");
+  writeFileSync(file, bundle, { mode: 0o400, flag: "wx" });
+  return file;
+}
+
+function cleanupTrust() {
+  if (trustDirectory !== undefined) {
+    rmSync(trustDirectory, { recursive: true, force: true });
+    trustDirectory = undefined;
+  }
+}
+process.once("exit", cleanupTrust);
+
+function authorization(config) {
+  return capability(
+    config.capabilityEnvironment
+      ? process.env.OCE_PUBLIC_GITHUB_READ_CAPABILITY
+      : readFileSync(config.capabilityPath, "utf8").trim(),
+    Boolean(config.capabilityEnvironment),
+  );
+}
+
+function runChild(binary, args, env, input) {
+  const child = spawn(binary, args, {
+    env,
+    stdio: input === undefined ? "inherit" : ["pipe", "pipe", "inherit"],
+  });
+  const chunks = [];
+  let responseSize = 0;
+  if (input !== undefined) {
+    // A child that refuses before reading headers can close stdin early; its
+    // error/close result below remains the authority for operation failure.
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
+    child.stdout.on("data", (chunk) => {
+      responseSize += chunk.length;
+      if (responseSize > 12 * 1024 * 1024 + 4) {
+        child.kill("SIGTERM");
+      } else {
+        chunks.push(chunk);
+      }
+    });
+  }
+  const term = () => child.kill("SIGTERM");
+  const interrupt = () => child.kill("SIGINT");
+  process.on("SIGTERM", term);
+  process.on("SIGINT", interrupt);
+  child.once("error", () => {
+    process.stderr.write("The managed public reader child could not start.\n");
+    process.exitCode = 1;
+  });
+  child.once("close", (code, signal) => {
+    process.off("SIGTERM", term);
+    process.off("SIGINT", interrupt);
+    cleanupTrust();
+    if (signal) {
+      process.kill(process.pid, signal);
+    } else if (input !== undefined && code === 0) {
+      const response = Buffer.concat(chunks);
+      if (/^\n2\d\d$/.test(response.subarray(-4).toString("ascii"))) {
+        process.stdout.write(response.subarray(0, -4));
+      } else {
+        process.stderr.write("The managed public API read refused the response.\n");
+        process.exitCode = 1;
+      }
+    } else {
+      process.exitCode = code !== null && code >= 0 ? code : 1;
+    }
+  });
+}
+
+function apiGet(route) {
+  // Origin-form only; the reader validates supported resources and query fields.
+  // Reject dot/encoded path segments before URL normalization can change them.
+  if (typeof route !== "string" || route.length > 2048 || /[^\x21-\x7e]|[\\#]/.test(route)) {
+    throw new Error("A reader-relative API route is required.");
+  }
+  const [pathname, , extra] = route.split("?");
+  if (
+    extra !== undefined ||
+    !/^\/repos\/[a-z\d][a-z\d-]{0,38}\/[a-z\d._-]{1,100}(?:\/[a-z\d._-]{1,100})*$/i.test(
+      pathname,
+    ) ||
+    pathname.split("/").some((part) => part === "." || part === "..")
+  ) {
+    throw new Error("A reader-relative API route is required.");
+  }
+  const config = configuration(process.env.OCE_PUBLIC_GITHUB_READ_CONFIG);
+  const token = authorization(config);
+  const ca = operationTrust(config);
+  const env = { ...process.env };
+  const proxy = env.https_proxy ?? env.HTTPS_PROXY ?? env.all_proxy ?? env.ALL_PROXY ?? "";
+  // No curl config, redirects, ambient client identity, cookies or caller options.
+  // Header input keeps the capability out of argv and temporary files.
+  runChild(
+    "curl",
+    [
+      "-q",
+      "--silent",
+      "--show-error",
+      "--fail-with-body",
+      "--globoff",
+      "--proto",
+      "=https",
+      "--max-time",
+      "24",
+      "--max-filesize",
+      String(12 * 1024 * 1024),
+      "--proxy",
+      proxy,
+      "--noproxy",
+      "",
+      "--cacert",
+      ca,
+      "--header",
+      "@-",
+      "--write-out",
+      "\n%{http_code}",
+      "--url",
+      config.endpoint + route,
+    ],
+    env,
+    "Authorization: Bearer " + token + "\n",
+  );
+}
 
 function configuration(path) {
   if (!isAbsolute(path ?? "")) {
@@ -161,12 +384,7 @@ function remoteHelper(remote, originalUrl) {
       (bound) => bound.toLowerCase() === repository,
     )
   ) {
-    const token = capability(
-      config.capabilityEnvironment
-        ? process.env.OCE_PUBLIC_GITHUB_READ_CAPABILITY
-        : readFileSync(config.capabilityPath, "utf8").trim(),
-      Boolean(config.capabilityEnvironment),
-    );
+    const token = authorization(config);
     url = `${config.endpoint}/git/${repository}.git`;
     // Git's -c parameters outrank GIT_CONFIG_COUNT, and URL-specific options
     // outrank origin-wide ones. Reset command configuration, then constrain the
@@ -210,7 +428,8 @@ function remoteHelper(remote, originalUrl) {
     ) {
       throw new Error("Inherited Git TLS client identities are unavailable for public reads.");
     }
-    env.GIT_SSL_CAINFO = config.caPath;
+    const ca = operationTrust(config);
+    env.GIT_SSL_CAINFO = ca;
     // Keep the Sandbox's environment proxy route; inherited Git config cannot
     // replace it with a proxy that receives repository credentials.
     const proxy = env.https_proxy ?? env.HTTPS_PROXY ?? env.all_proxy ?? env.ALL_PROXY ?? "";
@@ -219,7 +438,7 @@ function remoteHelper(remote, originalUrl) {
       ["http.extraHeader", ""],
       [`${http}.extraHeader`, ""],
       [`${http}.extraHeader`, `Authorization: Bearer ${token}`],
-      [`${http}.sslCAInfo`, config.caPath],
+      [`${http}.sslCAInfo`, ca],
       [`${http}.sslCAPath`, env.GIT_EXEC_PATH],
       [`${http}.sslVerify`, "true"],
       [`${http}.followRedirects`, "false"],
@@ -236,25 +455,7 @@ function remoteHelper(remote, originalUrl) {
     ]);
     env.GIT_TERMINAL_PROMPT = "0";
   }
-  const child = spawn(helper, [remote, url], { env, stdio: "inherit" });
-  const forward = (signal) => child.kill(signal);
-  const term = () => forward("SIGTERM");
-  const interrupt = () => forward("SIGINT");
-  process.on("SIGTERM", term);
-  process.on("SIGINT", interrupt);
-  child.once("error", () => {
-    process.stderr.write("The image Git HTTP helper could not start.\n");
-    process.exitCode = 1;
-  });
-  child.once("exit", (code, signal) => {
-    process.off("SIGTERM", term);
-    process.off("SIGINT", interrupt);
-    if (signal) {
-      process.kill(process.pid, signal);
-    } else {
-      process.exitCode = code ?? 1;
-    }
-  });
+  runChild(helper, [remote, url], env);
 }
 
 function installMaterial(materialPath) {
@@ -298,18 +499,7 @@ function installMaterial(materialPath) {
   }
   const directory = mkdtempSync(join(root, "material-"));
   chmodSync(directory, 0o700);
-  let ca = material.caBundle;
-  for (const file of new Set(
-    [process.env.GIT_SSL_CAINFO, process.env.SSL_CERT_FILE, process.env.NODE_EXTRA_CA_CERTS].filter(
-      Boolean,
-    ),
-  )) {
-    const inherited = readFileSync(file);
-    if (inherited.length > 1024 * 1024) {
-      throw new Error("Inherited TLS trust exceeds its bound.");
-    }
-    ca += "\n" + inherited.toString("utf8");
-  }
+  const ca = composeTrust(material.caBundle);
   const caPath = join(directory, "ca.pem");
   writeFileSync(caPath, ca, { mode: 0o400 });
   const token =
@@ -332,6 +522,7 @@ function installMaterial(materialPath) {
   return {
     ...install(configPath, directory, script),
     OCE_PUBLIC_GITHUB_READ_CA_FILE: caPath,
+    CODEX_CA_CERTIFICATE: caPath,
     OCE_PUBLIC_GITHUB_READ_CAPABILITY: token,
   };
 }
@@ -343,6 +534,8 @@ try {
     process.stdout.write(JSON.stringify(install(process.argv[3])) + "\n");
   } else if (process.argv[2] === "--remote-helper" && process.argv.length === 5) {
     remoteHelper(process.argv[3], process.argv[4]);
+  } else if (process.argv[2] === "--api-get" && process.argv.length === 4) {
+    apiGet(process.argv[3]);
   } else {
     throw new Error("Unsupported managed Git invocation.");
   }

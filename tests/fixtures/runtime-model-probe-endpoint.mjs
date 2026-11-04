@@ -164,7 +164,7 @@ function answerEvents(model, text) {
 }
 
 // The smoke's model stand-in requests a real Codex tool call. The command reads
-// the endpoint from the managed skill; the provider-only title is never supplied
+// the managed API operation from the skill; the provider-only title is never supplied
 // to the model or the command before the tool output returns.
 function publicReadEvents(model, request) {
   if (!publicReadJourney) {
@@ -199,8 +199,8 @@ function publicReadEvents(model, request) {
     "set -eu",
     'test "$CODEX_NETWORK_PROXY_ACTIVE" = 1',
     'test "$CODEX_NETWORK_ALLOW_LOCAL_BINDING" = 0',
-    'origin=$(grep -Eo "https://[0-9.]+:8080" /home/node/.openclaw/skills/public-github-read/SKILL.md | head -1)',
-    'curl -q --proxy "$HTTP_PROXY" --noproxy "" --cacert "$OCE_PUBLIC_GITHUB_READ_CA_FILE" -H "Authorization: Bearer $OCE_PUBLIC_GITHUB_READ_CAPABILITY" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
+    'grep -q -- "--api-get" /home/node/.openclaw/skills/public-github-read/SKILL.md',
+    'node "$GIT_EXEC_PATH/transport.mjs" --api-get "/repos/example/public-project/pulls/27"',
   ].join("\n");
   const item = {
     type: "function_call",

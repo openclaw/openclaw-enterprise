@@ -624,6 +624,18 @@ test("credential source boundary rejects new raw capabilities in the real source
       "drivers/repo/github/public-read/server.ts",
     ],
     [
+      "public tool trust parsing cannot acquire private key parsing",
+      'import { createPrivateKey } from "node:crypto";',
+      /unreviewed runtime import from node:crypto/,
+      "drivers/repo/github/public-read/transport.mjs",
+    ],
+    [
+      "public tool trust cleanup does not admit arbitrary file mutation capabilities",
+      'import { truncateSync } from "node:fs";',
+      /unreviewed runtime import from node:fs/,
+      "drivers/repo/github/public-read/transport.mjs",
+    ],
+    [
       "new composition source is scanned",
       'import { request } from "node:http";',
       /unreviewed runtime import from node:http/,
