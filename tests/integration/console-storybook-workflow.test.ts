@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { SandboxNetworkPolicyConfiguration } from "../../packages/contracts/src/sandbox-policy.ts";
+import networkPolicySchema from "../../scripts/console-storybook/public/network-policy-schema.mts";
 
 const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = controller("@kubernetes/client-node");
@@ -103,4 +105,11 @@ test("shared preview inputs select the Storybook build only on pushes to main", 
       assert.equal(selects(path, workflow.on.push.paths), true, "push to main");
     });
   }
+});
+
+test("the Storybook network policy schema matches the production JSON wire schema", () => {
+  const wireSchema: unknown = JSON.parse(
+    JSON.stringify(SandboxNetworkPolicyConfiguration.configurationSchema),
+  );
+  assert.deepEqual(networkPolicySchema, wireSchema);
 });
