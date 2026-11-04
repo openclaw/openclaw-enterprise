@@ -4,24 +4,20 @@ tags: [human_verified]
 
 # Set up OCE locally with OpenShell and Codex
 
-Install OpenClaw Enterprise (OCE) in a private k3d cluster and verify a Codex Agent conversation before [adding Git](../repository-credentials/openshell-git-push.md) or [plugins](../integrations/codex-plugins.md).
+Install OpenClaw Enterprise (OCE) in a private k3d cluster.
 
-[Create your first Agent](#5-create-the-configuration-and-agent) after installation.
+After installation, [deploy your first Agent](deploy-first-agent.md).
 
 ## Before you start
 
 - Install the [local Kubernetes tools on Linux](local-kubernetes-tools.md). Use Bash, curl and jq.
-- [Create a ChatGPT workspace service account and generate its Codex access token](https://learn.chatgpt.com/docs/enterprise/service-accounts).
 - Use the generated OCE service key for REST and the [private Gateway routing key and CA](workspace-routing.md) for WebSocket access. Keep credential files outside the checkout with owner-only permissions.
 - The operator needs permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
 
-Set your token file and assigned model in Bash:
+Set the model ID your credential can use. Choose the credential when you deploy the Agent.
 
 ```bash
-# Use the file containing the raw token, not the token itself.
-export CODEX_TOKEN_FILE=/secure/oce/codex-token
 export MODEL=gpt-5.4
-test -r "$CODEX_TOKEN_FILE" && test -s "$CODEX_TOKEN_FILE"
 ```
 
 ## 1. Prepare the quickstart files and select a matching release
@@ -82,6 +78,8 @@ else
   unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 fi
 
+# If the configured pnpm store is read-only, first select a private writable store:
+# export pnpm_config_store_dir="$RUN_DIR/pnpm-store"
 # Build the CLI from the matching source and wait for k3d bootstrap.
 pnpm install --frozen-lockfile
 go build -trimpath -o bin/occ ./cmd/occ
@@ -135,7 +133,7 @@ helm --kube-context "$CONTEXT" upgrade openclaw-enterprise deploy/helm/openclaw-
 
 If your network intercepts HTTPS, [install its approved public CA in the OpenShell supervisor](local-openshell-images.md#trust-an-upstream-ca-on-local-k3d).
 
-## 4. Connect to the API and register the model credential
+## 4. Prepare the operator session
 
 Set the common operator session inputs. REST paths are relative to the API root; the helper sends authenticated requests through the selected API Pod. It does not use the browser URL for API authentication.
 
@@ -168,6 +166,6 @@ TENANT_NAMESPACE=$(kube get ns -l "openclaw.dev/namespace=$namespace" -o json |
 
 The [operator session reference](quickstart-session.md) defines these inputs and helpers. Keep tracing off. If a mutation times out, read back its state before retrying.
 
-<Snippet file="../../snippets/openshell-quickstart/agent-setup.md" />
+Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 
-Continue to [Add Git](../repository-credentials/openshell-git-push.md) or [Add Plugin](../integrations/codex-plugins.md). To finish, [delete the Agent](quickstart-delete-agent.md), then [clean up this installation](local-cleanup.md).
+To finish, [delete the Agent](quickstart-delete-agent.md), then [clean up this installation](local-cleanup.md).

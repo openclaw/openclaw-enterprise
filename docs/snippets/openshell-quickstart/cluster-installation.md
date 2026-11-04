@@ -73,7 +73,7 @@ done
 
 Expect the target database, login and `t` for each connection.
 
-Provision the other rendered Secret references: distinct OCE authentication/private-routing keys and OpenShell client TLS. The routing key is named `occ`. Prepare the bootstrap PVC once with UID/GID 1000 and mode 0700. Follow [system Secret and bootstrap preparation](production-installation.md#provision-system-secrets-and-install) using namespace `oce-system` and your selected storage class.
+Provision distinct OCE authentication and [private-routing credentials](workspace-routing.md#configure-private-routing), plus OpenShell client TLS. Create `occ-private-gateway-key` with key `occ` in `oce-system` before installing OCC. Prepare the bootstrap PVC once with UID/GID 1000 and mode 0700. Follow [system Secret and bootstrap preparation](production-installation.md#provision-system-secrets-and-install) using namespace `oce-system` and your selected storage class.
 
 ```bash
 # Allow the initialization hook to reach the DNS Service VIP.
@@ -119,7 +119,7 @@ source "$RUN_DIR/platform.sh"
 namespace=$(request GET /namespaces | jq -er '[.data[]|select(.name=="default")]|select(length==1)|first.id')
 base="/namespaces/$namespace"
 export ENVOY_IMAGE
-bash "$assets/trusted-envoy-peers.sh" > "$RUN_DIR/trusted-peers.json"
+bash "$assets/trusted-envoy-peers.sh" "$RUN_DIR/kubeconfig" > "$RUN_DIR/trusted-peers.json"
 jq --slurpfile peers "$RUN_DIR/trusted-peers.json" \
   '.drivers.compute.configuration.network.gatewayTrustedProxyCidrs=$peers[0]' \
   "$RUN_DIR/installation.json" > "$RUN_DIR/installation-with-peers.json"
@@ -128,10 +128,30 @@ kubectl -n "$PLATFORM_NS" create secret generic "$peer_secret" \
   --from-file="installation.yaml=$RUN_DIR/installation-with-peers.json"
 jq --arg secret "$peer_secret" '.installation.secretName=$secret | .worker.replicaCount=1' \
   "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
+# The API registers model credentials and the worker manages workspaces through OpenShell.
+kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
+  jq -e --arg ns "$PLATFORM_NS" --arg release "$RELEASE" '
+    .spec as $svc | select($svc.type=="ClusterIP" and ($svc.selector|length)>0
+      and ($svc.clusterIP|test("^[0-9]+(\\.[0-9]+){3}$"))) |
+    [$svc.ports[] | select(.protocol=="TCP" and .port==8080)] | select(length==1) | first as $port |
+    {apiVersion:"networking.k8s.io/v1", kind:"NetworkPolicy",
+     metadata:{namespace:$ns,name:"oce-controller-openshell-management"},
+     spec:{podSelector:{matchLabels:{"app.kubernetes.io/name":"openclaw-enterprise",
+       "app.kubernetes.io/instance":$release},matchExpressions:[
+       {key:"app.kubernetes.io/component",operator:"In",values:["api","worker"]}]},
+       policyTypes:["Egress"],egress:[
+         {to:[{ipBlock:{cidr:($svc.clusterIP+"/32")}}],ports:[{protocol:"TCP",port:8080}]},
+         {to:[{podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
+       ]}}' > "$RUN_DIR/management-policy.json"
+kube create -f "$RUN_DIR/management-policy.json"
 helm upgrade oce "$OCE_CHART" -n "$PLATFORM_NS" -f "$RUN_DIR/worker.json" --wait
 cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
 cp "$RUN_DIR/worker.json" "$VALUES_FILE"
 ```
+
+Agent deployment pairs these egress rules with management ingress for the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Keep both directions. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Supervisor grants apply per tenant and Gateway grants per Agent. To verify ownership-based withdrawal, inspect every grant for that namespace. For a live Agent in its verified namespace, stage the current platform helper and renderer and run `deployment_network` in its saved session to replace a name-only grant.
+
+If namespace ownership has changed or the Agent’s Gateway Service is gone, withdraw the obsolete grant directly. Inspect its source namespace, Agent or supervisor Pod selector, and destination management selector with `kube -n "$PLATFORM_NS" get networkpolicy "$policy" -o yaml`. Match them to the recorded owner. Confirm a separate restrictive ingress policy still selects the management Pods so deleting the grant keeps them isolated. Then run `kube -n "$PLATFORM_NS" delete networkpolicy "$policy"` with the verified policy name. Preserve grants for other tenants and callers.
 
 Wait for Compute to create the backing namespace, then apply these [tenant bindings](production-agents.md#prepare-each-namespace). Verify restricted Pod Security; grant the ordinary worker role last.
 

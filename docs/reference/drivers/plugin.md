@@ -114,6 +114,12 @@ CredentialSource returns `409 RESOURCE_CONFLICT`. A Secret backend ownership
 mismatch returns `404`, a denied grant returns
 `403`, and an unavailable backend returns a safe dependency error. A rejected PAT returns
 `PLUGIN_DISCOVERY_CREDENTIALS_REJECTED`; rotate the Secret and retry.
+For details of an ID that a bundled catalog (`occ-plugin` or the curated
+`codex-plugin` catalog) does not offer, the Driver throws the `unknownPlugin`
+refusal that admission uses. OCC returns `400 INVALID_REQUEST` that names the ID
+and, if the ID only omits the version, the versioned ID. Hosted Codex discovery
+does not recognize unknown IDs: a provider error returns the unavailable
+discovery error.
 
 Discovery does not store catalog results and returns `Cache-Control: no-store`.
 Authorization denials emit `authorization_denial` audit events.

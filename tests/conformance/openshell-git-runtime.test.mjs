@@ -8,7 +8,10 @@ import {
   OpenShellGitRuntime,
   openShellGitRouteReadiness,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import { OpenShellPreparedGitProviderError } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import {
+  OpenShellPreparedGitProvider,
+  OpenShellPreparedGitProviderError,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
@@ -2275,6 +2278,7 @@ async function observedGitRoute(
   legacy = false,
   removeBinding = false,
   changedStartup = false,
+  repositoryOnly = false,
 ) {
   const previewRegistry = validateGitHubRepositoryRegistry(
     {
@@ -2284,16 +2288,17 @@ async function observedGitRoute(
       appId: registry.appId,
       githubInstallationId: registry.githubInstallationId,
       maximumDurationSeconds: 86400,
-      repositories: mandatoryPolicy
-        ? registry.repositories.map((r) => ({
-            ...r,
-            namespaces: r.namespaces.map((n) => ({
-              namespaceId: n.namespaceId,
-              profiles: ["github-repository"],
-              permissions: { metadata: "read", contents: "write" },
-            })),
-          }))
-        : registry.repositories,
+      repositories:
+        mandatoryPolicy && !repositoryOnly
+          ? registry.repositories.map((r) => ({
+              ...r,
+              namespaces: r.namespaces.map((n) => ({
+                namespaceId: n.namespaceId,
+                profiles: ["github-repository"],
+                permissions: { metadata: "read", contents: "write" },
+              })),
+            }))
+          : registry.repositories,
       installationAccess: {
         repositoryRef: "installation",
         namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
@@ -2303,10 +2308,11 @@ async function observedGitRoute(
   );
   const resolve = createGitHubRepositoryDeliveryResolver(previewRegistry);
   const f = fixture({ store: routeStore(), resolveDelivery: resolve });
+  const repositoryProfile = repositoryOnly ? "git-write" : "github-repository";
   const binding = resolveGitHubRepositoryBinding(previewRegistry, {
     namespaceId: "namespace-a",
     repositoryRef: mandatoryPolicy ? registry.repositories[0].repositoryRef : "installation",
-    profile: mandatoryPolicy ? "github-repository" : "github-installation",
+    profile: mandatoryPolicy ? repositoryProfile : "github-installation",
   });
   const credentials = { ...f.revision.repositoryCredentials, bindings: [binding] };
   const revision = {
@@ -2336,7 +2342,16 @@ async function observedGitRoute(
   f.entry.binding.provider = "oce-github-installation-" + "a".repeat(32);
   f.entry.binding.executionId = revision.id;
   const runtimeProvider = "oce-runtime-" + "a".repeat(16);
-  const gitRule = { name: "git", endpoints: [{ host: "github.com", port: 443 }] };
+  const gitRule = new OpenShellPreparedGitProvider(f.client, {
+    ...f.entry.authorization.delivery,
+    workspace: f.sandbox.workspace,
+    workspaceId: "workspace-id",
+    sandbox: f.sandbox.name,
+    executionId: revision.id,
+    gitOrigin: "https://github.com",
+    apiOrigin: "https://api.github.com",
+    binaries: ["/usr/bin/git"],
+  }).previewNetworkRule();
   f.provider.previewNetworkRule = () => gitRule;
   f.provider.settlePreviewReceipt = async () => true;
   let environment;
@@ -2383,7 +2398,7 @@ async function observedGitRoute(
   f.client.getSandboxConfig = async () => ({
     policy: {
       network_policies: {
-        git: gitRule,
+        [gitRule.name]: gitRule,
         _provider_openai: {
           name: "_provider_openai",
           endpoints: [{ host: "api.openai.com", port: 443 }],
@@ -2411,18 +2426,20 @@ async function observedGitRoute(
       },
     ],
   });
-  f.owner.material = {
-    ...binding.grant,
-    value: "synthetic-installation-token",
-    scope: mandatoryPolicy ? "github-repository" : "github-installation",
-    ...(mandatoryPolicy && { repositories: resolve(revision).delivery.repositories }),
-    installationId: registry.githubInstallationId,
-    expiresAt: new Date(Date.now() + 600_000).toISOString(),
-    sessionId: "preview-session",
-    preparationAttemptId: "preview-attempt",
-    materialVersion: "preview-material",
-    apiOrigin: "https://api.github.com",
-  };
+  if (!repositoryOnly) {
+    f.owner.material = {
+      ...binding.grant,
+      value: "synthetic-installation-token",
+      scope: mandatoryPolicy ? "github-repository" : "github-installation",
+      ...(mandatoryPolicy && { repositories: resolve(revision).delivery.repositories }),
+      installationId: registry.githubInstallationId,
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      sessionId: "preview-session",
+      preparationAttemptId: "preview-attempt",
+      materialVersion: "preview-material",
+      apiOrigin: "https://api.github.com",
+    };
+  }
   {
     const config = f.client.getSandboxConfig;
     for (const fields of [
@@ -2465,28 +2482,41 @@ async function observedGitRoute(
   assert.ok(preview.recipient, "the original bootstrap observation qualifies the recipient");
   const startupId = randomUUID();
   const signal = AbortSignal.timeout(5000);
-  const probe = async (path) => ({
-    startupId,
-    probePath: path,
-    reasonCode: preview.deny(
-      {
-        ...f.identity,
-        target: {
-          reportedScheme: "https",
-          host: "github.com",
-          port: 443,
-          method: "GET",
-          path,
-          query: "service=git-upload-pack",
+  let probePath;
+  const probe = async (path) => {
+    probePath = path;
+    return {
+      startupId,
+      probePath: path,
+      reasonCode: preview.deny(
+        {
+          ...f.identity,
+          target: {
+            reportedScheme: "https",
+            host: "github.com",
+            port: 443,
+            method: "GET",
+            path,
+            query: "service=git-upload-pack",
+          },
+          headers: [],
+          body: new Uint8Array(),
+          deadlineAt: new Date(Date.now() + 5000).toISOString(),
         },
-        headers: [],
-        body: new Uint8Array(),
-        deadlineAt: new Date(Date.now() + 5000).toISOString(),
-      },
-      f.sandbox.id,
-    ),
-  });
+        f.sandbox.id,
+      ),
+    };
+  };
   assert.equal(await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe), "held");
+  if (repositoryOnly) {
+    // The stock endpoint checks this prefix before invoking the mandatory hook.
+    // A hook callback alone cannot prove that the held request can reach it.
+    const endpointPath = gitRule.endpoints.find((endpoint) => endpoint.host === "github.com").path;
+    assert.ok(
+      probePath.startsWith(endpointPath.slice(0, -2)),
+      "the held probe must stay within the admitted repository endpoint",
+    );
+  }
   if (changedStartup) {
     const replacementStartup = randomUUID();
     const before = { material: f.calls.material, rotate: f.calls.rotate };
@@ -2637,6 +2667,9 @@ for (const policy of [undefined, 2, 3]) {
       await observedGitRoute(policy, true);
     }
     await observedGitRoute(policy);
+    if (policy) {
+      await observedGitRoute(policy, false, false, false, true);
+    }
     await observedGitRoute(policy, false, true);
     await observedGitRoute(policy, false, false, true);
   });

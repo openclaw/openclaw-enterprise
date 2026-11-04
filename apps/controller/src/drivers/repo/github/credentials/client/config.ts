@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, open, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { RepositoryCredentialSessionFiles } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../../credentials/client-contracts.ts";
@@ -113,6 +113,29 @@ export function encodeRepositoryCredentialSessionFiles(
   };
 }
 
+/** Refuse an unpublishable client directory: a missing or shared parent, or an existing target. */
+export async function assertClientDirectoryAvailable(directory: string): Promise<void> {
+  const target = resolve(directory);
+  try {
+    await assertPrivateDirectory(dirname(target));
+  } catch (error) {
+    // A fixed code for a missing parent or ancestor; the OS message repeats the path.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("client-parent-missing", { cause: error });
+    }
+    throw error;
+  }
+  try {
+    await lstat(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  throw new Error("client-directory-exists");
+}
+
 /** Publish a new private directory atomically; existing sessions are never overwritten. */
 export async function writeClientConfiguration(
   opened: RepositoryCredentialSessionResult,
@@ -122,21 +145,19 @@ export async function writeClientConfiguration(
   const contents = encodeRepositoryCredentialSessionFiles(opened, publicCa);
   const target = resolve(directory);
   const parent = dirname(target);
-  await assertPrivateDirectory(parent);
-  try {
-    await lstat(target);
-    throw new Error("client-directory-exists");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
+  await assertClientDirectoryAvailable(target);
   const staging = await mkdtemp(join(parent, ".session-"));
+  const gh = join(staging, "gh");
   try {
-    await mkdir(join(staging, "gh"), { mode: 0o700 });
+    // mkdtemp and open apply the process umask. A mask such as 0400 removes
+    // owner read, the publish still succeeds, and the next read is EACCES.
+    await chmod(staging, 0o700);
+    await mkdir(gh, { mode: 0o700 });
+    await chmod(gh, 0o700);
     for (const [name, content] of Object.entries(contents)) {
       const file = await open(join(staging, name), "wx", 0o600);
       try {
+        await file.chmod(0o600);
         await file.writeFile(content);
         await file.sync();
       } finally {
@@ -145,6 +166,8 @@ export async function writeClientConfiguration(
     }
     await rename(staging, target);
   } catch (error) {
+    await chmod(gh, 0o700).catch(() => undefined);
+    await chmod(staging, 0o700).catch(() => undefined);
     await rm(staging, { recursive: true, force: true });
     throw error;
   }

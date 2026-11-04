@@ -11,7 +11,7 @@ import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { skipperInstalledProof, skipperImageScope } from "./skipper-release.ts";
-import { imageConfigDigest } from "./image-config-digest.mjs";
+import { imageConfigDigest } from "./image-config-digest.ts";
 import { createInterface } from "node:readline";
 import {
   kubectl,

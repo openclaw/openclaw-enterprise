@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-02
-last_updated_session: 01a19d8b-33a8-76c0-9817-521a7f10626d
+updated: 2026-11-04
+last_updated_session: authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9
 ---
 
 # Compose development flow
@@ -310,6 +310,8 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 08:53: Remove retired local authority provisioning and retain authenticated Gateway readiness and recorded-state cleanup. (authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9 - d0421ca03868db643faa8ba2d13e784fc637cc2e)
 
 - 2026-11-02 13:31: Separate default authenticated Gateway bootstrap from opt-in static inference; accompanying launcher changes. (01a19d8b-33a8-76c0-9817-521a7f10626d - f5bef23f5796c2c3421189c79e6508079257cfd5)
 

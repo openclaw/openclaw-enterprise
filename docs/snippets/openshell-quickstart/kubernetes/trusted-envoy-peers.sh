@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Print only the ready, pinned private Envoy data-plane Pod addresses for this installation.
 set -euo pipefail
-k=(kubectl --kubeconfig "${KUBECONFIG:?}" --context "${CONTEXT:?}" -n envoy-gateway-system)
+k=(kubectl --kubeconfig "${1:?Supply the private run kubeconfig}" --context "${CONTEXT:?}" -n envoy-gateway-system)
 selector=$("${k[@]}" get service occ-gateway-362888b35fce -o json |
   jq -er 'select(.metadata.labels["gateway.envoyproxy.io/owning-gateway-name"]=="oce-agent-gateways"
     and .metadata.labels["gateway.envoyproxy.io/owning-gateway-namespace"]=="oce-system") |

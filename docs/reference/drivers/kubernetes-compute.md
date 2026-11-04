@@ -71,7 +71,8 @@ Harness configuration selects the Agent's execution topology:
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,
   token-limit, input, reasoning, and cost metadata. Custom endpoints require
-  endpoint-bound `credential_source` authentication and HTTPS on port 443 ending
+  the [shared provider](kubernetes-compute/model-provider.md), endpoint-bound
+  `credential_source` authentication and HTTPS on port 443 ending
   in `/v1`. Secret-backed keys require `https://api.openai.com/v1`. Model URLs
   reject credentials, queries, fragments and wildcards.
 

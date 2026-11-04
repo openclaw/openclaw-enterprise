@@ -8,7 +8,9 @@ Use the Console or API to discover Linear, enable it on your existing Codex Agen
 
 ## Before you start
 
-Complete one installation setup path: [local k3d](../deploy/local-setup.md), [Kubernetes](../deploy/kubernetes-setup.md), or [Amazon EKS](../deploy/eks-openshell-setup.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of setup. Use the same Agent and model Secret. The service account must already have an authorized Linear connection. Selecting a plugin does not authorize a new connection.
+Use a ChatGPT service account with Codex plugins enabled and an authorized Linear connection. Deploy the Agent with that account’s token. An OpenAI API key cannot access plugins.
+
+Complete [Deploy your first Agent](../deploy/deploy-first-agent.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of the guide. Use the same Agent and model Secret. Selecting a plugin does not authorize a new connection.
 
 ## 1. Enable Linear and redeploy
 
@@ -112,7 +114,7 @@ linear_marker=$(cat "$RUN_DIR/linear-marker")
 linear_run_id=$(cat "$RUN_DIR/linear-run-id")
 
 read -r gateway_ns gateway_pod < <(
-  kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get pods -A \
+  kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get pods -n "${TENANT_NAMESPACE:?Resume the operator session}" \
     -l "openclaw.dev/agent=$agent" -o json |
     jq -er '[.items[] | select(.metadata.deletionTimestamp==null and
       (.metadata.name|startswith("gateway-")) and
