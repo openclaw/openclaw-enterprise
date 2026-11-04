@@ -6391,7 +6391,7 @@ export class OpenClawController {
     const { provider, ref, inject, normalizeConfig, assertCurrent } = selection;
     const reference = references[provider.sourceType.secrets[0]!.name];
     assertCurrent();
-    Reflect.apply(normalizeConfig, provider, [config]);
+    const normalized = Reflect.apply(normalizeConfig, provider, [config]);
     // An Installation property: a Proxy that cannot serve the source refuses it before any
     // Secret is read (finding 2360).
     await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
@@ -6413,6 +6413,17 @@ export class OpenClawController {
     if (!secretDriver.readCredentialInput) {
       throw new DependencyUnavailableError(
         "Protected egress requires authoritative versioned Secret reads.",
+      );
+    }
+    // A Secret's immutable authorization binds the value to one destination. The Proxy source
+    // declares its destination through the normalized configuration, so compare before reading
+    // the value; operate permission alone must not redirect an authorized key.
+    if (
+      secret.authorizedEndpoint !== undefined &&
+      normalized.authorized_base_url !== secret.authorizedEndpoint
+    ) {
+      throw new SecretBindingValidationError(
+        "The credential source Secret does not authorize its destination. Supply an endpoint-specific key.",
       );
     }
     const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);

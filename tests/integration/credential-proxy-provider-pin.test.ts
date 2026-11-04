@@ -1008,3 +1008,45 @@ test("live static registration losing to DELETE preserves its deleting row witho
   assert.equal(retained?.ownerCapability, source.ownerCapability);
   assert.equal(retained?.driverId, source.driverId);
 });
+
+test("a Proxy source refuses a Secret authorized for another destination", async (t) => {
+  const f = await staticEgressFixture(t, { physicalPlacement: true });
+  assert.ok("egress" in f);
+  const otherEndpoint = "https://other.example.test/v1";
+  const other = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
+    body: {
+      name: "other-destination",
+      value: "synthetic-other-key",
+      authorizedEndpoint: otherEndpoint,
+    },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const refused = await f.request("POST", f.path, {
+    body: {
+      name: "mismatched-destination",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: other.data.ref },
+    },
+  });
+  assert.equal(refused.status, 400, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "INVALID_REQUEST");
+  assert.match(refused.body.error.message, /does not authorize its destination/u);
+
+  // Replacement runs the same admission: an accepted source cannot take the mismatched Secret.
+  const accepted = await f.request("POST", f.path, {
+    body: {
+      name: "accepted-destination",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
+  });
+  assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
+  const replaced = await f.request("PATCH", `${f.path}/${accepted.data.id}`, {
+    body: { secrets: { api_key: other.data.ref } },
+  });
+  assert.equal(replaced.status, 400, JSON.stringify(replaced.body));
+  assert.equal(replaced.body.error.code, "INVALID_REQUEST");
+  assert.match(replaced.body.error.message, /does not authorize its destination/u);
+});
