@@ -18,8 +18,8 @@ const half = body.length / 2;
 // Serves `body` on 127.0.0.1. `plan(request number)` picks how each request
 // is answered: "fast" sends it at once and honors a `Range: bytes=N-` resume
 // with 206; "no-range" sends it whole and ignores Range; "half" sends the
-// first half, then holds the connection open; "trickle" sends 4 bytes per
-// second and never finishes.
+// first half, then holds the connection open; "trickle" sends the next 4 bytes
+// each second and never finishes.
 async function withServer(plan, run) {
   const requests = [];
   const ranges = [];
@@ -53,7 +53,11 @@ async function withServer(plan, run) {
       response.write(body.subarray(0, half));
       return;
     }
-    const timer = setInterval(() => response.write(body.subarray(0, 4)), 1000);
+    let sent = 0;
+    const timer = setInterval(() => {
+      response.write(body.subarray(sent, sent + 4));
+      sent += 4;
+    }, 1000);
     timers.add(timer);
     response.on("close", () => clearInterval(timer));
   });
@@ -154,7 +158,7 @@ test("a server that ignores the resume request gets a fresh download", async () 
   await withServer(
     (n) => (n === 1 ? "half" : n === 2 ? "no-range" : "fast"),
     async ({ url, destination, requests, ranges }) => {
-      const result = await download(url, destination, sha256, cappedAttempt);
+      const result = await download(url, destination, sha256, { DOWNLOAD_PINNED_MAX_TIME: "3" });
       assert.equal(result.code, 0, result.stderr);
       assert.equal(requests.length, 3);
       assert.match(result.stderr, /Server refused to resume at byte 8192; starting over/);
