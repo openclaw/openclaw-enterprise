@@ -240,9 +240,10 @@ import {
   withComputeAbortSignal,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
-import type {
-  GatewayNodeEnrollment,
-  NodeSetupObservation,
+import {
+  isWorkspaceNodeDeviceId,
+  type GatewayNodeEnrollment,
+  type NodeSetupObservation,
 } from "../../../gateway/node-enrollment-client.ts";
 import {
   PLUGIN_RUNTIME_DIRECTORY,
@@ -1393,8 +1394,25 @@ const WORKSPACE_NODE_PAIRING_WAIT_MS = 8_000;
 // Remembered setups whose pairing budget is partly or fully spent. Forgetting
 // one (a full map, or a controller restart) only grants that setup one more wait.
 const MAX_WORKSPACE_NODE_PAIRING_BUDGETS = 1_024;
-const WORKSPACE_NODE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
-// The node Secret key naming the revision whose node readiness last saw paired or connected;
+
+function recordedWorkspaceNodeDeviceId(encoded: unknown): string | undefined {
+  if (encoded === undefined) {
+    return undefined;
+  }
+  const bytes = typeof encoded === "string" ? Buffer.from(encoded, "base64") : undefined;
+  const deviceId = bytes?.toString("utf8");
+  if (
+    typeof encoded !== "string" ||
+    !isWorkspaceNodeDeviceId(deviceId) ||
+    Buffer.from(deviceId, "utf8").toString("base64").replace(/=+$/u, "") !==
+      encoded.replace(/=+$/u, "")
+  ) {
+    throw new DependencyUnavailableError("The workspace node device ID is invalid.");
+  }
+  return deviceId;
+}
+
+// The node Secret key naming the revision whose node readiness last saw connected;
 // the device itself is the Agent's (finding 1671).
 const WORKSPACE_NODE_ENROLLED_REVISION_KEY = "enrolledRevisionId";
 const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
@@ -7148,9 +7166,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         this.getGatewayEndpoint(revision) !== undefined &&
         node === undefined
       ) {
-        // Provider-owned Harnesses receive node setup through their immutable
-        // provisioning request. Keep their provider and Sandbox absent until
-        // the first fail-closed Gateway has issued that exact setup material.
+        // Provider-owned Harnesses receive node setup through their provisioning
+        // request. Wait for initial setup or renewal before calling the provider.
         return incomplete();
       }
       if (nodeSetupFile) {
@@ -7425,8 +7442,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         };
         if (!(await this.workspaceNodeReady(revision, namespace))) {
           if (nativeRuntime !== undefined && !nodeEnrolled) {
-            // The readiness check may have recorded the device of a node that enrolled but
-            // is not connected yet: the exposure goes now, not on the next pass.
+            // Only a connection attributes the Agent's device to this revision.
+            // A disconnected setup receipt must keep startup diagnostics available.
             if (await this.workspaceNodeEnrolled(revision, namespace)) {
               await withdrawProviderExposure();
             } else if (sandboxDriver.harnessStatus !== undefined) {
@@ -11785,7 +11802,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (name === undefined || deviceId === undefined) {
       return;
     }
-    if (!WORKSPACE_NODE_ID_PATTERN.test(deviceId)) {
+    if (!isWorkspaceNodeDeviceId(deviceId)) {
       throw new DependencyUnavailableError("The workspace node device ID is invalid.");
     }
     const document = JSON.stringify({ revisionId: revision.id, deviceId });
@@ -11975,14 +11992,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.reconcileWorkspaceNodeNetworkPolicy(revision, namespace);
     }
     const existing = await this.getOwned("Secret", name, namespace, ownership);
+    const decode = (value: string | undefined) =>
+      Buffer.from(value ?? "", "base64").toString("utf8");
     const expired =
-      existing !== undefined &&
-      Number(Buffer.from(existing.data?.expiresAtMs ?? "", "base64").toString("utf8")) <=
-        Date.now();
-    // A file-delivered node that has paired reconnects with its saved device
-    // token and no setup code (readiness removed the code), so it needs no new setup.
-    const paired =
-      setupFile && Buffer.from(existing?.data?.deviceId ?? "", "base64").toString("utf8") !== "";
+      existing !== undefined && Number(decode(existing.data?.expiresAtMs)) <= Date.now();
+    // Both delivery modes reconnect with the saved device token after pairing.
+    // Setup expiry must not re-enroll a recorded device or restart its workload.
+    const paired = recordedWorkspaceNodeDeviceId(existing?.data?.deviceId) !== undefined;
     if (existing === undefined || (expired && !paired)) {
       const gatewayOwnership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
       const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
@@ -12001,31 +12017,34 @@ export class KubernetesComputeDriver implements ComputeDriver {
       // An expired setup may already have been redeemed before readiness
       // recorded its device. Re-minting would drop that completion, so record
       // the device from the old setup first.
-      const decode = (value: string | undefined) =>
-        Buffer.from(value ?? "", "base64").toString("utf8");
       const observed =
-        existing !== undefined && !decode(existing.data?.deviceId)
+        existing !== undefined && !paired
           ? await enrollment.observeSetup(
               url,
               required(decode(existing.data?.setupId), "Workspace node setup ID"),
               this.operationSignal(),
             )
           : undefined;
-      const setup = await enrollment.createSetup(
-        url,
-        // Worker HTTP transfers share the node's base URL. They require the
-        // scoped route's path rewriting and trusted client attribution.
-        `${url}/node`,
-        this.operationSignal(),
-      );
-      const setupData = {
-        setupId: setup.setupId,
-        setupCode: setup.setupCode,
-        expiresAtMs: String(setup.expiresAtMs),
-        // The device observed on an expired setup may have been redeemed by a predecessor's
-        // node; the revision whose node connects is credited by the readiness check.
-        ...(observed === undefined ? {} : { deviceId: observed.deviceId }),
-      };
+      const setup =
+        observed === undefined
+          ? await enrollment.createSetup(
+              url,
+              // Worker HTTP transfers share the node's base URL. They require the
+              // scoped route's path rewriting and trusted client attribution.
+              `${url}/node`,
+              this.operationSignal(),
+            )
+          : undefined;
+      // A predecessor may have redeemed this setup. Record its exact device;
+      // readiness alone credits the revision whose node subsequently connects.
+      const setupData =
+        setup === undefined
+          ? { deviceId: observed!.deviceId }
+          : {
+              setupId: setup.setupId,
+              setupCode: setup.setupCode,
+              expiresAtMs: String(setup.expiresAtMs),
+            };
       const clients = await this.clients(namespace.plane);
       if (existing === undefined) {
         // Persist before launching. An uncertain create is not replayed here; the
@@ -12043,11 +12062,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
           { mutating: true },
         );
       } else {
-        // The identity outlives revisions, but the native connect entrypoint
-        // refuses an expired setup code. Replace only the setup: a recorded
-        // deviceId stays, and the node reconnects with its persisted device
-        // token, so the new bootstrap token only lets the code decode. A device
-        // observed on the expired setup above is recorded in the same write.
+        // Preserve the Agent-owned Secret and its identity. An unredeemed setup
+        // is replaced; a redeemed setup only gains the server-observed device.
         required(existing.metadata.resourceVersion, "Workspace node Secret resource version");
         await this.request(
           () =>
@@ -12073,7 +12089,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           { mutating: true },
         );
       }
-      if (setupFile) {
+      if (setup !== undefined && setupFile) {
         await this.refreshWorkspaceNodeSetup(revision, namespace, setup.setupId);
       }
     }
@@ -12233,8 +12249,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       namespace,
       this.workspaceNodeOwnership(revision),
     );
-    const deviceId = Buffer.from(secret?.data?.deviceId ?? "", "base64").toString("utf8");
-    return deviceId || undefined;
+    return recordedWorkspaceNodeDeviceId(secret?.data?.deviceId);
   }
 
   private recordBudgetSpent(budgets: Map<string, number>, key: string, spentMs: number): void {
@@ -12250,13 +12265,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   /**
-   * Whether this revision's workspace node has enrolled: the node Secret records the device,
-   * and names this revision as the one whose node readiness saw paired or connected. The
+   * Whether this revision's workspace node has connected: the node Secret records the device,
+   * and names this revision as the one whose node readiness saw connected. The
    * device is the Agent's and outlives revisions, so without the second part every redeploy
    * would count as enrolled from its first pass, skip the provider's held-failure read and
-   * create its exposure only to delete it at once (finding 1671). A Secret that records a
-   * device under no revision was written before this check existed; its revision is the one
-   * that enrolled it, so it still counts. Without node enrollment there is no enrollment window
+   * create its exposure only to delete it at once (finding 1671). A disconnected setup receipt
+   * records only the Agent's device; it cannot attribute a connection to this revision.
+   * Without node enrollment there is no enrollment window
    * to observe a provider-owned Harness in, as `workspaceNodeReady` holds, so a native exposure
    * is withdrawn on the first pass.
    */
@@ -12280,7 +12295,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const read = (key: string) => Buffer.from(secret?.data?.[key] ?? "", "base64").toString("utf8");
     const enrolledRevisionId = read(WORKSPACE_NODE_ENROLLED_REVISION_KEY);
     return (
-      read("deviceId") !== "" && (enrolledRevisionId === "" || enrolledRevisionId === revision.id)
+      recordedWorkspaceNodeDeviceId(secret?.data?.deviceId) !== undefined &&
+      enrolledRevisionId === revision.id
     );
   }
 
@@ -12305,7 +12321,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       return false;
     }
     const read = (key: string) => Buffer.from(secret.data?.[key] ?? "", "base64").toString("utf8");
-    const deviceId = read("deviceId");
+    const deviceId = recordedWorkspaceNodeDeviceId(secret.data?.deviceId);
     // A file-delivered setup code is readable by every process in the Harness,
     // Codex included. Once the device is recorded the node reconnects with its
     // saved device token, so drop the code; the kubelet then removes the file.
@@ -12417,7 +12433,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       withoutSetupCode({
         ...secret.data,
         deviceId: Buffer.from(observation.deviceId, "utf8").toString("base64"),
-        [WORKSPACE_NODE_ENROLLED_REVISION_KEY]: Buffer.from(revision.id, "utf8").toString("base64"),
+        ...(observation.connected
+          ? {
+              [WORKSPACE_NODE_ENROLLED_REVISION_KEY]: Buffer.from(revision.id, "utf8").toString(
+                "base64",
+              ),
+            }
+          : {}),
       }),
     );
     // With the device recorded, later passes check its presence, not the setup.

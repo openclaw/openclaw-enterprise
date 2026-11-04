@@ -19,6 +19,7 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from 
 import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   managedInstalls,
@@ -475,6 +476,29 @@ process.exit(r.status);`,
         new URL("../fixtures/runtime-workspace-node.mjs", import.meta.url),
         "utf8",
       );
+      // Only the unrelated Codex sibling is inert. Native setup, the node, Gateway,
+      // and the exported production supervisor all execute without interception.
+      const supervisor = `
+const cp = require("node:child_process");
+const spawn = cp.spawn;
+cp.spawn = (command, args, options) => spawn(command,
+  args[0] === "-e" ? ["-e", "setInterval(() => {}, 1000)"] : args, options);
+${AGENT_WITH_NODE_ENTRYPOINT}`;
+      await runDocker(
+        [
+          "exec",
+          "-i",
+          containerName,
+          "node",
+          "-e",
+          'const fs = require("node:fs"); const files = JSON.parse(fs.readFileSync(0, "utf8")); for (const [name, content] of Object.entries(files)) fs.writeFileSync(name, content);',
+        ],
+        {},
+        JSON.stringify({
+          "/tmp/workspace-node-supervisor.cjs": supervisor,
+          "/tmp/runtime-workspace-node.mjs": source,
+        }),
+      );
       // The fixture bounds every CLI call and wait by one deadline 10 s inside this
       // exec timeout, so a hung call fails with its own name.
       const execTimeoutMs = 240_000 * imageSmokeTimeoutMultiplier;
@@ -485,15 +509,14 @@ process.exit(r.status);`,
           `WORKSPACE_PROOF_BUDGET_MS=${execTimeoutMs - 10_000}`,
           containerName,
           "node",
-          "--input-type=module",
-          "-e",
-          source,
+          "/tmp/runtime-workspace-node.mjs",
         ],
         { timeout: execTimeoutMs },
       );
       const result = JSON.parse(stdout);
       assert.equal(result.sameIdentityAfterRestart, true);
-      assert.equal(result.singleBootstrapCompletion, true);
+      assert.equal(result.sameIdentityAfterReplacementSetup, true);
+      assert.equal(result.stableCompletionPerSetup, true);
       assert.equal(result.commands.length, 7);
       t.diagnostic(`slowest gateway call: ${result.slowestCallMs} ms`);
     },

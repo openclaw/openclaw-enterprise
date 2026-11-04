@@ -8,6 +8,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { TransientDependencyError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+/** Device identifiers accepted by the persisted workspace-node binding. */
+export function isWorkspaceNodeDeviceId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+}
+
 export interface NodeSetup {
   readonly setupId: string;
   readonly setupCode: string;
@@ -203,16 +208,22 @@ export async function observeNodeSetup(
       }
       // A delivery-uncertain handoff may still have reached the node. Live
       // presence is observed separately; setup status alone is not readiness.
-      const completion = asRecord(status.completion ?? status.deliveryUncertain);
-      if (completion !== undefined) {
+      // Validate both present receipts before preferring confirmed completion.
+      // Malformed evidence must not be mistaken for an unredeemed setup.
+      for (const field of ["completion", "deliveryUncertain"] as const) {
+        if (!Object.hasOwn(status, field)) {
+          continue;
+        }
+        const completion = asRecord(status[field]);
         if (
+          completion === undefined ||
           completion.setupId !== setupId ||
           completion.access !== "node" ||
-          !isNonEmptyString(completion.deviceId)
+          !isWorkspaceNodeDeviceId(completion.deviceId)
         ) {
           throw new Error("The Gateway returned an invalid node setup completion.");
         }
-        deviceId = completion.deviceId;
+        deviceId ??= completion.deviceId;
       }
     }
     const observation =

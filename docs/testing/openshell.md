@@ -270,7 +270,11 @@ changing only the embedded QA preset does not exercise this path.
 
 The case edits `USER.md` through the workspace API and verifies its marker through
 real model execution and `exec`. That turn writes a unique file in its session
-worktree. After a normal redeployment, the case checks replacement Sandbox and
+worktree. It waits for the enrolled node's actual setup expiry before a normal
+redeployment, adding up to ten minutes to the case. The successor must retain
+the owned setup Secret, credential, expiry, device identity, and completion
+receipt while recording its own enrolled revision. The receipt comparison does
+not count emitted events. The case also checks replacement Sandbox and
 Pod UIDs, the retained workspace PVC/subpath, and every owner file's bytes. It
 then resumes the same session ID and key, requiring another model turn and `exec`
 to read the original file with its original hash. Run placement must identify the

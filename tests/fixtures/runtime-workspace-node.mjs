@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { setTimeout } from "node:timers/promises";
 import { promisify } from "node:util";
 
@@ -17,20 +17,10 @@ const commands = [
   "workspace.skills",
 ].sort();
 const state = "/home/node/workspace-node";
-const config = `${state}/openclaw.json`;
-await mkdir(state, { recursive: true, mode: 0o700 });
-await writeFile(
-  config,
-  JSON.stringify({
-    agents: { defaults: { workspace: "/home/node/workspace" } },
-    plugins: {
-      allow: ["file-transfer"],
-      slots: { memory: "none" },
-      entries: { "file-transfer": { enabled: true } },
-    },
-  }),
-  { mode: 0o600 },
-);
+const home = "/home/node/workspace-node-home";
+const setupPath = "/tmp/workspace-node-setup";
+await mkdir(home, { recursive: true, mode: 0o700 });
+let setupDelivery = "file";
 // One deadline, set by the test from its own exec timeout, bounds the whole proof.
 // Each CLI call and wait may use what is left of it. A `gateway call` boots the
 // OpenClaw CLI beside the Gateway and the node's own boot, and on a CPU-contended CI
@@ -47,20 +37,6 @@ function remainingMs(step) {
   }
   return remaining;
 }
-const nodeEnvironment = {
-  PATH: process.env.PATH,
-  HOME: "/home/node",
-  OPENCLAW_STATE_DIR: state,
-  OPENCLAW_CONFIG_PATH: config,
-};
-await execute(
-  process.execPath,
-  [cli, "setup", "--baseline", "--workspace", "/home/node/workspace", "--json"],
-  {
-    env: nodeEnvironment,
-    timeout: remainingMs("setup"),
-  },
-);
 async function call(method, params = {}) {
   const startedAt = Date.now();
   const timeout = remainingMs(method);
@@ -96,7 +72,7 @@ async function call(method, params = {}) {
   slowestCallMs = Math.max(slowestCallMs, Date.now() - startedAt);
   return JSON.parse(stdout);
 }
-const setup = await call("device.pair.setupCode", {
+let setup = await call("device.pair.setupCode", {
   publicUrl: "ws://127.0.0.1:8080",
   bootstrapProfile: "node",
   includeQr: false,
@@ -109,7 +85,7 @@ async function stop() {
   }
   const exited = once(child, "exit");
   child.kill("SIGTERM");
-  const killTimer = globalThis.setTimeout(() => child.kill("SIGKILL"), 5_000);
+  const killTimer = globalThis.setTimeout(() => child.kill("SIGKILL"), 10_000);
   await exited;
   clearTimeout(killTimer);
 }
@@ -128,7 +104,14 @@ async function waitForDisconnect(nodeId) {
 async function waitForConfirmedSetup(nodeId) {
   let status;
   while (Date.now() < deadline) {
-    status = await call("device.pair.setupStatus", { setupId: setup.setupId });
+    try {
+      status = await call("device.pair.setupStatus", { setupId: setup.setupId });
+    } catch (error) {
+      throw new Error(
+        `Setup was not confirmed for the connected device; last status: ${JSON.stringify(status)}`,
+        { cause: error },
+      );
+    }
     if (status.completion) {
       assert.equal(status.completion.deviceId, nodeId);
       return status.completion;
@@ -160,25 +143,30 @@ async function waitForNode(expectedId) {
   }
   throw new Error(`Restricted node did not connect: ${childLog}`);
 }
+function setupPayload() {
+  const encoded = setup.setupCode.replace(/^oc-pair:\/\//iu, "");
+  return JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+}
+async function publishSetup() {
+  const contents = setupDelivery === "file" ? setup.setupCode : JSON.stringify(setupPayload());
+  // Match the atomic replacement provided by projected Secret/provider files.
+  await writeFile(`${setupPath}.next`, contents, { mode: 0o600 });
+  await rename(`${setupPath}.next`, setupPath);
+}
 function start() {
-  child = spawn(
-    process.execPath,
-    [
-      cli,
-      "node",
-      "run",
-      "--pair-if-needed",
-      setup.setupCode,
-      "--display-name",
-      "runtime-workspace-proof",
-      "--commands",
-      commands.join(","),
-    ],
-    {
-      env: nodeEnvironment,
-      stdio: ["ignore", "pipe", "pipe"],
+  child = spawn(process.execPath, ["/tmp/workspace-node-supervisor.cjs"], {
+    env: {
+      PATH: process.env.PATH,
+      HOME: home,
+      OPENCLAW_NODE_STATE_DIR: state,
+      OPENCLAW_WORKSPACE_DIR: "/home/node/workspace",
+      OPENCLAW_NODE_DISPLAY_NAME: "runtime-workspace-proof",
+      ...(setupDelivery === "file"
+        ? { OPENCLAW_NODE_SETUP_PATH: setupPath }
+        : { OPENCLAW_NODE_SETUP_ENVELOPE: setupPath }),
     },
-  );
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   child.stdout.on("data", (data) => {
     childLog += data;
   });
@@ -187,7 +175,8 @@ function start() {
   });
 }
 try {
-  // The packaged CLI must enroll with exactly the production command surface.
+  // The production supervisor must enroll the packaged node with its restricted grant.
+  await publishSetup();
   start();
   const nodeId = await waitForNode();
   const completion = await waitForConfirmedSetup(nodeId);
@@ -200,11 +189,55 @@ try {
   await waitForNode(nodeId);
   const reconnected = await call("device.pair.setupStatus", { setupId: setup.setupId });
   assert.deepEqual(reconnected.completion, completion);
+
+  // Publish a replacement while the old node remains healthy. The supervisor
+  // must notice the file and renew enrollment without losing the native identity.
+  setup = await call("device.pair.setupCode", {
+    publicUrl: "ws://127.0.0.1:8080",
+    bootstrapProfile: "node",
+    includeQr: false,
+  });
+  await publishSetup();
+  const replacementCompletion = await waitForConfirmedSetup(nodeId);
+  assert.equal(replacementCompletion.access, "node");
+  await stop();
+  await waitForDisconnect(nodeId);
+  // A provider envelope uses the same retained identity after process replacement.
+  setupDelivery = "envelope";
+  await publishSetup();
+  start();
+  await waitForNode(nodeId);
+  const replacementReconnect = await call("device.pair.setupStatus", {
+    setupId: setup.setupId,
+  });
+  assert.deepEqual(replacementReconnect.completion, replacementCompletion);
+
+  // Provider projections must also refresh a running node, not only its next start.
+  setup = await call("device.pair.setupCode", {
+    publicUrl: "ws://127.0.0.1:8080",
+    bootstrapProfile: "node",
+    includeQr: false,
+  });
+  await publishSetup();
+  const providerCompletion = await waitForConfirmedSetup(nodeId);
+  await waitForNode(nodeId);
+  await stop();
+  await waitForDisconnect(nodeId);
+  // Expiry of an already-consumed code must not invalidate the saved device grant.
+  setup.setupCode = Buffer.from(JSON.stringify({ ...setupPayload(), expiresAtMs: 1 })).toString(
+    "base64url",
+  );
+  await publishSetup();
+  start();
+  await waitForNode(nodeId);
+  const expiredReconnect = await call("device.pair.setupStatus", { setupId: setup.setupId });
+  assert.deepEqual(expiredReconnect.completion, providerCompletion);
   console.log(
     JSON.stringify({
       commands,
       sameIdentityAfterRestart: true,
-      singleBootstrapCompletion: true,
+      sameIdentityAfterReplacementSetup: true,
+      stableCompletionPerSetup: true,
       slowestCallMs,
     }),
   );

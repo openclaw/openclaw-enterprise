@@ -26,10 +26,15 @@ function gateway({ pairedAt = Infinity, connectedAt = 1, completion } = {}) {
     if (method === "device.pair.setupStatus") {
       statusReads++;
       if (statusReads < pairedAt) {
-        return { setupId: params.setupId };
+        return {};
       }
       return {
-        completion: completion ?? { setupId: params.setupId, access: "node", deviceId: "node-1" },
+        completion: completion ?? {
+          setupId: params.setupId,
+          access: "node",
+          deviceId: "node-1",
+          ts: 1,
+        },
       };
     }
     if (method === "node.describe") {
@@ -45,6 +50,73 @@ test("a setup observation without a wait reads the Gateway once", async () => {
   const { request, calls } = gateway();
   assert.equal(await observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000)), undefined);
   assert.deepEqual(calls, ["device.pair.setupStatus"]);
+});
+
+test("setup observation rejects malformed receipts without treating them as absent", async (t) => {
+  const receipt = { setupId: "setup-1", access: "node", deviceId: "node-1", ts: 1 };
+  const malformed = [
+    ["array", []],
+    ["string", "broken"],
+    ["null", null],
+    ["number", 1],
+    ["boolean", true],
+  ];
+  for (const { name, status, invalid, expected } of [
+    { name: "absent receipts", status: {}, expected: undefined },
+    ...[
+      { completion: receipt },
+      { deliveryUncertain: receipt },
+      // The schema permits both: confirmed completion keeps precedence.
+      { completion: receipt, deliveryUncertain: { ...receipt, deviceId: "node-2" } },
+    ].map((status) => ({
+      name: Object.keys(status).join(" and "),
+      status,
+      expected: { deviceId: "node-1", connected: true },
+    })),
+    ...["completion", "deliveryUncertain"].flatMap((field) => [
+      ...malformed.map(([shape, value]) => ({
+        name: `${field} is ${shape}`,
+        status: { [field]: value },
+        invalid: true,
+      })),
+      {
+        name: `malformed ${field} alongside a valid receipt`,
+        status: { completion: receipt, deliveryUncertain: receipt, [field]: [] },
+        invalid: true,
+      },
+    ]),
+  ]) {
+    await t.test(name, async () => {
+      const calls = [];
+      const request = async (method, params) => {
+        calls.push(method);
+        if (method === "device.pair.setupStatus") {
+          return status;
+        }
+        assert.equal(method, "node.describe");
+        return { nodeId: params.nodeId, connected: true, commands: COMMANDS };
+      };
+      // Only a genuinely absent receipt permits the caller to replace expired
+      // setup. Malformed evidence must stop before node lookup or renewal.
+      if (invalid) {
+        await assert.rejects(
+          observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000)),
+          /invalid node setup completion/,
+        );
+      } else {
+        assert.deepEqual(
+          await observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000)),
+          expected,
+        );
+      }
+      assert.deepEqual(
+        calls,
+        expected === undefined
+          ? ["device.pair.setupStatus"]
+          : ["device.pair.setupStatus", "node.describe"],
+      );
+    });
+  }
 });
 
 test("a waiting setup observation returns as soon as the node pairs and connects", async () => {
@@ -88,14 +160,17 @@ test("a waiting setup observation returns the last reading when its time is up",
 });
 
 test("waiting does not relax setup completion validation", async () => {
-  const { request } = gateway({
-    pairedAt: 2,
-    completion: { setupId: "another-setup", access: "node", deviceId: "node-1" },
-  });
-  await assert.rejects(
-    observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000), 5_000),
-    /invalid node setup completion/,
-  );
+  for (const completion of [
+    { setupId: "another-setup", access: "node", deviceId: "node-1", ts: 1 },
+    { setupId: "setup-1", access: "node", deviceId: "bad/id", ts: 1 },
+  ]) {
+    const { request, calls } = gateway({ pairedAt: 2, completion });
+    await assert.rejects(
+      observeNodeSetup(request, "setup-1", AbortSignal.timeout(5_000), 5_000),
+      /invalid node setup completion/,
+    );
+    assert.equal(calls.includes("node.describe"), false);
+  }
 });
 
 test("a waiting setup observation stops when its owner aborts", async () => {
@@ -150,7 +225,7 @@ test("a waiting setup observation ends early once other work is waiting", async 
   );
   const invalid = gateway({
     pairedAt: 1,
-    completion: { setupId: "another-setup", access: "node", deviceId: "node-1" },
+    completion: { setupId: "another-setup", access: "node", deviceId: "node-1", ts: 1 },
   });
   await assert.rejects(
     observeNodeSetup(
