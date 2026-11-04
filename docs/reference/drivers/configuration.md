@@ -1,10 +1,14 @@
+---
+kind: reference/driver
+---
+
 # ConfigurationDriver contract
 
 ## Overview
 
 `ConfigurationDriver` stores native Agent configuration for a specific OpenClaw
 Namespace. OpenClaw Control Plane (OCC) assigns resource IDs, owns generations,
-authorizes requests, and creates immutable revision snapshots. The Driver owns
+authorizes requests, and creates Agent revisions. The Driver owns
 the storage representation; it does not deploy Agents or authorize callers.
 
 Trusted Installation YAML requires this capability. It defaults to bundled
@@ -15,7 +19,7 @@ development uses filesystem storage. See [Driver selection](selection.md).
 
 ### Operations and ownership
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires all five
+The [shared interface](../../../packages/contracts/src/drivers/configuration/index.ts) requires all five
 core methods. Optional value validation supports Preset admission.
 
 | Method                        | Contract                                                                                                        |
@@ -43,6 +47,13 @@ Bundled filesystem and Kubernetes Drivers implement this method. A Driver that
 omits it still supports ordinary Configuration operations, but OCC rejects
 Preset writes containing `configuration.values` with dependency unavailable.
 
+`validateSize?(values)` refuses values too large to store, as `validate` would.
+OCC calls it before its content rules on Configuration create and update and
+Agent provisioning, so no content rule walks a document the Driver would refuse. The
+bundled Kubernetes Driver implements it with its ConfigMap size limit. A Driver
+throws OCC's `ConfigurationSizeError` with its limit in bytes, which the API
+returns as `400 INVALID_REQUEST` with a message naming the limit.
+
 ## IAM
 
 OCC authorizes `create` on the Namespace's Configuration collection and `read`,
@@ -67,12 +78,12 @@ still references the Configuration. This is not permission for callers to roll
 back generations themselves. See the [persistence flow](../../flows/configuration-driver/persistence-and-revisions.md).
 
 Deployment reads the selected Configuration and freezes the effective values in
-the AgentRevision. Later storage updates or deletion cannot change that revision.
+the `AgentRevision`. Later storage updates or deletion cannot change that saved version.
 
 ## Limits
 
 - The current resource kind is `agent`. This Driver does not select Harnesses,
-  restart workloads, or update previously admitted revisions.
+  restart workloads, or update previously saved versions.
 - A backend can reject values it cannot represent. Size, storage permissions, and
   conflict behavior specific to Kubernetes are documented in [Kubernetes Configuration storage](../configuration/kubernetes.md).
 - Installed packages must implement all five methods and provide their own closed
@@ -94,7 +105,7 @@ the AgentRevision. Later storage updates or deletion cannot change that revision
 - [Kubernetes Configuration storage](../configuration/kubernetes.md): default for
   trusted YAML; one OCC-owned ConfigMap per Configuration in the tenant Namespace. Its [implementation](../../../apps/controller/src/drivers/configuration/kubernetes/index.ts)
   validates ownership and storage before use.
-- [Filesystem development Driver](../../../apps/controller/src/drivers/configuration/filesystem/index.ts): default Compose storage beneath `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, persisted in a controller-only named volume. It writes through an exclusively created private temporary file, closes it before atomic rename, and removes that file if writing or renaming fails. Cleanup targets only that write's file; the prior destination stays intact until rename succeeds. Directories use `0700` and files `0600`. It validates safe IDs; OCC still validates the document.
+- [Filesystem development Driver](../../../apps/controller/src/drivers/configuration/filesystem/index.ts): default Compose storage beneath `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, persisted in a controller-only named volume. It writes through an exclusively created private temporary file, closes it before atomic rename, and removes that file if writing or renaming fails. Cleanup targets only that write's file; the prior destination stays intact until rename succeeds. Directories use `0700` and files `0600`. It sets the open temporary file to `0600` before writing, so an owner-masking umask cannot make a successful replacement unreadable. It validates safe IDs; OCC still validates the document.
 
 ## Related
 

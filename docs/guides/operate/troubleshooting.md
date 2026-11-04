@@ -4,6 +4,8 @@ Use this page when local startup, the Kubernetes installation, the control plane
 or several Agents are affected. For a problem with one Agent, start with
 [Agent troubleshooting](../topics/agent-troubleshoot.md).
 
+For pnpm and Helm setup issues, see [Troubleshoot local k3d setup](local-setup-troubleshooting.md).
+
 ## Local K3s cannot find the cpuset controller
 
 If the k3d server logs report `failed to find cpuset cgroup (v2)`, inspect
@@ -20,17 +22,68 @@ required. Restore any paused management service and verify its health before
 continuing; do not disable the K3s check. Confirm `cpuset` is available inside the
 k3d server and that K3s starts successfully.
 
-## Local K3s image lookup times out
+## Local K3s image lookup fails
 
 The Compose control-plane profile without OpenShell resolves a K3s channel
-unless `OCC_DEVELOPMENT_K3S_IMAGE` selects an explicit image. If that lookup times out,
-select an approved Kubernetes 1.35-or-newer image through the
+through `update.k3s.io` unless `OCC_DEVELOPMENT_K3S_IMAGE` selects an explicit
+image. If that lookup fails or times out, startup stops with `k3d failed` and
+k3d's `error getting K3s version for channel` line. Select an approved
+Kubernetes 1.35-or-newer image through the
 [profile settings](../../reference/settings/development.md).
 
 After a failed creation, wait for startup to exit, then run `./scripts/dev-down`
 from the repository root with the same profile and state directory. Retry the
 [Compose profile startup](../deploy/local-kubernetes-development.md#run-occ-in-compose-with-kubernetes-compute)
 with the selected image and wait for the development stack to report ready.
+
+## Local K3s cannot load the legacy iptables nat table
+
+Both local k3d profiles start their node with `IPTABLES_MODE=legacy`. A host whose
+Docker uses nftables never loads the legacy netfilter modules, and the node cannot
+load them itself. kube-proxy then exits with
+`can't initialize iptables table 'nat': Table does not exist`, K3s shuts down, and
+cluster creation fails when the startup timeout expires with
+`k3d failed: exit status 1`: ten minutes by default for the Kubernetes-only
+profile, five for the Compose profile.
+
+When the container engine runs on the host's own Linux kernel (not Docker Desktop, a
+Podman machine, or a remote engine), `occ dev up` checks that kernel first. If it can
+tell the kernel has not loaded the modules, it stops before cluster creation with
+`the host kernel has not loaded the legacy iptables modules (ip_tables, iptable_nat)
+that the local k3d node needs`, followed by the `modprobe` command below. A kernel
+that ships no `iptable_nat` module stops with `provides no legacy iptables nat table
+(iptable_nat)` instead; see the end of this section. If it cannot tell, it prints
+`Warning: could not confirm that the host kernel provides the legacy iptables nat
+table (iptable_nat)` and continues, and the timeout above still applies. If
+creation then fails, the error repeats the `modprobe` command below unless
+k3d's last error names another cause.
+
+In a second terminal, while that wait is still running, read the node log.
+`<cluster>` is the cluster name from the startup output.
+
+```bash
+docker logs 'k3d-<cluster>-server-0' 2>&1 | grep -i 'iptables table'
+```
+
+On the host, `lsmod | grep '^iptable_nat'` prints nothing while the module is
+unloaded. Load the legacy modules K3s uses and keep them across reboots:
+
+```bash
+sudo modprobe --all iptable_nat iptable_filter iptable_mangle br_netfilter
+sudo tee /etc/modules-load.d/oce-k3d-legacy-iptables.conf >/dev/null <<'EOF'
+iptable_nat
+iptable_filter
+iptable_mangle
+br_netfilter
+EOF
+```
+
+A failed creation preserves the state directory and reports it for `occ dev down`.
+Wait until that startup exits, then run `./scripts/dev-down` from the repository root
+with the same profile and state directory, and start the profile again.
+`lsmod | grep -E '^iptable_(nat|filter)'` lists both modules, and startup reaches
+`OpenClaw Enterprise development stack is ready.` A host whose kernel ships no
+`iptable_nat` module cannot run these profiles.
 
 ## Local startup stalls on cert-manager
 
@@ -62,6 +115,15 @@ and set a reachable resolver for a fresh start. That recovery changes only the
 owned node's resolver. If startup rolls the cluster back, wait until that
 command exits before starting again.
 
+## Local Agent Sandbox controller image pull fails
+
+Inspect controller Pod events in `agent-sandbox-system` with the
+[startup kubeconfig and context](#local-startup-stalls-on-cert-manager).
+`ImagePullBackOff` with resets from `cdn.registry.k8s.io` indicates failed image
+delivery. Verify node access to registry and redirected blob hosts. Local manifest
+overrides do not preload images. Use a [verified image cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache),
+or restore registry connectivity. Preserve image versions and TLS verification.
+
 ## Local Codex sandbox check fails
 
 Kubernetes Compute startup with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` verifies the
@@ -79,13 +141,66 @@ A production node uses the separate
 [Codex sandbox profile](../deploy/codex-sandbox.md) procedure. Do not copy this
 sysctl change onto a shared cluster.
 
+## Source build fails TLS certificate verification
+
+If HTTPS inspection causes a certificate error during a runtime download, install the approved proxy CA in the host trust store. Before retrying `occ dev up`, select a PEM bundle containing both public roots and the proxy CA. The build mounts it only for downloads.
+
+```bash
+# Fedora 44 system bundle after the approved CA has been installed.
+export OCC_DEVELOPMENT_BUILD_CA_FILE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+```
+
+## The local console reports a certificate error
+
+For `NET::ERR_CERT_AUTHORITY_INVALID` or an unknown issuer, check the Console URL against this installation’s public CA. Set `BROWSER_CA` to the local certificate path and use the exact **Browser console** URL printed at startup.
+
+```bash
+BROWSER_CA='<local-browser-ca.crt-path>'
+CONSOLE_URL='<printed-HTTPS-browser-console-URL>'
+openssl x509 -in "$BROWSER_CA" -noout -subject -dates -fingerprint -sha256
+curl --fail --show-error --max-time 10 --cacert "$BROWSER_CA" \
+  -o /dev/null -w 'HTTP %{http_code}; TLS verify %{ssl_verify_result}\n' "$CONSOLE_URL"
+```
+
+HTTP `200` and TLS verify `0` confirm the chain and hostname. If the browser still rejects the issuer, enable SSL trust for this installation’s CA in the browser’s trust store. `occ dev up` leaves browser trust settings unchanged.
+
+### Trust the CA on macOS
+
+Safari and Chrome use explicit local trust settings in macOS Keychain Access.
+For an unmanaged Mac where local CA trust is permitted:
+
+1. Open Keychain Access, select the **login** keychain, and import only the
+   printed `browser-ca.crt` using **File → Import Items**.
+2. Open the imported **OCC development browser CA**. Match its SHA-256
+   fingerprint to the command above; different installations use the same name.
+3. Expand **Trust**, set **Secure Sockets Layer (SSL)** to **Always Trust**, and
+   close the certificate window. Complete any macOS authentication prompt locally.
+4. Reload the printed HTTPS URL. If the browser cached the old trust decision,
+   quit and reopen it. Expect the console sign-in page without a certificate warning.
+
+See Apple's [certificate trust settings](https://support.apple.com/guide/keychain-access/change-the-trust-settings-of-a-certificate-kyca11871/mac)
+and Chrome's [local trust-store behavior](https://chromium.googlesource.com/chromium/src/+/main/net/data/ssl/chrome_root_store/faq.md#how-does-the-chrome-certificate-verifier-integrate-with-platform-trust-stores-for-local-trust-decisions).
+Other browsers may use a separate certificate store. On managed computers, use
+the administrator-approved CA trust procedure; report a policy restriction
+instead of bypassing the warning or disabling TLS verification.
+
+If the `curl --cacert` check fails, inspect its error before importing anything:
+an expired certificate, wrong hostname, or CA from another installation needs
+that cause resolved. Do not use `curl -k` as a successful verification result.
+
+### Remove trust when discarding the installation
+
+Before `occ dev down` deletes the state files, record the CA fingerprint. Remove trust and delete only the matching certificate. Other installations use the same CA name. Trust each new installation’s CA separately.
+
 ## Open the console from another machine
 
-Kubernetes-only startup without OpenShell prints an HTTPS console URL such as
+With the browser port enabled, Kubernetes-only startup prints an HTTPS console
+URL and its public CA, including when using OpenShell. For example:
 `https://console.<cluster>.oce.localhost:8443/console/`. `<cluster>` is the k3d
-cluster name from startup. `8443` is the default `OCC_DEVELOPMENT_BROWSER_PORT`;
-use the printed port when it differs. Kubernetes-only startup with OpenShell
-prints `Console: <apiURL>/console/` and does not print this browser URL or CA.
+cluster name from startup. The local OpenShell quickstart explicitly sets
+`OCC_DEVELOPMENT_BROWSER_PORT=8443`; use the printed port when it differs.
+When the browser port is disabled, OpenShell startup prints only the HTTP API
+Console URL. Enable the browser port for the HTTPS workflow below.
 
 Open that URL on the machine that ran `occ dev up`. The hostname ends in
 `.localhost`, so the computer that looks it up resolves it to its own loopback
@@ -105,15 +220,19 @@ Replace `8443` in both places when startup printed a different port. The
 `localhost` bind keeps the forwarded port on the browser machine's loopback
 even when that machine's SSH configuration sets `GatewayPorts yes`.
 
-Copy only the printed public CA to that same computer, then import the local
-copy if the browser does not already trust it:
+Copy only the printed public CA to that same computer:
 
 ```bash
 scp <user>@<startup-host>:<printed-ca-path> ./browser-ca.crt
+BROWSER_CA='./browser-ca.crt'
+CONSOLE_URL='<printed-HTTPS-browser-console-URL>'
 ```
 
-`<printed-ca-path>` is the `browser-ca.crt` path from startup. Leave the CA
-private key and the state directory on the startup machine. Open the printed
+`<printed-ca-path>` is the `browser-ca.crt` path from startup. Follow
+[local browser CA trust](#the-local-console-reports-a-certificate-error) on the
+browser computer using the local `BROWSER_CA` value above instead of the startup
+machine's CA path. Keep the printed hostname and port in `CONSOLE_URL`. Leave the
+state directory, which holds the TLS key, on the startup machine. Open the printed
 URL. The console sign-in page loads. Stop the forward when you are done. Do
 not publish the console port on an address other than loopback. This name and
 certificate are for the private development installation.
@@ -148,12 +267,17 @@ If the Job started, inspect the failing container:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  logs "$INITIALIZATION_JOB" -c installation-check # upgrades only
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   logs "$INITIALIZATION_JOB" -c migration
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   logs "$INITIALIZATION_JOB" -c bootstrap
 ```
 
-Migration runs before bootstrap; an unstarted bootstrap container has no logs.
+On an upgrade, `installation-check` runs first. It loads any Console theme
+bundle and the Installation as API startup does. It names the refused setting or
+file. The running API keeps serving. Migration runs before bootstrap; an
+unstarted container has no logs.
 For image, scheduling, or volume errors, use the Pod events reported by
 `kubectl describe pod <pod-name>` with the same context and namespace. Fix the
 specific image, scheduling, or storage error. For a bootstrap failure, follow
@@ -182,13 +306,26 @@ After fixing the cause, repeat `occ installation get` and confirm the Namespace
 reports `ready` before creating an Agent there. A healthy control plane does
 not prove an Agent has deployed or can run a model.
 
+## A deployment fails because Kubernetes refused a Secret
+
+`KUBERNETES_SECRET_WRITE_FORBIDDEN` means Kubernetes answered `403` to one of
+the version's private Secret writes or readbacks, so the worker failed the
+deployment without retrying. A preparation failure's
+`worker.compute-prepare-failed` log line names the `step`. Check that the worker's
+[tenant RoleBindings](../deploy/production-agents.md#grant-tenant-rolebindings)
+grant `get`, `create` and `update` on `secrets` in the Agent's Kubernetes
+namespaces (with an execution cluster, also the control cluster's Gateway
+namespace), and that no admission policy or ResourceQuota refuses Secrets
+there. Then deploy again. A running version's maintenance does not fail: it
+retries and recovers by itself once the grant is fixed.
+
 ## An Agent's Gateway or Harness Pod stays unready
 
 Run `kubectl describe pod <pod-name>` in the Agent's tenant namespace. Each
-`Readiness probe failed:` event names the step that is not ready, such as
-`plugin runtime phase is starting` or `Gateway /readyz unavailable: ECONNREFUSED`.
-When the startup wrapper holds a failed check, the event adds it, for example
-`; startup check model-probe failed with AUTHENTICATION_FAILED`. See
+`Readiness probe failed:` event reports the private HTTP endpoint's status or a
+connection failure. A `503` means the runtime's native, plugin, authentication,
+or identity gate has not passed. Check the container's startup-phase logs for
+the failing stage. See
 [Harness authentication](../../reference/harness-execution.md#harness-authentication)
 for the probe codes.
 

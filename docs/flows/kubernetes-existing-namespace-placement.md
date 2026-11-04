@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-10-01
-last_updated_session: authoring-run/0cfc470c-ba88-4a95-86e0-35123f0de703
+updated: 2026-10-23
+last_updated_session: authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -42,7 +42,7 @@ graph TD
   E --> F["Bind generated tenant identity while preserving external manager"]
   F --> G["Provision owned infrastructure and mark Namespace ready"]
   G --> H["Place workloads and ConfigMaps in the bound namespace"]
-  H --> I["Delete owned infrastructure only; retain external ownership"]
+  H --> I["Delete orphans and owned infrastructure; retain external ownership"]
 ```
 
 ## Execution Trace
@@ -50,6 +50,14 @@ graph TD
 ### 1. Authorize and persist explicit external selection
 
 `packages/occ/src/index.ts:OpenClawController.createNamespace`
+
+`internal/occcli/cli.go:namespaceCommand` checks whether the caller supplied
+`--existing-namespace` before creating its HTTP client. An explicitly supplied
+value, including an empty string, must be a DNS-1123 label of 1 through 63
+characters. Invalid values return a local error without a request. Omitting
+the flag retains managed placement; an empty adoption flag cannot select it.
+`internal/occclient/client.go:Client.CreateNamespace` sends an admitted nonempty
+selection to the same API operation below.
 
 `POST /namespaces` accepts `{ "name": "support", "existingNamespace":
 "customer-support-prod" }`. Omitting `existingNamespace` keeps ordinary managed
@@ -109,19 +117,28 @@ provisioning rejects Configuration creation with `409` until the worker marks
 the Namespace `ready`. Compute uses the same resolved namespace for workloads,
 dedicated Agent-owned shared PersistentVolumeClaims, private gateway state
 claims, credentials, and deletion cleanup. Existing exact Namespace, Agent,
-revision, service-account, and child-resource ownership checks remain unchanged.
-Revision retirement preserves the current gateway and its owned claims; final
+version, service-account, and child-resource ownership checks remain unchanged.
+Version retirement preserves the current gateway and its owned claims; final
 gateway teardown removes the exact-owned private and shared claims by UID.
 
 ### 4. Preserve externally owned namespaces during deletion
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteNamespace`
 
-OCC first rejects deletion while Agents, Configurations, or service accounts
-remain. Compute therefore removes only its owned `openclaw-quota`,
+OCC first rejects deletion while Agents, Configurations, Secrets, service
+accounts, or other Namespace contents remain. Any object still carrying this Namespace's ownership (the
+`app.kubernetes.io/managed-by=openclaw-enterprise` and `openclaw.dev/namespace`
+labels plus the `openclaw.dev/namespace-id` annotation) is therefore an orphan,
+for example a Configuration ConfigMap whose create applied but whose transaction
+then failed. Compute deletes such ConfigMaps and ServiceAccounts by UID, and such
+Secrets too when repository credentials are enabled, the only setup in which the
+single-cluster chart lets the worker list Secrets. Two-cluster Compute keeps
+Secrets and Configurations in the control-plane namespace, which it deletes. A failed list or delete keeps the Namespace `deleting`.
+Compute then removes its owned `openclaw-quota`,
 `openclaw-limits`, `allow-dns`, `allow-gateway-ingress`, and `default-deny`
 objects, preserving default-deny until last. External namespace objects, their
-tenant markers, RoleBindings, Secrets, and unrelated resources remain untouched.
+tenant markers, RoleBindings, the operator's Secrets, and unrelated resources
+remain untouched.
 Deleting a failed selection that was never bound to either tenant marker also
 leaves the external namespace untouched; partial or foreign markers fail
 closed. An already-missing namespace counts as deleted. After deleting an
@@ -151,6 +168,10 @@ complete-deletion lifecycle.
   NetworkPolicy the Namespace does not own; list those with `kubectl`. Old
   tenant markers are usually left by an earlier OCC Namespace on the same
   Kubernetes namespace.
+- In single-cluster Compute without repository credentials, an orphaned
+  Secret outlives deletion. List Secrets labelled `openclaw.dev/namespace=<id>`
+  and `app.kubernetes.io/managed-by=openclaw-enterprise` with `kubectl`, and
+  delete those whose `openclaw.dev/namespace-id` annotation is also `<id>`.
 - Run `node --test tests/conformance/kubernetes-compute.test.mjs` for driver
   contract coverage, including current managed placement, previous managed-name
   discovery, duplicate-claim rejection, foreign ownership rejection, and cleanup
@@ -172,6 +193,9 @@ complete-deletion lifecycle.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 17:00: Deletion sweeps orphaned OCE-owned ConfigMaps, ServiceAccounts and, with repository credentials, Secrets. (fix-1400)
+- 2026-10-09 20:19: Refuse an explicitly empty CLI adoption flag before creating a client. (authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5 - c4cc1d9f23f9bebac8fd82881561cce48fb4fc6a)
 
 - 2026-10-06 18:55: A refused selection logs its reason in `worker.completed`, naming foreign markers by key only. (fix-d521)
 - 2026-10-06 18:40: Name all three tenant markers that block readoption, the stuck deletion of a failed selection over foreign markers, and the reasonless `failed` status. (dogfood-r38)

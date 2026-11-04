@@ -1,4 +1,6 @@
+import { SandboxPolicyDecisionSchema } from "../sandbox-policy.ts";
 import { Type } from "typebox";
+import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
 import {
   AgentId,
@@ -14,6 +16,7 @@ import {
   CredentialSourceReference,
   CredentialSourceSecrets,
   CredentialSourceType,
+  GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
@@ -28,6 +31,7 @@ import {
   RepositoryBindingSelectionsSchema,
   RepositoryAccessSchema,
   RevisionId,
+  RequestId,
   ResourceKindSchema,
   SecretBindings,
   SecretId,
@@ -66,7 +70,7 @@ const RuntimeFailureCauseSchema = Type.Object(
         maxLength: 32,
         pattern: "^[A-Za-z0-9_-]{1,32}$",
         description:
-          "A fixed token for the kind, such as exit-1, signal-SIGKILL, error-ENOBUFS, format, rate_limit, billing, no_model, turn-failed, tool-event, no-reply, json or shape. Never native output.",
+          "A fixed token for the kind, such as exit-1, signal-SIGKILL, error-ENOBUFS, format, rate_limit, billing, no_model, turn-failed, tool-event, no-reply, json or shape. A Codex token ends -attempt2, such as rate_limit-attempt2, when a retried check failed again. Never native output.",
       }),
     ),
   },
@@ -80,7 +84,8 @@ export const AgentDeviceAuthorizationResponse = Type.Object(
   {
     data: Type.Object(
       {
-        source: SecretReference,
+        session: SecretReference,
+        source: Type.Optional(CredentialSourceReference),
         status: Type.Union([Type.Literal("pending"), Type.Literal("ready")]),
         verificationUrl: Type.String({ format: "uri" }),
         userCode: Type.String(),
@@ -206,6 +211,7 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
+    policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
     approvers: Type.Optional(
       Type.Object(
         { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
@@ -244,6 +250,26 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
+        credentialSlots: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                pluginId: Type.String(),
+                releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+                id: Type.String(),
+                label: Type.String(),
+                toolDiscovery: Type.Optional(Type.Literal(true)),
+                sources: Type.Array(
+                  Type.Object(
+                    { id: CredentialSourceId, name: Type.String() },
+                    { additionalProperties: false },
+                  ),
+                ),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        ),
       },
       { additionalProperties: false },
     ),
@@ -252,8 +278,51 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
   { additionalProperties: false },
 );
 
+const CredentialSourceFieldSchema = Type.Object(
+  {
+    name: Type.String({ minLength: 1 }),
+    required: Type.Boolean(),
+    description: Type.Optional(Type.String()),
+    issuerRotated: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
+
+const CredentialSourceCatalogSchema = Type.Object(
+  {
+    type: CredentialSourceType,
+    config: Type.Array(CredentialSourceFieldSchema),
+    secrets: Type.Array(CredentialSourceFieldSchema),
+    rotation: Type.Union([Type.Literal("none"), Type.Literal("external"), Type.Literal("refresh")]),
+    deviceAuthorization: Type.Optional(
+      Type.Object({ harnessId: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
+    ),
+    harnessAuth: Type.Optional(
+      Type.Object(
+        {
+          modelProvider: Type.String({ minLength: 1 }),
+          loginMode: Type.Union([
+            Type.Literal("api_key"),
+            Type.Literal("codex_pat"),
+            Type.Literal("chatgptAuthTokens"),
+          ]),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 const InstallationCapabilitiesSchema = Type.Object(
   {
+    nativeAdmin: Type.Optional(Type.Literal(true)),
+    credentialSources: Type.Optional(
+      Type.Object(
+        { types: Type.Array(CredentialSourceCatalogSchema) },
+        { additionalProperties: false },
+      ),
+    ),
     agentProvisioning: Type.Optional(
       Type.Object(
         { executionModes: Type.Array(HarnessExecutionModeSchema, { minItems: 1, maxItems: 2 }) },
@@ -272,6 +341,35 @@ const InstallationCapabilitiesSchema = Type.Object(
           description:
             "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
         },
+      ),
+    ),
+    openclaw: Type.Optional(
+      Type.Object(
+        {
+          executionModes: Type.Array(HarnessExecutionModeSchema, {
+            maxItems: 2,
+            uniqueItems: true,
+            description:
+              "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither.",
+          }),
+          settingRefusals: Type.Optional(
+            Type.Object(
+              { dedicated: Type.Optional(Type.String({ minLength: 1 })) },
+              {
+                additionalProperties: false,
+                description:
+                  "Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing.",
+              },
+            ),
+          ),
+          sandboxDriverUnavailable: Type.Optional(
+            Type.Literal(true, {
+              description:
+                "Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE.",
+            }),
+          ),
+        },
+        { additionalProperties: false },
       ),
     ),
   },
@@ -306,6 +404,7 @@ export const NamespaceSchema = Type.Object(
 
 export const AgentSchema = Type.Object(
   {
+    sandboxPolicyEditing: Type.Optional(Type.Boolean()),
     id: AgentId,
     namespaceId: NamespaceId,
     name: Name,
@@ -315,6 +414,7 @@ export const AgentSchema = Type.Object(
     harnessAuth: Type.Union([HarnessAuthBindingSchema, Type.Null()]),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
+    gatewayManagedMode: GatewayManagedModeSchema,
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingSelectionsSchema),
@@ -462,7 +562,7 @@ export const SecretConsumersSchema = Type.Object(
     agents: Type.Array(AgentId, {
       maxItems: SECRET_CONSUMER_LIMIT,
       description:
-        "Readable Agents whose draft, active revision, or pending deployment references the Secret. Each needs a new deployment to receive a rotated value.",
+        "Agents that you can read. Each Agent has a Secret reference in its saved settings, selected Agent revision, or pending deployment. Deploy each Agent again to use a rotated value.",
     }),
     configurations: Type.Array(ConfigurationId, {
       maxItems: SECRET_CONSUMER_LIMIT,
@@ -494,12 +594,54 @@ export const SecretConsumersSchema = Type.Object(
   },
 );
 
+export const SecretCallerPermissionsSchema = Type.Object(
+  {
+    update: Type.Boolean({
+      description:
+        "Whether the selected IAM Driver allows you to replace this Secret's value now (Secret update). Advisory only: lifecycle state or a later authorization decision can still prevent the operation.",
+    }),
+    delete: Type.Boolean({
+      description:
+        "Whether the selected IAM Driver allows you to delete this Secret now (Secret delete). Advisory only: current references, lifecycle state or a later authorization decision can still prevent the operation.",
+    }),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "What the selected IAM Driver allows you to do to this Secret now. Checking it records no authorization denial. Returned by the exact Secret read only.",
+  },
+);
+
 export const SecretDetailSchema = Type.Object(
   {
     ...SecretSchema.properties,
     consumers: SecretConsumersSchema,
+    callerPermissions: SecretCallerPermissionsSchema,
   },
   { additionalProperties: false },
+);
+
+export const CredentialRefreshStatusSchema = Type.Object(
+  {
+    state: Type.Union([Type.Literal("pending"), Type.Literal("ready"), Type.Literal("failed")]),
+    expiresAt: Type.Optional(Type.String({ format: "date-time" })),
+    nextRefreshAt: Type.Optional(Type.String({ format: "date-time" })),
+    lastRefreshAt: Type.Optional(Type.String({ format: "date-time" })),
+    failureCode: Type.Optional(Type.String({ maxLength: 128 })),
+    recoveryAction: Type.Optional(
+      Type.Union([
+        Type.Literal("retry"),
+        Type.Literal("reauthorize"),
+        Type.Literal("fix_configuration"),
+        Type.Literal("investigate"),
+      ]),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+  },
 );
 
 export const CredentialSourceStatusSchema = Type.Object(
@@ -511,11 +653,12 @@ export const CredentialSourceStatusSchema = Type.Object(
       Type.Literal("absent"),
     ]),
     reason: Type.Optional(Type.String({ maxLength: 512 })),
+    refresh: Type.Optional(CredentialRefreshStatusSchema),
   },
   {
     additionalProperties: false,
     description:
-      "Live status reported by the selected Credential Gateway. It never contains credential values.",
+      "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
   },
 );
 
@@ -525,7 +668,31 @@ export const CredentialSourceSchema = Type.Object(
     namespaceId: NamespaceId,
     name: Name,
     type: CredentialSourceType,
+    ownerCapability: Type.Union(
+      [Type.Literal("credential_gateway"), Type.Literal("credential_proxy")],
+      {
+        description:
+          "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership.",
+      },
+    ),
     config: CredentialSourceConfig,
+    egress: Type.Optional(
+      Type.Object(
+        {
+          adoption: Type.Union([
+            Type.Literal("live"),
+            Type.Literal("prepared"),
+            Type.Literal("credential_free"),
+          ]),
+          retention: Type.Literal("none"),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
+        },
+      ),
+    ),
     secrets: CredentialSourceSecrets,
     state: Type.Union([
       Type.Literal("registering"),
@@ -575,8 +742,162 @@ export const AgentRuntimeImagesResponse = Type.Object(
   { additionalProperties: false },
 );
 
+// Caller-permission summaries let clients gate controls; the API still authorizes every
+// request. Each flag reports only the primary IAM action of the named operation.
+export const AgentCallerPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        update: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent update now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        deploy: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent deploy now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        operate: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        delete: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent delete now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        administer: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent administer now, which native admin UI access needs. Advisory only: other required permissions (native admin UI also needs a signed-in console session), lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        configurationUpdate: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows update of the Agent's Configuration now, which saving its draft Configuration needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        configurationRead: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows read of the Agent's Configuration now, which each Agent update needs. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        configurationSecretsOperate: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Secret operate now on every Secret that the Agent's Configuration binds. Each Configuration save needs it for the Secrets it binds: the Secrets in its `secretBindings`, or every bound Secret when it omits them. `true` when the Configuration binds no Secret. Reported only to a caller with Configuration read and update; otherwise `false`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        configurationSecretsOperateDeniedBindings: Type.Array(Type.String({ minLength: 1 }), {
+          maxItems: 64,
+          description:
+            "The names of the Agent's Configuration Secret bindings whose bound Secret the selected IAM Driver does not allow Secret operate on now, sorted. A Configuration save that submits `secretBindings` needs Secret operate only on the Secrets it submits, so a save that binds each listed name to another Secret does not need it on the Secrets they bind now. A save that omits `secretBindings` keeps every binding. Empty when `configurationSecretsOperate` is `true`, and when it is not reported: reported only to a caller with Configuration read and update. Advisory only: other required permissions, lifecycle state, the Secrets a save binds, or a later authorization decision can still prevent the operation.",
+        }),
+        agentSourcesOperate: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows, now, the source grants that each Agent update checks: Secret operate on every Secret that the Agent's Configuration binds and on a Secret Harness authentication source, credential source operate on every credential source the Agent lists or uses for Harness authentication, and ServiceAccount read on a ServiceAccount Harness authentication source. `true` when the Agent and its Configuration bind no source. Reported only to a caller with Agent update and Configuration read whose Agent settings are readable; otherwise `false`. Advisory only: other required permissions, lifecycle state, sources that an update adds, or a later authorization decision can still prevent the operation.",
+        }),
+        sandboxPolicyRead: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows read now on the Agent's sandbox policy, which reading its network policy and policy suggestions needs. Advisory only: other required permissions, Sandbox Driver support, or a later authorization decision can still prevent the read.",
+        }),
+        readLogs: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows reading the Agent's runtime log text now: Agent `read_logs`, or Agent `administer` when no Restriction denies `read_logs`. Advisory only: other required permissions, Compute Driver support, or a later authorization decision can still prevent the read.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+// Kept apart from the Agent answer, which list pages read for each row: this one reads every
+// readable Secret in the Namespace.
+export const AgentSecretPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        operateDenied: Type.Array(Type.String({ minLength: 1 }), {
+          description:
+            "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Binding a Secret to this Agent's Configuration or as its Harness authentication source needs Secret operate on it, and so does deploying a draft that binds it. Empty when it is not reported: reported only to a caller with read on the Namespace and on the Agent's Configuration, and update on the Agent or its Configuration or deploy on the Agent. A caller with deploy but neither update gets only the Secrets the draft binds: its Configuration's Secret bindings and a Secret Harness authentication source. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        unreadableOperateDenied: Type.Integer({
+          minimum: 0,
+          description:
+            "How many of the Secrets the draft binds the caller may neither read nor Secret operate now: its Configuration's Secret bindings and a Secret Harness authentication source. Deploying the draft needs Secret operate on each. A count only: the caller may not read them, so their IDs are never reported. 0 when it is not reported, under the same conditions as `operateDenied`. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+// Kept apart from the Namespace answer, which every Namespace page reads: this one reads every
+// readable Secret in the Namespace.
+export const NamespaceSecretPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        operateDenied: Type.Array(Type.String({ minLength: 1 }), {
+          description:
+            "The IDs of the Namespace's Secrets that the caller may read but the selected IAM Driver does not allow Secret operate on now, sorted. Agent creation needs Secret operate on each Secret it binds or uses: its Harness authentication source, its Configuration's Secret bindings, and a directory search Secret. Empty when it is not reported: reported only to a caller who may create an Agent in this Namespace. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+export const NamespaceCallerPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        delete: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion.",
+        }),
+        agents: Type.Object(
+          {
+            create: Type.Boolean({
+              description:
+                "Whether the selected IAM Driver allows Agent creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+            }),
+          },
+          { additionalProperties: false },
+        ),
+        secrets: Type.Object(
+          {
+            create: Type.Boolean({
+              description:
+                "Whether the selected IAM Driver allows Secret creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+            }),
+          },
+          { additionalProperties: false },
+        ),
+        installation: Type.Object(
+          {
+            administer: Type.Boolean({
+              description:
+                "Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation.",
+            }),
+          },
+          { additionalProperties: false },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const AgentProvisioningStatusSchema = Type.Object(
   {
+    requestId: Type.Optional(
+      Type.String({
+        ...RequestId,
+        description:
+          "The client request ID stored when this job was admitted. Older controllers omit it. The separate meta.requestId identifies the current HTTP request.",
+      }),
+    ),
     workId: Type.String({ minLength: 1, maxLength: 200 }),
     status: Type.Union([
       Type.Literal("queued"),
@@ -603,6 +924,37 @@ export const AgentProvisioningStatusSchema = Type.Object(
           message: Type.String({ minLength: 1, maxLength: 256 }),
         },
         { additionalProperties: false },
+      ),
+    ),
+    progress: Type.Optional(
+      Type.Object(
+        {
+          phase: Type.Literal("deployment", {
+            description: "Handoff is done; the job waits for its initial deployment.",
+          }),
+          lastAttempt: Type.Union(
+            [
+              Type.Null(),
+              Type.Object(
+                {
+                  at: Timestamp,
+                  code: Type.String({ minLength: 1, maxLength: 64 }),
+                  message: Type.String({ minLength: 1 }),
+                },
+                { additionalProperties: false },
+              ),
+            ],
+            {
+              description:
+                "With `agent_revision:read`, this can report the deployment's named wait. Otherwise it reports the job's own `PROVISIONING_DEPLOYMENT_PENDING`, or null if the job has not recorded that wait. The controller writes the message; a refusal can include a code restricted to uppercase letters, digits, and underscores.",
+            },
+          ),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0.",
+        },
       ),
     ),
   },
@@ -772,11 +1124,15 @@ export const CredentialWithdrawalSchema = Type.Object(
   {
     namespaceId: NamespaceId,
     agentId: AgentId,
-    revisionId: RevisionId,
+    revisionId: Type.String({
+      ...RevisionId,
+      description:
+        "Identifies the Agent revision for the reported withdrawal. This is the selected Agent revision unless another Agent revision that can still run has a `pending` withdrawal for this source. A status read first reports a `pending` withdrawal with no queued or running attempt. `revoked` means every Agent revision that can still run with this source has confirmed withdrawal.",
+    }),
     credentialSourceId: CredentialSourceId,
     state: Type.Union([Type.Literal("pending"), Type.Literal("revoked")], {
       description:
-        "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve.",
+        "`revoked` only after the Credential Gateway confirms that the Agent revision's placeholders no longer resolve.",
     }),
     requestedBy: Type.String({
       minLength: 1,
@@ -796,7 +1152,7 @@ export const CredentialWithdrawalSchema = Type.Object(
     lastAttemptAt: Type.Optional(Type.String({ format: "date-time" })),
     withdrawalInProgress: Type.Boolean({
       description:
-        "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
+        "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no queued or running attempt. OCC maintenance can queue a new attempt. To request another attempt, send the withdraw request again.",
     }),
   },
   { additionalProperties: false },
@@ -820,6 +1176,29 @@ export const SecretListResponse = Type.Object(
 export const ServiceAccountResponse = Type.Object(
   { data: ServiceAccountSchema, meta: Meta },
   { additionalProperties: false },
+);
+
+export const ServiceAccountForceDeletionResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        id: ServiceAccountId,
+        namespaceId: NamespaceId,
+        revocation: Type.Literal("skipped", {
+          description:
+            "The account's issued access token was not revoked: no ChatGPT Backend can revoke it. Revoke it at the provider; the audit event names its Backend and credential ID.",
+        }),
+        backendId: Type.Optional(BackendId),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  {
+    additionalProperties: false,
+    description:
+      "A forced deletion removed the account and its credential Secret but could not revoke its issued access token.",
+  },
 );
 
 export const ServiceAccountListResponse = Type.Object(
@@ -904,7 +1283,15 @@ export const RepositoryOptionListResponse = Type.Object(
   {
     data: Type.Array(RepositoryOptionSchema, { maxItems: 1000 }),
     meta: Type.Object(
-      { ...Meta.properties, descriptionsPending: Type.Boolean() },
+      {
+        ...Meta.properties,
+        notConfigured: Type.Optional(
+          Type.Literal(true, {
+            description:
+              "Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT.",
+          }),
+        ),
+      },
       { additionalProperties: false },
     ),
   },
@@ -949,6 +1336,10 @@ export const AgentRevisionSchema = Type.Object(
     configurationKind: ConfigurationKindSchema,
     configurationGeneration: ConfigurationGeneration,
     configuration: ConfigurationValues,
+    gatewayManagedMode: Type.Boolean({
+      description:
+        "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
+    }),
     harness: Type.Object(
       {
         id: Type.String({ minLength: 1 }),
@@ -960,6 +1351,13 @@ export const AgentRevisionSchema = Type.Object(
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
       { additionalProperties: false },
+    ),
+    sandboxDriverId: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description:
+          "The Sandbox Driver that provisions this version. Absent when the version runs without a Sandbox, so it has no Sandbox log source and records no policy denials.",
+      }),
     ),
     secretDriverId: Type.Optional(Type.String({ minLength: 1 })),
     secretBindings: Type.Optional(SecretBindings),
@@ -981,13 +1379,36 @@ export const AgentRevisionSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const FirstDeploymentReceiptSchema = Type.Object(
+  {
+    revisionId: RevisionId,
+    namespaceId: NamespaceId,
+    agentId: AgentId,
+    configurationId: ConfigurationId,
+    configurationGeneration: ConfigurationGeneration,
+    createdAt: Timestamp,
+  },
+  { additionalProperties: false },
+);
+export const FirstDeploymentReceiptResponse = Type.Object(
+  { data: FirstDeploymentReceiptSchema, meta: Meta },
+  { additionalProperties: false },
+);
+export const FirstDeploymentRecoveryResponse = Type.Object(
+  {
+    data: Type.Union([FirstDeploymentReceiptSchema, Type.Null()]),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const AgentRevisionResponse = Type.Object(
   { data: AgentRevisionSchema, meta: Meta },
   { additionalProperties: false },
 );
 
 const agentRevisionReadDescription =
-  "An immutable revision with readable saved settings, or revision metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits saved configuration fields.";
+  "Returns an Agent revision with saved settings that cannot change. If OCC cannot read them, the response omits saved configuration fields and includes `configurationReadError` with code `SAVED_CONFIGURATION_UNREADABLE` and the unreadable field.";
 
 export const AgentRevisionReadSchema = Type.Union(
   [
@@ -1017,10 +1438,63 @@ export const AgentRevisionReadResponse = Type.Object(
   { additionalProperties: false },
 );
 
+// A list item names a revision without its saved settings, so a page stays a few hundred bytes
+// per item whatever the admitted snapshots weigh (finding 1323). The fields beyond metadata are
+// the ones clients use to tell revisions apart; the database checks their shape on insert.
+export const AgentRevisionSummarySchema = Type.Object(
+  {
+    ...Type.Pick(AgentRevisionSchema, [
+      "id",
+      "namespaceId",
+      "agentId",
+      "revision",
+      "backendId",
+      "configurationId",
+      "configurationGeneration",
+      "harness",
+      "createdAt",
+    ]).properties,
+    // The outcome a Versions list marks beside each version (finding 2422).
+    deploymentStatus: Type.Union(
+      [
+        Type.Literal("queued"),
+        Type.Literal("running"),
+        Type.Literal("succeeded"),
+        Type.Literal("failed"),
+        Type.Null(),
+      ],
+      {
+        description:
+          "The status that reading this revision's deployment would report, or `null` when OCC has no deployment record for it.",
+      },
+    ),
+    deploymentErrorCode: Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
+      description:
+        "The `error.code` that reading this revision's deployment would report, or `null` when it reports no error. It tells a failure from a deployment that a newer version or a Stop ended.",
+    }),
+  },
+  {
+    description:
+      "Agent revision summary without saved settings. Read this Agent revision for its configuration. If OCC cannot read the saved settings, the response contains `configurationReadError`.",
+  },
+);
+
 export const AgentRevisionListResponse = Type.Object(
   {
-    data: Type.Array(AgentRevisionReadSchema, { description: agentRevisionReadDescription }),
-    meta: Meta,
+    data: Type.Array(AgentRevisionSummarySchema, {
+      maxItems: 100,
+      description: "Agent revisions that you can read, newest first.",
+    }),
+    meta: Type.Object(
+      {
+        ...Meta.properties,
+        nextCursor: Type.Union([Type.String({ maxLength: 32 }), Type.Null()], {
+          description:
+            "Pass this value as `cursor` to read older Agent revisions. OCC returns a cursor only when it finds an older Agent revision that you can read during this request. A later page can be empty if access changes. `null` means OCC found no older Agent revision that you can read.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
   },
   { additionalProperties: false },
 );
@@ -1036,6 +1510,24 @@ export const AgentDeploymentStatusSchema = Type.Object(
       Type.Literal("succeeded"),
       Type.Literal("failed"),
     ]),
+    cleanup: Type.Union(
+      [
+        Type.Null(),
+        Type.Object(
+          {
+            status: Type.Union(
+              ["queued", "running", "succeeded", "failed"].map((status) => Type.Literal(status)),
+            ),
+            nextAttemptAt: Type.Union([Timestamp, Type.Null()]),
+          },
+          { additionalProperties: false },
+        ),
+      ],
+      {
+        description:
+          "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete.",
+      },
+    ),
     progress: Type.Union(
       [
         Type.Null(),
@@ -1081,6 +1573,10 @@ export const AgentDeploymentStatusSchema = Type.Object(
             data: Type.Optional(
               Type.Union([
                 Type.Object(
+                  { preparation: ComputePreparationFailureEvidenceSchema },
+                  { additionalProperties: false },
+                ),
+                Type.Object(
                   {
                     timeoutMs: Type.Integer({ minimum: 1 }),
                     runtimeFailure: Type.Optional(
@@ -1120,7 +1616,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned.",
+          "`null` unless deployment failed. A failure contains `code`, a fixed safe message, and optional data with known fields. `CONVERGENCE_DEADLINE_EXCEEDED` can include `data.timeoutMs` and `data.runtimeFailure` with startup failure details. A component, check, or code unknown to the runtime is shown as `UNRECOGNIZED`. `RUNTIME_MODEL_PROBE_FAILED` can include `data.runtimeFailure` with the cause of the failed startup model check. The response never includes native error text.",
       },
     ),
     warnings: Type.Array(
@@ -1247,6 +1743,7 @@ export const RuntimeLogRecordSchema = Type.Union([
         Type.Literal("unknown"),
       ]),
       message: RuntimeMessage,
+      decision: Type.Optional(SandboxPolicyDecisionSchema),
       subsystem: Type.Optional(Type.String({ maxLength: 512 })),
       fields: Type.Optional(
         Type.Record(
@@ -1289,6 +1786,48 @@ export const RuntimeLogRecordSchema = Type.Union([
     { additionalProperties: false },
   ),
 ]);
+
+export const AgentHarnessStatusSchema = Type.Object(
+  {
+    state: Type.Union([
+      Type.Literal("running"),
+      Type.Literal("starting"),
+      Type.Literal("lost"),
+      Type.Literal("unknown"),
+    ]),
+    code: Type.Optional(
+      Type.Union([
+        Type.Literal("SANDBOX_MISSING"),
+        Type.Literal("SANDBOX_DELETING"),
+        Type.Literal("SANDBOX_STOPPED"),
+        Type.Literal("SANDBOX_FAILED"),
+        Type.Literal("HARNESS_EXITED"),
+        Type.Literal("HARNESS_RESTARTING"),
+        Type.Literal("UNAVAILABLE"),
+      ]),
+    ),
+    exitCode: Type.Optional(
+      Type.Integer({
+        minimum: -2147483648,
+        maximum: 2147483647,
+        description: "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+      }),
+    ),
+    restarts: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: 4294967295,
+        description:
+          "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+      }),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
+  },
+);
 
 export const AgentRuntimeDescriptionSchema = Type.Object(
   {
@@ -1368,7 +1907,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
               },
               { additionalProperties: false },
             ),
-            { maxItems: 16 },
+            { maxItems: 256 },
           ),
           available: Type.Boolean(),
           unavailableCode: Type.Optional(Type.Literal("NO_POD")),
@@ -1378,6 +1917,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
       ),
       { maxItems: 4 },
     ),
+    harness: Type.Optional(AgentHarnessStatusSchema),
   },
   { additionalProperties: false },
 );
@@ -1385,6 +1925,24 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
 export const AgentRuntimeResponse = Type.Object(
   { data: AgentRuntimeDescriptionSchema, meta: Meta },
   { $id: "AgentRuntimeResponse", additionalProperties: false },
+);
+
+export const AgentHarnessStatusResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        status: Type.Union([Type.Literal("observed"), Type.Literal("unobserved")], {
+          description:
+            "`observed` when OCC read the Sandbox record of the running Agent's active revision. `unobserved` when there is nothing to read: the Agent is stopped, deleting or has no active revision, its Harness is not dedicated, or the selected Sandbox Driver keeps no lifecycle record.",
+        }),
+        revisionId: Type.Optional(RevisionId),
+        harness: Type.Optional(AgentHarnessStatusSchema),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
 );
 
 export const AgentRuntimeLogPageSchema = Type.Object(
@@ -1445,6 +2003,7 @@ export type ServiceAccountWire = Type.Static<typeof ServiceAccountSchema>;
 export type BackendSummaryWire = Type.Static<typeof BackendSummarySchema>;
 export type AgentReadWire = Type.Static<typeof AgentReadSchema>;
 export type AgentRevisionReadWire = Type.Static<typeof AgentRevisionReadSchema>;
+export type AgentRevisionSummaryWire = Type.Static<typeof AgentRevisionSummarySchema>;
 export type AgentReadResponse = Type.Static<typeof AgentReadResponse>;
 export type AgentRevisionReadResponse = Type.Static<typeof AgentRevisionReadResponse>;
 export type AgentWire = Type.Static<typeof AgentSchema>;
@@ -1474,6 +2033,9 @@ export type CredentialWithdrawalWire = Type.Static<typeof CredentialWithdrawalSc
 export type CredentialWithdrawalResponse = Type.Static<typeof CredentialWithdrawalResponse>;
 export type SecretListResponse = Type.Static<typeof SecretListResponse>;
 export type ServiceAccountResponse = Type.Static<typeof ServiceAccountResponse>;
+export type ServiceAccountForceDeletionResponse = Type.Static<
+  typeof ServiceAccountForceDeletionResponse
+>;
 export type ServiceAccountListResponse = Type.Static<typeof ServiceAccountListResponse>;
 export type AgentResponse = Type.Static<typeof AgentResponse>;
 export type AgentRuntimeCredentialResponse = Type.Static<typeof AgentRuntimeCredentialResponse>;
@@ -1514,10 +2076,17 @@ export const PresetResponse = Type.Object(
   { data: PresetSchema, meta: Meta },
   { additionalProperties: false },
 );
+// A list item names a Preset without its template (up to 1 MiB); read the exact Preset for it.
+export const PresetSummarySchema = Type.Pick(
+  PresetSchema,
+  ["id", "namespaceId", "name", "createdAt"],
+  { description: "Preset summary without its template. Read the exact Preset for the template." },
+);
 export const PresetListResponse = Type.Object(
-  { data: Type.Array(PresetSchema), meta: Meta },
+  { data: Type.Array(PresetSummarySchema), meta: Meta },
   { additionalProperties: false },
 );
 export type PresetWire = Type.Static<typeof PresetSchema>;
+export type PresetSummaryWire = Type.Static<typeof PresetSummarySchema>;
 export type PresetResponse = Type.Static<typeof PresetResponse>;
 export type PresetListResponse = Type.Static<typeof PresetListResponse>;

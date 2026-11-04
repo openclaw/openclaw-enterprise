@@ -14,8 +14,40 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep, resolve } from "node:path";
+import { readOpenclawSource } from "./lib/openclaw-source.mjs";
 
-const [command, sourceRoot, output] = process.argv.slice(2);
+// Every patch deploy/runtime/Dockerfile applies, in order, as provenance records it under
+// `patches` (finding 2290). runtime-assets.test.mjs checks this list against the Dockerfile.
+// `field` keeps the per-patch provenance names that existed before `patches`.
+const appliedPatches = [
+  {
+    file: "openclaw-codex-read-only-paths.patch",
+    sha256: "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc",
+    field: "openclawBridgePatchSha256",
+  },
+  {
+    file: "openclaw-codex-full-access-profile.patch",
+    sha256: "37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc",
+  },
+  {
+    file: "openclaw-required-worker-authority-regression.patch",
+    sha256: "fe61a9c3bd9d2c777db5ce7b6272c0db8b12da4a97a07fb7a42cc879a10dbf0e",
+    field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",
+  },
+  {
+    file: "openclaw-control-ui-browser-reconnect.patch",
+    sha256: "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
+  },
+  {
+    file: "openclaw-terminated-gateway-namespace.patch",
+    sha256: "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
+  },
+  {
+    file: "openclaw-google-worker-placeholder.patch",
+    sha256: "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+  },
+];
+const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);
 const root = await realpath(sourceRoot);
 const runtimePaths = [
   "dist",
@@ -24,16 +56,25 @@ const runtimePaths = [
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "patches",
+  "scripts",
   "node-version.mjs",
   "node-sqlite.mjs",
+  "node-sqlite-capabilities.mjs",
+  "runtime-process-bootstrap.generated.mjs",
+  "runtime-process-scripts.generated.mjs",
+  "standalone-runtime-profile.mjs",
   "node-runtime-update.mjs",
   "node-runtime-recovery.mjs",
   "node-runtime-env.mjs",
+  "cli-invocation.mjs",
+  "cli-parent-lifetime.mjs",
   "cli-root-options.mjs",
+  "gateway-prewarm.mjs",
   "gateway-run-argv.mjs",
   "gateway-shutdown-budget.mjs",
   "node-host-launcher.mjs",
   "node-compile-cache.mjs",
+  "worker-heap-flag.mjs",
   "openclaw.mjs",
   "extensions",
   "skills",
@@ -183,10 +224,15 @@ if (command === "inputs") {
   )
     .trim()
     .split("\n");
+  await writeFile(join(output, "openclaw-workspace-plugin-dirs"), `${selected.join("\n")}\n`);
+  // Upstream asset preparation builds external plugin assets before pruning.
+  // Keep their build dependencies here; the production install stays selected.
   for (const dir of [
     "ui",
+    "examples/ai-chat",
+    "tools/solid-lint",
     ...(await readdir(join(root, "packages"))).map((name) => `packages/${name}`),
-    ...selected.map((name) => `extensions/${name}`),
+    ...(await readdir(join(root, "extensions"))).map((name) => `extensions/${name}`),
   ]) {
     try {
       const manifest = await readFile(join(root, dir, "package.json"));
@@ -199,6 +245,13 @@ if (command === "inputs") {
     }
   }
 } else if (command === "package") {
+  if (!sourceManifest) {
+    throw new Error("Runtime packaging requires the OpenClaw source manifest path");
+  }
+  const source = await readOpenclawSource(sourceManifest);
+  if (process.env.GIT_COMMIT !== source.commit) {
+    throw new Error("GIT_COMMIT must match the OpenClaw source manifest");
+  }
   // Preserve runtime templates and help text; omit upstream development/QA trees.
   for (const name of await readdir(root)) {
     if (!runtimePaths.includes(name)) {
@@ -290,12 +343,12 @@ if (command === "inputs") {
     `${JSON.stringify(
       {
         source: "https://github.com/openclaw/openclaw",
-        commit: process.env.GIT_COMMIT,
-        sourceArchiveSha256: "c56ea921a033efd95c2c9e43e4255c675939b0aa927c6aaf5bbdb51d5b693a8b",
-        openclawBridgePatchSha256:
-          "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca",
-        openclawConnectPatchSha256:
-          "c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f",
+        commit: source.commit,
+        sourceArchiveSha256: source.sourceArchiveSha256,
+        ...Object.fromEntries(
+          appliedPatches.flatMap(({ field, sha256 }) => (field ? [[field, sha256]] : [])),
+        ),
+        patches: Object.fromEntries(appliedPatches.map(({ file, sha256 }) => [file, sha256])),
         artifactKind: "assembled-runtime-root",
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),

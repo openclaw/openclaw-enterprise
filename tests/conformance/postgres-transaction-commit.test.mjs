@@ -12,9 +12,10 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 
 // A transport protocol fixture for the actual outer owner, not a SQL database
 // emulator. No repository reads/writes, authentication, custody or PG evidence.
-function protocol({ on, begin, commit, query, release, removeListener } = {}) {
+function protocol({ on, begin, commit, query, release } = {}) {
   const calls = [];
   const releases = [];
+  const cleanupAttempts = [];
   let transportListener;
   const client = {
     on(event, listener) {
@@ -24,7 +25,7 @@ function protocol({ on, begin, commit, query, release, removeListener } = {}) {
       }
     },
     removeListener(event, listener) {
-      removeListener?.(event, listener);
+      cleanupAttempts.push("removeListener");
       if (event === "error" && listener === transportListener) {
         transportListener = undefined;
       }
@@ -47,6 +48,7 @@ function protocol({ on, begin, commit, query, release, removeListener } = {}) {
     },
     release(destroy) {
       releases.push(destroy);
+      cleanupAttempts.push("release");
       release?.(destroy);
     },
   };
@@ -63,6 +65,10 @@ function protocol({ on, begin, commit, query, release, removeListener } = {}) {
     releases,
     emitTransportError: (error) => transportListener?.(error),
     hasTransportListener: () => transportListener !== undefined,
+    assertReleaseAttemptThenListenerRemoval() {
+      assert.deepEqual(cleanupAttempts, ["release", "removeListener"]);
+      assert.equal(transportListener, undefined);
+    },
   };
 }
 
@@ -79,6 +85,21 @@ async function assertCommitUnknown(p) {
   );
   assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
   assert.equal(p.releases.at(-1), true);
+}
+
+// The transaction refuses before its callback runs, sends only the given SQL
+// and discards its client exactly once.
+async function assertNotAdmitted(p, rejection, calls) {
+  let called = false;
+  await assert.rejects(
+    p.state.transact(async () => {
+      called = true;
+    }),
+    rejection,
+  );
+  assert.equal(called, false);
+  assert.deepEqual(p.calls, calls);
+  assert.deepEqual(p.releases, [true]);
 }
 
 test("known outer acknowledgment returns the original value after cleanup", async () => {
@@ -208,17 +229,7 @@ test("observed client error during listener registration prevents admission", as
   const p = protocol({
     on: (listener) => listener(failure),
   });
-  let called = false;
-  await assert.rejects(
-    p.state.transact(async () => {
-      called = true;
-    }),
-    DependencyUnavailableError,
-  );
-  assert.equal(called, false);
-  assert.deepEqual(p.calls, []);
-  assert.deepEqual(p.releases, [true]);
-  assert.equal(p.releases.length, 1);
+  await assertNotAdmitted(p, DependencyUnavailableError, []);
 });
 
 test("listener registration failure discards the checked-out client exactly once", async () => {
@@ -228,17 +239,7 @@ test("listener registration failure discards the checked-out client exactly once
       throw failure;
     },
   });
-  let called = false;
-  await assert.rejects(
-    p.state.transact(async () => {
-      called = true;
-    }),
-    (error) => error === failure,
-  );
-  assert.equal(called, false);
-  assert.deepEqual(p.calls, []);
-  assert.deepEqual(p.releases, [true]);
-  assert.equal(p.releases.length, 1);
+  await assertNotAdmitted(p, (error) => error === failure, []);
 });
 
 test("observed client error during a resolved BEGIN prevents callback and later SQL", async () => {
@@ -249,17 +250,7 @@ test("observed client error during a resolved BEGIN prevents callback and later 
       return { command: "BEGIN", rows: [], rowCount: 0 };
     },
   });
-  let called = false;
-  await assert.rejects(
-    p.state.transact(async () => {
-      called = true;
-    }),
-    DependencyUnavailableError,
-  );
-  assert.equal(called, false);
-  assert.deepEqual(p.calls, ["BEGIN"]);
-  assert.deepEqual(p.releases, [true]);
-  assert.equal(p.releases.length, 1);
+  await assertNotAdmitted(p, DependencyUnavailableError, ["BEGIN"]);
 });
 
 test("an observed client error is unavailable even with a server-looking code", async () => {
@@ -370,33 +361,25 @@ test("observed client error during resolved COMMIT remains unknown", async () =>
 });
 
 test("observed client error during release after acknowledged COMMIT remains unknown", async () => {
-  const order = [];
   const p = protocol({
     release: () => {
-      order.push("release");
       p.emitTransportError(new Error("release transport failure"));
     },
-    removeListener: () => order.push("removeListener"),
   });
   await assert.rejects(
     p.state.transact(async () => 1),
     PostgresCommitOutcomeUnknownError,
   );
   assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
-  assert.deepEqual(order, ["release", "removeListener"]);
-  assert.equal(p.releases.length, 1);
-  assert.equal(p.hasTransportListener(), false);
+  p.assertReleaseAttemptThenListenerRemoval();
 });
 
 test("observed client error during release preserves an earlier callback failure", async () => {
   const failure = new Error("callback failed");
-  const order = [];
   const p = protocol({
     release: () => {
-      order.push("release");
       p.emitTransportError(new Error("release transport failure"));
     },
-    removeListener: () => order.push("removeListener"),
   });
   await assert.rejects(
     p.state.transact(async () => {
@@ -405,8 +388,7 @@ test("observed client error during release preserves an earlier callback failure
     (error) => error === failure,
   );
   assert.deepEqual(p.calls, ["BEGIN", "ROLLBACK"]);
-  assert.deepEqual(order, ["release", "removeListener"]);
-  assert.equal(p.releases.length, 1);
+  p.assertReleaseAttemptThenListenerRemoval();
 });
 
 test("40003 statement completion unknown does not issue a follow-up query", async () => {
@@ -457,22 +439,17 @@ test("a throwing acknowledgment projection remains unknown even with a definite 
 });
 
 test("release failure after acknowledged COMMIT is unknown and cleanup continues", async () => {
-  let detached = false;
   const p = protocol({
     release: () => {
       throw new Error("release failed");
-    },
-    removeListener: () => {
-      detached = true;
     },
   });
   await assert.rejects(
     p.state.transact(async () => 1),
     PostgresCommitOutcomeUnknownError,
   );
-  assert.equal(detached, true);
-  assert.equal(p.releases.length, 1);
   assert.deepEqual(p.calls, ["BEGIN", "COMMIT"]);
+  p.assertReleaseAttemptThenListenerRemoval();
 });
 
 test("cleanup failure cannot replace an earlier callback failure", async () => {

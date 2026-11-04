@@ -8,6 +8,7 @@ the OpenClaw Control Plane (OCC).
 
 ## Cheat sheets
 
+- [GitHub Actions](cheatsheets/github-actions.md): workflows, triggers, and blocking failures.
 - [API](cheatsheets/api.md): public methods and what they do, by entity.
 - [Permissions](cheatsheets/permissions.md): all IAM actions, resources, and access scopes.
 - [Database entities](cheatsheets/database-entities.md): PostgreSQL tables, their purpose, and their columns.
@@ -24,9 +25,11 @@ commands, flags, and output formats.
 
 Use the HTTP API from automation or when you need an operation the CLI does not
 expose. The [HTTP API quickstart](../guides/http-api.md) makes authenticated
-requests and explains the responses. The [API reference](api.md) lists exact
-paths, schemas, permissions, and error codes. It is generated from the checked-in
-[OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json).
+requests and explains the responses. Use the [interactive API reference](api-explorer.md)
+to inspect paths, schemas, permissions, error codes, and examples. The
+[Markdown reference](api.md) provides a text-only view for browsing and site search.
+Both use the generated [OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json).
+Follow [create and deploy an Agent](../guides/http-api-agent.md) for the complete workflow.
 
 ## Metrics
 

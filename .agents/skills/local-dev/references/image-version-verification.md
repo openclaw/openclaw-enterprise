@@ -64,7 +64,7 @@ branch check before merge; complete the authorized publication after merge.
 
 ## After merge and before announcing updated images
 
-Follow [Prepare and publish](../../../../.github/containers.md#prepare-and-publish)
+Follow [Prepare and publish](../../../../docs/release/containers.md#prepare-and-publish)
 with the exact selected main SHA and its successful main-push CI run. Leave
 `image_tag` blank when publishing `latest`; a custom tag does not update it.
 Image-only publication uses `publish_chart: false`. Repository access or merge

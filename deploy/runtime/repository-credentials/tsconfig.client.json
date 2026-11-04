@@ -1,0 +1,13 @@
+{
+  "extends": "../../../apps/controller/tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "tsBuildInfoFile": null,
+    "noCheck": true
+  },
+  "include": [
+    "../../../apps/controller/src/drivers/repo/github/credentials/client/**/*.ts",
+    "../../../apps/controller/src/drivers/repo/credentials/client-contracts.ts"
+  ]
+}

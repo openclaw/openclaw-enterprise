@@ -6,13 +6,13 @@ These steps continue [the observability demonstration stack](demo.md). Run them 
 
 Do not rerun failed or interrupted commands: an absent marker does not prove
 no changes. The one exception is a demo install that timed out waiting; rerun
-that block as the [setup guide](demo.md#install-private-backends) describes. Confirm cluster UID, OCC status, complete history, saved revision
+that block as the [setup guide](demo.md#install-private-backends) describes. Confirm cluster UID, OCC status, complete history, saved Helm revision
 and live resources. If upgrade was never invoked and OCC matches the saved
-revision, no rollback is needed. Otherwise retain dependencies and inspect for
+Helm revision, no rollback is needed. Otherwise retain dependencies and inspect for
 rollback below or escalate. If backup or cluster identity is unavailable, stop
 and reconcile with a qualified operator.
 
-Inspect demo status, every relevant history revision, manifests, hooks and live objects
+Inspect demo status, every relevant Helm revision in its history, manifests, hooks and live objects
 in both namespaces, including the OCC discovery Role and RoleBinding, Grafana
 Secret and both Collector Secrets. Record UIDs and establish creation and ownership
 from independent records, not names or labels. Check workloads, Pods and external
@@ -20,7 +20,7 @@ Collectors for references. Retain and escalate on failed reads or ambiguity.
 Account for objects without a release record or outside the latest manifest.
 
 Once OCC and external exporters no longer depend on the demo, if the release
-exists, a qualified operator must establish ownership and revision. Inspect the
+exists, a qualified operator must establish ownership and Helm revision. Inspect the
 latest manifest, pre/post-delete hooks, policies and effects, and every live
 object Helm can delete. Confirm unchanged release and object UIDs and exclude
 other writers. Run `helm uninstall demo -n oce-observability-demo --wait --timeout 5m`
@@ -35,6 +35,53 @@ unreserved release name. If either cannot be reconciled, use fresh names and
 retain the backup. Otherwise, after verified cleanup, confirm `$OBS_FILES` names
 the setup directory, delete it, and unset it.
 
+## Refresh a renamed Loki address
+
+A custom release with a leading digit may already run on a cluster with relaxed
+Service-name validation. Upgrading its chart can rename Loki even though the old
+Service was valid there. The old endpoint saved by a managed or external
+Collector then stops accepting logs. Grafana updates its own datasource only.
+
+After the owned demo upgrade completes, read the actual Loki Service name from
+its manifest. Check the release, namespace, cluster UID and exporter ownership
+before writing. For the dedicated managed Collector from the setup guide, set
+`OBS_DEMO_RELEASE` and `OBS_DEMO_NAMESPACE` to that demo's actual identity:
+
+```bash
+(
+  set -euo pipefail
+  test "$(kubectl --context "$HELM_KUBECONTEXT" get namespace kube-system -o jsonpath='{.metadata.uid}')" = "$(cat "$OBS_FILES/cluster-uid")"
+  loki_service=$(helm get manifest "$OBS_DEMO_RELEASE" -n "$OBS_DEMO_NAMESPACE" |
+    yq -r 'select(.kind == "Service" and .spec.selector."app.kubernetes.io/component" == "loki") | .metadata.name')
+  test -n "$loki_service"
+  endpoint="http://${loki_service}.${OBS_DEMO_NAMESPACE}.svc:3100/otlp/v1/logs"
+  revision=$(kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" get secret occ-demo-collector-exporter -o jsonpath='{.metadata.resourceVersion}')
+  patch=$(jq -cn --arg endpoint "$endpoint" --arg revision "$revision" \
+    '{metadata: {resourceVersion: $revision}, data: {OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: ($endpoint | @base64)}}')
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" patch secret occ-demo-collector-exporter --type=merge -p "$patch"
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" rollout restart daemonset/openclaw-enterprise-collector
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" rollout status daemonset/openclaw-enterprise-collector --timeout=2m
+)
+```
+
+The patch preserves other exporter keys, including credentials, and rejects a
+concurrent Secret change. Stop on a conflict and reinspect. Secret environment
+variables are read when a Pod starts, so updating the Secret without refreshing
+the Collector leaves the old address active. If the installation uses another
+verified exporter Secret, use its configured name instead of the guide's name.
+
+For an external Collector, update its owned Loki `logs_endpoint` or
+`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, retain its filtering, credentials and verified
+TLS settings, and reload or restart that Collector through its owning workflow.
+Use an endpoint reachable from its network; update any address-based egress rule
+that pinned the old destination. The demo's Pod selectors stay unchanged.
+
+Send a fresh authorized operational record and find it in Loki or Grafana after
+the refresh. A Collector receive acknowledgement or a ready Pod alone does not
+prove delivery. Inspect Collector export failures and retry/queue metrics if it
+is absent. Demo rollouts can lose buffered records and disposable stored data;
+this procedure restores new ingestion rather than guaranteeing old-record replay.
+
 ## Remove only the demo
 
 Redirect external Collectors away from Loki and allow active work to finish;
@@ -48,11 +95,11 @@ replaced or ambiguous object. Preserve backend, Secrets, history and backup; do
 not blindly repeat operations. After inspection, `touch "$OBS_FILES/rollback-inspected"`;
 the command consumes it before rollback. Reinspect after failure or interruption.
 
-Rollback uses the original revision's chart, values, manifest and hooks. Only it
-or the immediately following demo revision is accepted. Stop for manual
+Rollback uses the original Helm revision's chart, values, manifest and hooks. Only it
+or the immediately following demo Helm revision is accepted. Stop for manual
 reconciliation on pending or unexpected states, pruned or changed backup, UID,
 chart or values, or interrupted rollback. `--history-max 0` prevents pruning the
-original revision.
+original Helm revision.
 
 ```bash
 (
@@ -112,7 +159,7 @@ PY_VALUES
 
 Rollback completion does not prove restoration or deletion. Keep dependencies
 and backup while a qualified operator compares status, history, restored manifest
-and live resources with the saved revision. Save DaemonSets and Pods; their
+and live resources with the saved Helm revision. Save DaemonSets and Pods; their
 configuration may be sensitive:
 
 ```bash
@@ -130,4 +177,4 @@ ambiguous readback.
 
 Stop the port-forward and follow
 [cleanup](#recover-an-incomplete-setup) for the release and remaining resources.
-See [observability acceptance](../../testing/metrics.md#kubernetes-observability-acceptance) for local and CI proof.
+See [observability acceptance](../../testing/local.md#kubernetes-observability-acceptance) for local and CI proof.

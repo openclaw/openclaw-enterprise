@@ -21,7 +21,7 @@ for review and merge.
    solves the problem, and what is out of scope. Show what existing owners or
    mechanisms can be reused before introducing another component.
 3. **Ask for human feedback early.** Open the RFC for review and link the code
-   or planned implementation. Code and RFC revisions can proceed in parallel;
+   or planned implementation. Code and RFC versions can proceed in parallel;
    waiting for an RFC response is not a prerequisite to starting implementation.
 4. **Revise both as you learn.** Incorporate material feedback and implementation
    discoveries. Keep decisions, diagrams, and interfaces consistent with the

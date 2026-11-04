@@ -45,8 +45,12 @@ curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
 
 `occ service-key create --service-principal ID --name NAME --out FILE`, with
 `--namespace` for a Namespace principal, makes the same request and writes the
-response to a new `0600` file without printing the key. For an Installation
-principal, unset `OCC_NAMESPACE`, which the CLI also sends as `namespaceId`.
+response to a new `0600` file without printing the key. The name is 1 to 32
+characters, counted as Unicode code points rather than bytes, and must contain
+a non-whitespace character, the same rule as the API. The CLI refuses any
+other name before it creates the key file or sends the request. For an
+Installation principal, unset `OCC_NAMESPACE`, which the CLI also sends as
+`namespaceId`.
 
 Success returns HTTP `201`. The response contains the credential exactly once in
 `data.key` and a non-secret `data.id` needed to revoke it. Record the key and
@@ -176,6 +180,15 @@ Validate it with `occ installation get`; the displayed ID should match
 file to obtain the ID.
 
 ## Recover an incomplete bootstrap
+
+Fresh bootstrap checks both configured password and service-key output paths
+before creating credentials. `BOOTSTRAP_OUTPUT_EXISTS` means preserve the output
+and reconcile the original attempt; it does not establish who owns the file.
+`BOOTSTRAP_OUTPUT_UNVERIFIED` means absence could not be established. Neither
+result authorizes a retry. Exclusive, no-follow creation still refuses a later collision,
+which can leave partial effects. Migration may already have run; the check does
+not establish an empty database. Existing-Installation verification and upgrades
+are unchanged.
 
 Bootstrap makes one attempt. On failure, preserve logs, non-secret IDs, and
 protected output. Confirm database commit state before deleting anything. If the

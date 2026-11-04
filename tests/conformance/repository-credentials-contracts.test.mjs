@@ -1,24 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verify } from "node:crypto";
 import { request } from "node:https";
 import { access } from "node:fs/promises";
-import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.mjs";
-import {
-  createResourceScope,
-  createTestResourceScope,
-} from "../fixtures/repository-credentials/resources.mjs";
-import {
-  temporaryDirectory,
-  createTlsMaterial,
-} from "../fixtures/repository-credentials/process.mjs";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
-import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
+import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
+import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { startTokenServiceScope } from "../fixtures/repository-credentials/service.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
-  createGitHubServiceFactory,
-  startServiceListeners,
+  startStaticTokenService,
   writeSessionClientConfiguration,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 import {
@@ -26,8 +16,9 @@ import {
   issueResponse,
   pullResponse,
 } from "../fixtures/repository-credentials/builders.mjs";
+import { validateDraftProjection } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-draft-pull.ts";
 
-test("GitHub driver admits exact REST methods, conservative GraphQL writes and configured Git routes", async (t) => {
+test("development token Driver admits exact REST methods, read-only GraphQL and configured Git routes", async (t) => {
   const { factory, bind } = await createGitHubPlanningFixture(t);
   const routes = [
     ["/repos/fixture/repository", ["GET"]],
@@ -90,7 +81,7 @@ test("GitHub driver admits exact REST methods, conservative GraphQL writes and c
     });
   }
   for (const profile of ["git-read", "git-write"]) {
-    for (const request of [head("GET", "/repos/fixture/repository"), head("POST", "/graphql")]) {
+    for (const request of [head("GET", "/repos/fixture/repository")]) {
       await t.test(`${profile} admits ${request.method} ${request.rawTarget}`, () => {
         const plan = bind(profile).plan(request);
         assert.equal(plan.kind, undefined);
@@ -503,8 +494,8 @@ test("response policy rejects a literal comma inside an otherwise admitted Link 
   );
 });
 
-test("gateway authentication is separate from upstream signing and rejects foreign attempt/result/plan objects", async (t) => {
-  const { factory, key, publicKey, bind } = await createGitHubPlanningFixture(t);
+test("gateway authentication rejects foreign attempt, result and plan objects", async (t) => {
+  const { factory, bind } = await createGitHubPlanningFixture(t);
   const bound = bind();
   const bearer = "a".repeat(43);
   assert.equal(
@@ -525,14 +516,6 @@ test("gateway authentication is separate from upstream signing and rejects forei
     ).kind,
     "denied",
   );
-  await key.withJwt(async (jwt) => {
-    const [h, p, s] = jwt.split(".");
-    assert.equal(
-      verify("sha256", Buffer.from(`${h}.${p}`), publicKey, Buffer.from(s, "base64url")),
-      true,
-    );
-    assert.equal(JSON.parse(Buffer.from(p, "base64url")).iss, "12345");
-  });
   await assert.rejects(
     bound.driver.acquire(
       { id: "copy", action: "acquire", authority: bound.authority },
@@ -545,23 +528,13 @@ test("gateway authentication is separate from upstream signing and rejects forei
     bound.driver.settle({ kind: "acquired", attemptId: "copy" }),
     /foreign-outcome/,
   );
-  await assert.rejects(
-    bound.driver.withAuthentication({}, {}, async () => {
-      throw new Error("must-not-send");
-    }),
-    /invalid-credential/,
-  );
-  key.close();
-  await assert.rejects(
-    key.withJwt(async () => {}),
-    /authority-unavailable/,
-  );
+  assert.throws(() => bound.driver.prepareAuthentication({}, {}), /invalid-credential/);
 });
 
-test("partial fixture cleanup retains the startup failure and releases keys and files", async () => {
+test("partial fixture cleanup retains the startup failure and releases owned material and files", async () => {
   const resources = createResourceScope();
   const directory = await temporaryDirectory(resources);
-  const { key } = await createGitHubPlanningFixture(resources);
+  const { owner } = await createGitHubPlanningFixture(resources);
   const startupFailure = new Error("startup failed");
   const cleanupFailure = new Error("cleanup failed");
   resources.after(() => {
@@ -576,7 +549,7 @@ test("partial fixture cleanup retains the startup failure and releases keys and 
   });
   await assert.rejects(access(directory), { code: "ENOENT" });
   await assert.rejects(
-    key.withJwt(async () => {}),
+    owner.withToken(async () => {}),
     /authority-unavailable/,
   );
 });
@@ -604,27 +577,17 @@ test("a cleanup deadline is a failure and does not prevent remaining resource re
 });
 
 test(
-  "service resource factories revoke acquired credentials before closing local upstreams",
+  "service resource factories dispose development sessions before closing local upstreams",
   { timeout: 15000 },
   async (t) => {
-    const resources = createTestResourceScope(t);
-    const clock = createControlledClock();
-    const tls = await createTlsMaterial(resources);
-    const config = await createLoopbackServiceConfiguration(resources);
-    const github = await startGitHubFixture(resources, { clock, tls });
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t);
     const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
-    const factory = await createGitHubServiceFactory(resources, {
+    const { service, listeners } = await startStaticTokenService(resources, {
       config,
-      clock,
-      privateKey: github.privateKey,
-      trustedEndpoints: { apiOrigin: github.origin, gitOrigin: git.origin, ca: tls.ca },
-    });
-    const { service, listeners } = await startServiceListeners(resources, {
-      config,
-      factory,
       clock,
       tls,
-      upstreamOrigins: [github.origin, git.origin],
+      github,
+      gitOrigin: git.origin,
     });
     const opened = service.open({ durationSeconds: 86400, profile: "git-full" });
     const clientDirectory = await writeSessionClientConfiguration(resources, {
@@ -657,12 +620,64 @@ test(
     });
     assert.equal(response.status, 200);
     assert.equal(JSON.parse(response.body).full_name, "fixture/repository");
-    assert.equal(github.issuesOfTokens.length, 1);
+    assert.equal(github.issuesOfTokens.length, 0);
     await resources.close();
     assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
-    assert.equal(github.tokenState()[0].revoked, true);
+    assert.equal(github.tokenState()[0].revoked, false);
     assert.deepEqual(github.errors, []);
     await assert.rejects(access(clientDirectory), { code: "ENOENT" });
     await assert.rejects(access(config.gateway.controlSocket), { code: "ENOENT" });
   },
 );
+
+test("a prepared draft keeps GitHub's spelling of the repository and still reads stored rows", async (t) => {
+  // The registry lowercases the repository; GitHub answers with its own spelling, and its
+  // names ignore case (finding 2236). The same check re-reads stored receipts, which hold
+  // the lowercase URL (the broker test replays both spellings from PostgreSQL).
+  const target = {
+    apiOrigin: "https://api.github.com",
+    repository: "acme/kit",
+    repositoryId: "42",
+    head: "review/task",
+    base: "main",
+  };
+  const side = (ref) => ({ repositoryId: "42", ref, sha: "a".repeat(40) });
+  const projection = (url, number = 8) => ({
+    id: "9001",
+    number,
+    url,
+    state: "open",
+    draft: true,
+    head: side("review/task"),
+    base: side("main"),
+  });
+  for (const url of [
+    "https://github.com/acme/kit/pull/8",
+    "https://github.com/Acme/Kit/pull/8",
+    "https://github.com/ACME/KIT/pull/8",
+  ]) {
+    await t.test(`admits ${url}`, () => {
+      assert.deepEqual(validateDraftProjection(projection(url), target), projection(url));
+    });
+  }
+  for (const [name, url, number] of [
+    ["another repository", "https://github.com/Acme/Other/pull/8"],
+    ["another owner", "https://github.com/Other/Kit/pull/8"],
+    ["a longer path", "https://github.com/Acme/Kit/x/pull/8"],
+    ["another number", "https://github.com/Acme/Kit/pull/9"],
+    ["a trailing slash", "https://github.com/Acme/Kit/pull/8/"],
+    ["a query", "https://github.com/Acme/Kit/pull/8?x=1"],
+    ["number zero", "https://github.com/Acme/Kit/pull/0", 0],
+    ["a number that disagrees", "https://github.com/Acme/Kit/pull/8", 9],
+    ["another host", "https://github.org/Acme/Kit/pull/8"],
+    ["plain HTTP", "http://github.com/Acme/Kit/pull/8"],
+    ["a non-ASCII letter that folds to ASCII", "https://github.com/acme/\u212Ait/pull/8"],
+  ]) {
+    await t.test(`refuses ${name}`, () => {
+      assert.throws(
+        () => validateDraftProjection(projection(url, number), target),
+        /invalid-draft-pull/,
+      );
+    });
+  }
+});

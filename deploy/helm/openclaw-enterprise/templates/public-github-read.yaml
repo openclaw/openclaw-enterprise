@@ -1,0 +1,85 @@
+{{- $read := .Values.publicGithubRead }}
+{{- if not (kindIs "bool" $read.enabled) }}{{ fail "publicGithubRead.enabled must be a boolean" }}{{ end }}
+{{- if $read.enabled }}
+{{- if .Values.executionCluster.enabled }}{{ fail "publicGithubRead supports single-cluster execution" }}{{ end }}
+{{- if not (regexMatch (include "openclaw.ipv4Host32" .) (printf "%s/32" $read.clusterIP)) }}
+  {{- fail "publicGithubRead.clusterIP must be the reserved IPv4 Service ClusterIP" }}
+{{- end }}
+{{- if not $read.upstreamCidrs }}{{ fail "publicGithubRead.upstreamCidrs must contain approved api.github.com IPv4 CIDRs" }}{{ end }}
+{{- range $cidr := $read.upstreamCidrs }}
+  {{- include "openclaw.requireIpv4Cidr" (dict "label" "publicGithubRead.upstreamCidrs" "cidr" $cidr) }}
+{{- end }}
+{{- $labels := include "openclaw.labels" (dict "root" . "component" "public-github-read") }}
+{{- $name := "openclaw-enterprise-public-github-read" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- $labels | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- $labels | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext: {{- include "openclaw.podSecurity" . | nindent 8 }}
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: reader
+          image: {{ .Values.images.controller | quote }}
+          args: ["apps/controller/src/drivers/repo/github/public-read/server.ts"]
+          securityContext: {{- include "openclaw.containerSecurity" . | nindent 12 }}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  type: ClusterIP
+  clusterIP: {{ $read.clusterIP | quote }}
+  selector: {{- $labels | nindent 4 }}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+spec:
+  podSelector:
+    matchLabels: {{- $labels | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - {key: openclaw.dev/namespace, operator: Exists}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: openclaw-enterprise
+              openclaw.dev/workload-role: agent
+              openclaw.dev/network-profile: broad-egress-v1
+            matchExpressions:
+              - {key: openclaw.dev/agent, operator: Exists}
+              - {key: openclaw.dev/revision, operator: Exists}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
+    - to:
+        {{- range $read.upstreamCidrs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 443}]
+{{- end }}

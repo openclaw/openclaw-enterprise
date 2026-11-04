@@ -1,9 +1,11 @@
+import { refuseRewrittenIpv4Host } from "../auth/configuration.ts";
 import { constants } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { ComputeDriver } from "@openclaw-enterprise/contracts";
 import type { ControllerWorkspaceFilesAccess } from "../gateway/contracts.ts";
 import { createNativeWorkspaceFilesAccess } from "../gateway/workspace-files-client.ts";
+import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "./production-harness.ts";
 
 const NATIVE_AGENT_ID = "main";
 const GATEWAY_API_KEY_MAX_BYTES = 4 * 1024;
@@ -16,6 +18,7 @@ function validateUrl(value: string): string {
   } catch {
     throw new Error("workspace-files endpoint url must be a valid absolute URL.");
   }
+  refuseRewrittenIpv4Host("workspace-files endpoint", value, parsed);
   if (
     parsed.protocol !== "wss:" ||
     parsed.username.length > 0 ||
@@ -43,6 +46,10 @@ export function createWorkspaceFilesAccess(
     return {
       url: validateUrl(endpoint),
       nativeAgentId: NATIVE_AGENT_ID,
+      ...(request.revision.harness.id === DEVELOPMENT_HARNESS_DESCRIPTOR.id &&
+      request.revision.harness.mode === "embedded"
+        ? { preferSoleNativeAgent: true as const }
+        : {}),
       apiKey: await readWorkspaceFilesApiKey(apiKeyPath),
     };
   });

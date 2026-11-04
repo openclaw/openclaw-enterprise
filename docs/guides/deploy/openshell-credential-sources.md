@@ -1,24 +1,32 @@
-# Use a credential source on the local OpenShell profile
+# Use a static credential source on the local OpenShell profile
 
-Use this procedure to register an OpenAI API key with the OpenShell Credential
+This is the static Credential Gateway setup, which remains available to existing
+Gateway owners. It does not qualify protected Credential Proxy access or transfer
+source ownership. For protected setup and upgrade decisions, start with
+[Credential Proxy setup](../credential-proxy.md).
+
+Use this procedure to register an OpenAI-compatible API key with the OpenShell Credential
 Gateway and bind it to a dedicated Codex Agent on the
 [local OpenShell profile](local-kubernetes-development.md#start-the-openshell-fail-closed-profile).
-OpenShell keeps its own copy of the key and substitutes it on requests to
-`api.openai.com`; the Harness receives only a placeholder. The
+Without Credential Proxy selected, OpenShell keeps its own copy of the key and substitutes it only on requests to
+its authorized endpoint; the Harness receives only a placeholder. By default the
+endpoint is `https://api.openai.com/v1`. The
 [credential source reference](../../reference/credential-sources.md) defines the
 API behavior.
 
 The profile installs private Gateway routing, so the deployment provisions an
-OpenShell Sandbox for the dedicated Codex Harness. To run these steps and verify
-a real model turn with the injected key in one command, use
-[Deploy your first Agent](../first-agent.md) with `--harness codex`.
+OpenShell Sandbox for the dedicated Codex Harness. After deployment,
+[verify a model response](../operate/model-verification.md).
+
+For native Git with worker-managed GitHub App credentials, use the
+[OpenShell Git push guide](../repository-credentials/openshell-git-push.md).
 
 ## Before you start
 
 Start the Kubernetes-only OpenShell profile and build the CLI:
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
@@ -35,10 +43,19 @@ export OCC_NAMESPACE="$(./bin/occ namespace list -o json |
   jq -r '.[] | select(.name == "default") | .id')"
 ```
 
-You need an existing OpenAI API key in a private file, `jq`, and a model name
-that key can use.
+You need an existing provider API key in a private file, `jq`, and a model name
+that key can use. Register the complete native model ID under
+`models.providers.codex`, including any namespace. OCE's generated Gateway
+configuration supplies the native provider explicitly; do not add it to the
+model ID yourself.
 
 ## Register the key
+
+If arriving from Credential Proxy setup, use only the `openai` example below,
+obtain whole-execution consent before creation, then
+[return to live-source setup](../credential-proxy.md#register-authorize-and-deploy-an-openai-static-inference-source).
+Fresh creation with Proxy selected is already live and Gateway-owned; the
+copied-key rotation and cleanup later on this page do not describe that path.
 
 Store the key as a Namespace Secret. Build the request file with owner-only
 permissions, delete it after use, and never put the key on the command line:
@@ -50,23 +67,39 @@ SECRET_REF="$(./bin/occ secret create --file model-secret.json -o json | jq -c .
 rm model-secret.json
 ```
 
-Register the Secret as an `openai` credential source:
+For a Codex personal access token, including a service-account token, save that
+token as the Secret above and register `type: "codex-pat"` with
+`secrets: {access_token: $ref}` in the command below. Select dedicated Codex;
+OpenShell keeps the real token outside the Harness. The [Driver reference](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+defines its permitted endpoints and authentication limits.
+
+Register an API-key Secret as an `openai` credential source:
+
+Configure the Installation's [shared model provider](../../reference/drivers/kubernetes-compute/model-provider.md)
+first. For a custom endpoint, set `MODEL_AUTHORIZED_BASE_URL` to the same URL
+when registering the source. This authorizes the destination; it cannot select it.
+Keep `models.providers.codex.baseUrl` at the fail-closed `http://127.0.0.1:9`
+shown below for the Gateway's transport bridge.
+The current source profile uses Bearer authorization; an endpoint requiring
+`x-api-key` is not supported by this profile.
 
 ```bash
-jq -n --argjson ref "$SECRET_REF" \
-  '{name: "openai", type: "openai", secrets: {api_key: $ref}}' > credential-source.json
+jq -n --argjson ref "$SECRET_REF" --arg authorized_base_url "${MODEL_AUTHORIZED_BASE_URL:-}" \
+  '{name: "openai", type: "openai", config: (if $authorized_base_url == "" then {} else {authorized_base_url: $authorized_base_url} end), secrets: {api_key: $ref}}' > credential-source.json
 SOURCE_ID="$(./bin/occ credential-source create --file credential-source.json -o json |
   jq -r .id)"
 ./bin/occ credential-source get "$SOURCE_ID"
 ```
 
 Expected result: `STATE` and `GATEWAY STATUS` both show `ready`. The response
-never contains the key. Changing the Secret afterward does not change the
-gateway's copy.
+never contains the key. Without Proxy selected, changing the Secret afterward
+does not change the Gateway copy. With Proxy selected, inspect the live-source
+fields in JSON; the column label does not imply a copy was deposited.
 
 ## Create the Agent and grant the source
 
-Write a dedicated Codex Configuration. Replace `<model>` in both places:
+Write a dedicated Codex Configuration. Replace each `<model>` with the native
+model ID, that your provider account can use:
 
 ```bash
 cat > configuration.json <<'JSON'
@@ -121,10 +154,11 @@ JSON
 CONFIGURATION_ID="$(./bin/occ configuration create --file configuration.json -o json | jq -r .id)"
 ```
 
-The Configuration keeps `"sandbox": "read-only"`, but each deployed revision
-freezes `"sandbox": "danger-full-access"`. The OpenShell Sandbox Driver
-overrides this value for every dedicated Codex revision so that Codex's own
-sandbox does not run inside OpenShell's; OpenShell is the containment boundary.
+The OpenShell Sandbox Driver freezes `"sandbox": "danger-full-access"` and
+`"approvalsReviewer": "user"` for dedicated Codex versions and removes
+`appServer.networkProxy`. `approvalPolicy` stays configured. The bridge selects the native `:danger-full-access` profile,
+which the Codex account must allow. OpenShell enforces the outer sandbox;
+restricted native profiles require nested bubblewrap namespaces that it blocks.
 See [OpenShell Sandbox configuration](../../reference/drivers/openshell-sandbox.md#configuration).
 
 Create the Agent with the source as its Harness authentication:
@@ -132,7 +166,8 @@ Create the Agent with the source as its Harness authentication:
 ```bash
 jq -n --arg configuration "$CONFIGURATION_ID" --arg source "$SOURCE_ID" \
   '{name: "openshell-codex", configurationId: $configuration, executionMode: "dedicated",
-    harnessAuth: {method: "credential_source", sourceId: $source}}' > agent.json
+    harnessAuth: {method: "credential_source", sourceId: $source},
+    credentialSources: [{sourceId: $source}]}' > agent.json
 ./bin/occ agent create --file agent.json -o json > agent-response.json
 AGENT_ID="$(jq -r .id agent-response.json)"
 ```
@@ -154,13 +189,14 @@ jq -n --arg principal "$(jq -r .servicePrincipalId agent-response.json)" \
 ## Deploy and check the result
 
 ```bash
+./bin/occ agent runtime-credentials provision "$AGENT_ID"
 DEPLOYMENT_ID="$(./bin/occ agent deploy "$AGENT_ID" -o json | jq -r .id)"
 ./bin/occ agent deployment-status "$AGENT_ID" "$DEPLOYMENT_ID"
 ```
 
 Expected result: OCC accepts the deployment and freezes
-`{"method": "credential_source", "sourceId": "cs_…"}` in the revision. Compute
-starts the Agent Gateway, then OpenShell creates the Sandbox, and the revision
+`{"method": "credential_source", "sourceId": "cs_…"}` in the version. Compute
+starts the Agent Gateway, then OpenShell creates the Sandbox, and the version
 becomes active once the Harness workspace node connects to the Gateway. Startup
 can take several minutes. Without the access binding, the deploy request fails
 with `403`.
@@ -221,7 +257,10 @@ the profile instead.
   method. With a Credential Gateway selected, only `credential_source` is
   accepted.
 - **`credential-source delete` returns `409`:** an Agent draft, active
-  revision, or pending deployment still references the source.
+  version, or pending deployment still references the source. With
+  `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`, only withdrawal work still retrying for
+  an earlier version that held the source blocks it: wait up to about an hour,
+  or delete the Agent.
 - **`iam role delete` returns `409`:** an access binding still uses the Role.
   Deleting the source removes its bindings; otherwise find the binding with
   `./bin/occ iam access-binding list` and delete it first.

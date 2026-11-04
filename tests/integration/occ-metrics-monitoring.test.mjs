@@ -9,6 +9,9 @@ import test from "node:test";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   checkGrafanaDatasource,
+  containerLogTail,
+  distinctPorts,
+  portClash,
   queryPrometheus,
   waitForMonitoring,
 } from "../helpers/metrics-monitoring-readiness.mjs";
@@ -27,6 +30,20 @@ async function containerState(name) {
   return JSON.parse(stdout);
 }
 
+async function containerLog(name, tail = 15) {
+  const logs = await run(engine, ["logs", `--tail=${tail}`, name], { timeout: 30_000 }).catch(
+    () => ({
+      stdout: "",
+      stderr: "",
+    }),
+  );
+  return `${logs.stdout}${logs.stderr}`;
+}
+
+// A host-network Prometheus whose port was taken exits at once; a new pair of
+// ports is retried this many times in all.
+const prometheusStartAttempts = 3;
+
 test(
   "Prometheus remote write records real OCC traffic and Grafana provisions its dashboard",
   {
@@ -42,11 +59,10 @@ test(
     t.after(async () => {
       for (const [role, name] of names.reverse()) {
         if (!t.passed) {
-          const logs = await run(engine, ["logs", "--tail=20", name]).catch(() => ({
-            stdout: "",
-            stderr: "",
-          }));
-          t.diagnostic(`${role}: ${logs.stdout}${logs.stderr}`);
+          // One diagnostic per line: the reporter bounds each from its start.
+          for (const line of containerLogTail(await containerLog(name))) {
+            t.diagnostic(`${role}: ${line}`);
+          }
         }
         await run(engine, ["rm", "-f", "-v", name]);
       }
@@ -57,28 +73,27 @@ test(
     const listener = await startMetricsListener(metrics, { host: "127.0.0.1", port: 0 });
     t.after(() => listener.close());
     await fixture.bootstrap();
-    // Select each candidate port as late as possible; Docker still owns the
-    // final bind, so an exited container is reported by the readiness wait.
-    const promPort = await availablePort();
-    const promURL = `http://127.0.0.1:${promPort}`;
     await writeFile(
       join(directory, "prometheus.yaml"),
       await readFile("deploy/metrics/development/prometheus.yaml"),
     );
-    const agentConfig = (await readFile("deploy/metrics/development/api.yaml", "utf8"))
-      .replace("127.0.0.1:9464", listener.url.slice(7))
-      .replace("http://prometheus:9090", promURL);
-    await writeFile(join(directory, "agent.yaml"), agentConfig);
     await mkdir(join(directory, "provisioning", "datasources"), { recursive: true });
     await mkdir(join(directory, "provisioning", "dashboards"), { recursive: true });
     await mkdir(join(directory, "dashboards"));
-    await writeFile(
-      join(directory, "provisioning", "datasources", "occ.yaml"),
-      (await readFile("deploy/metrics/development/grafana/datasources/occ.yaml", "utf8")).replace(
-        "http://prometheus:9090",
-        promURL,
-      ),
-    );
+    // The agent and Grafana configs name the server's port; each start attempt writes them.
+    async function writePrometheusConfigs(promURL) {
+      const agentConfig = (await readFile("deploy/metrics/development/api.yaml", "utf8"))
+        .replace("127.0.0.1:9464", listener.url.slice(7))
+        .replace("http://prometheus:9090", promURL);
+      await writeFile(join(directory, "agent.yaml"), agentConfig);
+      await writeFile(
+        join(directory, "provisioning", "datasources", "occ.yaml"),
+        (await readFile("deploy/metrics/development/grafana/datasources/occ.yaml", "utf8")).replace(
+          "http://prometheus:9090",
+          promURL,
+        ),
+      );
+    }
     await writeFile(
       join(directory, "provisioning", "dashboards", "occ.yaml"),
       (await readFile("deploy/metrics/development/grafana/dashboards/occ.yaml", "utf8")).replace(
@@ -122,44 +137,83 @@ test(
       );
       return name;
     }
+    async function removeContainer(name) {
+      await run(engine, ["rm", "-f", "-v", name], { timeout: 60_000 });
+      const index = names.findIndex(([, entry]) => entry === name);
+      if (index !== -1) {
+        names.splice(index, 1);
+      }
+    }
     // Containers use host networking solely to reach this test's real loopback
     // listener. The checked-in Compose overlay instead shares OCC namespaces.
-    const server = await container(
-      "server",
-      prometheusImage,
-      [
-        "--config.file=/etc/occ-test/prometheus.yaml",
-        "--web.enable-remote-write-receiver",
-        `--web.listen-address=127.0.0.1:${promPort}`,
-        "--storage.tsdb.path=/tmp/prometheus",
-      ],
-      ["--tmpfs", "/tmp:rw,mode=1777"],
-    );
-    const agentPort = await availablePort();
-    const agent = await container(
-      "agent",
-      prometheusImage,
-      [
-        "--agent",
-        "--config.file=/etc/occ-test/agent.yaml",
-        `--web.listen-address=127.0.0.1:${agentPort}`,
-        "--storage.agent.path=/tmp/agent",
-      ],
-      ["--tmpfs", "/tmp:rw,mode=1777"],
-    );
+    // Both ports are picked before either container starts, so the agent's cannot
+    // be one the server has not bound yet. Docker still owns the final bind, and
+    // another process can take a port before then (finding 1667); the retry
+    // handles that: a container that exits on "address already in use" is
+    // restarted with new ports, bounded.
+    let promURL;
+    let server;
+    let agent;
+    for (let attempt = 1; ; attempt += 1) {
+      const [promPort, agentPort] = await distinctPorts(2, availablePort);
+      promURL = `http://127.0.0.1:${promPort}`;
+      await writePrometheusConfigs(promURL);
+      server = await container(
+        "server",
+        prometheusImage,
+        [
+          "--config.file=/etc/occ-test/prometheus.yaml",
+          "--web.enable-remote-write-receiver",
+          `--web.listen-address=127.0.0.1:${promPort}`,
+          "--storage.tsdb.path=/tmp/prometheus",
+        ],
+        ["--tmpfs", "/tmp:rw,mode=1777"],
+      );
+      agent = await container(
+        "agent",
+        prometheusImage,
+        [
+          "--agent",
+          "--config.file=/etc/occ-test/agent.yaml",
+          `--web.listen-address=127.0.0.1:${agentPort}`,
+          "--storage.agent.path=/tmp/agent",
+        ],
+        ["--tmpfs", "/tmp:rw,mode=1777"],
+      );
+      try {
+        await waitForMonitoring(
+          "prometheus-up",
+          async () =>
+            (await queryPrometheus(promURL, "prometheus-up", 'up{job="occ-api"}')).some(
+              (series) => series.value[1] === "1",
+            ),
+          [
+            ["server", server],
+            ["agent", agent],
+          ],
+          containerState,
+        );
+        break;
+      } catch (error) {
+        const diagnostic = error.openclawCiDiagnostic;
+        const exited = { server, agent }[diagnostic?.container];
+        const clash =
+          attempt < prometheusStartAttempts &&
+          diagnostic?.reason === "container-exited" &&
+          exited !== undefined
+            ? containerLogTail(await containerLog(exited, 50), 50).findLast(portClash)
+            : undefined;
+        if (clash === undefined) {
+          throw error;
+        }
+        t.diagnostic(
+          `${diagnostic.container} could not bind its port (attempt ${attempt}): ${clash}`,
+        );
+        await removeContainer(agent);
+        await removeContainer(server);
+      }
+    }
     const query = (stage, expression) => queryPrometheus(promURL, stage, expression);
-    await waitForMonitoring(
-      "prometheus-up",
-      async () =>
-        (await query("prometheus-up", 'up{job="occ-api"}')).some(
-          (series) => series.value[1] === "1",
-        ),
-      [
-        ["server", server],
-        ["agent", agent],
-      ],
-      containerState,
-    );
     await fixture.request("GET", "/installation");
     await waitForMonitoring(
       "occ-request",

@@ -3,10 +3,16 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { OpenClawController, ResourceConflictError } from "../../packages/occ/src/index.ts";
-import { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-queue.ts";
+import {
+  OpenClawController,
+  ResourceConflictError,
+  ServiceAccountDriverNotConfiguredError,
+} from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   createAccessTokenServiceAccount,
@@ -16,7 +22,10 @@ import {
   requiresPostgres,
   seedBackendBinding,
   serviceAccountDriverId,
+  workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
 
 test(
   "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
@@ -29,7 +38,7 @@ test(
       backends: [backendDefinition()],
     });
     const deletedAccounts = [];
-    for (const driver of [
+    registerAndSelectDrivers(controller, [
       new NativeIAMDriver(state, { id: "service-account-deletion-iam" }),
       createDevelopmentComputeDriver(),
       createTestConfigurationDriver(),
@@ -48,10 +57,7 @@ test(
           deletedAccounts.push(account.id);
         },
       },
-    ]) {
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
-    }
+    ]);
     const namespace = fixture.track(
       await state.transact((unit) =>
         unit.namespaces.createNamespace({
@@ -105,27 +111,8 @@ test(
         { code },
       );
     }
-    async function claimRevision() {
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        // Other suites retain work in this database. Temporarily lock those rows so the
-        // real queue's SKIP LOCKED claim selects only this fixture without mutating peers.
-        await client.query(
-          "SELECT idempotency_key FROM occ.controller_work WHERE namespace_id <> $1 FOR UPDATE SKIP LOCKED",
-          [namespace.id],
-        );
-        // Claim on another connection: PostgreSQL does not skip a transaction's own locks.
-        const claim = await new PostgresWorkQueue(pool).claim();
-        await client.query("COMMIT");
-        return claim;
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
+    // Other suites retain work in this database; claim only this fixture's.
+    const claimRevision = () => claimIsolatedWork(pool, { namespaceId: namespace.id });
     // A draft binding alone protects the source before any deployment exists.
     await assertProtected();
     const revision = await controller.deployAgent(actor.id, target, resolveApprovedHarness);
@@ -250,5 +237,132 @@ test(
     });
     await controller.deleteServiceAccount(actor.id, namespace.id, failedAccount.id);
     assert.deepEqual(deletedAccounts, [account.id, failedAccount.id]);
+  },
+);
+
+test(
+  "a forced ServiceAccount delete without a Driver audits the unrevoked credential and decides on the locked account",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await createBackendFixture(context);
+    const { state, pool, actor } = fixture;
+    // This API process selects no ServiceAccount Driver: the ChatGPT Backend is gone.
+    const controller = new OpenClawController(fixture.installation, { state });
+    const deletedSecrets = [];
+    registerAndSelectDrivers(controller, [
+      new NativeIAMDriver(state, { id: "service-account-force-iam" }),
+      {
+        ...createDevelopmentComputeDriver(),
+        async deleteServiceAccountCredential(input) {
+          deletedSecrets.push(input);
+        },
+      },
+      createTestConfigurationDriver(),
+    ]);
+    const namespace = fixture.track(
+      await state.transact((unit) =>
+        unit.namespaces.createNamespace({
+          id: `ns_${randomUUID()}`,
+          name: `account-force-${randomUUID()}`,
+          status: "ready",
+          createdAt: new Date().toISOString(),
+        }),
+      ),
+    );
+    const bindingOf = async (account) =>
+      (
+        await pool.query(
+          `SELECT backend_id, workspace_id, external_account_id, external_credential_id
+           FROM occ.service_account_driver_bindings WHERE service_account_id = $1`,
+          [account.id],
+        )
+      ).rows[0];
+
+    const account = await createAccessTokenServiceAccount(state, namespace.id, "forced");
+    await seedBackendBinding(pool, account);
+    const binding = await bindingOf(account);
+    await assert.rejects(
+      controller.deleteServiceAccount(actor.id, namespace.id, account.id),
+      ServiceAccountDriverNotConfiguredError,
+    );
+    assert.deepEqual(
+      await controller.deleteServiceAccount(actor.id, namespace.id, account.id, { force: true }),
+      {
+        removedAccessBindings: [],
+        unrevokedCredential: {
+          backendId,
+          workspaceId,
+          externalAccountId: binding.external_account_id,
+          credentialId: binding.external_credential_id,
+        },
+      },
+    );
+    assert.deepEqual(deletedSecrets, [
+      {
+        namespaceId: namespace.id,
+        serviceAccountId: account.id,
+        secretRef: account.credential.secretRef,
+      },
+    ]);
+    // The account and its private binding are gone together.
+    assert.equal(await bindingOf(account), undefined);
+    assert.equal(
+      await state.read((unit) => unit.serviceAccounts.findServiceAccount(namespace.id, account.id)),
+      undefined,
+    );
+
+    // A token issued while the forced delete waits for the account row lock is seen and
+    // reported, never deleted unnoticed: the decision reads the locked row.
+    const racing = await state.transact((unit) =>
+      unit.serviceAccounts.createServiceAccount({
+        id: `sa_${randomUUID()}`,
+        namespaceId: namespace.id,
+        name: `racing-${randomUUID()}`,
+      }),
+    );
+    await seedBackendBinding(pool, racing, { credentialIssued: false });
+    const racingBinding = await bindingOf(racing);
+    const issuer = await pool.connect();
+    let forced;
+    try {
+      await issuer.query("BEGIN");
+      const [{ pid }] = (await issuer.query("SELECT pg_backend_pid() AS pid")).rows;
+      await issuer.query("SELECT id FROM occ.service_accounts WHERE id = $1 FOR UPDATE", [
+        racing.id,
+      ]);
+      forced = controller.deleteServiceAccount(actor.id, namespace.id, racing.id, {
+        force: true,
+      });
+      forced.catch(() => {});
+      await waitForLockWaiter(pool, pid, "the forced delete to wait for the account lock", {
+        timeoutMs: 15_000,
+        intervalMs: 50,
+      });
+      await issuer.query("UPDATE occ.service_accounts SET credential = $2::jsonb WHERE id = $1", [
+        racing.id,
+        JSON.stringify({
+          kind: "access_token",
+          secretRef: { name: `service-account-${racing.id.slice(3, 35)}`, key: "token" },
+        }),
+      ]);
+      await issuer.query(
+        `UPDATE occ.service_account_driver_bindings SET external_credential_id = $2
+         WHERE service_account_id = $1`,
+        [racing.id, "external-credential-raced"],
+      );
+      await issuer.query("COMMIT");
+    } catch (error) {
+      await issuer.query("ROLLBACK");
+      throw error;
+    } finally {
+      issuer.release();
+    }
+    assert.deepEqual((await forced).unrevokedCredential, {
+      backendId,
+      workspaceId,
+      externalAccountId: racingBinding.external_account_id,
+      credentialId: "external-credential-raced",
+    });
+    assert.equal(deletedSecrets.length, 2);
   },
 );

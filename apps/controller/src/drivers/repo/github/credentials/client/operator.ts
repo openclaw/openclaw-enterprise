@@ -7,7 +7,7 @@ import type { RepositoryCredentialBoundSessionInput } from "../../../credentials
 import { readPrivateFile } from "./private-files.ts";
 import { hasControlCharacter } from "../../../credentials/client-contracts.ts";
 import type { ControlRequest, ControlResponse } from "../../../credentials/control-contracts.ts";
-import { writeClientConfiguration } from "./config.ts";
+import { assertClientDirectoryAvailable, writeClientConfiguration } from "./config.ts";
 
 export async function callControl(
   socket: string,
@@ -16,7 +16,7 @@ export async function callControl(
 ): Promise<ControlResponse> {
   if (
     !socket.startsWith("/") ||
-    socket.length > 103 ||
+    Buffer.byteLength(socket) > 103 ||
     !/^\/v1\/sessions(?:\/[A-Za-z0-9_-]{1,128}(?:\/close)?)?$/.test(request.path)
   ) {
     throw new Error("invalid-control-request");
@@ -50,6 +50,8 @@ export async function callControl(
         response.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
           if (bytes > 16 * 1024) {
+            // destroy() without an error emits neither "end" nor "error": settle first.
+            fail();
             response.destroy();
             outgoing.destroy();
             return;
@@ -124,6 +126,7 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
           "expectedBinding",
           "deadlineWallMs",
           "recoverOnly",
+          "preparedOnly",
         ].includes(key),
     ) ||
     Object.keys(binding).some(
@@ -139,7 +142,9 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
     !isString(binding.providerInstanceId) ||
     !isString(binding.repositoryId) ||
     !isString(binding.grantId) ||
-    (Object.hasOwn(value, "recoverOnly") && value.recoverOnly !== true)
+    (Object.hasOwn(value, "recoverOnly") && value.recoverOnly !== true) ||
+    (Object.hasOwn(value, "preparedOnly") && value.preparedOnly !== true) ||
+    (value.recoverOnly !== true && value.preparedOnly !== true)
   ) {
     throw new Error("invalid-arguments");
   }
@@ -155,8 +160,30 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
     },
     deadlineWallMs: Number(value.deadlineWallMs),
     durableAdmission: true,
+    ...(value.preparedOnly === true ? { preparedOnly: true } : {}),
   };
   return Object.hasOwn(value, "recoverOnly") ? { ...request, recoverOnly: true } : request;
+}
+
+// The --output refusals an operator can fix; each names a path rule, never session material.
+const outputDirectoryRefusals = new Map([
+  [
+    "unsafe-client-directory",
+    "the --output parent must be a real directory you own with no group or other access (0700); no ancestor may be a symbolic link, or group- or world-writable without the sticky bit",
+  ],
+  ["client-directory-exists", "the --output directory must not exist yet; choose a new path"],
+  [
+    "client-parent-missing",
+    "the --output parent directory must exist; create it first with mode 0700",
+  ],
+]);
+
+function writeOutputRefusal(error: unknown): void {
+  const code = error instanceof Error ? error.message : "";
+  const reason = outputDirectoryRefusals.get(code);
+  if (reason !== undefined) {
+    process.stderr.write(`${code}: ${reason}\n`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -216,8 +243,15 @@ async function main(): Promise<void> {
     if (!/^[0-9]{13}-[0-9a-f-]{36}$/.test(admissionId)) {
       throw new Error("invalid-admission-id");
     }
+    // Refuse an unusable --output before admission; the publish below checks again for races.
+    try {
+      await assertClientDirectoryAvailable(directory);
+    } catch (error) {
+      writeOutputRefusal(error);
+      throw error;
+    }
     process.stderr.write(
-      `credential-admission ${admissionId}; recover with open --admission-id and the same inputs\n`,
+      `credential-admission ${admissionId}; if the outcome is uncertain, inspect the original owner and use status for any known session\n`,
     );
     const result = await callControl(
       socket,
@@ -239,13 +273,13 @@ async function main(): Promise<void> {
       }
       process.stdout.write(JSON.stringify({ ...result, recovered: true }) + "\n");
       process.stderr.write(
-        `credential-admission-recovered session=${result.sessionId}; close this session, then open with a new admission ID\n`,
+        `credential-admission-recovered session=${result.sessionId}; inspect this session's status on the original owner\n`,
       );
       return;
     }
     try {
       await writeClientConfiguration(result, directory, ca);
-    } catch {
+    } catch (error) {
       // Admission succeeded; retain the identifier for recovery, never the bearer.
       await callControl(socket, {
         method: "POST",
@@ -254,7 +288,8 @@ async function main(): Promise<void> {
       process.stderr.write(
         `client-configuration-failed session=${result.session.sessionId}; inspect cleanup status\n`,
       );
-      throw new Error("client-configuration-failed");
+      writeOutputRefusal(error);
+      throw new Error("client-configuration-failed", { cause: error });
     }
     process.stdout.write(
       JSON.stringify({ ...result.session, clientDirectory: resolve(directory) }) + "\n",

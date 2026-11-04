@@ -1,0 +1,30 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KEYCLOAK_ISSUER",
+    "OCC_TEST_KEYCLOAK_CONSOLE_PORT",
+    "OCC_TEST_KEYCLOAK_SECRETS_FILE",
+    "OCC_TEST_KEYCLOAK_CA_CERT",
+    "OCC_TEST_KEYCLOAK_CONSOLE_CERT",
+    "OCC_TEST_KEYCLOAK_CONSOLE_KEY",
+    "OCC_TEST_KEYCLOAK_CONTAINER",
+    "NODE_EXTRA_CA_CERTS"
+  ],
+  "prepare": {
+    "postgres": true,
+    "keycloak": true,
+    "requiresPreparedStateForFile": true
+  },
+  "files": [
+    {
+      "path": "tests/integration/keycloak-oidc-sign-in.test.mjs",
+      "expectedTests": [
+        "Keycloak discovery matches the configured endpoints and its JWKS offers an RS256 key of 2,048 bits or more",
+        "attached alice signs in through Keycloak with client_secret_post",
+        "attached alice signs in through Keycloak with client_secret_basic",
+        "a higher-priority Keycloak realm key changes the signing kid and the next sign-in succeeds without a controller restart",
+        "unattached carol is refused after Keycloak sign-in, audited and given no account",
+        "Console sign-out ends alice's OCE session, one click signs her in again while her Keycloak session lives, and disabling her keeps that session but refuses her next sign-in"
+      ]
+    }
+  ]
+}

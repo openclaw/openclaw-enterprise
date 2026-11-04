@@ -194,7 +194,11 @@ const profileEndpoint = "https://api.github.com/user";
 // The audited callback denials whose code the controller turns into a Console reason.
 export const MEMBERSHIP_DENIALS = ["MEMBERSHIP_REQUIRED", "MEMBERSHIP_UNAVAILABLE"] as const;
 type MembershipDenial = (typeof MEMBERSHIP_DENIALS)[number];
-export const CALLBACK_DENIALS = [...MEMBERSHIP_DENIALS, "ACCOUNT_DISABLED"] as const;
+export const CALLBACK_DENIALS = [
+  ...MEMBERSHIP_DENIALS,
+  "ACCOUNT_DISABLED",
+  "PROVIDER_UNAVAILABLE",
+] as const;
 
 // GitHub logins are letters, digits and hyphens; older accounts may break today's hyphen rules.
 const loginPattern = /^[A-Za-z0-9-]{1,39}$/;
@@ -345,16 +349,20 @@ async function exchangeGithubSubject(
     if (!subject) {
       throw rejected();
     }
+    const login =
+      typeof profile.login === "string" && loginPattern.test(profile.login)
+        ? profile.login
+        : undefined;
     if (hasAllowlist(config)) {
       // Before the account lookup: a refusal says nothing about which OCE accounts exist.
       const membership = await githubMembership(config, headers, profile.login, controller.signal);
       if (!membership.admitted) {
         return membership.failure === undefined
-          ? { denial: "MEMBERSHIP_REQUIRED", subject }
-          : { denial: "MEMBERSHIP_UNAVAILABLE", subject, failure: membership.failure };
+          ? { denial: "MEMBERSHIP_REQUIRED", subject, login }
+          : { denial: "MEMBERSHIP_UNAVAILABLE", subject, login, failure: membership.failure };
       }
     }
-    return { subject };
+    return { subject, login };
   } catch (error) {
     // Never expose provider response bodies, token values or request credentials.
     return providerExchangeFailure(error, controller.signal);
@@ -512,7 +520,10 @@ export function createHumanLogin(
   ) {
     throw new Error("The external sign-in provider deadline must be a positive integer.");
   }
-  const proofScope = new AsyncLocalStorage<{ proof?: HumanAuthenticationProof }>();
+  const proofScope = new AsyncLocalStorage<{
+    proof?: HumanAuthenticationProof;
+    audit?: { provider: "github"; subject: string; login?: string | undefined; attemptId: string };
+  }>();
   const githubLogin =
     config.github === undefined
       ? undefined
@@ -579,12 +590,23 @@ export function createHumanLogin(
     }
   }
 
-  // Denials of a matched attempt say whether the provider or the identity failed.
+  // Denials of a matched attempt say whether the provider or the identity failed. A provider
+  // failure happens before any identity is resolved, so its response code, which becomes the
+  // Console's outage advice, reveals nothing about OCE accounts. A rejected identity stays
+  // generic.
   async function rejectExternal(
     provider: ExternalProviderName,
     reason: "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABLE",
+    attemptId: string,
+    identity?: { subject: string; login?: string | undefined },
   ): Promise<never> {
-    await state.recordDenied(reason, provider);
+    await state.recordDenied(reason, provider, identity, { attemptId });
+    if (reason === "PROVIDER_UNAVAILABLE") {
+      throw APIError.fromStatus("UNAUTHORIZED", {
+        message: "Authentication was not accepted.",
+        code: reason,
+      });
+    }
     throw rejected();
   }
 
@@ -594,8 +616,10 @@ export function createHumanLogin(
     provider: ExternalProviderName,
     reason: MembershipDenial,
     subject: string,
+    login: string | undefined,
+    attemptId: string,
   ): Promise<never> {
-    await state.recordDenied(reason, provider, { subject });
+    await state.recordDenied(reason, provider, { subject, login }, { attemptId });
     throw APIError.fromStatus("UNAUTHORIZED", {
       message: "Authentication was not accepted.",
       code: reason,
@@ -605,8 +629,13 @@ export function createHumanLogin(
   // The provider authenticated this identity and it is attached to a disabled account. Only
   // that person reaches this answer (the attempt is bound to their browser), so telling them
   // reveals nothing to anyone else; the response code becomes the Console's reason.
-  async function refuseDisabled(provider: ExternalProviderName, userId: string): Promise<never> {
-    await state.recordDenied("ACCOUNT_DISABLED", provider, { userId });
+  async function refuseDisabled(
+    provider: ExternalProviderName,
+    userId: string,
+    attemptId: string,
+    identity?: { subject: string; login?: string | undefined },
+  ): Promise<never> {
+    await state.recordDenied("ACCOUNT_DISABLED", provider, { userId, ...identity }, { attemptId });
     throw APIError.fromStatus("UNAUTHORIZED", {
       message: "Authentication was not accepted.",
       code: "ACCOUNT_DISABLED",
@@ -656,7 +685,7 @@ export function createHumanLogin(
             userAgent: typeof data.userAgent === "string" ? data.userAgent : null,
           };
           // The original State unit owns this commit, including the login audit.
-          return (await state.issueSession(proof, session)) as R;
+          return (await state.issueSession(proof, session, scope.audit)) as R;
         },
         async findOne<T>(input: Parameters<DBAdapter["findOne"]>[0]): Promise<T | null> {
           if (input.model !== "session") {
@@ -829,6 +858,7 @@ export function createHumanLogin(
               if (!attempt) {
                 return refuseUnmatched(name);
               }
+              const attemptId = loginAttemptId(ctx.context.secret, digest(stateValue));
               if (error) {
                 // RFC 6749 section 4.1.2.1: the provider reports its own failure.
                 if (error === "server_error" || error === "temporarily_unavailable") {
@@ -836,9 +866,9 @@ export function createHumanLogin(
                     step: "authorization",
                     cause: "provider_error",
                   });
-                  return rejectExternal(name, "PROVIDER_UNAVAILABLE");
+                  return rejectExternal(name, "PROVIDER_UNAVAILABLE", attemptId);
                 }
-                return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED");
+                return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED", attemptId);
               }
               ctx.setCookie(bindingCookie, "", { ...cookieAttributes, maxAge: 0 });
               const exchange = await provider.exchange(
@@ -858,9 +888,15 @@ export function createHumanLogin(
                   exchange.denial === "MEMBERSHIP_REQUIRED" ||
                   exchange.denial === "MEMBERSHIP_UNAVAILABLE"
                 ) {
-                  return refuseMembership(name, exchange.denial, exchange.subject);
+                  return refuseMembership(
+                    name,
+                    exchange.denial,
+                    exchange.subject,
+                    exchange.login,
+                    attemptId,
+                  );
                 }
-                return rejectExternal(name, exchange.denial);
+                return rejectExternal(name, exchange.denial, attemptId);
               }
               const snapshot = await state.snapshotExternal(
                 provider.providerId,
@@ -868,14 +904,41 @@ export function createHumanLogin(
                 attempt.createdAt,
               );
               if (!snapshot) {
-                return rejectExternal(name, "EXTERNAL_IDENTITY_REJECTED");
+                return rejectExternal(
+                  name,
+                  "EXTERNAL_IDENTITY_REJECTED",
+                  attemptId,
+                  name === "github"
+                    ? { subject: exchange.subject, login: exchange.login }
+                    : undefined,
+                );
               }
               if ("disabled" in snapshot) {
-                return refuseDisabled(name, snapshot.userId);
+                return refuseDisabled(
+                  name,
+                  snapshot.userId,
+                  attemptId,
+                  name === "github"
+                    ? { subject: exchange.subject, login: exchange.login }
+                    : undefined,
+                );
               }
               const startedAt = performance.now();
-              const session = await proofScope.run({ proof: snapshot.proof }, () =>
-                ctx.context.internalAdapter.createSession(snapshot.user.id, false),
+              const session = await proofScope.run(
+                {
+                  proof: snapshot.proof,
+                  ...(name === "github"
+                    ? {
+                        audit: {
+                          provider: "github" as const,
+                          subject: exchange.subject,
+                          login: exchange.login,
+                          attemptId,
+                        },
+                      }
+                    : {}),
+                },
+                () => ctx.context.internalAdapter.createSession(snapshot.user.id, false),
               );
               if (!session) {
                 throw rejected();
@@ -906,7 +969,7 @@ export function createHumanLogin(
                 signLoginReceipt(ctx.context.secret, {
                   providerId: provider.providerId,
                   sessionId: session.id,
-                  attemptId: loginAttemptId(ctx.context.secret, digest(stateValue)),
+                  attemptId,
                   expiresAt: Date.now() + LOGIN_RECEIPT_LIFETIME_SECONDS * 1000,
                 }),
                 { ...receiptAttributes, maxAge: LOGIN_RECEIPT_LIFETIME_SECONDS },
@@ -960,9 +1023,10 @@ export function createHumanLogin(
     oidcLogin === undefined ? undefined : externalProviderEndpoints("oidc", oidcLogin);
   // A rejected password is audited before the refusal. When the audit write fails the
   // answer is 503 (audits fail closed), marked so admission still spends the budget.
+  const recordPasswordDenial = () => state.recordDenied("INVALID_CREDENTIALS");
   async function refusePassword(): Promise<never> {
     try {
-      await state.recordDenied("INVALID_CREDENTIALS");
+      await recordPasswordDenial();
     } catch {
       throw APIError.fromStatus("SERVICE_UNAVAILABLE", {
         message: "Authentication dependency unavailable.",
@@ -1090,6 +1154,8 @@ export function createHumanLogin(
           },
         }),
     designateRecovery,
+    // The controller also uses this owner for malformed-email refusals before account reads.
+    recordPasswordDenial,
     /** Whether `email` (normalized) is the recovery account's; its password stays reserved. */
     isRecoveryEmail: (email: string) => recoveryEmail !== undefined && email === recoveryEmail,
     /** Whether the known-device cookie uses its host-only (__Host-) name. */

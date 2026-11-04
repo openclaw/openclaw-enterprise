@@ -61,6 +61,143 @@ function safeMeasurement(message) {
   } catch {
     return undefined;
   }
+  if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
+    if (
+      ![
+        "database-start",
+        "cluster-start",
+        "controller-images-start",
+        "routing-start",
+        "network-check-start",
+        "openshell-assets-start",
+        "openshell-gateway-start",
+        "platform-start",
+        "controller-start",
+        "namespace-check-start",
+        "ready",
+      ].includes(value.stage) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return { kind: value.kind, stage: value.stage, elapsedMs: value.elapsedMs };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-capacity") {
+    const result = { kind: value.kind };
+    for (const key of ["cpus", "totalMiB", "minimumFreeMiB", "maximumLoadHundredths", "samples"]) {
+      if (!Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > 10_000_000) {
+        return undefined;
+      }
+      result[key] = value[key];
+    }
+    return result;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-command") {
+    if (
+      !["setup", "cleanup"].includes(value.phase) ||
+      ![
+        "runtime-build",
+        "controller-build",
+        "compose-build-and-start",
+        "compose-build",
+        "image-pull",
+        "image-export",
+        "image-import",
+        "node-image-pull",
+        "cluster-create",
+        "k3d-image-import",
+        "kubernetes-readiness",
+        "helm-install",
+      ].includes(value.stage) ||
+      !Number.isInteger(value.count) ||
+      value.count < 1 ||
+      value.count > 100_000 ||
+      !Number.isInteger(value.failed) ||
+      value.failed < 0 ||
+      value.failed > value.count ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      phase: value.phase,
+      stage: value.stage,
+      count: value.count,
+      failed: value.failed,
+      elapsedMs: value.elapsedMs,
+    };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-pod") {
+    if (
+      !["native-initial", "native-replacement"].includes(value.stage) ||
+      !["harness", "gateway"].includes(value.role) ||
+      !Number.isInteger(value.restarts) ||
+      value.restarts < 0 ||
+      value.restarts > 1000
+    ) {
+      return undefined;
+    }
+    const result = {
+      kind: value.kind,
+      stage: value.stage,
+      role: value.role,
+      restarts: value.restarts,
+    };
+    for (const key of [
+      "createdAfterRequestMs",
+      "scheduledMs",
+      "initializedMs",
+      "runningMs",
+      "readyMs",
+      "observedMs",
+    ]) {
+      if (
+        value[key] !== null &&
+        (!Number.isInteger(value[key]) || value[key] < -60_000 || value[key] > 7_200_000)
+      ) {
+        return undefined;
+      }
+      result[key] = value[key];
+    }
+    return result;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent") {
+    if (
+      ![
+        "setup",
+        "cleanup",
+        "initial-deploy-and-model",
+        "reuse-model",
+        "native-deploy",
+        "native-model",
+        "native-redeploy",
+        "native-resumed-model",
+      ].includes(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
+  }
+  if (isRecord(value) && value.kind === "runtime-model-probe") {
+    return safeModelProbeMeasurement(value);
+  }
+  if (isRecord(value) && value.kind === "runtime-sigterm") {
+    return safeSigtermMeasurement(value);
+  }
   if (
     !isRecord(value) ||
     value.kind !== "kubelet-volume-refresh" ||
@@ -85,12 +222,91 @@ function safeMeasurement(message) {
   };
 }
 
+const modelProbeMeasurementCases = new Set([
+  "gateway-500m-answer",
+  "gateway-500m-hang",
+  "gateway-500m-contended",
+  "gateway-1cpu-answer",
+]);
+const modelProbeMeasurementCodes = new Set([
+  "READY",
+  "MODEL_PROBE_TIMEOUT",
+  "MODEL_PROBE_CPU_STARVED",
+  "MODEL_PROBE_FAILED",
+  "AUTHENTICATION_FAILED",
+  "UNAVAILABLE",
+]);
+const modelProbeMeasurementTimes = [
+  "elapsedMs",
+  "capMs",
+  "cpuWaitMs",
+  "setupMs",
+  "probeDoneMs",
+  "readyMs",
+];
+
+// A Gateway model probe's timing (finding 936). Times are whole milliseconds
+// up to an hour, or null when the run did not reach that point.
+function safeModelProbeMeasurement(value) {
+  if (!modelProbeMeasurementCases.has(value.case)) {
+    return undefined;
+  }
+  const measurement = {
+    kind: value.kind,
+    case: value.case,
+    code: modelProbeMeasurementCodes.has(value.code)
+      ? value.code
+      : value.code === null
+        ? null
+        : "other",
+  };
+  for (const key of modelProbeMeasurementTimes) {
+    const time = value[key];
+    if (time !== null && !(Number.isInteger(time) && time >= -60_000 && time <= 3_600_000)) {
+      return undefined;
+    }
+    measurement[key] = time;
+  }
+  return measurement;
+}
+
+const sigtermMeasurementCases = new Set([
+  "codex-model-probe",
+  "codex-held-failure",
+  "codex-ready",
+  "gateway-model-probe",
+  "gateway-held-failure",
+  "gateway-ready",
+  "dedicated-gateway-harness-wait",
+]);
+
+// How long a runtime wrapper took to stop after SIGTERM in one startup phase, against the
+// budget the termination test allows it, in whole milliseconds up to an hour.
+function safeSigtermMeasurement(value) {
+  if (!sigtermMeasurementCases.has(value.case) || typeof value.stopped !== "boolean") {
+    return undefined;
+  }
+  for (const key of ["elapsedMs", "budgetMs"]) {
+    if (!(Number.isInteger(value[key]) && value[key] >= 0 && value[key] <= 3_600_000)) {
+      return undefined;
+    }
+  }
+  return {
+    kind: value.kind,
+    case: value.case,
+    stopped: value.stopped,
+    elapsedMs: value.elapsedMs,
+    budgetMs: value.budgetMs,
+  };
+}
+
 const safeRuntimeImageStockBrokerStages = new Set([
   "material-init",
   "native-git-init",
   "config-patch",
   "fixture-reachability",
   "initialize",
+  "bundled-system-skill",
   "proxy-env",
   "broker-denial",
   "outside-home-read",
@@ -327,10 +543,215 @@ function relayNodeDiagnostic(value) {
   };
 }
 
+// The proof runs in a separate controller process. Both its test and the CI
+// reporter use this closed vocabulary; neither publishes arbitrary stage text.
+export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
+  const stages = [
+    "startup",
+    "connect",
+    "create",
+    "create-session-id-missing",
+    "required-placement",
+    "required-placement-describe-rejected",
+    "required-placement-terminal-failed",
+    "required-placement-terminal-reclaimed",
+    "required-placement-terminal-local",
+    "session-identity",
+    "send",
+    "model-and-exec",
+    "model-outcome",
+    "model-history",
+    "exec-proof",
+    "current-placement",
+  ];
+  if (!stages.includes(failureStage)) {
+    return undefined;
+  }
+  const diagnostic = { kind: "native-first-agent-proof", failureStage };
+  if (!isRecord(worker)) {
+    return diagnostic;
+  }
+  const errors = [
+    "tunnel-timeout",
+    "workspace-command-timeout",
+    "workspace-command-failed",
+    "node-transport-unavailable",
+    "node-supervisor-disconnected",
+    "workspace-not-synced",
+    "workspace-device-mismatch",
+    "workspace-validation-failed",
+    "workspace-session-mismatch",
+    "owner-credential-stale",
+    "owner-epoch-stale",
+    "owner-binding-changed",
+    "tunnel-stopped",
+    "worker-bootstrap-failed",
+    "bundle-install-failed",
+    "provider-preparation-failed",
+    "provider-operation-failed",
+    "provider-profile-rejected",
+    "node-installer-disconnected",
+    "node-install-connection-stale",
+    "bundle-receipt-mismatch",
+    "bundle-prefetch-unsupported",
+    "worker-deploy-artifact-missing",
+    "worker-deploy-artifact-unsafe",
+    "gateway-build-missing",
+    "gateway-cli-missing",
+    "bootstrap-artifact-too-large",
+    "bootstrap-transfer-too-large",
+    "bundle-http-401",
+    "bundle-http-403",
+    "bundle-http-404",
+    "bundle-http-client-error",
+    "bundle-http-server-error",
+    "bundle-http-unexpected-status",
+    "bundle-storage-access-denied",
+    "bundle-operation-denied",
+    "bundle-storage-readonly",
+    "bundle-storage-full",
+    "bundle-file-missing",
+    "bundle-prewarm-failed",
+    "bundle-request-invalid",
+    "bundle-range-invalid",
+    "bundle-transfer-length-invalid",
+    "bundle-download-no-progress",
+    "bundle-archive-length-invalid",
+    "bundle-archive-too-large",
+    "bundle-response-too-large",
+    "bundle-archive-integrity-failed",
+    "bundle-published-invalid",
+    "bundle-tls-mismatch",
+    "bundle-https-required",
+    "bundle-transfer-unavailable",
+    "bundle-manifest-hash-mismatch",
+    "bundle-extracted-hash-mismatch",
+    "bundle-entry-invalid",
+    "bundle-extraction-limit",
+    "bundle-symlink-refused",
+    "bundle-file-changed",
+  ];
+  const turnErrors = [
+    "session-read-changed",
+    "session-binding-changed",
+    "model-authentication",
+    "model-rate-or-quota",
+    "model-unavailable",
+    "tool-policy",
+    "filesystem-permission",
+    "file-or-command-missing",
+    "tls-validation",
+    "network-connection",
+    "worker-authority",
+    "worker-transport",
+    "http-unauthorized",
+    "http-forbidden",
+    "http-rate-limit",
+  ];
+  const vocabularies = {
+    proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
+    historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
+    turnStatus: ["ok", "error", "timeout", "pending"],
+    turnError: turnErrors,
+    proofError: turnErrors,
+    assistantError: turnErrors,
+    execError: turnErrors,
+    turnStopReason: ["stop", "length", "toolUse", "error", "aborted"],
+    assistantStopReason: ["stop", "length", "toolUse", "error", "aborted"],
+    historyLookup: ["found", "unavailable", "invalid", "absent"],
+    placementLookup: ["fresh", "fallback", "absent"],
+    placementState: [
+      "local",
+      "requested",
+      "provisioning",
+      "syncing",
+      "starting",
+      "active",
+      "draining",
+      "reconciling",
+      "reclaimed",
+      "failed",
+    ],
+    recoveryError: errors,
+    terminalReason: errors,
+    environmentError: errors,
+    environmentLookup: ["absent", "found", "unavailable", "mismatch"],
+    environmentState: [
+      "requested",
+      "provisioning",
+      "bootstrapping",
+      "ready",
+      "attached",
+      "idle",
+      "draining",
+      "destroying",
+      "destroyed",
+      "failed",
+      "orphaned",
+    ],
+    tunnelStatus: ["stopped", "connecting", "connected", "reconnecting"],
+    nodeLookup: ["found", "unavailable", "invalid"],
+    expectedNodeWorkerBundle: ["installed", "missing"],
+  };
+  const safe = {};
+  for (const [field, values] of Object.entries(vocabularies)) {
+    if (worker[field] !== undefined) {
+      safe[field] = [...values, "absent", "other"].includes(worker[field])
+        ? worker[field]
+        : "other";
+    }
+  }
+  for (const field of [
+    "proofRpcResponse",
+    "historyToolProofPresent",
+    "historyFinalProofPresent",
+    "historySettleExpired",
+    "workspaceReferencePresent",
+    "attachedSessionMatches",
+    "expectedNodeIdPresent",
+    "expectedNodeConnected",
+    "expectedNodePaired",
+    "expectedNodeSessionHost",
+    "providerStarted",
+  ]) {
+    if (typeof worker[field] === "boolean") {
+      safe[field] = worker[field];
+    }
+  }
+  for (const field of [
+    "placementReadRetries",
+    "historyMessageCount",
+    "historyRunMessageCount",
+    "historyExecCount",
+    "historyExplicitSuccessCount",
+    "historyToolPrefixCount",
+    "historyFinalMarkerCount",
+    "historyTerminalAssistantCount",
+    "attachedSessionCount",
+    "nodeCount",
+    "connectedNodeCount",
+    "expectedNodeMatches",
+    "expectedNodeCaps",
+    "expectedNodeCommands",
+    "elapsedMs",
+    "execResultCount",
+    "execFailureCount",
+  ]) {
+    const limit = field === "elapsedMs" ? 3_600_000 : 4096;
+    if (Number.isSafeInteger(worker[field]) && worker[field] >= 0 && worker[field] <= limit) {
+      safe[field] = worker[field];
+    }
+  }
+  return { ...diagnostic, worker: safe };
+}
+
 function failureDiagnostic(error) {
   const diagnostic = error?.openclawCiDiagnostic;
   if (!isRecord(diagnostic)) {
     return undefined;
+  }
+  if (diagnostic.kind === "native-first-agent-proof") {
+    return nativeFirstAgentProofDiagnostic(diagnostic.failureStage, diagnostic.worker);
   }
   if (diagnostic.kind === "runtime-model-probe") {
     if (
@@ -526,26 +947,146 @@ function upstreamDiagnostic(value) {
   return { kind: "chatgpt-admin-http", operation, status };
 }
 
+// Stack lines before the first frame: the "Name: message" header.
+function stackHeader(stack) {
+  const lines = stack.split("\n");
+  const end = lines.findIndex((line) => /^\s+at\s/u.test(line));
+  return lines
+    .slice(0, end === -1 ? lines.length : end)
+    .join("\n")
+    .trim();
+}
+
+// An error's first line. A DOMException (a fetch TimeoutError or AbortError)
+// crosses the test runner's process boundary as a bare stack with an empty
+// message, so its header names it; a thrown value without either is printed.
+function errorHeader(error) {
+  if (typeof error === "string") {
+    return error;
+  }
+  if (typeof error?.message === "string" && error.message) {
+    return error.message;
+  }
+  const header = typeof error?.stack === "string" ? stackHeader(error.stack) : "";
+  if (header || error === undefined) {
+    return header;
+  }
+  try {
+    const text = String(error);
+    return text === "[object Object]" ? "" : text;
+  } catch {
+    return "";
+  }
+}
+
 // Failure messages and the top stack frame make flakes attributable. They are
 // raw here and travel only over the pipe to run-tests, which redacts and
 // truncates them (failure-redaction.mjs) before anything reaches an artifact
 // or the job log.
 function failureText(cause) {
-  const message =
-    typeof cause === "string" ? cause : typeof cause?.message === "string" ? cause.message : "";
+  const message = errorHeader(cause);
   const stack = typeof cause?.stack === "string" ? cause.stack : "";
   // The stack starts with the message, which can quote another process's stack.
   const messageEnd =
     message && stack.includes(message) ? stack.indexOf(message) + message.length : 0;
-  const frame = stack
+  const frames = stack
     .slice(messageEnd)
     .split("\n")
-    .find((line) => /^\s+at\s/u.test(line))
-    ?.trim();
+    .filter((line) => /^\s+at\s/u.test(line))
+    .map((line) => line.trim());
+  // A DOMException's constructor and Node's own frames do not locate a failure.
+  const frame = frames.find((line) => !/^at (?:.* \()?node:internal\//u.test(line)) ?? frames[0];
   return {
     message: message ? message.slice(0, failureInputLimit) : undefined,
-    frame: frame ? frame.slice(0, failureInputLimit) : undefined,
+    frame: frame?.slice(0, failureInputLimit),
+    // The whole stack goes only to the failure details in the diagnostics report.
+    stack: frames.length > 0 ? frames.join("\n").slice(0, failureInputLimit) : undefined,
   };
+}
+
+// A failed file's last output lines (test stdout, stderr and diagnostics), raw
+// like failure text: run-tests redacts them into the diagnostics report.
+const outputTailLines = 400;
+
+function outputTail() {
+  const lines = [];
+  const partial = { stdout: "", stderr: "" };
+  const dropping = { stdout: false, stderr: false };
+  let omitted = 0;
+  // Trim in batches so a chatty passing file costs amortized constant time per line.
+  const trim = (limit) => {
+    if (lines.length > limit) {
+      omitted += lines.length - outputTailLines;
+      lines.splice(0, lines.length - outputTailLines);
+    }
+  };
+  const push = (line) => {
+    lines.push(line.slice(0, failureInputLimit));
+    trim(2 * outputTailLines);
+  };
+  return {
+    add(stream, text) {
+      let rest = text;
+      if (dropping[stream]) {
+        // The rest of a line cut at the limit could start inside a secret.
+        const end = rest.indexOf("\n");
+        if (end === -1) {
+          return;
+        }
+        dropping[stream] = false;
+        rest = rest.slice(end + 1);
+      }
+      const parts = (partial[stream] + rest).split("\n");
+      partial[stream] = parts.pop();
+      if (partial[stream].length >= failureInputLimit) {
+        parts.push(partial[stream]);
+        partial[stream] = "";
+        dropping[stream] = true;
+      }
+      for (const line of parts) {
+        push(`${stream}: ${line}`);
+      }
+    },
+    diagnostic(text) {
+      push(`diagnostic: ${text}`);
+    },
+    finish() {
+      for (const stream of ["stdout", "stderr"]) {
+        if (partial[stream] !== "") {
+          push(`${stream}: ${partial[stream]}`);
+        }
+      }
+      trim(outputTailLines);
+      return { lines, omitted };
+    },
+  };
+}
+
+const interruptedTestLimit = 20;
+// About this much JSON per batch (the line strings, without the envelope).
+const interruptedOutputBatchChars = 32 * 1024;
+
+// Node exits soon after an interruption and can cut what is still queued, so the
+// tail goes out in small batches, newest first: a cut loses the oldest lines and
+// at most one partial JSON line, which run-tests skips.
+function* interruptedOutput({ lines, omitted }) {
+  // Measured as JSON, since escaping can grow a line several times.
+  const sizes = lines.map((line) => JSON.stringify(line).length);
+  let end = lines.length;
+  while (end > 0) {
+    let start = end - 1;
+    let chars = sizes[start];
+    while (start > 0 && chars + sizes[start - 1] <= interruptedOutputBatchChars) {
+      start -= 1;
+      chars += sizes[start];
+    }
+    yield `${JSON.stringify({
+      type: "test:output",
+      // Every line before this batch, so run-tests can count the ones a cut lost.
+      data: { lines: lines.slice(start, end), omitted: omitted + start },
+    })}\n`;
+    end = start;
+  }
 }
 
 function location(data = {}) {
@@ -609,8 +1150,62 @@ function location(data = {}) {
 // Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(source) {
+  const output = outputTail();
+  let failed = false;
+  let outputSent = false;
+  // Tests dequeued and not yet complete: the ones a timeout interrupted. Tests
+  // declared in a loop can share a key, so each key counts its runs.
+  const running = new Map();
+  const runningKey = (data) => `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
+    if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
+      const key = runningKey(event.data);
+      running.set(key, { data: event.data, count: (running.get(key)?.count ?? 0) + 1 });
+      continue;
+    }
+    if (event.type === "test:complete" && typeof event.data?.name === "string") {
+      const key = runningKey(event.data);
+      const entry = running.get(key);
+      if (entry?.count > 1) {
+        entry.count -= 1;
+      } else {
+        running.delete(key);
+      }
+      continue;
+    }
+    if (event.type === "test:interrupted") {
+      // The runner's timeout sent SIGTERM and Node exits right after this event,
+      // so send the names first and the output once, newest lines first.
+      yield `${JSON.stringify({
+        type: "test:interrupted",
+        data: {
+          running: [...running.values()].slice(-interruptedTestLimit).map(({ data }) => ({
+            name: data.name,
+            line: data.line,
+            nesting: data.nesting,
+          })),
+        },
+      })}\n`;
+      if (!outputSent) {
+        outputSent = true;
+        yield* interruptedOutput(output.finish());
+      }
+      continue;
+    }
+    if (event.type === "test:stdout" || event.type === "test:stderr") {
+      if (typeof event.data?.message === "string") {
+        output.add(event.type.slice(5), event.data.message);
+      }
+      continue;
+    }
+    if (event.type === "test:fail") {
+      failed = true;
+    }
     if (event.type === "test:diagnostic") {
+      // Per-test diagnostics name their file; the run summary counts do not.
+      if (typeof event.data?.message === "string" && typeof event.data.file === "string") {
+        output.diagnostic(event.data.message);
+      }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
       if (
         typeof event.data?.message === "string" &&
@@ -639,5 +1234,9 @@ export default async function* jsonLinesReporter(source) {
       type: event.type,
       data: location(event.data),
     })}\n`;
+  }
+  // Passing files send nothing extra.
+  if (failed && !outputSent) {
+    yield `${JSON.stringify({ type: "test:output", data: output.finish() })}\n`;
   }
 }

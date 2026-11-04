@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { execFile } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
+import { promisify } from "node:util";
 import { Agent, request as httpRequest } from "node:http";
 import test from "node:test";
 import {
@@ -17,6 +22,8 @@ import {
   startController,
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { AGENT_NAME_CONFLICT, callerDenied } from "../helpers/refusal-text.mjs";
 
 async function ensureInstallation(state, name) {
   const existing = await state.loadInstallation();
@@ -102,6 +109,7 @@ test(
       configurationId: `cfg_${randomUUID()}`,
       backendId: null,
       harnessAuth: null,
+      gatewayManagedMode: true,
       draft_spec: {},
       executionMode: "embedded",
       servicePrincipalId: `service-agent-${randomUUID()}`,
@@ -113,6 +121,7 @@ test(
       agentId,
       revision: 1,
       backendId: null,
+      gatewayManagedMode: agent.gatewayManagedMode,
       configurationId: `cfg_${randomUUID()}`,
       configurationKind: "agent",
       configurationGeneration: 1,
@@ -122,6 +131,7 @@ test(
         id: "compute-local-development",
         implementation: "deterministic-local-development",
       },
+      executionAdmission: { version: 2, mode: "unprotected" },
       servicePrincipalId: agent.servicePrincipalId,
       createdAt,
     };
@@ -407,10 +417,7 @@ test(
     );
     assert.deepEqual(requeued.rows, [{ state: "queued", completed_at: null, reason_code: null }]);
 
-    await pool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [workId],
-    );
+    await makeWorkDue(pool, workId);
     const secondClaim = await claimProvisioningWork(pool, workId);
     const settledBeforeFailure = await state.transact((unit) =>
       unit.provisioning.settleEffect(workId, {
@@ -476,10 +483,7 @@ test(
     );
     assert.deepEqual(retryWork.rows, [{ state: "queued", completed_at: null, reason_code: null }]);
 
-    await pool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [workId],
-    );
+    await makeWorkDue(pool, workId);
     const terminalClaim = await claimProvisioningWork(pool, workId);
     const cancelled = await state.transact((unit) =>
       unit.provisioning.cancel(terminalClaim, {
@@ -549,7 +553,7 @@ test(
         generation: 1,
         createdAt,
       });
-      await unit.agents.createAgent({
+      const agent = await unit.agents.createAgent({
         id: agentId,
         namespaceId,
         name: "Provisioning success",
@@ -568,12 +572,14 @@ test(
         agentId,
         revision: 1,
         backendId: null,
+        gatewayManagedMode: agent.gatewayManagedMode,
         configurationId,
         configurationKind: "agent",
         configurationGeneration: 1,
         configuration: { agents: { defaults: { model: "test/model" } } },
         harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
         compute: { id: "compute-provisioning-success", implementation: "deterministic-test" },
+        executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
         servicePrincipalId: `service-agent-${agentId}`,
         createdAt,
@@ -600,8 +606,7 @@ test(
       ),
       {
         name: "ResourceStateConflictError",
-        message:
-          "An Agent with this name already exists in this Namespace. Choose a different name.",
+        message: AGENT_NAME_CONFLICT,
       },
     );
 
@@ -779,6 +784,26 @@ test(
       import("../../packages/iam/src/index.ts"),
     ]);
     const pool = new Pool({ connectionString: databaseUrl });
+    // The database is authoritative for admitted credential-source login modes. PAT
+    // revisions must persist; unknown modes and secret bytes must still fail validation.
+    const sourceSnapshot = {
+      method: "credential_source",
+      sourceId: `cs_${randomUUID()}`,
+      credentialGatewayId: "credential-gateway",
+      sourceType: "codex-pat",
+      loginMode: "codex_pat",
+    };
+    for (const [snapshot, expected] of [
+      [sourceSnapshot, true],
+      [{ ...sourceSnapshot, loginMode: "unsupported" }, false],
+      [{ ...sourceSnapshot, accessToken: "synthetic-forbidden-value" }, false],
+    ]) {
+      const result = await pool.query(
+        "SELECT occ.harness_auth_is_valid($1::jsonb, $2, true) AS valid",
+        [JSON.stringify(snapshot), `ns_${randomUUID()}`],
+      );
+      assert.equal(result.rows[0].valid, expected);
+    }
     context.after(() => pool.end());
     const state = new PostgresPlatformState(pool);
     const installation = await state.loadInstallation();
@@ -891,6 +916,9 @@ test(
     );
     for (const [offset, invalid] of [
       null,
+      "api_key",
+      false,
+      2,
       {},
       { ...fixture.revision.harnessAuth, secretDriverId: "" },
       { ...fixture.revision.harnessAuth, secretValue: "sentinel-not-a-reference" },
@@ -1303,6 +1331,91 @@ test(
       });
       assert.equal(foreignNamespaceDecision.allowed, false);
     }
+
+    // Finding 1323 (bughunt-69): 64 revisions and 64 Presets of about 0.9 MB each. Full lists
+    // decoded every document (8-10 s on two CPUs); summaries read none into the API, and a
+    // summary page opens each row's snapshot once in the database for three top-level fields.
+    const large = JSON.stringify(
+      Object.fromEntries(Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"])),
+    );
+    await pool.query(
+      `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+       SELECT 'rev_' || gen_random_uuid(), namespace_id, agent_id, 5000 + n, backend_id,
+              jsonb_set(admitted_spec, '{draft_spec,env}', jsonb_build_object('vars', $2::jsonb)),
+              admitted_at
+       FROM occ.agent_revisions, generate_series(1, 64) AS n WHERE id = $1`,
+      [fixture.revision.id, large],
+    );
+    await pool.query(
+      `INSERT INTO occ.presets (id, namespace_id, name, template, created_at)
+       SELECT 'pre_' || gen_random_uuid(), $1, 'Heavy preset ' || n,
+              jsonb_build_object('configuration',
+                jsonb_build_object('values', jsonb_build_object('env', $2::jsonb))),
+              clock_timestamp()
+       FROM generate_series(1, 64) AS n`,
+      [fixture.namespace.id, large],
+    );
+    // The bound counts the bytes the database sends for one read, which a slow or busy runner
+    // does not change: a list that reads the full documents receives about 64 x 0.9 MB, a
+    // summary list a few hundred bytes a row. Every pool client this read checks out is counted.
+    const received = async (read) => {
+      const sockets = new Map();
+      const acquired = (client) => {
+        const socket = client.connection.stream;
+        if (!sockets.has(socket)) {
+          sockets.set(socket, socket.bytesRead);
+        }
+      };
+      pool.on("acquire", acquired);
+      try {
+        const started = performance.now();
+        const result = await state.read(read);
+        const ms = Math.round(performance.now() - started);
+        let bytes = 0;
+        for (const [socket, before] of sockets) {
+          bytes += socket.bytesRead - before;
+        }
+        return { result, bytes, ms };
+      } finally {
+        pool.off("acquire", acquired);
+      }
+    };
+    const revisionPage = await received((view) =>
+      view.revisions.pageRevisionSummaries(fixture.namespace.id, fixture.agent.id, {
+        limit: 100,
+      }),
+    );
+    const heavyRevisions = revisionPage.result.revisions.filter(({ revision }) => revision > 5000);
+    assert.deepEqual(
+      heavyRevisions.slice(0, 2).map(({ revision }) => revision),
+      [5064, 5063],
+    );
+    assert.equal(heavyRevisions.length, 64);
+    assert.equal(heavyRevisions[0].harness.mode, fixture.revision.harness.mode);
+    const presetSummaries = await received((view) =>
+      view.presets.listPresetSummaries(fixture.namespace.id),
+    );
+    assert.ok(presetSummaries.result.length >= 64);
+    const measured = (read) => `${read.bytes} bytes in ${read.ms} ms`;
+    context.diagnostic(
+      `64 x 0.9 MB: revision summary page ${measured(revisionPage)}, Preset summaries ${measured(presetSummaries)}`,
+    );
+    // Less than one stored document: neither list may carry a single snapshot or template.
+    // PostgreSQL's jsonb text is longer than the compact `large`, so one document exceeds this.
+    assert.ok(
+      revisionPage.bytes > 0 && revisionPage.bytes < large.length,
+      `revision summary page received ${measured(revisionPage)}`,
+    );
+    assert.ok(
+      presetSummaries.bytes > 0 && presetSummaries.bytes < large.length,
+      `Preset summaries received ${measured(presetSummaries)}`,
+    );
+    // Later starts in this database seed default Presets, which reads full templates.
+    await pool.query(
+      "DELETE FROM occ.presets WHERE namespace_id = $1 AND name LIKE 'Heavy preset %'",
+      [fixture.namespace.id],
+    );
   },
 );
 
@@ -1756,8 +1869,12 @@ test(
       api,
       namespaceId,
       "Unreadable saved configuration",
-      undefined,
-      { harnessAuth: { method: "runtime" } },
+    );
+    // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
+    // it as an older release did, to match the revisions seeded below.
+    await pool.query(
+      "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
+      [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
     );
     const { agent: healthyAgent } = await createConfiguredAgent(
       api,
@@ -1776,6 +1893,7 @@ test(
         agentId: agent.id,
         revision: 1,
         backendId: null,
+        gatewayManagedMode: agent.gatewayManagedMode,
         configurationId: configuration.id,
         configurationKind: "agent",
         configurationGeneration: 1,
@@ -1785,10 +1903,26 @@ test(
           id: "compute-local-development",
           implementation: "deterministic-local-development",
         },
+        executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
         servicePrincipalId: agent.servicePrincipalId,
         plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
         createdAt: new Date().toISOString(),
+      }),
+    );
+    // Preserve a normal queued deployment record for the healthy snapshot, so
+    // CLI status enrichment remains observable without executing a workload.
+    const actor = (await state.loadNativeIAMState()).identities.find(
+      (identity) => identity.kind === "principal",
+    );
+    assert.ok(actor);
+    await state.transact((unit) =>
+      unit.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        namespaceId,
+        resourceId: revision.id,
+        actorId: actor.id,
       }),
     );
     const healthyRevision = await request(api, "GET", `${revisionPath}/${revision.id}`);
@@ -1839,16 +1973,119 @@ test(
     const detail = await request(api, "GET", agentPath);
     assert.equal(detail.status, 200);
     assert.deepEqual(detail.data, degradedAgent);
+    // An Agent update checks the sources its saved settings bind, which this Agent's unreadable
+    // settings do not show: the sources answer stays false, even for a caller with every grant.
+    const permissions = await request(api, "GET", `${agentPath}/permissions`);
+    assert.equal(permissions.status, 200);
+    assert.equal(permissions.data.update, true);
+    assert.equal(permissions.data.configurationRead, true);
+    assert.equal(permissions.data.agentSourcesOperate, false);
 
+    // The list carries summaries, newest first. It never decodes a snapshot, so the
+    // unreadable revision lists like any other; its exact read reports the error.
+    const revisionSummary = (item, deploymentStatus) => ({
+      id: item.id,
+      namespaceId: item.namespaceId,
+      agentId: item.agentId,
+      revision: item.revision,
+      backendId: item.backendId,
+      configurationId: item.configurationId,
+      configurationGeneration: item.configurationGeneration,
+      harness: item.harness,
+      createdAt: item.createdAt,
+      deploymentStatus,
+      deploymentErrorCode: null,
+    });
+    // The planted revision has no deployment work; the deployed one is queued.
     const revisions = await request(api, "GET", revisionPath);
     assert.equal(revisions.status, 200);
-    assert.deepEqual(revisions.data, [healthyRevision.data, degradedRevision]);
+    assert.deepEqual(revisions.data, [
+      revisionSummary({ ...healthyRevision.data, id: malformedRevisionId, revision: 2 }, null),
+      revisionSummary(healthyRevision.data, "queued"),
+    ]);
     const validDetail = await request(api, "GET", `${revisionPath}/${revision.id}`);
     assert.equal(validDetail.status, 200);
     assert.deepEqual(validDetail.data, healthyRevision.data);
     const invalidDetail = await request(api, "GET", `${revisionPath}/${malformedRevisionId}`);
     assert.equal(invalidDetail.status, 200);
     assert.deepEqual(invalidDetail.data, degradedRevision);
+
+    // The compiled CLI consumes the same supported metadata/error variants over
+    // the shipped API's real HTTP listener. A retired saved enum is not a runtime.
+    const cliDirectory = await temporaryDirectory(context, "oce-cli-browsing-");
+    const cli = join(cliDirectory, "occ");
+    const execute = promisify(execFile);
+    await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
+    const principal = (await state.loadNativeIAMState()).identities.find(
+      (identity) =>
+        identity.kind === "service_principal" &&
+        identity.namespaceId === undefined &&
+        identity.agentId === undefined,
+    );
+    assert.ok(principal);
+    const key = await request(api, "POST", "/api/auth/service-keys", {
+      servicePrincipalId: principal.id,
+      name: "metadata-browsing-proof",
+      expiresIn: 86400,
+    });
+    assert.equal(key.status, 201);
+    const keyFile = join(cliDirectory, "service-key.json");
+    await writeFile(keyFile, JSON.stringify({ data: key.data }), { mode: 0o600 });
+    const cliArguments = [
+      "--url",
+      api.origin,
+      "--service-key-file",
+      keyFile,
+      "--namespace",
+      namespaceId,
+    ];
+    try {
+      for (const command of [
+        ["agent", "get", agent.id],
+        ["agent", "list"],
+        ["agent", "revisions", agent.id],
+      ]) {
+        const table = await execute(cli, [...cliArguments, ...command]);
+        const structured = await execute(cli, [...cliArguments, ...command, "--output", "json"]);
+        const decoded = JSON.parse(structured.stdout);
+        const records = Array.isArray(decoded) ? decoded : [decoded];
+        if (command[1] === "revisions") {
+          // Revision summaries carry no saved settings, so no read error either. The CLI
+          // keeps each deployment status OCC listed, though the Agent's settings are unreadable.
+          assert.ok(table.stdout.includes(malformedRevisionId));
+          assert.match(table.stdout, /queued/u);
+          assert.equal(structured.stderr, "");
+          assert.deepEqual(
+            records.map(({ id, deploymentStatus }) => ({ id, deploymentStatus })),
+            revisions.data.map(({ id, deploymentStatus }) => ({ id, deploymentStatus })),
+          );
+          continue;
+        }
+        assert.match(table.stdout, /CONFIGURATION ERROR/u);
+        assert.match(table.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
+        assert.ok(records.some((record) => record.configurationReadError?.code === readError.code));
+      }
+      // A readable Agent can still have an unreadable historical snapshot. The list never
+      // decodes it, so the CLI lists it beside its healthy sibling without a strict read.
+      await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
+        agent.id,
+        JSON.stringify(agent.plugins ?? {}),
+      ]);
+      const history = await execute(cli, [...cliArguments, "agent", "revisions", agent.id]);
+      assert.equal(history.stderr, "");
+      assert.ok(history.stdout.includes(revision.id));
+      assert.match(history.stdout, /queued/u);
+      assert.ok(history.stdout.includes(malformedRevisionId));
+    } finally {
+      await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
+        agent.id,
+        JSON.stringify(malformedPlugins),
+      ]);
+      assert.equal(
+        (await request(api, "DELETE", `/api/auth/service-keys/${key.data.id}`)).status,
+        200,
+      );
+    }
 
     // Browsing must not admit partially decoded records to mutation or runtime
     // paths, and a failed edit must not turn unreadable plugin state into {}.
@@ -1887,15 +2124,16 @@ test(
 
     // The degraded response has the same exact-resource IAM boundary as a
     // healthy response; neither metadata nor decode errors may leak on denial.
-    for (const [resourceKind, resourceId, listPath, detailPath, visible] of [
+    for (const [resourceKind, kindLabel, resourceId, listPath, detailPath, visible] of [
       [
         "agent_revision",
+        "AgentRevision",
         malformedRevisionId,
         revisionPath,
         `${revisionPath}/${malformedRevisionId}`,
-        [healthyRevision.data],
+        [revisionSummary(healthyRevision.data, "queued")],
       ],
-      ["agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
+      ["agent", "Agent", agent.id, `/namespaces/${namespaceId}/agents`, agentPath, [healthyAgent]],
     ]) {
       await pool.query(
         `INSERT INTO occ.iam_restrictions
@@ -1908,9 +2146,10 @@ test(
       assert.deepEqual(filtered.data, visible);
       const denied = await request(api, "GET", detailPath);
       assert.equal(denied.status, 403);
+      // The Restriction reads as any missing grant on the ID the path named.
       assert.deepEqual(denied.error, {
         code: "FORBIDDEN",
-        message: "The exact platform operation was not authorized.",
+        message: callerDenied(`${kindLabel} read`, `${kindLabel} ${resourceId}`),
       });
       assert.equal(denied.data, undefined);
     }
@@ -1944,8 +2183,12 @@ test(
       api,
       namespaceId,
       "Native admin successor",
-      undefined,
-      { harnessAuth: { method: "runtime" } },
+    );
+    // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
+    // it as an older release did, to match the revisions seeded below.
+    await pool.query(
+      "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
+      [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
     );
     const plugins = {
       "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
@@ -1962,6 +2205,7 @@ test(
           agentId: agent.id,
           revision,
           backendId: null,
+          gatewayManagedMode: agent.gatewayManagedMode,
           configurationId: configuration.id,
           configurationKind: "agent",
           configurationGeneration: 1,
@@ -1971,6 +2215,7 @@ test(
             id: "compute-local-development",
             implementation: "deterministic-local-development",
           },
+          executionAdmission: { version: 2, mode: "unprotected" },
           harnessAuth: { method: "runtime" },
           servicePrincipalId: agent.servicePrincipalId,
           plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
@@ -2019,6 +2264,141 @@ test(
       controller.getAdministerableActiveAgentRevision(principalId, namespaceId, agent.id),
       { name: "DependencyUnavailableError" },
     );
+  },
+);
+
+test(
+  "PostgreSQL deployment refuses with 503 and creates nothing when an earlier revision is unreadable",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { createTestConfigurationDriver },
+      { createTestSecretDriver },
+      { requestFailure },
+    ] = await Promise.all([
+      import("pg"),
+      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/secret-driver.mjs"),
+      import("../../apps/controller/src/http/errors.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    await startController(context);
+    const actor = await pool.query(
+      `SELECT identity.id
+       FROM occ.iam_identities AS identity
+       JOIN occ."user" AS auth_user ON auth_user.id = identity.subject
+       WHERE auth_user.email = $1`,
+      [adminEmail],
+    );
+    assert.equal(actor.rowCount, 1);
+    const principalId = actor.rows[0].id;
+    const { controller, resolveHarness } = await createDurableController(pool);
+    for (const driver of [
+      createTestConfigurationDriver({ id: `configuration-unreadable-${randomUUID()}` }),
+      createTestSecretDriver(),
+    ]) {
+      controller.registerDriver(driver);
+      controller.selectDriver(driver.capability, driver.id);
+    }
+
+    const namespace = await controller.createNamespace(principalId, {
+      name: `unreadable-history-${randomUUID()}`,
+    });
+    await controller.handleNamespaceLifecycle(principalId, namespace.id, "ready");
+    const configuration = await controller.createConfiguration(principalId, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values: {},
+    });
+    const agent = await controller.createAgent(principalId, {
+      namespaceId: namespace.id,
+      name: `unreadable-history-agent-${randomUUID()}`,
+      configurationId: configuration.id,
+    });
+    const harnessSecret = await controller.createSecret(principalId, {
+      namespaceId: namespace.id,
+      name: `unreadable-history-harness-${randomUUID()}`,
+      value: "synthetic-persistence-key",
+    });
+    await controller.updateAgent(principalId, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: configuration.id,
+      harnessAuth: {
+        method: "api_key",
+        source: { kind: "secret", namespaceId: namespace.id, id: harnessSecret.id },
+      },
+    });
+    const harnessRoleId = `role-${randomUUID()}`;
+    await pool.query(
+      "INSERT INTO occ.iam_roles(id, namespace_id, name, permissions) VALUES($1, $2, $3, $4::jsonb)",
+      [
+        harnessRoleId,
+        namespace.id,
+        "Harness Secret consumer",
+        JSON.stringify([{ action: "operate", resourceKind: "secret" }]),
+      ],
+    );
+    await pool.query(
+      "INSERT INTO occ.iam_access_bindings(id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id) VALUES($1, $2, $3, $4, 'secret', $5)",
+      [
+        `binding-${randomUUID()}`,
+        namespace.id,
+        agent.servicePrincipalId,
+        harnessRoleId,
+        harnessSecret.id,
+      ],
+    );
+    const deploy = () =>
+      controller.deployAgent(
+        principalId,
+        { namespaceId: namespace.id, agentId: agent.id },
+        resolveHarness,
+      );
+    const first = await deploy();
+    assert.equal(first.revision, 1);
+
+    // Revisions are immutable to the application role, so seed the unreadable one as a copy
+    // carrying a previously accepted plugin approval enum the current contract no longer decodes.
+    await pool.query(
+      `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+       SELECT $1, namespace_id, agent_id, 2, backend_id,
+              jsonb_set(admitted_spec, '{plugins}', $2::jsonb, true), admitted_at
+       FROM occ.agent_revisions WHERE id = $3`,
+      [
+        `rev_${randomUUID()}`,
+        JSON.stringify({
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } } },
+        }),
+        first.id,
+      ],
+    );
+    const counts = () =>
+      pool
+        .query(
+          `SELECT (SELECT count(*)::integer FROM occ.agent_revisions WHERE agent_id = $1) AS revisions,
+                  (SELECT count(*)::integer FROM occ.controller_work WHERE agent_id = $1) AS work`,
+          [agent.id],
+        )
+        .then(({ rows }) => rows[0]);
+    const before = await counts();
+    assert.equal(before.revisions, 2);
+    assert.ok(before.work > 0, "the first deployment queued its work");
+
+    // The worker decodes every earlier revision to stop or retire it, so admission must too.
+    const refusal = await deploy().then(
+      () => assert.fail("deployment was admitted"),
+      (error) => error,
+    );
+    assert.equal(refusal.name, "DependencyUnavailableError");
+    assert.equal(refusal.field, "plugins");
+    assert.equal(refusal.message, "Persisted AgentRevision plugin state is invalid.");
+    assert.equal(requestFailure(refusal).status, 503);
+    assert.deepEqual(await counts(), before);
   },
 );
 
@@ -2243,5 +2623,273 @@ test(
       "ready",
       "listen",
     ]);
+  },
+);
+
+test(
+  "PostgreSQL guarded first deployment persists one private receipt and one reconcile work",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { AuditEventFactory },
+      { PostgresPlatformState },
+      { OpenClawController },
+      { NativeIAMDriver, createAuthPrincipalSeed },
+      { createTestConfigurationDriver },
+      { createTestSecretDriver },
+      { createReadyComputeDriver },
+      { SlackChannelDriver },
+      { resolveApprovedHarness },
+      { grantAgentSecretOperate },
+    ] = await Promise.all([
+      import("pg"),
+      import("../../packages/audit/src/index.ts"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+      import("../../packages/occ/src/index.ts"),
+      import("../../packages/iam/src/index.ts"),
+      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/secret-driver.mjs"),
+      import("../helpers/development.mjs"),
+      import("../../apps/controller/src/drivers/channel/slack.ts"),
+      import("../../apps/controller/src/composition/production-harness.ts"),
+      import("../helpers/postgres-harness-auth.mjs"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const state = new PostgresPlatformState(pool);
+    const installation = await ensureInstallation(state, "guarded-first-deployment");
+    const seed = createAuthPrincipalSeed(
+      installation.id,
+      "guarded-deployment-test",
+      { id: randomUUID() },
+      { grant: "administrator" },
+    );
+    await state.seedNativeIAM({
+      identities: [seed.principal],
+      roles: seed.roles,
+      bindings: seed.bindings,
+      groups: [],
+      memberships: [],
+      restrictions: [],
+    });
+    const principalId = seed.principal.id;
+    const configurationDriver = createTestConfigurationDriver();
+    const secretDriver = createTestSecretDriver();
+    const compute = createReadyComputeDriver("guarded-test-compute", { validateHarnessAuth() {} });
+    let senderCalls = 0;
+    const channel = new SlackChannelDriver(async (url, options) => {
+      senderCalls++;
+      assert.equal(new URL(url).href, "https://slack.com/api/auth.test");
+      assert.equal(options.headers.authorization, "Bearer xoxb-synthetic-bot");
+      return Response.json({ ok: true, bot_id: "B123", team_id: "T123" });
+    });
+    const createController = (store) => {
+      const controller = new OpenClawController(installation, {
+        state: store,
+        recordOperations: true,
+      });
+      for (const driver of [
+        new NativeIAMDriver(store),
+        compute,
+        configurationDriver,
+        secretDriver,
+        channel,
+      ]) {
+        controller.registerDriver(driver);
+        controller.selectDriver(driver.capability, driver.id);
+      }
+      return controller;
+    };
+    const controller = createController(state);
+    const namespace = await controller.createNamespace(principalId, {
+      name: `guarded-${randomUUID()}`,
+    });
+    await controller.handleNamespaceLifecycle(principalId, namespace.id, "ready");
+    const bot = await controller.createSecret(principalId, {
+      namespaceId: namespace.id,
+      name: "synthetic-slack",
+      value: "xoxb-synthetic-bot",
+    });
+    const configuration = await controller.createConfiguration(principalId, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values: {
+        channels: { slack: { enabled: true, mode: "http", botToken: "${SLACK_BOT_TOKEN}" } },
+      },
+      secretBindings: {
+        SLACK_BOT_TOKEN: { source: { kind: "secret", namespaceId: namespace.id, id: bot.id } },
+      },
+    });
+    const secret = await controller.createSecret(principalId, {
+      namespaceId: namespace.id,
+      name: "synthetic-harness",
+      value: "synthetic-test-key",
+    });
+    const agent = await controller.createAgent(principalId, {
+      namespaceId: namespace.id,
+      name: "guarded-agent",
+      configurationId: configuration.id,
+      harnessAuth: {
+        method: "api_key",
+        source: { kind: "secret", namespaceId: namespace.id, id: secret.id },
+      },
+    });
+    await grantAgentSecretOperate(pool, agent, secret.id);
+    await grantAgentSecretOperate(pool, agent, bot.id);
+    const auditFactory = new AuditEventFactory();
+    const mutationEvent = ({ revision, authorization }) =>
+      auditFactory.create({
+        installationId: installation.id,
+        namespaceId: namespace.id,
+        actorId: principalId,
+        action: "openclaw.agents.deploy",
+        source: "occ",
+        kind: "mutation",
+        outcome: "success",
+        resource: { kind: "agent_revision", id: revision.id, namespaceId: namespace.id },
+        authorization: authorization.request,
+        details: { iamEvidence: authorization.decision.evidence },
+        iamDriverId: authorization.decision.driverId,
+      });
+    const input = { namespaceId: namespace.id, agentId: agent.id };
+    const intent = {
+      key: "reviewed-first",
+      expectedConfigurationId: configuration.id,
+      expectedGeneration: 1,
+    };
+    const count = async () =>
+      (
+        await pool.query(
+          `SELECT (SELECT count(*)::int FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2) AS revisions,
+            (SELECT count(*)::int FROM occ.controller_work WHERE namespace_id = $1 AND agent_id = $2 AND revision_id IS NOT NULL) AS work,
+            (SELECT count(DISTINCT a.id)::int FROM occ.audit_events a
+             JOIN occ.agent_revisions r ON r.id = a.resource_id
+             WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.revision_number = 1
+               AND a.kind = 'mutation' AND a.action = 'openclaw.agents.deploy'
+               AND a.outcome = 'success') AS audit`,
+          [namespace.id, agent.id],
+        )
+      ).rows[0];
+    secretDriver.calls.length = 0;
+    assert.equal(await controller.recoverAgentFirstDeployment(principalId, input, intent), null);
+    assert.deepEqual(await count(), { revisions: 0, work: 0, audit: 0 });
+    assert.equal(secretDriver.calls.length, 0);
+    const competing = { ...intent, key: "competing-first" };
+    const outcomes = await Promise.allSettled(
+      [intent, competing].map((requested) =>
+        controller.deployAgentFirst(
+          principalId,
+          input,
+          requested,
+          resolveApprovedHarness,
+          mutationEvent,
+        ),
+      ),
+    );
+    assert.equal(outcomes.filter((result) => result.status === "fulfilled").length, 1);
+    const winner = outcomes.findIndex((result) => result.status === "fulfilled");
+    const receipt = outcomes[winner].value;
+    const winnerIntent = winner === 0 ? intent : competing;
+    assert.deepEqual(await count(), { revisions: 1, work: 1, audit: 1 });
+    assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
+    assert.ok(senderCalls >= 1 && senderCalls <= 2, "only the two fresh contenders can validate");
+    assert.equal(
+      secretDriver.calls.filter((call) => call.operation === "withValue").length,
+      senderCalls,
+    );
+    const preparedSenderCalls = senderCalls;
+    context.diagnostic(JSON.stringify({ senderCalls, resolve: 2, ...(await count()) }));
+    const reopened = createController(new PostgresPlatformState(pool));
+    secretDriver.calls.length = 0;
+    assert.deepEqual(
+      await reopened.recoverAgentFirstDeployment(principalId, input, winnerIntent),
+      receipt,
+    );
+    assert.deepEqual(
+      await reopened.deployAgentFirst(
+        principalId,
+        input,
+        winnerIntent,
+        resolveApprovedHarness,
+        mutationEvent,
+      ),
+      receipt,
+    );
+    assert.equal(
+      await reopened.recoverAgentFirstDeployment(principalId, input, {
+        ...winnerIntent,
+        key: "unused",
+      }),
+      null,
+    );
+    assert.equal(secretDriver.calls.length, 0);
+    assert.equal(senderCalls, preparedSenderCalls);
+    assert.deepEqual(await count(), { revisions: 1, work: 1, audit: 1 });
+    const stored = await pool.query(
+      "SELECT first_deployment_digest, admitted_spec FROM occ.agent_revisions WHERE id = $1",
+      [receipt.revisionId],
+    );
+    assert.match(stored.rows[0].first_deployment_digest, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(stored.rows[0].admitted_spec).includes(winnerIntent.key), false);
+    assert.equal(JSON.stringify(stored.rows[0].admitted_spec).includes(principalId), false);
+    const sibling = await reopened.createAgent(principalId, {
+      namespaceId: namespace.id,
+      name: "guarded-digest-constraint",
+      configurationId: configuration.id,
+      harnessAuth: agent.harnessAuth,
+    });
+    await grantAgentSecretOperate(pool, sibling, secret.id);
+    await grantAgentSecretOperate(pool, sibling, bot.id);
+    // Revision updates are already forbidden by the immutable-row trigger. These new
+    // rows keep the admitted snapshot and Namespace intact, and isolate each CHECK rule:
+    // a malformed digest on revision one, then a well-formed digest on revision two.
+    for (const [agentId, revisionNumber, digest] of [
+      [sibling.id, 1, "invalid-digest"],
+      [agent.id, 2, "a".repeat(64)],
+    ]) {
+      await assert.rejects(
+        pool.query(
+          `INSERT INTO occ.agent_revisions
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec,
+            gateway_managed_mode, admitted_at, first_deployment_digest)
+           SELECT $1, namespace_id, $2, $3, backend_id, admitted_spec,
+                  gateway_managed_mode, admitted_at, $4
+           FROM occ.agent_revisions WHERE id = $5`,
+          [`rev_${randomUUID()}`, agentId, revisionNumber, digest, receipt.revisionId],
+        ),
+        { code: "23514", constraint: "agent_revisions_first_deployment_digest" },
+      );
+    }
+    assert.deepEqual(await count(), { revisions: 1, work: 1, audit: 1 });
+    assert.deepEqual(
+      await state.read((unit) => unit.revisions.listRevisionMetadata(namespace.id, sibling.id)),
+      [],
+    );
+    const next = await reopened.deployAgent(principalId, input, resolveApprovedHarness);
+    assert.equal(next.revision, 2);
+    const unchanged = await pool.query(
+      "SELECT id, first_deployment_digest FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2 ORDER BY revision_number",
+      [namespace.id, agent.id],
+    );
+    assert.deepEqual(unchanged.rows, [
+      { id: receipt.revisionId, first_deployment_digest: stored.rows[0].first_deployment_digest },
+      { id: next.id, first_deployment_digest: null },
+    ]);
+    await reopened.updateConfiguration(principalId, {
+      namespaceId: namespace.id,
+      configurationId: configuration.id,
+      values: { temperature: "1" },
+    });
+    assert.deepEqual(
+      await reopened.recoverAgentFirstDeployment(principalId, input, winnerIntent),
+      receipt,
+    );
+    assert.deepEqual(await count(), { revisions: 2, work: 2, audit: 1 });
+    const publicRevision = await state.read((unit) =>
+      unit.revisions.findRevision(namespace.id, agent.id, receipt.revisionId),
+    );
+    assert.equal(Object.hasOwn(publicRevision, "firstDeploymentDigest"), false);
+    assert.equal(Object.hasOwn(publicRevision, "first_deployment_digest"), false);
   },
 );

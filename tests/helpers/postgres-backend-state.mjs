@@ -20,6 +20,7 @@ import { waitFor } from "./wait-for.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { reservedPortArgs } from "./available-port.mjs";
 import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { databaseUrl, requiresPostgres };
 
@@ -141,41 +142,6 @@ export async function cleanupNamespaces(pool, namespaceIds) {
     await client.query("DELETE FROM occ.service_accounts WHERE namespace_id = ANY($1::text[])", [
       namespaceIds,
     ]);
-  });
-}
-
-export async function cleanupBackendFixtures(pool, namespaceId, cleanup) {
-  if (
-    [cleanup.serviceAccountIds, cleanup.agentIds, cleanup.revisionIds].every(
-      (ids) => ids.length === 0,
-    )
-  ) {
-    return;
-  }
-  await inTransaction(pool, async (client) => {
-    await client.query(
-      `UPDATE occ.controller_work
-       SET state = 'failed_permanent',
-           claim_token = NULL,
-           lease_expires_at = NULL,
-           completed_at = clock_timestamp(),
-           reason_code = 'TEST_FIXTURE_CLEANUP',
-           updated_at = clock_timestamp()
-       WHERE namespace_id = $1
-         AND revision_id = ANY($2::text[])
-         AND state IN ('queued', 'claimed')`,
-      [namespaceId, cleanup.revisionIds],
-    );
-    await client.query(
-      `UPDATE occ.agents
-       SET backend_id = NULL, harness_auth = NULL, active_revision_id = NULL
-       WHERE namespace_id = $1 AND id = ANY($2::text[])`,
-      [namespaceId, cleanup.agentIds],
-    );
-    await client.query(
-      "DELETE FROM occ.service_accounts WHERE namespace_id = $1 AND id = ANY($2::text[])",
-      [namespaceId, cleanup.serviceAccountIds],
-    );
   });
 }
 
@@ -312,7 +278,9 @@ export function createBackendController(fixture, options = {}) {
   const controller = new OpenClawController(fixture.installation, {
     state: fixture.state,
     backends,
+    driverConfigurations: options.driverConfigurations,
     nativeWorkerSupport: options.nativeWorkerSupport,
+    now: options.now,
   });
   registerCoreDrivers(controller, fixture.state, {
     serviceAccountDriverId: backends[0]?.drivers.service_account,
@@ -404,8 +372,7 @@ export async function createBootstrappedBackendState(context, options) {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
   const state = new PostgresPlatformState(pool);
   const namespaces = trackNamespaces(context, pool);
-  const configurationRoot = await mkdtemp(join(tmpdir(), "openclaw-backend-repair-config-"));
-  context.after(() => rm(configurationRoot, { recursive: true, force: true }));
+  const configurationRoot = await temporaryDirectory(context, "openclaw-backend-repair-config-");
   return { pool, state, configurationRoot, ...namespaces };
 }
 

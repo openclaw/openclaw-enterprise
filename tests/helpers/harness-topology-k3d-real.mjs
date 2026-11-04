@@ -1,4 +1,4 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -23,6 +23,9 @@ import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
+  productionGatewayMemoryLimit,
+  productionGatewayMemoryLimitGi,
+  withBoundedTeardown,
 } from "../helpers/kubernetes-real.mjs";
 import {
   ensureEnvoyGatewayControllers,
@@ -34,6 +37,7 @@ import {
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
+import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -265,6 +269,11 @@ async function createScopedController(context, identifier, platformNamespace, ku
     JSON.stringify([
       // Match Helm: Compute reads admitted source keys and persists Gateway
       // projections only inside the namespaces that bind this role.
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] },
+      },
       {
         op: "add",
         path: "/rules/-",
@@ -899,9 +908,16 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
+  if (process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+    configuration.drivers.compute.configuration.runtime.modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: process.env.OCC_TEST_CODEX_OPENAI_BASE_URL,
+    };
+  }
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
   // The real Gateway loads its plugins during the first model request.
-  configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";
+  configuration.drivers.compute.configuration.resources.gateway.limits.memory =
+    productionGatewayMemoryLimit;
   const pluginStatusProxyCidrs = process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS;
   if (pluginStatusProxyCidrs !== undefined && pluginStatusProxyCidrs.trim().length > 0) {
     configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
@@ -920,7 +936,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     "requests.memory": "2Gi",
     "limits.cpu": "8",
     // Two embedded Agents plus one replacement Gateway may coexist during cutover.
-    "limits.memory": "6Gi",
+    "limits.memory": `${3 * productionGatewayMemoryLimitGi}Gi`,
   };
   configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
   if (options.gatewayRouting !== undefined) {
@@ -1116,9 +1132,11 @@ async function createApiSecret(request, namespaceId, name, value) {
     200,
     `Secret read failed with HTTP ${read.status} (${read.error?.code ?? "unknown"})`,
   );
-  // Detail reads include consumers; a newly created, unbound Secret has none.
+  // Detail reads include consumers; a newly created, unbound Secret has none. Only the exact
+  // read reports what its caller may do next: every caller here holds Secret update and delete.
   assert.deepEqual(read.data, {
     ...response.data,
+    callerPermissions: { update: true, delete: true },
     consumers: {
       agents: [],
       configurations: [],
@@ -1407,7 +1425,42 @@ async function topologyPods(topology) {
   return (await Promise.all(targets.map((target) => resources("pods", target)))).flat();
 }
 
-async function arrangeProductionTopology(context, mode, slack, options = {}) {
+// The topology's own cleanups, each its own registration (finding 1711), so a worker stop that
+// rejects cannot keep the later ones from running. Operations are closures, so resources assigned
+// later are read at cleanup time. They run last-registered first: the forward and worker stop
+// before the pools, the Postgres network and the Namespaces they use go away.
+const productionTopologyCleanupOrder = Object.freeze([
+  "gatewayForward",
+  "worker",
+  "productionApp",
+  "observerPool",
+  "postgresNetwork",
+  "gatewayRuntimeNamespace",
+  "placementNamespace",
+  "temporaryDirectory",
+]);
+
+function registerProductionTopologyCleanups(context, operations) {
+  let stopped;
+  for (const name of [...productionTopologyCleanupOrder].reverse()) {
+    const operation = operations[name];
+    assert.equal(typeof operation, "function", `production topology cleanup ${name}`);
+    // Named for the teardown log: every registration comes from this line. Registered after its
+    // test's teardown, each runs at once and throws to stop the setup; register them all first.
+    try {
+      context.after({ [name]: () => operation() }[name]);
+    } catch (error) {
+      stopped ??= error;
+    }
+  }
+  if (stopped !== undefined) {
+    throw stopped;
+  }
+}
+
+async function arrangeProductionTopology(testContext, mode, slack, options = {}) {
+  // node:test would run these cleanups oldest-first and stop at the first failure (finding 1711).
+  const context = withBoundedTeardown(testContext, { label: "production topology teardown" });
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
   if (mode === "dedicated") {
@@ -1430,7 +1483,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
       ? authBaseURL
       : `http://127.0.0.1:${options.controllerPort}`;
   const controllerAuthBaseURL = options.publicOrigin ?? bootstrapAuthBaseURL;
-  const gatewayPassword =
+  let gatewayPassword =
     options.gatewayPassword === false ? undefined : randomBytes(32).toString("base64url");
   let inClusterWorker;
   let restartInClusterApi;
@@ -1538,6 +1591,20 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
   );
+  const publicGithubRead =
+    options.publicGithubRead !== true
+      ? undefined
+      : await installPublicGithubReadFixture({
+          namespace: platformNamespace,
+          controllerImage,
+          kubectl,
+          applyManifest,
+          waitFor,
+        });
+  if (publicGithubRead !== undefined) {
+    workerConfiguration.drivers.compute.configuration.network.publicGithubRead =
+      publicGithubRead.peer;
+  }
   const apiConfiguration = structuredClone(workerConfiguration);
   if (workspaceGateway !== undefined) {
     apiConfiguration.drivers.configuration.configuration.authentication = { mode: "inCluster" };
@@ -1574,20 +1641,19 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   let gatewayRuntimeNamespace;
   let gatewayPlacement;
   let forwarding;
-  context.after(async () => {
-    try {
-      await forwarding?.stop();
-    } finally {
+  registerProductionTopologyCleanups(context, {
+    gatewayForward: () => forwarding?.stop(),
+    worker: async () => {
       if (worker !== undefined) {
         await worker.stop();
       } else if (workerPool !== undefined) {
         await workerPool.end();
       }
-      if (productionApp !== undefined) {
-        await productionApp.close();
-      }
-      await observerPool.end();
-      await detachPostgres?.();
+    },
+    productionApp: () => productionApp?.close(),
+    observerPool: () => observerPool.end(),
+    postgresNetwork: () => detachPostgres?.(),
+    gatewayRuntimeNamespace: async () => {
       if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== placement) {
         await kubectl(
           "delete",
@@ -1598,6 +1664,8 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           "--timeout=120s",
         );
       }
+    },
+    placementNamespace: async () => {
       if (placement !== undefined) {
         await kubectl(
           "delete",
@@ -1608,13 +1676,13 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           "--timeout=120s",
         );
       }
-      await rm(directory, { recursive: true, force: true });
-    }
+    },
+    temporaryDirectory: () => rm(directory, { recursive: true, force: true }),
   });
 
   // Docker may replace published-port connections when another network attaches.
   // Complete that topology change before opening the observer/bootstrap pools;
-  // its registered cleanup runs only after those pools and controllers stop.
+  // its registered cleanup runs only after those pools and the workers stop.
   if (workspaceGateway !== undefined) {
     databaseAddress = await attachPostgresToK3d((cleanup) => {
       detachPostgres = cleanup;
@@ -2015,6 +2083,14 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   // Exercise Preset selection through the same creation APIs as the console. The
   // scoped caller still needs its own Secret grants; the template grants nothing.
   const launchValues = nativeConfiguration(harnessId, slack, nativeOptions);
+  if (publicGithubRead !== undefined) {
+    launchValues.plugins.entries.codex.config.appServer.networkProxy = {
+      enabled: true,
+      mode: "limited",
+      allowLocalBinding: false,
+      domains: { [publicGithubRead.peer.address]: "allow" },
+    };
+  }
   if (gatewayPassword !== undefined) {
     assert.deepEqual(launchValues.gateway.auth.password, {
       source: "env",
@@ -2060,104 +2136,151 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     secretId: secretApi.model.ref.id,
   });
   assert.deepEqual(launch.configuration.values, launchValues);
-  const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
-    kind: "agent",
-    ...launch.configuration,
-  });
-  assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
-  if (Object.keys(secretBindings).length > 0) {
-    assert.deepEqual(configuration.data.secretBindings, secretBindings);
+  async function assertPresetIndependent(configuration) {
+    const changedPreset = await adminRequest("PATCH", presetPath, { template: {} });
+    assert.equal(changedPreset.status, 200, JSON.stringify(changedPreset.error));
+    const deletedPreset = await adminRequest("DELETE", presetPath);
+    assert.equal(deletedPreset.status, 204, JSON.stringify(deletedPreset.error));
+    const independentConfiguration = await request(
+      "GET",
+      `/namespaces/${namespaceId}/configurations/${configuration.data.id}`,
+    );
+    assert.equal(independentConfiguration.status, 200);
+    assert.deepEqual(independentConfiguration.data.values, configuration.data.values);
   }
-  const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
-    ...launch.agent,
-    configurationId: configuration.data.id,
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.error));
-  assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secretApi.model.ref });
-  const changedPreset = await adminRequest("PATCH", presetPath, { template: {} });
-  assert.equal(changedPreset.status, 200, JSON.stringify(changedPreset.error));
-  const deletedPreset = await adminRequest("DELETE", presetPath);
-  assert.equal(deletedPreset.status, 204, JSON.stringify(deletedPreset.error));
-  const independentConfiguration = await request(
-    "GET",
-    `/namespaces/${namespaceId}/configurations/${configuration.data.id}`,
-  );
-  assert.equal(independentConfiguration.status, 200);
-  assert.deepEqual(independentConfiguration.data.values, launchValues);
-  const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
-  const provisionedGatewayPassword = await provisionAgentTransportSecret(
-    directory,
-    placement,
-    agent.data.id,
-    {
-      gatewayPassword,
-      legacyCombined: options.legacyRuntimeCredentials === true,
-    },
-  );
-  assert.equal(provisionedGatewayPassword, gatewayPassword);
-  const legacyTransportName = `openclaw-agent-transport-${hash(agent.data.id)}`;
-  const legacyTransport =
-    options.legacyRuntimeCredentials === true
-      ? await resource("secret", legacyTransportName, placement)
-      : undefined;
-  {
-    const revisionsBefore = await request(
+  let configuration;
+  let agent;
+  let deployed;
+  let legacyTransport;
+  if (options.provisionNativeAdmin) {
+    // Use Create Agent's admission path. The worker owns Configuration creation,
+    // transport credentials, exact Secret grants, and the initial deployment.
+    const admitted = await adminRequest("POST", `/namespaces/${namespaceId}/agents/provision`, {
+      ...launch.agent,
+      requestId: `req_${randomUUID()}`,
+      nativeAdmin: true,
+      configuration: { kind: "agent", ...launch.configuration },
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.error));
+    const provisioned = await waitFor("native admin provisioning handoff", async () => {
+      const result = await adminRequest("GET", admitted.data.provisioning.url);
+      assert.equal(result.status, 200, JSON.stringify(result.error));
+      assert.notEqual(result.data.status, "failed", JSON.stringify(result.data));
+      return result.data.revisionId ? result.data : undefined;
+    });
+    agent = await adminRequest("GET", `/namespaces/${namespaceId}/agents/${provisioned.agentId}`);
+    configuration = await adminRequest(
+      "GET",
+      `/namespaces/${namespaceId}/configurations/${provisioned.configurationId}`,
+    );
+    deployed = await adminRequest(
+      "GET",
+      `/namespaces/${namespaceId}/agents/${provisioned.agentId}/revisions/${provisioned.revisionId}`,
+    );
+    for (const response of [agent, configuration, deployed]) {
+      assert.equal(response.status, 200, JSON.stringify(response.error));
+    }
+    assert.equal(configuration.data.generation, 1);
+    await assertPresetIndependent(configuration);
+    const revisions = await adminRequest(
       "GET",
       `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
     );
-    assert.equal(revisionsBefore.status, 200, JSON.stringify(revisionsBefore.error));
-    const deniedDeploy = await expectApiFailureWithoutSecret(
-      request,
-      "POST",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
-      undefined,
-      secretApiProtectedValues({ secretApi }),
-      "Secret-backed deploy before Agent service principal operate",
-    );
-    assert.equal(
-      deniedDeploy.status,
-      403,
-      `Agent service principal denial returned HTTP ${deniedDeploy.status}`,
-    );
-    const revisionsAfter = await request(
-      "GET",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
-    );
-    assert.equal(revisionsAfter.status, 200, JSON.stringify(revisionsAfter.error));
+    assert.equal(revisions.status, 200, JSON.stringify(revisions.error));
     assert.deepEqual(
-      revisionsAfter.data.map(({ id }) => id),
-      revisionsBefore.data.map(({ id }) => id),
-      "missing Agent service-principal Secret operate must reject deployment before revision admission",
+      revisions.data.map(({ id }) => id),
+      [deployed.data.id],
     );
-    await Promise.all(
-      [
-        secretApi.model,
-        secretApi.slackApp,
-        secretApi.slackBot,
-        secretApi.probe,
-        secretApi.sharedProbe,
-      ]
-        .filter(Boolean)
-        .map((secret) =>
-          grantSecretOperate(
-            observerPool,
-            namespaceId,
-            persistedAgent.servicePrincipalId,
-            secret.id,
+    const password = await resource("secret", `gateway-password-${hash(agent.data.id)}`, placement);
+    gatewayPassword = Buffer.from(password.data["gateway-password"], "base64").toString("utf8");
+    assert.ok(gatewayPassword.length > 0);
+  } else {
+    configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
+      kind: "agent",
+      ...launch.configuration,
+    });
+    assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
+    assert.deepEqual(configuration.data.values, launchValues);
+    if (Object.keys(secretBindings).length > 0) {
+      assert.deepEqual(configuration.data.secretBindings, secretBindings);
+    }
+    agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
+      ...launch.agent,
+      configurationId: configuration.data.id,
+    });
+    assert.equal(agent.status, 201, JSON.stringify(agent.error));
+    assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secretApi.model.ref });
+    await assertPresetIndependent(configuration);
+    const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
+    const provisionedGatewayPassword = await provisionAgentTransportSecret(
+      directory,
+      placement,
+      agent.data.id,
+      {
+        gatewayPassword,
+        legacyCombined: options.legacyRuntimeCredentials === true,
+      },
+    );
+    assert.equal(provisionedGatewayPassword, gatewayPassword);
+    const legacyTransportName = `openclaw-agent-transport-${hash(agent.data.id)}`;
+    legacyTransport =
+      options.legacyRuntimeCredentials === true
+        ? await resource("secret", legacyTransportName, placement)
+        : undefined;
+    {
+      const revisionsBefore = await request(
+        "GET",
+        `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
+      );
+      assert.equal(revisionsBefore.status, 200, JSON.stringify(revisionsBefore.error));
+      const deniedDeploy = await expectApiFailureWithoutSecret(
+        request,
+        "POST",
+        `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
+        undefined,
+        secretApiProtectedValues({ secretApi }),
+        "Secret-backed deploy before Agent service principal operate",
+      );
+      assert.equal(
+        deniedDeploy.status,
+        403,
+        `Agent service principal denial returned HTTP ${deniedDeploy.status}`,
+      );
+      const revisionsAfter = await request(
+        "GET",
+        `/namespaces/${namespaceId}/agents/${agent.data.id}/revisions`,
+      );
+      assert.equal(revisionsAfter.status, 200, JSON.stringify(revisionsAfter.error));
+      assert.deepEqual(
+        revisionsAfter.data.map(({ id }) => id),
+        revisionsBefore.data.map(({ id }) => id),
+        "missing Agent service-principal Secret operate must reject deployment before revision admission",
+      );
+      await Promise.all(
+        [
+          secretApi.model,
+          secretApi.slackApp,
+          secretApi.slackBot,
+          secretApi.probe,
+          secretApi.sharedProbe,
+        ]
+          .filter(Boolean)
+          .map((secret) =>
+            grantSecretOperate(
+              observerPool,
+              namespaceId,
+              persistedAgent.servicePrincipalId,
+              secret.id,
+            ),
           ),
-        ),
-    );
-    secretApi = {
-      ...secretApi,
-      configuration: configuration.data,
-    };
-  }
+      );
+    }
 
-  const deployed = await request(
-    "POST",
-    `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
-  );
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+    deployed = await request("POST", `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`);
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  }
+  secretApi = { ...secretApi, configuration: configuration.data };
+  const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
   assert.deepEqual(deployed.data.harness, { id: harnessId, version: "1.0.0", mode });
   assert.deepEqual(deployed.data.harnessAuth, agent.data.harnessAuth);
   assert.equal(Object.hasOwn(deployed.data, "serviceAccount"), false);
@@ -2309,14 +2432,25 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     assert.ok(gatewayVersion.includes(process.env.OCC_TEST_KUBERNETES_OPENCLAW_VERSION));
   }
   context.diagnostic(`${mode}: ${gatewayVersion}`);
+  assert.equal(
+    deployed.data.configuration.agents.defaults.model,
+    modelReference,
+    "the admitted revision must retain its original model reference",
+  );
+  const expectedGatewayModel =
+    mode === "dedicated" &&
+    harnessId === "codex" &&
+    process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined
+      ? `codex/openai-compatible/${providerModel}`
+      : modelReference;
   await assertGatewayEffectiveDefaultModel(
     context,
     { mode, placement, gatewayPlacement, gatewayPod },
-    `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`,
+    expectedGatewayModel,
   );
 
   if (legacyTransport !== undefined) {
-    const retained = await resource("secret", legacyTransportName, placement);
+    const retained = await resource("secret", legacyTransport.metadata.name, placement);
     const password = await resource("secret", `gateway-password-${hash(agent.data.id)}`, placement);
     assert.equal(retained.metadata.uid, legacyTransport.metadata.uid);
     assert.deepEqual(retained.data, legacyTransport.data);
@@ -2379,6 +2513,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     workspaceGateway,
     controllerApiPod,
     workspaceRequest,
+    publicGithubRead,
     approvedClient,
     controllerAccount: controller.account,
     controllerTenantRole: controller.tenantRole,
@@ -2427,10 +2562,64 @@ async function inspectWorkloadEnvironment(namespace, pod) {
 }
 
 async function inspectEnvironmentValue(namespace, pod, name, expected) {
-  const script = `const name=${JSON.stringify(name)};const expected=${JSON.stringify(expected)};process.stdout.write(JSON.stringify({present:Object.hasOwn(process.env,name),matches:process.env[name]===expected}))`;
-  return JSON.parse(
-    await kubectl("exec", pod, "--namespace", namespace, "--", "node", "-e", script),
-  );
+  // Expected values can be provider credentials; keep them out of exec arguments and diagnostics.
+  const script = String.raw`
+    try {
+      const { name, expected } = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+      process.stdout.write(JSON.stringify({
+        present: Object.hasOwn(process.env, name),
+        matches: process.env[name] === expected,
+      }));
+    } catch {
+      process.stderr.write("Workload environment comparison failed.");
+      process.exitCode = 1;
+    }
+  `;
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "kubectl",
+      kubectlArguments([
+        "exec",
+        "--stdin",
+        pod,
+        "--namespace",
+        namespace,
+        "--",
+        "node",
+        "-e",
+        script,
+      ]),
+      { stdio: ["pipe", "pipe", "ignore"], timeout: 30_000, killSignal: "SIGKILL" },
+    );
+    let stdout = "";
+    const fail = () => {
+      child.kill("SIGKILL");
+      reject(new Error("Workload environment inspection failed."));
+    };
+    child.once("error", fail);
+    child.stdin.once("error", fail);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 1024) {
+        fail();
+      }
+    });
+    child.once("close", (code) => {
+      if (code !== 0) {
+        return fail();
+      }
+      try {
+        const result = JSON.parse(stdout);
+        if (typeof result.present !== "boolean" || typeof result.matches !== "boolean") {
+          return fail();
+        }
+        resolve({ present: result.present, matches: result.matches });
+      } catch {
+        fail();
+      }
+    });
+    child.stdin.end(JSON.stringify({ name, expected }));
+  });
 }
 
 async function inspectProjectedIdentity(namespace, pod) {
@@ -2495,6 +2684,7 @@ async function assertUnauthorizedCodexSocket(topology) {
 
 async function assertActualModelTurn(topology) {
   topology.gatewayUrl = await topology.refreshGatewayUrl();
+  const nonce = `OCC-K3D-${topology.mode.toUpperCase()}-${randomUUID()}`;
   try {
     if (topology.mode === "dedicated" && topology.harnessId === "openclaw") {
       await assertNativeWorkerTurn(topology);
@@ -2503,9 +2693,18 @@ async function assertActualModelTurn(topology) {
     await assertGatewayModelTurn({
       gatewayUrl: topology.gatewayUrl,
       gatewayPassword: topology.gatewayPassword,
-      nonce: `OCC-K3D-${topology.mode.toUpperCase()}-${randomUUID()}`,
+      nonce,
       secrets: [process.env.OPENAI_API_KEY],
     });
+    if (topology.mode === "dedicated" && process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+      // A Gateway turn, unlike a direct app-server call, exercises OpenClaw's
+      // model resolver. Native records must retain the endpoint provider and full ID.
+      const rollouts = (await codexRollouts(topology)).filter(({ text }) => text.includes(nonce));
+      assert.ok(rollouts.length > 0, "the real Gateway turn must reach the native Codex thread");
+      for (const rollout of rollouts) {
+        assertCustomCodexModelSelection(rollout);
+      }
+    }
   } catch (error) {
     const projectedSecrets = new Map();
     for (const pod of [topology.gatewayPod, topology.harnessPod].filter(Boolean)) {
@@ -2926,9 +3125,20 @@ async function assertStartupFailureDeploymentStatusDurable(context, topology, op
   });
   assert.deepEqual(
     Object.keys(failed).sort(),
-    ["agentId", "deploymentId", "error", "namespaceId", "progress", "status", "warnings"],
+    [
+      "agentId",
+      "cleanup",
+      "deploymentId",
+      "error",
+      "namespaceId",
+      "progress",
+      "status",
+      "warnings",
+    ],
     "deployment status must use the approved durable status shape",
   );
+  // No earlier revision retired, so no repository cleanup exists for this deployment (#1994).
+  assert.equal(failed.cleanup, null);
   assert.equal(failed.deploymentId, failure.revision.id);
   assert.equal(failed.namespaceId, topology.agent.namespaceId);
   assert.equal(failed.agentId, topology.agent.id);
@@ -3016,21 +3226,39 @@ function sharedVolumeClaimName(pod) {
 }
 
 function sharedVolumeSubPaths(pod) {
+  // Node identity shares the Harness claim under its own Agent subpath, outside task files.
   return (pod.spec.containers[0].volumeMounts ?? [])
-    .filter(({ name }) => name === sharedWorkspaceVolumeName)
+    .filter(
+      ({ name, mountPath }) =>
+        name === sharedWorkspaceVolumeName && mountPath !== "/home/node/.openclaw-node",
+    )
     .map(({ subPath }) => subPath)
     .sort();
 }
 
-function assertPrivateStateInitContainer(pod) {
+function assertPrivateStateInitContainer(pod, { embeddedGatewayOwner = false } = {}) {
   const main = pod.spec.containers[0];
-  const [init] = pod.spec.initContainers ?? [];
+  const [init, owner] = pod.spec.initContainers ?? [];
   const { runAsUser, runAsGroup, fsGroup } = pod.spec.securityContext;
+  // An embedded gateway with no Secret environment also records its owner key (#2633), in a
+  // second init that mounts only its two in-memory volumes and no Agent-controlled state.
   assert.deepEqual(
     pod.spec.initContainers?.map(({ name }) => name),
-    ["prepare-private-state"],
+    ["prepare-private-state", ...(embeddedGatewayOwner ? ["prepare-embedded-gateway-owner"] : [])],
     "runtime gateway and Codex Pods must prepare private /home/node state exactly once",
   );
+  if (embeddedGatewayOwner) {
+    assert.equal(owner.image, main.image);
+    assert.deepEqual(owner.volumeMounts, [
+      { name: "gateway-owner-key", mountPath: "/run/oce-gateway-owner-key" },
+      { name: "gateway-owner-start", mountPath: "/run/oce-gateway-owner-start" },
+    ]);
+    assert.deepEqual(owner.securityContext, {
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ["ALL"] },
+    });
+  }
   assert.equal(init.image, main.image, "private-state init must use the main workload image");
   assert.deepEqual(
     [
@@ -3046,10 +3274,7 @@ function assertPrivateStateInitContainer(pod) {
         { name: "runtime-temporary", mountPath: "/runtime-temporary" },
         ...(pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway"
           ? [{ name: "openclaw-gateway-state", mountPath: "/gateway-state" }]
-          : [
-              { name: "openclaw-workspace", mountPath: "/harness-workspace-state" },
-              { name: "openclaw-node-state", mountPath: "/workspace-node-state" },
-            ]),
+          : [{ name: "openclaw-workspace", mountPath: "/harness-workspace-state" }]),
       ],
       [],
       [],
@@ -3113,8 +3338,12 @@ const continuityImage =
   "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR4nGPQqLhEU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULAPHFyEwoyF0pAAAAAElFTkSuQmCC";
 const gatewayPrivatePaths = [
   ["state", "/home/node/.openclaw/state"],
+  // Client migration receipts refer to the retained Gateway database (#3041).
+  ["client", "/home/node/.openclaw/client"],
   ["agent", "/home/node/.openclaw/agents/main/agent"],
   ["media", "/home/node/.openclaw/media"],
+  ["worktrees", "/home/node/.openclaw/worktrees"],
+  ["worktree-sources", "/home/node/.openclaw/worktree-sources"],
 ];
 
 async function assertGatewayPrivateResources(topology) {
@@ -3284,7 +3513,7 @@ async function assertGatewayEffectiveDefaultModel(context, topology, expectedMod
   assert.equal(
     actualModel,
     expectedModel,
-    `gateway effective default model changed before live model calls: ${actualModel}`,
+    `gateway effective default model does not match its runtime projection: ${actualModel}`,
   );
   context.diagnostic(`${topology.mode}: effective default model ${actualModel}`);
 }
@@ -3752,6 +3981,13 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
       rolloutsAfter[0].text.includes(afterNonce),
       "the resumed Codex thread must record the post-restart turn",
     );
+    if (process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+      // Resume and subsequent turn construction re-resolve the selection; the
+      // original provider/model tuple must survive both boundaries.
+      for (const rollout of rolloutsAfter) {
+        assertCustomCodexModelSelection(rollout);
+      }
+    }
   }
   context.diagnostic(
     `Gateway transcript, PNG ${artifactId}, and SQLite integrity survived Pod UID ${previousUid} -> ${topology.gatewayPod.metadata.uid}.`,
@@ -3770,8 +4006,20 @@ const gatewayLocalCodexTools = Object.freeze([
   "gateway_exec",
   "gateway_process",
   "terminal",
+  "portal",
   "openclaw",
+  "plugins",
+  "gateway",
 ]);
+
+function assertCustomCodexModelSelection(rollout) {
+  assert.equal(rollout.modelProvider, "openai-compatible");
+  assert.ok(rollout.turnModels.length > 0, "the native thread must record its selected turn model");
+  assert.ok(
+    rollout.turnModels.every((model) => model === providerModel),
+    "native Codex turns must preserve the complete selected model ID without a provider prefix",
+  );
+}
 
 // Every Codex rollout in the Harness, with its thread ID and the dynamic tools it was given.
 async function codexRollouts(topology) {
@@ -3792,11 +4040,14 @@ async function codexRollouts(topology) {
     walk("/home/node/.codex/sessions");
     process.stdout.write(JSON.stringify(files.sort().map((file) => {
       const text = fs.readFileSync(file, "utf8");
-      const meta = JSON.parse(text.split("\\n")[0]).payload;
+      const records = text.split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const meta = records[0].payload;
       const names = (meta.dynamic_tools ?? []).flatMap((tool) =>
         tool.type === "namespace" ? tool.tools.map(({ name }) => name) : [tool.name],
       );
-      return { file, threadId: meta.id, dynamicTools: names, text };
+      const turnModels = records.filter((record) => record.type === "turn_context")
+        .map((record) => record.payload.model);
+      return { file, threadId: meta.id, modelProvider: meta.model_provider, turnModels, dynamicTools: names, text };
     })));
   `,
   );
@@ -3924,6 +4175,26 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
   );
   assert.equal(response.status, 200, `dedicated Agent model turn failed: ${body}`);
   return JSON.parse(body).choices?.[0]?.message?.content ?? "";
+}
+
+async function assertActualPublicGithubRead(topology) {
+  const status = await gatewayCall(topology, "skills.status", { agentId: "main" });
+  assert.ok(
+    status.skills.some(({ name }) => name === "public-github-read"),
+    "native managed skill discovery did not report the revision's public reader",
+  );
+  // The fresh, unbound Agent must discover the actual endpoint and obtain a
+  // title absent from its prompt using the limited native proxy and Helm Service.
+  const answer = await requestDedicatedAgentTurn(
+    topology,
+    "agent:main:read-public-pull",
+    "Use your credential-free public GitHub reader to read pull request 27 in known public repository example/public-project. " +
+      "Request the single pull's detail, not a list. Return its exact title. Use no credentials or escalated execution.",
+  );
+  assert.ok(
+    answer.includes(topology.publicGithubRead.marker),
+    "the Agent did not return the provider's pull title",
+  );
 }
 
 async function assertDedicatedNativeChildRelay(topology) {
@@ -4456,10 +4727,14 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     topology.secretApi.assignmentPrincipalId,
     crossSecret.id,
   );
+  const agentPath = `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`;
+  const before = await topology.request("GET", agentPath);
+  assert.equal(before.status, 200, JSON.stringify(before.error));
+  assert.deepEqual(before.data.harnessAuth, topology.agent.harnessAuth);
   const denied = await expectApiFailureWithoutSecret(
     topology.request,
     "PATCH",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+    agentPath,
     {
       configurationId: topology.agent.configurationId,
       harnessAuth: { method: "api_key", source: crossSecret.ref },
@@ -4467,17 +4742,20 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     secretApiProtectedValues(topology, [crossValue]),
     "cross-Namespace Secret binding",
   );
-  assert.equal(denied.status, 404, `unexpected cross-Namespace denial ${denied.status}`);
-  const observed = await topology.request(
-    "GET",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
-  );
+  assert.equal(denied.status, 400, "an explicit foreign Namespace is an invalid binding");
+  assert.deepEqual(denied.error, {
+    code: "INVALID_REQUEST",
+    message: "Secret references cannot cross Namespaces.",
+  });
+  assert.equal(denied.data, undefined);
+  const observed = await topology.request("GET", agentPath);
   assert.equal(observed.status, 200, JSON.stringify(observed.error));
   assert.deepEqual(
     observed.data.harnessAuth,
-    topology.agent.harnessAuth,
+    before.data.harnessAuth,
     "cross-Namespace denial must preserve the valid same-Namespace bindings",
   );
+  assert.equal(observed.data.activeRevisionId, before.data.activeRevisionId);
   context.diagnostic(`secret-api cross-namespace: denied with HTTP ${denied.status}`);
 }
 
@@ -5731,7 +6009,10 @@ async function assertRoutedWorkspaceModelTurn(topology, connection, marker) {
 
 export {
   arrangeProductionTopology,
+  productionTopologyCleanupOrder,
+  registerProductionTopologyCleanups,
   assertActualModelTurn,
+  assertActualPublicGithubRead,
   assertDedicatedAgentsInstructionsInFreshSession,
   assertDedicatedNativeChildRelay,
   assertLegacyModelSecretBindingDenied,

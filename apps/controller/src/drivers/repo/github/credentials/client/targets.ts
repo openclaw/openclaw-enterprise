@@ -122,23 +122,35 @@ function gitPushDestinations(
   });
 }
 
-export function hasGitPushDestination(
-  manifest: RuntimeRepositoryManifest,
+/**
+ * True only when the destination provably names none of `origins`. The authority must
+ * be plain (lowercase ASCII host, optional port, optional simple username), where Git's
+ * credential host and the URL parser's host agree; any other spelling stays in doubt.
+ */
+export function isUnrelatedPushDestination(
   destination: string,
+  origins: ReadonlySet<string>,
 ): boolean {
-  return gitPushDestinations(manifest, destination).length > 0;
+  if (!/^https:\/\/(?:[A-Za-z0-9._~-]+@)?[a-z0-9.-]+(?::[0-9]+)?(?:\/|$)/.test(destination)) {
+    return false;
+  }
+  try {
+    return !origins.has(new URL(destination).origin);
+  } catch {
+    return false;
+  }
 }
 
 export function selectGitPushDestination(
   manifest: RuntimeRepositoryManifest,
   destination: string,
-  pinned?: RuntimeRepositoryBinding,
+  pin?: () => RuntimeRepositoryBinding | undefined,
 ): RuntimeRepositoryBinding | undefined {
   const matches = gitPushDestinations(manifest, destination);
   if (matches.length === 0) {
     return undefined;
   }
-  const selected = selectBinding(matches, pinned);
+  const selected = selectBinding(matches, pin?.());
   const username = new URL(destination).username;
   if (username && username !== selected.client.gitUsername) {
     throw new Error("repository-not-admitted");
@@ -183,7 +195,7 @@ export function selectImplicitGhRepository(
       const repository = client.repository.toLowerCase();
       return (
         [client.gatewayOrigin, `https://${client.canonicalApiHost}`].includes(url.origin) &&
-        [repository, `${repository}.git`].includes(url.pathname.slice(1).toLowerCase())
+        [repository, `${repository}.git`].includes(gitRepositoryPath(url.pathname.slice(1)) ?? "")
       );
     });
     const binding = selectBinding(matches);

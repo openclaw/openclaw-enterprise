@@ -104,7 +104,7 @@ database connection and look for locks/slow aggregate queries. Recovery appears
 on the next scrape. API health and metrics health are separate signals.
 
 For disposable Kubernetes visualization, use the [demonstration stack](demo.md).
-For the Compose walkthrough, use [development metrics](../../testing/metrics.md).
+For the Compose walkthrough, use [development metrics](../../testing/local.md#metrics-and-observability-tests).
 
 ## Monitor log collection
 

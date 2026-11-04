@@ -38,7 +38,6 @@ async function main() {
   const state = await readState(resolve(stateArgument));
   const images = [];
   const imageIds = new Set();
-  const imageNames = new Set();
   const imageRoles = new Set();
   let tagBase;
   if (state !== undefined) {
@@ -78,6 +77,7 @@ async function main() {
               resource.name.slice(tagPrefix.length),
             )
           : null;
+      // Unique roles also reject duplicate names under this canonical tag grammar.
       if (
         resource.owner !== state.prefix ||
         typeof resource.id !== "string" ||
@@ -87,13 +87,11 @@ async function main() {
         imageRoles.has(tagParts[2]) ||
         (tagBase !== undefined && tagBase !== tagParts[1]) ||
         imageIds.has(resource.id) ||
-        imageNames.has(resource.name) ||
         images.length >= 2
       ) {
         throw new Error("Image CI resource identity is invalid.");
       }
       imageIds.add(resource.id);
-      imageNames.add(resource.name);
       imageRoles.add(tagParts[2]);
       tagBase = tagParts[1];
       images.push({ id: resource.id, name: resource.name, status: resource.status });

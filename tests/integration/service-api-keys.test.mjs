@@ -1,22 +1,29 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { renameSync } from "node:fs";
+import { open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
+import {
+  AUTHORIZATION_HEADER_REFUSED,
+  CREDENTIAL_REQUIRED,
+  serviceKeyOutsideNamespace,
+} from "../helpers/refusal-text.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const run = promisify(execFile);
 const occCli = join(process.cwd(), "bin", "occ");
@@ -84,6 +91,14 @@ test("service API keys authenticate scoped automation without replacing sessions
       return controller;
     },
   });
+  let rotateKeyBeforeResponse;
+  app.addHook("onSend", (_request, reply, payload, done) => {
+    if (rotateKeyBeforeResponse && reply.statusCode === 403) {
+      rotateKeyBeforeResponse();
+      rotateKeyBeforeResponse = undefined;
+    }
+    done(null, payload);
+  });
   await app.listen({ host: "127.0.0.1", port: 0 });
   t.after(() => app.close());
   const origin = `http://127.0.0.1:${app.server.address().port}`;
@@ -93,14 +108,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     path,
     { headers = { cookie: session.cookie, origin: authOptions.baseURL }, body } = {},
   ) {
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
-        ...headers,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const response = await fetch(`${origin}${path}`, jsonRequestInit(method, body, headers));
     assert.equal(response.headers.get("cache-control"), "no-store");
     return { status: response.status, ...(await response.json()) };
   }
@@ -251,8 +259,7 @@ test("service API keys authenticate scoped automation without replacing sessions
   );
 
   await t.test("occ CLI exercises Configuration CRUD and Agent stop/delete", async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-occ-cli-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "openclaw-occ-cli-");
     const keyFile = join(directory, "service-key.json");
     const adminKeyFile = join(directory, "admin-service-key.json");
     const bodyFile = join(directory, "configuration.json");
@@ -585,14 +592,92 @@ test("service API keys authenticate scoped automation without replacing sessions
       /failed to create key file/,
     );
     assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    // An explicit zero is invalid, not the API's omitted 30-day default.
+    const zeroExpiryFile = join(directory, "zero-expiry-key.json");
+    await assert.rejects(
+      run(
+        occCli,
+        [
+          "service-key",
+          "create",
+          "--service-principal",
+          installationPrincipal.id,
+          "--name",
+          "zero-expiry",
+          "--out",
+          zeroExpiryFile,
+          "--expires-in-days=0",
+        ],
+        { env: installationEnv },
+      ),
+      { stderr: /between 1 and 365/ },
+    );
+    await assert.rejects(open(zeroExpiryFile), { code: "ENOENT" });
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    for (const days of [1, 365]) {
+      const before = Date.now();
+      const created = JSON.parse(
+        (
+          await run(
+            occCli,
+            [
+              "service-key",
+              "create",
+              "--service-principal",
+              installationPrincipal.id,
+              "--name",
+              `expiry-${days}`,
+              "--out",
+              join(directory, `expiry-${days}.json`),
+              `--expires-in-days=${days}`,
+              "-o",
+              "json",
+            ],
+            { env: installationEnv },
+          )
+        ).stdout,
+      );
+      assert.ok(Math.abs(Date.parse(created.expiresAt) - before - days * 86_400_000) < 10_000);
+      await run(occCli, ["service-key", "revoke", created.id], { env: adminEnv });
+    }
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber);
+    // The CLI counts the name as the API does: 32 emoji are issued, 33 never leave the CLI.
+    const emojiKeyFile = join(directory, "emoji-key.json");
+    const emojiCreate = (name, out) =>
+      run(
+        occCli,
+        [
+          "service-key",
+          "create",
+          "--service-principal",
+          installationPrincipal.id,
+          "--name",
+          name,
+          "--out",
+          out,
+          "-o",
+          "json",
+        ],
+        { env: installationEnv },
+      );
+    const emoji = JSON.parse((await emojiCreate("😀".repeat(32), emojiKeyFile)).stdout);
+    assert.equal(emoji.name, "😀".repeat(32));
+    await assert.rejects(emojiCreate("😀".repeat(33), join(directory, "emoji-33.json")), {
+      stderr: /1 to 32 characters/,
+    });
+    assert.equal(memoryDatabase.apikey.length, keysBeforeClobber + 1);
+    await run(occCli, ["service-key", "revoke", emoji.id], { env: adminEnv });
     const revokedRotated = await run(
       occCli,
       ["service-key", "revoke", rotatedDetails.id, "-o", "json"],
       { env: adminEnv },
     );
     assert.deepEqual(JSON.parse(revokedRotated.stdout), { id: rotatedDetails.id, revoked: true });
+    // A revoked key's 401 names the key file and who issues a new key, not OCC's cookie and
+    // header advice (finding D745).
     await assert.rejects(run(occCli, ["iam", "service-principal", "list"], { env: rotatedEnv }), {
-      stderr: /HTTP 401/,
+      stderr:
+        /^Error: OCC rejected the service key in \S+rotated-admin-key\.json: it is invalid, expired or revoked\. Ask an Installation administrator for a new key\.\n$/,
     });
     // A secret Role bound to the Namespace could never grant anything there: the CLI shows
     // the API's refusal naming the Permissions instead of reporting a created binding.
@@ -719,6 +804,8 @@ test("service API keys authenticate scoped automation without replacing sessions
     });
     assert.equal(JSON.parse(deletingAgent.stdout).status, "deleting");
 
+    // Rotate after admission refuses the Namespace key, before the CLI receives that refusal.
+    rotateKeyBeforeResponse = () => renameSync(adminKeyFile, keyFile);
     await assert.rejects(
       run(occCli, ["installation", "get", "--output", "json"], { env }),
       (error) => {
@@ -726,9 +813,21 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.equal(error.stdout, "");
         assert.match(error.stderr, /FORBIDDEN/);
         assert.match(error.stderr, /HTTP 403/);
+        // The hint names the Namespace of the key this request sent, not the rotated one, and
+        // asks for an Installation-scoped key rather than a --namespace (finding D740), without
+        // repeating OCC's own sentence (finding D770).
+        assert.ok(
+          error.stderr.includes(
+            `"occ installation get" needs an Installation-scoped key; no --namespace value helps. Read this key's Namespace with "occ namespace get ${namespaceId}".`,
+          ),
+        );
+        assert.equal(error.stderr.split("works only in").length, 2);
         return true;
       },
     );
+    // A new command reads the replacement Installation key; only the refused one used the old key.
+    assert.equal(rotateKeyBeforeResponse, undefined, "rotated the key before delivering the 403");
+    await run(occCli, ["iam", "service-principal", "list"], { env });
   });
 
   await t.test(
@@ -736,15 +835,20 @@ test("service API keys authenticate scoped automation without replacing sessions
     async () => {
       for (const key of ["", "forged-key", `${issued.data.key}tampered`]) {
         const invalidHeaders = { "x-api-key": key, cookie: session.cookie };
-        assert.equal((await request("GET", path, { headers: invalidHeaders })).status, 401);
+        const refused = await request("GET", path, { headers: invalidHeaders });
+        assert.equal(refused.status, 401);
+        // Only a request that sent an Authorization header gets header advice (finding D762).
+        assert.equal(refused.error.message, CREDENTIAL_REQUIRED);
         await assertServiceKeyManagementDenied(invalidHeaders, issued, 401);
       }
-      assert.equal((await request("GET", path, { headers: {} })).status, 401);
-      assert.equal(
-        (await request("GET", path, { headers: { authorization: `Bearer ${issued.data.key}` } }))
-          .status,
-        401,
-      );
+      const anonymous = await request("GET", path, { headers: {} });
+      assert.equal(anonymous.status, 401);
+      assert.equal(anonymous.error.message, CREDENTIAL_REQUIRED);
+      const bearer = await request("GET", path, {
+        headers: { authorization: `Bearer ${issued.data.key}` },
+      });
+      assert.equal(bearer.status, 401);
+      assert.equal(bearer.error.message, AUTHORIZATION_HEADER_REFUSED);
     },
   );
 
@@ -755,7 +859,8 @@ test("service API keys authenticate scoped automation without replacing sessions
       const eventsBefore = auditSink.events.length;
       const denied = await request("GET", other, { headers });
       assert.equal(denied.status, 403);
-      assert.equal(denied.error.message, "The admitted Namespace does not match.");
+      // Names the key's own Namespace, never the requested one (finding D763).
+      assert.equal(denied.error.message, serviceKeyOutsideNamespace(namespaceId));
       assert.equal(auditSink.events.length, eventsBefore + 1);
       const audit = auditSink.events.at(-1);
       assert.equal(audit.kind, "authorization_denial");
@@ -767,13 +872,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     const [binding] = policy.bindings.splice(bindingIndex, 1);
     assert.equal((await request("GET", path, { headers })).status, 403);
     policy.bindings.push(binding);
-    policy.restrictions.push({
-      id: "deny-read",
-      namespaceId,
-      resourceKind: "namespace",
-      action: "read",
-      effect: "deny",
-    });
+    restrict(policy, "read", "namespace", { namespaceId });
     assert.equal((await request("GET", path, { headers })).status, 403);
     policy.restrictions.length = 0;
     assert.equal((await request("GET", path, { headers })).status, 200);
@@ -870,13 +969,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       for (const restricted of [false, true]) {
         if (restricted) {
           policy.bindings.push(adminBinding);
-          policy.restrictions.push({
-            id: "deny-service-key-management",
-            resourceKind: "installation",
-            resourceId: installationId,
-            action: "administer",
-            effect: "deny",
-          });
+          restrict(policy, "administer", "installation", { resourceId: installationId });
         }
         await assertServiceKeyManagementDenied(replacementHeaders, child, 403);
       }
@@ -1021,6 +1114,42 @@ test("service API keys authenticate scoped automation without replacing sessions
       (await request("DELETE", `/api/auth/service-keys/${shortLived.data.id}`)).status,
       200,
     );
+  });
+
+  await t.test("key names count code points, as the schema and the CLI do", async () => {
+    const tooLong =
+      "The request does not match the operation contract: body /name is too long (expected at most 32 characters).";
+    // 32 code points that are 64 UTF-16 units still fit, and the name round-trips.
+    for (const name of ["😀".repeat(32), "\u{20000}".repeat(32), `${"a".repeat(31)}😀`]) {
+      const named = await request("POST", "/api/auth/service-keys", { body: { ...body, name } });
+      assert.equal(named.status, 201, name);
+      assert.equal(named.data.name, name);
+      assert.equal(
+        (await request("DELETE", `/api/auth/service-keys/${named.data.id}`)).status,
+        200,
+      );
+    }
+    const keysBefore = memoryDatabase.apikey.length;
+    const over = await request("POST", "/api/auth/service-keys", {
+      body: { ...body, name: "😀".repeat(33) },
+    });
+    assert.equal(over.status, 400);
+    assert.equal(over.error.message, tooLong);
+    assert.deepEqual(over.error.details, [{ path: "/name", code: "TOO_LONG" }]);
+    // Should Better Auth still refuse a name the schema admitted, the caller gets the
+    // schema's 400, not a dependency 503, and no key is stored.
+    const createServiceKey = auth.createServiceKey;
+    auth.createServiceKey = (input) => createServiceKey({ ...input, name: "a".repeat(65) });
+    try {
+      const refused = await issue();
+      assert.equal(refused.status, 400);
+      assert.equal(refused.error.code, "INVALID_REQUEST");
+      assert.equal(refused.error.message, tooLong);
+      assert.deepEqual(refused.error.details, [{ path: "/name", code: "TOO_LONG" }]);
+    } finally {
+      auth.createServiceKey = createServiceKey;
+    }
+    assert.equal(memoryDatabase.apikey.length, keysBefore);
   });
 
   await t.test(
@@ -1249,15 +1378,10 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
   const adminSession = await signInWithEmailPassword({ origin, ...adminCredentials });
   const operatorSession = await signInWithEmailPassword({ origin, ...operatorCredentials });
   async function request(method, path, { headers, body } = {}) {
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
-        origin: baseURL,
-        ...headers,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const response = await fetch(
+      `${origin}${path}`,
+      jsonRequestInit(method, body, { origin: baseURL, ...headers }),
+    );
     return { status: response.status, ...(await response.json()) };
   }
   const asAdmin = { cookie: adminSession.cookie };

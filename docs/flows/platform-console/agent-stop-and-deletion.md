@@ -1,0 +1,172 @@
+---
+created: 2026-10-20
+updated: 2026-11-03
+last_updated_session: authoring-run/0b5d9b57-4ffe-4be0-a3b2-23bcb0922ad2
+---
+
+# Console Agent stop and deletion
+
+## Overview
+
+Trace **Stop Agent** and **Delete Agent** on Agent detail and Agents list rows,
+from confirmation to readback. See the [parent flow](../platform-console.md) and
+[Agent editing](agent-editing.md); steps 7 and 8 continue that trace's numbering.
+
+## Entry Points
+
+- `apps/controller/src/console/agents/stop.mts:createAgentStop` sends the stop request.
+- `apps/controller/src/console/agents/deletion.mts:createAgentDeletion` sends the deletion request.
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` shows the **Danger zone** on **Configuration**. When deletion starts, the deletion row replaces the tabbed view.
+  [Agents list rows](#stop-or-delete-from-an-agents-list-row) also offer Stop and Delete.
+- A signed-in caller needs Agent `operate` to stop and Agent `delete` to delete.
+
+## Flow
+
+```mermaid
+graph TD
+  subgraph Browser["Browser"]
+    E["Confirm Agent deletion"]
+    S["Confirm Agent stop"]
+    L["Agents list row icon"] --> E
+    L --> S
+  end
+  subgraph API["Controller API"]
+    E --> G["DELETE exact Agent"]
+    S --> T["POST exact Agent stop"]
+    T -->|accepted or uncertain| U["Refresh desired state and selected version"]
+    T -->|denied| I
+    G -->|accepted or uncertain| H["Refresh exact Agent"]
+    G -->|denied| I["Show access denied"]
+    H -->|exists| J["Show current Agent state"]
+    J -->|known deleting and manual request| E
+    H -->|not found| K["Return to Agents list"]
+  end
+```
+
+## Execution Trace
+
+<span id="stop-agent"></span>
+
+### 7. Request a stop and read back the Agent
+
+A negative [permission answer](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions)
+hides the Stop or Delete row, and the card when neither remains. If the dialog is open, it disables
+confirmation, focuses Cancel and keeps the row. A missing answer keeps the rows; late advice cannot recall a request.
+
+`apps/controller/src/console/agents/stop.mts:createAgentStop` sends a bodyless `POST` to the
+Agent’s `/stop` route. OCC’s `packages/occ/src/index.ts:stopAgent` checks Agent `operate`,
+persists the requested stopped state, and queues reconciliation. Success means admission,
+not that Compute has shut down. Cancel restores focus to the invoking button; submission focuses
+**Refresh stop status**. A `403` about grants shows the Console's refusal with the Agent's name
+and the Request ID; any other `403` shows the API's text. Either way Stop stays unavailable,
+described by it, until a permission answer read after the refusal allows operate, such as the one
+a window refocus rereads. An answer read before the refusal, even one that arrives after it,
+does not lift it.
+
+For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
+version; the Console cannot inspect history or candidate cleanup. Its confirmation says the
+Agent is already requested to stop and that this sends the request again. With no selected version
+and no readable versions yet (`setNoReadableVersions`), the Stop row is hidden unless the viewer
+just used it. A running Agent keeps Stop regardless of the latest readable deployment outcome
+(`setLatestDeployment`), as on the Agents list: a failed readable deployment can hide newer queued
+work. Agent `operate` still controls access. The latest readable outcome supplies confirmation
+text, not visibility. A queued or in-progress one says Stop cancels that deployment. An unreadable
+deployment or a failed read keeps the confirmation that names both outcomes; a succeeded one read
+before the Agent reread keeps the running-gateway text. The overview's **Runtime** row reports
+a requested stop. After an accepted Stop during a first deployment, the Stop row reports
+**Deployment cancellation requested**, not deployment or runtime completion. `applyAgent` clears
+that local result when either Stop readback or a detail-page update observes a running request
+or a selected version. An unchanged stopped read with no selected version keeps it.
+
+Refresh reads desired state and selected version, not live health. Denial stays inline; changed
+state updates panels in place. If the read finds deletion in progress, Agent detail switches to
+the deletion recovery controls without sending a write. Focus moves to **Refresh deletion status**
+only when the reader stayed on the disappearing Stop control. An uncertain write blocks another
+Stop until readback succeeds.
+[Deploy to resume](../../reference/agents/deployment.md#stop-and-resume); the lifecycle
+reference covers worker shutdown and preservation of versions, credentials, and state.
+
+<span id="7-confirm-deletion-and-read-back-the-agent"></span>
+<span id="7.-confirm-deletion-and-read-back-the-agent"></span>
+
+### 8. Confirm deletion and read back the Agent
+
+`apps/controller/src/console/agents/deletion.mts:createAgentDeletion`
+
+**Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
+exact Agent URL. The controller requires Agent `delete`. A `403` shows the Console's
+refusal with the Agent's name and the Request ID, or the API's text when the refusal is not
+about grants. Delete Agent stays unavailable, described by it, until a permission answer read
+after the refusal allows delete. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
+rereads the exact Agent every few seconds; **Refresh deletion status** reads it
+on demand. A read error stops polling. Only a not-found read after
+an accepted or uncertain request, or when an already-deleting Agent is opened,
+returns to the Agents list in the selected Namespace. A `403` after the Agent was marked
+deleting means the caller can no longer follow cleanup. The Console stops polling and closes
+the repeat confirmation if it is open. If the reader confirmed a repeat while that status read was
+pending, the Console drops the unsent request. Neither action cancels a DELETE already sent or
+establishes whether cleanup finished.
+
+An already deleting Agent keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
+and sends the same bodyless DELETE only when the reader confirms. Queued or claimed
+work stays unchanged; terminal work can restart under the controller's existing
+current-permission and retry-ownership checks. The view does not infer a worker
+outcome from the Agent's deleting state or add a separate status contract.
+
+An uncertain initial or repeated deletion blocks writes until a successful exact
+Agent read. A deleting read clears that guard even when the view was already deleting;
+a failed read does not. Cancel returns focus to the repeat-request button, and
+successful writes retain status refresh. The browser never retries DELETE automatically.
+
+`packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
+[Agent deletion reference](../../reference/agents.md#deletion) covers
+worker cleanup and the Namespace-owned resources it preserves.
+
+### Stop or delete from an Agents list row
+
+`apps/controller/src/console/agents/collection.mts:renderAgentList` rows use the
+same Stop and Delete confirmations. Each row reads
+[permission advice](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions)
+like its deployment, and reads it again when a retained list resumes.
+Refusal disables the action and explains why; in an open confirmation, it also
+disables confirmation and focuses Cancel. A stopped Agent without a selected
+version has no Stop action. A response that confirms the action for the requested Agent
+updates its row without polling. If the response names a different Agent, the list reports an
+unknown outcome and keeps the last observed state of both Agents. After `404`, `409`, or an
+uncertain outcome, the requested row’s actions stay disabled until **Refresh** rereads it.
+After a `403` about grants, the refused icon stays unavailable and the row's note names the grant
+under it, until a permission answer read later allows that action. Any other `403`, such as
+retry ownership on a stale row, shows the API's text, the row's note points to it, and the row's
+actions stay unavailable, described by it, until **Refresh**. A window refocus that rebuilds the
+list shows that refusal again while the Agent is listed, and keeps focus on the same row control,
+scrolling only as far as needed to keep its cell and note in view.
+If that control is gone or disabled, focus goes to the row's name, or to the page heading when
+the row is gone.
+
+## Debugging and Verification
+
+- On repeat `403`, follow the API’s retry-ownership explanation. For ordinary
+  denials, check `delete` on the exact Agent; Agent `read` and
+  `operate` do not authorize deletion. Any failed repeat pauses polling until a manual action. Use the displayed request ID when present.
+- An accepted deletion remains in progress until the exact Agent read reports
+  not found. A failed refresh does not establish whether cleanup finished.
+
+## Related docs
+
+- [Agent editing flow](agent-editing.md)
+- [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
+- [Agent lifecycle reference](../../reference/agents.md#deletion)
+
+## Manual Notes
+
+[keep this for the user to add notes. do not change between edits]
+
+## Changelog
+
+- 2026-11-03 20:31: Merge main into the detail Stop fix: keep Stop after a failed readable deployment beside main's refusal handling and Configuration-only Danger zone. (authoring-run/0b5d9b57-4ffe-4be0-a3b2-23bcb0922ad2 - 2323a30cd6ec2514d2348a25ffe4f24da9445664)
+- 2026-11-01 18:19: Limit the Danger zone to Configuration and preserve standalone deletion recovery in the accompanying change. (authoring-run/66929759-4566-4a73-bb19-97213ee54faf - 7bb67ab81e65bfcea35aeddf2a9f02c4f258b138)
+- 2026-10-28 21:55: Scope first-deployment Stop feedback to the observed lifecycle and distinguish requested cancellation from completion in the accompanying fix. (authoring-run/4b2306f4-4b43-4bec-b246-0e4b1f9819fb - 3b5e7834b9111ea31e22766811e228a43d4aa537)
+
+- 2026-10-20 08:02: Trace Stop and Delete from Agents list rows, moved from the Agent editing flow, in the accompanying merge. (8b95a6fb-7095-4556-9028-0723f32cc534 - a8fb50b1babb68f3eb759841f92b042da039248e)
+- 2026-10-20 07:57: Describe deletion discovered by a stop-status read in the accompanying change. (authoring-run/28365356-ae7e-47dc-9790-888c3592251f - 6aedac546aad8308b4e9954648268f14545e39b2)
+- 2026-10-20 05:00: Split from the Agent editing flow's steps 7 and 8. (docs-split-1020)

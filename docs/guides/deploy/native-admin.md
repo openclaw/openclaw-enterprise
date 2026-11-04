@@ -4,43 +4,27 @@ Enable Agent native admin UI access only for a trusted-operator pilot. The featu
 
 ## Local development
 
-Local setup prepares private routing and the browser endpoint. To opt a selected
-Agent into native admin access:
+Local setup prepares private routing and the browser endpoint. When you
+[create an Agent in the console](../../reference/console/create-and-deploy.md),
+select **Enable Native admin UI** before **Create Agent**. After deployment,
+select **Open Agent UI** on the Agent detail page. Your account needs
+`administer` permission on that exact Agent.
 
-1. [Create and deploy an Agent](../../reference/console/create-and-deploy.md) in the
-   console, for example with the Standard Codex Preset. Wait for its active
-   version. The account opening the UI needs `administer` permission on that
-   exact Agent.
-2. In the authenticated console session, follow [Configure each Agent](native-admin.md#configure-each-agent)
-   to obtain the exact `data.origin` and active revision ID from the status
-   route. Include the returned port; do not construct or reuse another Agent's
-   origin. An `unsupported` response can include the origin. If OCC cannot
-   select an active revision, resolve that first.
-3. Use **Create new version** → **Configuration** → **Edit Configuration** to
-   merge the documented native policy and origin into the existing JSON. Review
-   other Agents that share the Configuration: they use its new values on their
-   next deployment. Preserve existing origins, gateway settings, and Secret
-   references. Resolve explicit opt-outs or conflicting policy before changing
-   them; do not silently replace them. Recheck the active revision before saving;
-   if it changed, refresh and review the current Configuration again.
-4. Save the Configuration and select **Deploy new version**. Once it is active,
-   request status again and expect `available` with the same origin. Open
-   **Native admin UI** on the Agent detail page. For stale drafts or uncertain
-   saves, follow the [Configuration editor recovery](../console/agent-details.md#configuration-tab).
+The checkbox requires supported Dedicated provisioning and installation native
+admin access. For an existing Agent, follow [Configure each Agent](#configure-each-agent).
 
-The [first-Agent command](../first-agent.md) creates a separate Agent with native UI
-disabled and refuses to reuse it after outside Configuration edits. Create a
-console-managed Agent for this native admin walkthrough.
+The [local OpenShell quickstart](local-setup.md) includes native admin setup,
+browser onboarding and reopening the same conversation.
 
 <a id="requirements"></a>
 
 ## Production requirements
 
-- Private workspace routing already works for the target Agents. Helm rejects `agentNativeAdmin.enabled: true` unless `gatewayRouting.enabled: true` is also set.
+- Private workspace routing already works for the target Agents. Private routing is enabled by default, but its controllers, GatewayClass, service-key Secret, and matching Installation settings must be ready. Helm rejects an explicit routing opt-out while native admin is enabled.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
 - The configured `agentNativeAdmin.sharedCookieDomain` is the shared OCE session cookie parent domain. The console host and Agent domain must both be inside it on DNS-label boundaries, for example `console.oce.example.com`, `agents.oce.example.com`, and cookie domain `oce.example.com`. All matching subdomains that can receive the OCE session cookie must be trusted OCE ingress endpoints.
-- Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy admin device auto-approval.
+- Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy device auto-approval.
 - Operators who use the console have exact Agent `administer` permission.
 
 <a id="steps"></a>
@@ -147,7 +131,7 @@ its matching identity fields and opt-in settings in the saved Configuration.
 
 ## Configure each Agent
 
-Configure each pilot Agent after the API feature and wildcard route are enabled. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
+For a new Agent, use **Enable Native admin UI** on Create Agent. Use the procedure below for existing Agents after the API feature and wildcard route are enabled. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
 
 ```text
 https://occ.example.com/namespaces/<namespaceId>/agents/<agentId>/native-admin
@@ -161,7 +145,7 @@ await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
 }).then((response) => response.json());
 ```
 
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/agent-details.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
+A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. Select **Open draft** → **Configuration** → **Edit Configuration** to open the [console Configuration editor](../console/configuration-plugins-and-files.md#configuration-tab), then merge the following JSON fields into the selected Agent's existing Configuration:
 
 ```json
 {
@@ -174,7 +158,7 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
         "allowUsers": ["occ-workspace-files"],
         "deviceAutoApprove": {
           "enabled": true,
-          "scopes": ["operator.admin"]
+          "scopes": ["operator.read", "operator.write"]
         }
       },
       "identityScopes": {
@@ -189,7 +173,9 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
 }
 ```
 
-Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. `publicOrigin` is optional for native admin access: set it to the same origin so links the Agent returns, such as embedded Diffs viewer links, open through this Agent host instead of the Gateway's private address. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them. The editor preserves Secret bindings, but its freshness check cannot prevent a concurrent write racing with the save.
+Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. `publicOrigin` is optional for native admin access: set it to the same origin so links the Agent returns, such as embedded Diffs viewer links, open through this Agent host instead of the Gateway's private address. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them.
+
+The editor preserves Secret bindings. If someone saves a newer Configuration first, OCC refuses your stale save. Choose **Reload draft**, check your edits against the current values, then save only the changes you still intend. See [Configuration update conflicts](../../reference/configuration.md#create-read-update-and-delete) for the API contract.
 
 Do not set unsupported gateway authentication fields, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. For `stopped` or `unavailable`, follow the [troubleshooting checks](#troubleshooting) before changing configuration.
 
@@ -208,6 +194,7 @@ may try the Agent hostname on port 8081 and report a refused connection.
 Provision a wildcard HTTPS certificate and DNS for a separate preview domain,
 for example `*.previews.example.net`. This domain must be outside
 `agentNativeAdmin.sharedCookieDomain`; it must not receive OCE session cookies.
+Keep it to 214 characters or fewer so each `agent-<32 hex>.` hostname fits.
 Store the wildcard certificate in a TLS Secret in the Helm release namespace.
 Enable a separate Envoy listener with explicit public ingress peers:
 
@@ -226,6 +213,9 @@ gatewayRouting:
           matchLabels:
             app.kubernetes.io/name: ingress-nginx
 ```
+
+Each peer is an `ipBlock` or namespace and Pod selectors; Helm refuses a peer
+the Kubernetes API would refuse.
 
 Route the preview wildcard through your ingress to the Envoy Service's sandbox
 port, preserving the requested hostname and TLS server name. Keep the private
@@ -250,6 +240,13 @@ Compute derives each Agent's hostname, renders `mcp.apps.sandboxOrigin` and
 hostname mapping. Remove conflicting tenant overrides of those two native
 fields rather than redirecting the sandbox to the admin origin.
 
+With or without preview routing, OpenClaw binds its MCP Apps sandbox listener on
+an Agent's `mcp.apps.sandboxPort`, else the Gateway port plus one. TCP/18791 is
+the private runtime status port, so Compute refuses a `sandboxPort` of 18791,
+and enabled MCP Apps without a `sandboxPort` when `network.gatewayPort` is
+`18790`. With that Gateway port, set `sandboxPort` for canvas and board
+previews too.
+
 Open a generated HTML file from the native chat. Verify it renders on the preview
 domain, the request carries no OCE session cookie, and the preview host cannot
 serve `/console/`, Gateway RPCs or workspace data. A successful shell request
@@ -258,25 +255,49 @@ the same file and verify its contents are retained.
 
 ## Tests
 
-Open the console, choose a running Agent with an active revision, and verify the **Native admin UI** section on its detail page reports available for an administrator. Select **Open native admin UI** and confirm the Agent host loads in a new tab without native-admin exchange, bootstrap, callback, or Agent-specific session-cookie requests.
+Open the console, choose a running Agent with a selected version, and verify **Open Agent UI** is enabled for an administrator. Its description names the version selected for service. Select **Open Agent UI** and confirm the Agent host loads in a new tab without native-admin exchange, bootstrap, callback, or Agent-specific session-cookie requests.
 
 Full runtime proof still requires a real browser test that loads native assets through OCC, reconnects native WebSocket traffic, verifies the OCE session cookie never reaches the native gateway, and performs a reversible native admin edit against a disposable Agent.
 
 ## Troubleshooting
 
-| Symptom                                             | Check                                                                                                                                                                                 |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Helm render fails                                   | `agentNativeAdmin.enabled` requires `gatewayRouting.enabled`, a DNS-only `agentNativeAdmin.domain`, and a valid `agentNativeAdmin.sharedCookieDomain` parent.                         |
-| Helm render fails on `auth.baseUrl`                 | With native admin, `auth.baseUrl` must be HTTPS and its host inside `agentNativeAdmin.sharedCookieDomain`.                                                                            |
-| API startup fails with `AUTH_BASE_URL_INVALID`      | `auth.baseUrl` is an HTTPS origin whose host is inside `agentNativeAdmin.sharedCookieDomain`, which must not be a public suffix. Better Auth checks these first.                      |
-| API startup fails with `AUTH_SECRET_INVALID`        | The `auth.secretKey` value in the `auth.secretName` Secret has at least 32 characters.                                                                                                |
-| API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | `agentNativeAdmin.domain`, `agentNativeAdmin.sharedCookieDomain`, `OCC_AUTH_BASE_URL`, cookie-scope compatibility, auth secret length, and gateway routing.                           |
-| Console panel is hidden                             | Feature enablement and exact Agent `administer` permission.                                                                                                                           |
-| Panel or status API reports `stopped`               | A stopped Agent with no active revision returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                |
-| Panel or status API reports `unavailable`           | No version is serving: there is no active revision yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy. |
-| Panel reports unsupported                           | Compute gateway routing, `getGatewayEndpoint` support, and native trusted-proxy/control UI configuration for the active revision.                                                     |
-| Native tab cannot load                              | Browser wildcard DNS/TLS to API, shared session cookie scope, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                               |
-| Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                           |
+| Symptom                                             | Check                                                                                                                                                                                  |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Helm render fails                                   | `agentNativeAdmin.enabled` requires `gatewayRouting.enabled`, a DNS-only `agentNativeAdmin.domain`, and a valid `agentNativeAdmin.sharedCookieDomain` parent.                          |
+| An Agent root or chat link opens the console        | Sign in if prompted, then open chat from the Agent detail page. The link does not reopen the original chat session. A link that cannot be resolved lands on Agents with a notice.      |
+| Helm render fails on `auth.baseUrl`                 | With native admin, `auth.baseUrl` must be HTTPS and its host inside `agentNativeAdmin.sharedCookieDomain`.                                                                             |
+| API startup fails with `AUTH_BASE_URL_INVALID`      | `auth.baseUrl` is an HTTPS origin whose host is inside `agentNativeAdmin.sharedCookieDomain`, which must not be a public suffix. Better Auth checks these first.                       |
+| API startup fails with `AUTH_SECRET_INVALID`        | The `auth.secretKey` value in the `auth.secretName` Secret has at least 32 characters.                                                                                                 |
+| API startup fails with `AGENT_NATIVE_ADMIN_INVALID` | `agentNativeAdmin.domain`, `agentNativeAdmin.sharedCookieDomain`, `OCC_AUTH_BASE_URL`, cookie-scope compatibility, auth secret length, and gateway routing.                            |
+| Console panel is hidden                             | Feature enablement and exact Agent `administer` permission.                                                                                                                            |
+| Panel or status API reports `stopped`               | A stopped Agent with no selected version returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                |
+| Panel or status API reports `unavailable`           | No version is serving: there is no selected version yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy. |
+| Panel reports unsupported                           | Compute gateway routing, `getGatewayEndpoint` support, and native trusted-proxy/control UI configuration for the selected version.                                                     |
+| Native tab cannot load                              | Browser wildcard DNS/TLS to API, shared session cookie scope, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                |
+| Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                            |
+| Gateway stays unready after a container restart     | Run diagnostics reports a failed `peer-bridge-record` check; logs name `openclaw.json.oce-peer-bridge.json`. Delete the Pod to restore the managed snapshot; native edits are lost.    |
+
+### Repeated sign-in
+
+Check the [session lifetime](../../reference/authentication.md#session-lifecycle)
+before changing configuration: password-only sessions last seven days; sessions
+with external sign-in enabled last eight hours. Native Agent activity does not
+refresh them. An Agent revision change closes native WebSockets without expiring
+the OCE login.
+
+If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
+may have expired, or your access may have changed. If OCE asks you to sign in,
+it checks your access again and returns you to that Agent’s detail page. Select
+**Open Agent UI** to continue. With an older runtime, open the Agent root
+or its console page to start the same recovery.
+
+If expiry coincides with controller restarts, check persistent session storage
+and whether the configured auth secret changed. In-memory sessions disappear
+on restart; production uses PostgreSQL. Distinguish a console `401` from an
+actual permission denial (`403`), which signing in cannot repair. That browser
+document navigation shows a generic 403 page whose only link is the signed-in
+person's Agents list. API clients and WebSocket upgrades still get the refusal
+without that page.
 
 ## Related
 
@@ -291,6 +312,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 
 ## Changelog
 
+- 2026-10-10 04:00: Added troubleshooting for an unusable Pod-local peer bridge record. (fix-994-995)
 - 2026-09-21 21:20: Explained why intentionally stopped Agents return no native admin origin after their active revision is cleared. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)
 - 2026-09-20 08:53: Updated the deployment procedure for the shared OCE session cookie parent domain, cookie migration, and no-exchange Agent host test path. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)

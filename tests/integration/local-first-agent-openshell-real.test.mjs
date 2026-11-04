@@ -3,4 +3,5 @@
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_HARNESS = "codex";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE = "compose";
+process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_UI = "1";
 await import("./local-first-agent-real.test.mjs");

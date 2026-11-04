@@ -8,7 +8,7 @@
 
 ## Outcome and scope
 
-The local [first-Agent workflow](../../docs/guides/first-agent.md) can explicitly
+The local [first-Agent workflow](https://github.com/openclaw/openclaw-enterprise/blob/ba611818fe29271bb882316a8c9604350e470d42/docs/guides/first-agent.md) can explicitly
 select a dedicated Codex Harness in a Kubernetes development installation. When
 the Installation selects OpenShell, the command registers the model key through
 the existing Credential Gateway and completes a real model turn through the
@@ -24,7 +24,7 @@ The first slice supports plugin-free dedicated Codex with an OpenAI API-key
 CredentialSource. It does not add embedded OpenClaw support to OpenShell, OAuth,
 repository credentials, selected Codex plugins, or native OpenClaw file delivery.
 Those paths keep their current fail-closed behavior. This plan does not expand the
-unaccepted remainder of the [credential-injection RFC](../rfcs/0016-sandbox-credential-injection.md).
+unaccepted remainder of the [credential-injection RFC](../rfcs/0016-sandbox-credential-injection/index.md).
 
 ## Contract and source touchpoints
 

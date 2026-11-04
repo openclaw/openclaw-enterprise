@@ -2,8 +2,10 @@ package occdev
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -178,6 +180,141 @@ func TestUnixEndpointRejectsNonSocketTransports(t *testing.T) {
 	for _, value := range []string{"ssh://core@127.0.0.1/run/podman.sock", "tcp://127.0.0.1:2375", "", "unix://", "relative.sock"} {
 		if endpoint := unixEndpoint(value); endpoint != "" {
 			t.Fatalf("%q was accepted as a unix endpoint: %q", value, endpoint)
+		}
+	}
+}
+
+// engineSelection supplies only inert version/info/Compose answers. Its PATH
+// never reaches a host engine, including when a requested executable is absent.
+func engineSelection(t *testing.T, server, requested, missing, failure string, compose, dockerCompose, dockerComputeDown bool) (*runner, error, string) {
+	t.Helper()
+	directory := t.TempDir()
+	log := filepath.Join(directory, "calls")
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+	providers := []string{"podman-compose"}
+	if dockerCompose {
+		providers = append(providers, "docker-compose")
+	}
+	for _, name := range append([]string{"docker", "podman"}, providers...) {
+		if name == missing {
+			continue
+		}
+		body := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %s\":$*\" >> %s\nif [ %s\":$*\" = %s ]; then exit 1; fi\ncase \"$*\" in\n'version --format {{json .Server}}') printf '%%s\\n' %s ;;\n'info'|'compose version') exit 0 ;;\n*) exit 99 ;;\nesac\n", quote(name), quote(log), quote(name), quote(failure), quote(server))
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", directory)
+	r := &runner{opts: Options{Repository: directory}, env: map[string]string{"PATH": directory}}
+	var err error
+	switch {
+	case dockerComputeDown:
+		// occ dev down stops the Docker Compute stack scripts/dev-up started.
+		err = r.selectDockerComputeEngine(context.Background(), requested)
+	case compose:
+		err = r.selectEngine(context.Background(), requested)
+	default:
+		err = r.selectImageEngine(context.Background(), requested)
+	}
+	data, readErr := os.ReadFile(log)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+	return r, err, string(data)
+}
+
+func TestContainerEngineSelectionHonorsServerIdentity(t *testing.T) {
+	for _, tc := range []struct{ name, server, requested, want string }{
+		{"Docker platform", `{"Platform":{"Name":"Docker Engine - Community"}}`, "auto", "docker"},
+		{"Engine without platform", `{"Components":[{"Name":"Engine"}]}`, "auto", "docker"},
+		{"Podman platform", `{"Platform":{"Name":"PoDmAn Engine"},"Components":[{"Name":"Engine"}]}`, "auto", "podman"},
+		{"Podman before generic Engine", `{"Components":[{"Name":"Podman Engine"},{"Name":"Engine"}]}`, "auto", "podman"},
+		{"Podman after generic Engine", `{"Components":[{"Name":"Engine"},{"Name":"Podman Engine"}]}`, "auto", "podman"},
+		{"Podman overrides Docker platform", `{"Platform":{"Name":"Docker compatible"},"Components":[{"Name":"pOdMaN eNgInE"}]}`, "auto", "podman"},
+		{"raw Podman", `{"Components":[{"Name":"Podman Engine"}]}`, "auto", "podman"},
+		{"malformed", `{"Components":`, "auto", "podman"},
+		{"wrong field type", `{"Components":"Engine"}`, "auto", "podman"},
+		{"empty metadata", `{}`, "auto", "podman"},
+		{"foreign engine", `{"Platform":{"Name":"other"},"Components":[{"Name":"Other Engine"}]}`, "auto", "podman"},
+		{"explicit Docker refuses Podman", `{"Components":[{"Name":"Engine"},{"Name":"Podman Engine"}]}`, "docker", ""},
+	} {
+		for _, compose := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/compose=%t", tc.name, compose), func(t *testing.T) {
+				r, err, calls := engineSelection(t, tc.server, tc.requested, "", "", compose, false, false)
+				if (err != nil) != (tc.want == "") || r.engine != tc.want {
+					t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)
+				}
+				if tc.requested == "docker" && strings.Contains(calls, "podman:") {
+					t.Fatal("explicit Docker fell back to Podman")
+				}
+				if !compose && strings.Contains(calls, "compose version") {
+					t.Fatal("image selection checked Compose")
+				}
+				if compose && r.engine == "podman" && r.env["PODMAN_COMPOSE_PROVIDER"] != filepath.Join(r.env["PATH"], "podman-compose") {
+					t.Fatal("Podman provider was not pinned")
+				}
+			})
+		}
+	}
+}
+
+func TestPodmanComposeProviderPrefersDockerCompose(t *testing.T) {
+	// The Kubernetes-profile Compose command passes --project-directory, which
+	// standalone podman-compose does not support. With both providers installed,
+	// selection must pin docker-compose, which reaches Podman through the
+	// DOCKER_HOST endpoint startup pins, so a host that starts the Compose
+	// control plane can also stop it.
+	r, err, calls := engineSelection(t, `{"Platform":{"Name":"PoDmAn Engine"},"Components":[{"Name":"Engine"}]}`, "podman", "", "", true, true, false)
+	if err != nil || r.engine != "podman" {
+		t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)
+	}
+	if r.env["PODMAN_COMPOSE_PROVIDER"] != filepath.Join(r.env["PATH"], "docker-compose") {
+		t.Fatalf("Podman provider was not docker-compose: %q", r.env["PODMAN_COMPOSE_PROVIDER"])
+	}
+}
+
+func TestDockerComputeDownPinsStandalonePodmanCompose(t *testing.T) {
+	// scripts/dev-up starts the Docker Compute stack with standalone
+	// podman-compose. With both providers installed, occ dev down must pin the
+	// same provider: a docker-compose down against that stack exits 0 but
+	// removes nothing, leaving the started stack running.
+	r, err, calls := engineSelection(t, `{"Platform":{"Name":"PoDmAn Engine"},"Components":[{"Name":"Engine"}]}`, "podman", "", "", true, true, true)
+	if err != nil || r.engine != "podman" {
+		t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)
+	}
+	if r.env["PODMAN_COMPOSE_PROVIDER"] != filepath.Join(r.env["PATH"], "podman-compose") {
+		t.Fatalf("Docker Compute down provider was not podman-compose: %q", r.env["PODMAN_COMPOSE_PROVIDER"])
+	}
+}
+
+func TestContainerEngineSelectionRetainsCapabilityGates(t *testing.T) {
+	const docker = `{"Components":[{"Name":"Engine"}]}`
+	for _, tc := range []struct{ name, requested, missing, failure, imageWant, composeWant string }{
+		{"Docker info failure", "docker", "", "docker:info", "", ""},
+		{"Docker Compose failure", "docker", "", "docker:compose version", "docker", ""},
+		{"missing Podman provider", "podman", "podman-compose", "", "podman", ""},
+		{"Podman info failure", "podman", "", "podman:info", "", ""},
+		{"Podman Compose failure", "podman", "", "podman:compose version", "podman", ""},
+		{"failed Docker version falls back", "auto", "", "docker:version --format {{json .Server}}", "podman", "podman"},
+		{"missing requested engine", "docker", "docker", "", "", ""},
+	} {
+		for _, compose := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/compose=%t", tc.name, compose), func(t *testing.T) {
+				want := tc.imageWant
+				if compose {
+					want = tc.composeWant
+				}
+				r, err, calls := engineSelection(t, docker, tc.requested, tc.missing, tc.failure, compose, false, false)
+				if (err != nil) != (want == "") || r.engine != want {
+					t.Fatalf("engine=%q error=%v calls=%q", r.engine, err, calls)
+				}
+				if !compose && (strings.Contains(calls, "compose version") || r.env["PODMAN_COMPOSE_PROVIDER"] != "") {
+					t.Fatal("image selection required a Compose provider")
+				}
+				if tc.requested == "podman" && strings.Contains(calls, "docker:") {
+					t.Fatal("explicit Podman probed Docker")
+				}
+			})
 		}
 	}
 }

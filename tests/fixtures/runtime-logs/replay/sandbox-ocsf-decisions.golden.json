@@ -98,6 +98,15 @@
       },
       "contentClass": "activity",
       "kind": "sandbox",
+      "decision": {
+        "decision": "allowed",
+        "enforcement": "reported",
+        "binary": "/usr/bin/curl",
+        "host": "api.github.com",
+        "port": 443,
+        "rule": "github_api",
+        "engine": "opa"
+      },
       "level": "info",
       "message": "NET:OPEN [INFO] ALLOWED /usr/bin/curl(58) -> api.github.com:443 [policy:github_api engine:opa]",
       "subsystem": "ocsf",
@@ -122,6 +131,12 @@
       },
       "contentClass": "activity",
       "kind": "sandbox",
+      "decision": {
+        "decision": "allowed",
+        "enforcement": "reported",
+        "rule": "github_api",
+        "engine": "opa"
+      },
       "level": "info",
       "message": "HTTP:GET [INFO] ALLOWED GET http://api.github.com/zen [policy:github_api engine:opa]",
       "subsystem": "ocsf",
@@ -144,6 +159,13 @@
       },
       "contentClass": "activity",
       "kind": "sandbox",
+      "decision": {
+        "decision": "allowed",
+        "enforcement": "reported",
+        "binary": "curl",
+        "rule": "allow_host_9876",
+        "engine": "mechanistic"
+      },
       "level": "info",
       "message": "HTTP:GET [INFO] ALLOWED curl(68) -> GET http://172.20.0.1:9876/test [policy:allow_host_9876 engine:mechanistic]",
       "subsystem": "ocsf",
@@ -168,6 +190,16 @@
       },
       "contentClass": "activity",
       "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "binary": "/usr/bin/curl",
+        "host": "httpbin.org",
+        "port": 443,
+        "reason": "no matching policy",
+        "rule": "-",
+        "engine": "opa"
+      },
       "level": "warn",
       "message": "NET:OPEN [MED] DENIED /usr/bin/curl(64) -> httpbin.org:443 [policy:- engine:opa] [reason:no matching policy]",
       "subsystem": "ocsf",
@@ -193,6 +225,16 @@
       },
       "contentClass": "activity",
       "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "binary": "/usr/bin/curl",
+        "host": "169.254.169.254",
+        "port": 80,
+        "reason": "resolves to always-blocked address",
+        "rule": "-",
+        "engine": "ssrf"
+      },
       "level": "warn",
       "message": "NET:OPEN [MED] DENIED /usr/bin/curl(1618) -> 169.254.169.254:80 [policy:- engine:ssrf] [reason:resolves to always-blocked address]",
       "subsystem": "ocsf",
@@ -218,6 +260,12 @@
       },
       "contentClass": "activity",
       "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "rule": "github_api",
+        "engine": "opa"
+      },
       "level": "warn",
       "message": "HTTP:POST [MED] DENIED POST http://api.github.com/user/repos [policy:github_api engine:opa]",
       "subsystem": "ocsf",
@@ -240,6 +288,15 @@
       },
       "contentClass": "activity",
       "kind": "sandbox",
+      "decision": {
+        "decision": "denied",
+        "enforcement": "blocked",
+        "binary": "node",
+        "host": "93.184.216.34",
+        "port": 443,
+        "rule": "bypass-detect",
+        "engine": "nftables"
+      },
       "level": "warn",
       "message": "NET:REFUSE [MED] DENIED node(1234) -> 93.184.216.34:443/tcp [policy:bypass-detect engine:nftables]",
       "subsystem": "ocsf",

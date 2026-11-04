@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, posix, relative, resolve } from "node:path";
+import { privateOwned } from "./private-owned-path.mjs";
 import {
   assertReviewedCodexVersion,
   codexBwrapAdditionalSyscalls,
@@ -179,6 +180,9 @@ function restrictedProbePod({ name, namespace, nodeName, image, localhostProfile
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       restartPolicy: "Never",
+      // The probe's Node process runs as PID 1 and ignores SIGTERM. Without a
+      // short grace period, the cleanup's Namespace deletion waits 30 seconds.
+      terminationGracePeriodSeconds: 1,
       nodeName,
       securityContext: {
         runAsNonRoot: true,
@@ -641,7 +645,7 @@ async function prepareCodexSeccompProfile({
   execFile,
   kubectl: kubectlBin,
   docker,
-  codexVersion = "0.160.0",
+  codexVersion = "0.164.0",
   commandTimeoutMs = timeoutMs + 15_000,
   env = process.env,
 } = {}) {
@@ -749,17 +753,6 @@ async function prepareCodexSeccompProfile({
       };
     },
   );
-}
-
-async function privateOwned(path, directory = false) {
-  const info = await lstat(path);
-  if (
-    info.uid !== process.geteuid?.() ||
-    (info.mode & 0o077) !== 0 ||
-    (directory ? !info.isDirectory() : !info.isFile())
-  ) {
-    throw new Error(`${path} must be private and owned by the current user.`);
-  }
 }
 
 // Development and CI have different ownership records; neither may bypass the other's checks.
@@ -894,7 +887,7 @@ async function prepareDevelopmentCodexSeccompProfile({ directory, image, execFil
   const cluster = await selectedDevelopmentCluster(directory);
   assertImmutableImageReference(image);
   const execute = requireExecFile(execFile);
-  const codexVersion = "0.160.0";
+  const codexVersion = "0.164.0";
   assertReviewedCodexVersion(codexVersion);
   const selection = { kubeconfig: cluster.kubeconfig, context: cluster.context };
   const namespace = `openclaw-dev-seccomp-${randomSuffix(4)}`;

@@ -40,9 +40,9 @@ their existing owners.
 ## Evidence and limits
 
 The [GitHub Backend lifetime](../../apps/controller/src/drivers/repo/github/credentials/driver/lifetime.ts)
-sets a one-hour cleanup bound from response receipt. Its
-[response observer](../../apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts)
-captures a token before the response body is discarded. The
+sets a one-hour cleanup bound from response receipt. The
+[response observer evaluated for this proposal](https://github.com/openclaw/openclaw-enterprise/blob/8359f9fa580536321af64aa2c41445de9ae8ec55/apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts)
+captured a token before the response body was discarded. The
 [common lifecycle](../../apps/controller/src/drivers/repo/credentials/lifecycle.ts)
 measures the captured token's cleanup lifetime using monotonic time, separates
 `expired` from `revoked`, and retains uncertain issuance. GitHub documents that
@@ -136,7 +136,7 @@ The original broker commits its exact terminal observation before reporting
 no token, bearer or recoverable provider action is stored. Existing attempts
 without the durable protocol remain fail-closed. Uncaptured, active, uncertain
 and pre-commit outcomes remain unknown. The [current reference](../../docs/reference/repository-credentials.md)
-owns the supported contract and the [test guide](../../docs/testing/repository-credentials-platform.md)
+owns the supported contract and the [test guide](../../docs/testing/repository-credentials.md#verify-agent-admission-and-durable-ownership)
 describes verification and its limits.
 
 ## Persistence choice and tradeoffs

@@ -14,11 +14,18 @@ import {
   slackApi,
   waitFor,
 } from "../helpers/harness-topology-k3d-real.mjs";
+import { boundedTeardown } from "../helpers/kubernetes-real.mjs";
+
+// The topology registers its platform Namespace delete before the worker and port-forward stops.
+// Run them newest-first, each bounded and all attempted (finding 1711).
+const topologyTeardown = (testContext) =>
+  boundedTeardown(testContext, { label: "production topology teardown" });
 
 test(
   "production k3d gateway replies once to a real Slack message through its approved proxy and Codex Agent",
   { ...requiresLiveSlack, timeout: 780_000 },
-  async (context) => {
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
     for (const key of [
       "OCC_TEST_SLACK_PROXY_URL",
       "OCC_TEST_SLACK_CHANNEL_ID",

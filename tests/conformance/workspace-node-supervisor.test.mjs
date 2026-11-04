@@ -1,12 +1,26 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { AGENT_WITH_NODE_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_WITH_NODE_ENTRYPOINT,
+  NATIVE_WORKER_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 
 // Reads a JSON-lines file; a file that does not exist yet has no rows. Children append
@@ -26,6 +40,31 @@ async function jsonLines(path) {
     .map((line) => JSON.parse(line));
 }
 
+// True once `pid` no longer exists. A dying or zombie process still answers kill(pid, 0).
+function pidGone(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    if (error.code === "ESRCH") {
+      return true;
+    }
+    throw error;
+  }
+}
+
+// Polls pidGone for at most five seconds.
+async function processGone(description, pid) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (pidGone(pid)) {
+      return;
+    }
+    await delay(25);
+  }
+  assert.fail(description);
+}
+
 // Stub lines for a saved-identity probe that appends a "probe" row to the events
 // file in the supervisor's HOME (the test directory) and never answers, keeping
 // the event loop busy as a slow probe does.
@@ -40,31 +79,53 @@ const pendingIdentityProbe = [
 // Runs the supervisor program the container receives; supervision, signals and
 // environments run unchanged.
 // - Stubbed: native initialization (the runtime-image test covers it), and every child
-//   the supervisor spawns, which runs `child` (the lines of child.cjs) with the events
-//   path, "node" or "codex", and its JSON arguments. `stubs` are extra program lines
-//   that replace other external bodies.
+//   the supervisor spawns. Native setup runs `setup` (the lines of setup.cjs; by default
+//   it succeeds at once) with the events path, with the options (stdio included) the
+//   supervisor passes. Every other child runs `child` (the lines of child.cjs) with the
+//   events path, "node" or "codex", and its JSON arguments. `stubs` are extra program
+//   lines that replace other external bodies; `realSpawnSync` is the unstubbed spawnSync.
 // - Events: children append JSON rows to `directory`/events.jsonl.
 // - Cleanup kills the supervisor and every recorded pid, then removes `directory`.
-async function startSupervisor(t, directory, { child, stubs = [], env }) {
+async function startSupervisor(
+  t,
+  directory,
+  {
+    child,
+    setup = [],
+    stubs = [],
+    env,
+    entrypoint = AGENT_WITH_NODE_ENTRYPOINT,
+    statusReservation,
+  },
+) {
   const eventsPath = join(directory, "events.jsonl");
   const childPath = join(directory, "child.cjs");
+  const setupPath = join(directory, "setup.cjs");
   await writeFile(childPath, child.join("\n"));
+  await writeFile(setupPath, setup.join("\n"));
   const launch = [
     'const cp = require("node:child_process"); const realSpawn = cp.spawn;',
+    "const realSpawnSync = cp.spawnSync;",
     "cp.spawnSync = () => ({ status: 0 });",
-    "cp.spawn = (command, args, options) => realSpawn(command, [" +
+    'cp.spawn = (command, args, options) => realSpawn(command, args[1] === "setup" ? [' +
+      JSON.stringify(setupPath) +
+      ", " +
+      JSON.stringify(eventsPath) +
+      "] : [" +
       JSON.stringify(childPath) +
       ", " +
       JSON.stringify(eventsPath) +
       ', args[0] === "/app/openclaw.mjs" ? "node" : "codex", JSON.stringify(args)], options);',
     ...stubs,
-    AGENT_WITH_NODE_ENTRYPOINT.replace(
-      "\ninitializeRuntimeAssets();\npublishAgentPluginSkillPath();\n",
-      "\n",
-    ),
+    entrypoint
+      .replace("\ninitializeRuntimeAssets();\n", "\n")
+      .replace("\npublishAgentPluginSkillPath();\n", "\n"),
   ].join("\n");
-  // Launch through the same bounded program pieces the container receives.
-  const supervisor = spawn(process.execPath, ["-e", ...nodeProgramArguments(launch)], {
+  // Launch through the same bounded program pieces the container receives. A reserved
+  // status port stays held by the test until the supervisor's own listener answers; the
+  // preload lets that listener bind the held port.
+  const preload = statusReservation === undefined ? [] : reservedPortArgs(statusReservation);
+  const supervisor = spawn(process.execPath, [...preload, "-e", ...nodeProgramArguments(launch)], {
     env: {
       PATH: process.env.PATH,
       HOME: directory,
@@ -114,6 +175,24 @@ async function startSupervisor(t, directory, { child, stubs = [], env }) {
   return { supervisor, exited, events, waitFor, output: () => output };
 }
 
+test("native worker refuses an invalid configured private port", { timeout: 10_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-native-worker-readiness-"));
+  const { exited, output } = await startSupervisor(t, directory, {
+    entrypoint: NATIVE_WORKER_ENTRYPOINT,
+    child: ['throw new Error("unexpected native worker launch");'],
+    env: {
+      TMPDIR: directory,
+      OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify({}),
+      OPENCLAW_NATIVE_WORKER_CAPACITY: "2",
+      OPENCLAW_NODE_SETUP_CODE: "fixture-native-node-setup",
+      OPENCLAW_RUNTIME_STATUS_PORT: "",
+    },
+  });
+  const [code] = await exited;
+  assert.notEqual(code, 0);
+  assert.match(output(), /Runtime status port is invalid\./);
+});
+
 // This proves process supervision with real child processes. It does not prove
 // native pairing, Codex startup or container integration.
 test(
@@ -147,13 +226,20 @@ test(
         "hasSetup: process.env.OPENCLAW_NODE_SETUP_CODE !== undefined ||",
         "  process.env.OPENCLAW_NODE_SETUP_ENVELOPE !== undefined,",
         "caPath: process.env.NODE_EXTRA_CA_CERTS,",
+        "shellCaPath: process.env.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,",
         "hasModelKey: process.env.OPENAI_API_KEY !== undefined,",
         'autoUpdateDisabled: process.env.OPENCLAW_NO_AUTO_UPDATE === "1",',
         'hasTransportToken: process.env.APP_SERVER_TOKEN !== undefined }) + "\\n");',
         'if (kind === "codex") spawn(process.execPath, [__filename, events, "grandchild"], { stdio: "inherit" });',
         "setInterval(() => {}, 1_000);",
       ],
-      stubs: pendingIdentityProbe,
+      stubs: [
+        ...pendingIdentityProbe,
+        // Simulate a broken sink for node-exit diagnostics while preserving real supervision.
+        "const savedConsoleError = console.error; console.error = (line) => {",
+        '  if (typeof line === "string" && line.includes("runtime.process_exit") && line.includes("workspace-node")) throw new Error("sentinel-private-exit-log-secret");',
+        "  savedConsoleError(line); };",
+      ],
       env: {
         OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath,
         OPENCLAW_NODE_CA_PEM: "gateway-public-ca",
@@ -179,6 +265,9 @@ test(
     assert.equal((await stat(join(directory, ".oce-native-hooks"))).mode & 0o777, 0o700);
     assert.equal(await readFile(codex.caPath, "utf8"), "existing-public-ca\ngateway-public-ca");
     assert.equal(await readFile(node.caPath, "utf8"), "gateway-public-ca");
+    // Sandboxed commands cannot read the hook directory; they keep the Pod's own CA.
+    assert.equal(codex.shellCaPath, existingCa);
+    assert.equal(node.shellCaPath, undefined);
 
     process.kill(codex.pid, "SIGKILL");
     const afterCodex = await waitFor(
@@ -186,19 +275,36 @@ test(
       (rows) => rows.filter(({ kind }) => kind === "codex").length === 2,
     );
     assert.equal(afterCodex.filter(({ kind }) => kind === "node").length, 1);
+    const exitEvents = output()
+      .split("\n")
+      .flatMap((line) => {
+        try {
+          const value = JSON.parse(line);
+          return value.event === "runtime.process_exit" ? [value] : [];
+        } catch {
+          return [];
+        }
+      });
+    assert.deepEqual(
+      exitEvents.find((e) => e.component === "codex-wrapper"),
+      {
+        event: "runtime.process_exit",
+        component: "codex-wrapper",
+        exitCode: null,
+        signal: "SIGKILL",
+        stopping: false,
+      },
+    );
+    for (const secret of [
+      "synthetic-model-key",
+      "synthetic-transport-token",
+      "sentinel-private-exit-log-secret",
+    ]) {
+      assert.equal(JSON.stringify(exitEvents).includes(secret), false);
+    }
     process.kill(node.pid, 0);
     const descendant = initial.find(({ kind }) => kind === "grandchild");
-    await waitFor("old Codex descendant exited", () => {
-      try {
-        process.kill(descendant.pid, 0);
-        return false;
-      } catch (error) {
-        if (error.code === "ESRCH") {
-          return true;
-        }
-        throw error;
-      }
-    });
+    await waitFor("old Codex descendant exited", () => pidGone(descendant.pid));
 
     const renewedSetup = {
       url: "wss://gateway.example.test/node",
@@ -244,14 +350,312 @@ test(
     );
     assert.equal(afterEmptyToken.filter(({ kind }) => kind === "node").length, 3);
 
-    // Stop exits once the children are gone, without waiting for the probe.
+    // Stop exits once its children are gone, without waiting for the probe. It reaps
+    // its own children before exiting, so they are gone at once.
     supervisor.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null], output());
-    for (const { pid } of (await events()).filter(({ pid }) => pid !== undefined)) {
+    const recorded = (await events()).filter(({ pid }) => pid !== undefined);
+    for (const { pid } of recorded.filter(({ kind }) => kind !== "grandchild")) {
       assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    }
+    // The group kill also ends the Codex grandchild, but its new parent reaps it a
+    // moment later, and until then kill(pid, 0) still finds it.
+    for (const { pid } of recorded.filter(({ kind }) => kind === "grandchild")) {
+      await processGone(`Codex grandchild ${pid} still running 5 s after stop`, pid);
     }
   },
 );
+
+// An OpenShell Sandbox delivers the Gateway CA as a provider file (OPENCLAW_NODE_CA_PATH)
+// and runs the Harness with its own HOME. Codex hook commands call the Gateway route, so
+// they need that CA as much as the node does, and their credential directory is HOME's.
+test(
+  "Codex hooks trust a file-delivered Gateway CA from the Harness HOME",
+  {
+    timeout: 15_000,
+    skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
+  },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-ca-file-"));
+    const caPath = join(directory, "node-ca.pem");
+    await writeFile(caPath, "gateway-public-ca\n");
+    const setupEnvelopePath = join(directory, "node-setup.json");
+    await writeFile(
+      setupEnvelopePath,
+      JSON.stringify({
+        url: "wss://gateway.example.test/node",
+        bootstrapToken: "provider-bootstrap-token",
+        expiresAtMs: Date.now() + 60_000,
+      }),
+    );
+    const { waitFor } = await startSupervisor(t, directory, {
+      child: [
+        'const { appendFileSync } = require("node:fs");',
+        "const [events, kind] = process.argv.slice(2);",
+        "appendFileSync(events, JSON.stringify({ kind, pid: process.pid,",
+        "caPath: process.env.NODE_EXTRA_CA_CERTS,",
+        "shellCaPath: process.env.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,",
+        'hasCaPath: process.env.OPENCLAW_NODE_CA_PATH !== undefined }) + "\\n");',
+        "setInterval(() => {}, 1_000);",
+      ],
+      stubs: pendingIdentityProbe,
+      env: { OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath, OPENCLAW_NODE_CA_PATH: caPath },
+    });
+    const rows = await waitFor(
+      "children started",
+      (observed) =>
+        observed.some(({ kind }) => kind === "node") &&
+        observed.some(({ kind }) => kind === "codex"),
+    );
+    const node = rows.find(({ kind }) => kind === "node");
+    const codex = rows.find(({ kind }) => kind === "codex");
+    assert.equal(node.caPath, caPath);
+    const hooks = join(directory, ".oce-native-hooks");
+    assert.equal((await stat(hooks)).mode & 0o777, 0o700);
+    assert.equal(codex.caPath, join(hooks, "gateway-ca.pem"));
+    assert.equal(await readFile(codex.caPath, "utf8"), "gateway-public-ca");
+    // No Pod CA: sandboxed commands get no NODE_EXTRA_CA_CERTS at all.
+    assert.equal(codex.shellCaPath, "");
+    assert.equal(codex.hasCaPath, false);
+  },
+);
+
+// Code in the Harness runs as the Harness user, so it can replace the hook directory, for
+// example with a symlink into the workspace. On OpenShell HOME survives restarts, so the
+// replacement would steer later relay credentials and the CA copy into the workspace.
+test(
+  "each Codex start rebuilds the hook directory without following a planted link",
+  {
+    timeout: 15_000,
+    skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
+  },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-hook-directory-"));
+    const caPath = join(directory, "node-ca.pem");
+    await writeFile(caPath, "gateway-public-ca\n");
+    const setupEnvelopePath = join(directory, "node-setup.json");
+    await writeFile(
+      setupEnvelopePath,
+      JSON.stringify({
+        url: "wss://gateway.example.test/node",
+        bootstrapToken: "provider-bootstrap-token",
+        expiresAtMs: Date.now() + 60_000,
+      }),
+    );
+    // A previous Harness lifetime left the directory as a link into the workspace.
+    const hooks = join(directory, ".oce-native-hooks");
+    const leak = join(directory, "workspace", "leak");
+    await mkdir(leak, { recursive: true });
+    await writeFile(join(leak, "planted.json"), "planted");
+    await symlink(leak, hooks);
+    const { waitFor } = await startSupervisor(t, directory, {
+      child: [
+        'const { appendFileSync } = require("node:fs");',
+        "const [events, kind] = process.argv.slice(2);",
+        "appendFileSync(events, JSON.stringify({ kind, pid: process.pid,",
+        'caPath: process.env.NODE_EXTRA_CA_CERTS }) + "\\n");',
+        "setInterval(() => {}, 1_000);",
+      ],
+      stubs: pendingIdentityProbe,
+      env: { OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath, OPENCLAW_NODE_CA_PATH: caPath },
+    });
+    const codexRows = (rows) => rows.filter(({ kind }) => kind === "codex");
+    const first = codexRows(await waitFor("Codex started", (rows) => codexRows(rows).length === 1));
+    const assertPrivateHooks = async () => {
+      const entry = await lstat(hooks);
+      assert.equal(entry.isDirectory(), true);
+      assert.equal(entry.mode & 0o777, 0o700);
+      assert.equal((await lstat(join(hooks, "gateway-ca.pem"))).isFile(), true);
+      assert.equal(await readFile(join(hooks, "gateway-ca.pem"), "utf8"), "gateway-public-ca");
+    };
+    await assertPrivateHooks();
+    assert.equal(first[0].caPath, join(hooks, "gateway-ca.pem"));
+    assert.deepEqual(await readdir(leak), ["planted.json"]);
+
+    // Mid-run, Harness code links the CA copy into the workspace and then swaps the
+    // whole directory for a link. A Codex restart rebuilds the directory without
+    // writing through either link, and drops the previous process's credentials.
+    await writeFile(join(hooks, "relay.g1.json"), "previous-relay-credential", { mode: 0o600 });
+    await rm(join(hooks, "gateway-ca.pem"));
+    await symlink(join(leak, "linked-ca.pem"), join(hooks, "gateway-ca.pem"));
+    process.kill(first[0].pid, "SIGKILL");
+    const second = codexRows(
+      await waitFor("Codex restarted", (rows) => codexRows(rows).length === 2),
+    );
+    await assertPrivateHooks();
+    assert.deepEqual(await readdir(hooks), ["gateway-ca.pem"]);
+    assert.deepEqual(await readdir(leak), ["planted.json"]);
+
+    await rm(hooks, { recursive: true });
+    await symlink(leak, hooks);
+    process.kill(second.at(-1).pid, "SIGKILL");
+    await waitFor("Codex restarted again", (rows) => codexRows(rows).length === 3);
+    await assertPrivateHooks();
+    assert.deepEqual(await readdir(hooks), ["gateway-ca.pem"]);
+    assert.deepEqual(await readdir(leak), ["planted.json"]);
+  },
+);
+
+// An earlier Harness lifetime's credentials belong to retired relays. The first Codex
+// start removes them from an intact directory, fixes its mode and replaces a linked CA copy.
+test(
+  "the first Codex start removes credentials left by an earlier Harness lifetime",
+  {
+    timeout: 15_000,
+    skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
+  },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-hook-stale-"));
+    const setupEnvelopePath = join(directory, "node-setup.json");
+    await writeFile(
+      setupEnvelopePath,
+      JSON.stringify({
+        url: "wss://gateway.example.test/node",
+        bootstrapToken: "provider-bootstrap-token",
+        expiresAtMs: Date.now() + 60_000,
+      }),
+    );
+    const hooks = join(directory, ".oce-native-hooks");
+    const workspace = join(directory, "workspace");
+    await mkdir(hooks, { recursive: true, mode: 0o755 });
+    await mkdir(workspace, { recursive: true });
+    await writeFile(join(hooks, "relay.g0.json"), "retired-relay-credential");
+    await symlink(join(workspace, "linked-ca.pem"), join(hooks, "gateway-ca.pem"));
+    const { waitFor } = await startSupervisor(t, directory, {
+      child: [
+        'const { appendFileSync } = require("node:fs");',
+        "const [events, kind] = process.argv.slice(2);",
+        'appendFileSync(events, JSON.stringify({ kind, pid: process.pid }) + "\\n");',
+        "setInterval(() => {}, 1_000);",
+      ],
+      stubs: pendingIdentityProbe,
+      env: {
+        OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath,
+        OPENCLAW_NODE_CA_PEM: "gateway-public-ca",
+      },
+    });
+    await waitFor("Codex started", (rows) => rows.some(({ kind }) => kind === "codex"));
+    assert.equal((await lstat(hooks)).mode & 0o777, 0o700);
+    assert.deepEqual(await readdir(hooks), ["gateway-ca.pem"]);
+    assert.equal((await lstat(join(hooks, "gateway-ca.pem"))).isFile(), true);
+    assert.equal(await readFile(join(hooks, "gateway-ca.pem"), "utf8"), "gateway-public-ca");
+    assert.deepEqual(await readdir(workspace), []);
+  },
+);
+
+// The model probe uses the inherited proxy CA before the native child adds the
+// provider Gateway CA. Both must survive in the real child's environment.
+for (const topology of ["Compute-owned", "provider-owned"]) {
+  test(
+    `native worker preserves model-proxy and Gateway CAs when ${topology}`,
+    { timeout: 15_000 },
+    async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), "oce-native-worker-ca-"));
+      const inheritedCaPath = join(directory, "model-proxy-ca.pem");
+      const providerCaPath = join(directory, "provider-gateway-ca.pem");
+      await writeFile(inheritedCaPath, "model-proxy-public-ca");
+      await writeFile(providerCaPath, "provider-gateway-public-ca");
+      const setupEnvelopePath = join(directory, "node-setup.json");
+      const setupEnvelope = JSON.stringify({
+        url: "wss://gateway.example.test/node",
+        bootstrapToken: "synthetic-provider-bootstrap-token",
+        expiresAtMs: Date.now() + 60_000,
+      });
+      await writeFile(setupEnvelopePath, setupEnvelope);
+      const inference = {
+        agents: { defaults: { model: "openai/native-ca" } },
+        models: {
+          providers: {
+            openai: {
+              apiKey: "OPENAI_API_KEY",
+              api: "openai-responses",
+              baseUrl: "https://model-proxy.example.test/v1",
+              models: [
+                {
+                  id: "native-ca",
+                  name: "Native CA fixture",
+                  api: "openai-responses",
+                  contextWindow: 128_000,
+                  maxTokens: 8_192,
+                },
+              ],
+            },
+          },
+        },
+      };
+      // The supervisor binds its status port on every interface; hold it there.
+      const statusReservation =
+        topology === "Compute-owned" ? await reservePort({ host: "0.0.0.0" }) : undefined;
+      t.after(() => statusReservation?.release());
+      const statusPort = statusReservation?.port;
+      const { supervisor, exited, waitFor, output } = await startSupervisor(t, directory, {
+        entrypoint: NATIVE_WORKER_ENTRYPOINT,
+        statusReservation,
+        child: [
+          'const { appendFileSync } = require("node:fs");',
+          "const [events, kind, args] = process.argv.slice(2);",
+          "appendFileSync(events, JSON.stringify({ kind, pid: process.pid, args: JSON.parse(args),",
+          "caPath: process.env.NODE_EXTRA_CA_CERTS }) + '\\n');",
+          "setInterval(() => {}, 1_000);",
+        ],
+        // The model service is external to this process proof. The production
+        // probe preparation and success branch still run before the real child.
+        stubs: [
+          "cp.spawnSync = (command, args, options) => {",
+          '  require("node:assert/strict").ok(args.includes("--probe"));',
+          `  require("node:assert/strict").equal(options.env.NODE_EXTRA_CA_CERTS, ${JSON.stringify(inheritedCaPath)});`,
+          '  return { status: 0, stdout: JSON.stringify({ auth: { probes: { results: [{ provider: "openai", model: "openai/native-ca", source: "env", status: "ok" }] } } }) };',
+          "};",
+        ],
+        env: {
+          OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify(inference),
+          OPENCLAW_NATIVE_WORKER_CAPACITY: "8",
+          ...(statusPort === undefined ? {} : { OPENCLAW_RUNTIME_STATUS_PORT: String(statusPort) }),
+          OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath,
+          OPENCLAW_NODE_CA_PATH: providerCaPath,
+          NODE_EXTRA_CA_CERTS: inheritedCaPath,
+          OPENCLAW_HARNESS_MODEL: "openai/native-ca",
+          OPENCLAW_HARNESS_PROVIDER: "openai",
+          OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
+          OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify(inference),
+          OPENAI_API_KEY: "synthetic-model-key",
+          TMPDIR: join(directory, "tmp"),
+        },
+      });
+      const [node] = await waitFor("native worker started after the probe", (rows) =>
+        rows.some(({ kind }) => kind === "node"),
+      );
+      assert.equal(
+        await readFile(node.caPath, "utf8"),
+        "model-proxy-public-ca\nprovider-gateway-public-ca",
+      );
+      assert.equal((await stat(node.caPath)).mode & 0o777, 0o600);
+      assert.equal(node.args[1], "connect");
+      const targetPath = node.args[node.args.indexOf("--target-file") + 1];
+      assert.equal(
+        await readFile(targetPath, "utf8"),
+        Buffer.from(setupEnvelope).toString("base64url"),
+      );
+      assert.equal((await stat(targetPath)).mode & 0o777, 0o600);
+      if (statusPort !== undefined) {
+        // A connection that reaches the reservation is reset; retry until the supervisor answers.
+        const ready = await waitFor(
+          "status port answered",
+          (status) => status !== undefined,
+          () =>
+            fetch(`http://127.0.0.1:${statusPort}/readyz`).then(
+              (response) => response.status,
+              () => undefined,
+            ),
+        );
+        await statusReservation.release();
+        assert.equal(ready, 503);
+      }
+      supervisor.kill("SIGTERM");
+      assert.deepEqual(await exited, [0, null], output());
+    },
+  );
+}
 
 // A Deployment-backed Codex Harness starts before its node setup Secret exists
 // and receives the code through an optional volume. Real child processes prove
@@ -436,7 +840,9 @@ test(
       child: [],
       stubs: [
         // Every child fails to start, so Codex is only ever between restarts.
-        'cp.spawn = (command, args, options) => realSpawn(process.env.HOME + "/missing", [], options);',
+        'cp.spawn = (command, args, options) => args[1] === "setup"',
+        '  ? realSpawn(process.execPath, ["-e", ""], options)',
+        '  : realSpawn(process.env.HOME + "/missing", [], options);',
         ...pendingIdentityProbe,
       ],
       env: { OPENCLAW_NODE_SETUP_PATH: join(directory, "setup", "setup-code") },
@@ -445,5 +851,167 @@ test(
     await waitFor("Codex start failure", (text) => text.includes("Codex failed to start."), output);
     supervisor.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null], output());
+  },
+);
+
+// Native setup that prints the value of the JavaScript expression `stdout` and exits
+// with `status`.
+function setupStub(stdout, status) {
+  return [`process.stdout.write(${stdout}); process.exitCode = ${status};`];
+}
+
+const recordingChild = [
+  'const { appendFileSync } = require("node:fs");',
+  "const [events, kind] = process.argv.slice(2);",
+  'appendFileSync(events, JSON.stringify({ kind, pid: process.pid }) + "\\n");',
+  "setInterval(() => {}, 1_000);",
+];
+
+test(
+  "Harness starts its children after a native setup whose result outgrows a pipe buffer",
+  { timeout: 15_000 },
+  async (t) => {
+    // A buffered pipe (spawnSync's 1 MiB default) killed a setup whose result outgrew
+    // it, which failed a setup that succeeded (review-3817).
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-baseline-"));
+    const { waitFor } = await startSupervisor(t, directory, {
+      child: recordingChild,
+      setup: setupStub('JSON.stringify({ ok: true, padding: "x".repeat(3 * 1024 * 1024) })', 0),
+      env: { OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup" },
+    });
+    await waitFor(
+      "children started",
+      (rows) =>
+        rows.some(({ kind }) => kind === "node") && rows.some(({ kind }) => kind === "codex"),
+    );
+  },
+);
+
+test(
+  "Harness holds a failed native setup and serves the held check on the Compute status port",
+  { timeout: 15_000 },
+  async (t) => {
+    // Codex owns this container's status port, and it never starts on an uninitialized
+    // workspace: the supervisor serves the hold there itself, so Compute fails the
+    // revision with the check instead of waiting for its deadline (finding 2686).
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-held-"));
+    // The supervisor binds its status port on every interface; hold it there.
+    const statusReservation = await reservePort({ host: "0.0.0.0" });
+    t.after(() => statusReservation.release());
+    const { port } = statusReservation;
+    const result = {
+      ok: false,
+      error: { type: "cli_error", message: `bad\n\u001b]0;title\u0007${"y".repeat(600)}` },
+      issues: [{ path: "agents.defaults.skipBootstrap", message: "sk-fixture-value" }],
+    };
+    const { supervisor, events, waitFor, output } = await startSupervisor(t, directory, {
+      child: recordingChild,
+      statusReservation,
+      setup: setupStub(JSON.stringify(JSON.stringify(result, null, 2)), 1),
+      env: {
+        OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup",
+        OPENCLAW_RUNTIME_STATUS_PORT: String(port),
+        OPENCLAW_AGENT_REVISION_ID: "rev_fixture",
+        OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent",
+        OPENCLAW_POD_UID: "pod-fixture",
+      },
+    });
+    const read = async (path) => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}${path}`);
+        return { status: response.status, body: await response.text() };
+      } catch {
+        return undefined;
+      }
+    };
+    // A connection that reaches the reservation is reset, which read() reports as no answer.
+    const answer = await waitFor(
+      "held status served",
+      (served) => served?.status === 200,
+      () => read("/openclaw/runtime/status"),
+    );
+    await statusReservation.release();
+    const status = JSON.parse(answer.body);
+    const { checkedAt, ...failure } = status.runtimeFailure;
+    assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+    assert.deepEqual(
+      { ...status, runtimeFailure: failure },
+      {
+        revisionId: "rev_fixture",
+        container: "agent",
+        podUid: "pod-fixture",
+        runtimeFailure: { component: "agent", check: "workspace-baseline", code: "UNAVAILABLE" },
+      },
+    );
+    assert.equal((await read("/readyz")).status, 503);
+    // One bounded line names the setup's message and setting path, never its values.
+    const lines = output()
+      .split("\n")
+      .filter((line) => line.includes("Workspace initialization"));
+    assert.equal(lines.length, 1, output());
+    // eslint-disable-next-line no-control-regex -- matching control characters is the point
+    assert.doesNotMatch(lines[0], /[\u0000-\u001f\u007f-\u009f]|sk-fixture-value/u);
+    // The message is cut at 400 characters after control characters collapse.
+    assert.ok(
+      lines[0].includes(
+        `reported: bad ]0;title ${"y".repeat(387)} (invalid settings: agents.defaults.skipBootstrap).`,
+      ),
+      lines[0],
+    );
+    // Held: alive, and neither child started.
+    assert.equal(supervisor.exitCode, null);
+    assert.deepEqual(await events(), []);
+  },
+);
+
+test(
+  "a Harness stopped during native setup lets setup finish before it exits",
+  {
+    timeout: 15_000,
+    skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
+  },
+  async (t) => {
+    // Native setup holds the node state's lock on the Agent's workspace claim. If the
+    // supervisor exited on SIGTERM first, the container would end and the kernel would
+    // kill setup while it holds the lock, which no later Pod can then take (finding
+    // 3104). OpenClaw's launcher kills the CLI about 2 s after a forwarded stop, so the
+    // supervisor keeps the stop to itself and waits for setup to end on its own.
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-setup-stop-"));
+    const release = join(directory, "release-setup");
+    const { supervisor, exited, events, waitFor, output } = await startSupervisor(t, directory, {
+      child: recordingChild,
+      setup: [
+        'const { appendFileSync, existsSync } = require("node:fs");',
+        "const [events] = process.argv.slice(2);",
+        "const row = (kind) => appendFileSync(events, JSON.stringify({ kind, pid: process.pid }) + '\\n');",
+        'process.on("SIGTERM", () => row("setup-signal"));',
+        'row("setup");',
+        // Setup holds its lock until the test lets it finish; releasing takes a moment.
+        "const timer = setInterval(() => {",
+        `  if (!existsSync(${JSON.stringify(release)})) return;`,
+        "  clearInterval(timer);",
+        '  setTimeout(() => row("setup-done"), 100);',
+        "}, 10);",
+      ],
+      env: { OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup" },
+    });
+    const [setup] = await waitFor("native setup started", (rows) =>
+      rows.some(({ kind }) => kind === "setup"),
+    );
+    supervisor.kill("SIGTERM");
+    // While setup holds its lock, the stopped supervisor must not exit. The real
+    // supervisor cannot exit before setup does, so this wait cannot fail it; one
+    // that exits on the stop does so well within the wait.
+    const early = await Promise.race([exited, delay(500).then(() => "running")]);
+    assert.equal(early, "running", output());
+    await writeFile(release, "");
+    assert.deepEqual(await exited, [0, null], output());
+    // The supervisor exited after setup ended: setup was gone when it exited.
+    assert.ok(pidGone(setup.pid), "native setup outlived the supervisor");
+    // Setup finished undisturbed, and the stopped Harness started neither child.
+    assert.deepEqual(
+      (await events()).map(({ kind }) => kind),
+      ["setup", "setup-done"],
+    );
   },
 );

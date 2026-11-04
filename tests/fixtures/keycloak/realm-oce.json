@@ -1,0 +1,62 @@
+{
+  "realm": "oce",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "loginWithEmailAllowed": false,
+  "duplicateEmailsAllowed": false,
+  "clients": [
+    {
+      "clientId": "oce-console",
+      "name": "OCE Console",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${OCE_KEYCLOAK_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": ["${OCE_KEYCLOAK_REDIRECT_URI}"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "standard.token.exchange.enabled": "false",
+        "backchannel.logout.session.required": "false"
+      }
+    }
+  ],
+  "users": [
+    {
+      "id": "6f1c1e9a-3d4b-4c55-9a2e-0a11ce000001",
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.test",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Test",
+      "credentials": [
+        { "type": "password", "value": "${OCE_KEYCLOAK_ALICE_PASSWORD}", "temporary": false }
+      ]
+    },
+    {
+      "id": "6f1c1e9a-3d4b-4c55-9a2e-0ca201000002",
+      "username": "carol",
+      "enabled": true,
+      "email": "carol@example.test",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Test",
+      "credentials": [
+        { "type": "password", "value": "${OCE_KEYCLOAK_CAROL_PASSWORD}", "temporary": false }
+      ]
+    }
+  ]
+}

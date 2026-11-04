@@ -1,7 +1,91 @@
-import { TransientDependencyError } from "@openclaw-enterprise/occ";
+import {
+  SANDBOX_DELETION_UNCONFIRMED,
+  SandboxGatewayUnauthorizedError,
+  SandboxGatewayUnavailableError,
+  TransientDependencyError,
+} from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 
 export class OpenShellGatewayFailure extends Error {}
+
+const GRPC_PERMISSION_DENIED = 7;
+const GRPC_UNAUTHENTICATED = 16;
+
+/** Runs one gateway call; see `gatewayIdentityRefusal`. */
+export type GatewayCall = <T>(call: () => Promise<T>) => Promise<T>;
+
+/**
+ * Wraps the gateway calls of one Sandbox operation in `workspace`. A refusal of the
+ * controller's own gateway identity (grpc-js PERMISSION_DENIED or UNAUTHENTICATED, which
+ * `unary` passes through raw) becomes `SandboxGatewayUnauthorizedError`, so the worker fails
+ * the work with that code instead of spending its attempts on a generic failure: at once for
+ * PERMISSION_DENIED (a role the identity lacks), after its attempt budget for UNAUTHENTICATED,
+ * which OpenShell also answers while a token file or its JWKS is between refreshes (`transient`,
+ * finding 1694). `unconfirmed` names what the refusal leaves unconfirmed, for example "the
+ * Harness exposure of Sandbox x cannot be confirmed withdrawn".
+ */
+export function gatewayIdentityRefusal(workspace: string, unconfirmed: string): GatewayCall {
+  return async (call) => {
+    try {
+      return await call();
+    } catch (error) {
+      const record = asRecord(error);
+      // grpc-js ServiceError: a numeric status code and a string details field.
+      const code = typeof record?.details === "string" ? record.code : undefined;
+      if (code === GRPC_PERMISSION_DENIED || code === GRPC_UNAUTHENTICATED) {
+        throw new SandboxGatewayUnauthorizedError(
+          `OpenShell refused the controller gateway identity in Workspace ${workspace}, so ${unconfirmed}.`,
+          { cause: error, transient: code === GRPC_UNAUTHENTICATED },
+        );
+      }
+      throw error;
+    }
+  };
+}
+
+/**
+ * DeleteSandbox or DeleteService answered NOT_FOUND for a target a read had just found: the
+ * target went away in between (a failed candidate retired by the next activation while the
+ * sweep was withdrawing its exposure, finding 1696) or the identity lost sight of it. Either way
+ * nothing is confirmed; the next attempt settles it through `confirmSandboxAbsent`.
+ */
+export class OpenShellDeletionUnconfirmedError extends OpenShellGatewayFailure {
+  readonly code = SANDBOX_DELETION_UNCONFIRMED;
+}
+
+/**
+ * Decides whether a target's NOT_FOUND (a Sandbox, its exposed service or its provider
+ * attachment) means the target is gone. OpenShell answers NOT_FOUND alike for a target that
+ * does not exist and for one this identity may not see (no existence oracle: GetSandbox,
+ * DeleteSandbox, GetService, DeleteService, DetachSandboxProvider all hide it), so an identity
+ * that lost its Workspace role would otherwise read every Sandbox as removed while it, its
+ * exposure and its credentials stay live (findings 1670, 1676). GetWorkspace keeps
+ * PERMISSION_DENIED, so a Workspace this identity can still read is the proof; a refusal there
+ * fails with `SANDBOX_GATEWAY_UNAUTHORIZED` through `refused`, and a Workspace OpenShell reports
+ * missing fails closed with `absent()`. With the documented `user` role a Workspace deleted out
+ * of band presents as a refusal too, since OpenShell drops the membership before the record, so
+ * `absent()` is defense in depth for identities with a platform role.
+ *
+ * GetWorkspace proves the role now, not at the earlier read: a role restored between the two
+ * would otherwise confirm a live target (finding 1692). So `reread` repeats the target read
+ * after GetWorkspace, and only a target still missing is absent (`undefined`); one the identity
+ * now sees is returned, and the caller deletes or withdraws it instead of recording absence.
+ * What remains needs the role lost again between GetWorkspace and that read, after it was
+ * hidden at the first: two flaps within two round trips.
+ */
+export async function confirmSandboxAbsent<T>(
+  client: { getWorkspace(name: string, signal: AbortSignal): Promise<unknown> },
+  workspace: string,
+  signal: AbortSignal,
+  refused: GatewayCall,
+  absent: () => Error,
+  reread: () => Promise<T | undefined>,
+): Promise<T | undefined> {
+  if ((await refused(() => client.getWorkspace(workspace, signal))) === undefined) {
+    throw absent();
+  }
+  return refused(reread);
+}
 
 export class OpenShellSandboxAlreadyExistsError extends Error {
   readonly sandboxName: string;
@@ -32,6 +116,12 @@ export class OpenShellRequestReplayRefusedError extends Error {
 // refusals, such as the rate limit or busy admission workers, stay the raw gRPC error.
 export const ADMISSION_LIMIT_DETAILS = "caller has reached the durable mutation admission limit";
 
+// OpenShell's exact CreateSandbox refusal when the gateway's Kubernetes driver does not list
+// a template label key in allowed_pod_labels (crates/openshell-driver-kubernetes/src/driver.rs,
+// reject_disallowed_pod_metadata_keys). The rejected keys follow the colon.
+export const POD_LABELS_NOT_PERMITTED_DETAILS =
+  "pod labels not permitted by the gateway's allowed_pod_labels: ";
+
 /**
  * OpenShell refused a mutation because OCC's gateway identity holds its maximum of 1000
  * durable request admissions. Completed admissions free up 24 h after completion, so the
@@ -49,6 +139,31 @@ export class OpenShellAdmissionLimitError extends TransientDependencyError {
       { cause },
     );
     this.name = "OpenShellAdmissionLimitError";
+  }
+}
+
+/**
+ * gRPC UNAVAILABLE: grpc-js's status when it cannot reach the gateway or loses its connection,
+ * and also one the gateway itself answers with for some failures (finding 2042).
+ */
+export const GRPC_UNAVAILABLE = 14;
+/** gRPC DEADLINE_EXCEEDED: also grpc-js's status for a call that never got a connection. */
+export const GRPC_DEADLINE_EXCEEDED = 4;
+
+/**
+ * The gateway did not answer a request: grpc-js reached no gateway, lost the connection under
+ * the call, or still had no connection at the request deadline (a status grpc-js made up
+ * itself), so it is down or restarting. A status the gateway sent itself is not this error
+ * (findings 2042, 2048). A revision pass waits for it within the deployment deadline instead of
+ * spending attempts (finding 2040); every other caller sees a DependencyUnavailableError, as for
+ * any other failed request.
+ */
+export class OpenShellGatewayUnavailableError extends SandboxGatewayUnavailableError {
+  readonly grpcStatus: number;
+
+  constructor(message: string, grpcStatus: number) {
+    super(message);
+    this.grpcStatus = grpcStatus;
   }
 }
 

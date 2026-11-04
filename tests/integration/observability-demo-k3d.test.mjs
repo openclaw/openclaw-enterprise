@@ -11,7 +11,7 @@ test(
     skip:
       process.env.OCC_TEST_OBSERVABILITY_DEMO === "1"
         ? false
-        : "Select k3d-observability-demo with the CI runner; see docs/testing/metrics.md.",
+        : "Select k3d-observability-demo with the CI runner; see docs/testing/local.md#kubernetes-observability-acceptance.",
     timeout: 600_000,
   },
   async (t) => {

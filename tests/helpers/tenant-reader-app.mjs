@@ -28,7 +28,8 @@ const tenantAReaderPermissions = [
  * only. IDs are sequential so tests can name tenant A before it exists.
  *
  * `createApp(principal, overrides, factory)` builds another app over the same controller
- * with `principal`'s session as `app.defaultSession`; `appOptions(overrides)` maps a test's
+ * with `principal`'s session as `app.defaultSession`, and `session(principal)` returns that
+ * session for a request on an existing app; `appOptions(overrides)` maps a test's
  * overrides to extra app options. The returned `app` was built with `options` as overrides;
  * the fixture itself also reads `options.identities` (the provisioned identities, default
  * both people; bindings of anyone left out are dropped) and `options.restrictions`.
@@ -116,6 +117,8 @@ export async function createTenantReaderFixture({
                     agent: "agt",
                     agent_revision: "rev",
                     secret: "sec",
+                    preset: "pre",
+                    service_account: "sa",
                   }[kind];
                   return `${prefix}_00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
                 },
@@ -159,6 +162,7 @@ export async function createTenantReaderFixture({
     auth: adminAuth.auth,
     iamDriver,
     state,
+    session: (principal) => sessions.get(principal.id),
     get controller() {
       return controller;
     },

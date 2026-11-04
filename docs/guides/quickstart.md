@@ -11,13 +11,15 @@ cannot deploy Agents. A separate [Compose OCC with Kubernetes compute profile](d
 has fewer configured capabilities. To install OCC itself in a cluster you already operate,
 use [Kubernetes Setup](kubernetes-setup.md).
 
+For local OpenShell with native Git or Codex plugins, start with [Setup OCE on local k3d](deploy/local-setup.md). The instructions below use the profile without OpenShell.
+
 ## Before you start
 
 Run the commands below from the repository root on Linux or macOS. You need:
 
-- Docker Engine, k3d, kubectl, and Helm. Podman users should first
+- Docker Engine, k3d, kubectl, Helm, and jq. Podman users should first
   check the [local Kubernetes requirements](deploy/local-kubernetes-development.md#start-the-profile).
-- The Go version in `go.mod`, Node.js 24 or later, and the pnpm version pinned
+- The Go version in `go.mod`, Node.js 24.22.1 or later, and the pnpm version pinned
   in `package.json`.
 - About 20 GB of free container-engine storage for the first build. On macOS
   that space is inside the Podman or Docker virtual machine rather than on your
@@ -30,15 +32,15 @@ Run the commands below from the repository root on Linux or macOS. You need:
   see [development settings](../reference/settings/development.md#required-development-controller-environment).
 
 You do not need a model credential to install the platform. Have an OpenAI API
-key available when you continue to [deploy your first Agent](first-agent.md).
+key available when you continue to [deploy an Agent](#deploy-an-agent).
 
 ## Start the local stack
 
 By default, startup builds this checkout. To use published images, first
-[select the `latest` pair](#optional-use-matching-published-images).
+[select the published pair](#optional-use-matching-published-images).
 
 ```bash
-pnpm cli:build
+go build -trimpath -o bin/occ ./cmd/occ
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
@@ -60,11 +62,14 @@ sandbox on the node. If that check fails, follow
 
 ## Open the platform console
 
-Import the printed browser CA certificate into your browser's trusted CA store
-using your browser's own certificate settings, then open the printed HTTPS
-browser console URL. Only import the public `browser-ca.crt`; keep its private
-key and the entire state directory private. Remove the CA from your browser's
-trust store when you discard this installation.
+Trust the printed public `browser-ca.crt` on the computer running your browser,
+then open the printed HTTPS console URL. Startup generates a local CA; it does
+not install it in a trust store. Without that step, the browser can report
+`NET::ERR_CERT_AUTHORITY_INVALID` even when the stack is ready. Follow
+[local browser CA trust and verification](operate/troubleshooting.md#the-local-console-reports-a-certificate-error)
+for macOS instructions, certificate checks, and removal. The CA can vouch only
+for that installation's console and Agent hosts, and startup discards its
+private key. Keep the entire state directory private.
 
 Open the printed URL on the machine that ran `./bin/occ dev up`. Kubernetes-only
 mode publishes the console port on that machine's loopback, and the hostname
@@ -105,8 +110,36 @@ key from the file; do not pass the credential value as an argument or share it.
 
 Expect one Namespace named `default`. Wait for `STATUS` to become `ready` and
 note its server-assigned ID. This platform Namespace is separate from Kubernetes'
-built-in `default` namespace. Continue to [Deploy your first Agent](first-agent.md)
-to create an Agent and verify its model response.
+built-in `default` namespace.
+
+## Deploy an Agent
+
+Prepare the shared deployment guide's operator variables in Bash from this
+checkout. Keep `OCC_URL` and `OCC_SERVICE_KEY_FILE` from the authenticated check
+above. The launcher already configured this installation's private routing and
+tenant RoleBindings; keep those grants instead of applying the production
+examples with different release and ServiceAccount names.
+
+```bash
+set -euo pipefail
+export PATH="$(pwd)/bin:$PATH"
+LOCAL_STATE=${OCC_DEVELOPMENT_STATE_DIRECTORY:-$(node -p 'require("node:path").join(require("node:os").tmpdir(), "openclaw-development")')}
+export KUBECONFIG_FILE="$LOCAL_STATE/kubeconfig"
+export CONTEXT="k3d-$(jq -er .cluster "$LOCAL_STATE/state.json")"
+test "$(kubectl --kubeconfig "$KUBECONFIG_FILE" config current-context)" = "$CONTEXT"
+NAMESPACE_ID=$(occ namespace list --output json |
+  jq -er '[.[]|select(.name=="default" and .status=="ready")]|select(length==1)|first.id')
+export NAMESPACE_ID OCC_NAMESPACE="$NAMESPACE_ID"
+TENANT_NAMESPACE=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  get namespaces -l "openclaw.dev/namespace=$NAMESPACE_ID" -o json |
+  jq -er '.items|select(length==1)|first.metadata.name')
+export TENANT_NAMESPACE
+```
+
+Continue at [Prepare each Agent](deploy/production-agents.md#prepare-each-agent),
+select the **embedded OpenClaw** example, supply its model credential, and
+complete the deployment and model-response checks. Start at that section;
+do not repeat the production installation or Namespace RoleBinding steps.
 
 ## Clean up and stop
 
@@ -124,13 +157,13 @@ if you used a custom state directory or service-key location.
 
 ## Optional: use matching published images
 
-Follow [Use the latest published images](deploy/published-images.md) to pull both
-`latest` tags and select their matching source checkout. Keep its resolved image
+Follow [Use published controller and runtime images](deploy/published-images.md) to pull
+the `latest` or `stable` pair and select its matching source checkout. Keep its resolved image
 variables in the shell used for startup:
 
 ```bash
-export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the latest controller image first}"
-export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the latest runtime image first}"
+export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller image first}"
+export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the published runtime image first}"
 ```
 
 Return to [Start the local stack](#start-the-local-stack) in that checkout.
@@ -145,7 +178,8 @@ the stock local-path StorageClass supports the Harness-only claim.
 
 ## Open an Agent's native admin UI
 
-For a separate console-managed Agent, follow [local native admin setup](deploy/native-admin.md#local-development).
-It requires exact-Agent `administer` permission and the Agent's native access policy.
-The first-Agent helper disables native UI and refuses to reuse its Agent after
-outside Configuration edits.
+Follow [local native admin setup](deploy/native-admin.md#local-development). It
+requires exact-Agent `administer` permission and the Agent's native access
+policy. The first-Agent helper can opt in a new Agent when Local setup uses the
+Compose control plane with Kubernetes Compute and OpenShell; other profiles use
+a separate console-managed Agent.

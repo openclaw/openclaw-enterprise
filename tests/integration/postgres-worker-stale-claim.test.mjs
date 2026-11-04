@@ -6,14 +6,18 @@ import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
 
 // A TCP relay between one pool and PostgreSQL. `silence()` keeps every connection open but
 // forwards nothing, like a failover or partition that drops packets without a reset: queries
-// are sent and never answered. `reset()` closes every connection.
+// are sent and never answered. `hold()` still forwards queries, so PostgreSQL runs them, but
+// keeps their answers until `release()`, like a slow network or a busy worker host.
+// `reset()` closes every connection.
 async function startDatabaseRelay(url) {
   const target = new URL(url);
   const sockets = new Set();
   let silent = false;
+  let held;
   const server = createServer((client) => {
     const upstream = connect(Number(target.port || 5432), target.hostname);
     for (const [from, to] of [
@@ -22,9 +26,14 @@ async function startDatabaseRelay(url) {
     ]) {
       sockets.add(from);
       from.on("data", (chunk) => {
-        if (!silent) {
-          to.write(chunk);
+        if (silent) {
+          return;
         }
+        if (held !== undefined && from === upstream) {
+          held.push(() => to.write(chunk));
+          return;
+        }
+        to.write(chunk);
       });
       from.on("error", () => to.destroy());
       from.on("close", () => to.destroy());
@@ -38,6 +47,16 @@ async function startDatabaseRelay(url) {
     url: relayed.href,
     silence() {
       silent = true;
+    },
+    hold() {
+      held ??= [];
+    },
+    release() {
+      const writes = held ?? [];
+      held = undefined;
+      for (const write of writes) {
+        write();
+      }
     },
     async reset() {
       for (const socket of sockets) {
@@ -154,12 +173,10 @@ test(
     assert.equal(original.rows[0].state, "claimed");
     assert.equal(original.rows[0].attempt_count, 1);
 
-    await observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
-      [idempotencyKey, original.rows[0].claim_token],
-    );
+    await expireWorkLease(observerPool, {
+      key: idempotencyKey,
+      claimToken: original.rows[0].claim_token,
+    });
     const recoveryQueue = new PostgresWorkQueue(observerPool, {
       leaseDurationMs: 30_000,
       maxAttempts: 5,
@@ -390,6 +407,400 @@ test(
 );
 
 test(
+  "a worker whose lease renewal answers after the lease drops the claim before its Compute effect",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { createControllerWorker },
+      { createDevelopmentComputeDriver },
+      { PostgresPlatformState },
+      { PostgresWorkQueue },
+      { authorizedPrincipal, ensureInstallation },
+    ] = await Promise.all([
+      import("pg"),
+      import("../../apps/controller/src/worker.ts"),
+      import("../helpers/development.mjs"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+      import("../../packages/occ/src/state/postgres-work-queue.ts"),
+      import("../helpers/postgres-backend-state.mjs"),
+    ]);
+
+    const leaseDurationMs = 30_000;
+    const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
+    const workerPool = new Pool({ connectionString: databaseUrl, max: 4 });
+    const state = new PostgresPlatformState(observerPool);
+    const installation = await ensureInstallation(state, "worker-stale-claim");
+    const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
+    assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
+
+    const namespace = {
+      id: `ns_${randomUUID()}`,
+      name: `worker-late-renewal-${randomUUID()}`,
+      status: "provisioning",
+      createdAt: new Date().toISOString(),
+    };
+    const idempotencyKey = `namespace:${namespace.id}:reconcile:ready`;
+
+    // The worker's clock runs on: each renewal of the work's first attempt succeeds but
+    // answers 2.6 s after the lease it confirmed ran out, like a loaded host (finding 2137).
+    // Nothing really waits, so the database lease stays valid throughout.
+    const realNow = performance.now.bind(performance);
+    let skewMs = 0;
+    performance.now = () => realNow() + skewMs;
+    const heartbeat = PostgresWorkQueue.prototype.heartbeat;
+    let lateRenewals = 0;
+    PostgresWorkQueue.prototype.heartbeat = async function (claim) {
+      const renewed = await heartbeat.call(this, claim);
+      if (claim.idempotencyKey === idempotencyKey && claim.attemptCount === 1) {
+        lateRenewals += 1;
+        skewMs += leaseDurationMs + 2_558;
+      }
+      return renewed;
+    };
+    const warnings = [];
+    const onWarning = (warning) => warnings.push(warning);
+    process.on("warning", onWarning);
+    let worker;
+    context.after(async () => {
+      try {
+        await worker?.stop();
+      } finally {
+        PostgresWorkQueue.prototype.heartbeat = heartbeat;
+        delete performance.now;
+        process.off("warning", onWarning);
+        await observerPool.end();
+      }
+    });
+
+    const calls = [];
+    const events = [];
+    const developmentCompute = createDevelopmentComputeDriver();
+    worker = createControllerWorker({
+      pool: workerPool,
+      installationId: installation.id,
+      pollIntervalMs: 20,
+      leaseDurationMs,
+      maxAttempts: 5,
+      computeDriver: {
+        ...developmentCompute,
+        async ensureNamespace(candidate) {
+          calls.push(candidate.id);
+          return developmentCompute.ensureNamespace(candidate);
+        },
+      },
+      emit(event) {
+        events.push(event);
+      },
+    });
+
+    await state.transactWithQueue(async (unit, queue) => {
+      await unit.namespaces.createNamespace(namespace);
+      await queue.enqueue({
+        idempotencyKey,
+        namespaceId: namespace.id,
+        namespaceTarget: "ready",
+        actorId: actor.id,
+        availableAt: new Date(0),
+      });
+    });
+    await worker.start();
+
+    // On the old code the negative timer fired a tick later, after Compute had started.
+    await waitFor("the worker to act on the late renewal", async () =>
+      lateRenewals > 0 && (calls.length > 0 || events.some(({ event }) => event === "worker.error"))
+        ? true
+        : undefined,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    // No timer was armed with the negative remainder, and Compute never ran on the claim.
+    assert.deepEqual(
+      warnings
+        .filter(({ name }) => name === "TimeoutNegativeWarning")
+        .map(({ message }) => message),
+      [],
+    );
+    assert.deepEqual(calls, []);
+    assert.deepEqual(
+      events.find(({ event }) => event === "worker.error"),
+      {
+        event: "worker.error",
+        code: "CLAIM_LOST",
+        workId: idempotencyKey,
+        attempt: 1,
+        operation: "namespace.ensure",
+        cause: "CLAIM_RENEWAL_LATE",
+      },
+    );
+    const late = events.filter(({ event }) => event === "worker.claim-renewal-warning");
+    assert.equal(late.length, 1);
+    assert.deepEqual(
+      { ...late[0], durationMs: undefined },
+      {
+        event: "worker.claim-renewal-warning",
+        workId: idempotencyKey,
+        attempt: 1,
+        operation: "namespace.ensure",
+        code: "CLAIM_RENEWAL_LATE",
+        durationMs: undefined,
+      },
+    );
+    assert.ok(late[0].durationMs > leaseDurationMs, `durationMs ${late[0].durationMs}`);
+
+    // The claim stays with lease recovery; once it expires the work runs again and converges.
+    await expireWorkLease(observerPool, { key: idempotencyKey, state: "claimed" });
+    await waitFor("the recovered work to converge the Namespace", async () => {
+      const rows = await observerPool.query(
+        `SELECT namespaces.status, work.state, work.attempt_count
+         FROM occ.namespaces AS namespaces
+         JOIN occ.controller_work AS work ON work.namespace_id = namespaces.id
+         WHERE namespaces.id = $1 AND work.idempotency_key = $2`,
+        [namespace.id, idempotencyKey],
+      );
+      const current = rows.rows[0];
+      return current.status === "ready" && current.state === "succeeded" ? current : undefined;
+    });
+    assert.deepEqual(calls, [namespace.id]);
+  },
+);
+
+// A stale worker whose renewal PostgreSQL ran at once but whose answer is held on the wire
+// until another worker has recovered the expired claim and finished the work. `stage` picks
+// the held renewal: "initial" holds the renewal right before the Compute effect, "interval"
+// the first renewal sent while the effect runs.
+async function heldRenewalHandoff(context, stage) {
+  const [
+    { Pool },
+    { createControllerWorker, workerDatabasePoolOptions },
+    { currentComputeAbortSignal },
+    { createDevelopmentComputeDriver },
+    { PostgresPlatformState },
+    { PostgresWorkQueue },
+    { authorizedPrincipal, ensureInstallation },
+  ] = await Promise.all([
+    import("pg"),
+    import("../../apps/controller/src/worker.ts"),
+    import("../../apps/controller/src/drivers/compute/operation-context.ts"),
+    import("../helpers/development.mjs"),
+    import("../../packages/occ/src/state/postgres-state.ts"),
+    import("../../packages/occ/src/state/postgres-work-queue.ts"),
+    import("../helpers/postgres-backend-state.mjs"),
+  ]);
+
+  const leaseDurationMs = 1_500;
+  const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
+  const relay = await startDatabaseRelay(databaseUrl);
+  const stalePool = new Pool({
+    connectionString: relay.url,
+    max: 4,
+    ...workerDatabasePoolOptions(60_000),
+  });
+  const ownerPool = new Pool({ connectionString: databaseUrl, max: 4 });
+  const state = new PostgresPlatformState(observerPool);
+  const installation = await ensureInstallation(state, "worker-stale-claim");
+  const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
+  assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
+  const namespace = {
+    id: `ns_${randomUUID()}`,
+    name: `worker-held-renewal-${randomUUID()}`,
+    status: "provisioning",
+    createdAt: new Date().toISOString(),
+  };
+  const idempotencyKey = `namespace:${namespace.id}:reconcile:ready`;
+
+  // The namespace pass renews once before its effect without a timer, then again inside the
+  // effect's claim heartbeat; the "initial" stage holds that second renewal.
+  const heartbeat = PostgresWorkQueue.prototype.heartbeat;
+  let renewals = 0;
+  let effectEntered = false;
+  let heldAt;
+  PostgresWorkQueue.prototype.heartbeat = function (claim) {
+    if (claim.idempotencyKey === idempotencyKey && claim.attemptCount === 1) {
+      renewals += 1;
+      if (heldAt === undefined && (stage === "initial" ? renewals === 2 : effectEntered)) {
+        relay.hold();
+        heldAt = Date.now();
+      }
+    }
+    return heartbeat.call(this, claim);
+  };
+  const warnings = [];
+  const onWarning = (warning) => warnings.push(warning);
+  process.on("warning", onWarning);
+  const workers = [];
+  context.after(async () => {
+    try {
+      relay.release();
+      for (const worker of workers) {
+        await worker.stop();
+      }
+    } finally {
+      PostgresWorkQueue.prototype.heartbeat = heartbeat;
+      process.off("warning", onWarning);
+      await relay.reset();
+      await stalePool.end().catch(() => {});
+      await observerPool.end();
+    }
+  });
+
+  const calls = [];
+  const staleEvents = [];
+  let staleStoppedAt;
+  const developmentCompute = createDevelopmentComputeDriver();
+  const workerFor = (name, pool, events) =>
+    createControllerWorker({
+      pool,
+      installationId: installation.id,
+      pollIntervalMs: 20,
+      leaseDurationMs,
+      maxAttempts: 5,
+      computeDriver: {
+        ...developmentCompute,
+        async ensureNamespace(candidate) {
+          calls.push({ worker: name, at: Date.now() });
+          if (name === "stale" && stage === "interval") {
+            // Like the shipped Drivers, this effect runs until the claim-owned signal ends it.
+            const signal = currentComputeAbortSignal();
+            effectEntered = true;
+            await new Promise((resolve) => {
+              signal.addEventListener("abort", resolve, { once: true });
+            });
+            staleStoppedAt = Date.now();
+            throw signal.reason;
+          }
+          return developmentCompute.ensureNamespace(candidate);
+        },
+      },
+      emit(event) {
+        events?.push(event);
+      },
+    });
+
+  await state.transactWithQueue(async (unit, queue) => {
+    await unit.namespaces.createNamespace(namespace);
+    await queue.enqueue({
+      idempotencyKey,
+      namespaceId: namespace.id,
+      namespaceTarget: "ready",
+      actorId: actor.id,
+      availableAt: new Date(0),
+    });
+  });
+  const stale = workerFor("stale", stalePool, staleEvents);
+  workers.push(stale);
+  await stale.start();
+  await waitFor("the stale worker's held renewal", async () => heldAt);
+
+  // PostgreSQL ran the held renewal, so its lease runs out one lease after it; then a healthy
+  // worker recovers the claim and finishes the work while the answer is still held.
+  await waitFor(
+    "the held claim's lease to expire",
+    async () => {
+      const rows = await observerPool.query(
+        `SELECT lease_expires_at <= clock_timestamp() AS expired
+         FROM occ.controller_work WHERE idempotency_key = $1 AND state = 'claimed'`,
+        [idempotencyKey],
+      );
+      return rows.rows[0]?.expired === true ? true : undefined;
+    },
+    leaseDurationMs * 4,
+  );
+  const owner = workerFor("owner", ownerPool);
+  workers.push(owner);
+  await owner.start();
+  const finished = await waitFor("the new owner to converge the Namespace", async () => {
+    const rows = await observerPool.query(
+      `SELECT namespaces.status, work.state, work.attempt_count
+       FROM occ.namespaces AS namespaces
+       JOIN occ.controller_work AS work ON work.namespace_id = namespaces.id
+       WHERE namespaces.id = $1 AND work.idempotency_key = $2`,
+      [namespace.id, idempotencyKey],
+    );
+    const current = rows.rows[0];
+    return current.status === "ready" && current.state === "succeeded" ? current : undefined;
+  });
+  assert.equal(finished.attempt_count, 2);
+
+  // Only now does the stale worker get its successful, late answer.
+  relay.release();
+  const lost = await waitFor("the stale worker's claim-loss error", async () =>
+    staleEvents.find(({ event }) => event === "worker.error"),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    warnings.filter(({ name }) => name === "TimeoutNegativeWarning").map(({ message }) => message),
+    [],
+  );
+  const published = await observerPool.query(
+    `SELECT outcome FROM occ.audit_events
+     WHERE resource_id = $1 AND action = 'openclaw.namespaces.lifecycle.ensure'`,
+    [namespace.id],
+  );
+  assert.deepEqual(published.rows, [{ outcome: "success" }]);
+  return { calls, lost, staleEvents, staleStoppedAt, idempotencyKey, leaseDurationMs };
+}
+
+test(
+  "a stale worker whose held renewal succeeds after a takeover starts no Compute effect",
+  requiresPostgres,
+  async (context) => {
+    const { calls, lost, staleEvents, idempotencyKey, leaseDurationMs } = await heldRenewalHandoff(
+      context,
+      "initial",
+    );
+    assert.deepEqual(
+      calls.map(({ worker }) => worker),
+      ["owner"],
+    );
+    assert.deepEqual(lost, {
+      event: "worker.error",
+      code: "CLAIM_LOST",
+      workId: idempotencyKey,
+      attempt: 1,
+      operation: "namespace.ensure",
+      cause: "CLAIM_RENEWAL_LATE",
+    });
+    const late = staleEvents.filter(({ event }) => event === "worker.claim-renewal-warning");
+    assert.equal(late.length, 1);
+    assert.ok(late[0].durationMs > leaseDurationMs, `durationMs ${late[0].durationMs}`);
+  },
+);
+
+test(
+  "a stale worker whose held interval renewal succeeds after a takeover stopped its effect first",
+  requiresPostgres,
+  async (context) => {
+    const { calls, lost, staleEvents, staleStoppedAt, idempotencyKey } = await heldRenewalHandoff(
+      context,
+      "interval",
+    );
+    assert.deepEqual(
+      calls.map(({ worker }) => worker),
+      ["stale", "owner"],
+    );
+    const ownerStartedAt = calls[1].at;
+    assert.ok(staleStoppedAt !== undefined, "the stale effect must stop");
+    assert.ok(
+      staleStoppedAt <= ownerStartedAt,
+      `the stale effect stopped ${staleStoppedAt - ownerStartedAt} ms after the new owner started`,
+    );
+    assert.deepEqual(lost, {
+      event: "worker.error",
+      code: "CLAIM_LOST",
+      workId: idempotencyKey,
+      attempt: 1,
+      operation: "namespace.ensure",
+      cause: "CLAIM_LEASE_LAPSED",
+    });
+    // The answer came after the claim was already given up; it re-arms and logs nothing.
+    assert.equal(
+      staleEvents.filter(({ event }) => event === "worker.claim-renewal-warning").length,
+      0,
+    );
+  },
+);
+
+test(
   "a worker that loses its claim before committing plugin warnings cannot write them",
   requiresPostgres,
   async (context) => {
@@ -445,6 +856,7 @@ test(
       backendId: null,
       harnessAuth: { method: "runtime" },
       executionMode: "embedded",
+      gatewayManagedMode: true,
       servicePrincipalId: `service-agent-${randomUUID()}`,
       createdAt: new Date().toISOString(),
     };
@@ -460,12 +872,14 @@ test(
       configurationId: owner.configurationId,
       configurationKind: "agent",
       configurationGeneration: 1,
+      gatewayManagedMode: owner.gatewayManagedMode,
       harness: { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" },
       compute: {
         id: compute.id,
         implementation: compute.implementation,
       },
       plugins: codexPluginRevisionState(pluginId),
+      executionAdmission: { version: 2, mode: "unprotected" },
       harnessAuth: { method: "runtime" },
       servicePrincipalId: owner.servicePrincipalId,
       createdAt: new Date().toISOString(),
@@ -531,12 +945,10 @@ test(
     assert.equal(original.rows[0].state, "claimed");
     assert.equal(original.rows[0].attempt_count, 1);
 
-    await observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
-      [idempotencyKey, original.rows[0].claim_token],
-    );
+    await expireWorkLease(observerPool, {
+      key: idempotencyKey,
+      claimToken: original.rows[0].claim_token,
+    });
     const recoveryQueue = new PostgresWorkQueue(recoveryPool, {
       leaseDurationMs: 30_000,
       maxAttempts: 5,

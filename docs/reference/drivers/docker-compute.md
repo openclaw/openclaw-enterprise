@@ -1,4 +1,20 @@
+---
+kind: reference/driver/impl
+---
+
 # Docker Compute Driver
+
+**Contents**
+
+- [Overview](#overview)
+- [Lifecycle](#lifecycle)
+- [Configuration](#configuration)
+- [Limits](#limits)
+- [Troubleshooting](#troubleshooting)
+
+## Overview
+
+This implementation follows the [ComputeDriver contract](compute.md).
 
 `DockerComputeDriver` is the default Compute Driver for local control-plane
 development. Compose runs PostgreSQL, migrations, the initializer, the OCC API,
@@ -14,36 +30,157 @@ Use [Kubernetes](kubernetes-compute.md) to deploy Agents locally with OCC-manage
 credentials, or [SSH](ssh-compute.md) for embedded OpenClaw with operator-managed
 host credentials. Docker Compute cannot be selected for production.
 
-## Requirements
+## Lifecycle
 
-- Docker Engine with Docker Compose, or Podman with `podman-compose` and `yq` v4.
-- The full Compose development stack, not a process-local controller.
-- Existing production-equivalent runtime images:
-  `OCC_DOCKER_GATEWAY_IMAGE` and `OCC_DOCKER_AGENT_IMAGE`, or one shared
-  `OCC_DOCKER_RUNTIME_IMAGE` containing both runtime entrypoints.
-- Explicit `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` when the Compose bridge range
-  must be admitted as local development traffic.
-- The controller-only `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, which Compose sets
-  to `/app/.development/configurations` from the `occ_configuration_data` named
-  volume.
+### Namespace lifecycle
 
-`scripts/dev-up` is the supported Podman entry point. It auto-detects Podman
-without a `docker` alias, pins the standalone `podman-compose` provider, mounts
-the reported API socket through `compose.podman.yaml`, and preserves the
-driver's existing `/var/run/docker.sock` contract inside the worker. The
-Docker Compute worker disables SELinux process labeling because relabeling the
-host engine socket could disrupt the engine; the API, database, initializer,
-and migration services remain confined. The prior verified
-baseline is Podman client 6.1.0, server 5.7.1, and podman-compose 1.6.0. Prior
-Podman runtime proof covered control-plane startup, worker API preflight,
-authenticated Installation access, isolated Namespace networks, embedded and
-dedicated model responses, recovery after worker interruption, and exact test
-cleanup. That proof predates required harness bindings; current Agent admission
-prevents reaching those model and recovery scenarios. Interactive TUI execution
-remains unverified on Podman. `compose.logging.yaml` remains Docker-only because this Podman baseline
-does not provide the required Fluentd log driver.
+`ensureNamespace(namespace)` creates or verifies one Docker network for the
+exact Namespace. The network is labeled with the driver, Installation,
+Namespace, and ownership metadata. The method does not start a gateway or Agent
+workload.
 
-## Development configuration and persistence
+`deleteNamespace(namespace)` removes only driver-owned containers and the
+driver-owned network for that exact Namespace. It refuses to adopt or delete a
+foreign network with the same name but different ownership labels. If the network
+was removed externally, deletion still removes remaining owned containers and
+workspace volumes before reporting success.
+
+Each Namespace maps to one Docker network. Runtime containers for one
+Namespace join only that network; they do not join the control-plane management
+network or another Namespace network.
+
+### AgentRevision lifecycle
+
+`prepareRevision(revision)` validates the immutable Namespace, Agent, and `AgentRevision`,
+Harness identity, execution mode, and selected Compute implementation before it
+starts containers. The code implements the topologies below, but it rejects
+the model-authentication bindings required for a newly deployed Agent:
+
+- `openclaw` with `embedded` starts one Agent-owned OpenClaw gateway container.
+  That container also runs the embedded Harness and receives only that Agent's
+  model credential.
+- `codex` with `dedicated` starts one Agent-owned OpenClaw gateway container
+  and one Codex app-server container for that Agent revision. The gateway
+  connects to Codex through authenticated `APP_SERVER_URL` and `APP_SERVER_TOKEN`
+  transport. Only the Codex container receives the model credential.
+
+When recovery reuses a healthy Codex container, the driver reads its existing
+transport token after verifying exact ownership and supplies that token to the
+gateway. A surviving Codex container without a token fails closed. If Codex is
+recreated, the driver replaces a gateway whose token no longer matches; a healthy
+matching pair is reused.
+
+The driver uses the same runtime entrypoint contract as production. It does
+not build, download, or publish runtime images. Missing image references,
+unsupported Harness combinations, unavailable container-engine access, failed
+transport authentication, or unready containers fail closed.
+
+To upgrade OpenClaw, deploy the Agent with a different gateway image. As on
+Kubernetes, the gateway starts OpenClaw and its state migration with
+`OPENCLAW_NO_AUTO_UPDATE=1`: OpenClaw does not check for updates, send its
+installation count request, or install updates.
+
+Container image references must already resolve in the selected engine. The
+development Driver accepts tags as well as digests; production Kubernetes
+digest requirements do not imply that the local engine enforces immutable
+images.
+
+Both topologies keep one gateway container per Agent, so a new version
+replaces the active version's gateway. The Driver therefore declares
+[exclusive replacement](compute.md#production-revision-stages)
+(`requiresStoppedPredecessors`) for every version: the worker stops all earlier
+versions before preparing the new one, and stops a refused new version, so
+the Agent is unavailable until a later version deploys. Redeployment interrupts
+service and has no automatic rollback.
+
+`retireRevision(revision)` removes only the runtime with the same Agent revision
+ID. It preserves another Agent's containers and preserves a gateway still required by
+a replacement version for the same Agent.
+
+`stopRevision(revision)` removes the exact dedicated Agent container and a
+gateway only when it still serves that version. Embedded execution removes the
+combined gateway container. Repeating stop is safe; Docker stop does not retire
+the persisted AgentRevision or remove credentials outside the containers. The
+Driver retains the Agent-owned state and workspace volumes used for initial
+workspace setup across stop and version replacement. Without initial workspace
+inputs, writable container tmpfs remains ephemeral.
+
+For a stateful embedded Gateway, the Driver can recover after an unclean stop
+if it observed the old container's private Linux PID namespace while it ran.
+Docker Engine must report that the same container instance exited, and the
+replacement must use the same local state volume. OpenClaw checks every
+recorded holder against that namespace before releasing its locks. If the
+Driver lost its observation or the holders do not match, follow
+[operator recovery](../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+
+The Driver kills an observed embedded Gateway to record its exit. It stops
+every other container before removal: Docker sends SIGTERM and sends SIGKILL
+after 10 seconds. A Gateway that exits on SIGTERM releases its OpenClaw state
+lock, so its replacement needs no recovery. This includes a Gateway that the
+Driver did not observe, for example after a controller restart. If the stop
+fails, the Driver still removes the container and reports the stop failure.
+
+State on that volume outlives runtime image upgrades. Before OpenClaw starts,
+the gateway runs the same state migration as a
+[Kubernetes Gateway](kubernetes-compute/storage-and-credentials.md#gateway-storage):
+`openclaw doctor --fix --non-interactive` once, with the configuration
+read-only, when its shared state or an agent database uses an older schema. If a database is still
+older afterwards, the container logs `Gateway state migration failed` and exits
+without starting OpenClaw, and the deployment fails as an unready container.
+The Driver then removes the container, so Doctor's output survives only
+through the Docker logging address. A slow migration can also outlast the
+Driver's 120-second readiness budget; deploying again retries it.
+
+### Initial workspace storage
+
+When an Agent has [initial workspace contents](../agents.md#initial-contents-at-creation),
+the Driver creates two named volumes owned by its exact Namespace and Agent:
+one for native state at `/home/node/.openclaw` and one for workspace files. The
+same workspace volume is mounted at both `/home/node/.openclaw/workspace` and
+`/home/node/workspace`, so the native default and dedicated Harness directory
+refer to the same files. Initial setup accepts either path; other workspace
+locations and disabled native bootstrap are rejected.
+
+A separate setup container runs native initialization and writes the supplied
+files and completion marker before execution starts. Later startup checks the
+marker without replaying the original text. Missing initialized storage blocks
+startup. Native setup holds the OpenClaw state lock on the state volume.
+Preparation never stops a running setup container, because a killed setup
+leaves its lock. A setup still running after 120 seconds keeps the deployment
+pending within its convergence deadline. A failed Docker request while setup
+starts or during that wait fails that attempt; if setup is still running, the
+next attempt reports the deployment pending. Once setup exits, the next attempt
+removes the container and continues. Stop, container replacement, and
+redeployment retain both volumes; Agent or Namespace
+deletion removes them after the owned runtimes are removed.
+These Driver-created volumes are separate from Compose's control-plane volumes
+and are not removed by `compose down --volumes`.
+
+Agents without initial inputs retain the existing tmpfs storage behavior.
+[Workspace setup](../../flows/workspace-files.md) owns the initialization and
+retry contract. The Agent admission limitation above still applies to these
+Driver capabilities.
+
+## Configuration
+
+The [environment factory](../../../apps/controller/src/drivers/compute/docker/index.ts)
+reads these settings at process startup. Restart API and worker after changing
+them. Docker is the default development selection, not a bundled YAML selection.
+
+| Setting                      | Type   | Requirement | Value, default, and constraints                                            |
+| ---------------------------- | ------ | ----------- | -------------------------------------------------------------------------- |
+| `OCC_DOCKER_GATEWAY_IMAGE`   | string | Optional    | Gateway image; falls back to `OCC_DOCKER_RUNTIME_IMAGE`. One must be set.  |
+| `OCC_DOCKER_AGENT_IMAGE`     | string | Optional    | Codex image; falls back to `OCC_DOCKER_RUNTIME_IMAGE`. One must be set.    |
+| `OCC_DOCKER_RUNTIME_IMAGE`   | string | Optional    | Shared image containing both entrypoints; no default.                      |
+| `OCC_DOCKER_LOGGING_ADDRESS` | string | Optional    | Loopback Fluentd host and port, `1`–`65535`. Omission disables forwarding. |
+
+For example, with an image already loaded in the engine:
+
+```bash
+OCC_DOCKER_RUNTIME_IMAGE=oce-runtime:local scripts/dev-up
+```
+
+### Development configuration and persistence
 
 The [deployment guide](../../guides/deploy.md) owns the Compose startup
 procedure. [Settings](../settings.md) owns the environment-variable reference;
@@ -68,70 +205,23 @@ The cleanup command printed by `dev-up` keeps `occ_postgres_data`,
 `occ_configuration_data`, and the bootstrap-only `occ_bootstrap_data` volume.
 Adding `--volumes` deletes all three, including the initial service-key JSON.
 
-## Namespace lifecycle
+### Gateway authentication
 
-`ensureNamespace(namespace)` creates or verifies one Docker network for the
-exact Namespace. The network is labeled with the driver, Installation,
-Namespace, and ownership metadata. The method does not start a gateway or Agent
-workload.
-
-`deleteNamespace(namespace)` removes only driver-owned containers and the
-driver-owned network for that exact Namespace. It refuses to adopt or delete a
-foreign network with the same name but different ownership labels.
-
-Each Namespace maps to one Docker network. Runtime containers for one
-Namespace join only that network; they do not join the control-plane management
-network or another Namespace network.
-
-## AgentRevision lifecycle
-
-`prepareRevision(revision)` validates the immutable Namespace, Agent, revision,
-Harness identity, execution mode, and selected Compute implementation before it
-starts containers. The code implements the topologies below, but it rejects
-the model-authentication bindings required for a newly deployed Agent:
-
-- `openclaw` with `embedded` starts one Agent-owned OpenClaw gateway container.
-  That container also runs the embedded Harness and receives only that Agent's
-  model credential.
-- `codex` with `dedicated` starts one Agent-owned OpenClaw gateway container
-  and one exact-revision Codex app-server container. The gateway connects to
-  Codex through authenticated `APP_SERVER_URL` and `APP_SERVER_TOKEN`
-  transport. Only the Codex container receives the model credential.
-
-When recovery reuses a healthy Codex container, the driver reads its existing
-transport token after verifying exact ownership and supplies that token to the
-gateway. A surviving Codex container without a token fails closed. If Codex is
-recreated, the driver replaces a gateway whose token no longer matches; a healthy
-matching pair is reused.
-
-The driver uses the same runtime entrypoint contract as production. It does
-not build, download, or publish runtime images. Missing image references,
-unsupported Harness combinations, unavailable container-engine access, failed
-transport authentication, or unready containers fail closed.
-
-Container image references must already resolve in the selected engine. The
-development Driver accepts tags as well as digests; production Kubernetes
-digest requirements do not imply that the local engine enforces immutable
-images.
-
-`retireRevision(revision)` removes only the exact revision's owned runtime. It
-preserves another Agent's containers and preserves a gateway still required by
-a replacement revision for the same Agent.
-
-`stopRevision(revision)` removes the exact dedicated Agent container and a
-gateway only when it still serves that revision. Embedded execution removes the
-combined gateway container. Repeating stop is safe; Docker stop does not retire
-the persisted AgentRevision or remove credentials outside the containers. The
-Driver retains the Agent-owned state and workspace volumes used for initial
-workspace setup across stop and revision replacement. Without initial workspace
-inputs, writable container tmpfs remains ephemeral.
-
-## Gateway authentication
+The native listener must serve HTTP for readiness and private traffic.
+`gateway.tls.enabled` must be omitted or false; native TLS enablement is refused
+before backend work. External proxy TLS is independent of this listener setting.
+A `plugins.entries.codex.config.appServer.approvalPolicy` other than `never`,
+`on-request` or `on-failure` is refused the same way. So are listeners the
+published port cannot reach while the healthcheck on loopback passes: a
+`gateway.bind` other than `auto`, `lan` or `custom`, `custom` unless
+`gateway.customBindHost` is `0.0.0.0`, and any `gateway.tailscale.mode` but `off`.
 
 The container implementation renders `gateway.auth.mode: password` when native
 Configuration omits the mode. Explicit `password` and `trusted-proxy` are supported.
-Only supported authentication fields and modes are admitted. These rules do not
-remove the harness-authentication admission limit above.
+Only supported authentication fields and modes are admitted: deployment refuses
+another mode, such as `token` or `none`, or an unsupported field, such as
+`gateway.auth.token`, with `409` before it stops the running revision. These rules
+do not remove the harness-authentication admission limit above.
 
 With password mode, omitting `gateway.auth.password` selects the managed
 `OPENCLAW_GATEWAY_PASSWORD` reference. An explicit reference to that variable also
@@ -139,34 +229,58 @@ selects a managed password, including optional loopback access with trusted prox
 For either mode, a new container receives a new managed password; a reused healthy
 container keeps its value. Other explicit password settings are preserved and
 receive no Driver-generated password. Configuration API secret-reference rules
-still apply. Trusted proxy without a password reference receives no managed
+still apply: save and deployment refuse a password SecretRef that OpenClaw cannot
+read, such as one without a provider. Trusted proxy without a password reference receives no managed
 password. The dedicated Codex `APP_SERVER_TOKEN` remains a separate transport
 credential with its existing recovery checks.
 
-## Initial workspace storage
+## Limits
 
-When an Agent has [initial workspace contents](../agents.md#initial-contents-at-creation),
-the Driver creates two named volumes owned by its exact Namespace and Agent:
-one for native state at `/home/node/.openclaw` and one for workspace files. The
-same workspace volume is mounted at both `/home/node/.openclaw/workspace` and
-`/home/node/workspace`, so the native default and dedicated Harness directory
-refer to the same files. Initial setup accepts either path; other workspace
-locations and disabled native bootstrap are rejected.
+### Requirements
 
-A separate setup container runs native initialization and writes the supplied
-files and completion marker before execution starts. Later startup checks the
-marker without replaying the original text. Missing initialized storage blocks
-startup. Stop, container replacement, and redeployment retain both volumes;
-Agent or Namespace deletion removes them after the owned runtimes are removed.
-These Driver-created volumes are separate from Compose's control-plane volumes
-and are not removed by `compose down --volumes`.
+- Docker Engine with Docker Compose, or Podman with `podman-compose` and `yq` v4.
+- The full Compose development stack, not a process-local controller.
+- Existing production-equivalent runtime images:
+  `OCC_DOCKER_GATEWAY_IMAGE` and `OCC_DOCKER_AGENT_IMAGE`, or one shared
+  `OCC_DOCKER_RUNTIME_IMAGE` containing both runtime entrypoints.
+- Explicit `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` when the Compose bridge range
+  must be admitted as local development traffic.
+- The controller-only `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, which Compose sets
+  to `/app/.development/configurations` from the `occ_configuration_data` named
+  volume.
 
-Agents without initial inputs retain the existing tmpfs storage behavior.
-[Workspace setup](../../flows/workspace-files.md) owns the initialization and
-retry contract. The Agent admission limitation above still applies to these
-Driver capabilities.
+`scripts/dev-up` is the supported Podman entry point. It auto-detects Podman
+without a `docker` alias, requires and pins the standalone `podman-compose`
+provider, and `occ dev down` stops the stack with that same provider. It mounts
+the reported API socket through `compose.podman.yaml`, and preserves the
+driver's existing `/var/run/docker.sock` contract inside the worker. The
+Docker Compute worker disables SELinux process labeling because relabeling the
+host engine socket could disrupt the engine; the API, database, initializer,
+and migration services remain confined. Rootful Podman on Linux must expose its
+API socket (for example, `systemctl enable --now podman.socket`); the Compose
+provider reaches Podman through the `DOCKER_HOST` endpoint startup pins. The prior verified
+baseline is Podman client 6.1.0, server 5.7.1, and podman-compose 1.6.0. Prior
+Podman runtime proof covered control-plane startup, worker API preflight,
+authenticated Installation access, isolated Namespace networks, embedded and
+dedicated model responses, recovery after worker interruption, and exact test
+cleanup. That proof predates required harness bindings; current Agent admission
+prevents reaching those model and recovery scenarios. Interactive TUI execution
+remains unverified on Podman. `compose.logging.yaml` remains Docker-only because this Podman baseline
+does not provide the required Fluentd log driver.
 
-## Credential and container-engine boundaries
+Engine requests have a 10-second deadline and observe the current Compute
+cancellation signal. If the connection closes before the response body is
+complete, the operation fails rather than staying pending. The Driver does
+not automatically retry an interrupted request; an already-sent engine
+operation may still have taken effect.
+
+Engine response bodies have a 4 MiB budget. A larger declared content length
+is rejected before the body is read, and a response without that header is
+stopped when its received bytes cross the same limit. This fixed development
+boundary applies to all shared Driver requests, including image inspection and
+resource lists; unusually large legitimate metadata fails explicitly.
+
+### Credential and container-engine boundaries
 
 Only the worker container receives Docker-compatible engine access. The OCC API,
 PostgreSQL, the migration job, gateway containers, and Codex containers do
@@ -188,28 +302,11 @@ personal OpenClaw/Codex homes, SSH-agent sockets, cloud credentials, or
 controller credentials into workload containers.
 
 The driver detects Podman's Docker-compatible API during preflight. Docker
-keeps UID/GID-owned `0700` tmpfs mount options. Podman receives the same bounded
-`1Gi` home and `64Mi` temporary filesystems using its supported mount options;
-the non-root runtime creates its `.openclaw` and workspace directories as
+keeps UID/GID-owned `0700` tmpfs mount options. Podman receives the same size
+limits: `1Gi` for the home and `64Mi` for temporary filesystems. It uses its
+supported mount options. The non-root runtime creates its `.openclaw` and workspace directories as
 `0700` before writing configuration or state. For Agents with initial inputs,
 the setup container prepares ownership and permissions on the named volumes.
-
-## Inspect owned resources
-
-Owned resources can be observed through the selected engine using the same
-driver labels:
-
-```bash
-docker network ls --filter label=org.openclaw.enterprise.compute-driver=docker
-docker ps --filter label=org.openclaw.enterprise.compute-driver=docker
-docker volume ls --filter label=org.openclaw.enterprise.compute-driver=docker
-```
-
-Replace `docker` with `podman` for a Podman-backed development stack.
-
-After deleting a Namespace, its matching network, containers, and Agent workspace
-volumes should be gone while other Namespaces remain. Agent deletion removes only
-that Agent's runtimes and volumes.
 
 ## Troubleshooting
 
@@ -232,7 +329,24 @@ that Agent's runtimes and volumes.
 - **Namespace cleanup leaves resources:** inspect ownership labels before
   deleting anything manually. The driver removes only exact owned resources.
 
-## Related
+### Inspect owned resources
+
+Owned resources can be observed through the selected engine using the same
+driver labels:
+
+```bash
+docker network ls --filter label=org.openclaw.enterprise.compute-driver=docker
+docker ps --filter label=org.openclaw.enterprise.compute-driver=docker
+docker volume ls --filter label=org.openclaw.enterprise.compute-driver=docker
+```
+
+Replace `docker` with `podman` for a Podman-backed development stack.
+
+After deleting a Namespace, its matching network, containers, and Agent workspace
+volumes should be gone while other Namespaces remain. Agent deletion removes only
+that Agent's runtimes and volumes.
+
+### Related
 
 - [Development and production deployment](../../guides/deploy.md)
 

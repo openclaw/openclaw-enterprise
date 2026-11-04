@@ -38,3 +38,10 @@ controls, workload IAM, or credential isolation. Consult
 for the current boundaries and
 [OpenShell troubleshooting](../../reference/drivers/openshell-sandbox.md#troubleshooting)
 for compatibility and admission failures.
+
+## Per-Agent network additions
+
+With a supporting Driver, operators can delegate bounded network additions for
+one Agent and enable user editing separately. Use the [Policy denials workflow](agent-sandbox-policy.md)
+to inspect observations, review a grant, and confirm application. See the
+[policy contract](../../reference/sandbox-policies.md) for authority and limits.

@@ -8,7 +8,13 @@ import {
   type Preset,
 } from "@openclaw-enterprise/contracts";
 import type { BundledPresetVersion } from "@openclaw-enterprise/occ";
-import { closed, type ConfigurationRecord, nonempty, object } from "./startup-file.ts";
+import {
+  closed,
+  type ConfigurationRecord,
+  nonempty,
+  object,
+  withoutByteOrderMark,
+} from "./startup-file.ts";
 
 /** A bundled default skipped because a `presets.files` entry uses its name. */
 export interface ShadowedDefaultPreset {
@@ -50,7 +56,7 @@ async function loadPresetDefinition(
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(contents);
+    parsed = JSON.parse(withoutByteOrderMark(contents));
   } catch {
     throw new Error(`Preset file ${path} must contain valid JSON.`);
   }
@@ -122,11 +128,11 @@ export async function loadInstallationPresets(
   }
   const includeDefaults = presets.includeDefaults === true;
   const bundledPresetVersions = await loadBundledPresetVersions();
-  const filePresets: {
-    readonly path: string;
-    readonly preset: Pick<Preset, "name" | "template">;
-  }[] = [];
-  const filePresetPaths = new Map<string, string>();
+  // File order becomes default order; retain the first file for duplicate diagnostics.
+  const filePresets = new Map<
+    string,
+    { readonly path: string; readonly preset: Pick<Preset, "name" | "template"> }
+  >();
   for (const entry of (presets.files ?? []) as readonly string[]) {
     const trimmed = entry.trim();
     if (trimmed.length === 0) {
@@ -146,14 +152,13 @@ export async function loadInstallationPresets(
         cause: error,
       });
     }
-    const earlier = filePresetPaths.get(preset.name);
+    const earlier = filePresets.get(preset.name);
     if (earlier !== undefined) {
       throw new PresetFileError(
-        `Default Preset ${preset.name} is configured more than once: ${earlier} and ${path}.`,
+        `Default Preset ${preset.name} is configured more than once: ${earlier.path} and ${path}.`,
       );
     }
-    filePresetPaths.set(preset.name, path);
-    filePresets.push({ path, preset });
+    filePresets.set(preset.name, { path, preset });
   }
   // An operator file named like a bundled default replaces that default: a later release can
   // bundle a name an operator already uses (default-codex), and startup must not stop for it.
@@ -164,7 +169,7 @@ export async function loadInstallationPresets(
       if (!version.current) {
         continue;
       }
-      const shadow = filePresets.find(({ preset }) => preset.name === version.name);
+      const shadow = filePresets.get(version.name);
       if (shadow !== undefined) {
         shadowedDefaultPresets.push(
           Object.freeze({ presetName: version.name, presetFile: shadow.path }),
@@ -174,6 +179,6 @@ export async function loadInstallationPresets(
       defaultPresets.push(Object.freeze({ name: version.name, template: version.template }));
     }
   }
-  defaultPresets.push(...filePresets.map(({ preset }) => preset));
+  defaultPresets.push(...Array.from(filePresets.values(), ({ preset }) => preset));
   return { includeDefaults, bundledPresetVersions, defaultPresets, shadowedDefaultPresets };
 }

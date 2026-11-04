@@ -6,11 +6,20 @@ import {
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  CallerStateDeniedError,
   DeletionRetryOwnedError,
   ChannelDirectoryError,
   ChannelCredentialError,
+  ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
+  ConfigurationSizeError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceConfigError,
+  CredentialSourceDriverError,
+  CredentialSourceRegistrationConfigError,
+  CredentialTokenUnsettledError,
+  CredentialWithdrawalInProgressError,
+  CredentialWithdrawalNotFoundError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
   IAMAccessBindingRoleError,
@@ -26,19 +35,34 @@ import {
   NativeWorkerSupportError,
   PluginPolicyValidationError,
   PostgresCommitOutcomeUnknownError,
+  QualifiedAuthorizationDeniedError,
   ResourceConflictError,
   ResourceStateConflictError,
+  RetryLaterError,
+  ProtectedExecutionNetworkPolicyError,
+  RepositoryBindingSelectionError,
+  RepositoryGitProfileUnsupportedError,
+  RepositoryGitSenderUnqualifiedError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
   SecretBindingValidationError,
+  SecretDriverOwnershipError,
   SecretValueError,
+  ServiceAccountDriverNotConfiguredError,
   type RuntimeLogsErrorCode,
 } from "@openclaw-enterprise/occ";
 import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
 } from "../drivers/configuration/kubernetes/index.ts";
+import { loggedErrorText, resemblesCredential } from "../logging.ts";
+import {
+  agentPrincipalDenialMessage,
+  callerDenialMessage,
+  GENERIC_DENIAL,
+  type DeniedRequest,
+} from "./caller-denial.ts";
 import {
   collapseScalarUnions,
   jsonPointer,
@@ -51,6 +75,11 @@ export class RequestFailure extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: readonly ErrorDetail[];
+  remainingResources?: readonly {
+    kind: string;
+    count: number;
+    ids: readonly string[];
+  }[];
 
   constructor(status: number, code: string, message: string, details?: readonly ErrorDetail[]) {
     super(message);
@@ -74,6 +103,22 @@ export function failure(
 
 export function dependencyUnavailable(): RequestFailure {
   return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+}
+
+/**
+ * A workspace file read or write on an Agent with no active version: a lifecycle state the caller
+ * can change, not an outage (finding D768). `stopped` is an Agent that is stopped or was never
+ * deployed; otherwise its deployment is still activating. Raised only after the Agent grant, for
+ * the Agent ID the request named.
+ */
+export function workspaceWithoutRunningVersion(agentId: string, stopped: boolean): RequestFailure {
+  return failure(
+    409,
+    "RESOURCE_CONFLICT",
+    stopped
+      ? `Agent ${agentId} has no running version, so its workspace files cannot be read or written. Deploy it, then try again.`
+      : `Agent ${agentId} has no running version yet: its deployment is still starting, so its workspace files cannot be read or written. Try again when the deployment finishes.`,
+  );
 }
 
 /**
@@ -104,7 +149,9 @@ function cappedPointer(segments: readonly string[]): string {
     }
     if (path === "") {
       path = "/";
-      for (const piece of segment.match(/~[01]|[^]/gu) ?? []) {
+      // At most 511 characters of the first segment fit, so only its first 1,024 are split
+      // into pieces: a multi-megabyte key costs no more than a short one (finding 1131).
+      for (const piece of segment.slice(0, 1024).match(/~[01]|[^]/gu) ?? []) {
         if (path.length + piece.length > 512) {
           break;
         }
@@ -136,6 +183,9 @@ export function canonicalFailure(reply: FastifyReply, error: RequestFailure): vo
       // Some messages come from Drivers or name submitted values; none may break the cap.
       message: capped(error.message),
       ...(error.details === undefined ? {} : { details: error.details }),
+      ...(error.remainingResources === undefined
+        ? {}
+        : { remainingResources: error.remainingResources }),
     },
     meta: { requestId: reply.request.id },
   });
@@ -193,6 +243,8 @@ const DETAIL_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = Object.fr
   INVALID_VALUE: "has an unsupported value",
   TOO_LONG: "is too long",
   TOO_DEEP: "is nested too deeply",
+  INVALID_RANGE: "has an invalid range",
+  OUTSIDE_CEILING: "exceeds the delegation ceiling",
 });
 
 // A path that lost segments to the cap names an ancestor of the offending field, which may
@@ -205,6 +257,8 @@ const SHORTENED_PATH_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = O
   INVALID_VALUE: "contains a field that has an unsupported value",
   TOO_LONG: "contains a field that is too long",
   TOO_DEEP: "contains a field that is nested too deeply",
+  INVALID_RANGE: "contains an invalid range",
+  OUTSIDE_CEILING: "contains a grant exceeding the delegation ceiling",
 });
 
 // The error contract caps messages at 256 characters.
@@ -395,8 +449,8 @@ export function unstorableTextFailure(
 }
 
 /**
- * Names each remaining kind and as many of its resource IDs as fit the 256-character
- * message contract; a kind whose IDs do not all fit says how many are left.
+ * Names each remaining kind and as many of its readable resource IDs as fit the 256-character
+ * message contract; a kind with more resources than it names says how many are left.
  */
 function namespaceNotEmptyMessage(error: NamespaceNotEmptyError): string {
   const prefix = "The requested Namespace is not empty.";
@@ -407,14 +461,15 @@ function namespaceNotEmptyMessage(error: NamespaceNotEmptyError): string {
   const render = (): string => {
     const parts = error.contents.map((kind) => {
       const ids = error.ids[kind] ?? [];
+      const total = error.counts[kind] ?? 0;
       const count = shown.get(kind) ?? 0;
-      if (ids.length === 0) {
+      if (total === 0) {
         return kind;
       }
       if (count === 0) {
-        return `${kind} (${ids.length})`;
+        return `${kind} (${total})`;
       }
-      const more = ids.length - count;
+      const more = total - count;
       return `${kind} (${ids.slice(0, count).join(", ")}${more === 0 ? "" : ` and ${more} more`})`;
     });
     return `${prefix} It still contains: ${parts.join(", ")}.`;
@@ -455,6 +510,81 @@ export function isDependencyUnavailable(error: unknown): boolean {
   );
 }
 
+const LOGGED_ERROR_CLASS = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+const LOGGED_ERROR_CODE = /^[A-Za-z0-9_.-]{1,64}$/;
+const MAX_LOGGED_CAUSES = 4;
+
+/** The error's class: its constructor's name, else its `name`, when either is an identifier. */
+function loggedErrorClass(error: object): string | undefined {
+  return [error.constructor?.name, (error as { readonly name?: unknown }).name].find(
+    (candidate): candidate is string =>
+      typeof candidate === "string" &&
+      candidate !== "Error" &&
+      candidate !== "Object" &&
+      LOGGED_ERROR_CLASS.test(candidate) &&
+      !resemblesCredential(candidate),
+  );
+}
+
+/** An HTTP status, SQLSTATE or transport code (`ECONNRESET`), never free text. */
+function loggedErrorCode(error: object): string | number | undefined {
+  const code = (error as { readonly code?: unknown }).code;
+  if (typeof code === "number") {
+    return Number.isSafeInteger(code) ? code : undefined;
+  }
+  return typeof code === "string" && LOGGED_ERROR_CODE.test(code) && !resemblesCredential(code)
+    ? code
+    : undefined;
+}
+
+/**
+ * Log fields naming why a request answered `503 DEPENDENCY_UNAVAILABLE`. The response keeps its
+ * text, so callers learn nothing more; the operator finds the cause by request ID. The record
+ * keeps the error's class and message, and, for up to four errors on its `cause` chain, only
+ * class and code: a cause can be a client error whose message, body or request echoes private
+ * data. Most DependencyUnavailableError messages built in this repository are fixed text or name
+ * only identifiers, an HTTP method or status. Some carry bounded upstream text (OpenShell
+ * CreateSandbox detail, a runtime failure code), and a driver package can raise any message.
+ * `loggedErrorText` withholds a message that resembles a credential, and a class or code that
+ * resembles one is dropped; both are pattern checks, not sanitizers.
+ */
+export function dependencyUnavailableLogFields(error: Error): {
+  readonly errorClass?: string;
+  readonly message?: string;
+  readonly causes?: readonly { readonly errorClass?: string; readonly code?: string | number }[];
+} {
+  const causes: { errorClass?: string; code?: string | number }[] = [];
+  const seen = new Set<unknown>([error]);
+  let cause: unknown = error.cause;
+  while (
+    causes.length < MAX_LOGGED_CAUSES &&
+    cause !== null &&
+    typeof cause === "object" &&
+    !seen.has(cause)
+  ) {
+    seen.add(cause);
+    const errorClass = loggedErrorClass(cause);
+    const code = loggedErrorCode(cause);
+    causes.push({
+      ...(errorClass === undefined ? {} : { errorClass }),
+      ...(code === undefined ? {} : { code }),
+    });
+    cause = (cause as { readonly cause?: unknown }).cause;
+  }
+  const errorClass = loggedErrorClass(error);
+  const message = typeof error.message === "string" ? loggedErrorText(error.message) : undefined;
+  return {
+    ...(errorClass === undefined ? {} : { errorClass }),
+    ...(message === undefined ? {} : { message }),
+    ...(causes.length === 0 ? {} : { causes }),
+  };
+}
+
+// Names the requested source and which versions have each source (finding D762). The source is
+// one the contract accepts, so the text never echoes free input.
+const runtimeLogSourceUnavailable = (source: string) =>
+  `This Agent version has no ${source} log source. Every version has gateway; only a Dedicated Agent has agent, and only a version deployed with a Sandbox Driver has sandbox.`;
+
 const RUNTIME_LOG_FAILURES: Readonly<
   Record<RuntimeLogsErrorCode, { readonly status: number; readonly message: string }>
 > = Object.freeze({
@@ -468,7 +598,7 @@ const RUNTIME_LOG_FAILURES: Readonly<
   },
   RUNTIME_LOGS_SOURCE_UNAVAILABLE: {
     status: 400,
-    message: "This Agent version has no such runtime log source.",
+    message: runtimeLogSourceUnavailable("such"),
   },
   RUNTIME_LOGS_RATE_LIMITED: {
     status: 429,
@@ -498,13 +628,79 @@ const RUNTIME_LOG_FAILURES: Readonly<
   },
 });
 
-export function requestFailure(error: unknown): RequestFailure {
+type DiscoveryFailureReason =
+  ChannelDirectoryError["reason"] | ModelDiscoveryError["reason"] | PluginDiscoveryError["reason"];
+
+const DISCOVERY_FAILURE_STATUS: Record<DiscoveryFailureReason, number> = {
+  credentials_rejected: 400,
+  missing_scope: 400,
+  rate_limited: 429,
+  invalid_response: 503,
+  unavailable: 503,
+};
+
+const CHANNEL_DIRECTORY_MESSAGES: Record<ChannelDirectoryError["reason"], string> = {
+  credentials_rejected:
+    "The channel provider rejected the selected credential. Check the Secret and retry.",
+  missing_scope:
+    "The channel credential lacks directory permissions. Update its provider scopes and retry.",
+  rate_limited: "The channel provider rate-limited directory lookup. Wait and retry.",
+  invalid_response:
+    "The channel provider returned an invalid directory response. Retry or enter an exact ID.",
+  unavailable: "Channel directory lookup is unavailable. Retry or enter an exact ID.",
+};
+
+const MODEL_DISCOVERY_MESSAGES: Record<ModelDiscoveryError["reason"], string> = {
+  credentials_rejected:
+    "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
+  rate_limited:
+    "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
+  invalid_response:
+    "The provider returned an invalid model list. Retry or enter a model ID manually.",
+  unavailable: "The provider model service is unavailable. Retry or enter a model ID manually.",
+};
+
+const PLUGIN_DISCOVERY_MESSAGES: Record<PluginDiscoveryError["reason"], string> = {
+  credentials_rejected:
+    "The plugin service rejected this credential. Check its permission to list plugins, then retry.",
+  rate_limited: "The plugin service rate-limited discovery. Wait and retry.",
+  invalid_response: "The plugin service returned an invalid response. Retry discovery.",
+  unavailable: "The plugin service is unavailable. Retry discovery.",
+};
+
+function discoveryFailure<Reason extends DiscoveryFailureReason>(
+  prefix: string,
+  reason: Reason,
+  messages: Record<Reason, string>,
+): RequestFailure | undefined {
+  // Only recognized reasons may select a public message or contribute to its code.
+  if (typeof reason !== "string" || !Object.hasOwn(messages, reason)) {
+    return undefined;
+  }
+  return failure(
+    DISCOVERY_FAILURE_STATUS[reason],
+    `${prefix}_${reason.toUpperCase()}`,
+    messages[reason],
+  );
+}
+
+/**
+ * Maps an error to its client answer. `denied` describes the request for a caller's denial;
+ * without it the denial names no resource ID.
+ */
+export function requestFailure(error: unknown, denied?: DeniedRequest): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
   }
   if (error instanceof RuntimeLogsError) {
     const mapped = RUNTIME_LOG_FAILURES[error.code];
-    return failure(mapped.status, error.code, mapped.message);
+    return failure(
+      mapped.status,
+      error.code,
+      error.code === "RUNTIME_LOGS_SOURCE_UNAVAILABLE"
+        ? runtimeLogSourceUnavailable(error.source ?? "such")
+        : mapped.message,
+    );
   }
   if (error instanceof RuntimeCredentialsForbiddenByClusterError) {
     return failure(
@@ -531,104 +727,32 @@ export function requestFailure(error: unknown): RequestFailure {
     );
   }
   if (error instanceof ChannelDirectoryError) {
-    switch (error.reason) {
-      case "credentials_rejected":
-        return failure(
-          400,
-          "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED",
-          "The channel provider rejected the selected credential. Check the Secret and retry.",
-        );
-      case "missing_scope":
-        return failure(
-          400,
-          "CHANNEL_DIRECTORY_MISSING_SCOPE",
-          "The channel credential lacks directory permissions. Update its provider scopes and retry.",
-        );
-      case "rate_limited":
-        return failure(
-          429,
-          "CHANNEL_DIRECTORY_RATE_LIMITED",
-          "The channel provider rate-limited directory lookup. Wait and retry.",
-        );
-      case "invalid_response":
-        return failure(
-          503,
-          "CHANNEL_DIRECTORY_INVALID_RESPONSE",
-          "The channel provider returned an invalid directory response. Retry or enter an exact ID.",
-        );
-      case "unavailable":
-        return failure(
-          503,
-          "CHANNEL_DIRECTORY_UNAVAILABLE",
-          "Channel directory lookup is unavailable. Retry or enter an exact ID.",
-        );
+    const mapped = discoveryFailure("CHANNEL_DIRECTORY", error.reason, CHANNEL_DIRECTORY_MESSAGES);
+    if (mapped !== undefined) {
+      return mapped;
     }
   }
   if (error instanceof ModelDiscoveryError) {
-    switch (error.reason) {
-      case "credentials_rejected":
-        return failure(
-          400,
-          "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
-          "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
-        );
-      case "rate_limited":
-        return failure(
-          429,
-          "MODEL_DISCOVERY_RATE_LIMITED",
-          "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
-        );
-      case "invalid_response":
-        return failure(
-          503,
-          "MODEL_DISCOVERY_INVALID_RESPONSE",
-          "The provider returned an invalid model list. Retry or enter a model ID manually.",
-        );
-      case "unavailable":
-        return failure(
-          503,
-          "MODEL_DISCOVERY_UNAVAILABLE",
-          "The provider model service is unavailable. Retry or enter a model ID manually.",
-        );
+    const mapped = discoveryFailure("MODEL_DISCOVERY", error.reason, MODEL_DISCOVERY_MESSAGES);
+    if (mapped !== undefined) {
+      return mapped;
     }
   }
   if (error instanceof DeviceAuthorizationStartError) {
-    // Device login starts at auth.openai.com from the API Pods, which the chart's default
-    // network policy does not allow, so name that cause when no connection was made.
+    // The Refresh Driver starts Codex login at auth.openai.com from the API Pods.
+    // Name that egress boundary only when its issuer request could not get a response.
     return failure(
       503,
       "DEPENDENCY_UNAVAILABLE",
       error.reason === "unreachable"
-        ? "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs or the cluster's egress policy), then try again."
-        : "The sign-in service could not start device login. Try again.",
+        ? "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again."
+        : "Device login could not start. Try again.",
     );
   }
   if (error instanceof PluginDiscoveryError) {
-    switch (error.reason) {
-      case "credentials_rejected":
-        return failure(
-          400,
-          "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED",
-          "The plugin service rejected this credential. Check its permission to list plugins, then retry.",
-        );
-      case "rate_limited":
-        return failure(
-          429,
-          "PLUGIN_DISCOVERY_RATE_LIMITED",
-          "The plugin service rate-limited discovery. Wait and retry.",
-        );
-      case "invalid_response":
-        return failure(
-          503,
-          "PLUGIN_DISCOVERY_INVALID_RESPONSE",
-          "The plugin service returned an invalid response. Retry discovery.",
-        );
-      case "unavailable":
-        return failure(
-          503,
-          "PLUGIN_DISCOVERY_UNAVAILABLE",
-          "The plugin service is unavailable. Retry discovery.",
-        );
+    const mapped = discoveryFailure("PLUGIN_DISCOVERY", error.reason, PLUGIN_DISCOVERY_MESSAGES);
+    if (mapped !== undefined) {
+      return mapped;
     }
   }
   if (error instanceof IAMAccessBindingRoleError) {
@@ -644,8 +768,33 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof IAMRoleInUseError) {
     return failure(409, "RESOURCE_CONFLICT", error.message);
   }
+  if (
+    error instanceof CredentialSourceConfigError ||
+    error instanceof CredentialSourceRegistrationConfigError
+  ) {
+    // OCC's catalog check names a submitted field, which can be any key: cap the message and
+    // escape the detail path. A registration-time refusal names a catalog field the same way.
+    return failure(
+      400,
+      "INVALID_REQUEST",
+      capped(error.message),
+      pointerDetail(`/${error.group}`, error.field),
+    );
+  }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
+  }
+  if (error instanceof CredentialTokenUnsettledError) {
+    // Names only the retry time; raised only after delete on the source and its lookup.
+    return failure(409, "CREDENTIAL_TOKEN_UNSETTLED", error.message);
+  }
+  if (error instanceof CredentialWithdrawalInProgressError) {
+    // A fixed message naming the way out; raised only after delete on the source and its lookup.
+    return failure(409, "CREDENTIAL_WITHDRAWAL_IN_PROGRESS", error.message);
+  }
+  if (error instanceof ServiceAccountDriverNotConfiguredError) {
+    // A fixed message naming the fix; raised only after the account's grant and lookup.
+    return failure(409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", error.message);
   }
   if (error instanceof SecretValueError) {
     return failure(400, "INVALID_REQUEST", error.message, [{ path: "/value", code: error.code }]);
@@ -656,6 +805,10 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof AgentCredentialSourceBindingError) {
     // Either field can break the rule (an update may drop the source from the list), so
     // the message names it and no detail points at one field.
+    return failure(400, "INVALID_REQUEST", error.message);
+  }
+  if (error instanceof RepositoryBindingSelectionError) {
+    // Either repositoryBindings or repositoryAccess can carry the selections, so no detail.
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof SecretBindingValidationError) {
@@ -694,6 +847,10 @@ export function requestFailure(error: unknown): RequestFailure {
     // messages that name submitted object keys.
     return failure(400, "INVALID_REQUEST", capped(error.message));
   }
+  if (error instanceof ConfigurationSizeError) {
+    // The message names the Driver's limit and what to change, never the content.
+    return failure(400, "INVALID_REQUEST", capped(error.message));
+  }
   if (error instanceof ConfigurationValidationError) {
     return failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.");
   }
@@ -704,7 +861,13 @@ export function requestFailure(error: unknown): RequestFailure {
     return failure(409, "NAMESPACE_NOT_READY", "The requested Namespace is not ready.");
   }
   if (error instanceof NamespaceNotEmptyError) {
-    return failure(409, "NAMESPACE_NOT_EMPTY", namespaceNotEmptyMessage(error));
+    const result = failure(409, "NAMESPACE_NOT_EMPTY", namespaceNotEmptyMessage(error));
+    result.remainingResources = error.contents.slice(0, 7).map((kind) => ({
+      kind,
+      count: error.counts[kind] ?? 0,
+      ids: (error.ids[kind] ?? []).slice(0, 20),
+    }));
+    return result;
   }
   if (error instanceof AgentDeletingError) {
     return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");
@@ -719,11 +882,45 @@ export function requestFailure(error: unknown): RequestFailure {
       "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
     );
   }
+  if (error instanceof SecretDriverOwnershipError) {
+    // A fixed message naming the path's fix; raised only after the Secret's grant and lookup.
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+  }
+  if (error instanceof CredentialSourceDriverError) {
+    // A fixed message naming the fix; raised only after the source's grant and lookup.
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+  }
+  if (error instanceof RetryLaterError) {
+    // A fixed message naming the wait or the restart; raised only after the caller's grant and
+    // lookup (finding 2536).
+    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+  }
   if (isDependencyUnavailable(error)) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
   }
+  if (error instanceof ConfigurationGenerationConflictError) {
+    // The detail marks a stale read, which a reread fixes, apart from other Configuration
+    // conflicts such as a provisioning reservation, which a reread does not (finding 1511).
+    return failure(409, "RESOURCE_CONFLICT", error.message, [
+      { path: "/expectedGeneration", code: "INVALID_VALUE" },
+    ]);
+  }
+  if (error instanceof RepositoryGitProfileUnsupportedError) {
+    // Finding 2204: raised only after the deploy grant, with a fixed message naming the
+    // supported delivery profiles.
+    return failure(409, RepositoryGitProfileUnsupportedError.code, error.message);
+  }
+  if (error instanceof RepositoryGitSenderUnqualifiedError) {
+    // Finding 2199: raised only after the deploy grant, with a fixed message naming the
+    // Installation capability and the supported alternatives.
+    return failure(409, RepositoryGitSenderUnqualifiedError.code, error.message);
+  }
+  if (error instanceof ProtectedExecutionNetworkPolicyError) {
+    // Finding 2053: raised only after the caller's policy or deploy grants, with a fixed message.
+    return failure(409, "SANDBOX_POLICY_PROTECTED_EXECUTION", error.message);
+  }
   if (error instanceof ResourceStateConflictError) {
-    return failure(409, "RESOURCE_CONFLICT", error.message);
+    return failure(409, "RESOURCE_CONFLICT", error.message, error.details);
   }
   if (error instanceof ResourceConflictError) {
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");
@@ -731,16 +928,48 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof ScopeViolationError) {
     return failure(404, "NOT_FOUND", "The requested platform resource was not found.");
   }
+  if (error instanceof CredentialWithdrawalNotFoundError) {
+    // Raised only after Agent read, with a fixed message about that Agent's active version.
+    return failure(404, "NOT_FOUND", error.message);
+  }
   if (error instanceof DeletionRetryOwnedError) {
     // The caller holds delete on this exact resource; only the retry condition is named.
     return failure(403, "FORBIDDEN", error.message);
   }
   if (error instanceof AgentPrincipalAuthorizationError) {
-    // Only the Agent's own principal is named; caller denials stay generic below.
+    // The Agent's own principal lacks the grant; the caller's denial is below. The text names a
+    // stored resource only when the caller sent or may read it (finding 2592).
+    return failure(403, "FORBIDDEN", capped(agentPrincipalDenialMessage(error, denied?.requested)));
+  }
+  if (error instanceof CallerStateDeniedError) {
+    // Fixed text about the caller's own account, session or job, not about a grant.
     return failure(403, "FORBIDDEN", error.message);
   }
   if (isAuthorizationDenied(error)) {
-    return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+    // The caller's own denial names the grant it checked, never the IAM decision's reason, so a
+    // Restriction and a missing grant read the same (finding 2534). Only a check of the caller's
+    // own grant is named: a decision for another principal, such as an Agent's service principal
+    // checked without naming it, stays generic, since its grant would read as the caller's own
+    // (finding 2586).
+    const own =
+      error.checkedPrincipalId !== undefined && error.checkedPrincipalId === denied?.actorId;
+    return failure(
+      403,
+      "FORBIDDEN",
+      error.authorization === undefined || !own
+        ? GENERIC_DENIAL
+        : capped(
+            callerDenialMessage(
+              error.authorization,
+              denied?.requested,
+              error instanceof QualifiedAuthorizationDeniedError
+                ? error.qualifier
+                : denied?.administratorRestricted === true
+                  ? "administrator_restricted"
+                  : undefined,
+            ),
+          ),
+    );
   }
   if (error instanceof Error) {
     const candidate = error as FastifyError;
@@ -761,7 +990,7 @@ export function requestFailure(error: unknown): RequestFailure {
         return failure(401, "UNAUTHENTICATED", "The caller did not provide valid credentials.");
       }
       if (status === 403) {
-        return failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
+        return failure(403, "FORBIDDEN", GENERIC_DENIAL);
       }
       return failure(
         503,
@@ -802,7 +1031,10 @@ export function requestFailure(error: unknown): RequestFailure {
           ? reason === "untrusted_origin"
             ? UNTRUSTED_ORIGIN_MESSAGE
             : "The request did not satisfy the configured admission boundary."
-          : "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Send service API keys in the x-api-key header; Authorization bearer tokens are not accepted.",
+          : // Header advice only for a request that sent an Authorization header (finding D762).
+            reason === "authorization_header"
+            ? "The API does not accept an Authorization header. Send a service API key in the x-api-key header, or sign in for a session cookie."
+            : "A valid session cookie or service API key is required: the credential sent is missing, invalid, expired, or revoked. Sign in again, or use a current service API key.",
       );
     }
   }

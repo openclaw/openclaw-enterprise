@@ -39,5 +39,6 @@ export function createControlledClock(wallMs = Date.now()) {
       throw new Error("fixture timer loop did not settle");
     },
     pendingTimers: () => scheduled.size,
+    deadlines: () => [...scheduled.values()].map((timer) => timer.at),
   });
 }

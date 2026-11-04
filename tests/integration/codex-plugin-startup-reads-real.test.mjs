@@ -58,7 +58,7 @@ mkdirSync("/home/node/workspace", { recursive: true });
 writeFileSync(process.env.CODEX_HOME + "/config.toml", '[features]\\napps = true\\nplugins = true\\nremote_plugin = true\\n'.replaceAll("\\\\n", "\\n"));
 const version = spawnSync("codex", ["--version"], { encoding: "utf8" });
 assert.equal(version.status, 0);
-assert.equal(version.stdout.trim(), "codex-cli 0.156.0", "native proof is pinned to the reviewed runtime");
+assert.equal(version.stdout.trim(), "codex-cli 0.164.0", "native proof is pinned to the reviewed runtime");
 const login = spawnSync("codex", ["-c", "cli_auth_credentials_store=file", "login", "--with-access-token"], {
   input: ${JSON.stringify(process.env.CODEX_ACCESS_TOKEN)}, encoding: "utf8", timeout: 30000,
 });
@@ -100,10 +100,11 @@ ${PLUGIN_RUNTIME_HELPERS}
     const recovered = await readCodexPluginDetails(params, read);
     assert.deepEqual(recovered.map((detail) => detail.plugin.summary.remotePluginId), candidates.map((entry) => entry.remotePluginId));
     const selections = Object.fromEntries(candidates.slice(0, 4).map((entry) => ["codex-plugin:" + entry.id, { enabled: false, toolDefaults: { approval: "provider_default" } }]));
-    const result = await installCodexPlugins({ manifest: { kind: "codex", selections } });
+    const result = await installCodexPlugins({ manifest: { kind: "codex", selections } }, [], codexAppServerRequest);
     assert.deepEqual(result, { successfulPluginIds: [], failures: [] });
-    const effective = await readCodexAppConfiguration();
+    const effective = await readCodexPluginConfiguration();
     assert.equal(effective.apps._default.enabled, false);
+    assert.equal(effective.plugins._default.enabled, false);
     for (const detail of details.slice(0, 4)) {
       for (const app of detail.plugin.apps) {
         assert.equal(effective.apps[app.id]?.enabled ?? effective.apps._default.enabled, false,
@@ -122,7 +123,7 @@ ${PLUGIN_RUNTIME_HELPERS}
     assert.equal(code, 0, errors.replaceAll(process.env.CODEX_ACCESS_TOKEN, "[REDACTED]"));
     const receipt = JSON.parse(output.trim());
     assert.deepEqual(receipt, {
-      version: "codex-cli 0.156.0",
+      version: "codex-cli 0.164.0",
       nativeReadCount: 6,
       maxOutstanding: 4,
       drainedNativeError: true,

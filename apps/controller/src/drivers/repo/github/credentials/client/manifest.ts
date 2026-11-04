@@ -9,7 +9,6 @@ import {
 import { assertPrivateDirectory, readPrivateFile } from "./private-files.ts";
 
 export const repositoryMaterialRoot = "/run/oce/repository-credentials";
-export const repositoryManifestPath = join(repositoryMaterialRoot, "manifest.json");
 export const repositorySelectionVariable = "OCE_REPOSITORY_SELECTION";
 
 export interface RuntimeRepositoryBinding {
@@ -208,6 +207,48 @@ export async function readRuntimeRepositoryManifest(
     throw new Error("invalid-repository-material");
   }
   return Object.freeze({ generation: parsed.generation, bindings: Object.freeze(bindings) });
+}
+
+/**
+ * The gateway and canonical origins in a manifest's public binding metadata, read
+ * without session material. Full validation, which every bearer release needs,
+ * requires each session's client.json to agree with these fields.
+ */
+export async function readManifestOrigins(
+  root: string,
+  generation: string,
+): Promise<ReadonlySet<string>> {
+  if (
+    !isAbsolute(root) ||
+    resolve(root) !== root ||
+    root.length > 4096 ||
+    hasControlCharacter(root)
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+  const parsed = JSON.parse(
+    (await readPrivateFile(join(root, "manifest.json"), 256 * 1024)).toString("utf8"),
+  ) as { version?: unknown; generation?: unknown; bindings?: unknown } | null;
+  const bindings = parsed?.bindings;
+  // Only the generation the rendered configuration names, which its helper serves.
+  if (
+    parsed?.version !== 1 ||
+    parsed.generation !== generation ||
+    !Array.isArray(bindings) ||
+    bindings.length === 0
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+  const origins = new Set<string>();
+  for (const binding of bindings) {
+    const client = (binding as { client?: Record<string, unknown> } | null)?.client;
+    if (typeof client?.gatewayOrigin !== "string" || typeof client.canonicalApiHost !== "string") {
+      throw new Error("invalid-repository-material");
+    }
+    origins.add(new URL(client.gatewayOrigin).origin);
+    origins.add(new URL(`https://${client.canonicalApiHost}`).origin);
+  }
+  return origins;
 }
 
 export function requireCurrentBinding(binding: RuntimeRepositoryBinding): void {

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-03
-last_updated_session: 01a10328-9de5-7081-ada2-d88ff80161e4
+updated: 2026-11-03
+last_updated_session: authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6
 ---
 
 # Platform console request flow
@@ -9,19 +9,12 @@ last_updated_session: 01a10328-9de5-7081-ada2-d88ff80161e4
 ## Overview
 
 `/console/` renders session-authorized resources.
-The [console reference](../reference/console.md) owns user-visible behavior;
-API and IAM authorize access.
+The [console reference](../reference/console.md) owns user-visible behavior.
 
 ## Entry Points
 
 - Browser entry: `apps/controller/src/console/console.mjs` composes the session,
   request client, view lifetime, navigation, and shell.
-- `api-client.mjs` owns cancellation and session expiry; `view-lifetime.mjs`
-  owns generation and abort state; `navigation.mjs` owns return paths and history;
-  `shell.mjs` owns navigation and collections.
-- `agents/{list,create,detail}.mjs` own Agent views;
-  `channels/{slack,shared-ui}.mjs` own Slack editing. `agents.mjs` and
-  `channels.mjs` compose them.
 - HTTP: `apps/controller/src/index.ts:createFastifyApp`.
 - Startup: `apps/controller/src/composition/production.ts:composeProduction`
   and `development-postgres.ts:composePostgresDevelopment`.
@@ -33,16 +26,25 @@ API and IAM authorize access.
 
 ```mermaid
 graph TD
+  THEME["API startup loads optional theme bundle"] -->|valid snapshot| ASSET["Serve branded HTML, CSS and images"]
+  THEME -->|invalid| FAIL["Refuse API startup"]
+  ASSET --> A
   subgraph Browser["Browser"]
     A["Open console or change page"] --> B["Restore scoped preview or show first-load state"]
     B --> B1["Recheck session and Namespace access"]
     B1 -->|no session| C["Login"]
     C -->|GitHub| C1["Start GitHub sign-in"]
+    B1 -->|authenticated recovery key| NR["Resolve authorized Agent key"]
+    NR -->|allowed| D
+    NR -->|unavailable| D
     C1 -->|callback redirect| B1
     B1 -->|authenticated| D["Read readable Namespaces and validate selection"]
     D -->|debug=true| DBG["Read accessible Agents and runtime image metadata"]
     DBG --> F
     D --> E["Request current page resource"]
+    E --> NC["Create Namespace"]
+    E --> ND["Confirm deletion"]
+    E --> SEC["Manage Namespace Secret metadata and values"]
     E --> E1["Edit starter JSON and select associations"]
     E1 --> S1["Select Secret or open creation modal"]
     S1 -->|select| S3["Stage binding until Apply"]
@@ -53,24 +55,38 @@ graph TD
     E2 --> E5["Confirm Agent stop"]
   end
   subgraph Controller["Controller API"]
+    ND --> NDELETE["Authorize DELETE; check contents"]
     E --> F["Authenticate and authorize exact scope"]
     F -->|Agents or Namespaces| G["OCC reads and filters by IAM"]
     F -->|Backends and Installation admin| H["Project loaded Backend IDs and types"]
+    NC --> NPOST["POST authorizes, persists and queues provisioning"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
+    SEC --> SAPI["Authorize Secret list, read, create, replace or delete"]
+    SAPI -->|metadata or confirmed mutation| I
+    SAPI -->|unconfirmed write| SU["Erase input and block resubmission"]
+    SU -->|manual inspection| SEC
     E1 -->|draft runtime| M1["POST creates Configuration with staged bindings"]
     E1 -->|supported Dedicated and valid repository selection| M3["POST queues provisioning with inline Configuration"]
     M3 --> M4["Worker creates resources, grants and first deployment"]
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
     M --> M2["Console grants Agent use of selected Secrets"]
-    E2 --> N["GET draft Configuration or immutable revision"]
+    E2 --> N["GET draft Configuration or Agent revision"]
     E3 --> O["PATCH Configuration, then grant selected Secret access"]
     E4 --> P["DELETE exact Agent"]
     E5 --> P2["POST exact Agent stop"]
   end
   subgraph Result["Browser result"]
+    NDELETE -->|nonempty| NB["Show blockers and cleanup links"]
+    NDELETE -->|accepted| NP["Poll Namespace until removed"]
+    NDELETE -->|uncertain| NRD["Require status refresh before retry"]
     G --> I["Accept only current navigation response"]
     H --> I
+    NPOST -->|201| NSUCCESS["Creation accepted"]
+    NPOST -->|unconfirmed| NUNKNOWN["Inspect before retry"]
+    NPOST -->|refused| K
+    NUNKNOWN --> D
+    NSUCCESS --> D
     M2 --> I
     M4 --> I
     N --> I
@@ -80,7 +96,7 @@ graph TD
     P2 -->|denied| K
     P -->|denied| K
     Q -->|Agent not found| R["Return to Agents list"]
-    I --> J["Render list, draft, revision, or channel state"]
+    I --> J["Render list, draft, Agent revision, or channel state"]
     F -->|denied or unavailable| K["Clear rows and show recovery"]
     J -->|Logout| L["Hide private state and confirm sign-out"]
   end
@@ -90,26 +106,33 @@ graph TD
 
 ### 1. Compose discovery metadata and serve public assets
 
-`apps/controller/src/composition/production.ts:composeProduction`
+`apps/controller/src/api-startup.mjs:startApi` loads an optional
+[theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
+ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
+branding and links the generated stylesheet. `console/shell.mts:brandContents`
+renders the name as text. `/console/theme/` serves only referenced images and
+generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
+API restart can replace the theme.
 
-`apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
-
-Startup passes safe Backend `{id,type}` summaries to `createFastifyApp`.
+Startup (see Entry Points) passes safe Backend `{id,type}` summaries to `createFastifyApp`.
 [Backend-managed delivery](service-account-driver-credential-delivery.md) owns
 Driver activation. Requests do not reread configuration or credentials.
 
 `apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted assets
 and the shared HTML shell with MIME types and same-origin CSP. Unknown console
 paths return the shell with `404`; API routes retain JSON errors.
+`encodedAsset` compresses static scripts and styles once (brotli or gzip, per
+`Accept-Encoding`, with `Vary`), unless an explicit `identity` weight beats both
+encodings. The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
-`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
+`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mts:renderShell` displays
 the full commit; invalid or absent metadata remains unknown.
 
-`runtime-images.mjs:renderRuntimeImages` issues at most three concurrent reads for
+`runtime-images.mts:renderRuntimeImages` issues at most three concurrent reads for
 readable Agents in the selected Namespace.
 `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
-exact Agent read, resolves its active revision, then calls its Compute Driver.
+exact Agent read, resolves its selected version, then calls its Compute Driver.
 The [Compute contract](../reference/drivers/compute.md) owns workload inspection
 and Enterprise/OpenClaw provenance. Navigation preserves `debug=true`; removing it
 stops reads. Missing provenance stays explicit.
@@ -118,51 +141,52 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`loadPage` advances the request generation and requests `GET /api/auth/session`.
-First loads show loading. Return navigation and Refresh can restore one of at most
-16 document-local views keyed by route, Namespace, and session owner while reads
-run. Password fields and their derived discovery state clear before retention.
-Controls stay inert until admission succeeds; navigation remains available.
+`agents/collection.mts:renderAgentList` focuses the Agent-name link for plain row
+clicks. Links, buttons (including disabled ones), modified clicks, and selected
+text keep their own behavior.
 
-Completed views retain their DOM, handlers, and draft capture callbacks. On return,
-`loadPage` rereads their GET dependencies and compares data and user identity.
-Unchanged views reactivate without rebuilding panels; changed data rebuilds them,
-as does a first readable Namespace for a view retained without a selection.
-Pending reads, read failures, password input, or mutations prevent reuse. Read-only
-catalog and diagnostic POSTs do not invalidate views. Refresh always rebuilds.
-Debug runtime disclosures follow the same validation and retain expanded state.
+`loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
+shows **Loading agent details…** and **Back to Agents**, then reveals its name,
+actions, and overview after access checks. Back cancels once; refocus does not
+interrupt loading. Other Agent routes preserve the page or show loading after
+400 ms. Visible loading lasts at least 300 ms (`loadingMinimumMs`). Other first
+visits and Refresh show loading after 250 ms.
 
-A changed user or session key clears retained views and drafts before further
-private reads. Missing sessions open login; failed reads offer Retry.
-`showLogin` reads `GET /api/auth/providers`; true `github`/`google` flags add their **Continue
-with** buttons, and discovery failure keeps password login. A true `oidc` flag adds a button
-labelled from `oidcSignIn.label` only when `oidcSignIn.authorizationUrl` is `https:`; its start
-URL must use that endpoint's origin and path, as GitHub's and Google's must use their fixed ones. `password: false`
-(recovery-only) hides the form behind **Recovery sign-in** and changes the
-provider-error advice from "use your password" to asking an administrator. Pending login disables
-all; generations reject late redirects. With `sessionBinding`, `loadPage`
-exchanges the button's stored `attemptId` once for its key. Tabs then send
-their pinned `x-occ-session-key`, so a replaced cookie yields login.
-`authError=<provider>` shows a generic, one-time error; with `authError=github`, an
-`authReason` of `membership` or `membership-unavailable` explains a GitHub
-[allowlist](../reference/authentication/external-sign-in.md#organization-and-team-allowlist)
-refusal instead. The
-[authentication flow](local-password-authentication.md#3-construct-session-authentication)
-owns the server side.
+Return and refocus checks, not Tab laps, hold the page inert (header visible, Namespace selection
+disabled), showing **Still checking…** after one second. The Console retains up to 16 views by
+route, Namespace, and session owner. Matching user and GET dependencies restore
+DOM, handlers, drafts, and debug disclosures. Changed data, newly readable
+Namespaces, and Refresh rebuild. Discovery state is not retained. Pending/failed reads, passwords, and
+mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
+Interrupted returns preserve the view; interrupted Refresh discards it.
 
-`apps/controller/src/auth/index.ts:requireTrustedBrowserOrigin` checks Origin
-before sign-in/out, even for SDK calls bypassing Better Auth middleware; headerless
-CLI requests remain supported. The browser stores no credentials.
+`api-client.mts:createApiClient` preserves abort reasons through response bodies.
+Socket failure means interrupted read, not invalid JSON. Neither replays requests.
 
-After authentication, `loadPage` reads `GET /namespaces`, preserving URL
-selection or choosing the first ready/readable Namespace. Unreadable IDs stay
-unavailable; selection never becomes an API query selector.
+**Back to Agents** waits for session, Namespace, permission, and collection checks,
+not row reads. The newest readable revisions page supplies each row;
+`agents/collection.mts:currentRevision` reads only an off-page current version.
+`deniedReadsFor` retains 403s. Reused deployment cells show **Reading deployment…**
+after 250 ms, for at least 150 ms, before fresh results. Back/refocus focuses the
+cell, not the old version link. Unfinished/failed row reads resume without blocking reuse.
+A search cancels the unfinished reads of rows it hides (`collection.mts:retireHidden`); a row
+shown again reads once.
 
-`shell.mjs:namespaceSelector` disables and hides choices through session and
-Namespace checks for loads, Refresh, and admission-starting navigation;
-retained-view reads do not extend this.
-Empty lists show access guidance. `navigation.mjs:navigate` returns Agent detail/creation
-to Agents; global pages remain open; recovered warnings disappear.
+Changed users or session keys clear retained views and drafts before private
+reads. Missing sessions open login; failed reads offer Retry. The
+[sign-in flow](platform-console/sign-in-return.md) owns provider discovery,
+one-use session binding, and destination recovery.
+
+After authentication, `GET /namespaces` preserves URL selection or chooses the
+first ready/readable Namespace. Unreadable IDs remain unavailable; selection
+never becomes an API query selector. `shell.mts:namespaceSelector` hides choices
+during session/Namespace checks, naming known selections; retained-view reads do
+not extend this. Widening past 760px closes the drawer, releases `main.inert`, and
+avoids focusing its hidden toggle. While `drawer-open`, `console.css` prevents
+background scrolling. `createShell` preserves primary navigation
+presses across replacement renders. Empty lists explain access. Namespace
+navigation sends Agent detail/creation to Agents; global pages stay open and
+recovered warnings disappear.
 
 ### 3. Authorize the selected page resource
 
@@ -170,132 +194,135 @@ to Agents; global pages remain open; recovered warnings disappear.
 
 `packages/occ/src/index.ts:OpenClawController.listNamespaces`, `listAgents`
 
-Agents use the selected Namespace's route. OCC authorizes Namespace reads and
+Agents and Secrets use the selected Namespace's route. OCC authorizes Namespace reads and
 filters Agents by exact read permission; Namespace listing filters its
 Installation-wide collection. No readable selection means no Agent request.
 `GET /backends` ignores selection and requires Installation `administer` before
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent` composes Provider,
-Harness, Preset, Configuration, and workspace inputs. Provider/Harness changes
-reset incompatible credentials and model choices while retaining unrelated JSON. The
-[creation reference](../reference/console/create-and-deploy.md) owns combinations,
-Preset constraints, token handling, permissions, and recovery.
+`apps/controller/src/console/secrets.mts:renderSecrets` lists metadata and reads
+the exact Secret's `consumers` and advisory `callerPermissions` before showing
+actions, as the [Secrets guide](../guides/console/secrets.md) describes. Agent
+names come from the readable Agent list. Known references disable Delete; the
+server rechecks them. `console.mjs:takeLinkedSecret` keeps a `secret` link's ID
+until the page shows it. Create and replacement wait for Namespace readiness.
+Mutations use the tracked request client and Secret API, never a Driver.
 
-`agents/plugin-fields.mjs:createPluginFields` edits Agent `plugins` separately
-from Configuration. Invalid JSON and untouched fields survive; clearing overrides
-restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editing.
-`capabilities.pluginPolicies` gates policy edits; unsupported reviewers remain clearable.
+`secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
+and clears it after the request, dismissal, or view retention
+(`console.mjs:clearPasswordInputs`). Pending requests block navigation and
+dismissal. A denied write disables submission; an unconfirmed write cannot be
+replayed from that dialog. `secrets.mjs:confirmDelete` offers an explicit exact
+status read after an uncertain delete; a denial never confirms removal.
+Replacement hands delivery to explicit Agent deployment or CredentialSource
+update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
 
-`create.mjs:loadPluginCatalog` and `loadPluginTools` implement
-[PAT discovery](agent-plugins.md#credential-scoped-discovery): the selected or
-Preset Secret takes precedence over an entered token. OCC reads the
-Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
-Credential, provider, and Harness changes clear results and invalidate pending reads.
+`apps/controller/src/console/namespaces.mts:renderNamespaces` sends Name-rule-valid names
+through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
+each attempt, queues provisioning; `perform` audits. Open Agents needs the Namespace
+relisted. Closing refocuses the opener; a 403 disables it per account, across
+navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
+mark names; conflicts keep input; unconfirmed responses need inspection.
 
-`create.mjs:MODEL_CHOICES` supplies unauthenticated static model lists and manual
-entry. In `renderAgentForm`, the model-entry button switches `manualModel` and
-calls `updateModelConfiguration` and `updateControls`. Entering manual mode
-keeps `model.value` and clears the hidden dropdown selection.
-Returning to the list uses `resetModelChoices` to rebuild the current provider's
-options, including after Configuration JSON changes the provider. It retains
-the model only if that provider's list contains it; otherwise it clears both
-inputs. Provider and authentication changes call the same reset without a model
-to retain. `model.value` supplies one Configuration model, and submission checks
-that its primary model matches that value.
-`updateControls` updates the button label, visibility, and required input; focus moves
-to that input. Switching back to the list preserves credentials and unrelated
-Configuration values. Saved Configuration and pending-request locks apply to
-both directions.
+`namespace-deletion.mts` blocks navigation and dismissal during writes; OCC rechecks
+IAM and contents. `http/errors.ts` limits blockers to 20
+IDs per kind. Poll every three seconds after `202`; `404` removes the row;
+`console.mjs` repairs selection and views. `403` reports lost access.
+Uncertain writes require **Refresh status** before retry.
+See [deletion](../guides/console/delete-namespace.md).
 
-`configurationTemplate` enables Control UI with loopback origins on port 18789.
-Compute supplies gateway authentication; Presets replace the starter unchanged.
-[Native admin access](agent-native-admin.md) owns HTTPS isolation.
+Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
+[Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
+Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
+omission disables Create (`NAMESPACE_MISSING`), clears rows and feedback, closes
+confirmations, and ends polling. Its note replaces empty states. Late outcomes are
+generic, without replay; 401 expires the session. Focus: Search. Failed reads retry.
 
-`createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
-then requests optional descriptions for visible refs. [Repository admission](agent-repository-credentials.md) resolves the
-submitted `repositoryAccess`. Retained drafts keep selections through failed
-discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
-permits creation without bindings, and only without retained selections; other
-failures block submission.
-
-Supported Dedicated runtimes submit inline Configuration, optional repository
-access, and Secret references to [provisioning](agent-provisioning.md), even after
-that outage. The worker reauthorizes, creates resources and exact Secret grants,
-and deploys; Console polls, then opens the revision.
-
-Ordinary drafts post `{kind: "agent", values, secretBindings}` to
-`POST /namespaces/:namespaceId/configurations`, then submit its ID, plugins,
-`initialWorkspaceFiles`, and `workspaceDefaultsId` to
-`POST /namespaces/:namespaceId/agents`. Success opens `revision=draft`.
-OCC stages all four workspace textareas, including unchanged/empty values, outside
-Agent/Configuration for [workspace setup](workspace-files.md).
-
-`create.mjs:grantConfigurationSecretAccess` grants exact Secret `operate` for final
-same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
-rereads grants without duplication. Failed Agent writes retain Configuration ID
-and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
-admit no revision and start no runtime.
-
-`agents/harness-auth.mjs` edits bindings and shows
-[Secret identities](platform-console/agent-editing.md#4-render-draft-revision-or-channels),
-never values.
+See [Agent setup and provisioning](platform-console/agent-creation.md).
 
 ### 4–6. Edit the Agent and access runtime files
 
-[Agent editing](platform-console/agent-editing.md) traces revision rendering,
-channels, credentials, workspace files, stopping, and deletion;
+[Agent editing](platform-console/agent-editing.md) traces version rendering,
+channels and credentials; [workspace files](platform-console/agent-workspace-files.md) and
+[stop and deletion](platform-console/agent-stop-and-deletion.md) trace those operations;
 [Agent sharing](platform-console/agent-sharing.md) traces policy writes.
-Responses follow the ordering checks below.
 
-`channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve;
-`updatedSlack` preserves untouched policies and reply overrides. The
+`channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve. The
 [editing flow](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
 owns DM policies and channel-only reply defaults. Admission snapshots native values;
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers tab
-navigation with `console.mjs:loadPage`. For the same Agent, Namespace, and
-revision, tab clicks/history replace only tab content; shell, native-admin panel,
-and revision controls stay mounted. Configuration and revision reads are shared;
-direct Workspace URLs start neither. Refresh, revision changes, and successful
-channel/authentication edits reload fully. A `403` on the configuration or revision
-read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path in tab
-`sessionStorage` for the session owner; later views show **Configuration unavailable**
-without asking again, and **Retry** forgets the path and rereads. Logout clears it.
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tabs
+with `console.mjs:loadPage`. Within one Agent, Namespace and version, tabs replace
+content; shell, native-admin and version controls remain mounted. Configuration
+and revision reads are shared; direct Workspace URLs start neither. Refresh,
+version changes and successful channel/authentication edits reload fully.
+`console.mjs:deniedReadsFor` remembers audited Configuration/revision `403` paths
+in owner-scoped tab `sessionStorage`. Later views show **Configuration unavailable**
+without rereading; **Retry** forgets and rereads. Logout clears denials.
 
-Completed tabs retain their DOM and draft capture callbacks within the detail view.
-Returning restores loaded controls and expanded disclosures. Pending or failed
-reads, password values, and mutations invalidate tab reuse. Each tab checks it
-is mounted before applying a response; late reads cannot overwrite another tab.
-Password values clear while [draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels) retain edits. Channel
-Secret saves update the shared draft snapshot used by other tabs and deployment
-preflight.
+`agents/detail.mts:renderTab` reveals clipped tabs horizontally without changing
+focus or vertical scroll. Its ResizeObserver repeats on resize, disconnects for
+inactive/detached views, and re-arms on resume.
+Tabs retain DOM/drafts except during pending/failed reads, passwords or mutations;
+unmounted responses are ignored.
+[Draft captures](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
+exclude passwords. Secret saves update the shared snapshot.
+`agents/detail.mts:boundSecretsDenied` reuses Deploy's authorized names.
+Configuration excludes Harness-only Secrets; Plugins/Credentials include them.
+Epochs fence publication; rechecks clear names and refresh authorized reads.
+Deploy keeps its last Secret operate answer until the refreshed one lands.
+Late names preserve state/focus; metadata failures keep IDs; unknown grants stay generic.
+
+[Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
+owns receipts and draft retirement.
+
+**Open vN Logs** opens the failed version from any version or draft. Logs reserves space;
+Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
+the tab leaves visible output in place. Recovery links scroll their version tab into view
+and focus its tab control, smoothly unless the page rebuilds or motion is reduced.
+
+[Runtime logs](agent-runtime-logs.md) explains access. A false `readLogs` in the Agent
+permission answer skips the audited log read. Status `403` hides Pod details, not
+separately authorized logs. Denials last until logout; newly granted `operate` permits another
+status read. Refused reads or downloads clear the rows; late successes cannot restore them or
+download. Refusing allowed log text rereads status at once, superseding stale reads. Back
+rebuilds refused views, else shows the checked page. Refresh keeps rows and cursor until
+replaced; rate-limit notices update at the retry time without rereading. New streams or
+rejected cursors clear rows.
 
 ### 7. Commit only the current response, or clear the view
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
-Navigation, Namespace changes, and logout invalidate reads; generations reject
-late responses. Refocus coalesces events. Agent detail rechecks access in place,
-preserving controls, input, and saves; failures clear the view. Other pages
-revalidate before reuse; forms defer refocus. Drafts keep save baselines and Namespace
-scopes separate.
+After full-page navigation settles, `loadPage` focuses the destination heading if
+focus fell to the body, using `preventScroll` to preserve return position. An Agent
+opened from the list focuses its heading when the title renders. Tabs (one Tab
+stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
+reads; generations reject late responses. Refocus coalesces events.
+`revalidateMountedAgent` rechecks session, Namespace, Agent, version, and
+[permission answer](platform-console/agent-stop-and-deletion.md#stop-agent);
+unchanged access preserves controls, input, and saves.
+Refocus sends a fresh GET. A repeated 403 on a never-readable draft Configuration
+keeps the partial Agent; a version proved unreadable is not read again.
+Lost access scrubs; Agent, session, and scope failures clear their protected views.
+Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
+Returning to the tab restores focus after the unchanged view is admitted, if the control
+remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
 
-Authorization and dependency failures clear affected content and expose recovery;
+Other admission failures clear affected content;
 a current protected `401` clears all private state. `pagehide` clears
 private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
-a fresh load. Failure views show local reasons and bounded request IDs, never
-backend error text. Backend authorization denial clears every retained preview,
+a fresh load. Failure views show local reasons and `req_<UUID>` request IDs. The
+only backend text they show is a refusal the API explains (a 400 naming the field or
+rule, a typed 409 naming the state), set as text. Backend authorization denial clears every retained preview,
 including other Namespace selections, because the permission is Installation-wide.
 
-The [detail action flow](platform-console/agent-editing.md#stop-agent) traces
-confirmed Stop and Delete requests and permissions. Acceptance
-is not completed shutdown or deletion. Uncertain outcomes block replay until
-readback; only confirmed absence returns to Agents. Deployment resumes
-a stopped Agent through a new revision. The [Agent reference](../reference/agents.md#deletion)
-owns asynchronous cleanup.
+The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
+acceptance, uncertainty, and replay guards. `agents/deletion.mts:refreshStatus` owns polling: 404 returns to Agents;
+Postacceptance 403 stops polling without claiming completion.
+The [Agent reference](../reference/agents.md#deletion) owns asynchronous cleanup.
 
 Logout first hides private state, then calls the sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -305,18 +332,17 @@ this client never infers it from a network error.
 
 <span id="deploy-the-saved-draft"></span>
 
-## Deploy the new revision
+<span id="deploy-the-new-revision" class="anchor-alias"></span>
 
-The **Create new version** draft exposes **Deploy new version**.
-**Operator-managed credentials** persist `{ "method": "runtime" }` and bypass
-managed credential setup in Console; OCC does not validate host credentials.
-Deployment checks the Agent, Configuration association, and generation, then sends
-bodyless
-`POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server authorizes
-and admits the revision. Its read-only details open while **Deployment
-activity** follows the latest visible deployment. Workspace reads check gateway
-startup and file availability. An uncertain response disables replay until
-refresh and inspection.
+## Deploy the new version
+
+**Deploy new version** on the **Create new version** draft sends bodyless
+`POST /namespaces/:namespaceId/agents/:agentId/deploy` after the checks and
+uncertain-response handling that [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels) traces.
+**Operator-managed credentials** (`{ "method": "runtime" }`) skip managed setup; OCC
+does not validate host credentials. The server saves the version; its read-only
+details open while **Deployment activity** follows it. Workspace reads check
+gateway startup and file availability.
 
 ## Debugging and Verification
 
@@ -327,18 +353,18 @@ refresh and inspection.
   They verify navigation, isolation, creation, draft/history/channel editing, and
   authentication, not PostgreSQL persistence, Backend health, runtime dispatch,
   worker leases, or Compute effects.
+- `node --test tests/browser/console-secrets.test.ts` exercises Secret mutation,
+  Agent references, denials, and lost replies with passive test Secret storage.
+  The `console-secrets` [QA scenario](../testing/ci.md#qa-matrix) selects real
+  shipped storage; it requires the documented runtime and credential setup.
 - API tests cover safe discovery, permission boundaries, empty versus missing
   wiring, static MIME/allowlisting, and unchanged API JSON errors. See
   [Testing](../testing/README.md) for commands and the image smoke boundary.
 
 ## Related docs
 
-- [Console reference](../reference/console.md)
+- [Namespaces](../reference/namespaces.md)
 - [Authentication](../reference/authentication.md)
-- [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
-- [Configuration and Agent revision](configuration-driver.md)
-- [Docker development](docker-compose-development.md)
-- [Production startup](production-startup.md)
 
 ## Manual Notes
 
@@ -346,14 +372,25 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
-- 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
-- 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
-- 2026-09-30 19:00: Remember denied Agent detail snapshot reads per tab so reloads do not add an audited denial per view.
-- 2026-09-29 20:00: Trace repository descriptions and inherited access. (public-pr/374)
+- 2026-11-03 15:16: Preserve page position during navigation. (authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6 - 44c2f77b611207eef71a69f82ab692c26dbea2bc)
 
-- 2026-09-29 07:19: Guard recovery until session and Namespace reads finish. (authoring-run/1ca6a40a-a247-465f-9a83-182dbcb6ff4e - 90326e6fab11f84fc11b8990b6c8e197a2752c60)
+- 2026-10-30 14:30: Keep Deploy's last Secret operate answer while a recheck rereads it. (bughunt-1030g - a382326dde)
 
-- 2026-09-28 01:39: Move the sharing trace to its child flow. (authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a - 4f32ebbca5d699296a142dfbd34c8ec46844fce7)
+- 2026-10-30 11:02: Name denied Secrets. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
+
+- 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
+
+- 2026-10-29 22:18: Cancel the unfinished row reads of Agents a search hides. (authoring-run/6f6ebb4a-7c4c-4bd7-a11c-8381c411c816 - 225ce0ebaf1dd14c01c5c50ccf8ac420e13c72a4)
+
+- 2026-10-29 12:23: Retire denied Save views. (authoring-run/3ff450d4-971d-48f5-bb76-367dbfa06f25 - 5d8c060238a58)
+
+- 2026-10-29 12:06: Clarify denials. (authoring-run/d43e9380-649f-4966-80a0-1fedecf36e05 - 4d68e053e69a1)
+
+- 2026-10-29 11:42: Keep contextual request recovery and scope binding scrubbing to its preflight. (authoring-run/221d2fc5-7549-4054-a3ab-6b078a1755ae - aa74d9bc28d8c)
+- 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
+
+- 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
+
+- 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
