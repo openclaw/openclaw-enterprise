@@ -1,4 +1,4 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -2562,10 +2562,64 @@ async function inspectWorkloadEnvironment(namespace, pod) {
 }
 
 async function inspectEnvironmentValue(namespace, pod, name, expected) {
-  const script = `const name=${JSON.stringify(name)};const expected=${JSON.stringify(expected)};process.stdout.write(JSON.stringify({present:Object.hasOwn(process.env,name),matches:process.env[name]===expected}))`;
-  return JSON.parse(
-    await kubectl("exec", pod, "--namespace", namespace, "--", "node", "-e", script),
-  );
+  // Expected values can be provider credentials; keep them out of exec arguments and diagnostics.
+  const script = String.raw`
+    try {
+      const { name, expected } = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+      process.stdout.write(JSON.stringify({
+        present: Object.hasOwn(process.env, name),
+        matches: process.env[name] === expected,
+      }));
+    } catch {
+      process.stderr.write("Workload environment comparison failed.");
+      process.exitCode = 1;
+    }
+  `;
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "kubectl",
+      kubectlArguments([
+        "exec",
+        "--stdin",
+        pod,
+        "--namespace",
+        namespace,
+        "--",
+        "node",
+        "-e",
+        script,
+      ]),
+      { stdio: ["pipe", "pipe", "ignore"], timeout: 30_000, killSignal: "SIGKILL" },
+    );
+    let stdout = "";
+    const fail = () => {
+      child.kill("SIGKILL");
+      reject(new Error("Workload environment inspection failed."));
+    };
+    child.once("error", fail);
+    child.stdin.once("error", fail);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 1024) {
+        fail();
+      }
+    });
+    child.once("close", (code) => {
+      if (code !== 0) {
+        return fail();
+      }
+      try {
+        const result = JSON.parse(stdout);
+        if (typeof result.present !== "boolean" || typeof result.matches !== "boolean") {
+          return fail();
+        }
+        resolve({ present: result.present, matches: result.matches });
+      } catch {
+        fail();
+      }
+    });
+    child.stdin.end(JSON.stringify({ name, expected }));
+  });
 }
 
 async function inspectProjectedIdentity(namespace, pod) {

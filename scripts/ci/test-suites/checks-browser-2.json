@@ -16,7 +16,7 @@
     "tests/browser/console-agents-2.test.ts",
     "tests/browser/console-agent-state.test.mjs",
     "tests/browser/console-agent-saves.test.ts",
-    "tests/browser/console-runtime-credentials.test.mjs",
+    "tests/browser/console-runtime-credentials.test.ts",
     "tests/browser/console-codex-oauth.test.mjs",
     "tests/browser/console-agent-save-refusals.test.ts",
     "tests/browser/console-repository-dedicated.test.ts",
@@ -78,7 +78,7 @@
       "path": "tests/browser/console-repository-picker-network.test.ts"
     },
     {
-      "path": "tests/browser/console-runtime-credentials.test.mjs"
+      "path": "tests/browser/console-runtime-credentials.test.ts"
     },
     {
       "path": "tests/integration/ci-impact.test.mjs"

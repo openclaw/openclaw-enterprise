@@ -513,6 +513,8 @@ const devdayCreateCheckpoint = [
   { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
   click("Apply channel settings"),
   click("Create Agent"),
+  { text: "devday claw" },
+  { selector: '.agent-tabs button[role="tab"][aria-controls$="-deployment-panel"]', click: true },
   { selector: ".deployment-status" },
 ];
 const devdayAdminCheckpoint = [
@@ -1055,6 +1057,31 @@ export const scenarios = {
     name: "Session unavailable",
     rules: [{ path: "/api/auth/session", status: 503 }],
     description: "The console cannot verify the session. Private data stays hidden.",
+  },
+  missingSessionBindingRetry: {
+    group: "Pages/Sign in",
+    name: "Missing session binding, retry",
+    rules: [
+      {
+        path: "/api/auth/session",
+        method: "GET",
+        once: true,
+        data: {
+          authenticated: true,
+          user: {
+            id: "storybook-operator",
+            name: "Demo Operator",
+            email: "operator@example.com",
+          },
+        },
+      },
+    ],
+    description:
+      "Simulated session recovery: the first authenticated response has no session binding. Retry uses the ordinary bound fixture session.",
+    steps: [
+      "Observe Session unavailable with private content and console navigation hidden.",
+      "Choose Retry and confirm the Agents page appears.",
+    ],
   },
   loading: {
     group: "Pages/Sign in",
@@ -6238,6 +6265,30 @@ export const scenarios = {
       "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
     ],
   },
+  deploymentCompletionFocus: {
+    group: "Pages/Agent detail",
+    name: "Diagnostics focus when deployment completes",
+    path: `${candidateVersion}&tab=deployment`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // Give the reader time to position the focused button before the terminal poll answers.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        delayMs: 12000,
+      },
+    ],
+    description:
+      "The automatic poll records a simulated completion and opens Deployment details. The focused diagnostics button stays in view if it was visible before the update.",
+    steps: [
+      "Collapse Deployment details, then Tab to Run diagnostics for this version. Scroll up just enough to put the entire focused button near the bottom edge of the viewport.",
+      "Wait for the recorded status to read Completed. The details open and the same button stays focused and fully in view. Repeat at desktop and phone widths.",
+      "At phone width, reload the preview and repeat, this time scrolling all the way to the top without changing focus. The details open on completion and the reader stays at the top with the focused button still offscreen.",
+    ],
+  },
   deploymentCompletesRereadFails: {
     group: "Pages/Agent detail",
     name: "New version completes, Agent reread fails",
@@ -9792,7 +9843,8 @@ export const scenarios = {
       { suffix: "/runtime", status: 403 },
       {
         suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
-        skip: 1,
+        // Keep the initial read and first Logs recheck denied.
+        skip: 2,
         once: true,
         data: { update: true, deploy: true, operate: true, delete: true },
       },
@@ -10286,7 +10338,7 @@ export const scenarios = {
   },
   devdayCreateCheckpoint: {
     group: "Flows",
-    name: "DevDay segment 1 checkpoint: deployed devday claw",
+    name: "DevDay segment 1 checkpoint: first deployment queued",
     path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
     agentName: "oceclaw",
     deployed: true,

@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { createRequire } from "node:module";
+import type { Locator, Page } from "playwright";
+
+import {
+  NamespaceListResponse,
+  type NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
 
 import {
   fileBrowser,
@@ -36,29 +43,51 @@ const ADOPTED_WAITS = "Create Agent is unavailable until this Namespace is ready
 const MISSING = `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`;
 const MISSING_LINE = "Create Agent is unavailable until you choose another Namespace.";
 
+const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
+const {
+  Check,
+}: {
+  Check(schema: typeof NamespaceListResponse, value: unknown): value is NamespaceListResponse;
+} = require("typebox/value");
+
 const browser = fileBrowser();
+
+async function settledNamespaceReads(page: Page) {
+  const count: unknown = await settledFetches(page, "/namespaces");
+  assert.ok(typeof count === "number", "expected the settled Namespace read count");
+  return count;
+}
 
 // Answers GET /namespaces from the real API with the Namespace's status replaced while `status`
 // is set, and `fields` merged in; `absent` leaves it out of the list. `fail` answers that many reads with a 503; `hold()` keeps the next reads unanswered
 // until its release. `reads` counts the reads the page started.
-async function routeNamespace(page, namespaceId) {
-  const state = {
+async function routeNamespace(page: Page, namespaceId: NamespaceWire["id"]) {
+  const state: {
+    status: NamespaceWire["status"] | null;
+    fields: Pick<NamespaceWire, "existingNamespace">;
+    absent: boolean;
+    fail: number;
+    reads: number;
+    held: Promise<void> | null;
+    hold(): () => void;
+  } = {
     status: "provisioning",
     fields: {},
     absent: false,
     fail: 0,
     reads: 0,
     held: null,
-  };
-  state.hold = () => {
-    let release;
-    state.held = new Promise((resolve) => {
-      release = resolve;
-    });
-    return () => {
-      state.held = null;
-      release();
-    };
+    hold() {
+      let release: (() => void) | undefined;
+      state.held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return () => {
+        state.held = null;
+        assert.ok(release);
+        release();
+      };
+    },
   };
   await page.route(
     (url) => url.pathname === "/namespaces",
@@ -70,7 +99,11 @@ async function routeNamespace(page, namespaceId) {
         await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
         return;
       }
-      await fulfillPatchedJson(route, (body) => {
+      await fulfillPatchedJson(route, (body: unknown) => {
+        assert.ok(
+          Check(NamespaceListResponse, body),
+          "expected a Namespace list from the controller",
+        );
         body.data = body.data.filter((item) => !(state.absent && item.id === namespaceId));
         body.data = body.data.map((item) =>
           item.id === namespaceId && state.status
@@ -86,7 +119,14 @@ async function routeNamespace(page, namespaceId) {
 
 // A Dedicated plan waiting on the provisioning Namespace, on a controlled clock, with a name
 // being typed: the caret sits inside it.
-async function openGatedForm(t, { fixture, namespace }, { viewport, keepable = false } = {}) {
+async function openGatedForm(
+  t: TestContext,
+  { fixture, namespace }: Awaited<ReturnType<typeof createReadyConsoleNamespace>>,
+  {
+    viewport,
+    keepable = false,
+  }: { viewport?: Parameters<Page["setViewportSize"]>[0]; keepable?: boolean } = {},
+) {
   const { page } = await newPage(t, fixture, { browser });
   if (viewport) {
     await page.setViewportSize(viewport);
@@ -96,11 +136,11 @@ async function openGatedForm(t, { fixture, namespace }, { viewport, keepable = f
   // so that count is exact once a tick returns.
   await trackSettledFetches(page);
   await page.addInitScript(() => {
-    globalThis.namespaceReads = 0;
+    const probe = Object.assign(globalThis, { namespaceReads: 0 });
     const fetch = globalThis.fetch;
     globalThis.fetch = (resource, ...rest) => {
       if (new URL(String(resource), globalThis.location.href).pathname === "/namespaces") {
-        globalThis.namespaceReads += 1;
+        probe.namespaceReads += 1;
       }
       return fetch(resource, ...rest);
     };
@@ -136,14 +176,21 @@ async function openGatedForm(t, { fixture, namespace }, { viewport, keepable = f
   assert.equal(await create.isDisabled(), true);
   const name = view.getByLabel("Agent name");
   await name.fill("Probe Agent");
-  await name.evaluate((input) => input.setSelectionRange(5, 5));
+  await name.evaluate((input: HTMLInputElement) => input.setSelectionRange(5, 5));
   namespaces.reads = 0;
-  const started = () => page.evaluate(() => globalThis.namespaceReads);
+  const started = () =>
+    page.evaluate(() => {
+      const reads: unknown = Reflect.get(globalThis, "namespaceReads");
+      if (typeof reads !== "number") {
+        throw new Error("Namespace read counter was not installed");
+      }
+      return reads;
+    });
   // One 10 s tick whose read must arrive, so its answer, not the absence of one, decides. It
   // returns once the page has read the answer, so the next tick is already scheduled.
   const poll = async () => {
     const before = namespaces.reads;
-    const answered = await settledFetches(page, "/namespaces");
+    const answered = await settledNamespaceReads(page);
     await page.clock.runFor(10_000);
     await waitForSettledFetches(page, "/namespaces", answered + 1);
     assert.equal(namespaces.reads, before + 1);
@@ -159,10 +206,10 @@ async function openGatedForm(t, { fixture, namespace }, { viewport, keepable = f
   return { page, view, create, name, namespaces, poll, idle, started };
 }
 
-async function assertDraftIntact(name) {
+async function assertDraftIntact(name: Locator) {
   assert.equal(await name.inputValue(), "Probe Agent");
   assert.deepEqual(
-    await name.evaluate((input) => [
+    await name.evaluate((input: HTMLInputElement) => [
       globalThis.document.activeElement === input,
       input.selectionStart,
       input.selectionEnd,
@@ -171,12 +218,12 @@ async function assertDraftIntact(name) {
   );
 }
 
-async function setHidden(page, hidden) {
+async function setHidden(page: Page, hidden: boolean) {
   await page.evaluate((value) => {
     for (const [key, shown] of [
       ["hidden", value],
       ["visibilityState", value ? "hidden" : "visible"],
-    ]) {
+    ] as const) {
       Object.defineProperty(globalThis.document, key, { configurable: true, get: () => shown });
     }
     globalThis.document.dispatchEvent(new globalThis.Event("visibilitychange"));
@@ -201,8 +248,8 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await assertDraftIntact(name);
   });
 
-  for (const status of ["failed", "deleting"]) {
-    const label = `${status[0].toUpperCase()}${status.slice(1)}`;
+  for (const status of ["failed", "deleting"] as const) {
+    const label = `${status.charAt(0).toUpperCase()}${status.slice(1)}`;
     await t.test(`a Namespace that turns ${status} ends the recheck and says why`, async (t) => {
       const { view, create, name, namespaces, poll, idle } = await openGatedForm(t, team);
       namespaces.status = status;
@@ -291,7 +338,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
       viewport: { width: 1440, height: 900 },
     });
     await page.evaluate(() => globalThis.scrollTo(0, 0));
-    const top = () => name.evaluate((input) => input.getBoundingClientRect().top);
+    const top = () => name.evaluate((input: HTMLInputElement) => input.getBoundingClientRect().top);
     const before = await top();
     namespaces.status = null;
     await poll();
@@ -305,16 +352,24 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await assertDraftIntact(name);
     // The reserved height lasts until the width changes: the form reflows then anyway, and the
     // space would only stay empty (finding 2039).
-    const minHeight = () => note.evaluate((node) => node.style.minHeight);
+    const minHeight = () => note.evaluate((node: HTMLElement) => node.style.minHeight);
     assert.notEqual(await minHeight(), "");
     // Listen before resizing; the product's listener, added earlier, runs first.
     await page.evaluate(() => {
-      globalThis.resized = new Promise((resolve) =>
-        globalThis.addEventListener("resize", resolve, { once: true }),
-      );
+      Object.assign(globalThis, {
+        resized: new Promise<Event>((resolve) =>
+          globalThis.addEventListener("resize", resolve, { once: true }),
+        ),
+      });
     });
     await page.setViewportSize({ width: 390, height: 900 });
-    await page.evaluate(() => globalThis.resized);
+    await page.evaluate(() => {
+      const resized: unknown = Reflect.get(globalThis, "resized");
+      if (!(resized instanceof Promise)) {
+        throw new Error("Resize listener was not installed");
+      }
+      return resized;
+    });
     assert.equal(await minHeight(), "");
   });
 
@@ -371,7 +426,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
       keepable: true,
     });
     // The same form comes back: only a view with no read in flight is kept for a return.
-    await name.evaluate((input) => {
+    await name.evaluate((input: HTMLInputElement) => {
       input.dataset.kept = "true";
     });
     await waitForIdleFetches(page);
@@ -419,7 +474,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     const before = await started();
     await page.clock.runFor(10_000);
     assert.equal(await started(), before + 1);
-    const answered = await settledFetches(page, "/namespaces");
+    const answered = await settledNamespaceReads(page);
     // The replaced form's controls, kept to inspect after its read is answered.
     const replaced = await create.elementHandle();
     page.once("dialog", (dialog) => void dialog.accept());
@@ -430,7 +485,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await waitForSettledFetches(page, "/namespaces", answered + 1);
     // Still unavailable: natively, or aria-disabled while its wait shows (class of finding 2899).
     assert.deepEqual(
-      await replaced.evaluate((node) => [
+      await replaced.evaluate((node: HTMLButtonElement) => [
         node.isConnected,
         node.disabled || node.getAttribute("aria-disabled") === "true",
       ]),

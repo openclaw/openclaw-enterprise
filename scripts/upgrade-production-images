@@ -1211,7 +1211,7 @@ if ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installat
 fi
 
 rendered="$evidence_dir/rendered.yaml"
-helm template "$release" "$chart" "${helm_args[@]}" \
+helm template "$release" "$chart" "${helm_args[@]}" --is-upgrade \
   --values "$candidate_values" >"$rendered"
 helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
   --values "$candidate_values" --dry-run=server --hide-secret \

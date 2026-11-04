@@ -244,26 +244,29 @@ inspection reads its containers. It is not a health result; each version's [depl
 is. Unless Compute activates before commit, the worker sets the pointer before
 activation finishes.
 
-If a version fails before the worker sets the pointer, the pointer is
-unchanged. After a failed first deployment, the Agent has no selected version.
+Failure before the worker sets the pointer leaves it unchanged: unset for a
+first deployment.
 With [exclusive replacement](../drivers/compute.md#production-revision-stages),
 the unchanged pointer names a predecessor that was already stopped, so nothing
 serves until a new version activates. When the worker refuses such a candidate
-or any first deployment, for example because its deploying actor lost `deploy`
+or a first deployment, for example because its deploying actor lost `deploy`
 or a credential source was revoked, it stops the candidate's workload and
 records the refusal only after the stop succeeds (until then it waits as
 [`REFUSED_CANDIDATE_STOP_PENDING`](#pending-deployment-progress)). Other refused
-candidates stay until a later successful deployment, stop or delete. A candidate
-whose runtime failed by itself, such as `RUNTIME_MODEL_PROBE_FAILED` or
-`CONVERGENCE_DEADLINE_EXCEEDED`, keeps its Pods so its version's Logs tab can
-show the cause; the next deployment stops them.
+candidates stay until a later successful deployment, stop, deletion or
+[repository cleanup](../repository-credentials.md#deletion-and-restart).
+After runtime failures such as `RUNTIME_MODEL_PROBE_FAILED` or
+`CONVERGENCE_DEADLINE_EXCEEDED`, existing workloads remain for diagnosis until
+redeployment, stop, deletion or repository cleanup removes them. Container logs
+require Pods. Repository cleanup clears a stopped revision's pointer only if
+it remains selected; credential disposal may remain pending.
 Kubernetes embedded replacement reports ready while the predecessor still
 serves, so the worker sets the pointer first. Activation then replaces the
 shared gateway, and the new gateway runs the startup model probe. If that
 probe rejects the credential, the deployment fails with
 `RUNTIME_AUTHENTICATION_FAILED` (or, for a probe that timed out after its retries,
-`RUNTIME_MODEL_PROBE_TIMEOUT`). The failed version stays selected because its
-workload is the only one left; the predecessor has already been replaced. OCC
+`RUNTIME_MODEL_PROBE_TIMEOUT`). Unless cleanup stops it, the failed version stays selected;
+its predecessor has already been replaced. OCC
 never rolls back to an earlier version. To recover, correct the cause and
 deploy a new version, or stop the Agent.
 
