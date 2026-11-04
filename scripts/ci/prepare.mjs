@@ -3121,8 +3121,16 @@ async function prepareLane({ lane, statePath, file }) {
       // The tests start these containers themselves under 60–120 s command
       // timeout, so pull the pinned images here, where a slow or failed pull
       // is retried. An unpinned local override is still pulled by the test.
+      let collectorImage;
+      try {
+        collectorImage = await readDefaultCollectorImage();
+      } catch (error) {
+        // The prepare step fails before the image pulls start.
+        await recordLoggingSetupTiming("image-pulls", "skipped");
+        throw error;
+      }
       const images = {
-        OCC_TEST_LOGGING_COLLECTOR_IMAGE: await readDefaultCollectorImage(),
+        OCC_TEST_LOGGING_COLLECTOR_IMAGE: collectorImage,
         OCC_TEST_LOGGING_NODE_IMAGE: effectiveLaneEnv(name, env).OCC_TEST_LOGGING_NODE_IMAGE,
         ...metricsMonitoringImages,
       };
