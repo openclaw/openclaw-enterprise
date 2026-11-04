@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { pluginRuntimeConfigMapData } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
-import {
-  codexPublicGithubRead,
-  PUBLIC_GITHUB_READ_SKILL,
-} from "../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
+import { PUBLIC_GITHUB_READ_SKILL } from "../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import {
   image,
@@ -26,6 +23,11 @@ async function readerWithPrivateProvider() {
   const { execFileSync } = await import("node:child_process");
   const { readFileSync } = await import("node:fs");
   const https = (await import("node:https")).default;
+  const { createHash } = await import("node:crypto");
+  const { networkInterfaces } = await import("node:os");
+  const address = Object.values(networkInterfaces())
+    .flat()
+    .find((entry) => entry.family === "IPv4" && !entry.internal).address;
   const name = "api.github.com";
   const keyFile = "/tmp/provider.key";
   const certFile = "/tmp/provider.pem";
@@ -48,7 +50,7 @@ async function readerWithPrivateProvider() {
       "-subj",
       "/CN=" + name,
       "-addext",
-      "subjectAltName=DNS:" + name,
+      "subjectAltName=DNS:" + name + ",IP:" + address,
     ],
     { stdio: "ignore" },
   );
@@ -71,8 +73,25 @@ async function readerWithPrivateProvider() {
       callback,
     );
   };
-  const { createPublicGithubReadServer } = await import("/tmp/public-read.ts");
-  createPublicGithubReadServer().listen(8080, () => console.log("public-reader-ready"));
+  const { createPublicGithubReadServer } = await import("/tmp/public-read/server.ts");
+  const capability = process.env.OCE_TEST_PUBLIC_CAPABILITY;
+  const revisionId = capability.split(".")[0];
+  const policy = { mode: "repositories", repositories: ["example/public-project"] };
+  createPublicGithubReadServer({
+    tls: { cert, key: readFileSync(keyFile) },
+    policy,
+    loadAuthorizations: () => ({
+      [revisionId]: {
+        installationId: "ins_fixture",
+        namespaceId: "ns_fixture",
+        agentId: "agt_fixture",
+        revisionId,
+        tokenSha256: createHash("sha256").update(capability).digest("hex"),
+        policy,
+        validUntil: new Date(Date.now() + 600_000).toISOString(),
+      },
+    }),
+  }).listen(8080, () => console.log("public-reader-ready"));
 }
 
 // Runs as the stock runtime user with the reviewed seccomp profile. Resolve the real
@@ -80,6 +99,14 @@ async function readerWithPrivateProvider() {
 async function readWithStockCodex() {
   const assert = (await import("node:assert/strict")).default;
   const { mkdirSync, readdirSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const publicEnvironment = JSON.parse(
+    execFileSync(
+      process.execPath,
+      ["/tmp/transport.mjs", "--install-material", "/tmp/public-material.json"],
+      { encoding: "utf8" },
+    ),
+  );
   const { resolveProviderIdForAuth } = await import("openclaw/plugin-sdk/provider-auth-aliases");
   const { pluginConfig, skillPath } = JSON.parse(process.argv[1]);
   const workspace = "/home/node/workspace";
@@ -128,7 +155,7 @@ async function readWithStockCodex() {
     startOptions: {
       ...start,
       args: [...start.args, ...overrides],
-      env: { HOME: "/home/node", CODEX_HOME: "/tmp/public-codex" },
+      env: { HOME: "/home/node", CODEX_HOME: "/tmp/public-codex", ...publicEnvironment },
       clearEnv: ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"],
     },
   });
@@ -138,8 +165,8 @@ async function readWithStockCodex() {
     const shell = [
       'test "$CODEX_NETWORK_PROXY_ACTIVE" = 1',
       'test "$CODEX_NETWORK_ALLOW_LOCAL_BINDING" = 0',
-      'origin=$(grep -Eo "http://[0-9.]+:8080" "$1")',
-      'curl -q --proxy "$HTTP_PROXY" --noproxy "" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
+      'origin=$(grep -Eo "https://[0-9.]+:8080" "$1" | head -1)',
+      'curl -q --proxy "$HTTP_PROXY" --noproxy "" --cacert "$OCE_PUBLIC_GITHUB_READ_CA_FILE" -H "Authorization: Bearer $OCE_PUBLIC_GITHUB_READ_CAPABILITY" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
     ].join("\n");
     const result = await client.request("command/exec", {
       permissionProfile: profileName,
@@ -162,12 +189,10 @@ test(
     const owner = "oce-public-read-" + randomUUID();
     const reader = owner + "-reader";
     const server = fileURLToPath(
-      new URL(
-        "../../apps/controller/src/drivers/repo/github/public-read/server.ts",
-        import.meta.url,
-      ),
+      new URL("../../apps/controller/src/drivers/repo/github/public-read/", import.meta.url),
     );
     const pullTitle = "public-pull-" + randomUUID();
+    const capability = "rev_fixture." + randomBytes(32).toString("base64url");
     const isolated = [
       "--network",
       owner,
@@ -198,7 +223,9 @@ test(
       "--tmpfs",
       "/tmp",
       "-v",
-      server + ":/tmp/public-read.ts:ro",
+      server + ":/tmp/public-read:ro",
+      "--env",
+      "OCE_TEST_PUBLIC_CAPABILITY=" + capability,
       "--entrypoint",
       "node",
       image,
@@ -223,7 +250,14 @@ test(
       allowLocalBinding: false,
       domains: { [address]: "allow" },
     };
-    const publicGithubRead = codexPublicGithubRead(address, proxy);
+    const caBundle = (await runDocker(["exec", reader, "cat", "/tmp/provider.pem"])).stdout;
+    const publicGithubRead = {
+      address,
+      endpoint: "https://" + address + ":8080",
+      caBundle,
+      skillPath: "/home/node/.openclaw/skills/public-github-read/SKILL.md",
+      authenticatedRepositories: [],
+    };
     const projection = pluginRuntimeConfigMapData({
       kind: "codex",
       selections: {},
@@ -243,6 +277,14 @@ test(
     const skill = join(directory, "SKILL.md");
     const { skillPath } = publicGithubRead;
     await writeFile(skill, projection[PUBLIC_GITHUB_READ_SKILL]);
+    const material = join(directory, "public-material.json");
+    await writeFile(material, projection["public-github-read.json"]);
+    const transport = fileURLToPath(
+      new URL(
+        "../../apps/controller/src/drivers/repo/github/public-read/transport.mjs",
+        import.meta.url,
+      ),
+    );
     const proof = await runDocker([
       "run",
       "--rm",
@@ -257,6 +299,12 @@ test(
       "/tmp",
       "-v",
       skill + ":" + skillPath + ":ro",
+      "-v",
+      material + ":/tmp/public-material.json:ro",
+      "-v",
+      transport + ":/tmp/transport.mjs:ro",
+      "--env",
+      "OCE_PUBLIC_GITHUB_READ_CAPABILITY=" + capability,
       "--entrypoint",
       "node",
       image,

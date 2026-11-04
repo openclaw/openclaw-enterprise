@@ -1251,6 +1251,8 @@ async function enablePublicReader(stack) {
   const values = JSON.parse(await readFile(valuesPath, "utf8"));
   const reader = await installPublicGithubReadFixture({
     namespace: stack.state.platformNamespace,
+    release: "openclaw-enterprise",
+    installationId: (await stack.api("GET", "/installation")).id,
     controllerImage: values.images.controller,
     kubectl: async (...args) => (await kubectl(stack, args)).stdout,
     applyManifest: (input) => kubectl(stack, ["apply", "-f", "-"], { input }),
@@ -1642,6 +1644,10 @@ async function createCodexAgent(stack, reader, label, modelCredential) {
   });
   const values = createHarnessConfiguration("codex", defaultAgentModel);
   if (reader) {
+    values.plugins.entries.codex.config.publicGithubRead = {
+      mode: "repositories",
+      repositories: ["example/public-project"],
+    };
     values.plugins.entries.codex.config.appServer.networkProxy = {
       enabled: true,
       mode: "limited",
@@ -1868,13 +1874,16 @@ async function revisionHarness(stack, agent, revisionId) {
 // Keep one Agent-to-reader socket busy, avoiding the reader's idle timeout.
 // A second selected Agent performs the same requests throughout the interval.
 function holdReaderSocket(stack, pod, address, number) {
-  const script = `const http = require('node:http');
-const agent = new http.Agent({keepAlive:true, maxSockets:1});
+  const script = `const https = require('node:https');
+const fs = require('node:fs');
+const material = JSON.parse(fs.readFileSync(process.env.OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE, 'utf8'));
+const capability = fs.readFileSync(process.env.OCE_PUBLIC_GITHUB_READ_CAPABILITY_FILE, 'utf8').trim();
+const agent = new https.Agent({keepAlive:true, maxSockets:1, ca:material.caBundle});
 let busy = false;
 function read() {
   if (busy) return;
   busy = true;
-  const req = http.get({host:${JSON.stringify(address)}, port:8080, path:'/repos/example/public-project/pulls/${number}', agent}, res => {
+  const req = https.get({host:${JSON.stringify(address)}, port:8080, path:'/repos/example/public-project/pulls/${number}', agent, headers:{Authorization:'Bearer '+capability}}, res => {
     res.resume(); res.on('end', () => { if (res.statusCode !== 200) process.exit(2); busy = false; console.log('ok'); });
   });
   req.on('error', () => process.exit(3));
@@ -2055,6 +2064,7 @@ async function proveRetirement(stack, selected, control, reader) {
     );
     assert.ok(!stillSelected.closed(), "selected control stopped during withdrawal");
     const unselected = structuredClone(selected.values);
+    delete unselected.plugins.entries.codex.config.publicGithubRead;
     unselected.plugins.entries.codex.config.appServer.networkProxy.domains = {};
     await stack.api(
       "PATCH",
@@ -2108,8 +2118,8 @@ async function proveRetirement(stack, selected, control, reader) {
       "unselected successor discovered the reader skill",
     );
     log("unselected Gateway and Harness skill: absent");
-    const negative = `const http = require('node:http');
-const req = http.get({host:${JSON.stringify(reader.peer.address)}, port:8080, path:'/repos/example/public-project/pulls/29'}, res => {res.resume(); process.exit(1)});
+    const negative = `const https = require('node:https');
+const req = https.get({host:${JSON.stringify(reader.peer.address)}, port:8080, ca:${JSON.stringify(reader.peer.caBundle)}, path:'/repos/example/public-project/pulls/29'}, res => {res.resume(); process.exit(1)});
 const timer = setTimeout(() => req.destroy(new Error('probe-deadline')), 5000);
 req.on('error', error => { clearTimeout(timer); process.exit(error.message === 'probe-deadline' || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'].includes(error.code) ? 0 : 2); });`;
     const controlBeforeNegative = stillSelected.count();

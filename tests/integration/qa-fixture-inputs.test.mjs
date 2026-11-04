@@ -104,12 +104,19 @@ test("API-key QA injection stays in the consumer and its errors are redacted", a
       "-e",
       `
     import { launcherEnvironment } from ${JSON.stringify(helper)};
-    console.log(Object.hasOwn(launcherEnvironment(), "OCC_TEST_QA_MODEL_API_KEY"));
+    console.log(JSON.stringify({ modelKey: Object.hasOwn(launcherEnvironment(), "OCC_TEST_QA_MODEL_API_KEY"), forwarder: launcherEnvironment().OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR }));
   `,
     ],
-    { encoding: "utf8", env: { ...process.env, OCC_TEST_QA_MODEL_API_KEY: secret } },
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OCC_TEST_QA_MODEL_API_KEY: secret,
+        OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR: "192.168.127.1/32",
+      },
+    },
   );
-  assert.equal(result.trim(), "false");
+  assert.deepEqual(JSON.parse(result), { modelKey: false, forwarder: "192.168.127.1/32" });
 });
 
 test(
@@ -297,6 +304,24 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
       selectQaMatrix({
         OCC_TEST_QA_SCENARIOS: "codex-search-config,model-ui",
       }),
+    /exclusive QA selection/,
+  );
+  const publicGit = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "public-github-git",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "compose",
+    OCC_TEST_QA_MODEL_API_KEY: "synthetic-key",
+  });
+  assert.equal(publicGit.publicGithubGit, true);
+  assert.equal(publicGit.repository, false);
+  assert.ok(publicGit.cells.every((cell) => cell.scenarios.length === 0));
+  assert.deepEqual(publicGit.requiredEnv, [
+    "OCC_TEST_QA_MODEL_API_KEY",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+    "OCC_TEST_QA_CODEX_MODEL",
+  ]);
+  assert.throws(
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "public-github-git,model-ui" }),
     /exclusive QA selection/,
   );
   const full = selectQaMatrix({});

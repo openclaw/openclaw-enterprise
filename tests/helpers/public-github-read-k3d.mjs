@@ -1,16 +1,23 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { fileTemporaryDirectory } from "./temporary-directory.mjs";
+import { selfSigned } from "./certificates.mjs";
 import { parseProductionChart, renderProductionChart } from "./production-chart.mjs";
 
 /** Install the chart reader in this journey's disposable namespace. Replace only GitHub. */
 export async function installPublicGithubReadFixture({
   namespace,
+  release = "oce",
+  installationId,
   controllerImage,
   kubectl,
   applyManifest,
   waitFor,
   observeRequests = false,
+  liveGithub = false,
+  policy = { mode: "repositories", repositories: ["example/public-project"] },
 }) {
+  assert.ok(installationId, "reader fixture requires the actual OCC Installation ID");
   const name = "openclaw-enterprise-public-github-read";
   // Let this cluster reserve a Service IP. Apply the chart over the same Service
   // so no other fixture can acquire the IP between allocation and Agent admission.
@@ -19,23 +26,78 @@ export async function installPublicGithubReadFixture({
       apiVersion: "v1",
       kind: "Service",
       metadata: { name, namespace },
-      spec: { type: "ClusterIP", ports: [{ name: "http", port: 8080, targetPort: "http" }] },
+      spec: { type: "ClusterIP", ports: [{ name: "https", port: 8080, targetPort: "https" }] },
     }),
   );
   const allocated = JSON.parse(
     await kubectl("get", "service", name, "--namespace", namespace, "-o", "json"),
   );
   const address = allocated.spec.clusterIP;
+  const tlsSecretName = `${name}-tls`;
+  const authorizationConfigMapName = `${name}-authorizations`;
+  const tls = await selfSigned(fileTemporaryDirectory("oce-reader-k3d-tls-"), {
+    subjectAltName: `IP:${address}`,
+  });
+  let upstreamCidrs = ["192.0.2.1/32"];
+  if (liveGithub) {
+    const response = await fetch("https://api.github.com/meta", {
+      signal: AbortSignal.timeout(30_000),
+    });
+    assert.ok(response.ok, "GitHub's public address metadata must be available");
+    const metadata = await response.json();
+    upstreamCidrs = [...new Set([...metadata.git, ...metadata.api])].filter(
+      (cidr) => !cidr.includes(":"),
+    );
+    assert.ok(upstreamCidrs.length > 0, "GitHub must publish IPv4 Git and API addresses");
+  }
   const { stdout } = await renderProductionChart(
     {
       "images.controller": controllerImage,
       "publicGithubRead.enabled": true,
       "publicGithubRead.clusterIP": address,
-      "publicGithubRead.upstreamCidrs[0]": "192.0.2.1/32",
+      "publicGithubRead.installationId": installationId,
+      "publicGithubRead.authorizationConfigMapName": authorizationConfigMapName,
+      "publicGithubRead.tlsSecretName": tlsSecretName,
+      "publicGithubRead.policy.mode": policy.mode,
+      ...Object.fromEntries(
+        (policy.repositories ?? []).map((repository, index) => [
+          `publicGithubRead.policy.repositories[${index}]`,
+          repository,
+        ]),
+      ),
+      ...Object.fromEntries(
+        upstreamCidrs.map((cidr, index) => [`publicGithubRead.upstreamCidrs[${index}]`, cidr]),
+      ),
     },
-    { namespace },
+    { namespace, release, strings: { "publicGithubRead.caBundle": tls.cert } },
   );
-  const items = (await parseProductionChart(stdout)).filter((item) => item.metadata.name === name);
+  const items = (await parseProductionChart(stdout)).filter((item) =>
+    item.metadata.name.startsWith(name),
+  );
+  items.push({
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: {
+      name: authorizationConfigMapName,
+      labels: {
+        "openclaw.dev/public-read-installation": createHash("sha256")
+          .update(installationId)
+          .digest("hex")
+          .slice(0, 32),
+      },
+    },
+    data: { "authorizations.json": "{}\n" },
+  });
+  items.push({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: { name: tlsSecretName },
+    type: "kubernetes.io/tls",
+    data: {
+      "tls.crt": Buffer.from(tls.cert).toString("base64"),
+      "tls.key": Buffer.from(tls.key).toString("base64"),
+    },
+  });
   const pod = items.find(({ kind }) => kind === "Deployment").spec.template;
   const service = items.find(({ kind }) => kind === "Service");
   assert.equal(service.spec.clusterIP, address);
@@ -69,14 +131,14 @@ export async function installPublicGithubReadFixture({
     "};",
     ...(observeRequests
       ? [
-          "const createServer = http.createServer;",
+          "const createServer = https.createServer;",
           "let nextConnection = 0;",
-          "http.createServer = (options, handler) => {",
+          "https.createServer = (options, handler) => {",
           "  const reader = createServer(options, (req, res) => {",
           '  if (req.url !== "/healthz") console.log(JSON.stringify({event: "reader", path: req.url, connection: req.socket.oceConnection}));',
           "  handler(req, res);",
           "  });",
-          "  reader.on('connection', socket => {",
+          "  reader.on('secureConnection', socket => {",
           "    const connection = ++nextConnection; socket.oceConnection = connection;",
           "    console.log(JSON.stringify({event: 'connection', connection}));",
           "    socket.on('close', () => console.log(JSON.stringify({event: 'closed', connection})));",
@@ -87,10 +149,12 @@ export async function installPublicGithubReadFixture({
       : []),
     "syncBuiltinESMExports();",
   ].join("\n");
-  pod.spec.containers[0].args.unshift(
-    "--import",
-    "data:text/javascript," + encodeURIComponent(provider),
-  );
+  if (!liveGithub) {
+    pod.spec.containers[0].args.unshift(
+      "--import",
+      "data:text/javascript," + encodeURIComponent(provider),
+    );
+  }
   for (const item of items) {
     item.metadata.namespace = namespace;
   }
@@ -171,5 +235,15 @@ export async function installPublicGithubReadFixture({
     },
     120_000,
   );
-  return { peer: { namespace, podLabels: liveService.spec.selector, address }, marker };
+  return {
+    peer: {
+      namespace,
+      podLabels: liveService.spec.selector,
+      address,
+      installationId,
+      authorizationConfigMapName,
+      caBundle: tls.cert,
+    },
+    marker,
+  };
 }

@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, copyFile, chmod, readFile, writeFile, stat } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  copyFile,
+  chmod,
+  readFile,
+  writeFile,
+  stat,
+  realpath,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
@@ -85,9 +94,14 @@ export function launcherEnvironment() {
   );
   for (const name of [
     "OCC_DEVELOPMENT_K3S_IMAGE",
+    "OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR",
     "OCC_DEVELOPMENT_K3D_DNS_RESOLVER",
     "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT",
     "NODE_BASE_IMAGE",
+    "OCC_DEVELOPMENT_OPENSHELL_GATEWAY_IMAGE",
+    "OCC_DEVELOPMENT_OPENSHELL_SANDBOX_IMAGE",
+    "OCC_DEVELOPMENT_OPENSHELL_SUPERVISOR_IMAGE",
+    "OCC_DEVELOPMENT_OPENSHELL_SOURCE_REVISION",
   ]) {
     if (process.env[name]) {
       env[name] = process.env[name];
@@ -457,7 +471,7 @@ export async function createQaInstallation(
   assert.ok(["none", "openshell"].includes(sandboxDriver));
   const suffix = randomUUID().slice(0, 8);
   const cluster = `occ-dev-qa-${controlPlane === "compose" ? "c" : "k"}-${suffix}`;
-  const directory = await mkdtemp(join(tmpdir(), `${cluster}-`));
+  const directory = await mkdtemp(join(await realpath(tmpdir()), `${cluster}-`));
   const stateDirectory = join(directory, "state");
   const ports = new Set();
   while (ports.size < 4) {
@@ -472,7 +486,7 @@ export async function createQaInstallation(
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
     OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
     OCC_DEVELOPMENT_SANDBOX_DRIVER: sandboxDriver,
-    OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
+    OCC_DEVELOPMENT_CONTAINER_ENGINE: process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker",
     OCC_DEVELOPMENT_COMPOSE_PROJECT: cluster,
     OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
     OCC_DEVELOPMENT_KUBERNETES_CLUSTER: cluster,
@@ -643,6 +657,7 @@ export async function createQaInstallation(
           );
         }
       }
+      await f.afterSaveInstallation?.();
       await waitFor("OCC after configuration", async () => {
         try {
           return await f.api("GET", "/installation");
@@ -844,6 +859,12 @@ export async function createQaInstallation(
   f.state = JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8"));
   assert.equal(f.state.cluster, cluster);
   assert.equal(f.state.sandboxDriver, sandboxDriver);
+  // Continue against the exact endpoint chosen and recorded by dev-up.
+  env.DOCKER_HOST = f.state.dockerHost;
+  if (f.state.containerEngine === "podman") {
+    env.CONTAINER_HOST = f.state.dockerHost;
+    delete env.CONTAINER_CONNECTION;
+  }
   f.serviceKey = JSON.parse(
     await protectedText(join(stateDirectory, "initial-admin-service-key.json"), "bootstrap key"),
   ).data.key;
@@ -994,7 +1015,7 @@ export async function createQaAgent(
   presetName,
   browserOrigin,
   nameSuffix = "",
-  { apiKeyAuth = false } = {},
+  { apiKeyAuth = false, configureValues = undefined } = {},
 ) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
@@ -1031,6 +1052,7 @@ export async function createQaAgent(
     ...(browserOrigin ? { allowedOrigins: [browserOrigin] } : {}),
   };
   values.agents.defaults.skipBootstrap = true;
+  configureValues?.(values);
   const secret = await f.api("POST", `/namespaces/${f.namespace.id}/secrets`, {
     name: `${rendered.agent.name}-model`,
     value: credential,

@@ -7922,6 +7922,7 @@ test(
         const rev = {
           ...revision,
           id: revisionId,
+          compute: { id: protectedGit.computeDriver.id, implementation: "kubernetes" },
           harnessAuth: auth,
           egressPlan: plan,
           executionAdmission: { version: 5, mode: "protected" },
