@@ -12,10 +12,12 @@ const credentialDirectories = [
   "backends/token-service",
 ];
 const sharedConfigurationFields = "composition/installation-fields.ts";
+const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
 const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
 const requiredEntrypoints = [
   ...processEntrypoints,
   sharedConfigurationFields,
+  openShellEvidence,
   "composition/repository-credentials/check-config.ts",
   "composition/repository-credentials/projected-inputs.ts",
   "composition/repository-credentials/probe.ts",
@@ -34,6 +36,20 @@ const sourceExtensions = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", 
 
 // Adding an I/O owner or member requires security review; see the owning test guide.
 const reviewedImports = {
+  // Pure recipient SQL only: no adapter, loader, material or I/O authority.
+  [openShellEvidence]: {
+    "@openclaw-enterprise/contracts": ["repositoryGitRecipientFields"],
+    "../repo/credentials/protected-repository-git-installation.ts": [
+      "admittedAuthorization",
+      "recipientAuthorization",
+      "peerKey",
+      "recipient",
+      "registeredGitSelection",
+      "installationGitAdoption",
+      "selectedGitAdoption",
+      "protectedGitAdoption",
+    ],
+  },
   [sharedConfigurationFields]: {
     "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
     "node:path": ["isAbsolute"],
@@ -42,15 +58,7 @@ const reviewedImports = {
     "../../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
   },
   "drivers/repo/github/installation.ts": {
-    "../../../composition/installation-fields.ts": [
-      "object",
-      "closed",
-      "nonempty",
-      "openShellRepositoryConfiguration",
-    ],
-    // Hash selected configuration without loading mounted key bytes.
-    "node:crypto": ["createHash"],
-    "@openclaw-enterprise/occ": ["SandboxRepositoryRecipientUnverifiedError"],
+    "../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
   },
   "drivers/repo/github/credentials/material.ts": {
     "node:crypto": ["KeyObject", "constants", "sign"],
@@ -71,8 +79,9 @@ const reviewedImports = {
     "node:util": ["parseArgs"],
   },
   "drivers/repo/github/credentials/client/commands.ts": { "node:child_process": ["spawnSync"] },
+  // chmod restores 0700/0600 after umask. It does not read credential material.
   "drivers/repo/github/credentials/client/config.ts": {
-    "node:fs/promises": ["lstat", "mkdir", "mkdtemp", "open", "rename", "rm"],
+    "node:fs/promises": ["chmod", "lstat", "mkdir", "mkdtemp", "open", "rename", "rm"],
   },
   "drivers/repo/github/credentials/client/launch.ts": {
     "node:child_process": ["spawn"],
@@ -193,10 +202,13 @@ const reviewedImports = {
   },
   // Standalone grants hash only nonsecret configuration/profile policy, never key material.
   "drivers/repo/github/credentials/grants.ts": { "node:crypto": ["createHash"] },
+  // Hash the canonical public CA bundle for issuer trust identity.
+  "drivers/repo/github/credentials/origin.ts": { "node:crypto": ["createHash"] },
   "drivers/repo/github/policy.ts": {
     "@openclaw-enterprise/occ": ["ScopeViolationError"],
   },
   "drivers/repo/github/driver.ts": {
+    "@openclaw-enterprise/contracts": ["isInstallationRepositoryProfile"],
     "@openclaw-enterprise/occ": ["DependencyUnavailableError", "ScopeViolationError"],
   },
   // The isolated image probe reports only a synthetic binding and failure kind.
@@ -246,6 +258,12 @@ const ordinaryBuiltins = new Set([
 // Restrict imports and re-exports inside scanned credential source. The worker
 // entrypoint is outside that source; packaging and runtime tests cover that boundary.
 const capabilityConsumers = {
+  [openShellEvidence]: {
+    "composition/repository-credentials/custody-selection.ts": [
+      "openShellGitRecipientEvidence",
+      "openShellPreviewEnded",
+    ],
+  },
   "backends/repository-credentials/control-socket.ts": {
     "backends/repository-credentials/private-request-server.ts": ["prepareControlSocket"],
     "drivers/repo/credentials/server.ts": ["prepareControlSocket"],
@@ -450,10 +468,18 @@ function inspectSource(path, root, sources, ast) {
       continue;
     }
     const source = node.source.value;
-    if (ordinaryBuiltins.has(source) && file !== sharedConfigurationFields) {
+    if (
+      ordinaryBuiltins.has(source) &&
+      file !== sharedConfigurationFields &&
+      file !== openShellEvidence
+    ) {
       continue;
     }
-    if (source.startsWith(".") && file !== sharedConfigurationFields) {
+    if (
+      source.startsWith(".") &&
+      file !== sharedConfigurationFields &&
+      file !== openShellEvidence
+    ) {
       const target = relativeSource(path, root, source, sources);
       const restricted =
         target === sharedConfigurationFields ||
@@ -477,6 +503,22 @@ function inspectSource(path, root, sources, ast) {
     if (typeof specifier !== "string") {
       deny(node, "nonliteral module loading requires security review");
       return;
+    }
+    // Like the shared field owner, this pure module must not inherit general
+    // relative-source or ordinary-builtin access (including credential material).
+    if (file === openShellEvidence) {
+      if (
+        kind === "import" &&
+        names.every((binding) => reviewedImports[file]?.[specifier]?.includes(binding))
+      ) {
+        // Continue through the source and capability checks for relative imports.
+        if (!specifier.startsWith(".")) {
+          return;
+        }
+      } else {
+        deny(node, `unreviewed OpenShell evidence ${kind} from ${specifier}`);
+        return;
+      }
     }
     // The pure owner and its consumers admit only exact module spellings and symbols.
     // Do not inherit ordinary builtin or relative-source permissions here.
@@ -678,7 +720,7 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
     }
     files.push(...owned.sort());
   }
-  for (const entrypoint of [...processEntrypoints, sharedConfigurationFields]) {
+  for (const entrypoint of [...processEntrypoints, sharedConfigurationFields, openShellEvidence]) {
     const path = join(root, entrypoint);
     const stat = await lstat(path).catch((error) => {
       if (error.code !== "ENOENT") {

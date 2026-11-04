@@ -5,7 +5,6 @@ import { readFile } from "node:fs/promises";
 
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -538,12 +537,12 @@ export const repositoryBackendFixture = Object.freeze({
 /**
  * @param {import("node:test").TestContext} t
  * @param {(namespaceId: string) => readonly GitHubRepositoryRegistration[]} buildRepositories
- * @param {{ reloadablePolicy?: boolean, controlSocket?: string }} [options]
+ * @param {{ reloadablePolicy?: boolean, includeInstallationAccess?: boolean }} [options]
  */
 export async function createRepositoryLaunchFixture(
   t,
   buildRepositories,
-  { reloadablePolicy = false, controlSocket } = {},
+  { reloadablePolicy = false, includeInstallationAccess = false } = {},
 ) {
   const fixture = await createConsoleAppFixture(t, {
     defaultPresets: [defaultCodexPreset],
@@ -552,7 +551,11 @@ export async function createRepositoryLaunchFixture(
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Repository launch", { ready: true });
-  let currentPolicy = repositoryPolicyDriver(buildRepositories(namespace.id), controlSocket);
+  const installationNamespaceId = includeInstallationAccess ? namespace.id : undefined;
+  let currentPolicy = repositoryPolicyDriver(
+    buildRepositories(namespace.id),
+    installationNamespaceId,
+  );
   // Simulate replacing mounted policy between requests while keeping all projection and resolution
   // decisions in the actual GitHub Driver. This does not prove production configuration reload.
   const repoDriver = reloadablePolicy
@@ -576,15 +579,12 @@ export async function createRepositoryLaunchFixture(
     /** @param {readonly GitHubRepositoryRegistration[]} repositories */
     replacePolicy(repositories) {
       assert.equal(reloadablePolicy, true);
-      currentPolicy = repositoryPolicyDriver(repositories, controlSocket);
+      currentPolicy = repositoryPolicyDriver(repositories, installationNamespaceId);
     },
   };
 }
 
-function repositoryPolicyDriver(
-  repositories,
-  controlSocket = "/unused/console/repository-control.sock",
-) {
+function repositoryPolicyDriver(repositories, installationNamespaceId) {
   const backend = repositoryBackendFixture;
   const registry = validateGitHubRepositoryRegistry(
     {
@@ -595,14 +595,21 @@ function repositoryPolicyDriver(
       githubInstallationId: "456",
       maximumDurationSeconds: 3600,
       repositories,
+      ...(installationNamespaceId === undefined
+        ? {}
+        : {
+            installationAccess: {
+              repositoryRef: "test-installation",
+              namespaces: [{ namespaceId: installationNamespaceId, accessMode: "installation" }],
+            },
+          }),
     },
     backend.id,
   );
   return new GitHubRepositoryPolicy(
     {
-      id: backend.id,
-      client: new UnixRepositoryCredentialControlClient({ controlSocket }),
-      drivers: backend.drivers,
+      driverId: backend.drivers.repo,
+      backendId: backend.id,
     },
     registry,
     { sessionDurationSeconds: 600 },

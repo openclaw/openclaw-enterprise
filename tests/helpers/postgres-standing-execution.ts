@@ -62,8 +62,8 @@ export async function standingExecutionFixture(
     } as const);
   const driver = new GitHubRepositoryPolicy(
     {
-      id: registry.backendId,
-      drivers: { repo: registry.backendId },
+      driverId: external?.backendId ?? "execution-proof",
+      backendId: external?.backendId ?? "execution-proof",
     },
     registry,
     { sessionDurationSeconds: 120 },
@@ -189,6 +189,7 @@ export async function standingExecutionPlatform(
   t: TestContext,
   testUrl: string,
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  backends: import("../../packages/contracts/src/index.ts").BackendDefinition[] = [],
 ) {
   await ensurePostgresAgentBootstrap(t, {
     label: "standing-execution",
@@ -206,6 +207,6 @@ export async function standingExecutionPlatform(
       }
     }
   });
-  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections };
+  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections, backends };
   return createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
 }

@@ -61,7 +61,7 @@ controlPlane:
   nodeSelector:
     oce-role: control
 
-# Required by dedicated Harness storage; install Envoy Gateway and cert-manager,
+# Enabled by default and required by dedicated Harness storage. Install Envoy Gateway and cert-manager,
 # and create this service-key Secret before deployment. See workspace-routing.md.
 gatewayRouting:
   enabled: true

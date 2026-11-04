@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   fileBrowser,
+  fulfillPatchedJson,
   login,
   newPage,
   settledFetches,
@@ -15,6 +16,7 @@ import {
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
+import { refocus } from "./console-refocus-helpers.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 
 // Create Agent open on a provisioning Namespace rechecks it every 10 s while a Dedicated plan
@@ -68,15 +70,15 @@ async function routeNamespace(page, namespaceId) {
         await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
         return;
       }
-      const response = await route.fetch();
-      const body = await response.json();
-      body.data = body.data.filter((item) => !(state.absent && item.id === namespaceId));
-      body.data = body.data.map((item) =>
-        item.id === namespaceId && state.status
-          ? { ...item, ...state.fields, status: state.status }
-          : item,
-      );
-      await route.fulfill({ response, json: body });
+      await fulfillPatchedJson(route, (body) => {
+        body.data = body.data.filter((item) => !(state.absent && item.id === namespaceId));
+        body.data = body.data.map((item) =>
+          item.id === namespaceId && state.status
+            ? { ...item, ...state.fields, status: state.status }
+            : item,
+        );
+        return body;
+      });
     },
   );
   return state;
@@ -278,7 +280,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await view.getByText(MISSING_LINE, { exact: true }).waitFor();
     namespaces.absent = false;
     namespaces.status = null;
-    await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+    await refocus(page);
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
     await view.getByRole("status").filter({ hasText: READY_NOTE }).waitFor();
     await waitForEnabled(create);
@@ -349,9 +351,9 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     const release = namespaces.hold();
     const before = await started();
     await page.clock.runFor(10_000);
-    await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+    await refocus(page);
     await page.clock.runFor(10_000);
-    await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+    await refocus(page);
     assert.equal(await started(), before + 1);
     namespaces.status = null;
     const read = page.waitForResponse(

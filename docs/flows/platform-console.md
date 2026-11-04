@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-30
-last_updated_session: b03beb3e-57d1-47cf-829f-e31955a47d3c
+updated: 2026-11-03
+last_updated_session: authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6
 ---
 
 # Platform console request flow
@@ -182,7 +182,8 @@ first ready/readable Namespace. Unreadable IDs remain unavailable; selection
 never becomes an API query selector. `shell.mts:namespaceSelector` hides choices
 during session/Namespace checks, naming known selections; retained-view reads do
 not extend this. Widening past 760px closes the drawer, releases `main.inert`, and
-avoids focusing its hidden toggle. `createShell` preserves primary navigation
+avoids focusing its hidden toggle. While `drawer-open`, `console.css` prevents
+background scrolling. `createShell` preserves primary navigation
 presses across replacement renders. Empty lists explain access. Namespace
 navigation sends Agent detail/creation to Agents; global pages stay open and
 recovered warnings disappear.
@@ -271,6 +272,7 @@ exclude passwords. Secret saves update the shared snapshot.
 `agents/detail.mts:boundSecretsDenied` reuses Deploy's authorized names.
 Configuration excludes Harness-only Secrets; Plugins/Credentials include them.
 Epochs fence publication; rechecks clear names and refresh authorized reads.
+Deploy keeps its last Secret operate answer until the refreshed one lands.
 Late names preserve state/focus; metadata failures keep IDs; unknown grants stay generic.
 
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
@@ -370,6 +372,10 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-03 15:16: Preserve page position during navigation. (authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6 - 44c2f77b611207eef71a69f82ab692c26dbea2bc)
+
+- 2026-10-30 14:30: Keep Deploy's last Secret operate answer while a recheck rereads it. (bughunt-1030g - a382326dde)
+
 - 2026-10-30 11:02: Name denied Secrets. (b03beb3e-57d1-47cf-829f-e31955a47d3c - f5d5dfda697a9e0d41c88a4e570dafcce768ec7b)
 
 - 2026-10-30 09:32: Name authorized bound Secrets in the Configuration save permission hint. (b03beb3e-57d1-47cf-829f-e31955a47d3c - 755ff77baa3377441be0938302030386fa985c75)
@@ -384,9 +390,5 @@ gateway startup and file availability.
 
 - 2026-10-29 11:42: Keep contextual request recovery and scope binding scrubbing to its preflight. (authoring-run/221d2fc5-7549-4054-a3ab-6b078a1755ae - aa74d9bc28d8c)
 - 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
-
-- 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
-
-- 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

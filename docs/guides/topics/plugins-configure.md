@@ -21,6 +21,12 @@ The picker lists compatible sources attached to the Agent. Other sources can sta
 package digest changes, select the account again. Clearing the slot or removing
 the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
+To deploy Slack, select **Slack**, add it, save the selection and deploy. Inspect the server on the dedicated worker with the command below. It shows `https://mcp.slack.com/mcp` with `enabled: false`. This release stages the server without an account.
+
+```sh
+OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.slack --json
+```
+
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
 The CLI example below uses Diffs.
@@ -51,6 +57,22 @@ does not mark read-only. New app actions inherit that default. Deploy, then
 check the effective policy and a normal Agent turn; a saved selection alone does
 not prove approval routing. See the [approval policy](../../reference/agent-plugins.md#approval-policy)
 and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
+
+## Prepare a Slack MCP credential
+
+Register a `bearer-token` credential source that references the saved Slack
+OAuth access token as its `token` Secret. Use
+`protocol: mcp`, `host: mcp.slack.com`, `port: "443"`, `path: /mcp`,
+`env_var: SLACK_MCP_TOKEN`. OCE stores the token through the Secret Driver
+and supplies the access token to OpenShell for injection.
+
+Use the OpenShell Sandbox and Credential Gateway Drivers. Add
+`/usr/local/bin/node` to `toolBinaries`. Attach the source to the Agent draft
+and grant the operator and Agent service principal `credential_source:operate`
+on it. [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
+· [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
+
+A standalone Slack source permits MCP `ping`.
 
 ## Before you start
 
@@ -93,6 +115,16 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   an Agent entry. A `tools.byProvider` object that also has a
   `<provider>/<model>` key for that provider is not checked, because OpenClaw
   may rewrite the model ID it matches.
+- Check the Configuration's plugin settings. With Diffs enabled, the Gateway
+  does not start when `plugins.enabled` is `false`, `plugins.deny` lists
+  `diffs`, or a non-empty `plugins.allow` leaves it out. Configuration save
+  refuses an item in either list that is not text, such as `1`. OCE writes the
+  `plugins.entries.diffs` entry from the selection. The Configuration can hold
+  only an exact copy: `{"enabled": true}` with Diffs enabled, or
+  `{"enabled": false}` with it disabled. With an HTTPS `gateway.publicOrigin` listed in
+  `gateway.controlUi.allowedOrigins` and Diffs enabled, it must not hold one.
+  Agent create, update, provisioning and deployment return `400` naming the
+  setting.
 - With one Agent under `agents.entries` and a `minimal`, `coding` or
   `messaging` tool profile, the Agent's own `tools.alsoAllow` replaces the
   top-level list that grants Diffs, so the request returns `400` unless that

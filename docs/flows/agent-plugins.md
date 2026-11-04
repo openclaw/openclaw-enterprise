@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-29
-last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
+updated: 2026-11-03
+last_updated_session: authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7
 ---
 
 # Agent Plugin Deployment Flow
@@ -116,17 +116,19 @@ teardown sends `SIGTERM`, then `SIGKILL` after one second if needed. HTTP discov
 
 HTTP contracts validate input before [OpenClawController](../../packages/occ/src/index.ts)
 checks the exact Namespace and Agent. Reads require Agent `read`; create/PATCH
-stores the `plugins` map. Shared validators check the nested selection shape.
-`OpenClawController.validatePluginPolicies` calls the selected Driver's
-`validatePolicies` before Agent create/update and provisioning writes. Its optional
-`validateAgentConfiguration` checks selections against Configuration values here and at
-deployment. The OpenClaw Driver refuses a selection whose tools `tools.deny`, the sole
-`agents.entries` entry's list, the primary provider's `byProvider` lists, or these together block,
-any selection beside an entry denying `*`, or one a sole entry's `alsoAllow` hides under a profile. Unsupported
-controls, reviewer scopes, and combinations return `400 INVALID_REQUEST`;
+stores the `plugins` map. `OpenClawController.validatePluginPolicies` calls the selected Driver's
+`validatePolicies` before Agent create/update and provisioning writes, and its optional
+`validateAgentConfiguration` there and at deployment. The OpenClaw Driver refuses a selection
+whose tools `tools.deny`, the sole `agents.entries` entry's list, the primary provider's
+`byProvider` lists, or these together block, any selection beside an entry denying `*`, or one a
+sole entry's `alsoAllow` hides under a profile. With an OpenClaw Harness,
+[`openClawPluginSettingConflict`](../../apps/controller/src/drivers/plugin/openclaw-plugin-settings.ts)
+first refuses [plugin settings the Gateway refuses](../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
+Unsupported controls, reviewer scopes, and combinations return `400 INVALID_REQUEST`;
 a missing selected Driver returns `501 NOT_IMPLEMENTED`. Validation is static: native app mapping,
-authentication, and release/tool metadata remain startup checks. Agent mutations store desired state and audit evidence atomically without changing
-the reusable Configuration or active runtime. On update, omission preserves the
+authentication, and release/tool metadata remain startup checks. Agent mutations store desired
+state and audit evidence atomically, leaving the Configuration and active runtime unchanged. On
+update, omission preserves the
 map, `{}` clears it, and a nonempty map replaces it.
 
 Installation uses `GET /installation`; Agent editors use
@@ -136,11 +138,13 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-Deployment revalidates selections and Configuration, records the Driver and
-policy-only plugin map in an Agent revision, and queues it. Native app mapping,
-release metadata, and configuration resolve later.
+OCC validates selections and queues the Agent revision.
 
-Google Workspace binds an attached Agent credential to a pinned release. The OpenClaw Gateway loads the skill. At deployment, the Sandbox Driver binds the credential’s host, path and scopes. When the worker runs `gog`, its OpenShell supervisor asks the execution cluster’s shared guard to check the actual request against that binding and the release’s operation map. OpenShell injects the bearer after approval. Withdrawal detaches that source. Worker recovery preserves other attachments. [Deployment and inspection](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+- **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
+- **Hosted MCP packages.** The Credential Gateway matches the endpoint and placeholder. The Sandbox translates selected tool names into OpenShell rules and rejects overlapping routes.
+- **Native runtime plugins.** Startup installs packages and verifies native tool policy.
+
+Credential withdrawal removes injection. Recovery preserves other attachments.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -181,8 +185,8 @@ container's private temporary home.
 Embedded OpenClaw validates selections against its bundled catalog and policy.
 Grants enter nonempty `tools.allow`, otherwise `tools.alsoAllow`; denies and profiles
 remain. Tool `enabled` overrides `toolDefaults.enabled`; disabled tools emit denies.
-Master disable and operator denies prevail. Diffs adds no review for
-`provider_default` or `none`. Version-private installs use `--pin --force --no-enable`,
+Master disable and operator denies prevail. The supported modes
+`provider_default` and `none` add no plugin review. Version-private installs use `--pin --force --no-enable`,
 preserving enablement and tool policy. Preparation refreshes the registry and verifies
 configuration, plugin/package identity, versions, integrity and source containment
 within the install path. Verification failures keep the Gateway unready. Confirmed
@@ -205,7 +209,12 @@ describe the generated bridge.
 <!-- Internal preparation threads one explicit RPC caller through these reads,
 writes, reviewer checks, and no-account disablement; ordinary transport is unchanged. -->
 
-After `plugin/search` resolves each selected ID,
+Startup enables experimental APIs and resolves selected IDs through `plugin/search`.
+`codex-plugin-stdio.ts:withCodexPluginStdio` retains fixed
+`nativeErrorType`/`nativeSubErrorType` values, discarding other stderr/RPC content
+and lines over 64 KiB while draining. RPC errors alone do not prove backend
+installation.
+
 `runtime-entrypoints.ts:readCodexPluginDetails` reads up to four
 selections concurrently before and after installs. Batches preserve order and drain
 before retries and final verification; writes stay sequential.
@@ -218,8 +227,6 @@ Install rejections or missing app authentication warn. Explicit tool policies
 require `mcpServerStatus/list`'s `codex_apps` inventory; `codexAppToolSettings`
 binds catalog action IDs through `_meta._codex_apps.resource_uri`. Native IDs
 work. Unknown, unowned, ambiguous, or duplicate IDs fail startup.
-
-`codexRuntimeArtifact` applies the [native policy mappings](../reference/drivers/plugin-bundled.md).
 
 After installation, startup rechecks catalog identity, version, apps and components
 before final app/tool grants; `plugin/read` cannot inspect bundles.
@@ -246,8 +253,7 @@ and `configRequirements/read`. Forbidden reviewers, incompatible automatic-revie
 settings or conflicting model requirements block startup. Checks exclude later
 workspace/session/model changes and strict review. Codex 0.156 readback omits
 execution-time managed app/tool requirements; [effective-policy proof](../testing/plugins.md#current-proof-notes)
-remains necessary. Codex owns cache integrity and health;
-[older binaries](../reference/drivers/plugin-bundled.md#native-mappings-and-limits) may ignore plugin defaults.
+remains necessary.
 
 `runtime-entrypoints.ts:disableCodexSelectionsWithoutChatGptLogin` disables enabled
 selections and app/plugin features for API-key logins when best-effort preparation
@@ -350,9 +356,6 @@ establish starvation.
 - Prove behavior with a model-chosen plugin call in a normal Agent turn, then
   disable or remove the plugin and verify another Agent is unchanged. Source or
   fixture tests are not native runtime proof.
-- The opt-in [Agent plugin testing](../testing/plugins.md) real-runtime lane covers
-  Kubernetes, database, credential, native-runtime, and historical proof. Skipped
-  native tests are not proof.
 
 ## Related docs
 
@@ -370,6 +373,13 @@ establish starvation.
 
 ## Changelog
 
-- 2026-10-29 22:19: Release deferred catalog loading when its tab is no longer current. (authoring-run/7a2bb516-4223-4156-b1a8-1d89f60a54d4)
+- 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
+
+- 2026-11-02 22:29: Trace Slack credential policy. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
+
+- 2026-10-31 05:52: Classify native install failures. (authoring-run/86b48c89-0c80-493f-b48a-6999988d4766 - 6d941c15081e95ef36b4ba1ffbbbc0b117972c0a)
+- 2026-10-31 03:36: Restore experimental plugin search with the upstream Codex version. (authoring-run/dc99918c-2f5c-4141-bffd-b216830017d0 - 25364fcfdc905e95b5a813a6cd7b2de47b66ca71)
+
+- 2026-10-28 14:40: Trace worker installation and discovery of Slack MCP tools. (authoring-run/55da35a7-f123-436e-9c32-65036b85894d - 0ba3c0fd5a26a82dba6551f04b74a697c5324fdd)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

@@ -3,14 +3,14 @@
 Install OpenClaw Enterprise on Kubernetes, verify access to the OpenClaw
 Control Plane (OCC), then deploy an Agent and check its model response. Use
 [Local Setup](quickstart.md) for a first installation on your machine. The
-production guides below are for operators using an existing cluster; [Kubernetes Setup](kubernetes-setup.md) gives a short introduction. Run
+production guides below are for operators using an existing cluster; [Kubernetes setup](deploy/kubernetes-setup.md) installs an OpenShell Codex Agent and finishes with the shared operator session. Run
 repository commands from the repository root. Starting OCC needs no model
 credential; an Agent needs one to send a model request.
 
 ## Development
 
 Use [Local Setup](quickstart.md) to start the platform with Kubernetes and
-verify authenticated access. Then [deploy your first Agent](first-agent.md).
+verify authenticated access. Then [prepare the local Agent session](quickstart.md#deploy-an-agent).
 The [local Kubernetes development guide](deploy/local-kubernetes-development.md)
 explains the profile for contributors working on the platform.
 
@@ -18,7 +18,7 @@ explains the profile for contributors working on the platform.
 
 Follow [Local Setup](quickstart.md) to verify the control plane. That check
 proves authenticated access; it does not prove an Agent can answer a model
-request. Complete [Deploy your first Agent](first-agent.md) for that result.
+request. Follow [model verification](operate/model-verification.md) for that result.
 For local Kubernetes images and cleanup, see
 [local operations](deploy/local-operations.md).
 
@@ -35,35 +35,16 @@ Choose the guide for your cluster:
 
 - [Standard Kubernetes](deploy/kubernetes.md): prepare an existing Kubernetes
   cluster, storage, networking, and PostgreSQL.
-- [Amazon EKS](deploy/eks.md): prepare AWS managed Kubernetes, node groups,
-  VPC networking, EBS storage, and optional RDS PostgreSQL.
+- [Amazon EKS quickstart](deploy/eks-openshell-setup.md): prepare AWS infrastructure,
+  install OCE, configure browser access, and onboard a dedicated OpenShell Agent.
 
-Both paths use the same Helm chart and shared installation procedure. Cluster
-hosting does not select the Agent model provider.
+The EKS quickstart includes installation and Agent deployment; do not repeat the
+sequence below after completing it. For a custom installation, use the shared
+procedure below. Cluster hosting does not select the Agent model provider.
 
 ### Production prerequisites
 
-- Kubernetes 1.35 or later, an explicit context, enforcing NetworkPolicies,
-  Helm, a version-compatible `kubectl`, Python 3, `yq` v4, and the installed
-  [OCC CLI](cli.md). Use Bash for image selection and model verification, and
-  Node.js 24.22.1 or newer for profile generation or the API transport-credential
-  example. Manual YAML plus console transport provisioning avoids those Node
-  commands. Older Kubernetes servers produce a startup warning and remain
-  outside the supported boundary.
-- Controller and runtime image digests and a chart matched to their source; see
-  [private image delivery](deploy/private-registry-images.md).
-- External PostgreSQL with separate migrator and application roles.
-- A Kubernetes node pool labeled for OCC control-plane Pods. The production example
-  selects nodes with `oce-role: control`; the chart default is `{}`. Set
-  `controlPlane.nodeSelector` to the reviewed labels for your cluster.
-- A Kubernetes node pool labeled for Agent runtime Pods. The production
-  Installation example selects nodes with `oce-role: agents`; set
-  `drivers.compute.configuration.runtime.nodeSelector` to the reviewed labels
-  for gateway and Agent scheduling.
-- Operator-managed HTTPS access for approved clients; the chart does not create
-  TLS or Ingress.
-- Operator-created startup, database, authentication, optional Backend Secrets,
-  fresh bootstrap PVC, gateway storage, and exact `/32` egress destinations.
+<Snippet file="../snippets/kubernetes-prerequisites.md" />
 
 ### Production installation sequence
 

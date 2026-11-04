@@ -16,7 +16,10 @@ type Hooks = {
   resolve?: () => void;
   construct?: (custody?: DriverCustody) => void | (() => Promise<void>);
   sessions?: number;
+  credentialSlots?: number;
   clock?: Clock;
+  // A prepared factory may resolve by profile instead of by registry binding.
+  unbound?: boolean;
 };
 const unexpected = () => {
   throw new Error("unexpected credential operation");
@@ -55,12 +58,17 @@ function fixture(prepared: boolean, hooks: Hooks = {}) {
   const service = createCredentialService({
     clock,
     config: validateServiceConfig(
-      serviceConfigurationData({ limits: { sessions: hooks.sessions ?? 1 } }),
+      serviceConfigurationData({
+        limits: {
+          sessions: hooks.sessions ?? 1,
+          ...(hooks.credentialSlots ? { credentialSlotsPerSession: hooks.credentialSlots } : {}),
+        },
+      }),
     ),
     factory: prepared
       ? {
           ...factory,
-          resolveBound: resolve,
+          ...(hooks.unbound ? {} : { resolveBound: resolve }),
           createPrepared(_authority, resolved) {
             assert.equal(resolved, selection);
             hooks.construct?.();
@@ -78,7 +86,8 @@ function fixture(prepared: boolean, hooks: Hooks = {}) {
     deadlineWallMs: clock.wallNow() + 60000,
     preparedOnly: true as const,
   };
-  const input = prepared ? boundInput : { durationSeconds: 60, profile: "git-write" };
+  const input =
+    prepared && !hooks.unbound ? boundInput : { durationSeconds: 60, profile: "git-write" };
   return { service, input, boundInput, alternate };
 }
 
@@ -150,12 +159,42 @@ test("prepared selections release capacity and retain their one-use error", asyn
 
 test("shutdown during resolution refuses publication and drains", async () => {
   let shutdown: Promise<ShutdownSummary> | undefined;
+  let constructions = 0;
   const f = fixture(true, {
     resolve: () => {
       shutdown = f.service.shutdown(50);
     },
+    construct: () => {
+      constructions++;
+    },
   });
   assert.throws(() => f.service.open(f.input), /SERVICE_CLOSED/);
+  // The refusal happens before construction: no Backend is created after shutdown starts.
+  assert.equal(constructions, 0);
+  assert.equal((await shutdown!).graceExpired, false);
+});
+
+test("shutdown started by the expiry sweep refuses admission before resolution", async () => {
+  const clock = createControlledClock(1700000000000);
+  let resolutions = 0;
+  let shutdown: Promise<ShutdownSummary> | undefined;
+  const f = fixture(true, {
+    clock,
+    unbound: true,
+    resolve: () => {
+      resolutions++;
+    },
+  });
+  assert.equal(f.service.open(f.input).session.state, "OPEN");
+  f.service.observeDisposal(() => {
+    shutdown ??= f.service.shutdown(50);
+  });
+  // Only wall time passes, so the deadline timer has not fired. The next
+  // admission's expiry sweep closes and disposes the first session, and its
+  // disposal observer starts shutdown before the new grant is resolved.
+  await clock.advance(0, 60000);
+  assert.throws(() => f.service.open(f.input), /SERVICE_CLOSED/);
+  assert.equal(resolutions, 1);
   assert.equal((await shutdown!).graceExpired, false);
 });
 
@@ -197,8 +236,12 @@ test("development shutdown retains the original renewal callback until cleanup",
   let read: Promise<void> | undefined;
   let bytes: Uint8Array | undefined;
   let shutdown: Promise<ShutdownSummary> | undefined;
+  let lateRenewal: string | undefined;
   const f = fixture(false, {
     clock,
+    // The driver and this hook each retain a renewal; leave a slot free so only
+    // shutdown can refuse the late retention below.
+    credentialSlots: 3,
     construct: (custody) => {
       assert.ok(custody);
       const ref = custody.retainRenewal(Buffer.from("fixture-renewal"));
@@ -207,6 +250,13 @@ test("development shutdown retains the original renewal callback until cleanup",
         await held.promise;
       });
       shutdown = f.service.shutdown(50);
+      // Custody admits nothing new once shutdown starts, even during construction.
+      try {
+        custody.retainRenewal(Buffer.from("late-renewal"));
+        lateRenewal = "retained";
+      } catch (error) {
+        lateRenewal = (error as Error).message;
+      }
       return () => custody.disposeRenewal(ref);
     },
   });
@@ -217,6 +267,15 @@ test("development shutdown retains the original renewal callback until cleanup",
     await f.service.shutdown(50);
   });
   assert.throws(() => f.service.open(f.input), /SERVICE_CLOSED/);
+  assert.equal(lateRenewal, "RENEWAL_LIMIT");
+  // Shutdown started while the open was still constructing. Without moving the
+  // clock, the drain must wait for that open's session instead of settling early.
+  let settled = false;
+  void shutdown!.then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
   await clock.advance(50);
   const pending = await shutdown!;
   assert.equal(pending.graceExpired, true);

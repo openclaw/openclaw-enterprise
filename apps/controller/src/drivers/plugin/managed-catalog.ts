@@ -1,17 +1,19 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type {
-  CredentialSource,
-  PluginCatalogEntry,
-  PluginDesiredState,
+import {
+  isAllowedSecretBindingDestination,
+  type CredentialSource,
+  type PluginCatalogEntry,
+  type PluginDesiredState,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { exactDnsName } from "../credential-source-endpoint.ts";
 import {
   eligibleGoogleOperations,
   googleDiscoveryRequests,
   googleRequestScope,
-  googleRelease as release,
-  googleReleaseSha256,
+  googleRelease,
 } from "./google-workspace/operations.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
@@ -38,29 +40,86 @@ export const managedPluginMiddleware = "oce-plugin-requests";
 export const managedPluginMiddlewareImplementation = "oce/managed-plugin-requests";
 export const managedPluginMiddlewareAudience = `urn:openshell:extension:middleware:${managedPluginMiddleware}`;
 
-// Only this package bundled in the controller participates in managed deployment.
-const directory = new URL("../../../plugins/oce-google-workspace/", import.meta.url);
-const pkg = asRecord(JSON.parse(readFileSync(new URL("plugin.json", directory), "utf8")));
-const extension = asRecord(asRecord(pkg?.extensions)?.["ai.openclaw.oce"]);
-const policyScope = extension?.policyScope;
-if (
-  policyScope !== "enablement_only" ||
-  extension?.release !== "./ai.openclaw.oce/release.json" ||
-  !isNonEmptyString(extension.id) ||
-  !isNonEmptyString(extension.displayName) ||
-  !isNonEmptyString(pkg?.version) ||
-  !isNonEmptyString(pkg?.description)
-) {
-  throw new Error("Invalid bundled Google Workspace package.");
+// Only released packages bundled into both images participate in managed deployment.
+function loadManagedInstall(packageName: string) {
+  const directory = new URL(`../../../plugins/${packageName}/`, import.meta.url);
+  const pkg = asRecord(JSON.parse(readFileSync(new URL("plugin.json", directory), "utf8")));
+  const extension = asRecord(asRecord(pkg?.extensions)?.["ai.openclaw.oce"]);
+  const policyScope = extension?.policyScope;
+  const runtimeName =
+    typeof extension?.id === "string"
+      ? /^occ-plugin:([a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/u.exec(extension.id)?.[1]
+      : undefined;
+  if (
+    policyScope !== "enablement_only" ||
+    extension?.release !== "./ai.openclaw.oce/release.json" ||
+    !runtimeName ||
+    !isNonEmptyString(extension.displayName) ||
+    !isNonEmptyString(pkg?.version) ||
+    !isNonEmptyString(pkg?.description)
+  ) {
+    throw new Error(`Invalid bundled package: ${packageName}.`);
+  }
+  const bytes = readFileSync(new URL(extension.release, directory));
+  const release = asRecord(JSON.parse(bytes.toString("utf8")));
+  const placement = asRecord(release?.placement);
+  const computeImplementations = placement?.computeImplementations;
+  if (
+    !isNonEmptyString(placement?.harnessId) ||
+    !isNonEmptyString(placement?.mode) ||
+    !Array.isArray(computeImplementations) ||
+    !computeImplementations.every(isNonEmptyString)
+  ) {
+    throw new Error(`Invalid placement in bundled package: ${packageName}.`);
+  }
+
+  const id = `${extension.id}@${pkg.version}`;
+  return {
+    id,
+    packageName,
+    directory,
+    release,
+    runtimeName,
+    policyScope,
+    placement: { harnessId: placement.harnessId, mode: placement.mode, computeImplementations },
+    releaseSha256: createHash("sha256").update(bytes).digest("hex"),
+    entry: {
+      id,
+      name: extension.displayName,
+      description: pkg.description,
+      selectableWithoutTools: true,
+      tools: [],
+    } satisfies PluginCatalogEntry,
+  } as const;
 }
-const placement = asRecord(release?.placement);
-const credentials = release?.credentials;
-const computeImplementations = placement?.computeImplementations;
+
+const marketplaceSchema = Type.Object({
+  plugins: Type.Array(
+    Type.Object({
+      name: Type.String({ pattern: "^[a-z][a-z0-9-]*$" }),
+      source: Type.String(),
+    }),
+    { minItems: 1 },
+  ),
+});
+const marketplace: unknown = JSON.parse(
+  readFileSync(new URL("../../../plugins/marketplace.json", import.meta.url), "utf8"),
+);
+if (!Check(marketplaceSchema, marketplace)) {
+  throw new Error("Invalid bundled plugin marketplace.");
+}
+const bundledInstalls = marketplace.plugins.map(({ name, source }) => {
+  if (source !== "./" + name) {
+    throw new Error(`Invalid source for bundled package: ${name}.`);
+  }
+  return loadManagedInstall(name);
+});
+const googleInstall = bundledInstalls.find(
+  ({ packageName }) => packageName === "oce-google-workspace",
+);
+const credentials = googleRelease?.credentials;
 if (
-  !isNonEmptyString(placement?.harnessId) ||
-  !isNonEmptyString(placement?.mode) ||
-  !Array.isArray(computeImplementations) ||
-  !computeImplementations.every(isNonEmptyString) ||
+  !googleInstall ||
   !Check(
     Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), credentialSlot, {
       minProperties: 1,
@@ -69,20 +128,107 @@ if (
     }),
     credentials,
   ) ||
-  !isNonEmptyString(release?.executable) ||
-  !/^[a-z][a-z0-9-]*$/.test(release.executable)
+  !isNonEmptyString(googleRelease?.executable) ||
+  !/^[a-z][a-z0-9-]*$/.test(googleRelease.executable)
 ) {
   throw new Error("Invalid bundled Google Workspace release.");
 }
 
 export const managedGoogleInstall = {
-  id: `${extension.id}@${pkg.version}`,
-  policyScope,
-  placement: { harnessId: placement.harnessId, mode: placement.mode, computeImplementations },
+  ...googleInstall,
   credentials,
-  binaryPath: `/usr/local/lib/oce/plugins/google/bin/${release.executable}`,
-  releaseSha256: googleReleaseSha256,
+  binaryPath: `/usr/local/lib/oce/plugins/google/bin/${googleRelease.executable}`,
 } as const;
+const mcpSlot = Type.Object(
+  {
+    label: Type.String({ minLength: 1 }),
+    issuer: Type.String({ minLength: 1 }),
+    delivery: credentialSlot.properties.delivery,
+    mcp: Type.Object({
+      server: Type.String({ pattern: "^[a-zA-Z](?:[a-zA-Z0-9_-]{0,21}[a-zA-Z0-9])?$" }),
+      resource: Type.String(),
+      versions: Type.Array(Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }), {
+        minItems: 1,
+        uniqueItems: true,
+      }),
+    }),
+  },
+  { additionalProperties: false },
+);
+const mcpSlots = Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), mcpSlot, {
+  minProperties: 1,
+  maxProperties: 1,
+  additionalProperties: false,
+});
+const mcpEndpointUrl = /^https:\/\/[a-z0-9.-]+(?::[1-9][0-9]{0,4})?\/[a-zA-Z0-9/._~-]{0,255}$/u;
+
+function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
+  const invalid = () => new Error(`Invalid managed MCP release: ${install.packageName}.`);
+  const { release } = install;
+  const slots = release?.credentials;
+  const capabilities = asRecord(release?.capabilities);
+  if (
+    !Check(mcpSlots, slots) ||
+    !Array.isArray(capabilities?.harness) ||
+    !capabilities.harness.includes("mcp") ||
+    install.placement.harnessId !== "openclaw" ||
+    install.placement.mode !== "dedicated"
+  ) {
+    throw invalid();
+  }
+  const [slotId, slot] = Object.entries(slots)[0]!;
+  const { server, resource, versions } = slot.mcp;
+  const bytes = readFileSync(new URL("mcp.json", install.directory));
+  if (createHash("sha256").update(bytes).digest("hex") !== release?.mcpServersSha256) {
+    throw invalid();
+  }
+  const manifest = asRecord(JSON.parse(bytes.toString("utf8")));
+  const servers = asRecord(manifest?.mcpServers);
+  const declaration = asRecord(servers?.[server]);
+  const url =
+    typeof declaration?.url === "string" && mcpEndpointUrl.test(declaration.url)
+      ? URL.parse(declaration.url)
+      : null;
+  if (
+    !servers ||
+    Object.keys(servers).length !== 1 ||
+    declaration?.type !== "streamable-http" ||
+    !url ||
+    url.href !== declaration.url ||
+    !isAllowedSecretBindingDestination(slot.delivery.env) ||
+    !exactDnsName(url.hostname) ||
+    !url.hostname.includes(".") ||
+    (resource !== url.origin && resource !== url.href)
+  ) {
+    throw invalid();
+  }
+  return {
+    ...install,
+    server,
+    slotId,
+    url: url.href,
+    endpoint: { host: url.hostname, port: Number(url.port || 443), path: url.pathname },
+    credentialEnvironment: slot.delivery.env,
+    credentialLabel: slot.label,
+    binaryPath: "/usr/local/bin/node",
+    mcpVersions: Object.freeze(versions),
+  } as const;
+}
+
+export type ManagedMcpInstall = ReturnType<typeof loadManagedMcpInstall>;
+export const managedMcpInstalls: readonly ManagedMcpInstall[] = Object.freeze(
+  bundledInstalls.filter((install) => install !== googleInstall).map(loadManagedMcpInstall),
+);
+export const managedInstalls = [managedGoogleInstall, ...managedMcpInstalls] as const;
+if (
+  new Set(managedInstalls.map(({ runtimeName }) => runtimeName)).size !== managedInstalls.length ||
+  new Set(managedMcpInstalls.map(({ endpoint }) => `${endpoint.host}:${endpoint.port}`)).size !==
+    managedMcpInstalls.length
+) {
+  throw new Error(
+    "Bundled plugins must have distinct runtime names and managed MCP hosts and ports.",
+  );
+}
 
 /** A selection holds references only. Installation without an account remains valid. */
 export function managedCredentialBinding(selections: PluginDesiredState | undefined) {
@@ -114,15 +260,65 @@ export function managedCredentialBinding(selections: PluginDesiredState | undefi
   return { slot, sourceId, credential };
 }
 
+/** Upstream tool names belong to one pinned MCP server. */
+export function managedMcpCredentialBinding(
+  selections: PluginDesiredState | undefined,
+  install = managedMcpInstalls.find(({ id }) => selections?.[id]?.driverPolicy !== undefined),
+) {
+  if (!install) {
+    return undefined;
+  }
+  const selection = selections?.[install.id];
+  const policy = selection?.driverPolicy;
+  if (policy === undefined) {
+    return undefined;
+  }
+  if (policy.releaseSha256 !== install.releaseSha256) {
+    throw new ConfigurationHarnessError(
+      `The ${install.entry.name} release has changed. Select the account again for the current release.`,
+    );
+  }
+  const credentials = asRecord(policy.credentials);
+  const sourceId = credentials?.[install.slotId];
+  if (
+    !selection?.enabled ||
+    Object.keys(policy).some(
+      (key) => !["releaseSha256", "credentials", "toolNames"].includes(key),
+    ) ||
+    Object.keys(credentials ?? {}).length !== 1 ||
+    typeof sourceId !== "string" ||
+    !sourceId.startsWith("cs_")
+  ) {
+    throw new ConfigurationHarnessError(
+      `Enable ${install.entry.name} and select exactly one credential, or clear its credential policy.`,
+    );
+  }
+  const selected = policy.toolNames === undefined ? [] : policy.toolNames;
+  // Literal names keep the OpenClaw alias stable and the OpenShell glob exact.
+  if (
+    !Array.isArray(selected) ||
+    !selected.every(
+      (name) =>
+        typeof name === "string" &&
+        /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
+        `oce_mcp_${install.server}_${name}`.length <= 64,
+    ) ||
+    new Set(selected.map((name) => name.toLowerCase())).size !== selected.length
+  ) {
+    throw new ConfigurationHarnessError(
+      `Select distinct literal ${install.entry.name} tool names whose OpenClaw aliases fit within 64 characters.`,
+    );
+  }
+  return { install, sourceId, toolNames: selected as string[] };
+}
+
 export function requireManagedCredentialRuntime(
   selections: PluginDesiredState | undefined,
   sandbox?: string,
   gateway?: string,
 ): void {
-  if (
-    managedCredentialBinding(selections) &&
-    (sandbox !== "openshell" || gateway !== "openshell")
-  ) {
+  const supported = sandbox === "openshell" && gateway === "openshell";
+  if (managedCredentialBinding(selections) && !supported) {
     throw new ConfigurationHarnessError(
       "A bound Google account requires the OpenShell Sandbox and Credential Gateway.",
     );
@@ -179,6 +375,35 @@ export function googleAttachmentConflict(
   }
 }
 
+export function managedMcpInstallForSourceConfig(
+  config: CredentialSource["config"],
+): ManagedMcpInstall | undefined {
+  if (config.protocol !== "mcp") {
+    return undefined;
+  }
+  return managedMcpInstalls.find(
+    ({ credentialEnvironment, endpoint }) =>
+      config.host === endpoint.host &&
+      Number(config.port ?? 443) === endpoint.port &&
+      config.path === endpoint.path &&
+      config.env_var === credentialEnvironment,
+  );
+}
+
+export function managedMcpSlotAcceptsSource(
+  install: ManagedMcpInstall,
+  source: CredentialSource,
+): boolean {
+  return (
+    source.state === "ready" &&
+    source.ownerCapability === "credential_gateway" &&
+    source.egress === undefined &&
+    source.type === "bearer-token" &&
+    source.secrets.token?.namespaceId === source.namespaceId &&
+    managedMcpInstallForSourceConfig(source.config) === install
+  );
+}
+
 export const managedPluginCredentials = {
   choices(sources: readonly CredentialSource[]) {
     return Object.entries(managedGoogleInstall.credentials).map(([id, slot]) => ({
@@ -216,11 +441,3 @@ export const managedPluginCredentials = {
     }
   },
 };
-
-export const googlePackage = {
-  id: managedGoogleInstall.id,
-  name: extension.displayName,
-  description: pkg.description,
-  selectableWithoutTools: true,
-  tools: [],
-} satisfies PluginCatalogEntry;

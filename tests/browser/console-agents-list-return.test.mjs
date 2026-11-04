@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   fileBrowser,
+  fulfillPatchedJson,
   hasFocus,
   holdRequests,
   login,
@@ -32,12 +33,16 @@ const activeView = '.content [aria-live="polite"]:not([inert])';
 const revisionsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/revisions`;
 const deploymentsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/deployments/*`;
 
-// A deployment record read; the list shows its status and, for a failure, its error.
-function deploymentRecord(namespace, status) {
+// A deployment record read; the list shows its status and, for a failure, its error. As the API's
+// does, the record names its Agent and version: the Agent page uses only a record of the version
+// it asked about, and one without them left that page on its 2 s fallback before it showed.
+function deploymentRecord(namespace, status, { agentId, deploymentId }) {
   return {
     json: {
       data: {
+        deploymentId,
         namespaceId: namespace.id,
+        agentId,
         status,
         error: status === "failed" ? persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED") : null,
         warnings: [],
@@ -45,6 +50,21 @@ function deploymentRecord(namespace, status) {
       },
       meta: { requestId: "req_test_list_return" },
     },
+  };
+}
+
+// Answers each deployment read with the record of the Agent and version in its path.
+function answerDeployments(namespace, status) {
+  return (route) => {
+    const [, agentId, deploymentId] = new URL(route.request().url()).pathname.match(
+      /\/agents\/([^/]+)\/deployments\/([^/]+)$/,
+    );
+    return route.fulfill(
+      deploymentRecord(namespace, status, {
+        agentId: decodeURIComponent(agentId),
+        deploymentId: decodeURIComponent(deploymentId),
+      }),
+    );
   };
 }
 
@@ -65,9 +85,7 @@ async function openTeamList(t, name, { newer = [] } = {}) {
   const { page } = await newPage(t, fixture, { browser });
   // The fixture runs no worker, so each deployment record is served as it would read once its
   // deployment succeeded.
-  await page.route(deploymentsRead(namespace), (route) =>
-    route.fulfill(deploymentRecord(namespace, "succeeded")),
-  );
+  await page.route(deploymentsRead(namespace), answerDeployments(namespace, "succeeded"));
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.locator(settledView).getByRole("link", { name: agents[0].name }).waitFor();
   // Every row's deployment has landed, so the list is reusable when the reader leaves.
@@ -144,16 +162,25 @@ async function goBackToList(page, how) {
 }
 
 // Holds every row's deployment reads; only the Agents list's own reads may decide the reveal.
+// Released, each deployment read gets its own Agent's record, so an Agent page opened while the
+// hold is in place reads the record of the version it asked about.
 async function holdRowReads(t, page, namespace) {
   const revisions = await holdRequests(t, page, revisionsRead(namespace));
-  const deployments = await holdRequests(t, page, deploymentsRead(namespace), {
-    fulfill: deploymentRecord(namespace, "succeeded"),
+  let releaseDeployments;
+  const deployments = new Promise((resolve) => {
+    releaseDeployments = resolve;
   });
+  const answer = answerDeployments(namespace, "succeeded");
+  await page.route(deploymentsRead(namespace), async (route) => {
+    await deployments;
+    await answer(route).catch(() => {});
+  });
+  t.after(() => releaseDeployments());
   return {
     revisions,
     release() {
       revisions.release();
-      deployments.release();
+      releaseDeployments();
     },
   };
 }
@@ -176,7 +203,12 @@ for (const how of ["Browser Back", "Agents navigation"]) {
       t,
       page,
       `**/namespaces/${namespace.id}/agents/${changed.id}/deployments/${changed.revisionId}`,
-      { fulfill: deploymentRecord(namespace, "failed") },
+      {
+        fulfill: deploymentRecord(namespace, "failed", {
+          agentId: changed.id,
+          deploymentId: changed.revisionId,
+        }),
+      },
     );
     await startRecording(page);
     await goBackToList(page, how);
@@ -223,12 +255,10 @@ test("A return whose list read dropped an Agent never reveals that Agent, with r
       await route.fallback();
       return;
     }
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: { ...body, data: body.data.filter((item) => item.id !== removed.id) },
-    });
+    await fulfillPatchedJson(route, (body) => ({
+      ...body,
+      data: body.data.filter((item) => item.id !== removed.id),
+    }));
   });
   await startRecording(page);
   await page.goBack();
@@ -380,7 +410,10 @@ for (const outcome of ["fills", "is refused"]) {
       {
         fulfill: refused
           ? apiErrorResponse(403, "FORBIDDEN", "Access denied.")
-          : deploymentRecord(namespace, "succeeded"),
+          : deploymentRecord(namespace, "succeeded", {
+              agentId: target.id,
+              deploymentId: target.revisionId,
+            }),
       },
     );
     await page.goBack();
@@ -471,9 +504,7 @@ for (const visit of ["a first visit", "a return"]) {
       agents.push({ ...agent, name: label });
     }
     const { page } = await newPage(t, fixture, { browser });
-    await page.route(deploymentsRead(namespace), (route) =>
-      route.fulfill(deploymentRecord(namespace, "succeeded")),
-    );
+    await page.route(deploymentsRead(namespace), answerDeployments(namespace, "succeeded"));
     const first = visit === "a first visit";
     if (!first) {
       // A row whose read failed has no link to keep: its reread on return is delayed too.
@@ -528,9 +559,7 @@ async function returnWithHeldRows(t, name) {
     agents.push({ ...agent, name: label });
   }
   const { page } = await newPage(t, fixture, { browser });
-  await page.route(deploymentsRead(namespace), (route) =>
-    route.fulfill(deploymentRecord(namespace, "succeeded")),
-  );
+  await page.route(deploymentsRead(namespace), answerDeployments(namespace, "succeeded"));
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
@@ -1338,15 +1367,12 @@ test("Agents list names the current version by number in the page's outcome word
   const activeId = (await active(newer)).activeRevisionId;
   const openWithout = async ({ olderPage, status, current }) => {
     const { page: opened } = await newPage(t, fixture, { browser });
-    await opened.route(
-      `**/namespaces/${namespace.id}/agents/${newer.id}/revisions`,
-      async (route) => {
-        const response = await route.fetch();
-        const body = await response.json();
+    await opened.route(`**/namespaces/${namespace.id}/agents/${newer.id}/revisions`, (route) =>
+      fulfillPatchedJson(route, (body) => {
         body.data = body.data.filter((revision) => revision.revision !== 1);
         body.meta.nextCursor = olderPage ? "older-page" : null;
-        await route.fulfill({ response, json: body });
-      },
+        return body;
+      }),
     );
     const reads = { count: 0 };
     await opened.route(`**/agents/${newer.id}/revisions/${activeId}`, (route) => {
@@ -1355,9 +1381,7 @@ test("Agents list names the current version by number in the page's outcome word
         ? route.continue()
         : route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL));
     });
-    await opened.route(deploymentsRead(namespace), (route) =>
-      route.fulfill(deploymentRecord(namespace, status)),
-    );
+    await opened.route(deploymentsRead(namespace), answerDeployments(namespace, status));
     await login(opened, fixture, `/console/agents?namespace=${namespace.id}`);
     const row = () => opened.locator(settledView).getByRole("row").filter({ hasText: newer.name });
     const currentCell = () => row().locator('[data-label="Current version"]');

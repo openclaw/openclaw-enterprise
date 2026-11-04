@@ -12,6 +12,9 @@ export const FormNamespaceBecomesReady = story("createFormNamespaceBecomesReady"
 export const FormNamespaceFailed = story("createFormNamespaceFailed");
 export const FormNamespaceMissing = story("createFormNamespaceMissing");
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
+export const CreateNativeAdmin = story("createNativeAdmin");
+export const CreateNativeAdminSelected = story("createNativeAdminSelected");
+export const CreateNativeAdminDisabled = story("createNativeAdminDisabled");
 export const CreateSecretCreateNotPermitted = {
   ...story("createSecretCreateNotPermitted"),
   name: "Secret creation not permitted",
@@ -38,6 +41,16 @@ export const PluginsConfigured = {
 };
 export const PluginsCurated = story("createPluginsCurated");
 export const PluginsDiscovered = story("createPluginsDiscovered");
+export const PluginsShortWindow = {
+  ...story("createPluginsDiscovered", {
+    name: "Short window plugin picker",
+    frameWidth: "1440px",
+    frameHeight: "480px",
+    instructions:
+      "Scroll the catalog browser with setup collapsed and expanded, choose Calendar, and reach pagination.",
+  }),
+  name: "Short window plugin picker",
+};
 export const PluginsPrefetch = story("createPluginsPrefetch");
 export const PluginsSearchLoading = story("createPluginsSearchLoading");
 export const PluginsToolsLoading = story("createPluginsToolsLoading");
@@ -152,6 +165,7 @@ export const RepositoryDetails = story("createRepositoriesDetails");
 export const RepositoryDescriptionsPending = story("createRepositoriesDescriptionsPending");
 export const RepositoryHiddenCharacters = story("createRepositoriesHiddenCharacters");
 export const RepositoryLocaleSearch = story("createRepositoriesLocaleSearch");
+export const RepositoryNoMatches = story("createRepositoriesNoMatches");
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
   name: "Contributor without issue management",
@@ -236,6 +250,7 @@ export const CreateOAuthPending = story("createOAuthPending");
 export const CreateOAuthReady = story("createOAuthReady");
 export const CreateOAuthDenied = story("createOAuthDenied");
 export const CreateOAuthUnavailable = story("createOAuthUnavailable");
+export const CreateOAuthNotOffered = story("createOAuthNotOffered");
 export const CreateOAuthStartUnconfirmed = story("createOAuthStartUnconfirmed");
 export const CreateOAuthError = story("createOAuthError");
 export const CreateOAuthExpired = story("createOAuthExpired");
@@ -301,6 +316,9 @@ export const CreatePasswordPresetDraft = {
   ...story("createPasswordPresetDraft"),
   name: "Standard Codex password draft",
 };
+export const CreatePresetVariableRefused = story("createPresetVariableRefused");
+export const CreatePresetVariableMarked = story("createPresetVariableMarked");
+export const CreatePresetQuotedSettingRefused = story("createPresetQuotedSettingRefused");
 export const CreatePasswordPresetDenied = {
   ...story("createPasswordPresetDenied"),
   name: "Password Secret creation denied",

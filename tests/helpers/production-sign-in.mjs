@@ -916,6 +916,16 @@ export async function authRowCounts(pool) {
   ).rows[0];
 }
 
+/** The IAM principal of a person's sign-in account, as audit records name the actor. */
+export async function accountPrincipalId(pool, userId) {
+  return (
+    await pool.query(
+      "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
+      [userId],
+    )
+  ).rows[0].principal_id;
+}
+
 /** The guarded account read an administrator uses for expectedVersion. */
 export async function readAccount(app, headers, userId) {
   const response = await app.inject({ url: `/api/auth/accounts/${userId}`, headers });

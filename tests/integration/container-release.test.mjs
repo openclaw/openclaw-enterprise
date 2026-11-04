@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -208,9 +207,8 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
 });
 
 test("chart push accepts a digest on stderr only after a successful exit", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-push-stream-"));
+  const directory = await temporaryDirectory(t, "oce-chart-push-stream-");
   const helm = join(directory, "helm");
-  t.after(() => rm(directory, { recursive: true, force: true }));
   setEnvironment(t, { OCC_HELM_BIN: helm });
   const reported = `sha256:${"f".repeat(64)}`;
   // Helm writes the successful push digest to stderr, so stdout-only parsing fails.

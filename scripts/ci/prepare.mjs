@@ -22,7 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
-import { withStateLock } from "./state-lock.mjs";
+import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
 import {
   ANSI_COLOR,
@@ -32,10 +32,10 @@ import {
 } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
-import { ownedName, randomSuffix, slug } from "./resource-names.mjs";
-import { pullImage } from "./image-pull.mjs";
+import { ownedName, randomSuffix, slug } from "./resource-names.ts";
+import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
-import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
+import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -2538,7 +2538,8 @@ async function prepareNativeWorkspaceEnvoyImage(state, env) {
   env.OCC_TEST_WORKSPACE_ENVOY_IMAGE = image;
 }
 
-export async function prepareRuntimeImageSmoke({ image, statePath }) {
+/** @param {{ image: string, statePath: string, codexVersion?: string }} options */
+export async function prepareRuntimeImageSmoke({ image, statePath, codexVersion }) {
   assertDockerImageId(image, "Runtime smoke image");
   const path = normalizeStatePath(statePath);
   if (await readState(path)) {
@@ -2547,6 +2548,9 @@ export async function prepareRuntimeImageSmoke({ image, statePath }) {
   const state = baseState("images-packaging", path);
   const tag = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/runtime-smoke:local`;
   const env = { ...baseEnv(path, state), OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag };
+  if (codexVersion !== undefined) {
+    env.OCC_TEST_KUBERNETES_CODEX_VERSION = codexVersion;
+  }
   const resource = addResource(state, "image-tag", { name: tag });
   await writeState(path, state);
   try {
@@ -3119,7 +3123,7 @@ async function prepareLane({ lane, statePath, file }) {
     }
     case "qa-matrix":
       // On a hosted runner, record the starting images so cleanup can return the
-      // shared image store to them (lane-images.mjs, finding 1345). A workstation's
+      // shared image store to them (lane-images.ts, finding 1345). A workstation's
       // launcher tags are the developer's own and stay as the run leaves them. A
       // failed inventory only skips that: the QA run itself does not need it.
       if (process.env.GITHUB_ACTIONS === "true") {
