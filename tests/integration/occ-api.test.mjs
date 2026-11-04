@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { realpathSync } from "node:fs";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -18,6 +19,7 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp, createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -545,6 +547,9 @@ async function createInjectedFixture(options = {}) {
         installationId,
       },
       auth: authFixture.auth,
+      ...(options.readManagedMcpToolNames === undefined
+        ? {}
+        : { readManagedMcpToolNames: options.readManagedMcpToolNames }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       ...(options.provisionAuthAccount === undefined
         ? {}
@@ -9292,7 +9297,99 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   assert.equal(deploy.body.error.message, noRoute);
 });
 
-test("deploying Slack freezes the reviewed tool selection and keeps its credential attachment independent", async () => {
+test("managed MCP discovery reads tool names using one pinned authenticated session", async () => {
+  const url = "https://tools.example/api/mcp/v1";
+  const token = "fixture-mcp-discovery-token";
+  const calls = [];
+  const result = await listManagedMcpToolNames(url, token, undefined, {
+    async resolveHost(host) {
+      assert.equal(host, "tools.example");
+      return [{ address: "8.8.8.8", family: 4 }];
+    },
+    async fetch(target, request) {
+      assert.equal(target.href, url);
+      assert.equal(request.credentials, "omit");
+      assert.equal(request.redirect, "error");
+      const headers = new Headers(request.headers);
+      assert.equal(headers.get("Authorization"), `Bearer ${token}`);
+      const body = request.body === undefined ? undefined : JSON.parse(request.body);
+      calls.push(body?.method ?? request.method);
+      if (body?.method === "initialize") {
+        return Response.json(
+          {
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "Document MCP fixture", version: "1" },
+            },
+          },
+          { headers: { "mcp-session-id": "fixture-session" } },
+        );
+      }
+      assert.equal(headers.get("mcp-session-id"), "fixture-session");
+      if (body?.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (request.method === "GET" || request.method === "DELETE") {
+        return new Response(null, { status: 405 });
+      }
+      assert.equal(body?.method, "tools/list");
+      const secondPage = body.params?.cursor === "next";
+      const payload = {
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          tools: [
+            {
+              name: secondPage ? "create_document" : "search_documents",
+              inputSchema: { type: "object" },
+            },
+          ],
+          ...(secondPage ? {} : { nextCursor: "next" }),
+        },
+      };
+      return new Response(`event: message\ndata: ${JSON.stringify(payload)}\n\n`, {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  });
+  assert.deepEqual([...result], ["search_documents", "create_document"]);
+  assert.deepEqual(
+    calls.filter((method) => method !== "GET"),
+    ["initialize", "notifications/initialized", "tools/list", "tools/list", "DELETE"],
+  );
+});
+
+test("managed MCP discovery refuses private DNS answers and redirects", async () => {
+  const url = "https://tools.example/api/mcp/v1";
+  const token = "fixture-mcp-discovery-token";
+  let attempted = false;
+  await assert.rejects(
+    listManagedMcpToolNames(url, token, undefined, {
+      resolveHost: async () => [{ address: "127.0.0.1", family: 4 }],
+      async fetch() {
+        attempted = true;
+        throw new Error("Unexpected request");
+      },
+    }),
+    { reason: "unavailable" },
+  );
+  assert.equal(attempted, false);
+  await assert.rejects(
+    listManagedMcpToolNames(url, token, undefined, {
+      resolveHost: async () => [{ address: "8.8.8.8", family: 4 }],
+      async fetch(target) {
+        assert.equal(target.href, url);
+        return Response.redirect("https://other.example/mcp");
+      },
+    }),
+    { reason: "invalid_response" },
+  );
+});
+
+test("deploying Slack freezes the Agent's discovered tool selection and keeps its credential attachment independent", async (t) => {
   const sourceConfig = {
     protocol: "mcp",
     host: "mcp.slack.com",
@@ -9305,6 +9402,77 @@ test("deploying Slack freezes the reviewed tool selection and keeps its credenti
   function unexpectedGatewayCall() {
     assert.fail("the admission fixture must not access credential material");
   }
+  const token = "fixture-slack-discovery-token";
+  const upstream = [];
+  let tokenReads = 0;
+  let beforeTokenUse = () => {};
+  let echoToken = false;
+  const peerErrors = [];
+  const peer = createServer(async (request, response) => {
+    try {
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+      const method = body?.method ?? request.method;
+      const authenticated = request.headers.authorization === `Bearer ${token}`;
+      upstream.push({ method, authenticated });
+      assert.equal(request.url, "/mcp");
+      assert.equal(authenticated, true);
+      if (method === "GET" || method === "DELETE") {
+        response.writeHead(405).end();
+        return;
+      }
+      if (method !== "initialize") {
+        assert.equal(request.headers["mcp-session-id"], "fixture-session");
+      }
+      if (method === "notifications/initialized") {
+        response.writeHead(202).end();
+        return;
+      }
+      assert.ok(method === "initialize" || method === "tools/list");
+      const result =
+        method === "initialize"
+          ? {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "Managed MCP HTTP fixture", version: "1" },
+            }
+          : {
+              tools: [
+                "slack_search_public",
+                "slack_send_message",
+                ...(echoToken ? [token] : []),
+              ].map((name) => ({ name, inputSchema: { type: "object" } })),
+            };
+      response
+        .writeHead(200, {
+          "content-type": "application/json",
+          "mcp-session-id": "fixture-session",
+        })
+        .end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
+    } catch (error) {
+      peerErrors.push(error);
+      response.writeHead(500).end();
+    }
+  });
+  t.after(async () => {
+    peer.closeAllConnections();
+    await new Promise((resolve) => peer.close(resolve));
+    assert.deepEqual(peerErrors, []);
+  });
+  peer.listen(0, "127.0.0.1");
+  await once(peer, "listening");
+  const peerUrl = `http://127.0.0.1:${peer.address().port}/mcp`;
+  const secretDriver = createTestSecretDriver({ id: "secret-slack-admission" });
+  const readValue = secretDriver.withValue;
+  secretDriver.withValue = (secret, use) =>
+    readValue(secret, (value) => {
+      tokenReads += 1;
+      beforeTokenUse();
+      return use(value);
+    });
   const gateway = {
     id: "credential-gateway-slack-admission",
     capability: "credential_gateway",
@@ -9359,6 +9527,21 @@ test("deploying Slack freezes the reviewed tool selection and keeps its credenti
   compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
   const controller = await configuredController({
     computeDriver: compute,
+    secretDriver,
+    readManagedMcpToolNames(endpoint, accessToken, signal) {
+      return listManagedMcpToolNames(endpoint, accessToken, signal, {
+        async resolveHost(host) {
+          assert.equal(host, "mcp.slack.com");
+          return [{ address: "8.8.8.8", family: 4 }];
+        },
+        fetch(target, request) {
+          assert.equal(target.href, "https://mcp.slack.com/mcp");
+          // The real reader and MCP SDK send HTTP to this counted peer. Only DNS/routing
+          // are controlled: this does not qualify public DNS, TLS, or live Slack access.
+          return fetch(peerUrl, { ...request, dispatcher: undefined });
+        },
+      });
+    },
   });
   await bootstrap(controller);
   const pluginDriver = new OCCPluginDriver();
@@ -9372,7 +9555,7 @@ test("deploying Slack freezes the reviewed tool selection and keeps its credenti
   );
   const base = `/namespaces/${namespace.id}`;
   const secret = await controller.request("POST", `${base}/secrets`, {
-    body: { name: "Slack access token", value: "fixture-slack-access-token" },
+    body: { name: "Slack access token", value: token },
   });
   assert.equal(secret.status, 201, JSON.stringify(secret.body));
   const source = await controller.request("POST", `${base}/credential-sources`, {
@@ -9384,6 +9567,7 @@ test("deploying Slack freezes the reviewed tool selection and keeps its credenti
     },
   });
   assert.equal(source.status, 201, JSON.stringify(source.body));
+  tokenReads = 0;
   const model = await controller.request("POST", `${base}/credential-sources`, {
     body: { name: "Model account", type: "openai" },
   });
@@ -9431,10 +9615,117 @@ test("deploying Slack freezes the reviewed tool selection and keeps its credenti
 
   const agentPath = `${base}/agents/${created.data.id}`;
   const pluginId = "occ-plugin:slack@1.0.0";
+  const discovery = { pluginId, managedConnection: { slot: "account", sourceId: source.data.id } };
+  const discover = (body = discovery) =>
+    controller.request("POST", `${agentPath}/plugins/details`, { body });
+  const detail = await discover();
+  assert.equal(detail.status, 200, JSON.stringify(detail.body));
+  assert.equal(detail.headers.get("cache-control"), "no-store");
+  assert.deepEqual(detail.data.tools, [
+    { id: "slack_search_public", name: "slack_search_public", ownerId: pluginId },
+    { id: "slack_send_message", name: "slack_send_message", ownerId: pluginId },
+  ]);
+  assert.equal(JSON.stringify(detail.body).includes(token), false);
+  assert.deepEqual(
+    upstream.filter(({ method }) => method !== "GET"),
+    ["initialize", "notifications/initialized", "tools/list", "DELETE"].map((method) => ({
+      method,
+      authenticated: true,
+    })),
+  );
+  assert.equal(tokenReads, 1);
+  upstream.length = 0;
+  tokenReads = 0;
+
+  const editor = await controller.fixture.createAuthPrincipal("managed-mcp-editor");
+  state.identities.push(editor.principal);
+  state.roles.push({
+    id: "managed-mcp-editor",
+    namespaceId: namespace.id,
+    permissions: ["read", "update"].map((action) => ({ action, resourceKind: "agent" })),
+  });
+  state.bindings.push({
+    id: "managed-mcp-editor",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: editor.principal.id,
+    roleId: "managed-mcp-editor",
+    resourceKind: "agent",
+    resourceId: created.data.id,
+  });
+  const forbidden = await controller.request("POST", `${agentPath}/plugins/details`, {
+    body: discovery,
+    session: editor.session,
+  });
+  assertApiError(forbidden, 403, "FORBIDDEN");
+  assert.match(forbidden.body.error.message, /CredentialSource operate/);
+  assert.equal(tokenReads, 0);
+  assert.deepEqual(upstream, []);
+  state.bindings.pop();
+
+  const agentBinding = state.bindings.pop();
+  assert.equal(agentBinding.resourceId, source.data.id);
+  assertApiError(await discover(), 403, "FORBIDDEN");
+  assert.equal(tokenReads, 0);
+  assert.deepEqual(upstream, []);
+
+  state.bindings.push(agentBinding);
+  assertApiError(
+    await discover({
+      ...discovery,
+      managedConnection: { ...discovery.managedConnection, slot: "wrong" },
+    }),
+    409,
+    "RESOURCE_CONFLICT",
+  );
+  assertApiError(
+    await discover({
+      ...discovery,
+      credentialSource: {
+        kind: "credential_source",
+        id: source.data.id,
+        namespaceId: namespace.id,
+      },
+    }),
+    400,
+    "INVALID_REQUEST",
+  );
+  assert.equal(tokenReads, 0);
+
+  const detached = await controller.request("PATCH", agentPath, {
+    body: {
+      configurationId: configuration.id,
+      credentialSources: [{ sourceId: model.data.id }],
+    },
+  });
+  assert.equal(detached.status, 200, JSON.stringify(detached.body));
+  assertApiError(await discover(), 409, "RESOURCE_CONFLICT");
+  assert.equal(tokenReads, 0);
+  assert.deepEqual(upstream, []);
+  const restored = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, credentialSources },
+  });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+
+  // An Agent's grant may change during the backend read. Recheck it before calling Slack.
+  beforeTokenUse = () => state.bindings.pop();
+  assertApiError(await discover(), 403, "FORBIDDEN");
+  assert.equal(tokenReads, 1);
+  assert.deepEqual(upstream, []);
+  beforeTokenUse = () => {};
+  state.bindings.push(agentBinding);
+
+  // A server that echoes the bearer in its inventory must not expose it through the picker.
+  echoToken = true;
+  const echoed = await discover();
+  assertApiError(echoed, 503, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
+  assert.equal(JSON.stringify(echoed.body).includes(token), false);
+  echoToken = false;
   const capabilities = await controller.request("GET", `${agentPath}/plugins/capabilities`);
   assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
   const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
   assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
+  assert.equal(slot.toolDiscovery, true);
   const save = (toolNames) =>
     controller.request("PATCH", agentPath, {
       body: {
@@ -9454,8 +9745,10 @@ test("deploying Slack freezes the reviewed tool selection and keeps its credenti
   const refused = await save(["slack_*"]);
   assertApiError(refused, 400, "INVALID_REQUEST");
   assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
-  const saved = await save(["slack_search_public"]);
+  // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
+  const saved = await save(["slack_send_message"]);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(saved.data.plugins[pluginId].driverPolicy.toolNames, ["slack_send_message"]);
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.deepEqual(deployed.data.plugins.plugins, saved.data.plugins);
