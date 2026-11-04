@@ -642,6 +642,12 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
   ]);
+  const suiteSkip = summary.issues.find((entry) => entry.name === "skipped suite");
+  assert.equal(suiteSkip.file, "tests/integration/skips.test.mjs");
+  assert.equal(suiteSkip.source.file, suiteSkip.file);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.line) && suiteSkip.source.line > 0);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.column) && suiteSkip.source.column > 0);
+  assert.equal(suiteSkip.source.nesting, 0);
   // Every issue is named in the job log, which keeps every attempt.
   for (const line of [
     "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
