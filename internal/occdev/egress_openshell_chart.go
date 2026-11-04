@@ -6,9 +6,12 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 	"go.yaml.in/yaml/v3"
@@ -19,6 +22,17 @@ import (
 func (r *runner) checkProtectedOpenShellChart(ctx context.Context, state *developmentState, images openShellImageSelection) error {
 	const selector = "OCC_DEVELOPMENT_OPENSHELL_HELM_CHART"
 	chart := r.env[selector]
+	if chart == "" {
+		root, err := os.MkdirTemp("", "oce-openshell-chart-preflight-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(root)
+		chart, _, err = r.openShellCharts(ctx, root)
+		if err != nil {
+			return err
+		}
+	}
 	if !filepath.IsAbs(chart) || filepath.Clean(chart) != chart {
 		return fmt.Errorf("protected egress requires %s to be an absolute canonical chart path", selector)
 	}
@@ -77,10 +91,12 @@ func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) err
 			Supervisor struct {
 				Middleware []struct {
 					Name, Audience, Timeout string
-					Endpoint                string `toml:"grpc_endpoint"`
-					Payload                 int    `toml:"max_payload_bytes"`
-					Insecure                *bool  `toml:"allow_insecure_transport"`
-					CAPath                  string `toml:"tls_ca_cert_path"`
+					BindingPolicy           string   `toml:"binding_policy"`
+					Bindings                []string `toml:"bindings"`
+					Endpoint                string   `toml:"grpc_endpoint"`
+					Payload                 int      `toml:"max_payload_bytes"`
+					Insecure                *bool    `toml:"allow_insecure_transport"`
+					CAPath                  string   `toml:"tls_ca_cert_path"`
 				}
 			}
 		}
@@ -98,13 +114,17 @@ func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) err
 		return fmt.Errorf("rendered %s registration does not select the required HTTPS endpoint, audience, secure transport and request limits", m.Name)
 	}
 
+	if (m.BindingPolicy != "allowlist" && m.BindingPolicy != "exact") ||
+		!slices.Equal(m.Bindings, []string{"http_request_pre_credentials"}) {
+		return fmt.Errorf("rendered %s must require the pre-credentials request binding", m.Name)
+	}
+
 	for _, c := range pod.Containers {
 		if c.Name != openShellGatewayService {
 			continue
 		}
-		i := slices.Index(c.Args, "--config")
 		configPath := pod.mountedConfigMapKey(c.Mounts, configMap, "gateway.toml")
-		if !path.IsAbs(configPath) || i < 0 || i+1 >= len(c.Args) || c.Args[i+1] != configPath {
+		if !path.IsAbs(configPath) || !selectsGatewayConfig(c.Args, configPath) {
 			return fmt.Errorf("rendered Gateway must load gateway.toml from ConfigMap %s", configMap)
 		}
 		caPath := pod.mountedConfigMapKey(c.Mounts, developmentEgressCA, "ca.crt")
@@ -114,6 +134,38 @@ func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) err
 		return nil
 	}
 	return fmt.Errorf("rendered chart is missing the %s StatefulSet and Gateway container", openShellGatewayService)
+}
+
+func selectsGatewayConfig(args []string, configPath string) bool {
+	// Accept the shipped chart's daemon arguments and the optional port override.
+	// Unknown options and positional arguments may prevent daemon startup or select a subcommand.
+	seen := make(map[string]bool)
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			return seen["--config"] && i == len(args)-1
+		}
+		option, value, hasValue := strings.Cut(args[i], "=")
+		if seen[option] || (option != "--config" && option != "--db-url" && option != "--port") {
+			return false
+		}
+		if !hasValue {
+			i++
+			if i == len(args) || strings.HasPrefix(args[i], "-") {
+				return false
+			}
+			value = args[i]
+		}
+		if value == "" || (option == "--config" && value != configPath) {
+			return false
+		}
+		if option == "--port" {
+			if _, err := strconv.ParseUint(value, 10, 16); err != nil {
+				return false
+			}
+		}
+		seen[option] = true
+	}
+	return seen["--config"]
 }
 
 // The launcher waits for this StatefulSet. Resolve both ConfigMap keys through

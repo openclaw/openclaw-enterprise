@@ -36,3 +36,11 @@ components with simulated API state; they do not prove persistence or enforcemen
 
 Capture screenshots and an interaction video outside the checkout. Include the
 story names and proof limits with the media; refresh it after material UI edits.
+
+## Change the shared model in a roster
+
+Open **Pages → Create Agent → Change a roster's shared primary model**. Change
+Model ID, then inspect Advanced settings → Configuration JSON. Defaults and
+explicit roster selections share the new primary; inherited selections remain
+omitted. Clear the field and select another model: local policies and ordered
+fallbacks remain. This story simulates the API and does not deploy a runtime.

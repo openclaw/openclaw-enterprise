@@ -103,9 +103,16 @@ See the
 full placement, runtime, and recovery sequence.
 
 A recovered older operation never replaces a newer selected version: the worker
-marks it superseded without calling Compute. A stop or deletion owns the
-versions admitted before it was requested. PostgreSQL stamps both times on
-its own clock, so controller clock skew cannot exempt a running version.
+marks it superseded without preparing it. An older candidate also ends
+superseded once the newest version, on the same Compute and without repository
+credentials, failed with a held runtime failure: the worker keeps that runtime, so
+the older one cannot become ready. A superseded exclusive candidate finishes its
+yielded predecessor stops, then stops its own runtime, which a newer version may
+never stop. The failure of a version with repository credentials queues
+retirement of its runtime, so the older one keeps waiting.
+A stop or deletion owns the versions admitted before it was requested. PostgreSQL
+stamps both times on its own clock, so controller clock skew cannot exempt a
+running version.
 Sibling Agents have independent
 queue lanes, while versions for the same Agent serialize. The default
 PostgreSQL-backed development Compute Driver provisions Docker Namespace resources
@@ -205,6 +212,9 @@ connection, a dropped one, or a Harness status read left unanswered; an
 pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
+When a bundled Compute Driver's cleanup after a failed preparation or activation
+fails too, the pass is decided by the preparation's or activation's own failure,
+and `worker.completed` adds `cleanupCause`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
 measured from operation creation on PostgreSQL's clock, so
 controller clock skew cannot move it. Exceeding it fails the operation with
@@ -216,7 +226,7 @@ version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
 and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
 unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`, and a `403` on a
-private Secret write fails preparation at once with
+private Secret write fails preparation or activation at once with
 [`KUBERNETES_SECRET_WRITE_FORBIDDEN`](../../guides/operate/troubleshooting.md#a-deployment-fails-because-kubernetes-refused-a-secret). A Sandbox Driver that cannot run
 the version fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as

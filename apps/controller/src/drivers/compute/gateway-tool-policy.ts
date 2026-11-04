@@ -1,0 +1,516 @@
+import type {
+  ConfigurationValidationOptions,
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
+} from "@openclaw-enterprise/contracts";
+
+// Reviewed Gateway tools and actions. Dedicated deployments can add reviewed
+// managed plugin tools. Ordinary tool grants remain subject to this policy.
+const GATEWAY_TOOL_BASELINE = {
+  allow: [
+    "sessions",
+    "sessions_list",
+    "sessions_history",
+    "sessions_search",
+    "sessions_send",
+    "sessions_spawn",
+    "sessions_yield",
+    "subagents",
+    "session_status",
+    "agents_list",
+    "automations",
+    "message",
+    "ask_user",
+    "progress_card",
+    "get_goal",
+    "create_goal",
+    "update_goal",
+    "ls",
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "exec",
+    "process",
+  ],
+  actions: {
+    sessions: [
+      "cloud_profiles",
+      "patch",
+      "stop",
+      "reset",
+      "delete",
+      "assign_owner",
+      "group_list",
+      "group_set",
+      "group_rename",
+      "group_delete",
+    ],
+    subagents: ["list", "wait", "cancel"],
+    automations: [
+      "status",
+      "list",
+      "get",
+      "add",
+      "update",
+      "remove",
+      "run",
+      "runs",
+      "next_check",
+      "wake",
+    ],
+    process: [
+      "list",
+      "poll",
+      "log",
+      "write",
+      "send-keys",
+      "submit",
+      "paste",
+      "kill",
+      "clear",
+      "remove",
+    ],
+    message: [
+      "send",
+      "broadcast",
+      "poll",
+      "poll-vote",
+      "react",
+      "reactions",
+      "read",
+      "edit",
+      "unsend",
+      "reply",
+      "sendWithEffect",
+      "sendAttachment",
+      "delete",
+      "pin",
+      "unpin",
+      "list-pins",
+      "permissions",
+      "thread-create",
+      "thread-list",
+      "thread-reply",
+      "search",
+      "sticker",
+      "sticker-search",
+      "member-info",
+      "role-info",
+      "emoji-list",
+      "channel-info",
+      "channel-list",
+      "conversation-open",
+      "voice-status",
+      "event-list",
+      "download-file",
+      "upload-file",
+    ],
+  },
+  automations: {
+    scope: "caller",
+    allowCommandJobs: false,
+  },
+};
+
+// Tools outside the baseline that the pinned OpenClaw core (src/agents/tools)
+// declares with a top-level action field. OpenClaw refuses to assemble any
+// allowed tool like this without tools.gatewayPolicy.actions.<tool>, so every
+// model turn would fail; Agent save refuses it first. Plugin tools are not
+// listed: OCE cannot read their schemas before deployment.
+const GATEWAY_ACTION_TOOLS = [
+  "computer",
+  "dashboard",
+  "github_publish",
+  "image_generate",
+  "mobile_ui",
+  "music_generate",
+  "personal_instructions",
+  "portal",
+  "screen",
+  "skill_workshop",
+  "theme",
+  "transcripts",
+  "video_generate",
+];
+
+// Codex's native tools operate in the Harness. Their Gateway equivalents
+// would instead access the control-plane container.
+const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
+  "ls",
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+  "exec",
+  "process",
+  "gateway_exec",
+  "gateway_process",
+  "terminal",
+  "portal",
+  "openclaw",
+  "plugins",
+  "gateway",
+];
+
+// Reviewed core, automation and Codex adapter enforcement. Update together
+// with the runtime source pin and archive provenance.
+export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "554f0b886bde6c089578c49967227f8b50d1cf16";
+
+type SettingError = (setting: string, requirement: string) => Error;
+
+/**
+ * Compose only in a dedicated Gateway. The second document is OCE's admitted
+ * input, captured before plugin writes or human edits to native configuration.
+ * Existing effective restrictions can narrow that input, never widen it.
+ * Keep this function self-contained: the runtime wrappers embed the same code.
+ */
+export function managedGatewayConfiguration(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  admitted: Readonly<OpenClawConfigurationDocument> = configuration,
+  codex = false,
+  createError: SettingError = (setting, requirement) =>
+    new Error(`Configuration setting ${setting} ${requirement}.`),
+  managedPluginTools: readonly string[] = [],
+): OpenClawConfigurationDocument {
+  const object = (value: unknown, path: string): Record<string, unknown> => {
+    if (value === undefined) {
+      return {};
+    }
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw createError(path, "must be an object");
+    }
+    return value as Record<string, unknown>;
+  };
+  const name = (value: unknown, path: string): string => {
+    if (
+      typeof value !== "string" ||
+      !/^[a-zA-Z0-9_][a-zA-Z0-9_.:/-]*$/.test(value.trim()) ||
+      value.trim().toLowerCase().startsWith("group:")
+    ) {
+      throw createError(path, "must name a concrete tool or action");
+    }
+    return value.trim();
+  };
+  const toolName = (value: unknown, path: string): string => {
+    const normalized = name(value, path).toLowerCase();
+    const aliases: Record<string, string> = {
+      bash: "exec",
+      "apply-patch": "apply_patch",
+      cron: "automations",
+      tool_call: "dispatch_action",
+    };
+    return aliases[normalized] ?? normalized;
+  };
+  const names = (value: unknown, path: string, tools = false): string[] => {
+    if (!Array.isArray(value)) {
+      throw createError(path, "must be a list");
+    }
+    return [...new Set(value.map((entry) => (tools ? toolName(entry, path) : name(entry, path))))];
+  };
+  const parsePolicy = (value: unknown) => {
+    const path = "tools.gatewayPolicy";
+    const policy = object(value, path);
+    for (const key of Object.keys(policy)) {
+      if (!["allow", "actions", "automations"].includes(key)) {
+        throw createError(path, "contains an unsupported field");
+      }
+    }
+    const allow = names(policy.allow, `${path}.allow`, true);
+    const actions: Record<string, string[]> = {};
+    for (const [key, value] of Object.entries(object(policy.actions, `${path}.actions`))) {
+      const id = toolName(key, `${path}.actions`);
+      const requested = names(value, `${path}.actions.${id}`);
+      actions[id] = actions[id]?.filter((action) => requested.includes(action)) ?? requested;
+    }
+    const automations = object(policy.automations, `${path}.automations`);
+    if (
+      Object.keys(automations).some((key) => !["scope", "allowCommandJobs"].includes(key)) ||
+      (automations.scope !== undefined && automations.scope !== "caller") ||
+      (automations.allowCommandJobs !== undefined &&
+        typeof automations.allowCommandJobs !== "boolean")
+    ) {
+      throw createError(`${path}.automations`, "must use supported automation restrictions");
+    }
+    return { allow, actions };
+  };
+  const supplied = object(admitted.tools ?? undefined, "tools").gatewayPolicy;
+  const approved = parsePolicy(supplied === undefined ? GATEWAY_TOOL_BASELINE : supplied);
+  const administrativeTools = [
+    "gateway",
+    "plugins",
+    "openclaw",
+    "nodes",
+    "terminal",
+    "secrets",
+    "gateway_exec",
+    "gateway_process",
+  ];
+  const reviewedPluginTools = names(managedPluginTools, "tools.gatewayPolicy.allow", true);
+  if (
+    [...approved.allow, ...reviewedPluginTools].some((tool) => administrativeTools.includes(tool))
+  ) {
+    throw createError("tools.gatewayPolicy.allow", "must not grant Gateway administrative tools");
+  }
+  const effective = object(configuration.tools ?? undefined, "tools").gatewayPolicy;
+  const existing = effective === undefined ? undefined : parsePolicy(effective);
+  const admittedAllow =
+    supplied === undefined
+      ? [...new Set([...approved.allow, ...reviewedPluginTools])]
+      : approved.allow;
+  const allow =
+    existing === undefined
+      ? admittedAllow
+      : admittedAllow.filter((tool) => existing.allow.includes(tool));
+  const actions: Record<string, string[]> = {};
+  for (const tool of allow) {
+    const requested = approved.actions[tool];
+    const baseline = (GATEWAY_TOOL_BASELINE.actions as Record<string, string[]>)[tool];
+    if (baseline !== undefined && requested === undefined) {
+      throw createError(`tools.gatewayPolicy.actions.${tool}`, "must list the permitted actions");
+    }
+    if (baseline !== undefined && requested!.some((action) => !baseline.includes(action))) {
+      throw createError(`tools.gatewayPolicy.actions.${tool}`, "must use reviewed task actions");
+    }
+    const permitted = requested;
+    const prior = existing?.actions[tool];
+    if (existing !== undefined && permitted !== undefined && prior === undefined) {
+      throw createError(`tools.gatewayPolicy.actions.${tool}`, "must list the permitted actions");
+    }
+    if (permitted !== undefined) {
+      actions[tool] =
+        prior === undefined ? permitted : permitted.filter((action) => prior.includes(action));
+    } else if (prior !== undefined) {
+      actions[tool] = prior;
+    }
+    if (actions[tool] === undefined && GATEWAY_ACTION_TOOLS.includes(tool)) {
+      throw createError(`tools.gatewayPolicy.actions.${tool}`, "must list the permitted actions");
+    }
+  }
+  const next: Record<string, OpenClawConfigurationDocument[string]> =
+    structuredClone(configuration);
+  const tools = object(next.tools ?? undefined, "tools");
+  const pluginGrants = reviewedPluginTools.filter((tool) => allow.includes(tool));
+  if (pluginGrants.length && (tools.alsoAllow === undefined || Array.isArray(tools.alsoAllow))) {
+    // Native allow and alsoAllow are mutually exclusive. Extend the configured
+    // form without changing the operator's deny list.
+    if (Array.isArray(tools.allow) && tools.allow.length > 0) {
+      tools.allow = [...new Set([...tools.allow, ...pluginGrants])];
+    } else {
+      tools.alsoAllow = [...new Set([...(tools.alsoAllow ?? []), ...pluginGrants])];
+    }
+  }
+  tools.gatewayPolicy = {
+    allow,
+    actions,
+    automations: { scope: "caller", allowCommandJobs: false },
+  };
+  next.tools = tools as OpenClawConfigurationDocument[string];
+  const agents = object(next.agents ?? undefined, "agents");
+  const defaults = object(agents.defaults ?? undefined, "agents.defaults");
+  defaults.modelSelectionScope = "session";
+  agents.defaults = defaults;
+  next.agents = agents as OpenClawConfigurationDocument[string];
+  const cron = object(next.cron ?? undefined, "cron");
+  const triggers = object(cron.triggers ?? undefined, "cron.triggers");
+  triggers.enabled = false;
+  cron.triggers = triggers;
+  next.cron = cron as OpenClawConfigurationDocument[string];
+  if (codex) {
+    const plugins = object(next.plugins ?? undefined, "plugins");
+    const entries = object(plugins.entries ?? undefined, "plugins.entries");
+    const entry = object(entries.codex ?? undefined, "plugins.entries.codex");
+    const config = object(entry.config ?? undefined, "plugins.entries.codex.config");
+    const exclude = config.codexDynamicToolsExclude ?? undefined;
+    const path = "plugins.entries.codex.config.codexDynamicToolsExclude";
+    if (
+      exclude !== undefined &&
+      (!Array.isArray(exclude) || exclude.some((name) => typeof name !== "string"))
+    ) {
+      throw createError(path, "must be a list of tool names");
+    }
+    config.codexDynamicToolsExclude = [
+      ...new Set([
+        ...((exclude as string[] | undefined) ?? []),
+        ...GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS,
+      ]),
+    ];
+    entry.config = config;
+    entries.codex = entry;
+    plugins.entries = entries;
+    next.plugins = plugins as OpenClawConfigurationDocument[string];
+  }
+  return next;
+}
+
+/**
+ * The tool policy rules that hold for every OpenClaw topology: the pinned OpenClaw applies
+ * tools.gatewayPolicy natively in an embedded Gateway too, so a policy it cannot assemble fails
+ * every turn there (finding 2688). Configuration save and Agent admission run it with the
+ * messages dedicated composition uses (finding 2689). A Configuration without a policy passes:
+ * only dedicated composition adds the baseline. A Preset policy with an unfilled variable
+ * anywhere, in a value or an object key, is skipped whole at Preset save and checked when a
+ * Configuration is created from it.
+ */
+export function validateGatewayToolPolicy(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError?: SettingError,
+  options?: ConfigurationValidationOptions,
+): void {
+  const tools = configuration.tools;
+  if (
+    tools === null ||
+    typeof tools !== "object" ||
+    Array.isArray(tools) ||
+    !Object.hasOwn(tools, "gatewayPolicy")
+  ) {
+    return;
+  }
+  const { gatewayPolicy } = tools as { readonly gatewayPolicy: OpenClawConfigurationValue };
+  const unresolved = options?.unresolved;
+  const waits = (value: OpenClawConfigurationValue, path: (string | number)[]): boolean =>
+    unresolved !== undefined &&
+    (typeof value === "string"
+      ? unresolved(path) !== undefined
+      : Array.isArray(value)
+        ? value.some((item: OpenClawConfigurationValue, index) => waits(item, [...path, index]))
+        : value !== null &&
+          typeof value === "object" &&
+          Object.entries(value).some(
+            ([key, item]) =>
+              unresolved([...path, key], true) !== undefined || waits(item, [...path, key]),
+          ));
+  if (waits(gatewayPolicy, ["tools", "gatewayPolicy"])) {
+    return;
+  }
+  // The policy alone, so the composition's other settings stay with dedicated deployment.
+  managedGatewayConfiguration({ tools: { gatewayPolicy } }, undefined, false, createError);
+}
+
+// Both Compute launchers compose and validate before any native Gateway starts.
+// The expected source identifies the reviewed core + automation + Codex adapter
+// stack; accepting this schema alone would not establish adapter enforcement.
+export const GATEWAY_TOOL_POLICY_RUNTIME = String.raw`
+const GATEWAY_TOOL_BASELINE = ${JSON.stringify(GATEWAY_TOOL_BASELINE)};
+const GATEWAY_ACTION_TOOLS = ${JSON.stringify(GATEWAY_ACTION_TOOLS)};
+const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = ${JSON.stringify(GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS)};
+const managedGatewayConfiguration = ${managedGatewayConfiguration.toString()};
+class GatewayToolPolicyError extends Error {
+  constructor() {
+    super("The dedicated Gateway cannot apply its required tool policy. It remains unready; use the supporting OCE runtime image and a valid Gateway tool allowlist.");
+  }
+}
+function requireGatewayToolPolicyRuntime() {
+  try {
+    const provenance = JSON.parse(pluginReadFileSync("/opt/oce/runtime/provenance.json", "utf8"));
+    if (provenance.source !== "https://github.com/openclaw/openclaw" ||
+        provenance.commit !== ${JSON.stringify(GATEWAY_TOOL_POLICY_SOURCE_COMMIT)}) {
+      throw new GatewayToolPolicyError();
+    }
+  } catch {
+    throw new GatewayToolPolicyError();
+  }
+}
+// OpenClaw refuses to read its configuration while an earlier Gateway process may still own
+// the state: after an unclean exit, a restarted container runs in a new PID namespace and
+// cannot prove that the recorded holder stopped (finding 2864). validate --json reports the
+// refusal as its root read issue, which names OpenClaw's GatewayLockNamespaceError.
+class GatewayStateLockError extends Error {
+  constructor(refusal) {
+    super("The dedicated Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds the Gateway state lock, and this container cannot verify that it stopped. It remains unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes for an unverifiable state owner. OpenClaw reported: " + refusal);
+  }
+}
+function gatewayStateLockRefusal(stdout) {
+  let report;
+  try {
+    report = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  if (report?.valid !== false || !Array.isArray(report.issues)) return undefined;
+  for (const issue of report.issues) {
+    if (issue?.path !== "<root>" || typeof issue.message !== "string") continue;
+    const refusal = /^read failed at [^\n]*?: GatewayLockNamespaceError: ([^\n]+)/u.exec(issue.message);
+    if (refusal !== null) return refusal[1].slice(0, 1000);
+  }
+  return undefined;
+}
+// The settings the tool policy step composes (managedGatewayConfiguration). A validation issue
+// on one of them, or on an object that names one of them as a key it refuses, is a refusal of
+// the step itself, as is an issue OpenClaw ties to no setting.
+const GATEWAY_TOOL_POLICY_SETTINGS = [
+  "tools.gatewayPolicy",
+  "agents.defaults.modelSelectionScope",
+  "cron.triggers.enabled",
+  "plugins.entries.codex.config.codexDynamicToolsExclude",
+];
+function concernsGatewayToolPolicy(issue) {
+  const path = issue?.path;
+  if (typeof path !== "string" || path === "" || path === "<root>") return true;
+  return GATEWAY_TOOL_POLICY_SETTINGS.some((setting) => {
+    if (path === setting || path.startsWith(setting + ".")) return true;
+    if (!setting.startsWith(path + ".")) return false;
+    const key = setting.slice(path.length + 1).split(".")[0];
+    return typeof issue.message !== "string" || issue.message.includes('"' + key + '"');
+  });
+}
+// A validation report whose issues all lie outside the tool policy: the Agent's own
+// configuration is invalid, such as a plugin entry that fails its schema (finding 3045).
+// It is held as check gateway-config with the log line an embedded Gateway's hold writes
+// (finding 3043). The wrapper provides invalidOpenClawConfigurationLine.
+class GatewayConfigurationError extends Error {
+  constructor(issues) {
+    super(invalidOpenClawConfigurationLine("The OpenClaw Gateway did not start", issues));
+  }
+}
+function invalidGatewayConfiguration(stdout) {
+  let report;
+  try {
+    report = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  if (report?.valid !== false || !Array.isArray(report.issues) || report.issues.length === 0) return undefined;
+  return report.issues.some(concernsGatewayToolPolicy) ? undefined : new GatewayConfigurationError(report.issues);
+}
+function configureManagedGatewayTools(admitted, managedPluginTools) {
+  let refusal;
+  try {
+    const config = managedGatewayConfiguration(
+      readOpenClawConfig(), admitted, Boolean(process.env.APP_SERVER_URL), undefined, managedPluginTools,
+    );
+    writeOpenClawConfig(config);
+    const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
+      env: { ...process.env, OPENCLAW_CONFIG_READONLY: "1" },
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
+    });
+    if (validation.error === undefined && validation.status !== 0) {
+      const lockRefusal = gatewayStateLockRefusal(validation.stdout);
+      refusal = lockRefusal === undefined
+        ? invalidGatewayConfiguration(validation.stdout) : new GatewayStateLockError(lockRefusal);
+    }
+    if (validation.error !== undefined || validation.status !== 0 || JSON.parse(validation.stdout)?.valid !== true) {
+      throw new GatewayToolPolicyError();
+    }
+  } catch {
+    throw refusal ?? new GatewayToolPolicyError();
+  }
+}
+// Holds each refusal of the tool policy step: the policy itself, the Gateway state lock that
+// kept OpenClaw from reading the configuration it validates, or an invalid setting outside
+// the policy.
+function holdGatewayToolPolicyFailure(error) {
+  if (error instanceof GatewayStateLockError) {
+    publishRuntimeFailure("gateway-state-lock", "UNAVAILABLE");
+  } else if (error instanceof GatewayConfigurationError) {
+    publishRuntimeFailure("gateway-config", "UNAVAILABLE");
+  } else if (error instanceof GatewayToolPolicyError) {
+    publishRuntimeFailure("gateway-tool-policy", "INCOMPATIBLE_RESPONSE");
+  } else {
+    return false;
+  }
+  console.error(error.message);
+  setInterval(() => {}, 3600000);
+  return true;
+}
+`;

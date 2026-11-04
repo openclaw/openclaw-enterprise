@@ -2,14 +2,11 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createSecureContext } from "node:tls";
 import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
 import type { LoadedConfiguration } from "./contracts.ts";
-import { createGitHubStaticTokenOwner } from "../../drivers/repo/github/credentials/static-token.ts";
-import { createGitHubDriverFactory } from "../../drivers/repo/github/credentials/factory.ts";
 import {
   record,
   string,
   validateServiceConfig,
 } from "../../drivers/repo/credentials/configuration.ts";
-import { validateGitHubConfiguration } from "../../drivers/repo/github/credentials/config.ts";
 import {
   GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
   validateGitHubRepositoryRegistry,
@@ -140,6 +137,8 @@ export async function loadConfiguration(
           : { apiOrigin: string(backendInput.apiOrigin) }),
       };
     } else {
+      const { validateGitHubConfiguration } =
+        await import("../../drivers/repo/github/credentials/config.ts");
       const configuration = validateGitHubConfiguration(backendInput);
       // Second explicit opt-in: the process flag, visible in argv and `docker inspect`.
       if (
@@ -168,6 +167,8 @@ export async function loadConfiguration(
       if (length < 1 || length > config.limits.accessTokenBytes) {
         throw new Error("invalid-configuration");
       }
+      const { createGitHubStaticTokenOwner } =
+        await import("../../drivers/repo/github/credentials/static-token.ts");
       owner = createGitHubStaticTokenOwner({ token: token.subarray(0, length) });
     }
     cert = await readProtected(string(gateway.tlsCertFile), 131072, false);
@@ -193,13 +194,16 @@ export async function loadConfiguration(
         });
         break;
       }
-      case "github-token":
+      case "github-token": {
+        const { createGitHubDriverFactory } =
+          await import("../../drivers/repo/github/credentials/factory.ts");
         factory = createGitHubDriverFactory({
           authority: owner!,
           ...factoryOptions,
           configuration: selected.configuration,
         });
         break;
+      }
     }
     const providerQueue = createProviderQueue(config.limits.providerQueue);
     const ownedCert = cert;

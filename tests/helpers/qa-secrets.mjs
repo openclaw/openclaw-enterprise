@@ -324,6 +324,18 @@ export function redactedQaTail(text, env, { lines, lineChars }) {
     .map((line) => redactOutputLine(line, secrets, "", lineChars));
 }
 
+// Only the explicit API-key QA scenario accepts process-environment injection.
+// Register before an API call or assertion can include the value in an error.
+export async function protectedModelApiKey(env = process.env) {
+  if (env.OCC_TEST_QA_MODEL_API_KEY === undefined) {
+    return protectedText(env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential");
+  }
+  const value = env.OCC_TEST_QA_MODEL_API_KEY.trim();
+  assert.ok(value.length > 0, "model credential must not be empty");
+  registerQaSecret(value);
+  return value;
+}
+
 export async function protectedText(path, label) {
   assert.ok(path, `${label} path is required`);
   // Check and read the same opened file; never follow a substituted symlink.

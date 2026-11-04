@@ -1,5 +1,15 @@
 # Protected static inference
 
+New local development launches of this profile are retired. The launcher rejects
+`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
+`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before effects, with no fallback.
+Unset, empty or `0` protected-egress selections retain ordinary authenticated
+OpenShell startup. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+
+The controller contracts below remain for existing installations, source owners
+and historical specifications. Launcher retirement does not remove their admission,
+withdrawal or cleanup responsibilities.
+
 Select the Credential Proxy Driver only with a Kubernetes Compute and OpenShell pair that
 enforces the whole-execution profile below. The security principal is one freshly
 admitted Agent execution. Its parent, a sibling and an ordinary client can use the
@@ -70,11 +80,26 @@ retry follows. Retain that uncertain receipt.
 
 ## Static source and response policy
 
+Fresh static sources select the first provider for their type in catalog order.
+The selected provider ID and generation must identify one registration; duplicates
+return `409` before credential material is read. Multiple distinct providers for
+the same type remain supported. Reordering distinct providers does not change the
+provider selected for an existing source update.
+
 The static OpenAI profile admits an explicitly configured model and a closed set of
 text inference requests. Unsupported operations, remote provider tools, arbitrary
 model selection and discovery are refused before reading the Secret. The trusted
 sender injects the selected version. Neither the Agent nor the admission snapshot
 receives its value.
+
+Responses requests may declare local function and custom tools, including namespaces,
+in the top-level `tools` list or a developer `additional_tools` input item. Inline
+declarations use the same local-tool restrictions; they do not authorize hosted tools.
+Local function parameter schemas accept `encrypted: true` only on a string schema.
+This annotation does not itself encrypt data. The JSON string in
+`client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
+`none`, `minimal`, `low`, `medium`, `high` or `xhigh`. This metadata grants no authority.
+Unknown request fields remain refused.
 
 Static provider generation two identifies whole-execution authority. A generation-one
 grant remains narrower. Adopting live material and authorizing the broader execution
@@ -118,8 +143,9 @@ client transformations; they do not reinterpret function-call argument data.
 
 ## Installation configuration
 
-Use the [protected local launch profile](../../guides/deploy/local-openshell-images.md#select-the-protected-profile)
-and the [OpenShell Backend and Sandbox configuration](../drivers/openshell-credential-gateway.md).
+For retained controller installations, consult the
+[OpenShell Backend and Sandbox configuration](../drivers/openshell-credential-gateway.md).
+The retired local launcher cannot prepare this configuration.
 Select the same Driver ID in `backend[].drivers.credential_proxy` and the
 Installation's `drivers.credential_proxy` selection. Configuring only one is an
 error, not a request to disable protection. Startup also rejects the retired

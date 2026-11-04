@@ -31,23 +31,34 @@ const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
 const CONSOLE_ASSETS = new Map([
   ...Object.entries({
-    "image/png": ["oce-mascot.png", "favicon-16.png", "favicon-32.png", "apple-touch-icon.png"],
+    "image/png": [
+      "oce-mascot.png",
+      "oce-mascot-inverse.png",
+      "favicon-16.png",
+      "favicon-32.png",
+      "apple-touch-icon.png",
+    ],
     "image/vnd.microsoft.icon": ["favicon.ico"],
     "text/javascript; charset=utf-8": [
       "api-client.mts",
       "configuration-fields.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",
+      "request-turns.mts",
       "navigation.mts",
       "shell.mts",
       "namespaces.mts",
+      "namespace-deletion.mts",
+      "resource-actions.mts",
       "secrets.mts",
       "runtime-images.mts",
       "agents/list.mts",
+      "agents/access-reasons.mts",
       "agents/collection.mts",
       "agents/lifecycle-confirmation.mts",
       "agents/logs.mts",
       "agents/sandbox-policy.mts",
+      "agents/gateway-safety.mts",
       "agents/logs-view.mts",
       "agents/presets.mts",
       "agents/create.mts",
@@ -106,6 +117,48 @@ const CONSOLE_ASSETS = new Map([
       contentType: "text/javascript; charset=utf-8",
     },
   ],
+  // The Console reads Slack tokens with OCC's environment reference grammar.
+  [
+    "/console/environment-references.mjs",
+    {
+      path: new URL("../../../packages/occ/src/environment-references.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console shows the Gateway security values deployment admission fills from OCC's own table.
+  [
+    "/console/gateway-security-defaults.mjs",
+    {
+      path: new URL("../../../packages/occ/src/gateway-security-defaults.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console holds a draft's Deploy with the refusal OCC's stored-row rules give first, in
+  // deploy's order (finding 3093). It imports OCC's environment reference and retired setting
+  // modules, which are served here too.
+  [
+    "/console/stored-configuration-rules.mjs",
+    {
+      path: new URL("../../../packages/occ/src/stored-configuration-rules.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // OCC's retired OpenClaw settings, which the stored-row rules above read.
+  [
+    "/console/retired-openclaw-settings.mjs",
+    {
+      path: new URL("../../../packages/occ/src/retired-openclaw-settings.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console offers each failed deployment's next step from OCC's own table.
+  [
+    "/console/deployment-failure-steps.mjs",
+    {
+      path: new URL("../../../packages/occ/src/deployment-failure-steps.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
 ]);
 const CONSOLE_SHELL_ROUTES = new Set([
   "/console",
@@ -138,14 +191,36 @@ export function consoleAssetPaths(): Iterable<string> {
 
 const browserModules = new Map<string, { source: Buffer; javascript: Buffer }>();
 
+// The Console URL of each source file it serves, so an OCC module's import of another can name it.
+const consoleUrls = new Map([...CONSOLE_ASSETS].map(([url, { path }]) => [path.href, url]));
+
 // Node 24 erases types without moving source lines. Reuse that result until the file changes;
 // the Console TypeScript project checks types and rejects syntax that would require a transform.
-function browserJavaScript(pathname: string, source: Buffer): Buffer {
+// An OCC module imports a sibling by its `.ts` source name, which the browser cannot load, so the
+// import is pointed at the Console URL that serves the same file, beside the importing module's.
+// A module that imports a file the Console does not serve there is refused, so it fails in tests,
+// not in a browser. `href` is the module's source file URL.
+function browserJavaScript(pathname: string, source: Buffer, href: string): Buffer {
   const previous = browserModules.get(pathname);
   if (previous?.source.equals(source)) {
     return previous.javascript;
   }
-  const javascript = Buffer.from(stripTypeScriptTypes(source.toString("utf8")));
+  const directory = pathname.slice(0, pathname.lastIndexOf("/") + 1);
+  const javascript = Buffer.from(
+    stripTypeScriptTypes(source.toString("utf8")).replaceAll(
+      /(?<=\bfrom ")\.\.?\/[^"]+\.ts(?=";)/g,
+      (specifier) => {
+        const name = specifier.slice(2);
+        const url = name.includes("/")
+          ? undefined
+          : consoleUrls.get(`${href.slice(0, href.lastIndexOf("/") + 1)}${name}`);
+        if (url === undefined || url.slice(0, url.lastIndexOf("/") + 1) !== directory) {
+          throw new Error(`${pathname} imports ${specifier}, which the Console does not serve.`);
+        }
+        return `./${url.slice(directory.length)}`;
+      },
+    ),
+  );
   browserModules.set(pathname, { source, javascript });
   return javascript;
 }
@@ -200,8 +275,8 @@ export async function readConsoleAsset(
     if (!asset.contentType.startsWith("text/")) {
       return { body: source, contentType: asset.contentType, statusCode: 200 };
     }
-    const body = asset.path.pathname.endsWith(".mts")
-      ? browserJavaScript(pathname, source)
+    const body = /\.m?ts$/.test(asset.path.pathname)
+      ? browserJavaScript(pathname, source, asset.path.href)
       : source;
     return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
@@ -212,12 +287,23 @@ export async function readConsoleAsset(
         ? shell
         : Buffer.from(renderConsoleThemeShell(shell.toString("utf8"), theme)),
     contentType: "text/html; charset=utf-8",
-    statusCode:
-      CONSOLE_SHELL_ROUTES.has(pathname) ||
-      /^\/console\/agents\/(new|agt_[a-f0-9-]+)$/.test(pathname)
-        ? 200
-        : 404,
+    statusCode: isConsolePage(canonicalConsolePath(pathname)) ? 200 : 404,
   };
+}
+
+// A page path with trailing slashes names the same page, so it gets the same status; the
+// console then shows the address without them (navigation.mts). `/console/` itself stays.
+// Assets never match: an asset path with a slash is not an asset (finding 1906).
+function canonicalConsolePath(pathname: string) {
+  return pathname.startsWith("/console/")
+    ? `/console/${pathname.slice("/console/".length).replace(/\/+$/, "")}`
+    : pathname;
+}
+
+function isConsolePage(pathname: string) {
+  return (
+    CONSOLE_SHELL_ROUTES.has(pathname) || /^\/console\/agents\/(new|agt_[a-f0-9-]+)$/.test(pathname)
+  );
 }
 
 async function encodedAsset(

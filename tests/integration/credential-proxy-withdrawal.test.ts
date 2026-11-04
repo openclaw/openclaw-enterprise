@@ -1,3 +1,4 @@
+import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
@@ -25,12 +26,14 @@ import {
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
 
 test(
   "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
@@ -88,6 +91,34 @@ test(
           undefined,
           "stock OpenShell is not qualified for policy reduction",
         );
+        // The reduction protocol needs distinct upstreams. Only the primary source is a Harness
+        // model source; a separate fixture provider owns the auxiliary API destination.
+        const auxiliaryOrigin = origin.replace("provider.example.test", "second.example.test");
+        const auxiliary = createOpenAiStaticProvider({
+          protocol: "openai-responses",
+          baseUrl: `${auxiliaryOrigin}/v1`,
+        });
+        const auxiliaryType = { ...auxiliary.sourceType, type: "auxiliary-inference" };
+        delete auxiliaryType.harnessAuth;
+        const auxiliaryProvider = {
+          ...auxiliary,
+          ref: { ...auxiliary.ref, id: "auxiliary-inference" },
+          sourceType: auxiliaryType,
+        };
+        // This test-owned catalogue adapter delegates validation and routing to the real provider.
+        // Registration remains live through the Proxy; no Gateway copy is invented for this type.
+        const gateway = app.controller.selectedDriver("credential_gateway");
+        const listTypes = gateway.listSourceTypes.bind(gateway);
+        const validate = gateway.validateSourceConfig.bind(gateway);
+        t.mock.method(gateway, "listSourceTypes", async (...args: Parameters<typeof listTypes>) => [
+          ...(await listTypes(...args)),
+          auxiliaryType,
+        ]);
+        t.mock.method(gateway, "validateSourceConfig", (input: Parameters<typeof validate>[0]) =>
+          input.type === auxiliaryType.type
+            ? auxiliary.normalizeConfig(input.config)
+            : validate(input),
+        );
         const sandbox = new Proxy(app.controller.selectedDriver("sandbox"), {
           get(target, key) {
             if (key === "id" || key === "implementation") {
@@ -101,7 +132,10 @@ test(
           id: "policy-reduction-fixture",
           implementation: "policy-reduction-fixture",
           capability: "credential_proxy",
-          sourceControl: original.sourceControl,
+          sourceControl: {
+            ...original.sourceControl,
+            providers: [...original.sourceControl.providers, auxiliaryProvider],
+          },
           get policyReduction(): CredentialPolicyReducer {
             return {
               version: reductionVersion,
@@ -133,28 +167,28 @@ test(
           credentialGatewayDriver: app.controller.selectedDriver("credential_gateway"),
           protectedDriver: owner,
           channelRuntime: true,
+          modelProvider: { protocol: "openai-responses", baseUrl: `${origin}/v1` },
         });
         app.controller.registerDriver(compute);
         app.controller.selectDriver("compute", compute.id);
-        const createSource = async (name: string, baseUrl: string) => {
+        const createSource = async (name: string, type: string, baseUrl: string) => {
           const result = await app.request("POST", path, {
             body: {
               name,
-              type: "openai",
-              config: { base_url: `${baseUrl}/v1` },
+              type,
+              config: { authorized_base_url: `${baseUrl}/v1` },
               secrets: { api_key: secret.ref },
             },
           });
           assert.equal(result.status, 201, JSON.stringify(result.body));
           return result.data;
         };
-        const source = await createSource("first-reduced-source", origin);
-        sourceB = (
-          await createSource(
-            "second-inference",
-            origin.replace("provider.example.test", "second.example.test"),
-          )
-        ).id;
+        const source = await createSource(
+          "first-reduced-source",
+          "auxiliary-inference",
+          auxiliaryOrigin,
+        );
+        sourceB = (await createSource("harness-inference", "openai", origin)).id;
         const bound = await app.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
           body: {
             configurationId: agent.configurationId,
@@ -186,9 +220,9 @@ test(
     reductionVersion = 2;
     const agentPath = `/namespaces/${baseFixture.namespace.id}/agents/${baseFixture.agent.id}`;
     const unsupported = await api("POST", `${agentPath}/deploy`);
-    // Scope violations are deliberately not exposed as resource details by the API.
-    assert.equal(unsupported.status, 404);
-    assert.equal(unsupported.body.error.code, "NOT_FOUND");
+    // The deployer may read both sources, so the Installation limit is named (finding 2536).
+    assertApiError(unsupported, 409, "RESOURCE_CONFLICT");
+    assert.equal(unsupported.body.error.message, CREDENTIAL_PROXY_ONE_SOURCE);
     assert.equal(
       (
         await api("PATCH", agentPath, {
