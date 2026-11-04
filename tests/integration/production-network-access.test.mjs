@@ -155,6 +155,8 @@ test(
         for (const source of ["supervisor0", "gateway0"]) {
           await access.verify({ source, deny: ["management"], controlSource: "management" });
         }
+        // Uninstall consumes the policy sets recorded by both deployments.
+        await access.removeRecordedServicePolicies();
       },
     );
   },

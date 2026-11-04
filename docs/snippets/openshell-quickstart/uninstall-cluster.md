@@ -16,12 +16,11 @@ kube -n "$PLATFORM_NS" delete configmap oce-owner-listener --ignore-not-found
 kube -n "$PLATFORM_NS" delete secret oce-owner-browser-tls --ignore-not-found
 ```
 
-Stop the laptop port-forward. Remove the quickstart network policies recorded by setup and Add Git, if those files exist:
+Stop the laptop port-forward. Run `delete_service_peers` in each saved quickstart session for this installation. It removes every service policy set recorded before deployment or Add Git applied it. In the setup session, also remove the listener and bootstrap policies:
 
 ```bash
-for policy_file in "$RUN_DIR/agent-service-peers.json" "$RUN_DIR/protected-service-peers.json" "$RUN_DIR/listener.json"; do
-  if [[ -f $policy_file ]]; then kube delete -f "$policy_file" --ignore-not-found; fi
-done
+delete_service_peers
+if [[ -f $RUN_DIR/listener.json ]]; then kube delete -f "$RUN_DIR/listener.json" --ignore-not-found; fi
 kube -n "$PLATFORM_NS" delete networkpolicy oce-initialization-dns-vip oce-controller-openshell-management --ignore-not-found
 ```
 

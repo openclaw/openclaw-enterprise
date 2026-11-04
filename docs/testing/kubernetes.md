@@ -71,7 +71,7 @@ k3d cluster delete oce
 
 ### Production workload network access
 
-With the fixture cluster and image above, install Helm and `yq`, then run:
+Use an exclusive fixture cluster with `oce-system` and `envoy-gateway-system` available. Install Helm and `yq`, then run:
 
 ```sh
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \

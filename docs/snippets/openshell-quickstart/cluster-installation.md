@@ -149,7 +149,7 @@ cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
 cp "$RUN_DIR/worker.json" "$VALUES_FILE"
 ```
 
-Agent deployment pairs these egress rules with management ingress for the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Keep both directions. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Each tenant has its own supervisor ingress policy.
+Agent deployment pairs these egress rules with management ingress for the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Keep both directions. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Supervisor grants apply per tenant and Gateway grants per Agent. To verify ownership-based withdrawal, inspect every grant for that namespace. If a grant selects only the namespace name, stage the current platform helper and renderer and run `deployment_network` in the owning Agent’s saved session.
 
 Wait for Compute to create the backing namespace, then apply these [tenant bindings](production-agents.md#prepare-each-namespace). Verify restricted Pod Security; grant the ordinary worker role last.
 

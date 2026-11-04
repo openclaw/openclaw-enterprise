@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { symlink } from "node:fs/promises";
+import { join } from "node:path";
+import { temporaryDirectory } from "./temporary-directory.ts";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -84,7 +87,10 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       await kubectl("delete", "namespace", ...ownedNamespaces, "--wait=false");
     }
   });
-  for (const name of [namespace, destinations, envoyNamespace]) {
+  // Claim the public quickstart's fixed namespaces first. Never adopt an existing installation.
+  const system = "oce-system";
+  const envoy = "envoy-gateway-system";
+  for (const name of [system, envoy, namespace, destinations, envoyNamespace]) {
     await kubectl("create", "namespace", name);
     ownedNamespaces.push(name);
   }
@@ -249,17 +255,43 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     }
   }
 
+  const quickstart = fileURLToPath(
+    new URL("../../docs/snippets/openshell-quickstart/", import.meta.url),
+  );
+  const runDir = await temporaryDirectory(t, "oce-network-");
+  await symlink(join(quickstart, "kubernetes"), join(runDir, "kubernetes"));
+  const runNetworkHelper = (command, tenant) =>
+    execute(
+      "bash",
+      [
+        "-eu",
+        "-c",
+        'source "$1"; source "$2"; "$3"',
+        "bash",
+        join(quickstart, "operator-session.sh"),
+        join(quickstart, "platform-kubernetes.sh"),
+        command,
+      ],
+      {
+        env: {
+          ...process.env,
+          RUN_DIR: runDir,
+          KUBECONFIG: selection.kubeconfigPath,
+          CONTEXT: selection.kubernetesContext,
+          PLATFORM_NS: system,
+          ...(tenant && {
+            TENANT_NAMESPACE: tenant.namespace,
+            namespace: tenant.id,
+            agent: tenant.agent,
+          }),
+        },
+        timeout: 30_000,
+      },
+    );
   let managementTenants;
   return {
     async installOpenShellManagement(tenantIndex) {
       if (!managementTenants) {
-        // The public quickstart fixes these names. Never adopt a namespace from another run.
-        const system = "oce-system";
-        const envoy = "envoy-gateway-system";
-        for (const name of [system, envoy]) {
-          await kubectl("create", "namespace", name);
-          ownedNamespaces.push(name);
-        }
         const api = baseline.find(
           (object) =>
             object?.kind === "Service" && object.metadata.name === "openclaw-enterprise-api",
@@ -386,33 +418,24 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
         );
         await apply(resources);
       }
-      const tenant = managementTenants[tenantIndex];
-      const { stdout } = await execute(
-        "python3",
-        [
-          fileURLToPath(
-            new URL(
-              "../../docs/snippets/openshell-quickstart/kubernetes/service-policies.py",
-              import.meta.url,
-            ),
-          ),
-          "--tenant",
-          tenant.namespace,
-          "--namespace-id",
-          tenant.id,
-          "--agent-id",
-          tenant.agent,
-        ],
-        {
-          env: {
-            ...process.env,
-            KUBECONFIG: selection.kubeconfigPath,
-            CONTEXT: selection.kubernetesContext,
-          },
-          timeout: 30_000,
-        },
-      );
-      await apply(JSON.parse(stdout).items);
+      await runNetworkHelper("deployment_network", managementTenants[tenantIndex]);
+    },
+    async removeRecordedServicePolicies() {
+      await runNetworkHelper("delete_service_peers");
+      for (const tenant of managementTenants) {
+        const remaining = await kubectl(
+          "get",
+          "networkpolicy",
+          "-n",
+          system,
+          "--ignore-not-found",
+          "-o",
+          "name",
+          "oce-management-from-supervisors-" + kubernetesHash(tenant.id),
+          "oce-management-from-" + kubernetesHash(tenant.agent),
+        );
+        assert.equal(remaining.trim(), "", "uninstall must remove earlier and later tenant grants");
+      }
     },
     async withdrawSupervisorGrant(index) {
       const tenant = managementTenants[index];
