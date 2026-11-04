@@ -869,6 +869,7 @@ function renderAgentForm(
       Object.keys(agent.initialWorkspaceFiles).every((filename) =>
         workspaceFileNames.includes(filename),
       ));
+  let presetPluginApprovers: PluginApprovers | undefined;
   // Name the first field the form cannot use, so a Preset editor knows what to fix.
   const invalidField = (() => {
     if (agent.name !== undefined && typeof agent.name !== "string") {
@@ -887,15 +888,18 @@ function renderAgentForm(
     if (agent.plugins !== undefined && !isObject(agent.plugins)) {
       return "agent.plugins must be an object";
     }
-    if (
-      agent.pluginApprovers !== undefined &&
-      (!Array.isArray(agent.pluginApprovers) ||
-        !agent.pluginApprovers.every(
-          (entry) =>
+    if (agent.pluginApprovers !== undefined) {
+      const approvers = agent.pluginApprovers;
+      if (
+        !Array.isArray(approvers) ||
+        !approvers.every(
+          (entry: unknown): entry is PluginApprovers[number] =>
             isObject(entry) && typeof entry.channel === "string" && typeof entry.id === "string",
-        ))
-    ) {
-      return "agent.pluginApprovers must list objects with text channel and id";
+        )
+      ) {
+        return "agent.pluginApprovers must list objects with text channel and id";
+      }
+      presetPluginApprovers = approvers;
     }
     if (!hasRenderableWorkspaceFiles) {
       return `agent.initialWorkspaceFiles must be an object with only ${workspaceFileNames.join(", ")}`;
@@ -1747,7 +1751,7 @@ function renderAgentForm(
     control.addEventListener("change", resetPluginDiscovery);
   }
   let pluginApprovers = structuredClone(
-    Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
+    Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : presetPluginApprovers,
   );
   const directorySecret = createSecretReferenceField({
     context: secretContext,

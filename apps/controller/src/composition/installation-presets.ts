@@ -5,7 +5,7 @@ import {
   isName,
   NAME_RULE,
   validatePresetTemplate,
-  type Preset,
+  type PresetDraftDefinition,
 } from "@openclaw-enterprise/contracts";
 import type { BundledPresetVersion } from "@openclaw-enterprise/occ";
 import {
@@ -23,7 +23,7 @@ export interface ShadowedDefaultPreset {
   readonly presetFile: string;
 }
 
-function presetDefinition(value: unknown, path: string): Pick<Preset, "name" | "template"> {
+function presetDefinition(value: unknown, path: string): PresetDraftDefinition {
   const preset = object(value, path);
   closed(preset, ["name", "template"], path);
   const name = nonempty(preset.name, `${path}.name`);
@@ -45,9 +45,7 @@ export class PresetFileError extends Error {
   override readonly name = "PresetFileError";
 }
 
-async function loadPresetDefinition(
-  path: string | URL,
-): Promise<Pick<Preset, "name" | "template">> {
+async function loadPresetDefinition(path: string | URL): Promise<PresetDraftDefinition> {
   let contents: string;
   try {
     contents = await readFile(path, "utf8");
@@ -109,7 +107,7 @@ export async function loadInstallationPresets(
 ): Promise<{
   readonly includeDefaults: boolean;
   readonly bundledPresetVersions: readonly BundledPresetVersion[];
-  readonly defaultPresets: Pick<Preset, "name" | "template">[];
+  readonly defaultPresets: PresetDraftDefinition[];
   readonly shadowedDefaultPresets: ShadowedDefaultPreset[];
 }> {
   const presets = object(
@@ -131,7 +129,7 @@ export async function loadInstallationPresets(
   // File order becomes default order; retain the first file for duplicate diagnostics.
   const filePresets = new Map<
     string,
-    { readonly path: string; readonly preset: Pick<Preset, "name" | "template"> }
+    { readonly path: string; readonly preset: PresetDraftDefinition }
   >();
   for (const entry of (presets.files ?? []) as readonly string[]) {
     const trimmed = entry.trim();
@@ -144,7 +142,7 @@ export async function loadInstallationPresets(
       );
     }
     const path = isAbsolute(trimmed) ? trimmed : resolve(dirname(configurationPath!), trimmed);
-    let preset: Pick<Preset, "name" | "template">;
+    let preset: PresetDraftDefinition;
     try {
       preset = await loadPresetDefinition(path);
     } catch (error) {
@@ -162,7 +160,7 @@ export async function loadInstallationPresets(
   }
   // An operator file named like a bundled default replaces that default: a later release can
   // bundle a name an operator already uses (default-codex), and startup must not stop for it.
-  const defaultPresets: Pick<Preset, "name" | "template">[] = [];
+  const defaultPresets: PresetDraftDefinition[] = [];
   const shadowedDefaultPresets: ShadowedDefaultPreset[] = [];
   if (includeDefaults) {
     for (const version of bundledPresetVersions) {

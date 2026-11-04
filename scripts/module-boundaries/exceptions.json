@@ -140,8 +140,8 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/console-assets.ts",
-      "to": "packages/contracts/src/preset-variables.mjs",
-      "specifier": "file:packages/contracts/src/preset-variables.mjs",
+      "to": "packages/contracts/src/preset-variables.mts",
+      "specifier": "file:packages/contracts/src/preset-variables.mts",
       "kind": "path",
       "typeOnly": false,
       "bindings": ["*"],
