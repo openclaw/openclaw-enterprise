@@ -35,22 +35,11 @@ docker version --format '{{.Server.Version}}'
 docker buildx version
 ```
 
-If Docker reports a socket permission error and your host uses the `docker` group, ask the host administrator to grant membership. This group grants root-level access. Log out and log back in, then repeat both checks. See [Docker's Linux post-installation steps](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user).
-
-If you later verify Git access, install the [GitHub CLI](https://cli.github.com/) and check that `gh auth status` reports your approved reader account.
-
-### Build behind a TLS inspection proxy
-
-If your network inspects HTTPS, ask your administrator for the approved proxy CA and add it to the host trust store. For a source build, set the following variable in the shell where you run `occ dev up`. Use a PEM bundle containing the public roots and the approved proxy CA. The runtime build mounts the bundle only while downloading dependencies.
-
-```bash
-# Fedora 44 system bundle after the approved CA has been installed.
-export OCC_DEVELOPMENT_BUILD_CA_FILE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
-```
+[Docker socket permission denied?](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user) Docker group membership grants root-level access.
 
 ## Install Node, pnpm, Go and the Kubernetes tools
 
-If this host downloads packages through an HTTP proxy, set the approved `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` for your network. For Corepack to use them, run `export NODE_USE_ENV_PROXY=1` before the first pnpm invocation. See [Corepack proxy configuration](https://github.com/nodejs/corepack#environment-variables).
+[Downloading packages through an HTTP proxy?](../operate/local-setup-troubleshooting.md#corepack-cannot-download-pnpm-through-a-proxy)
 
 Download the Node and Go versions pinned for this release into a temporary directory. The repository download helper checks each archive against its SHA-256 before extraction. Install them under `/opt/oce-tools` and link their commands into `/usr/local/bin`. This replaces any existing commands with the same names in `/usr/local/bin`. Run the remaining blocks in a child Bash shell so a failed installation returns you to your original shell.
 

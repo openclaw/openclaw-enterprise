@@ -8,7 +8,7 @@ Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShe
 
 ### Option A. ChatGPT service account token
 
-Choose this path for Codex plugins. On a pay-as-you-go plan, a workspace owner or admin creates the [ChatGPT service account](https://learn.chatgpt.com/docs/enterprise/service-accounts) and can delegate token creation. Enable the plugins you need on that account. For a new source, save its Codex access token in a private file outside the checkout.
+To use Codex plugins, choose a [ChatGPT service account](https://learn.chatgpt.com/docs/enterprise/service-accounts) with the plugins you need enabled. For a new source, save its Codex access token in a private file outside the checkout.
 
 ```bash
 source_type=codex-pat
@@ -160,7 +160,7 @@ deploy_and_wait
 </Accordion>
 </AccordionGroup>
 
-Continue when the deployment reports `succeeded` and the Agent's `activeRevisionId` matches the new revision. If the model check fails, see [Recover from an unavailable model](../topics/agent-troubleshoot.md#the-configured-model-is-unavailable).
+Continue when the deployment reports `succeeded` and the Agent's `activeRevisionId` matches the new revision. If the Console says the model is unavailable, see [Recover from an unavailable model](../topics/agent-troubleshoot.md#the-configured-model-is-unavailable).
 
 <a id="7-verify-a-turn-through-openclaw"></a>
 

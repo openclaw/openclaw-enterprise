@@ -38,13 +38,13 @@ source docs/snippets/openshell-quickstart/stage-session.sh
 
 Choose one image path before starting the cluster.
 
-**Build from this checkout.** Clear any previous image selection. The launcher builds and imports both images from your checkout. If your network inspects HTTPS, [configure the build CA](local-kubernetes-tools.md#build-behind-a-tls-inspection-proxy).
+**Build from this checkout.** Clear any previous image selection. The launcher builds and imports both images from your checkout.
 
 ```bash
 unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 ```
 
-**Use published images.** Follow [published image selection](published-images.md) to verify the publication receipt and switch to its source commit. For repository access, check that the matching checkout includes `deploy/examples/repository-credentials/openshell.registry.json` and supports OpenShell 0.1.6. In the same shell, select the verified images:
+**Use published images.** Follow [published image selection](published-images.md) to verify the publication receipt and switch to its source commit. In the same shell, select the verified images:
 
 ```bash
 export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller}"
@@ -54,6 +54,8 @@ export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the published runti
 ## 2. Start a new k3d installation
 
 Choose unused local ports for the OCE API, HTTPS Console and Kubernetes API. The launcher creates `k3d-state` under the new run directory. To repeat the exercise on a host with a previous disposable installation, first [remove only that installation](local-cleanup.md).
+
+If you build from source and your network inspects HTTPS, [configure the proxy CA for source builds](../operate/troubleshooting.md#source-build-fails-tls-certificate-verification) before running `occ dev up`.
 
 The [plugin network policy](../../snippets/openshell-quickstart/plugin-network-policy.yaml), copied to `$RUN_DIR/artifacts.yaml`, grants the two pinned Codex binaries read-only HTTPS access to the listed package hosts.
 
@@ -65,13 +67,13 @@ export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_CONTROL_PLANE=k
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 # Static-inference enforcement is a separate, optional profile.
 unset OCC_DEVELOPMENT_PROTECTED_EGRESS
-# If the configured pnpm store is read-only, first select a private writable store:
-# export pnpm_config_store_dir="$RUN_DIR/pnpm-store"
 # Build the CLI from the matching source and wait for k3d bootstrap.
 pnpm install --frozen-lockfile
 go build -trimpath -o bin/occ ./cmd/occ
 ./bin/occ dev up --sandbox-network-policy-file "$RUN_DIR/artifacts.yaml"
 ```
+
+[pnpm reports a read-only store?](../operate/local-setup-troubleshooting.md#pnpm-reports-a-read-only-store)
 
 The launcher enables Gateway TLS, mTLS and authentication before startup. Wait for `OpenClaw Enterprise development stack is ready`. Record the printed API URL, Kubernetes context and cleanup command. With the example ports the REST base is `http://127.0.0.1:3012`. Open the printed Console origin at `/console/`; its Agents page is `/console/agents`. [Trust the local Console CA](../operate/troubleshooting.md#the-local-console-reports-a-certificate-error). If your browser runs on another machine, [forward the Console port](../operate/troubleshooting.md#open-the-console-from-another-machine).
 
@@ -107,7 +109,7 @@ PLATFORM_NS=$(jq -er .platformNamespace "$state/state.json")
 )
 ```
 
-The chart can report that `api.trustedProxy` is unset. With local password sign-in, failed attempts are limited per email. If you put an HTTP proxy in front of the API, [configure proxy trust](../../reference/settings/production.md#github-sign-in-and-trusted-proxies) before using it.
+[Helm warned that `api.trustedProxy` is unset?](../operate/local-setup-troubleshooting.md#helm-warns-that-apitrustedproxy-is-unset)
 
 If your network intercepts HTTPS, [install its approved public CA in the OpenShell supervisor](local-openshell-images.md#trust-an-upstream-ca-on-local-k3d).
 
