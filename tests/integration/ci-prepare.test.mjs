@@ -53,8 +53,11 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
   const root = await fixture(t);
   const saved = {
     CODEX_ACCESS_TOKEN: process.env.CODEX_ACCESS_TOKEN,
+    OCC_HELM_BIN: process.env.OCC_HELM_BIN,
     OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
   };
+  // Fail before side effects if generic stack preparation is accidentally restored.
+  process.env.OCC_HELM_BIN = join(root, "unavailable-helm");
   process.env.CODEX_ACCESS_TOKEN = "synthetic-model-credential";
   process.env.OCC_TEST_OPENAI_MODEL = "synthetic-model";
   t.after(() => {
@@ -74,7 +77,6 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
     const lane = await prepareLane({ lane: "openshell", statePath, file });
     const prepared = await prepareFile({ lane: "openshell", statePath, file });
     const state = JSON.parse(await readFile(statePath, "utf8"));
-    // No external CLI is replaced: a regression would try to provision real resources.
     assert.deepEqual(state.resources, []);
     assert.equal(prepared.env.OCC_TEST_DATABASE_URL, undefined);
     assert.equal(prepared.env.OCC_TEST_KUBERNETES_CONTEXT, undefined);
