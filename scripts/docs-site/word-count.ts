@@ -14,19 +14,19 @@ export const DEFAULT_MAX_WORDS = 2500;
 const __filename = fileURLToPath(import.meta.url);
 const markdownWord = /[\p{L}\p{N}]/u;
 
-function countWords(text) {
+function countWords(text: string) {
   return String(text)
     .split(/\s+/u)
     .filter((word) => markdownWord.test(word)).length;
 }
 
-function stripHtml(value) {
+function stripHtml(value: string) {
   return String(value)
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/<[^>]*>/g, " ");
 }
 
-function gitMarkdownFiles(root) {
+function gitMarkdownFiles(root: string) {
   return execFileSync(
     "git",
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.md"],
@@ -37,10 +37,14 @@ function gitMarkdownFiles(root) {
     .sort((left, right) => left.localeCompare(right));
 }
 
-export function collectMarkdownFiles({ root = process.cwd(), files } = {}) {
+type FileOptions = { root?: string | undefined; files?: string[] | undefined };
+type MarkdownFile = { path: string; absolutePath: string; realPath: string; aliases: string[] };
+type Section = { heading: string; level?: string; line: number; proseWords: number; codeWords: number };
+
+export function collectMarkdownFiles({ root = process.cwd(), files }: FileOptions = {}) {
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
   const seenPaths = new Set();
-  const byRealPath = new Map();
+  const byRealPath = new Map<string, MarkdownFile>();
   for (const file of files ?? gitMarkdownFiles(absoluteRoot)) {
     const relativePath = file.split(path.sep).join("/");
     if (seenPaths.has(relativePath)) {
@@ -71,21 +75,21 @@ export function collectMarkdownFiles({ root = process.cwd(), files } = {}) {
   return [...byRealPath.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-export function countMarkdownWords(markdown, options = {}) {
+export function countMarkdownWords(markdown: string, options: { markdown?: ReturnType<typeof createDocsMarkdown>; sourceFile?: string; root?: string } = {}) {
   const md = options.markdown ?? createDocsMarkdown();
   const content = parseFrontmatter(markdown).content.replace(/<!--[\s\S]*?-->/g, "");
   const parsed = parseDocsDocument(content, md, options);
   const sections = [];
   let proseWords = 0;
   let codeWords = 0;
-  let current = { heading: "Introduction", line: 1, proseWords: 0, codeWords: 0 };
+  let current: Section = { heading: "Introduction", line: 1, proseWords: 0, codeWords: 0 };
 
-  const addProse = (text) => {
+  const addProse = (text: string) => {
     const words = countWords(text);
     proseWords += words;
     current.proseWords += words;
   };
-  const addCode = (text) => {
+  const addCode = (text: string) => {
     const words = countWords(text);
     codeWords += words;
     current.codeWords += words;
@@ -131,7 +135,7 @@ export function checkMarkdownWordCounts({
   maxWords = DEFAULT_MAX_WORDS,
   reviewWords = DEFAULT_REVIEW_WORDS,
   files,
-} = {}) {
+}: FileOptions & { maxWords?: number; reviewWords?: number } = {}) {
   const md = createDocsMarkdown();
   const markdownFiles = collectMarkdownFiles({ root, files });
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
@@ -189,7 +193,7 @@ export function checkMarkdownWordCounts({
   };
 }
 
-export function formatWordCountReport(result) {
+export function formatWordCountReport(result: ReturnType<typeof checkMarkdownWordCounts>) {
   const lines = [
     `Checked ${result.fileCount} Markdown files; hard limit ${result.maxWords} words; review threshold ${result.reviewWords} words.`,
   ];
@@ -249,8 +253,8 @@ export function formatWordCountReport(result) {
   return lines.join("\n");
 }
 
-function parseCliArgs(argv) {
-  const options = {
+function parseCliArgs(argv: string[]) {
+  const options: { root: string | undefined; maxWords: number; reviewWords: number; json: boolean } = {
     root: process.cwd(),
     maxWords: DEFAULT_MAX_WORDS,
     reviewWords: DEFAULT_REVIEW_WORDS,
