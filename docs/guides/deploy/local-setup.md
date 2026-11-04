@@ -8,7 +8,7 @@ Install OpenClaw Enterprise (OCE) in a private k3d cluster.
 
 ## Before you start
 
-- [Prepare your Linux host (Ubuntu or Fedora)](local-kubernetes-tools.md). Check that your operator account can use Docker, pnpm and the Kubernetes tools.
+- [Prepare your Linux host](local-kubernetes-tools.md). Check that your operator account can use Docker, pnpm and the Kubernetes tools.
 - Use an operator account with permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
 
 ## 1. Prepare the quickstart files and select a matching release

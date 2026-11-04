@@ -4,20 +4,29 @@ Start from the OCE checkout on a Linux AMD64 or ARM64 host with Bash, sudo acces
 
 ## Prepare Docker and host utilities
 
-Install Docker Engine for [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) or [Fedora](https://docs.docker.com/engine/install/fedora/), including the Buildx plugin. Start the daemon as directed for your distribution.
+Choose your Linux distribution, then run the Docker checks below.
 
-On Ubuntu:
+<AccordionGroup>
+<Accordion title="Ubuntu">
+
+Follow the [Docker Engine installation instructions for Ubuntu](https://docs.docker.com/engine/install/ubuntu/), including the Buildx plugin. Start Docker, then install the host utilities:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl git jq openssl tar xz-utils
 ```
 
-On Fedora 44:
+</Accordion>
+<Accordion title="Fedora 44">
+
+Follow the [Docker Engine installation instructions for Fedora](https://docs.docker.com/engine/install/fedora/), including the Buildx plugin. Start Docker, then install the host utilities:
 
 ```bash
 sudo dnf install -y ca-certificates /usr/bin/curl git jq openssl tar xz
 ```
+
+</Accordion>
+</AccordionGroup>
 
 Run these commands as the account that will start k3d:
 
