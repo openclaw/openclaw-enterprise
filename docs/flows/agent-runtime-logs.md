@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: "2026-10-30"
-last_updated_session: fix-3012
+updated: 2026-11-04
+last_updated_session: 01a12074-7896-7f63-99fe-9f42e9041d02
 ---
 
 # Agent runtime logs flow
@@ -207,6 +207,9 @@ Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
 CLI flags, follow polling and `Retry-After` handling (`internal/occclient/transport.go:apiError`): see the
 [CLI reference](../reference/cli.md#runtime-status-and-logs). Cancellation succeeds only for `runAgentLogs --follow`.
+`cmd/occ/main.go:main` restores default signal handling after the first
+cancellation. A subsequent Ctrl-C or `SIGTERM` can terminate a command blocked
+on local I/O or cleanup; that forced exit does not guarantee completed cleanup.
 Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadlines.
 
 ## Debugging and Verification
@@ -232,6 +235,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 22:52: Restore signal termination after initial CLI cancellation. (01a12074-7896-7f63-99fe-9f42e9041d02 - f9c0fb4398a33099bdbeec7a83d18b99b0861933)
 
 - 2026-10-31 18:30: Mask values after literal escapes and percent-encoded separators. (3053, 3055)
 - 2026-10-31 17:30: Mask values after spacing controls and quoted keys. (3051, 3052)

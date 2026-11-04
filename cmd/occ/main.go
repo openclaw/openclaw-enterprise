@@ -14,6 +14,11 @@ import (
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	go func() {
+		<-ctx.Done()
+		// Let another interrupt terminate a command still waiting on I/O or cleanup.
+		cancel()
+	}()
 	command := occcli.New(os.Stdout, os.Stderr)
 	if err := command.ExecuteContext(ctx); err != nil {
 		var status *occcli.ExitStatusError
