@@ -104,6 +104,30 @@ func (r *runner) selectDevelopmentImageRegistry(ctx context.Context) error {
 	return nil
 }
 
+// Compose builds its controller through the selected Compose recipe. Only the
+// Kubernetes runtime can be imported from this registry in the hybrid profile.
+func (r *runner) selectComposeDevelopmentImageRegistry(ctx context.Context) error {
+	if r.env[developmentImageRegistrySetting] == "" {
+		return nil
+	}
+	for _, setting := range []string{"OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_DEVELOPMENT_POSTGRES_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_IMAGE"} {
+		if r.env[setting] != "" {
+			return fmt.Errorf("Compose registry import supports only OCC_KUBERNETES_RUNTIME_IMAGE")
+		}
+	}
+	if err := r.selectDevelopmentImageRegistry(ctx); err != nil {
+		return err
+	}
+	return r.validateSelectedDevelopmentImageRevisions(ctx, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"])
+}
+
+func developmentImageRegistryNetwork(state *developmentState) string {
+	if state.DeploymentMode == "k3d" {
+		return "k3d-" + state.Cluster
+	}
+	return state.ComposeProject + "_development"
+}
+
 func validPort(value string) bool {
 	port, err := strconv.Atoi(value)
 	return err == nil && port > 0 && port <= 65535 && strconv.Itoa(port) == value
@@ -265,7 +289,7 @@ func (r *runner) attachDevelopmentImageRegistry(ctx context.Context, state *deve
 	if g == nil {
 		return nil
 	}
-	network := "k3d-" + state.Cluster
+	network := developmentImageRegistryNetwork(state)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.network != "" {
@@ -393,7 +417,10 @@ func (r *runner) pullDevelopmentImage(ctx context.Context, s *developmentState, 
 	pull := r.command(ctx, r.engine, "exec", server, "ctr", "-n", "k8s.io", "images", "pull", "--plain-http", "--platform", platform, source)
 	pull.Stdout = io.Discard
 	pull.Stderr = r.opts.Err
-	if err := pull.Run(); err != nil {
+	started := time.Now()
+	err = pull.Run()
+	r.commandTiming(r.engine, pull.Args[1:], started, err)
+	if err != nil {
 		return "", fmt.Errorf("pull %s into the cluster: %w", image, err)
 	}
 	if err := r.run(ctx, r.engine, "exec", server, "ctr", "-n", "k8s.io", "images", "tag", source, image); err != nil {

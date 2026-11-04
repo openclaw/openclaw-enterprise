@@ -539,6 +539,11 @@ export const readFailure = (subject: string, cause: unknown, need?: AccessNeed) 
 // the field that holds the Configuration.
 const CHANNEL_REFERENCE_REFUSAL =
   / (?:without a Configuration Secret binding|the runtime does not substitute): | holds /;
+// Where the console binds a Secret that a channel refusal asks for: Slack's standard names on the
+// Credentials tab or in the Channels tab's Slack editor, other names only through the API. The
+// Agent page's Configuration JSON editor and the Credentials tab both say it (findings 2494, 2542).
+export const CHANNEL_BINDING_PLACES =
+  "bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
 export function channelBindingRefusal(cause: unknown): string | undefined {
   const { status, serverMessage } = requestFailure(cause);
   return status === 400 &&

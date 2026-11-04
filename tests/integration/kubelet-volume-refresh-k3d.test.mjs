@@ -6,9 +6,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
   createKubernetesClient,
+  explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 // Premise test for delivering late workload inputs through optional volumes.
 // A Pod starts before its optional Secret or ConfigMap exists; the object is created
@@ -17,10 +19,7 @@ import {
 // annotation on the running Pod is an update event, which syncs the Pod at once.
 
 const execute = promisify(execFile);
-const selection = {
-  kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-  kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-};
+const selection = explicitK3dSelection();
 const image = process.env.OCC_TEST_KUBERNETES_IMAGE;
 const requested = [...Object.values(selection), image].some(Boolean);
 
@@ -130,26 +129,22 @@ const podSelector = "openclaw.dev/test=volume-refresh";
 const pollIntervalMs = 2_000;
 
 async function waitForRecords(readLogs, cases, field, description, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const records = podLogRecords(await readLogs());
-    for (const entry of cases) {
-      const record = records.get(entry.name)?.find((item) => item[field] !== undefined);
-      if (entry[field] === undefined && record !== undefined) {
-        entry[field] = record[field];
+  const pending = () =>
+    cases.filter((entry) => entry[field] === undefined).map((entry) => entry.name);
+  await waitUntil(
+    () => `${pending().join(", ")} to report ${description}`,
+    async () => {
+      const records = podLogRecords(await readLogs());
+      for (const entry of cases) {
+        const record = records.get(entry.name)?.find((item) => item[field] !== undefined);
+        if (entry[field] === undefined && record !== undefined) {
+          entry[field] = record[field];
+        }
       }
-    }
-    const pending = cases.filter((entry) => entry[field] === undefined);
-    if (pending.length === 0) {
-      return;
-    }
-    if (Date.now() >= deadline) {
-      assert.fail(
-        `Timed out waiting for ${pending.map((entry) => entry.name).join(", ")} to report ${description}.`,
-      );
-    }
-    await delay(pollIntervalMs);
-  }
+      return pending().length === 0;
+    },
+    { timeoutMs, intervalMs: pollIntervalMs },
+  );
 }
 
 // `kubectl logs --prefix` lines read "[pod/<name>/<container>] <line>".

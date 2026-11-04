@@ -1,9 +1,8 @@
 import { githubProviderOrigin } from "./origin.ts";
 import type { RepositoryBackend } from "../../credentials/backend-contracts.ts";
 import { createGitHubDriver } from "./driver.ts";
-import { snapshotBinding } from "../../credentials/sessions.ts";
 import { validateGitHubConfiguration } from "./config.ts";
-import { permissionsForProfile, staticTokenGraphqlPolicy } from "./profiles.ts";
+import { staticTokenGraphqlPolicy } from "./profiles.ts";
 import { createRoutePolicy } from "./routes.ts";
 import { createGatewayAuthentication } from "./gateway-authentication.ts";
 import { createGrantResolver } from "./grants.ts";
@@ -13,34 +12,13 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
   const config = validateGitHubConfiguration(options.configuration);
   // A static token has no metadata-only capability.
   // Its push allowlist comes only from configuration, where the gateway enforces it.
+  // Caller-selected bindings are unsupported, including an explicitly undefined property.
   if (
     options.authority?.kind !== config.kind ||
     Object.hasOwn(options, "metadataOnly") ||
-    (options.binding !== undefined && Object.hasOwn(options.binding, "pushRefAllowlist"))
+    "binding" in options
   ) {
     throw new Error("invalid-configuration");
-  }
-  if (
-    options.binding &&
-    (Object.hasOwn(options.binding, "transport") ||
-      ["git-ref-write", "git-ref-draft-pr"].includes(options.binding.profile))
-  ) {
-    throw new Error("invalid-binding");
-  }
-  const selectedBinding =
-    options.binding &&
-    Object.freeze({
-      profile: options.binding.profile,
-      identity: snapshotBinding(options.binding.identity),
-    });
-  if (selectedBinding) {
-    permissionsForProfile(selectedBinding.profile);
-    if (
-      selectedBinding.identity.providerInstanceId !== config.providerInstanceId ||
-      selectedBinding.identity.repositoryId !== config.repositoryId
-    ) {
-      throw new Error("invalid-binding");
-    }
   }
   const apiOrigin = githubProviderOrigin(
     options.trustedEndpoints?.apiOrigin ?? "https://api.github.com",
@@ -58,11 +36,7 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
   ) {
     throw new Error("invalid-configuration");
   }
-  const grants = createGrantResolver({
-    config,
-    gatewayOrigin,
-    selectedBinding,
-  });
+  const grants = createGrantResolver({ config, gatewayOrigin });
   const { pushRefAllowlist } = config;
   const policy = (profile: GitHubTokenProfile) =>
     createRoutePolicy({

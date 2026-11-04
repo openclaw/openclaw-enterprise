@@ -64,6 +64,11 @@ export class ComputeLifecycleDispatcher {
     }));
   }
 
+  /** Whether a selected Driver may add variables to a workload's launch environment. */
+  get contributesLaunchEnvironment(): boolean {
+    return this.#drivers.some(({ callbacks }) => callbacks.beforeWorkloadStart !== undefined);
+  }
+
   async afterNamespacePrepared(namespace: Readonly<Namespace>): Promise<void> {
     const preparedNamespace = immutableCopy(namespace);
     const signal = currentComputeAbortSignal() ?? FALLBACK_SIGNAL;

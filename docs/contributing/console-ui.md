@@ -15,6 +15,8 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
 - **Structure.** Let the [shell](../../apps/controller/src/console/shell.mts)
   supply the page title, Namespace, and navigation. Use a `.section` with an
   `h2` to group related content. Add a `.card` when the group needs its own surface.
+  Desktop pages scroll as one document: the sidebar stretches to the page bottom,
+  with the account control at its end. The phone drawer retains its own viewport.
 - **Collections.** Agents and Secrets put search and the primary action in a
   `.collection-toolbar`. Give the search input an accessible name. It comes
   first in markup and in tab order, even when the action wraps below it.
@@ -32,9 +34,12 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   the intended resource and confirms the expected saved state. If the write may have
   committed but you cannot confirm it, say the outcome is unknown and read that same
   resource again. Do not repeat the write to find out.
-- **Disabled controls.** Show the reason next to a disabled control, and link it with
-  `describeDisabled(control, reason)` wherever the control's state changes, so a screen
-  reader reads the reason with the control.
+- **Disabled controls.** Show the reason next to a disabled control. For a button,
+  checkbox, select or text field, call `setUnavailable(control, unavailable, reason)`
+  wherever its state or reason changes. While the reason shows, the control stays in the
+  Tab order (`aria-disabled`), is described by the reason, and ignores clicks, Enter,
+  Space and edits. With no reason it is natively disabled. For other controls, link the
+  reason with `describeDisabled(control, reason)`.
 
 ## Extend the shared styles
 
@@ -57,7 +62,7 @@ Keep a one-page layout with that page. When another page needs the same
 pattern, move the shared rule next to the component it extends and use it in
 both places. Register new assets in the
 [controller's allowlist](../../apps/controller/src/console-assets.ts).
-[Storybook](../../scripts/console-storybook/prepare-assets.mjs) prepares its preview
+[Storybook](../../scripts/console-storybook/prepare-assets.ts) prepares its preview
 with the same list and asset reader, then simulates API responses for each story.
 
 ## Review the result
@@ -71,3 +76,8 @@ Check that new assets load and the interaction works with the actual API. Follow
 [visual review instructions](../../AGENTS.md#console-storybook) for screenshots and video.
 Record the interaction with [pr-walkthrough](../../.agents/skills/pr-walkthrough/SKILL.md)
 so reviewers can read the starting state, follow the action, and see the result.
+
+Use [`responseTo`](../../tests/browser/console-action-helpers.ts) to wait for a response
+to the exact request method and URL. Start listening before triggering the action,
+then assert the status separately. An unexpected 500 fails the assertion immediately
+instead of making the test time out while waiting for a 403 or 503.

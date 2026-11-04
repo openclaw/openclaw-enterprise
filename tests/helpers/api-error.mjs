@@ -9,15 +9,18 @@ const require = createRequire(new URL("../../packages/contracts/package.json", i
 const { Check, Errors } = require("typebox/value");
 
 /**
- * Asserts that an API `response` (`{ status, body }`) is the error envelope with `status` and
- * `body.error.code`. Each failure names `label` (when given) and the response body, so a
- * refusal that answered differently shows what came back.
+ * Asserts that an API `response` is the error envelope with `status` and `error.code`. The
+ * response is `{ status, body }` with a parsed body, or a Fastify inject response (`statusCode`,
+ * `json()`). Each failure names `label` (when given) and the response body, so a refusal that
+ * answered differently shows what came back.
  */
 export function assertApiError(response, status, code, label) {
-  const body = JSON.stringify(response.body);
+  const injected = typeof response.statusCode === "number";
+  const body = injected ? response.body : JSON.stringify(response.body);
   const message = label === undefined ? body : `${label}: ${body}`;
-  assert.equal(response.status, status, message);
-  assert.equal(response.body.error.code, code, message);
+  assert.equal(injected ? response.statusCode : response.status, status, message);
+  // An inject body is parsed only after the status matched, so a non-JSON answer fails on its status.
+  assert.equal((injected ? response.json() : response.body).error.code, code, message);
 }
 
 /**

@@ -9,25 +9,15 @@ import { proxyNativeAdminWebSocket } from "../../apps/controller/src/gateway/nat
 import { selfSigned } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 // Drives proxyNativeAdminWebSocket in this process against a loopback HTTPS gateway, with a
 // browser socket whose writes complete only when the test says so, as writes do behind a full
 // TCP send buffer. A real slow browser only reaches that state when the kernel buffers happen
 // to be full, so a loopback test would rarely catch a relay that drops queued bytes.
 
-const WAIT_MS = 10_000;
 const testOptions = { timeout: 60_000 };
 const agentOrigin = "https://agent.native.example";
-
-function bound(promise, what, ms = WAIT_MS) {
-  let timer;
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${what} within ${ms} ms`)), ms);
-    }),
-  ]).finally(() => clearTimeout(timer));
-}
 
 // A gateway that answers the upgrade with 101, sends `reply` and closes its side.
 async function startGateway(t, reply) {
@@ -109,7 +99,7 @@ async function relayToHeldBrowser(t, reply, relayOptions = {}) {
     socket,
     closed,
     held,
-    relayClosed: bound(relayClosed, "relay close"),
+    relayClosed: within(relayClosed, "relay close"),
     bytes: () => Buffer.concat(chunks),
     finished: () => finished,
     reset: () => reset,
@@ -146,7 +136,7 @@ test(
     const body = received.subarray(received.indexOf("\r\n\r\n") + 4);
     assert.ok(body.equals(reply), "the browser received every frame byte");
     browser.socket.push(null);
-    await bound(browser.closed, "browser close");
+    await within(browser.closed, "browser close");
     assert.equal(browser.reset(), false, "a drained browser gets a clean close");
   },
 );
@@ -161,7 +151,7 @@ test(
 
     await browser.relayClosed;
     assert.equal(browser.socket.destroyed, false, "the browser gets time to read");
-    await bound(browser.closed, "browser close after the drain timeout");
+    await within(browser.closed, "browser close after the drain timeout");
     assert.equal(browser.finished(), false, "the stuck browser never got a clean EOF");
     assert.ok(browser.reset(), "a cut stream ends in a reset, not a clean close");
   },
@@ -207,7 +197,7 @@ test(
     const body = received.subarray(received.indexOf("\r\n\r\n") + 4);
     assert.ok(body.equals(reply), "the browser received every frame byte");
     browser.socket.push(null);
-    await bound(browser.closed, "browser close");
+    await within(browser.closed, "browser close");
     assert.equal(browser.reset(), false, "a drained browser gets a clean close");
   },
 );

@@ -4,6 +4,18 @@ Start with the symptom you can observe. When asking an operator for help, give
 them the Namespace, Agent ID, version ID, approximate time, and any request ID
 the console shows. Never include API keys, tokens, or Secret values.
 
+## The configured model is unavailable
+
+Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
+
+For the dedicated Codex quickstart, open **Configuration** → **Edit current Configuration**. In the draft, replace the old model ID in these three places:
+
+- Set `agents.defaults.model` to `codex/<new-id>`.
+- Rename its entry in `agents.defaults.models` to the same prefixed ID. Keep the entry’s Codex runtime settings.
+- Set the corresponding `models.providers.codex.models` entry’s `id` and `name` to the new ID without the prefix.
+
+Save the Configuration and select **Deploy new version** on the same Agent. When deployment succeeds, open **Open Agent UI** and send a prompt to confirm the model replies.
+
 ## The Agent or Namespace is missing
 
 Open **Namespaces** and confirm that you selected the intended Namespace. The
@@ -67,9 +79,8 @@ embedded replacement's model check rejected its key after it replaced the
 previous version; see
 [the selected version after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment).
 That selection cannot tell you whether the model still accepts
-the credential or can answer. Use [Deploy your first Agent](../first-agent.md)
-to verify your local setup or ask an operator to
-[verify a production workload](../deploy/production-agents.md#verify-production-workloads).
+the credential or can answer. [Verify the Agent’s model response](../operate/model-verification.md)
+or ask an operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
 Check for an actual answer from the configured model, not just a selected
 version or successful file read.
 
@@ -81,6 +92,47 @@ or the first eligible Kubernetes container in the same Pod. A new Pod cannot
 verify the previous Pod's owner. An older image may also lack a record of the
 original PID 1 start time. If the replacement reports an unverifiable owner,
 use the following procedure.
+
+A dedicated Gateway does not recover its locks. After an unclean exit it stays
+unready with the failed check `gateway-state-lock`, and its log quotes the
+holder. Use the same procedure.
+
+A dedicated Harness Pod that stops without a clean shutdown during native setup,
+for example on a node failure, can leave the lock in its workspace node state. Each
+later version then fails the check `workspace-baseline`, and its log says `cannot
+verify Gateway ownership`. This applies to the Harness Deployment that
+Kubernetes Compute creates; a Harness run by a SandboxDriver has no such
+Deployment. Use the same procedure, with these changes:
+
+- Step 1: The holder is usually an earlier version's Pod that is already
+  deleted. Record the Pod name from the log's `holder N at POD_NAME/pid-ns`
+  text, not the current Pod. Before you stop the Agent (stopping deletes the
+  Harness Deployment), find the Deployment's volume mount at
+  `/home/node/.openclaw-node` and record its claim, `workspace-node-…` subPath
+  and the Pod's `securityContext`. After the stop, `kubectl get pods -A -l openclaw.dev/agent=AGENT_ID`
+  must list no Pod, including `Terminating` Pods, and the holder Pod must not
+  exist. Kubernetes removes a Pod only after its kubelet reports that the
+  containers stopped, unless someone force-deleted the Pod, deleted its node or
+  tainted the node `node.kubernetes.io/out-of-service`; `kubectl get nodes`
+  shows every node Ready without that taint. If one of these occurred, or a
+  node is unreachable, keep the Agent stopped until the
+  infrastructure operator verifies on the node that the holder's containers
+  exited.
+- Step 2: Start the maintenance container from the Harness image with the
+  Harness Pod's `runAsUser` and `runAsGroup`. Do not set `fsGroup`, unless you
+  also copy the Harness Pod's `fsGroupChangePolicy: OnRootMismatch`. With the
+  default policy, the kubelet gives the group read and write access to every
+  file on the claim, and the next version fails `workspace-baseline` with
+  `Runtime pin store owner is unsafe`. Mount only the subPath, not the claim
+  root, at the same path, and set `OPENCLAW_STATE_DIR` to
+  `/home/node/.openclaw-node`. The lock file names depend on this path. A
+  Harness has no configuration mount or profile; skip those items.
+- Step 3: Run the inspection and `--confirm` in the same container, for example
+  a Pod that sleeps, with `kubectl exec` for each command. A new Pod can change
+  the lock files' metadata, and OpenClaw then reports a changed record.
+- If a version already fails with `Runtime pin store owner is unsafe`, stop the
+  Agent and verify as in step 1. From a maintenance container without `fsGroup`, run
+  `chmod -R go-rwx,g-s /home/node/.openclaw-node`, then deploy again.
 
 1. Record the Agent, state volume and original container ID. On Kubernetes,
    also record the Pod UID and node. Stop the Agent in OCC and verify with the

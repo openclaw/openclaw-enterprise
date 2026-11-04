@@ -190,6 +190,7 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
     fixture.request("POST", secretsPath, { session, body: { name, value: "synthetic-value" } });
 
   assert.deepEqual(await answer(), {
+    delete: false,
     agents: { create: true },
     secrets: { create: false },
     installation: { administer: false },
@@ -399,6 +400,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
   assert.deepEqual(adminNamespace.data, {
+    delete: true,
     agents: { create: true },
     secrets: { create: true },
     installation: { administer: true },
@@ -474,6 +476,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const namespaceSummary = await fixture.request("GET", namespacePath, { session });
   assert.equal(namespaceSummary.status, 200);
   assert.deepEqual(namespaceSummary.data, {
+    delete: false,
     agents: { create: false },
     secrets: { create: false },
     installation: { administer: false },
@@ -905,11 +908,12 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   for (const secret of [app, spares[0]]) {
     await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
-  // Every authorization check passes: this fixture's Compute Driver then refuses the topology,
-  // which is no authorization denial.
+  // Every authorization check passes: Kubernetes Compute then refuses the draft, which selects
+  // no model (finding 3022), and that is no authorization denial.
   const deniedBeforeDeploy = denials().length;
   const admitted = await fixture.request("POST", deployPath, { session: blind.session });
-  assertApiError(admitted, 409, "RESOURCE_CONFLICT");
+  assertApiError(admitted, 400, "INVALID_REQUEST");
+  assert.match(admitted.body.error.message, /agents\.defaults\.model is required/);
   assert.equal(denials().length, deniedBeforeDeploy);
   const deniedAfterDeploy = denials().length;
   // A reader who may not deploy or update gets no count.
@@ -1386,6 +1390,13 @@ test("console static routes expose only public assets and preserve API JSON fail
     "/console/agents/new",
     "/console/agents/agt_00000000-0000-4000-8000-000000000000",
     "/console/settings",
+    // A page path with trailing slashes is that page; the console drops them (finding 1906).
+    "/console//",
+    "/console/agents/",
+    "/console/agents//?namespace=ns",
+    "/console/agents/new/",
+    "/console/agents/agt_00000000-0000-4000-8000-000000000000//?tab=channels",
+    "/console/settings/",
   ]) {
     const result = await fixture.rawRequest("GET", path);
     assert.equal(result.response.status, 200, path);
@@ -1422,6 +1433,10 @@ test("console static routes expose only public assets and preserve API JSON fail
     "/console/index.ts",
     "/console/%2e%2e/index.ts",
     "/console/missing.css",
+    // An asset, or no page, with a trailing slash is still not a page.
+    "/console/console.css/",
+    "/console/missing/",
+    "/console/agents/x/",
   ]) {
     const result = await fixture.rawRequest("GET", path);
     assert.equal(result.response.status, 404, path);
@@ -1894,6 +1909,7 @@ test("an IAM failure on any caller permission decision fails the whole answer in
     assertApiError(await outage(agentPermissions, failing), 503, "DEPENDENCY_UNAVAILABLE", label);
   }
   for (const [label, failing] of [
+    ["namespace.delete", decision("delete", "namespace", namespace.id)],
     ["agents.create", decision("create", "agent", namespace.id)],
     ["secrets.create", decision("create", "secret", namespace.id)],
   ]) {

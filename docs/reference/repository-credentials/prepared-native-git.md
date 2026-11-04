@@ -87,7 +87,17 @@ Select `repositoryCredentials.authority: prepared-git` in the chart and
 `repository.preparedGitHub` in the Installation. Select the policy ID and session duration
 under `repository.id` and `repository.configuration.sessionDurationSeconds`. Select
 `repository.nativeSender.controlSocket` and `repository.nativeSender.publicCaPath`
-explicitly. Keep the Backend’s `drivers.repo` policy ID equal to `repository.id`.
+explicitly. Both paths must be absolute and canonical: remove dot segments,
+repeated separators, trailing separators and ASCII control characters
+(`U+0000`–`U+001F` and `U+007F`). The socket path
+must fit in 103 UTF-8 bytes; non-ASCII characters can use more than one byte.
+Native sender validation rejects invalid paths before reading the registry or
+public CA, naming the field without printing its value. Correct that field in the
+Installation; shorten the socket path if it exceeds the byte limit. If startup
+reports only a generic failure, check that both path settings contain nonblank
+strings: the initial Installation reader rejects blank values before native
+sender validation.
+Keep the Backend’s `drivers.repo` policy ID equal to `repository.id`.
 Omit the Installation’s `drivers.repo`, Sandbox and Credential Proxy selections. Mount the signing and custody
 keys in the worker; do not copy them to the Agent or broker. OCE must be able to
 bind this repository session to the admitted revision and restrict broker ingress.
@@ -144,6 +154,39 @@ head, for example for a wrong `Host`, is logged only when its credential names a
 A line never carries the session credential,
 a token, a URL or a ref. Unauthenticated requests are part of Git's normal authentication and
 are not logged.
+
+## Deployment and the first token
+
+The worker asks GitHub for a version's first token only after it publishes that
+version as active. The deployment stays in progress at
+`REPOSITORY_GIT_MATERIAL_PENDING` until the token is committed, usually a few
+seconds later. If the request fails, the worker quarantines that version's
+preparation and never prepares it again. The request fails when GitHub rejects
+the App key or the registry names the wrong App or installation, and also when
+GitHub is unreachable, does not answer within 25 seconds, or its answer is lost.
+The deployment then fails at once with `REPOSITORY_GIT_TOKEN_QUARANTINED`, and
+the worker log names the revision and `repositoryRef`
+(`PREPARED_GITHUB_RECOVERY_REQUIRED`). What happens to the version then depends
+on the Agent:
+
+| Agent                                                       | Result                                                                                                                                                                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| New: no earlier version was activated by its own deployment | The controller retires the failed version and stops its runtime. The Agent has no running version until a deployment succeeds.                                                                                     |
+| Existing: an earlier version was activated                  | The failed version keeps running without Git, so users can still chat with the Agent and it can report the problem. Its maintenance continues. The earlier version stopped serving when the new one was published. |
+
+A version stopped or superseded before activation does not make the Agent
+existing. A token can also stay pending until the deployment's convergence
+deadline, for example when the worker cannot read the App key after a Secret
+rotation, restarts during a request, or the issuer changes. A new Agent's
+deployment then fails with `CONVERGENCE_DEADLINE_EXCEEDED` and its version is
+retired. An existing Agent's deployment fails with
+`REPOSITORY_GIT_TOKEN_PENDING` and the version keeps running as in the table.
+If the token is committed later, that version gets Git. Ask an Installation
+administrator to correct the key or registry, then deploy a new version; if both
+are correct, deploy a new version. See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
+This check runs only for a deployment. A running version whose token renewal
+fails reports it only in the worker log.
 
 ## Change the issuer
 

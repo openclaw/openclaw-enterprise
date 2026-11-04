@@ -17,6 +17,7 @@ import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
+import { nativeOpenAiModelSelections } from "../../native-openai-catalog.ts";
 import {
   normalizeOpenAiBaseUrl,
   openAiBaseUrlRewritesIpv4,
@@ -172,6 +173,7 @@ import {
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
   validRuntimeLogFrontierTime,
+  waitsOnVariable,
 } from "@openclaw-enterprise/occ";
 import {
   createKubernetesClientConfiguration,
@@ -189,7 +191,8 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { managedGoogleInstall } from "../../plugin/managed-catalog.ts";
+import { managedInstalls, managedMcpCredentialBinding } from "../../plugin/managed-catalog.ts";
+import { requireManagedCredentialRuntime } from "../../plugin/managed-runtime.ts";
 import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
@@ -199,17 +202,32 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
+  requireCodexPlugin,
+  refuseInvalidTrustedProxyIdentities,
+  refuseKubernetesPluginEntryKeyVariants,
+  refuseUnreadablePluginSecretInputs,
+  requirePluginSecretInputs,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
   providerWaitsOnVariable,
   requireHarnessCredentialBinding,
   requireSelectedModelProvider,
+  requireWorkspaceNodeGatewayPassword,
   requireWorkspaceNodePlugins,
+  TRUSTED_PROXY_IDENTITY,
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
 import { managedGatewayConfiguration, validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
+import {
+  modelProviderBaseUrl,
+  modelProviderReferenceSetting,
+  MODEL_PROVIDER_REFERENCE_REQUIREMENT,
+  modelProviderConfiguration,
+  requireModelSourceDestination,
+  type ModelProviderConfiguration,
+} from "../model-provider.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
 import {
@@ -218,6 +236,7 @@ import {
   computeWorkWaiting,
   currentComputeAbortSignal,
   isYieldingComputeStop,
+  recordNamespaceEnsureHint,
   withComputeAbortSignal,
 } from "../operation-context.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
@@ -254,6 +273,7 @@ import {
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
+  MANAGED_PLUGIN_ENVIRONMENT,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   NATIVE_WORKER_ENTRYPOINT,
@@ -518,8 +538,8 @@ export interface KubernetesComputeDriverOptions {
     readonly nodeSelector?: Readonly<Record<string, string>>;
     readonly gatewayNodeSelector?: Readonly<Record<string, string>>;
     readonly codexSeccompProfile?: string;
-    /** HTTPS OpenAI-compatible Responses endpoint for dedicated Codex API-key auth. */
-    readonly codexModelBaseUrl?: string;
+    /** Installation-owned OpenAI-compatible provider shared by supported Harnesses. */
+    readonly modelProvider?: ModelProviderConfiguration;
     readonly channels?: {
       readonly proxyUrl: string;
       readonly managedProxy?: KubernetesWorkloadPeer & {
@@ -607,10 +627,6 @@ class ConfigurationFailure extends Error {}
  * provision. It names the setting's path and what is accepted, never the submitted value.
  * Deployment admission and provisioning validation report it to the caller as a
  * ComputeGatewaySettingError; preparation treats it as any other ConfigurationFailure.
- * TODO: raise it for trustedProxy.allowUsers too once open #906, which rewrites that check,
- * lands or closes; until then that refusal keeps the fixed 409 text and a logged reason at
- * provisioning, and fails a deployment only in preparation. Because that check runs before
- * the allowLoopback and identityScopes checks, a refused allowUsers also hides those.
  */
 class GatewaySettingFailure extends ConfigurationFailure {
   readonly setting: string;
@@ -1075,7 +1091,13 @@ function prepareHarnessAuth(
   const environment: V1EnvVar[] = [];
   if (resolvedAuth.method === "api_key") {
     environment.push(
-      secret(harnessModelAuthentication(configuration).environmentName, resolvedAuth.backendRef),
+      secret(
+        harnessModelAuthentication(
+          configuration,
+          harness.id === "openclaw" && harness.mode === "embedded",
+        ).environmentName,
+        resolvedAuth.backendRef,
+      ),
     );
   } else if (
     resolvedAuth.method === "credential_source" &&
@@ -1210,9 +1232,33 @@ const NATIVE_WORKER_COMPILE_CACHE = "/home/node/.openclaw-node/.cache/node-compi
 const AGENT_TRANSPORT_TOKEN_KEY = "app-server-token";
 const APP_TOKEN_SHA = "APP_TOKEN_SHA";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
-const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
+// The proxy header that caps a trusted-proxy request's operator scopes. Native HTTP
+// APIs ignore identityScopes: without it, OpenClaw grants its default operator scopes,
+// operator.admin included (finding 2183).
+const TRUSTED_PROXY_SCOPES_HEADER = "x-openclaw-scopes";
+// Request headers every Gateway HTTPRoute removes before the Gateway sees a request.
+const ROUTE_REMOVED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "cookie",
+  "forwarded",
+  "x-forwarded-for",
+]);
+// Native Gateway scope enum at the supported OpenClaw runtime pin.
+const NATIVE_OPERATOR_SCOPES: ReadonlySet<string> = new Set([
+  "operator.admin",
+  "operator.read",
+  "operator.write",
+  "operator.sessions.read",
+  "operator.sessions.write",
+  "operator.approvals",
+  "operator.questions",
+  "operator.pairing",
+  "operator.talk",
+  "operator.talk.secrets",
+]);
 const MODEL_API_KEY = "OPENAI_API_KEY";
+const CUSTOM_MODEL_API_KEY = "OCE_MODEL_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 /** The provider credential whose token an account Secret holds, so a leftover can be revoked. */
 const SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION = "openclaw.dev/provider-credential-id";
@@ -1472,6 +1518,7 @@ const POD_LABEL_VALUE_PATTERN = "^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)
 const POD_LABEL_VALUE = new RegExp(POD_LABEL_VALUE_PATTERN);
 const POD_LABELS_SCHEMA = {
   type: "object",
+  writeOnly: true,
   minProperties: 1,
   additionalProperties: { type: "string", maxLength: 63, pattern: POD_LABEL_VALUE_PATTERN },
 };
@@ -2587,7 +2634,11 @@ export async function resolveKubernetesNamespace(
 
 // OCC admission requires every configured Agent entry to share this primary model.
 // The isolated probe sets it explicitly instead of invoking native roster selection.
-function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): string {
+function harnessPrimaryModel(
+  configuration: OpenClawConfigurationDocument,
+  missing: () => Error = () =>
+    new ConfigurationFailure("Harness authentication requires an explicit primary model."),
+): string {
   const agents = asRecord(configuration.agents);
   const defaults = asRecord(agents?.defaults);
   const selection =
@@ -2597,39 +2648,62 @@ function harnessPrimaryModel(configuration: OpenClawConfigurationDocument): stri
       .find((model) => model !== undefined);
   const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
   if (typeof model !== "string" || model.trim().length === 0) {
-    throw new ConfigurationFailure("Harness authentication requires an explicit primary model.");
+    throw missing();
   }
   return model;
 }
 
-function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument): object {
+// The startup model probe gets only the selected provider's settings, the primary model's entry
+// and the binding's credential, so a reference there (other than the binding's apiKey) cannot
+// resolve. Another Compute may resolve it, so Configuration save accepts it; Kubernetes admission
+// names the setting, never its value (finding 2828). On Dedicated OpenClaw (`nativeAuthMethod`
+// set) the probe gets the primary model's entry as nativeRuntimeConfiguration renders it for the
+// native worker: no other entry can supply its endpoint (findings 2882, 2883), and the probe
+// resolves the same model ID and checked endpoint as the worker (finding 2903). The checked
+// endpoint is the provider default, not a row setting (finding 2904). No other authored provider
+// setting reaches that probe, as none reaches the worker (finding 2905).
+function harnessProbeConfiguration(
+  configuration: OpenClawConfigurationDocument,
+  embedded = false,
+  settingError: (setting: string, requirement: string) => Error = preparationSettingError,
+  nativeAuthMethod?: HarnessAuthSnapshot["method"],
+): object {
   const model = harnessPrimaryModel(configuration);
-  const { providerId } = harnessModelAuthentication(configuration);
+  const { providerId, environmentName } = harnessModelAuthentication(configuration, embedded);
   const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
-  const fragment = provider === undefined ? undefined : { ...provider };
+  let fragment: Record<string, unknown> | undefined =
+    provider === undefined ? undefined : { ...provider };
   if (fragment !== undefined) {
     delete fragment.apiKey;
   }
-  const containsReference = (value: unknown): boolean => {
-    if (typeof value === "string") {
-      return value.includes("${");
-    }
-    if (Array.isArray(value)) {
-      return value.some(containsReference);
-    }
-    const record = asRecord(value);
-    return (
-      record !== undefined &&
-      ((typeof record.source === "string" && typeof record.id === "string") ||
-        Object.values(record).some(containsReference))
-    );
-  };
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   const modelEntry = asRecord(asRecord(defaults?.models)?.[model]);
-  if (containsReference(fragment) || containsReference(modelEntry)) {
-    throw new ConfigurationFailure(
-      "Selected model provider transport configuration cannot require additional Secret or environment references.",
-    );
+  const reference =
+    modelProviderReferenceSetting(fragment, keyedSettingPath("models.providers", providerId)) ??
+    modelProviderReferenceSetting(modelEntry, keyedSettingPath("agents.defaults.models", model));
+  if (reference !== undefined) {
+    throw settingError(reference, MODEL_PROVIDER_REFERENCE_REQUIREMENT);
+  }
+  // A custom provider has no ambient native key name. Its isolated probe uses only
+  // the Compute-owned process environment, not caller Secret provider configuration.
+  if (fragment !== undefined && environmentName === CUSTOM_MODEL_API_KEY) {
+    fragment.apiKey = { source: "env", provider: "default", id: CUSTOM_MODEL_API_KEY };
+  }
+  if (nativeAuthMethod !== undefined) {
+    // An authored row may carry the provider prefix (openai/<id>); OpenClaw's probe then cannot
+    // route a known model whose row endpoint differs from the provider's, while the worker gets
+    // the split ID. The rendered row also makes its checked endpoint the provider default, so an
+    // unchecked provider baseUrl never reaches the probe.
+    const rendered = nativeRuntimeConfiguration(configuration, settingError, nativeAuthMethod);
+    const { id } = splitModelRef(model);
+    // The rendering holds one row for each selected model, the primary included.
+    const primary = rendered.models.providers.openai.models.find((row) => row.id === id)!;
+    // The row inherits its endpoint from the provider and the provider API is the row's, so the
+    // runtime's upfront credential check, which skips rows with their own baseUrl or another
+    // API, still applies (finding 2904). The worker gets provider-level model metadata on the
+    // row; on the provider it fails the probe's validation, and any other key skips that check.
+    const { baseUrl, ...row } = primary;
+    fragment = { baseUrl, api: row.api, models: [row] };
   }
   return {
     agents: {
@@ -2643,7 +2717,10 @@ function harnessProbeConfiguration(configuration: OpenClawConfigurationDocument)
 }
 
 // The immutable model selection owns both native credential projection and probing.
-function harnessModelAuthentication(configuration: OpenClawConfigurationDocument) {
+function harnessModelAuthentication(
+  configuration: OpenClawConfigurationDocument,
+  embedded = false,
+) {
   const providerId = splitModelRef(harnessPrimaryModel(configuration)).provider;
   if (providerId === "openai" || providerId === "codex") {
     return { providerId, environmentName: MODEL_API_KEY };
@@ -2651,26 +2728,17 @@ function harnessModelAuthentication(configuration: OpenClawConfigurationDocument
   if (providerId === "anthropic") {
     return { providerId, environmentName: "ANTHROPIC_API_KEY" };
   }
-  throw new ConfigurationFailure("Harness authentication requires a compatible model provider.");
-}
-
-function harnessModels(configuration: OpenClawConfigurationDocument): readonly string[] {
-  const agents = asRecord(configuration.agents);
-  const defaults = asRecord(agents?.defaults);
-  const entries = Object.values(asRecord(agents?.entries) ?? {});
-  const selections = [defaults?.model, ...entries.map((entry) => asRecord(entry)?.model)].filter(
-    (value) => value !== undefined,
-  );
-  const models = selections.flatMap((selection) => {
-    const value = asRecord(selection);
-    return typeof selection === "string"
-      ? [selection]
-      : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
-  });
-  if (models.some((model) => typeof model !== "string" || model.trim().length === 0)) {
-    throw new ConfigurationFailure("Harness authentication requires explicit model references.");
+  const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
+  if (embedded && provider !== undefined) {
+    if (provider.apiKey === undefined) {
+      throw callerSettingError(
+        `${keyedSettingPath("models.providers", providerId)}.apiKey`,
+        `must reference ${CUSTOM_MODEL_API_KEY}, which the Agent's Harness authentication binding supplies`,
+      );
+    }
+    return { providerId, environmentName: CUSTOM_MODEL_API_KEY };
   }
-  return [...new Set(models as string[])];
+  throw new ConfigurationFailure("Harness authentication requires a compatible model provider.");
 }
 
 // Every provider is checked, selected or not: a bare model name or a `/model` switch can still
@@ -2762,30 +2830,6 @@ function requireProviderApiKeys(
   }
 }
 
-// Whether a Preset variable without a value fills any text (a string or an object key) in `value`,
-// which sits at `path` in the Configuration document.
-function waitsOnVariable(
-  value: unknown,
-  path: readonly (string | number)[],
-  options: ConfigurationValidationOptions | undefined,
-): boolean {
-  const unresolved = options?.unresolved;
-  if (unresolved === undefined) {
-    return false;
-  }
-  if (typeof value === "string") {
-    return unresolved(path) !== undefined;
-  }
-  const entries = Array.isArray(value)
-    ? [...value.entries()]
-    : Object.entries(asRecord(value) ?? {});
-  return entries.some(
-    ([key, child]) =>
-      (typeof key === "string" && unresolved([...path, key], true) !== undefined) ||
-      waitsOnVariable(child, [...path, key], options),
-  );
-}
-
 // A `${NAME}` or SecretRef-shaped value, as the Configuration Driver admits in a credential field
 // (model-auth.ts); it refuses anything else but null as an inline credential, with its own message.
 function isCredentialReference(value: unknown): boolean {
@@ -2867,13 +2911,13 @@ function withoutVariableProviders(
 function requireConfiguredModelProviders(
   configuration: Readonly<OpenClawConfigurationDocument>,
   options?: ConfigurationValidationOptions,
-): void {
+): string | undefined {
   let harnessId: string;
   let authentication: ReturnType<typeof harnessModelAuthentication>;
   try {
     const resolvable = withoutVariableProviders(configuration, options);
     harnessId = resolveConfiguredHarnessId(resolvable);
-    authentication = harnessModelAuthentication(resolvable);
+    authentication = harnessModelAuthentication(resolvable, harnessId === "openclaw");
   } catch (error) {
     if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
       return;
@@ -2889,6 +2933,23 @@ function requireConfiguredModelProviders(
   );
   // An inline key is left to the Configuration Driver, whose message says to use a Secret.
   requireProviderApiKeys(configuration, harnessId === "openclaw", authentication, true, options);
+  return harnessId;
+}
+
+// The Harness the Configuration's model policy selects, resolved as requireConfiguredModelProviders
+// does, or undefined for a draft that selects none yet: deployment refuses that first.
+function configuredHarnessId(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
+): string | undefined {
+  try {
+    return resolveConfiguredHarnessId(withoutVariableProviders(configuration, options));
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 // The error contract caps the message a ConfigurationHarnessError becomes.
@@ -3001,7 +3062,7 @@ function nativeRuntimeConfiguration(
   configuration: OpenClawConfigurationDocument,
   createError: (setting: string, requirement: string) => Error,
   authMethod: HarnessAuthSnapshot["method"],
-): object {
+) {
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   if (asRecord(defaults?.embeddedAgent)?.runtimeServer !== undefined) {
     throw createError(
@@ -3009,7 +3070,10 @@ function nativeRuntimeConfiguration(
       "must be unset on Dedicated OpenClaw: the selected Compute Driver owns the runtime transport",
     );
   }
-  const models = harnessModels(configuration);
+  const selections = nativeOpenAiModelSelections(configuration);
+  if (selections === undefined) {
+    throw new ConfigurationFailure("Harness authentication requires explicit model references.");
+  }
   const providers = asRecord(asRecord(configuration.models)?.providers);
   const openai = asRecord(providers?.openai);
   const catalog = "models.providers.openai.models";
@@ -3022,18 +3086,13 @@ function nativeRuntimeConfiguration(
   if (openai.headers !== undefined) {
     throw createError("models.providers.openai.headers", "must be unset on Dedicated OpenClaw");
   }
-  const entries = openai.models.map((value) => asRecord(value));
-  const runtimeModels = models.map((reference) => {
-    const { provider, id } = splitModelRef(reference);
+  const runtimeModels = selections.map(({ provider, id, matches }) => {
     if (provider !== "openai" || !id) {
       throw createError(
         "agents.defaults.model",
         "and every agents.entries.*.model must select openai/<model> references on Dedicated OpenClaw",
       );
     }
-    const matches = entries.flatMap((entry, index) =>
-      entry?.id === id || entry?.id === reference ? [{ entry: entry!, index }] : [],
-    );
     if (matches.length !== 1) {
       throw createError(
         catalog,
@@ -3372,7 +3431,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               envoyHttpsTargetPort: { type: "integer", minimum: 1, maximum: 65535 },
             },
           },
-          caBundle: { type: "string", minLength: 1, maxLength: 65536 },
+          caBundle: { type: "string", minLength: 1, maxLength: 65536, writeOnly: true },
           network: {
             type: "object",
             additionalProperties: false,
@@ -3481,10 +3540,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
           transportSecretPrefix: { type: "string" },
           gatewayStorageClassName: { type: "string", minLength: 1 },
           nativeOpenClawSessionCapacity: { type: "integer", minimum: 1, maximum: 1024 },
-          nodeSelector: { type: "object", additionalProperties: { type: "string" } },
-          gatewayNodeSelector: { type: "object", additionalProperties: { type: "string" } },
+          nodeSelector: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            writeOnly: true,
+          },
+          gatewayNodeSelector: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            writeOnly: true,
+          },
           codexSeccompProfile: { type: "string", minLength: 1 },
-          codexModelBaseUrl: { type: "string", minLength: 1 },
+          modelProvider: {
+            type: "object",
+            required: ["protocol", "baseUrl"],
+            additionalProperties: false,
+            properties: {
+              protocol: { type: "string", enum: ["openai-responses", "openai-completions"] },
+              baseUrl: { type: "string", minLength: 1 },
+              supportsStandaloneWebSearch: { type: "boolean" },
+            },
+          },
           channels: {
             type: "object",
             required: ["proxyUrl"],
@@ -3869,19 +3945,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
           );
         }
         if (
-          options.runtime.codexModelBaseUrl !== undefined &&
-          (normalizeOpenAiBaseUrl(options.runtime.codexModelBaseUrl) === undefined ||
-            openAiBaseUrlRewritesIpv4(options.runtime.codexModelBaseUrl))
+          options.runtime.modelProvider?.baseUrl !== undefined &&
+          (normalizeOpenAiBaseUrl(options.runtime.modelProvider?.baseUrl) === undefined ||
+            openAiBaseUrlRewritesIpv4(options.runtime.modelProvider?.baseUrl))
         ) {
           throw configurationConstraintFailure(
             openAiBaseUrlSpellingMessage(
-              "Codex model endpoint",
-              options.runtime.codexModelBaseUrl,
+              "Model provider endpoint",
+              options.runtime.modelProvider?.baseUrl,
             ) ??
-              (openAiBaseUrlRewritesIpv4(options.runtime.codexModelBaseUrl)
+              (openAiBaseUrlRewritesIpv4(options.runtime.modelProvider?.baseUrl)
                 ? "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address."
                 : "Codex model endpoint requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment."),
-            "/runtime/codexModelBaseUrl",
+            "/runtime/modelProvider/baseUrl",
           );
         }
         if (options.runtime.codexSeccompProfile !== undefined) {
@@ -4163,11 +4239,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }));
     // A Codex model endpoint the generated model egress policy does not admit still starts: an
     // operator's own NetworkPolicy can open it (finding 2284). Startup validated the URL.
-    const codexModelBaseUrl = this.options.runtime?.codexModelBaseUrl;
+    const codexModelBaseUrl = this.options.runtime?.modelProvider?.baseUrl;
     const modelEgress =
       codexModelBaseUrl === undefined
         ? undefined
-        : modelEgressWarning("Codex model endpoint", normalizeOpenAiBaseUrl(codexModelBaseUrl)!);
+        : modelEgressWarning("Model provider endpoint", normalizeOpenAiBaseUrl(codexModelBaseUrl)!);
     if (modelEgress !== undefined) {
       warnings.push({ code: "KUBERNETES_MODEL_EGRESS_BLOCKED", message: modelEgress });
     }
@@ -4454,7 +4530,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (error instanceof ComputeGatewaySettingError) {
         throw error;
       }
-      // Other refusals (trustedProxy.allowUsers until open #906) stay with preparation.
+      // Other preparation-only refusals stay with preparation.
     }
   }
 
@@ -4617,19 +4693,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
     }
-    const agents = asRecord(configuration.agents);
-    const defaults = asRecord(agents?.defaults);
-    const entries = Object.values(asRecord(agents?.entries) ?? {});
-    const selections = [defaults?.model, ...entries.map((entry) => asRecord(entry)?.model)].filter(
-      (value) => value !== undefined,
+    // Configuration save keeps a draft that selects no model yet, and no topology here runs
+    // without one, so admission names the setting instead of refusing the binding (finding 3022).
+    if (stage === "admission") {
+      harnessPrimaryModel(configuration, () =>
+        callerSettingError(
+          "agents.defaults.model",
+          "is required to deploy on Kubernetes: set it, or each agents.entries model, to a model such as openai/gpt-5.1",
+        ),
+      );
+    }
+    const models = nativeOpenAiModelSelections(configuration)?.map(({ reference }) => reference);
+    const authentication = harnessModelAuthentication(configuration, embedded);
+    configuration = modelProviderConfiguration(
+      configuration,
+      harness,
+      this.providerForHarness(harness, auth, configuration),
     );
-    const models = selections.flatMap((selection) => {
-      const value = asRecord(selection);
-      return typeof selection === "string"
-        ? [selection]
-        : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
-    });
-    const authentication = harnessModelAuthentication(configuration);
+
     // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
     // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
     // Codex qualifies model policy selectors, so it refuses every bare one, a little more than
@@ -4648,10 +4729,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
         : ["openai/", "codex/"];
     if (
       (embedded && authentication.providerId === "codex") ||
+      models === undefined ||
       models.length === 0 ||
       models.some(
         (model) =>
-          typeof model !== "string" ||
           !prefixes.some((prefix) => model.startsWith(prefix) && model.length > prefix.length),
       )
     ) {
@@ -4659,11 +4740,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Harness authentication requires a compatible model provider.",
       );
     }
+    // On Dedicated OpenClaw this renders the native catalog too (nativeRuntimeConfiguration).
     if (openclaw) {
-      harnessProbeConfiguration(configuration);
-    }
-    if (native) {
-      nativeRuntimeConfiguration(configuration, callerSettingError, auth.method);
+      harnessProbeConfiguration(
+        configuration,
+        embedded,
+        callerSettingError,
+        native ? auth.method : undefined,
+      );
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
@@ -4674,7 +4758,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Preparation and the Gateway entrypoint would refuse these only after a dedicated
     // deployment stopped its predecessors. The caller owns them, so admission names the setting.
     if (this.hostsWorkspaceNode(harness)) {
-      requireWorkspaceNodePlugins(configuration, callerSettingError);
+      requireWorkspaceNodePlugins(configuration, callerSettingError, stage === "admission");
+    }
+    // After the workspace node's rule, so Agent save and provisioning (which run this admission
+    // check before the save rules) name that plugin first. Configuration save and deploy run
+    // validateConfiguration first, so there the codex message comes first. Preparation skips it,
+    // as validateConfigurationContent does (finding 2694).
+    if (codex && stage === "admission") {
+      requireCodexPlugin(configuration, callerSettingError);
     }
     // Not a Configuration save rule: it depends on the Agent's execution mode and on the
     // Installation's channel runtime (runtime.channels), which an operator may add later.
@@ -4686,6 +4777,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
+    // Every topology's Gateway would exit at every start on a plugin secret input it cannot
+    // resolve, and the deployment would wait for its convergence deadline. Configuration save
+    // refuses a reference OpenClaw cannot read at all; the Agent's mode decides the APP_SERVER_
+    // case, so Agent save refuses it too; the rest waits for the bindings.
+    this.requirePluginSecretInputs(configuration, topology, secretBindings);
     requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {
       this.validateChannelSecretBindings(configuration, secretBindings);
@@ -4724,30 +4820,51 @@ export class KubernetesComputeDriver implements ComputeDriver {
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
    * model credentials only through the Harness authentication binding, the Gateway tool policy,
-   * and model selections and provider apiKeys on the primary model's provider.
+   * model selections and provider apiKeys on the primary model's provider, another spelling of a
+   * plugin entry key it renders (finding 3077), plugin secret inputs OpenClaw cannot read
+   * (finding 3069), the trusted-proxy allowlist and deviceAutoApprove shape (finding 3032), and,
+   * where this Installation applies a Dedicated Codex workspace node at runtime, the gateway
+   * password its Gateway signs in with (finding 3132). Deployment admission applies each in its
+   * own order (validateAdmittedHarnessAuth).
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
   ): void {
     this.validateConfigurationContent(configuration, options);
-    requireConfiguredModelProviders(configuration, options);
+    const harnessId = requireConfiguredModelProviders(configuration, options);
+    refuseUnreadablePluginSecretInputs(configuration, callerSettingError, options);
+    // A Configuration whose model policy selects Codex runs only as Dedicated Codex.
+    const dedicatedCodex = (harnessId ?? configuredHarnessId(configuration, options)) === "codex";
+    if (dedicatedCodex) {
+      requireCodexPlugin(configuration, callerSettingError, options);
+    }
+    // Deployment admission refuses the rest of the gateway shape in its own order.
+    const trustedProxy = asRecord(asRecord(asRecord(configuration.gateway)?.auth)?.trustedProxy);
+    if (trustedProxy !== undefined) {
+      refuseInvalidTrustedProxyIdentities(trustedProxy, callerSettingError, options);
+    }
+    if (dedicatedCodex && this.appliesWorkspaceNodeAtRuntime()) {
+      requireWorkspaceNodeGatewayPassword(configuration, callerSettingError);
+    }
   }
 
   // validateHarnessAuth runs these first and the model provider rules in its own order.
   private validateConfigurationContent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
-    toolPolicy = true,
+    admission = true,
   ): void {
     enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError);
     requireHarnessCredentialBinding(configuration, callerSettingError, options);
-    // Every OpenClaw topology applies the tool policy, embedded too (findings 2688, 2689).
-    // Preparation and activation skip it: an active revision saved before this rule keeps its
-    // maintenance and recovery passes until a redeploy, which admission checks (finding 2694).
-    // Dedicated preparation still checks its composed policy (managedGatewayConfiguration).
-    if (toolPolicy) {
+    // Every OpenClaw topology applies the tool policy, embedded too (findings 2688, 2689), and the
+    // plugin entry key rule (finding 3077). Preparation and activation skip them: an active
+    // revision saved before these rules keeps its maintenance and recovery passes until a
+    // redeploy, which admission checks (finding 2694). Dedicated preparation still checks its
+    // composed policy (managedGatewayConfiguration).
+    if (admission) {
       validateGatewayToolPolicy(configuration, callerSettingError, options);
+      refuseKubernetesPluginEntryKeyVariants(configuration);
     }
   }
 
@@ -5647,7 +5764,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       } else if (this.preprovisionedNamespace) {
         await this.verifyExistingNetworkPolicies(name, ownership);
       }
-      await this.prepareNamespaceInfrastructure(ownership, name);
+      try {
+        await this.prepareNamespaceInfrastructure(ownership, name);
+      } catch (error) {
+        // Only this call reconciles the tenant resources. The Gateway uses the same helper.
+        if (
+          numericErrorStatus(error) === 403 &&
+          error instanceof (await import("@kubernetes/client-node")).ApiException
+        ) {
+          recordNamespaceEnsureHint("KUBERNETES_TENANT_ACCESS_DENIED");
+        }
+        throw error;
+      }
       if (!(await this.ensureGatewayNamespace(ownership))) {
         return result;
       }
@@ -6071,6 +6199,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): void {
+    const provider = this.providerAdmission(revision);
+    const admission = revision.compute.admission;
+    if (admission?.startsWith("model-provider:v1:")) {
+      if (provider === undefined || !admission.startsWith(`model-provider:v1:${provider}:`)) {
+        throw new ConfigurationFailure(
+          "The Installation model provider changed; deploy a new Agent revision.",
+        );
+      }
+    } else if (provider !== undefined) {
+      throw new ConfigurationFailure(
+        "The Agent revision has no model provider admission; deploy a new Agent revision.",
+      );
+    }
     this.validateExecutionAdmission(revision, "stored");
     const plan = revision.egressPlan;
     if (!plan) {
@@ -6283,7 +6424,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision,
       this.gatewaySandboxConfiguration(
         revision,
-        this.kubernetesGatewayConfigurationDocument(nativeConfiguration),
+        this.kubernetesGatewayConfigurationDocument(
+          modelProviderConfiguration(
+            nativeConfiguration,
+            revision.harness,
+            this.providerForHarness(revision.harness, revision.harnessAuth, nativeConfiguration),
+          ),
+        ),
       ),
     );
     const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
@@ -6298,6 +6445,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const sandboxDriver = this.sandboxDriverForRevision(revision);
     const providerOwnsHarnessEndpoint = sandboxDriver?.harnessEndpoint !== undefined;
+    requireManagedCredentialRuntime(
+      revision.plugins?.plugins,
+      sandboxDriver?.implementation,
+      this.credentialGatewayDriver?.implementation,
+    );
     requireNativeWorkerSandbox(revision.harness, sandboxDriver);
     if (sandboxDriver !== undefined && embedded) {
       throw new ConfigurationFailure("SandboxDriver support is limited to dedicated Harnesses.");
@@ -6554,7 +6706,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer,
         repositoryMaterial,
       ),
-      harnessAuth.credentialSource?.config.base_url,
     );
     if (repositoryMaterial !== undefined) {
       await this.prepareRevisionStage("repository_material", () =>
@@ -7569,7 +7720,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision,
       this.gatewaySandboxConfiguration(
         revision,
-        this.kubernetesGatewayConfigurationDocument(nativeConfiguration),
+        this.kubernetesGatewayConfigurationDocument(
+          modelProviderConfiguration(
+            nativeConfiguration,
+            revision.harness,
+            this.providerForHarness(revision.harness, revision.harnessAuth, nativeConfiguration),
+          ),
+        ),
       ),
     );
     const admittedRevision = { ...revision, configuration: admittedNativeConfiguration };
@@ -7645,7 +7802,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
           repositoryConsumer,
           repositoryMaterial,
         ),
-        harnessAuth.credentialSource?.config.base_url,
       );
       if (
         currentRevisionId !== revision.id ||
@@ -7751,7 +7907,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         repositoryConsumer,
         repositoryMaterial,
       ),
-      harnessAuth.credentialSource?.config.base_url,
     );
     if (repositoryMaterial !== undefined) {
       await this.reconcileRepositoryIngress(
@@ -11151,8 +11306,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.harnessAuth.method !== "credential_source") {
       return undefined;
     }
+    const gateway = this.requireCredentialGateway();
+    if (gateway.id !== revision.harnessAuth.credentialGatewayId) {
+      return undefined;
+    }
     const sourceType = revision.harnessAuth.sourceType;
-    const catalog = await this.requireCredentialGateway().listSourceTypes({
+    const catalog = await gateway.listSourceTypes({
       signal: this.operationSignal(),
     });
     return catalog.find((entry) => entry.type === sourceType);
@@ -11175,6 +11334,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): readonly SandboxEnvironmentVariable[] {
     if (revision.harnessAuth.method !== "credential_source") {
       return [];
+    }
+    if (source?.type === "openai") {
+      requireModelSourceDestination(source.config, this.options.runtime?.modelProvider);
     }
     const sourceId = revision.harnessAuth.sourceId;
     const attachment = attachments.find((entry) => entry.sourceId === sourceId);
@@ -11363,9 +11525,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       runtime.kind === "openclaw" &&
       Object.keys(runtime.selections).length === 1 &&
-      Object.hasOwn(runtime.selections, managedGoogleInstall.id)
+      managedInstalls.some(({ id }) => Object.hasOwn(runtime.selections, id))
     ) {
-      return []; // The Google package is already in the image.
+      return []; // The managed package is already in the image.
     }
     const data = pluginRuntimeConfigMapData(runtime);
     const environment = new Map([
@@ -11563,9 +11725,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return (
       revision.harness.mode === "dedicated" &&
       revision.harness.id !== "openclaw" &&
+      this.appliesWorkspaceNodeAtRuntime() &&
+      this.getGatewayEndpoint(revision) !== undefined
+    );
+  }
+
+  // The Installation settings with which a dedicated Gateway other than OpenClaw gets its
+  // workspace node through the binding ConfigMap and confirms it through its own Gateway client
+  // (usesWorkspaceNodeBinding), which signs in with the gateway password
+  // (requireWorkspaceNodeGatewayPassword). Without private status, the node is in the pod spec.
+  private appliesWorkspaceNodeAtRuntime(): boolean {
+    return (
       this.nodeEnrollment !== undefined &&
       this.options.runtime !== undefined &&
-      this.getGatewayEndpoint(revision) !== undefined &&
+      this.options.gatewayRouting !== undefined &&
       this.gatewayPrivateStatusReachable()
     );
   }
@@ -11840,7 +12013,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           : undefined;
       const setup = await enrollment.createSetup(
         url,
-        this.workspaceNodeConnectionUrl(revision, namespace, url),
+        // Worker HTTP transfers share the node's base URL. They require the
+        // scoped route's path rewriting and trusted client attribution.
+        `${url}/node`,
         this.operationSignal(),
       );
       const setupData = {
@@ -11904,28 +12079,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const ca = await this.readNodeCa?.();
     return { name, ...(ca === undefined ? {} : { ca }) };
-  }
-
-  private workspaceNodeConnectionUrl(
-    revision: AgentRevision,
-    namespace: KubernetesNamespaceAddress,
-    gatewayUrl: string,
-  ): string {
-    // An in-cluster route is the Envoy Service, which attributes the proxied node
-    // client. Another hostname may resolve only outside the cluster, so
-    // same-cluster OpenShell then uses the Gateway Service directly.
-    const hostname = this.options.gatewayRouting?.hostname;
-    if (
-      this.sandboxDriverForRevision(revision)?.implementation !== "openshell" ||
-      this.options.executionCluster !== undefined ||
-      !hostname ||
-      /^[a-z0-9-]+\.[a-z0-9-]+\.svc(?:\.[a-z0-9.-]+)?$/.test(hostname)
-    ) {
-      return `${gatewayUrl}/node`;
-    }
-    const gatewayNamespace = this.gatewayNamespace(revision, namespace);
-    const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
-    return `ws://${gatewayName}.${gatewayNamespace.name}.svc.cluster.local:${this.options.network.gatewayPort}/node`;
   }
 
   private addWorkspaceNode(
@@ -12944,6 +13097,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const nativeConfiguration = this.kubernetesGatewayConfigurationDocument(revision.configuration);
     const usesGatewayPasswordEnv = usesGatewayPasswordEnvironment(
       asRecord(asRecord(nativeConfiguration.gateway)?.auth) ?? {},
+      asRecord(nativeConfiguration.secrets),
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
     return {
@@ -13180,6 +13334,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     usesGatewayPasswordEnvironment(
       auth,
+      asRecord(configuration.secrets),
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
     if (gateway.trustedProxies !== undefined) {
@@ -13214,14 +13369,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         `must be ${TRUSTED_PROXY_HEADER} when set`,
       );
     }
-    if (
-      trustedProxy.allowUsers !== undefined &&
-      !isDeepStrictEqual(trustedProxy.allowUsers, [TRUSTED_PROXY_IDENTITY])
-    ) {
-      throw new ConfigurationFailure(
-        `Kubernetes native trustedProxy.allowUsers must contain only ${TRUSTED_PROXY_IDENTITY}.`,
-      );
-    }
+    refuseInvalidTrustedProxyIdentities(
+      trustedProxy,
+      (setting, requirement) => new GatewaySettingFailure(setting, requirement),
+    );
+    const allowUsers = trustedProxy.allowUsers;
     if (trustedProxy.allowLoopback !== undefined && trustedProxy.allowLoopback !== false) {
       throw new GatewaySettingFailure(
         "gateway.auth.trustedProxy.allowLoopback",
@@ -13230,14 +13382,89 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     if (
       identityScopes !== undefined &&
-      (!isDeepStrictEqual(Object.keys(identityScopes).sort(), [TRUSTED_PROXY_IDENTITY]) ||
-        !isDeepStrictEqual(identityScopes[TRUSTED_PROXY_IDENTITY], ["operator.admin"]))
+      !isDeepStrictEqual(identityScopes[TRUSTED_PROXY_IDENTITY], ["operator.admin"])
     ) {
       throw new GatewaySettingFailure(
         "gateway.auth.identityScopes",
-        `must grant only ${TRUSTED_PROXY_IDENTITY} operator.admin when set`,
+        `must grant ${TRUSTED_PROXY_IDENTITY} exactly operator.admin when set`,
       );
     }
+    const admittedIdentities = new Set(
+      Array.isArray(allowUsers) ? allowUsers : [TRUSTED_PROXY_IDENTITY],
+    );
+    if (
+      identityScopes !== undefined &&
+      Object.entries(identityScopes).some(
+        ([identity, scopes]) =>
+          identity === "" ||
+          identity.trim() !== identity ||
+          !admittedIdentities.has(identity) ||
+          !Array.isArray(scopes) ||
+          scopes.some((scope) => typeof scope !== "string" || !NATIVE_OPERATOR_SCOPES.has(scope)),
+      )
+    ) {
+      throw new GatewaySettingFailure(
+        "gateway.auth.identityScopes",
+        "must map nonblank, trimmed identities in trustedProxy.allowUsers to arrays of supported operator scopes",
+      );
+    }
+    const deviceAutoApprove = asRecord(trustedProxy.deviceAutoApprove);
+    if (
+      Array.isArray(allowUsers) &&
+      allowUsers.some((user) => user !== TRUSTED_PROXY_IDENTITY) &&
+      Array.isArray(deviceAutoApprove?.scopes) &&
+      deviceAutoApprove.scopes.some(
+        (scope) => typeof scope === "string" && scope.trim() === "operator.admin",
+      )
+    ) {
+      // Upstream unions device and identity grants; an admin device grant would
+      // silently elevate every admitted human, regardless of identityScopes.
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+        "must exclude operator.admin when allowUsers includes human identities; grant administrators through identityScopes instead",
+      );
+    }
+    const requiredHeaders = trustedProxy.requiredHeaders;
+    if (
+      requiredHeaders !== undefined &&
+      (!Array.isArray(requiredHeaders) ||
+        requiredHeaders.some(
+          (header) => typeof header !== "string" || header === "" || header.trim() !== header,
+        ))
+    ) {
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.requiredHeaders",
+        "must be an array of nonblank, trimmed header names when set",
+      );
+    }
+    if (
+      this.options.gatewayRouting !== undefined &&
+      Array.isArray(requiredHeaders) &&
+      requiredHeaders.some((header) =>
+        ROUTE_REMOVED_REQUEST_HEADERS.has((header as string).toLowerCase()),
+      )
+    ) {
+      // The operator HTTPRoute strips these, so requiring one would refuse OCC's own access.
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.requiredHeaders",
+        `must not require a header the Gateway route removes (${[...ROUTE_REMOVED_REQUEST_HEADERS].join(", ")})`,
+      );
+    }
+    // Native HTTP APIs such as /tools/invoke and /sessions/<key>/kill ignore identityScopes:
+    // a trusted-proxy request without x-openclaw-scopes receives OpenClaw's default operator
+    // scopes, operator.admin included. Once a human is admitted, the Gateway must refuse
+    // requests that do not carry the header; the operator HTTPRoute sends the machine
+    // identity's exact grant, so OCC's own access keeps working.
+    const admitsHumans =
+      Array.isArray(allowUsers) && allowUsers.some((user) => user !== TRUSTED_PROXY_IDENTITY);
+    const requiredHeadersWithScopes = (requiredHeaders as readonly string[] | undefined)?.some(
+      (header) => header.toLowerCase() === TRUSTED_PROXY_SCOPES_HEADER,
+    )
+      ? requiredHeaders
+      : [
+          ...((requiredHeaders as readonly string[] | undefined) ?? []),
+          TRUSTED_PROXY_SCOPES_HEADER,
+        ];
     // OpenClaw binds its MCP Apps sandbox listener on mcp.apps.sandboxPort, else
     // gatewayPort + 1: at startup when MCP Apps are enabled, lazily otherwise. The private
     // status listener binds first, so the Gateway would fail with EADDRINUSE on 18791.
@@ -13272,10 +13499,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           mode: "trusted-proxy",
           trustedProxy: {
             ...trustedProxy,
+            ...(admitsHumans ? { requiredHeaders: requiredHeadersWithScopes } : {}),
             userHeader: TRUSTED_PROXY_HEADER,
-            allowUsers: [TRUSTED_PROXY_IDENTITY],
+            allowUsers: allowUsers ?? [TRUSTED_PROXY_IDENTITY],
           },
-          identityScopes: { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
+          identityScopes: identityScopes ?? { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
         },
       },
     };
@@ -13296,8 +13524,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       Array.isArray(identityScopes) &&
       identityScopes.includes("operator.admin") &&
       deviceAutoApprove?.enabled === true &&
-      Array.isArray(deviceAutoApprove.scopes) &&
-      deviceAutoApprove.scopes.includes("operator.admin") &&
       controlUi?.enabled === true &&
       Array.isArray(controlUi.allowedOrigins) &&
       controlUi.allowedOrigins.some(
@@ -13427,7 +13653,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       requestHeaderModifier: {
         set: [
           ...(access === "operator"
-            ? [{ name: "x-occ-identity", value: "occ-workspace-files" }]
+            ? [
+                { name: TRUSTED_PROXY_HEADER, value: TRUSTED_PROXY_IDENTITY },
+                // The machine identity's exact grant. The Gateway requires this header
+                // once humans are admitted, and a client value must never cap or widen it.
+                { name: TRUSTED_PROXY_SCOPES_HEADER, value: "operator.admin" },
+              ]
             : []),
           {
             name: "x-real-ip",
@@ -13439,9 +13670,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "cookie",
           "forwarded",
           "x-forwarded-for",
-          "x-openclaw-scopes",
           ...(access === "node" || access === "node-transfer"
             ? [
+                TRUSTED_PROXY_SCOPES_HEADER,
                 "x-occ-identity",
                 "x-api-key",
                 "tailscale-user-login",
@@ -13942,7 +14173,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private hasProtectedCodexAdmission(revision: AgentRevision): boolean {
-    if (revision.compute.admission !== PROTECTED_CODEX_NO_CONNECTION_RETRY) {
+    if (this.runtimeAdmission(revision) !== PROTECTED_CODEX_NO_CONNECTION_RETRY) {
       return false;
     }
     if (!this.protectedCodexInference(revision)) {
@@ -13951,34 +14182,88 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return true;
   }
 
+  private providerForHarness(
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+  ): ModelProviderConfiguration | undefined {
+    if (this.options.runtime?.modelProvider === undefined) {
+      return undefined;
+    }
+    if (
+      auth.method !== "api_key" &&
+      !(auth.method === "credential_source" && auth.loginMode === "api_key")
+    ) {
+      return undefined;
+    }
+    if (
+      harness.id === "openclaw" &&
+      harnessModelAuthentication(configuration, harness.mode === "embedded").providerId !== "openai"
+    ) {
+      return undefined;
+    }
+    return this.options.runtime?.modelProvider;
+  }
+
+  private providerAdmission(revision: Readonly<AgentRevision>): string | undefined {
+    const provider = this.providerForHarness(
+      revision.harness,
+      revision.harnessAuth,
+      revision.configuration,
+    );
+    return provider === undefined
+      ? undefined
+      : sha256Hex(
+          JSON.stringify([
+            provider.protocol,
+            modelProviderBaseUrl(provider),
+            provider.supportsStandaloneWebSearch === true,
+          ]),
+        );
+  }
+
+  private runtimeAdmission(revision: Readonly<AgentRevision>): string | undefined {
+    const admission = revision.compute.admission;
+    if (!admission?.startsWith("model-provider:v1:")) {
+      return admission;
+    }
+    // Cleanup and public-reader withdrawal must still read the saved launch facts after
+    // an Installation change. Execution compares the provider before any delivery.
+    const saved = /^model-provider:v1:[a-f0-9]{64}:(.*)$/.exec(admission);
+    if (saved === null) {
+      throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
+    }
+    return saved[1] || undefined;
+  }
+
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
     this.validateGatewayManagedMode(revision);
-    // A launch fact, not an authorization grant. Never infer it for stored revisions:
-    // older workers must refuse the new command and older Sandboxes keep their exact command.
+    let runtime: string | undefined;
     if (this.protectedCodexInference(revision)) {
-      return PROTECTED_CODEX_NO_CONNECTION_RETRY;
+      runtime = PROTECTED_CODEX_NO_CONNECTION_RETRY;
+    } else if (this.publicGithubReadCandidate(revision) !== undefined) {
+      runtime = this.publicGithubReadAdmission();
     }
-    return this.publicGithubReadCandidate(revision) === undefined
-      ? undefined
-      : this.publicGithubReadAdmission();
+    const provider = this.providerAdmission(revision);
+    return provider === undefined ? runtime : `model-provider:v1:${provider}:${runtime ?? ""}`;
   }
 
   private publicGithubReadForRevision(revision: AgentRevision) {
     if (
-      revision.compute.admission !== undefined &&
+      this.runtimeAdmission(revision) !== undefined &&
       !this.hasProtectedCodexAdmission(revision) &&
       !this.hasPublicGithubReadAdmission(revision)
     ) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const admission = this.publicGithubReadAdmission();
-    return admission !== undefined && revision.compute.admission === admission
+    return admission !== undefined && this.runtimeAdmission(revision) === admission
       ? this.publicGithubReadCandidate(revision)
       : undefined;
   }
 
   private hasPublicGithubReadAdmission(revision: AgentRevision): boolean {
-    return /^public-github-read:v1:[a-f0-9]{64}$/.test(revision.compute.admission ?? "");
+    return /^public-github-read:v1:[a-f0-9]{64}$/.test(this.runtimeAdmission(revision) ?? "");
   }
 
   private async revokeUnavailablePublicGithubRead(
@@ -14085,21 +14370,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private pluginRuntimeSnapshot(
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
-    openaiBaseUrl?: string,
   ): PluginRuntimeSnapshot | undefined {
+    const provider = this.providerForHarness(
+      revision.harness,
+      revision.harnessAuth,
+      revision.configuration,
+    );
+    let openaiBaseUrl: string | undefined;
     if (
-      openaiBaseUrl === undefined &&
+      provider !== undefined ||
+      (revision.harnessAuth.method === "credential_source" &&
+        revision.harnessAuth.loginMode === "api_key")
+    ) {
+      openaiBaseUrl = modelProviderBaseUrl(provider);
+    }
+    const standaloneWebSearch =
       revision.harness.id === "codex" &&
       revision.harness.mode === "dedicated" &&
-      revision.harnessAuth?.method === "api_key"
-    ) {
-      openaiBaseUrl = this.options.runtime?.codexModelBaseUrl;
-    }
+      provider?.supportsStandaloneWebSearch === true;
     if (openaiBaseUrl !== undefined) {
       const normalized = normalizeOpenAiBaseUrl(openaiBaseUrl);
       if (normalized === undefined || openAiBaseUrlRewritesIpv4(openaiBaseUrl)) {
         throw new ConfigurationFailure(
-          openAiBaseUrlSpellingMessage("Codex model endpoint", openaiBaseUrl) ??
+          openAiBaseUrlSpellingMessage("Model provider endpoint", openaiBaseUrl) ??
             (openAiBaseUrlRewritesIpv4(openaiBaseUrl)
               ? "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address."
               : "Codex model endpoint requires a valid HTTPS /v1 URL with a nonzero port and no hostname wildcards."),
@@ -14115,6 +14408,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         openaiBaseUrl,
         this.publicGithubReadForRevision(revision),
       );
+      if (
+        standaloneWebSearch &&
+        runtime?.kind === "codex" &&
+        runtime.modelEndpoint !== undefined &&
+        runtime.providerTools !== "none"
+      ) {
+        runtime = {
+          ...runtime,
+          modelEndpoint: { ...runtime.modelEndpoint, supportsStandaloneWebSearch: true },
+        };
+      }
     } catch (error) {
       throw new ConfigurationFailure(
         error instanceof Error
@@ -14505,6 +14809,37 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
     return providers.map(
       (provider) => CHANNEL_REQUIREMENTS[provider as keyof typeof CHANNEL_REQUIREMENTS],
+    );
+  }
+
+  // A Gateway's environment sets a name a Secret binding could set only from a binding or from
+  // what the Installation's Drivers add at launch (beforeWorkloadStart), whose names are unknown
+  // before then; null bindings (Agent save) check only what the Agent's mode decides.
+  private requirePluginSecretInputs(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    topology: KubernetesHarnessTopology,
+    secretBindings: SecretBindings | null | undefined,
+  ): void {
+    let bindings: ReturnType<typeof normalizeSecretBindings> | undefined;
+    requirePluginSecretInputs(
+      configuration,
+      topology,
+      secretBindings === null
+        ? undefined
+        : (name) => {
+            if (this.lifecycle.contributesLaunchEnvironment) {
+              return true;
+            }
+            if (bindings === undefined) {
+              try {
+                bindings = normalizeSecretBindings(secretBindings);
+              } catch {
+                throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+              }
+            }
+            return Object.hasOwn(bindings, name);
+          },
+      callerSettingError,
     );
   }
 
@@ -15124,7 +15459,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             environment: [{ name: "CODEX_LOGIN_MODE", value: "protected-no-inference" }],
           }
         : prepareHarnessAuth(revision.harness, auth, revision.configuration);
-    const native = harnessModelAuthentication(revision.configuration);
+    const embedded = revision.harness.id === "openclaw" && revision.harness.mode === "embedded";
+    const native = harnessModelAuthentication(revision.configuration, embedded);
     return {
       ...prepared,
       environment: [
@@ -15136,7 +15472,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               { name: "OPENCLAW_HARNESS_CREDENTIAL_ENV", value: native.environmentName },
               {
                 name: "OPENCLAW_HARNESS_PROBE_CONFIG",
-                value: JSON.stringify(harnessProbeConfiguration(revision.configuration)),
+                value: JSON.stringify(
+                  harnessProbeConfiguration(
+                    revision.configuration,
+                    embedded,
+                    preparationSettingError,
+                    revision.harness.mode === "dedicated" ? revision.harnessAuth.method : undefined,
+                  ),
+                ),
               },
             ]
           : []),
@@ -15829,19 +16172,25 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
       }
     }
-    // The native worker consumes only the image release digest. Its Sandbox needs no plugin files.
+    // The managed release is in the image. The two processes receive only its
+    // identity and the reviewed tool selection, never the account's bearer.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
-      const selection = pluginRuntime.runtime.selections[managedGoogleInstall.id];
-      if (selection !== undefined && role === "gateway") {
+      const { selections } = pluginRuntime.runtime;
+      const install = managedInstalls.find(({ id }) => Object.hasOwn(selections, id));
+      if (install && (selections[install.id]?.enabled || role === "gateway")) {
+        const selection = selections[install.id]!;
+        const binding =
+          install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
         variables.push({
-          name: "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID",
-          value: managedGoogleInstall.id,
-        });
-      }
-      if (selection?.enabled) {
-        variables.push({
-          name: "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256",
-          value: managedGoogleInstall.releaseSha256,
+          name: MANAGED_PLUGIN_ENVIRONMENT,
+          value: JSON.stringify({
+            kind: install.kind,
+            packageName: install.packageName,
+            slotId: Object.keys(install.credentials)[0],
+            ...(role === "gateway" && { id: install.id }),
+            ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
+            ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
+          }),
         });
       }
     }
@@ -15858,7 +16207,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const hasEnabledPlugins =
       pluginRuntime !== undefined &&
       Object.values(pluginRuntime.runtime.selections).some((selection) => selection.enabled);
-    const needsPluginStatus = needsPluginRuntime && hasEnabledPlugins;
+    const providerPreparesCodexPlugins =
+      dedicated &&
+      pluginRuntime?.runtime.kind === "codex" &&
+      (role === "agent"
+        ? harnessAuth?.environment.some(({ name }) => name === APP_TOKEN_SHA) === true
+        : // The initial Gateway must issue node setup before the provider has an
+          // endpoint. OpenShell already selects verifier delivery in prepareRevision.
+          this.sandboxDriver?.implementation === "openshell");
+    if (providerPreparesCodexPlugins && role === "gateway") {
+      variables.push({ name: "OPENCLAW_CODEX_PLUGINS_PREPARED", value: "true" });
+    }
+    const needsPluginStatus =
+      needsPluginRuntime && hasEnabledPlugins && !providerPreparesCodexPlugins;
     const statusRevisionId = configuration?.revisionId ?? ownership.revisionId;
     const needsRuntimeStatus =
       runtime !== undefined &&

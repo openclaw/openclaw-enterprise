@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -243,11 +244,12 @@ test("OpenShell direct construction and policy rendering still enforce configura
 
 test("OpenShell discovery and policy use the installed configuration after caller mutation", async (t) => {
   let registration = "installed";
+  let gatewayVersion = "0.1.5";
   let executionCapable = true;
   const gatewayClient = new (class extends GrpcOpenShellGatewayClient {
     override async getGatewayInfo() {
       return {
-        gateway_version: "0.1.5",
+        gateway_version: gatewayVersion,
         extensions: [
           {
             configured_name: registration,
@@ -266,6 +268,7 @@ test("OpenShell discovery and policy use the installed configuration after calle
     id: "sandbox",
     implementation: "fixture",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     harnessResource: () => {
       throw new Error("Discovery must not access a Harness");
@@ -324,6 +327,21 @@ test("OpenShell discovery and policy use the installed configuration after calle
   await assert.rejects(proxy.sourceControl.assertAvailable(t.signal, "repository_git"), {
     code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
   });
+  gatewayVersion = "0.1.6";
+  assert.equal(
+    await repositoryGitAuthorization(proxy.sourceControl, t.signal, "github_installation"),
+    "request-hook-observed",
+  );
+  gatewayVersion = "0.1.7";
+  assert.equal(
+    await repositoryGitAuthorization(proxy.sourceControl, t.signal, "github_installation"),
+    "request-hook-observed",
+  );
+  gatewayVersion = "unknown";
+  assert.equal(
+    await repositoryGitAuthorization(proxy.sourceControl, t.signal, "github_installation"),
+    "request-hook-observed",
+  );
 
   registration = "replacement";
   await assert.rejects(proxy.configureRevision(context), { name: "RetryLaterError" });

@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "./sandbox-driver.ts";
 import type { SelectedDriverConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { driverHasCapabilityContract } from "../../packages/occ/src/driver-contract.ts";
 import assert from "node:assert/strict";
@@ -70,6 +71,7 @@ export function protectedRepositoryGitRelease(
     id,
     implementation: "registered-online-sender",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     networkPolicy: { wildcards: true, portRanges: true, live: true },
     harnessResource: () => ({}),

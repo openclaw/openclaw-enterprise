@@ -10,18 +10,19 @@
   },
   "scripts": {
     "build": "tsc --build tsconfig.json --pretty false",
-    "typecheck": "tsc --build tsconfig.json tests/tsconfig.json --pretty false",
+    "typecheck": "tsc --build tsconfig.json tests/tsconfig.json scripts/tsconfig.json --pretty false",
     "cli:build": "go build -trimpath -o bin/occ ./cmd/occ",
     "cli:check": "test -z \"$(gofmt -l cmd internal)\" && go vet ./...",
     "cli:test": "go test ./...",
-    "format:fix": "prettier --write \"{apps,packages,scripts,tests}/**/*.{ts,mts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
-    "format:check": "prettier --check \"{apps,packages,scripts,tests}/**/*.{ts,mts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
+    "format:fix": "bun fmt --no-script \"{apps,packages,scripts,tests}/**/*.{ts,mts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
+    "format:check": "bun fmt --no-script --check \"{apps,packages,scripts,tests}/**/*.{ts,mts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
     "contributors:update": "node scripts/update-contributors.mjs",
     "hooks:install": "node scripts/install-git-hooks.mjs",
     "prepare": "node scripts/install-git-hooks.mjs --if-git-present",
     "check:workspace": "node scripts/verify-workspace-boundary.mjs",
     "openapi:generate": "node scripts/generate-occ-openapi.mjs",
     "openapi:check": "node scripts/generate-occ-openapi.mjs --check",
+    "openapi:lint": "node scripts/docs-site/node_modules/@redocly/cli/bin/cli.js lint --config scripts/docs-site/redocly.yaml packages/contracts/openapi/occ-api.openapi.json",
     "start:controller": "node apps/controller/src/server.mjs",
     "start:controller:production": "NODE_ENV=production node apps/controller/src/server.mjs",
     "start:worker": "node apps/controller/src/worker.mjs",
@@ -47,7 +48,7 @@
     "test:standing-git-conversation": "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION=1 node --test tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "test:postgres": "node scripts/verify-workspace-boundary.mjs && node --test --test-concurrency=1 'tests/integration/postgres-*.test.{mjs,ts}'",
     "docs:build": "node scripts/docs-site/build.mjs && scripts/docs-site/node_modules/.bin/pagefind --site dist/docs",
-    "docs:dev": "npm run docs:build && node scripts/docs-site/serve.mjs",
+    "docs:dev": "node scripts/docs-site/serve.ts --watch",
     "docs:check-length": "node scripts/docs-site/word-count.mjs",
     "docs:check": "node scripts/docs-site/word-count.mjs && node scripts/docs-site/build.mjs --check && node scripts/check-specs.mjs",
     "docs:install": "pnpm --dir scripts/docs-site install --frozen-lockfile --ignore-scripts",
@@ -65,8 +66,8 @@
     "storybook:install": "pnpm --dir scripts/console-storybook install --frozen-lockfile",
     "storybook": "pnpm --dir scripts/console-storybook dev",
     "storybook:build": "pnpm --dir scripts/console-storybook build",
-    "analyze:modules": "node scripts/verify-module-boundaries.mjs",
-    "check:modules": "node scripts/verify-module-boundaries.mjs --policy scripts/module-boundaries/policy.json --exceptions scripts/module-boundaries/exceptions.json"
+    "analyze:modules": "node scripts/verify-module-boundaries.ts",
+    "check:modules": "node scripts/verify-module-boundaries.ts --policy scripts/module-boundaries/policy.json --exceptions scripts/module-boundaries/exceptions.json"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -80,8 +81,9 @@
     "pg": "8.23.1",
     "playwright": "1.64.1",
     "prettier": "3.9.10",
+    "typebox": "1.4.3",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-compiler-api": "npm:typescript@6.0.3",
-    "typescript-eslint": "8.71.2"
+    "typescript-eslint": "8.72.0"
   }
 }

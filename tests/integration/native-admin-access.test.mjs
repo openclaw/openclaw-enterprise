@@ -27,7 +27,11 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture, denialsDuring } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
+import {
+  createHarnessConfiguration,
+  withNativeAdminGateway,
+} from "../helpers/harness-configuration.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -51,52 +55,30 @@ function nativeOriginForAgent(
 }
 
 function nativeAdminHarnessConfiguration(nativeOrigin) {
-  const configuration = createHarnessConfiguration("openclaw", "gpt-4.1");
-  return {
-    ...configuration,
-    gateway: {
-      ...configuration.gateway,
-      controlUi: { enabled: true, allowedOrigins: [nativeOrigin] },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: { "occ-workspace-files": ["operator.admin"] },
-      },
-    },
-  };
+  const configuration = withNativeAdminGateway(
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+    nativeOrigin,
+  );
+  // Preserve read/write device coverage: the machine identity supplies admin.
+  configuration.gateway.auth.trustedProxy.deviceAutoApprove.scopes = [
+    "operator.read",
+    "operator.write",
+  ];
+  return configuration;
 }
 
 function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
-  return {
+  return createReadyComputeDriver("native-admin-compute", {
     // Kubernetes dedicated revisions stop their predecessors before they start.
     ...(exclusiveReplacement ? { requiresStoppedPredecessors: () => true } : {}),
-    id: "native-admin-compute",
-    capability: "compute",
     implementation: "native-admin-test-upstream",
+    // The HTTPS upstream is no OC Gateway, so this Compute applies no managed mode.
+    supportsGatewayManagedMode: undefined,
     validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
     getGatewayEndpoint(revision) {
       return `wss://localhost:${upstreamPort}/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
     },
-  };
+  });
 }
 
 async function startNativeHttpsUpstream(t) {
@@ -648,11 +630,42 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   });
   assert.equal(invented.statusCode, 302);
   assert.equal(invented.headers.location, destination.replace(key, inventedKey));
+  // A copied link with a trailing slash is the same page load.
+  const trailing = await injectJson(context.fixture, "GET", "/chat/main/", { headers: navigation });
+  assert.equal(trailing.statusCode, 302);
+  assert.equal(trailing.headers.location, destination);
+
+  // Safari never sends Sec-Fetch-User, and other browsers omit it on navigations without user
+  // activation. Such a page load stays 403 without redirecting, but shows a sign-in link instead of
+  // the JSON refusal.
+  const { "sec-fetch-user": _activation, ...unactivated } = navigation;
+  for (const path of ["/", "/chat/main", "/chat/main/", `/chat/main/${sessionSuffix}`]) {
+    const signIn = await injectJson(context.fixture, "GET", path, { headers: unactivated });
+    assert.equal(signIn.statusCode, 403, path);
+    assert.equal(signIn.headers.location, undefined, path);
+    assert.match(signIn.headers["content-type"], /^text\/html/, path);
+    assert.equal(signIn.headers["cache-control"], "no-store", path);
+    assert.equal(signIn.headers["referrer-policy"], "no-referrer", path);
+    assert.equal(signIn.headers["x-content-type-options"], "nosniff", path);
+    assert.ok(signIn.headers["x-request-id"], path);
+    assert.equal(signIn.headers["set-cookie"], undefined, path);
+    assert.match(
+      signIn.body,
+      new RegExp(`<a href="${publicOrigin}/console/#native-agent=${key}">Sign in</a>`),
+      path,
+    );
+    assert.equal(signIn.body.includes(context.agent.id), false, path);
+  }
 
   for (const [method, path, headers] of [
     ["GET", "/chat/main", { host, accept: "application/json" }],
+    // Link unfurlers send no Fetch Metadata: no redirect and no sign-in page.
     ["GET", "/chat/main", { host, accept: "text/html", "user-agent": "Slackbot-LinkExpanding" }],
-    ["GET", "/chat/main", { ...navigation, "sec-fetch-user": undefined }],
+    [
+      "GET",
+      "/chat/main",
+      { host, accept: "text/html", "user-agent": "Slackbot-LinkExpanding", "sec-fetch-user": "?1" },
+    ],
     ["GET", "/chat/main", { ...navigation, host: `agent-${key}.other.${nativeDomain}` }],
     ["GET", "/chat/main", { ...navigation, "sec-fetch-dest": "iframe" }],
     ["GET", "/chat/main", { ...navigation, "sec-fetch-mode": "cors" }],
@@ -673,9 +686,13 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
     assert.equal(denied.json().error.code, "FORBIDDEN");
   }
   const limited = await createReadOperateSession(context);
-  for (const path of ["/", "/chat/main"]) {
+  for (const [path, headers] of [
+    ["/", navigation],
+    ["/chat/main", navigation],
+    ["/chat/main", unactivated],
+  ]) {
     const unauthorized = await injectJson(context.fixture, "GET", path, {
-      headers: { ...navigation, cookie: limited.cookie },
+      headers: { ...headers, cookie: limited.cookie },
     });
     assert.equal(unauthorized.statusCode, 403);
     assert.equal(unauthorized.headers.location, undefined);

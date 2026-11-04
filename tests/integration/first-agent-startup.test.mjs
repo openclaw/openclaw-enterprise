@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { cp, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -16,6 +16,7 @@ import {
 import { listen } from "../helpers/listen.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   GATEWAY_SECURITY_DEFAULTS,
   withGatewaySecurityDefaults,
@@ -99,8 +100,7 @@ function runFirstAgent(env, ...args) {
 }
 
 test("first-Agent starts without installed workspace dependencies", async (t) => {
-  const directory = await mkdtemp(join(await realpath(tmpdir()), "oce-first-agent-source-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await realpath(await temporaryDirectory(t, "oce-first-agent-source-"));
 
   // Run real sources outside the checkout so installed workspace packages cannot
   // hide import failures in the host-run command used by First Agent Smoke.
@@ -113,6 +113,7 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
     "scripts/first-agent.mjs",
     "scripts/first-agent-database.mjs",
     "scripts/first-agent-model.mjs",
+    "scripts/lib/private-owned-path.mjs",
     "packages/contracts/src/api/plain-text.ts",
     "packages/occ/src/gateway-security-defaults.ts",
     "apps/controller/src",
@@ -450,6 +451,51 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
   );
 });
 
+test(
+  "first-Agent keeps its saved record readable after a restrictive-umask attempt",
+  { skip: process.platform === "win32" ? "Unix file modes are required" : false },
+  async (t) => {
+    const { directory, engineLog, env } = await k3dFixture(t);
+    // Existing Local Setup files retain their original permissions. Only the new
+    // helper process inherits the real kernel umask; no model credential is used.
+    await writeFile(engineLog, "", { mode: 0o600 });
+    for (const key of [
+      "CODEX_ACCESS_TOKEN",
+      "CODEX_ACCESS_TOKEN_FILE",
+      "OPENAI_API_KEY",
+      "OPENAI_API_KEY_FILE",
+    ]) {
+      delete env[key];
+    }
+    const strict = {
+      ...env,
+      NODE_OPTIONS:
+        `${env.NODE_OPTIONS ?? ""} --import=data:text/javascript,process.umask(0o777)`.trim(),
+    };
+    const first = await runFirstAgentAsync(strict);
+    assert.match(first, /kubectl did not complete successfully \(exit 23\)/);
+    const path = join(
+      directory,
+      `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json`,
+    );
+    const readRecord = async () => {
+      const file = await open(path, "r");
+      try {
+        return { mode: (await file.stat()).mode & 0o777, content: await file.readFile("utf8") };
+      } finally {
+        await file.close();
+      }
+    };
+    const saved = await readRecord();
+    assert.equal(saved.mode, 0o600);
+    await writeFile(engineLog, "", { mode: 0o600 });
+    const retry = await runFirstAgentAsync(env);
+    assert.match(retry, /kubectl did not complete successfully \(exit 23\)/);
+    assert.match(await readFile(engineLog, "utf8"), /exec -i statefulset\/postgres/);
+    assert.deepEqual(await readRecord(), saved);
+  },
+);
+
 test("first-Agent refuses an unrecognized saved record without calling it old", async (t) => {
   const { directory, engineLog, env } = await k3dFixture(t);
   const recordPath = join(
@@ -509,6 +555,44 @@ test("first-Agent refuses an unrecognized saved record without calling it old", 
     await run({ ...current, harness: "codex" }),
     /recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs/,
   );
+});
+
+test("first-Agent counts a prompt's characters as code points", () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = "/tmp/oce-first-agent-prompt-characters";
+  const run = (prompt) =>
+    spawnSync(process.execPath, [firstAgent, "MyAgent", "--prompt", prompt], {
+      cwd: repository,
+      encoding: "utf8",
+      env,
+      timeout: 10_000,
+    });
+  // 4,000 emoji are 4,000 characters and 8,000 UTF-16 units. The length check
+  // must accept them and stop later, at the missing Local Setup state.
+  const fourThousandEmoji = run("😀".repeat(4_000));
+  assert.equal(fourThousandEmoji.status, 1);
+  assert.match(
+    fourThousandEmoji.stderr,
+    /Local Kubernetes state or its recorded key was not found/,
+  );
+  assert.doesNotMatch(fourThousandEmoji.stderr, /1–4,000 characters/);
+  const tooManyEmoji = run("😀".repeat(4_001));
+  assert.equal(tooManyEmoji.status, 1);
+  assert.match(tooManyEmoji.stderr, /1–4,000 characters/);
+  assert.doesNotMatch(tooManyEmoji.stderr, /Local Kubernetes state/);
+  const fourThousandAscii = run("a".repeat(4_000));
+  assert.equal(fourThousandAscii.status, 1);
+  assert.match(
+    fourThousandAscii.stderr,
+    /Local Kubernetes state or its recorded key was not found/,
+  );
+  const tooManyAscii = run("a".repeat(4_001));
+  assert.equal(tooManyAscii.status, 1);
+  assert.match(tooManyAscii.stderr, /1–4,000 characters/);
+  const blank = run("   ");
+  assert.equal(blank.status, 1);
+  assert.match(blank.stderr, /1–4,000 characters/);
 });
 
 test("first-Agent does not take the next flag as the prompt or harness", () => {
