@@ -1,3 +1,4 @@
+import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -63,7 +64,6 @@ import {
   agentDeleteRequests,
   agentStopRequests,
   replyWithDifferentAgentId,
-  waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 import {
   callerDenied,

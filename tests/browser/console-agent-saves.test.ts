@@ -1,5 +1,12 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  focusedDescription,
+  focusedText,
+  openAdvancedSettings,
+  LIVE_BUTTON,
+  watchForReload,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -48,14 +55,7 @@ import {
   secretOptionLabel,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import {
-  LIVE_BUTTON,
-  createRepositoryLaunchFixture,
-  focusedDescription,
-  focusedText,
-  openAdvancedSettings,
-  watchForReload,
-} from "./console-agents-test-support.mjs";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   CHANNEL_BINDING_CONSOLE_REMEDY,
@@ -1969,7 +1969,9 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
     })
     .waitFor();
   assert.equal(await focusedText(page), "Save Configuration");
-  assert.match(await focusedDescription(page), /^Draft reloaded\. Your edits are applied/);
+  const description = await focusedDescription(page);
+  assert.ok(typeof description === "string", "Expected the focused control's description");
+  assert.match(description, /^Draft reloaded\. Your edits are applied/);
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
