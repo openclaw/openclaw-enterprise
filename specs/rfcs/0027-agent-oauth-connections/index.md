@@ -106,7 +106,7 @@ where that person connected it.
 | `scopes`, `authorizationParameters` | Fixed scopes for configured OAuth. MCP owners pick a subset. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
 | `endpoint`                          | Credential destination (`host`, `port`, `path`). `access` is `read-only` or `full` for `oauth2`, and `full` for `mcp_oauth`.                    |
 | `envVar`                            | The placeholder variable supplied to an authorized Agent execution.                                                                             |
-| `accountIdentity`                   | `none` (default) or `oidc`. With `oidc`, OCC also requests `openid email` and shows the connected address.                                      |
+| `accountIdentity`                   | `none` (default) or `oidc`. With `oidc`, OCC also requests `openid email` so it can show a verified address.                                    |
 | `jwksUri`                           | Optional with `oidc`. Without it, the Driver discovers the signing keys from `issuer`.                                                          |
 
 Existing templates use configured `oauth2` endpoints. For an `mcp_oauth`
@@ -123,10 +123,11 @@ for manual registration. OCE includes the same URI in its DCR request.
 
 With `accountIdentity: oidc`, the Refresh Driver verifies the provider before it
 accepts the connection template version, and verifies each ID token against it
-([OIDC verification](contracts.md#oidc-account-identity)). OCC stores the verified
-address on the credential source and shows "Connected as alice@example.com". The
-consent screen lists the two extra scopes. Use it to catch a user who approved the
-wrong account; it does not affect who may use the Agent.
+([OIDC verification](contracts.md#oidc-account-identity)). The consent screen
+lists the two extra scopes. When the Driver returns a verified address, OCC stores
+it on the credential source and shows "Connected as alice@example.com" so the
+person can spot a wrong account. Agent access follows the same attachment rules
+whether or not the source has an address.
 
 ### Versions and consent
 

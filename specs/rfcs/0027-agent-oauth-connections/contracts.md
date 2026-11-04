@@ -109,7 +109,12 @@ approved values. At completion, the Driver validates the ID token
 ([OIDC Core](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation))
 against keys from that JWKS URL only: signature, `iss` equal to the recorded
 `issuer`, `aud` containing the client ID, expiry, and nonce. It refetches the key
-set once for an unknown key ID, then rejects. It returns only a verified `email`.
+set once for an unknown key ID, then rejects the connection if it cannot validate
+the token.
+
+The Driver returns `accountEmail` only when that validated ID token contains a
+nonempty `email` string and the boolean claim `email_verified` is `true`.
+When either condition is unmet, the connection can complete without `accountEmail`.
 
 ## IAM Driver
 
@@ -229,7 +234,9 @@ issue seven-day refresh tokens.
   refused. Only Installation administrators can create or delete the bindings.
 - **OIDC.** Reject a version whose metadata issuer or endpoints differ, and an ID
   token with a wrong issuer, an untrusted signing key, a wrong audience, or a wrong
-  nonce. Show the verified address on success.
+  nonce. With a valid token, store and display the address when
+  `email_verified` is `true`. With the same address and a false or missing
+  claim, verify the source becomes ready without a stored or displayed address.
 - **Real k3d and OpenShell.** Through the regular Agent create path, connect via
   Keycloak and prove: a tool reaches its endpoint with no added network policy; a
   write fails under `read-only`; a tool and a script get the same allow and deny
