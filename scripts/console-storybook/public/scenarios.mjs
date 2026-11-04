@@ -17,6 +17,7 @@ const soulVersion = (version) =>
     (_, index) => `Line ${index + 1}: keep answers short and cite the files you used.\n`,
   ).join("");
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
+/** @param {string} text */
 const click = (text) => ({ click: text });
 const runtimeLogsPage = {
   group: "Pages/Agent detail",
@@ -180,6 +181,14 @@ const pluginToolRefusal =
 // The same refusal from Create Agent's preflight, worded as the OpenClaw Plugin Driver words it.
 const pluginPreflightRefusal =
   "Configuration setting tools.deny blocks every tool of plugin codex-plugin:calendar@openai-curated-remote; remove the matching deny entry or deselect the plugin.";
+/** @type {"plugins"} */
+const pluginsComponent = "plugins";
+
+/** @typedef {import("/console/agents/plugin-fields.mjs").PluginFieldsOptions} PluginFieldsOptions */
+/** @typedef {PluginFieldsOptions["catalog"]} PluginFieldCatalog */
+/** @typedef {PluginFieldsOptions["capabilities"]} PluginFieldCapabilities */
+
+/** @satisfies {PluginFieldCapabilities} */
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
   approvers: { agent: true, plugin: false, tools: false },
@@ -209,16 +218,21 @@ const slackTool = {
   name: "slack_search_public",
   ownerId: slackPluginId,
 };
+const manageWorkspacePlugins = {
+  label: "Manage workspace plugins",
+  url: "https://chatgpt.com/admin/plugins?catalog=GLOBAL",
+};
+const ocePluginSetup = {
+  label: "OCE plugin setup",
+  url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
+};
 const pluginSetup = {
   message:
     "App connection status is not verified. Catalog availability does not confirm linked credentials. In ChatGPT admin, select the same workspace as this credential and enable plugin and app access for its user or service account. For service-account plugin credentials, open Service accounts, choose the account, and configure its app connections. Workspace administrator access is required. OCE policies do not grant access or configure credentials. Reload plugins after changes.",
   links: [
-    { label: "Manage workspace plugins", url: "https://chatgpt.com/admin/plugins?catalog=GLOBAL" },
+    manageWorkspacePlugins,
     { label: "Service account credentials", url: "https://admin.openai.com/" },
-    {
-      label: "OCE plugin setup",
-      url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
-    },
+    ocePluginSetup,
   ],
 };
 const unavailablePlugins = [
@@ -229,7 +243,7 @@ const unavailablePlugins = [
     available: false,
     unavailableReason:
       "This plugin requires local components or skills that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.",
-    unavailableHelp: pluginSetup.links[2],
+    unavailableHelp: ocePluginSetup,
     tools: null,
   },
   {
@@ -239,7 +253,7 @@ const unavailablePlugins = [
     available: false,
     unavailableReason:
       "Disabled by a ChatGPT workspace administrator. Ask one to enable access for the user or service account behind this token.",
-    unavailableHelp: pluginSetup.links[0],
+    unavailableHelp: manageWorkspacePlugins,
     tools: null,
   },
   {
@@ -249,7 +263,7 @@ const unavailablePlugins = [
     available: false,
     unavailableReason:
       "This workspace's plan is not eligible for this plugin. Ask a ChatGPT workspace administrator to review plan availability.",
-    unavailableHelp: pluginSetup.links[0],
+    unavailableHelp: manageWorkspacePlugins,
     tools: null,
   },
 ];
@@ -309,41 +323,50 @@ const devdayCuratedEntries = codexPluginSuggestions.map((suggestion) => {
         : [],
   };
 });
+const calendarPlugin = {
+  id: "codex-plugin:calendar@openai-curated-remote",
+  remoteId: "plugin_demo_calendar",
+  name: "Calendar",
+  logoUrl: "/storybook-fixtures/plugin-logos/calendar.svg",
+  websiteUrl: "https://example.com/calendar",
+  privacyPolicyUrl: "https://example.com/calendar/privacy",
+  termsOfServiceUrl: "https://example.com/calendar/terms",
+  description: "Find events and manage a team calendar.",
+  available: true,
+  tools: [
+    {
+      id: "app_calendar/list_events",
+      name: "List events",
+      ownerId: "app_calendar",
+      description: "Find events in a calendar and date range.",
+    },
+    {
+      id: "app_calendar/create_event",
+      name: "Create event",
+      ownerId: "app_calendar",
+      description: "Create a calendar event with a title, time, and attendees.",
+    },
+    {
+      id: "app_calendar/delete_event",
+      name: "Delete event",
+      ownerId: "app_calendar",
+      description: "Remove an existing calendar event.",
+    },
+  ],
+};
+const projectTrackerPlugin = {
+  id: "codex-plugin:project-tracker@openai-curated-remote",
+  remoteId: "plugin_demo_project_tracker",
+  name: "Project tracker",
+  logoUrl: "/storybook-fixtures/plugin-logos/missing.svg",
+  tools: null,
+};
+/** @satisfies {PluginFieldCatalog} */
 const pluginCatalog = {
   status: "ready",
   setup: pluginSetup,
   entries: [
-    {
-      id: "codex-plugin:calendar@openai-curated-remote",
-      remoteId: "plugin_demo_calendar",
-      name: "Calendar",
-      logoUrl: "/storybook-fixtures/plugin-logos/calendar.svg",
-      websiteUrl: "https://example.com/calendar",
-      privacyPolicyUrl: "https://example.com/calendar/privacy",
-      termsOfServiceUrl: "https://example.com/calendar/terms",
-      description: "Find events and manage a team calendar.",
-      available: true,
-      tools: [
-        {
-          id: "app_calendar/list_events",
-          name: "List events",
-          ownerId: "app_calendar",
-          description: "Find events in a calendar and date range.",
-        },
-        {
-          id: "app_calendar/create_event",
-          name: "Create event",
-          ownerId: "app_calendar",
-          description: "Create a calendar event with a title, time, and attendees.",
-        },
-        {
-          id: "app_calendar/delete_event",
-          name: "Delete event",
-          ownerId: "app_calendar",
-          description: "Remove an existing calendar event.",
-        },
-      ],
-    },
+    calendarPlugin,
     {
       id: "codex-plugin:documents@openai-curated-remote",
       remoteId: "plugin_demo_documents",
@@ -364,13 +387,7 @@ const pluginCatalog = {
         },
       ],
     },
-    {
-      id: "codex-plugin:project-tracker@openai-curated-remote",
-      remoteId: "plugin_demo_project_tracker",
-      name: "Project tracker",
-      logoUrl: "/storybook-fixtures/plugin-logos/missing.svg",
-      tools: null,
-    },
+    projectTrackerPlugin,
     ...unavailablePlugins,
   ],
 };
@@ -412,7 +429,7 @@ const pluginPreviewGap =
 const pluginDiscovery = {
   pages: {
     initial: {
-      plugins: [...unavailablePlugins, { ...pluginCatalog.entries[0], tools: null }],
+      plugins: [...unavailablePlugins, { ...calendarPlugin, tools: null }],
       nextCursor: "demo-page-2",
       setup: pluginSetup,
     },
@@ -424,10 +441,11 @@ const pluginDiscovery = {
   },
   details: Object.fromEntries(pluginCatalog.entries.map((entry) => [entry.remoteId, entry])),
 };
+/** @satisfies {PluginFieldCatalog} */
 const devdayPluginCatalog = {
   status: "ready",
   setup: pluginSetup,
-  entries: [...devdayCuratedEntries, pluginCatalog.entries[0]],
+  entries: [...devdayCuratedEntries, calendarPlugin],
 };
 const devdayPluginDiscovery = {
   pages: {
@@ -2170,7 +2188,7 @@ export const scenarios = {
   pluginsAvailable: {
     group: "Components/Plugins",
     name: "Available catalog",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCatalog,
     pluginCapabilities,
@@ -2192,7 +2210,7 @@ export const scenarios = {
   pluginsUnavailableReasonPopover: {
     group: "Components/Plugins",
     name: "Unavailable reason popover",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCatalog,
     pluginCapabilities,
     actions: [
@@ -2212,7 +2230,7 @@ export const scenarios = {
   pluginsSelected: {
     group: "Components/Plugins",
     name: "Write approval and tool overrides",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCatalog,
     pluginCapabilities,
     pluginSelections,
@@ -2235,7 +2253,7 @@ export const scenarios = {
   pluginsUnsupportedToolReviewer: {
     group: "Components/Plugins",
     name: "Unsupported saved tool reviewer",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCatalog,
     pluginCapabilities,
     pluginSelections: JSON.stringify(
@@ -2264,9 +2282,12 @@ export const scenarios = {
   pluginsUnknownTools: {
     group: "Components/Plugins",
     name: "Tool catalog unavailable",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCapabilities,
-    pluginCatalog: { status: "ready", entries: [pluginCatalog.entries[2]] },
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
+      status: "ready",
+      entries: [projectTrackerPlugin],
+    }),
     actions: [
       click("Configure plugins"),
       { selector: 'button[aria-label="Project tracker"]', click: true },
@@ -2278,10 +2299,10 @@ export const scenarios = {
   pluginsEmpty: {
     group: "Components/Plugins",
     name: "Empty catalog",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCapabilities,
-    pluginCatalog: { status: "ready", entries: [] },
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({ status: "ready", entries: [] }),
     description:
       "An empty catalog has an explicit empty state and keeps the JSON editor available.",
     gap: pluginPreviewGap,
@@ -2289,27 +2310,27 @@ export const scenarios = {
   pluginsLoading: {
     group: "Components/Plugins",
     name: "Catalog loading",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCapabilities,
-    pluginCatalog: { status: "loading" },
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({ status: "loading" }),
     description: "A pending catalog is distinct from a successful empty catalog.",
     gap: pluginPreviewGap,
   },
   pluginsDenied: {
     group: "Components/Plugins",
     name: "Catalog access denied",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [
       click("Configure plugins"),
       { selector: 'button[aria-label="Available plugins"]', click: true },
     ],
     pluginCapabilities,
-    pluginCatalog: {
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
       status: "error",
       canLoad: true,
       message: "This credential does not have access to the plugin catalog.",
-    },
+    }),
     description:
       "A simulated catalog permission error stays visible while existing configuration remains editable.",
     pluginSelections,
@@ -2318,21 +2339,21 @@ export const scenarios = {
   pluginsError: {
     group: "Components/Plugins",
     name: "Catalog unavailable",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCapabilities,
-    pluginCatalog: {
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
       status: "error",
       canLoad: true,
       message: "The plugin catalog could not be loaded. Try again after restoring connectivity.",
-    },
+    }),
     description: "A simulated catalog failure is shown as an error, not a successful empty result.",
     gap: pluginPreviewGap,
   },
   pluginsUnavailable: {
     group: "Components/Plugins",
     name: "Discovery credential required",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCapabilities,
     description:
@@ -2341,7 +2362,7 @@ export const scenarios = {
   pluginsCapabilitiesUnavailable: {
     group: "Components/Plugins",
     name: "Policy capabilities unavailable",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCatalog,
     pluginSelections,
     actions: [
@@ -2355,13 +2376,13 @@ export const scenarios = {
   managedGoogleInstall: {
     group: "Components/Plugins",
     name: "Install Google Workspace",
-    component: "plugins",
-    pluginCapabilities: {
+    component: pluginsComponent,
+    pluginCapabilities: /** @satisfies {PluginFieldCapabilities} */ ({
       ...pluginCapabilities,
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
       policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
-    },
-    pluginCatalog: {
+    }),
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
       status: "ready",
       entries: [
         {
@@ -2373,7 +2394,7 @@ export const scenarios = {
           tools: [],
         },
       ],
-    },
+    }),
     actions: [
       click("Configure plugins"),
       { selector: 'button[aria-label="Google Workspace"]', click: true },
@@ -2385,17 +2406,17 @@ export const scenarios = {
   pluginsNativeLimited: {
     group: "Components/Plugins",
     name: "Native Driver with unsupported saved policy",
-    component: "plugins",
-    pluginCatalog: {
+    component: pluginsComponent,
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
       status: "ready",
       entries: [{ id: "occ-plugin:diffs", name: "Diffs", tools: null }],
-    },
-    pluginCapabilities: {
+    }),
+    pluginCapabilities: /** @satisfies {PluginFieldCapabilities} */ ({
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
       toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
       tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
       driverPolicySchema: { type: "object", properties: {}, additionalProperties: false },
-    },
+    }),
     pluginSelections: JSON.stringify(
       {
         "occ-plugin:diffs": {
