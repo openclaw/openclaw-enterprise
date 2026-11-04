@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 // k3dDirectImportAttempts bounds how often a direct archive import is tried
@@ -142,7 +143,9 @@ func (r *runner) importArchiveDirect(ctx context.Context, archive, cluster strin
 		cmd := r.command(ctx, "k3d", "image", "import", "--mode", "direct", archive, "-c", cluster)
 		cmd.Stdout = r.opts.Out
 		cmd.Stderr = io.MultiWriter(r.opts.Err, output)
+		started := time.Now()
 		err := cmd.Run()
+		r.commandTiming("k3d", []string{"image", "import"}, started, err)
 		if err == nil {
 			return nil
 		}

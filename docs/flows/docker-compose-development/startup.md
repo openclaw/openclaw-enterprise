@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-29
-last_updated_session: authoring-run/88c984db-3b18-420c-acfc-7e329a46af89
+updated: 2026-11-04
+last_updated_session: authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925
 ---
 
 # Compose development startup
@@ -93,6 +93,11 @@ is unsafe; other services retain SELinux confinement. One development image
 covers migration, bootstrap, API, and worker, so `dev-up` builds it once through
 migration and starts with `--no-build`; Docker uses `up --build`. Expanded
 configuration and credentials are never printed.
+`internal/occdev/command.go` and `k3d_import.go` measure the existing command
+execution with Go's monotonic clock and report fixed timing categories through
+`timing.go`. They keep the same subprocess and cancellation context. See
+[local command diagnostics](../../reference/cli/local-development.md) for the
+output scope; concurrent durations can overlap.
 
 For unselected runtime images, `dev-up` builds missing
 `openclaw-enterprise-runtime:quickstart` from `deploy/runtime/Dockerfile` at
@@ -274,9 +279,11 @@ owns both OpenShell control-plane sequences.
 `internal/occdev/kubernetes.go:writeInstallation`,
 `internal/occdev/openshell.go:prepareOpenShell`.
 
-Compose starts PostgreSQL, migration, and bootstrap. After both one-shot
-services succeed, startup creates k3d on the Compose network.
-With the default Sandbox profile, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
+With Docker and a selected runtime, Compose creates its owned PostgreSQL
+container/network, then overlaps database/bootstrap with cluster setup. Both join
+before routing/controller startup; failure cancels and drains both before rollback. Cold
+builds and Podman remain serial.
+Without OpenShell, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
 image; its default `+v1.35` resolves the latest K3s 1.35 patch. An explicit
 image skips lookup. OpenShell uses its pinned image in both control-plane modes.
 The cluster API binds host loopback; creation leaves the default kubeconfig and
@@ -285,6 +292,10 @@ current context unchanged.
 The host kubeconfig stays private. Non-root API/worker containers receive
 read-only configuration and kubeconfig for the TLS-verified internal load balancer,
 without the engine socket.
+
+Before importing a source-built runtime, `importRuntime` passes the optional
+[build CA file](../../reference/settings/development.md) to the engine as
+a build secret. Selecting an existing runtime image skips this build.
 
 `internal/occdev/kubernetes.go:engineImageReference` resolves engine-recorded names,
 including Podman `localhost/` and Docker Hub, defaults omitted tags to `:latest`,
@@ -403,6 +414,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 20:46: Overlap selected-image setup; preserve readiness and rollback. (authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925 - 7951de4edf7abadc02725484771bcd6207ed9b9d)
 
 - 2026-10-29 18:57: Resolved the manifest-list platform child before saving images. (authoring-run/88c984db-3b18-420c-acfc-7e329a46af89 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)
 
