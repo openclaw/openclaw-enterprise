@@ -47,6 +47,13 @@ type CredentialDependencies = {
   reservedConfigurationWrite: Parameters<typeof createFixtureFetch>[0][number];
 };
 
+export const credentialsThemeScenario = [
+  "themeCredentials",
+  "authMissing",
+  "Custom missing credentials",
+  "custom",
+] satisfies [string, keyof ReturnType<typeof credentialsRecoveryScenarios>, string, "custom"];
+
 export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies, "draft">) {
   return {
     authOAuthStartNavigation: {

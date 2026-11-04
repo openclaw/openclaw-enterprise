@@ -2,6 +2,7 @@ import {
   credentialsOAuthScenarios,
   credentialsScenarios,
   credentialsRecoveryScenarios,
+  credentialsThemeScenario,
 } from "./scenario-groups/credentials.mts";
 import { pluginsScenarios, pluginApproverScenarios } from "./scenario-groups/plugins.mts";
 import { channelsScenarios } from "./scenario-groups/channels.mts";
@@ -5386,7 +5387,7 @@ for (const [id, source, name, theme] of [
   ["themeEmpty", "agentsEmpty", "Custom empty state", "custom"],
   ["themeDenied", "agentsDenied", "Custom denied state", "custom"],
   ["themeLoading", "agentsLoading", "Custom loading state", "custom"],
-  ["themeCredentials", "authMissing", "Custom missing credentials", "custom"],
+  credentialsThemeScenario,
   ["themePublicError", "sessionUnavailable", "Custom public error", "custom"],
 ]) {
   scenarios[id] = {
