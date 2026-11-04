@@ -569,7 +569,7 @@ function backendConfiguration(
       }
       continue;
     }
-    if (backend.type === "github") {
+    if (backend.type === "github" || backend.type === "gitlab") {
       if (repoSelection === undefined) {
         throw new Error(`backend[${backend.id}].drivers.repo requires repository.`);
       }

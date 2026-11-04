@@ -246,6 +246,14 @@ export interface GitHubRepositoryCredentialBackendDefinition {
   readonly drivers: { readonly repo: string };
 }
 
+/** GitLab.com repository credentials. The provider owns the origin; there is no caller host. */
+export interface GitLabRepositoryCredentialBackendDefinition {
+  readonly id: string;
+  readonly type: "gitlab";
+  readonly configuration: Record<string, never>;
+  readonly drivers: { readonly repo: string };
+}
+
 /** Connection settings for one OpenShell gateway deployment; no workspace policy. */
 export interface OpenShellBackendConfiguration {
   readonly endpoint?: string;
@@ -292,6 +300,7 @@ export interface OpenShellBackendDefinition {
 export type BackendDefinition =
   | ChatGPTBackendDefinition
   | GitHubRepositoryCredentialBackendDefinition
+  | GitLabRepositoryCredentialBackendDefinition
   | OpenShellBackendDefinition;
 
 export interface BackendSummary {

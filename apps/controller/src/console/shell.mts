@@ -128,6 +128,7 @@ export function sorted<T extends { id: string; name?: string }>(items: readonly 
 const backendTypes = {
   chatgpt: "ChatGPT",
   github: "GitHub",
+  gitlab: "GitLab",
   openshell: "OpenShell",
 } satisfies Record<BackendSummary["type"], string>;
 
