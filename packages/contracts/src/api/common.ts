@@ -540,13 +540,28 @@ export const DiscoverSavedAgentPluginsBody = Type.Object(
   { additionalProperties: false },
 );
 
-export const DiscoverSavedAgentPluginDetailsBody = Type.Object(
-  {
-    pluginId: Type.String({ minLength: 1, maxLength: 256 }),
-    credentialSource: Type.Optional(CredentialSourceReference),
-  },
-  { additionalProperties: false },
-);
+export const DiscoverSavedAgentPluginDetailsBody = Type.Union([
+  Type.Object(
+    {
+      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+      credentialSource: Type.Optional(CredentialSourceReference),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+      managedConnection: Type.Object(
+        {
+          slot: Type.String({ minLength: 1, maxLength: 64 }),
+          sourceId: CredentialSourceId,
+        },
+        { additionalProperties: false },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 export const PermissionActionSchema = Type.Union([
   Type.Literal("create"),
@@ -760,6 +775,12 @@ export const ProvisionAgentConfigurationBody = Type.Object(
 export const ProvisionAgentBody = Type.Object(
   {
     requestId: RequestId,
+    nativeAdmin: Type.Optional(
+      Type.Boolean({
+        description:
+          "Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false.",
+      }),
+    ),
     initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
     workspaceDefaultsId: Type.Optional(CreateAgentBody.properties.workspaceDefaultsId),
     name: Name,
@@ -1061,7 +1082,7 @@ export const ErrorResponse = Type.Object(
           }),
           Type.Literal("REPOSITORY_GIT_PROFILE_UNSUPPORTED", {
             description:
-              "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
+              "Deploy is refused because the selected Credential Proxy delivers repository Git only for github-repository bindings, or one git-write or github-installation binding; git-read, git-full or several bindings that are not all github-repository could never start.",
           }),
           Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
             description:
@@ -1102,6 +1123,23 @@ export const ErrorResponse = Type.Object(
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
+        remainingResources: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                kind: Type.String({ minLength: 1, maxLength: 64 }),
+                count: Type.Integer({ minimum: 0 }),
+                ids: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 }),
+              },
+              { additionalProperties: false },
+            ),
+            {
+              maxItems: 7,
+              description:
+                "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
+            },
+          ),
+        ),
       },
       { additionalProperties: false },
     ),
@@ -1120,6 +1158,9 @@ export type IAMAccessBindingId = Type.Static<typeof IAMAccessBindingId>;
 export type IAMServicePrincipalId = Type.Static<typeof IAMServicePrincipalId>;
 export type ConfigurationGeneration = Type.Static<typeof ConfigurationGeneration>;
 export type AgentId = Type.Static<typeof AgentId>;
+export type DiscoverSavedAgentPluginDetailsBody = Type.Static<
+  typeof DiscoverSavedAgentPluginDetailsBody
+>;
 export type RevisionId = Type.Static<typeof RevisionId>;
 export type AuditId = Type.Static<typeof AuditId>;
 export type RequestId = Type.Static<typeof RequestId>;

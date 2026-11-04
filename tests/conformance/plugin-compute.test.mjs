@@ -22,7 +22,8 @@ import {
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
-import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
@@ -36,10 +37,20 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { validateConfigurationSettings } from "../../packages/occ/src/configuration-settings.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
+import { listen as listenServer } from "../helpers/listen.mjs";
+import {
+  gatewayExitedBeforeServing,
+  invalidGatewayConfiguration,
+  invalidGatewayConfigurationLine,
+  invalidGatewayConfigurationSecret,
+} from "../helpers/openclaw-config-validation.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { waitForResult } from "../helpers/wait-for.mjs";
@@ -55,7 +66,7 @@ const PLUGIN_APP_SERVER_TOKEN_DOMAIN = "openclaw-plugin-runtime/app-server-token
 const nodeRequire = createRequire(import.meta.url);
 const gatewayRuntimeProvenance = JSON.stringify({
   source: "https://github.com/openclaw/openclaw",
-  commit: GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+  commit: (await readOpenclawSource()).commit,
 });
 
 function plain(value) {
@@ -240,7 +251,7 @@ function kubernetesOptions(overrides = {}) {
   };
 }
 
-function codexListResponse(options = {}) {
+function codexSearchResponse(options = {}) {
   const plugins = options.plugins ?? [
     {
       id: options.nativeId ?? CODEX_LINEAR_NATIVE_ID,
@@ -257,16 +268,8 @@ function codexListResponse(options = {}) {
     },
   ];
   return {
-    marketplaces: [
-      {
-        name: "openai-curated-remote",
-        path: null,
-        interface: null,
-        plugins,
-      },
-    ],
-    marketplaceLoadErrors: [],
-    featuredPluginIds: [],
+    data: plugins.map((plugin) => ({ marketplaceName: "openai-curated-remote", plugin })),
+    nextCursor: null,
   };
 }
 
@@ -382,12 +385,27 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
     }
     close() {}
   }
+  // The helper's clock advances only through its own timer waits, so the 25 ms install
+  // budget below counts retry delays, never host scheduling: a loaded runner cannot
+  // expire a successful RPC (finding 3034). Expiry cases pass their own Date.
+  let now = 0;
+  class FixtureDate extends Date {
+    static now() {
+      return now;
+    }
+  }
   const sandbox = {
     JSON,
     Buffer,
-    Date: options.Date ?? Date,
+    Date: options.Date ?? FixtureDate,
     WebSocket: FakeWebSocket,
-    setTimeout,
+    setTimeout:
+      options.setTimeout ??
+      ((callback, delay, ...args) =>
+        setTimeout(() => {
+          now += delay ?? 0;
+          callback(...args);
+        }, delay)),
     clearTimeout,
     process: {
       env: {
@@ -432,7 +450,8 @@ async function runCodexRuntimeHelper(runtime, handler, options = {}) {
       `${PLUGIN_RUNTIME_HELPERS}
 installCodexPlugins(
   ${JSON.stringify(runtime)},
-  ${JSON.stringify(options.failures ?? [])}
+  ${JSON.stringify(options.failures ?? [])},
+  codexAppServerRequest
 ).then(result.resolve, result.reject);`,
       sandbox,
     );
@@ -466,6 +485,24 @@ test("compute renders plugin-free Codex revisions with native default-deny plugi
   );
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[apps\._default\]\nenabled = false/m);
   assert.match(data[PLUGIN_RUNTIME_CODEX_CONFIG], /^\[plugins\._default\]\nenabled = false/m);
+});
+
+test("standalone search declarations cannot enable protected provider tools", () => {
+  const runtime = {
+    kind: "codex",
+    selections: {},
+    providerTools: "none",
+    modelEndpoint: {
+      baseUrl: "https://models.example.test/v1",
+      modelProvider: "openai-compatible",
+      supportsStandaloneWebSearch: true,
+    },
+  };
+  const config = pluginRuntimeConfigMapData(runtime)[PLUGIN_RUNTIME_CODEX_CONFIG];
+  assert.match(config, /^web_search = "disabled"$/m);
+  assert.equal(config.includes("supports_standalone_web_search"), false);
+  assert.match(config, /^request_max_retries = 0$/m);
+  assert.match(config, /^stream_max_retries = 0$/m);
 });
 
 test("compute pins the credential source endpoint in dedicated Codex configuration", () => {
@@ -780,13 +817,13 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
     manifest: pluginRuntimeSpecForRevision(revision({ plugins: state })),
   };
   let readCount = 0;
-  const { requests, sockets } = await runCodexRuntimeHelper(runtime, (method, params) => {
+  const handleRequest = (method, params) => {
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.149.0" } };
     }
-    if (method === "plugin/list") {
-      assert.deepEqual(params, {});
-      return codexListResponse();
+    if (method === "plugin/search") {
+      assert.deepEqual(params, { searchTerm: "linear", scope: "global", limit: 100 });
+      return codexSearchResponse();
     }
     if (method === "plugin/read") {
       assert.deepEqual(params, {
@@ -875,13 +912,14 @@ test("Codex runtime helper installs a plugin with skills and applies write actio
       return { requirements: null };
     }
     throw new Error(`unexpected request ${method}`);
-  });
+  };
+  const { requests, sockets } = await runCodexRuntimeHelper(runtime, handleRequest);
 
   assert.deepEqual(
     requests.map((request) => request.method),
     [
       "initialize",
-      "plugin/list",
+      "plugin/search",
       "initialize",
       "plugin/read",
       "initialize",
@@ -918,8 +956,8 @@ test("Codex startup explicitly denies inherited apps and replaces inherited appr
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.158.0" } };
     }
-    if (method === "plugin/list") {
-      return codexListResponse();
+    if (method === "plugin/search") {
+      return codexSearchResponse();
     }
     if (method === "plugin/read") {
       return codexReadResponse();
@@ -1064,8 +1102,8 @@ test("Codex runtime helper verifies explicit reviewers before readiness without 
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -1124,8 +1162,8 @@ test("Codex runtime helper discovers tool policy after installation and before r
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.156.0" } };
     }
-    if (method === "plugin/list") {
-      return codexListResponse();
+    if (method === "plugin/search") {
+      return codexSearchResponse();
     }
     if (method === "plugin/read") {
       return codexReadResponse({
@@ -1236,6 +1274,14 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
     ],
   ]) {
     await t.test(name, async () => {
+      // Keep startup time deterministic until the intended discovery failure.
+      // Advancing there prevents a retry without racing the fixture's 25 ms budget.
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
+      }
       const state = codexLinearPluginState({
         tools: { [CODEX_LINEAR_APP_ID + "/list_issues"]: { enabled: false } },
       });
@@ -1247,8 +1293,8 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -1260,11 +1306,12 @@ test("Codex runtime helper rejects incomplete or unbounded tool discovery before
             return { status: "ok", version: "selected-plugins" };
           }
           if (method === "mcpServerStatus/list") {
+            now = 25;
             return response(page++);
           }
           throw new Error(`unexpected request ${method}`);
         },
-        { captureError: true },
+        { captureError: true, Date: FixtureDate },
       );
       assert.match(result.error?.message ?? "", expected);
       assert.equal(
@@ -1292,8 +1339,8 @@ test("Codex runtime helper reports plugin install warnings without retrying", as
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexListResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         readCount += 1;
@@ -1371,8 +1418,8 @@ test("Codex runtime helper reports connector-auth warnings with the admitted key
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexListResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         return codexReadResponse();
@@ -1593,8 +1640,8 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.149.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -1672,6 +1719,46 @@ test("Codex runtime cannot report installation success when its deadline expires
   assert.deepEqual(result.requests, []);
 });
 
+test("Codex selected-plugin search stops before writes or continuation when its budget expires", async (t) => {
+  for (const matching of [false, true]) {
+    await t.test(matching ? "late exact match" : "late continuation", async () => {
+      let now = 0;
+      class FixtureDate extends Date {
+        static now() {
+          return now;
+        }
+      }
+      let pages = 0;
+      const result = await runCodexRuntimeHelper(
+        { manifest: pluginRuntimeSpecForRevision(revision({ plugins: codexLinearPluginState() })) },
+        (method) => {
+          if (method === "initialize") {
+            return {};
+          }
+          assert.equal(
+            method,
+            "plugin/search",
+            "expired search must not reach installation or writes",
+          );
+          assert.equal(++pages, 1, "the client must not fetch a continuation after expiry");
+          now = 25;
+          // Neither a late exact match nor another page may outlive the installation budget.
+          return matching
+            ? codexSearchResponse()
+            : {
+                ...codexSearchResponse({ nativeId: "other@openai-curated-remote", name: "other" }),
+                nextCursor: "continuation",
+              };
+        },
+        { captureError: true, Date: FixtureDate },
+      );
+      assert.match(result.error?.message ?? "", /search deadline expired/);
+      assert.equal(result.value, undefined);
+      assert.equal(pages, 1);
+    });
+  }
+});
+
 test("Codex runtime helper keeps pre-install native uncertainty generic", async () => {
   const state = codexLinearPluginState();
   const runtime = {
@@ -1683,8 +1770,8 @@ test("Codex runtime helper keeps pre-install native uncertainty generic", async 
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexListResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         throw new Error("catalog read unavailable");
@@ -1716,8 +1803,8 @@ test("Codex runtime keeps disabled selected plugins default-denied while preserv
       if (method === "initialize") {
         return { serverInfo: { name: "codex", version: "0.149.0" } };
       }
-      if (method === "plugin/list") {
-        return codexListResponse();
+      if (method === "plugin/search") {
+        return codexSearchResponse();
       }
       if (method === "plugin/read") {
         readCount += 1;
@@ -1816,8 +1903,8 @@ test("Codex runtime installs and reports only enabled selections in mixed plugin
     if (method === "initialize") {
       return { serverInfo: { name: "codex", version: "0.149.0" } };
     }
-    if (method === "plugin/list") {
-      return codexListResponse({
+    if (method === "plugin/search") {
+      return codexSearchResponse({
         plugins: [
           {
             id: CODEX_LINEAR_NATIVE_ID,
@@ -1965,8 +2052,8 @@ test("Codex runtime helper fails before readiness when catalog identity is absen
         if (method === "initialize") {
           return { serverInfo: { name: "codex", version: "0.149.0" } };
         }
-        if (method === "plugin/list") {
-          return codexListResponse({
+        if (method === "plugin/search") {
+          return codexSearchResponse({
             nativeId: "asana@openai-curated-remote",
             remotePluginId: "plugin_asdk_app_asana",
             name: "asana",
@@ -2010,8 +2097,8 @@ test("Codex runtime helper rejects catalog drift before app grants and readiness
             if (method === "initialize") {
               return { serverInfo: { name: "codex", version: "0.149.0" } };
             }
-            if (method === "plugin/list") {
-              return codexListResponse();
+            if (method === "plugin/search") {
+              return codexSearchResponse();
             }
             if (method === "plugin/read") {
               // A post-install catalog read must still match the admitted capabilities.
@@ -2060,8 +2147,8 @@ test("Codex runtime helper verifies defaults and rejects inherited unselected ap
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -2235,8 +2322,8 @@ test("Codex runtime helper checks effective app, tool, and account policy before
           if (method === "initialize") {
             return { serverInfo: { name: "codex", version: "0.156.0" } };
           }
-          if (method === "plugin/list") {
-            return codexListResponse();
+          if (method === "plugin/search") {
+            return codexSearchResponse();
           }
           if (method === "plugin/read") {
             return codexReadResponse();
@@ -2294,8 +2381,8 @@ test("Codex runtime helper fails before readiness when selected plugin lacks app
         if (method === "initialize") {
           return { serverInfo: { name: "codex", version: "0.149.0" } };
         }
-        if (method === "plugin/list") {
-          return codexListResponse();
+        if (method === "plugin/search") {
+          return codexSearchResponse();
         }
         if (method === "plugin/read") {
           return codexReadResponse({ apps: [] });
@@ -2324,6 +2411,183 @@ test("OpenClaw runtime helper rejects foreign OpenClaw plugin config before nati
   assert.match(result.error.message, /configuration conflicts with managed plugin selections/);
   assert.deepEqual(result.calls, []);
   assert.equal(result.files.has("/home/node/.openclaw/openclaw.json"), false);
+});
+
+test("Agent save refuses the Configuration plugin settings the Gateway entrypoint refuses for a selected catalog plugin, apart from two documented rows", () => {
+  // Finding 3091. The entrypoint writes each selected catalog plugin's entry and exits
+  // at every start on a setting that turns an enabled one off or replaces that entry; the OpenClaw
+  // Plugin Driver refuses the same settings at Agent save, provisioning and deploy admission. Each
+  // case runs both; one that passes the entrypoint's check reaches the (failing) package install.
+  const driver = new OCCPluginDriver();
+  const enabled = occSelection();
+  const disabled = { "occ-plugin:diffs": { enabled: false } };
+  const origin = "https://agent.example.com";
+  // The Gateway serves this origin only with trusted-proxy auth, which Kubernetes Compute always
+  // renders; the entrypoint then writes the entry with the Diffs viewer's public-origin config.
+  const publicOrigin = {
+    port: 8080,
+    publicOrigin: origin,
+    auth: { mode: "trusted-proxy" },
+    controlUi: { allowedOrigins: [origin] },
+  };
+  const viewer = { security: { allowRemoteViewer: true } };
+  // The TypeError the entrypoint's trim of a number, object or null item throws.
+  const unreadableItem = /id\.trim is not a function|reading 'trim'/;
+  const cases = [
+    [{ enabled: false }, enabled, true],
+    [{ deny: [" DIFFS "] }, enabled, true],
+    [{ allow: ["codex"] }, enabled, true],
+    [{ entries: { diffs: { config: {} } } }, enabled, true],
+    [{ entries: { diffs: { enabled: true, config: {} } } }, enabled, true],
+    [{ entries: { diffs: { enabled: false } } }, enabled, true],
+    [{ entries: { diffs: { enabled: true } } }, disabled, true],
+    [{ entries: { diffs: null } }, enabled, true],
+    // The entrypoint trims every allow and deny item before it checks any entry it writes, so an
+    // item that is not text stops it, for a disabled selection too (finding 3099).
+    [{ allow: ["diffs", 1] }, enabled, unreadableItem],
+    [{ deny: [null] }, disabled, unreadableItem],
+    [{ allow: ["diffs"], deny: [{ id: "slack" }] }, enabled, unreadableItem],
+    // A list that is not an array is ignored, as the entrypoint ignores it.
+    [{ allow: "codex", deny: 1 }, enabled, false],
+    // An exact copy of the entry the entrypoint writes passes.
+    [{ entries: { diffs: { enabled: true } } }, enabled, false],
+    [{ entries: { diffs: { enabled: false } } }, disabled, false],
+    [{ entries: { diffs: { enabled: false } } }, disabled, false, false, publicOrigin],
+    // An origin the Control UI does not allow is not served, so the entry stays {enabled:true}.
+    [
+      { entries: { diffs: { enabled: true } } },
+      enabled,
+      false,
+      false,
+      { ...publicOrigin, controlUi: { allowedOrigins: [] } },
+    ],
+    [{ entries: { diffs: { enabled: true } } }, enabled, true, true, publicOrigin],
+    // PostgreSQL's jsonb stores shorter keys first, so a deployed Gateway reads a public-origin
+    // copy in this order, and the entrypoint's JSON comparison refuses it.
+    [{ entries: { diffs: { config: viewer, enabled: true } } }, enabled, true, true, publicOrigin],
+    // Documented divergence: only a copy kept in the order the entrypoint writes passes, which no
+    // PostgreSQL-backed deployment delivers, so Agent save refuses every public-origin copy.
+    [{ entries: { diffs: { enabled: true, config: viewer } } }, enabled, false, true, publicOrigin],
+    // Documented divergence: with password auth (Docker Compute) the Gateway serves no public
+    // origin and accepts {enabled:true}; Agent save cannot know the Compute, and Kubernetes
+    // Compute renders trusted-proxy auth, where the same document does not start.
+    [
+      { entries: { diffs: { enabled: true } } },
+      enabled,
+      false,
+      true,
+      { ...publicOrigin, auth: { mode: "password" } },
+    ],
+    [{ enabled: true, allow: ["codex", " Diffs"], deny: ["slack"] }, enabled, false],
+    [{ allow: [" "], entries: { slack: { enabled: true } } }, enabled, false],
+    [{ enabled: false, deny: ["diffs"], allow: ["codex"] }, disabled, false],
+  ];
+  for (const [index, row] of cases.entries()) {
+    const [settings, plugins, entrypointRefuses, saveRefuses = entrypointRefuses] = row;
+    const configuration = { gateway: row[4] ?? { port: 8080 }, plugins: settings };
+    const runtime = {
+      manifest: pluginRuntimeSpecForRevision(
+        revision({
+          harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+          plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
+        }),
+      ),
+    };
+    const result = runOpenClawRuntimeHelper(
+      runtime,
+      [{ status: null, signal: "SIGTERM", stdout: "", stderr: "" }],
+      { captureError: true, baseConfig: configuration },
+    );
+    if (entrypointRefuses) {
+      assert.match(
+        result.error?.message ?? "",
+        entrypointRefuses === true ? /conflicts with managed plugin selection/ : entrypointRefuses,
+        `${index}: entrypoint`,
+      );
+    } else {
+      assert.match(result.error?.message ?? "", /OpenClaw plugin install failed/, `${index}`);
+    }
+    if (saveRefuses) {
+      assert.throws(
+        () => driver.validateAgentConfiguration(plugins, configuration),
+        { name: "ConfigurationHarnessError" },
+        `${index}: Agent save`,
+      );
+    } else {
+      driver.validateAgentConfiguration(plugins, configuration);
+    }
+  }
+});
+
+test("every Configuration save refuses the non-text plugins.allow and deny items the Gateway entrypoint trims for any OpenClaw plugin runtime", async () => {
+  // Finding 3101. The entrypoint trims every allow and deny item whenever an openclaw plugin
+  // runtime writes plugins.entries, which it does for any such runtime, selection or not. Two
+  // runtimes reach it with no catalog plugin, so the OpenClaw Plugin Driver's rule (above) never
+  // ran: plugin approvers without a plugin, and the managed Google plugin alone on dedicated
+  // OpenClaw, which installGatewayPlugins sets aside. OpenClaw's own config schema refuses the
+  // same items on every Gateway, so every Configuration save refuses them.
+  const unreadableItem = /id\.trim is not a function|reading 'trim'/;
+  const google = { [managedGoogleInstall.id]: { enabled: false } };
+  const approversOnly = (mode) =>
+    pluginRuntimeSpecForRevision(
+      revision({ harness: { id: "openclaw", version: "1.0.0", mode }, pluginApprovers: [] }),
+    );
+  const googleOnly = pluginRuntimeSpecForRevision(
+    revision({
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      plugins: {
+        driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+        plugins: google,
+      },
+    }),
+  );
+  const driver = new OCCPluginDriver();
+  for (const [plugins, key] of [
+    [{ deny: ["discord", 7] }, "deny"],
+    [{ allow: [null] }, "allow"],
+    [{ allow: ["slack"], deny: [{ id: "discord" }] }, "deny"],
+  ]) {
+    const configuration = { gateway: { port: 8080 }, plugins };
+    for (const mode of ["embedded", "dedicated"]) {
+      const result = runOpenClawRuntimeHelper({ manifest: approversOnly(mode) }, [], {
+        captureError: true,
+        baseConfig: configuration,
+      });
+      assert.match(result.error?.message ?? "", unreadableItem, `approvers ${mode}`);
+    }
+    // The plugin rule skips a plugin outside the native catalog.
+    driver.validateAgentConfiguration(google, configuration);
+    // The full Gateway entrypoint, as a dedicated Gateway that hosts a workspace node runs it.
+    await assert.rejects(
+      runOpenClawRuntimeHelper({ manifest: googleOnly }, [], {
+        baseConfig: configuration,
+        env: {
+          OPENCLAW_MANAGED_PLUGIN_JSON: JSON.stringify({
+            kind: "cli",
+            id: managedGoogleInstall.id,
+            packageName: managedGoogleInstall.packageName,
+            slotId: "account",
+          }),
+          OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({ manifest: googleOnly }),
+        },
+        workspaceNodeBindingPath: true,
+      }),
+      unreadableItem,
+      "Google",
+    );
+    assert.throws(() => validateConfigurationSettings(configuration), {
+      name: "ConfigurationHarnessError",
+      message: pluginPolicyListRefusal(key),
+    });
+  }
+  // With text items the entrypoint passes its check and reaches the (failing) package install.
+  const startable = { gateway: { port: 8080 }, plugins: { allow: [" "], deny: ["Discord"] } };
+  validateConfigurationSettings(startable);
+  const result = runOpenClawRuntimeHelper({ manifest: approversOnly("embedded") }, [], {
+    captureError: true,
+    baseConfig: startable,
+  });
+  assert.equal(result.error, undefined);
 });
 
 test("OpenClaw runtime helper keeps install signals generic", () => {
@@ -3619,6 +3883,9 @@ async function startCodexGatewaySupervisor(
     peerRequests: 0,
     serving: true,
     readinessProbes: [],
+    // What OpenClaw's config validator reports, and how often the wrapper ran it.
+    validation: { status: 0, stdout: JSON.stringify({ valid: true }) },
+    validations: 0,
     children: [],
     exits: [],
     intervals: [],
@@ -3652,12 +3919,7 @@ async function startCodexGatewaySupervisor(
       JSON.stringify({ revisionId, deviceId: bindingDeviceId }),
     );
   }
-  const listen = async (handler) => {
-    const server = peerHttp.createServer(handler);
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    return server.address().port;
-  };
+  const listen = (handler) => listenServer(t, peerHttp.createServer(handler));
   const peerPort = await listen(async (request, response) => {
     assert.equal(request.url, "/openclaw/plugin-runtime/status");
     fixture.peerRequests++;
@@ -3672,9 +3934,9 @@ async function startCodexGatewaySupervisor(
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(fixture.peerStatus));
   });
-  // The native Gateway's own readiness endpoint, answered only while serving.
+  // The native Gateway's own readiness endpoints, answered only while serving.
   const gatewayPort = await listen((request, response) => {
-    assert.equal(request.url, "/readyz");
+    assert.ok(["/readyz", "/startupz"].includes(request.url), request.url);
     const live = fixture.children.at(-1);
     const status = fixture.serving && live?.exited === undefined ? 200 : 503;
     fixture.readinessProbes.push({ child: fixture.children.length, status });
@@ -3746,6 +4008,8 @@ async function startCodexGatewaySupervisor(
             fixture.statusHandler = handler;
             return { listen() {} };
           },
+          // Readiness reaches the fixture's native Gateway port.
+          get: peerHttp.get,
         };
       }
       if (specifier === "node:fs") {
@@ -3825,7 +4089,8 @@ async function startCodexGatewaySupervisor(
             assert.equal(command, "node");
             assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
             assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
-            return { status: 0, stdout: JSON.stringify({ valid: true }) };
+            fixture.validations++;
+            return fixture.validation;
           },
         };
       }
@@ -4583,6 +4848,101 @@ test("Codex gateway supervisor stops respawning a Gateway whose Harness keeps ch
   assert.deepEqual(gateway.exits, [1]);
   assert.equal(gateway.children.length, 6);
 });
+
+test("Kubernetes Gateway holds a configuration OpenClaw refuses when its first start exits", async (t) => {
+  const gateway = await startCodexGatewaySupervisor(t, {
+    runtimeStatus: true,
+    bindingDeviceId: "a".repeat(64),
+  });
+  gateway.validation = invalidGatewayConfiguration;
+  // The kubelet's readiness probe finds OpenClaw unready; it exits at about 3 s, before
+  // its /readyz ever answers 200.
+  gateway.serving = false;
+  assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 503);
+  const validationsBefore = gateway.validations;
+  // OpenClaw refuses an invalid configuration with status 78 (EX_CONFIG).
+  gateway.children[0].exit(78, null);
+
+  // The wrapper holds the failure instead of restarting the container into the same refusal.
+  assert.deepEqual(gateway.exits, []);
+  assert.equal(gateway.validations - validationsBefore, 1);
+  const { checkedAt, ...held } = gateway.runtimeStatus().runtimeFailure;
+  assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+  assert.deepEqual(held, { component: "gateway", check: "gateway-config", code: "UNAVAILABLE" });
+  // One log line names up to five settings. Only JSON Schema messages, which carry no
+  // setting value, stay beside their paths: the configuration may hold secrets.
+  assert.ok(
+    gateway.logs.includes(invalidGatewayConfigurationLine(gatewayExitedBeforeServing("exit-78"))),
+    JSON.stringify(gateway.logs),
+  );
+  assert.equal(JSON.stringify(gateway.logs).includes(invalidGatewayConfigurationSecret), false);
+
+  // A held Gateway is not respawned for a changed Harness peer, nor restarted for another
+  // workspace node; a container stop ends it. A respawn would validate again and hold anew,
+  // so the validator count tells a skipped poll from a repeated hold.
+  gateway.peerStatus = { ...gateway.peerStatus, startupId: "agent-startup-2" };
+  await gateway.pollPeer();
+  gateway.files.set(
+    "/home/node/workspace-node-binding/workspace-node.json",
+    JSON.stringify({ revisionId: gateway.revisionId, deviceId: "b".repeat(64) }),
+  );
+  await gateway.intervals.find(({ delay }) => delay === 1_000).callback();
+  assert.equal(gateway.children.length, 1);
+  assert.deepEqual(gateway.exits, []);
+  assert.equal(gateway.validations - validationsBefore, 1);
+  assert.equal(gateway.runtimeStatus().runtimeFailure.check, "gateway-config");
+  gateway.signalHandlers.SIGTERM();
+  assert.deepEqual(gateway.exits, [0]);
+});
+
+// Every other exit restarts the container as before; the hold covers only a Gateway that
+// never served, whose configuration OpenClaw's validator reports invalid.
+for (const {
+  label,
+  runtimeStatus = true,
+  validation,
+  served = false,
+  exitCode = 1,
+  validations,
+} of [
+  { label: "a configuration the validator accepts", validation: undefined, validations: 1 },
+  {
+    label: "a validator that times out",
+    validation: { status: null, error: new Error("spawnSync node ETIMEDOUT"), stdout: "" },
+    validations: 1,
+  },
+  {
+    label: "no Compute status port",
+    runtimeStatus: false,
+    validation: invalidGatewayConfiguration,
+    validations: 0,
+  },
+  {
+    label: "a Gateway that served first",
+    validation: invalidGatewayConfiguration,
+    served: true,
+    validations: 0,
+  },
+  { label: "status 0", validation: invalidGatewayConfiguration, exitCode: 0, validations: 0 },
+]) {
+  test(`Kubernetes Gateway restarts after an exit with ${label}`, async (t) => {
+    const gateway = await startCodexGatewaySupervisor(t, { runtimeStatus });
+    if (validation !== undefined) {
+      gateway.validation = validation;
+    }
+    if (served) {
+      // The kubelet's readiness probe saw OpenClaw serve.
+      assert.equal((await readReadyStatusFromHandler(gateway.statusHandler)).status, 200);
+    }
+    const validationsBefore = gateway.validations;
+    gateway.children[0].exit(exitCode, null);
+    assert.deepEqual(gateway.exits, [exitCode]);
+    assert.equal(gateway.validations - validationsBefore, validations);
+    if (runtimeStatus) {
+      assert.equal(gateway.runtimeStatus().runtimeFailure, undefined);
+    }
+  });
+}
 
 for (const [dedicated, withBroker, proxyEnabled] of [
   [true, true, true],

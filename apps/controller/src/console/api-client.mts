@@ -10,6 +10,16 @@ export interface RequestOptions {
   /** A session-scoped read that a later view joins instead of aborting it. */
   outlivesView?: boolean;
   /**
+   * A write whose Agent detail tab is kept while it is pending, so a reply that lands after the
+   * reader switched tabs reaches that tab (finding 2980). Leaving the page still aborts it.
+   */
+  keepsTab?: boolean;
+  /**
+   * A write whose outcome its Agent detail tab shows itself, as a device login's poll and cancel
+   * do, so it alone does not make that tab stale (finding 2981). `keepsTab` writes are too.
+   */
+  showsOutcome?: boolean;
+  /**
    * A read the console makes because it takes the caller for an Installation administrator:
    * "required" when only that administration allows it, "path" when other grants may allow it too
    * (a Secret's metadata by ID). The console sends these one at a time until a "required" one
@@ -53,6 +63,7 @@ export interface ConsoleApiError extends Error {
   detailPaths?: string[];
   retryAfterSeconds?: number;
   requestId?: string;
+  remainingResources?: { kind: string; count: number; ids: string[] }[];
 }
 
 // Responses are untrusted JSON. Check each field before exposing it on an error.
@@ -186,6 +197,23 @@ export function createApiClient({
       const code = problem.code;
       if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {
         error.code = code;
+      }
+      if (code === "NAMESPACE_NOT_EMPTY" && Array.isArray(problem.remainingResources)) {
+        error.remainingResources = problem.remainingResources.slice(0, 7).flatMap((entry) => {
+          const { kind, count, ids } = responseFields(entry);
+          return typeof kind === "string" &&
+            kind.length <= 64 &&
+            typeof count === "number" &&
+            Number.isSafeInteger(count) &&
+            count >= 0 &&
+            Array.isArray(ids) &&
+            ids.length <= 20 &&
+            ids.every(
+              (id): id is string => typeof id === "string" && /^[a-z]+_[0-9a-f-]{36}$/.test(id),
+            )
+            ? [{ kind, count, ids }]
+            : [];
+        });
       }
       // The API's own sentence, for views that show it instead of a generic status text.
       const serverMessage = problem.message;

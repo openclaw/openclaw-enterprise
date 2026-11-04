@@ -78,6 +78,7 @@ import {
   IMAGE_PULL_FAILING,
   codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -2569,12 +2570,8 @@ test("Agent creation retries a denied credential grant without duplicating its s
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   // Native IAM denies the administrator's grant authority after the session found it allowed. A
   // session that already knows it is refused sends no grant at all (finding 2109).
-  fixture.policy.restrictions.push({
-    id: "deny-credential-grant",
-    resourceKind: "installation",
+  const deniedGrant = restrict(fixture.policy, "administer", "installation", {
     resourceId: installation.id,
-    action: "administer",
-    effect: "deny",
   });
   await page.getByLabel("Agent name").fill("Grant retry Agent");
   await enterManualModel(page, "grant-retry-key", "gpt-4.1");
@@ -2590,10 +2587,7 @@ test("Agent creation retries a denied credential grant without duplicating its s
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
   const bindingPath = `/namespaces/${namespace.id}/iam/access-bindings`;
   assert.equal(pathRequests(requests, "POST", bindingPath).length, 0);
-  fixture.policy.restrictions.splice(
-    fixture.policy.restrictions.findIndex((item) => item.id === "deny-credential-grant"),
-    1,
-  );
+  liftRestriction(fixture.policy, deniedGrant);
 
   // The binding is really committed; only its response is lost before the browser sees it.
   await page.route(`**${bindingPath}`, async (route) => {

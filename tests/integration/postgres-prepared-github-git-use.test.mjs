@@ -3,9 +3,7 @@ import { createPublicKey, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { isDeepStrictEqual } from "node:util";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
-import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
@@ -16,84 +14,87 @@ import {
   prepare,
   startProtectedOwner,
 } from "../fixtures/prepared-repository-git.mjs";
-import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
+import {
+  fixtureInstallationId,
+  fixtureRepository,
+} from "../fixtures/repository-credentials/github.mjs";
 import { clockBehind } from "../helpers/prepared-standing-git-peer.ts";
 
 // Refusal must come from the durable admission guard, before any issuer or retirement call.
 async function assertUseGuarded(f) {
   const calls = f.gh.trace.length;
-  await assert.rejects(f.owner.use(f.request()), /custody transaction did not complete \(guard\)/);
+  const request = f.request();
+  assert.ok(Date.parse(request.deadlineAt) > Date.now());
+  await assert.rejects(f.owner.use(request), {
+    message: "Prepared GitHub custody transaction did not complete (guard).",
+  });
   assert.equal(f.gh.trace.length, calls, "denied use contacted the provider");
 }
 
-test(
-  "OpenShell material delivery reads only an existing live revision token without issuing or authorizing use",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (t) => {
-    const f = await fixture(t, { draftPull: true, sessionLifetimeMs: 120_000 });
-    const signal = new AbortController().signal;
-    const read = (revisionId = f.revision.id) => f.owner.readOpenShellMaterial(revisionId, signal);
-    // Absent material says why (finding 2149): a live session with nothing prepared yet.
-    assert.deepEqual(await read(), { absent: "unprepared" });
-    assert.equal(f.gh.issuesOfTokens.length, 0, "cold material reads must not issue");
-    assert.deepEqual(
-      (
-        await f.pool.query(
-          "SELECT source_id FROM occ.prepared_github_families WHERE source_id=$1",
-          [f.familyId],
-        )
-      ).rows,
-      [],
-      "cold material reads must not enroll a family",
-    );
-    await prepare(f);
-    const before = f.gh.trace.length;
-    assert.deepEqual(await read("rev_" + randomUUID()), { absent: "withdrawn" });
-    await assert.rejects(f.owner.readOpenShellMaterial(f.revision.id, AbortSignal.abort()), {
-      name: "AbortError",
-    });
-    const material = await read();
-    assert.ok(material?.value);
-    assert.equal(material.sessionId, f.sessionId);
-    for (const key of ["providerInstanceId", "repositoryId", "grantId"]) {
-      assert.equal(material[key], f.binding.grant[key]);
-    }
-    assert.equal(material.pushRef, f.request().pushRef);
-    assert.equal(material.pullRequestBase, "main");
-    assert.equal(material.apiOrigin, f.gh.origin);
-    assert.equal(Date.parse(material.expiresAt), f.deadlineWallMs);
-    const {
-      rows: [row],
-    } = await f.pool.query(
-      "SELECT id, material_version, admission FROM occ.prepared_github_attempts WHERE source_id=$1 AND custody='current'",
-      [f.familyId],
-    );
-    assert.equal(material.preparationAttemptId, row.id);
-    assert.equal(material.materialVersion, row.material_version);
-    assert.equal(material.repository, row.admission.grant.repository);
-    assert.deepEqual(await read(), material, "reading does not rotate material");
-    assert.equal(f.gh.trace.length, before, "material read must not contact the provider");
-    assert.equal(
-      (
-        await f.pool.query(
-          "SELECT count(*)::integer AS count FROM occ.prepared_repository_git_uses WHERE admission_id=$1",
-          [f.admissionId],
-        )
-      ).rows[0].count,
-      0,
-      "material delivery is not request authorization",
-    );
-    assert.equal(await f.providerStatus(material.value), 200);
-    assert.equal(await f.owner.authorizeOpenShellRequest(f.request(), material, signal), true);
-    await f.withdraw();
-    assert.deepEqual(
-      await read(),
-      { absent: "withdrawn" },
-      "withdrawal denies before background retirement",
-    );
-    assert.equal(await f.providerStatus(material.value), 200);
-  },
-);
+async function nativeReceipts(f) {
+  return (
+    await f.pool.query(
+      `SELECT admission_id, exchange_id, attempt_id, material_version, operation,
+              request_digest_sha256, send_start_by FROM occ.prepared_repository_git_uses
+       WHERE admission_id=$1`,
+      [f.admissionId],
+    )
+  ).rows;
+}
+
+// Capture the expected version before use, without opening custody or authorizing an exchange.
+async function currentNativeMetadata(f, { draftPull = false } = {}) {
+  const { rows } = await f.pool.query(
+    `SELECT a.id, a.material_version, a.usable_until, a.admission, f.source
+     FROM occ.prepared_github_attempts a
+     JOIN occ.prepared_github_families f USING (source_id)
+     WHERE a.source_id=$1 AND a.state='committed' AND a.custody='current'
+       AND f.enabled AND a.admission=f.admission`,
+    [f.familyId],
+  );
+  assert.equal(rows.length, 1);
+  const [row] = rows;
+  assert.equal(row.source.session.sessionId, f.sessionId);
+  assert.equal(row.source.session.admissionId, f.admissionId);
+  assert.deepEqual(row.source.session.binding.grant, f.binding.grant);
+  assert.equal(row.admission.grant.repository, fixtureRepository);
+  assert.equal(row.admission.grant.pushRef, "refs/heads/prepared-fixture");
+  if (draftPull) {
+    assert.equal(row.admission.grant.pullRequestBase, "main");
+  }
+  return {
+    preparationAttemptId: row.id,
+    materialVersion: row.material_version,
+    expiresAt: row.usable_until.toISOString(),
+  };
+}
+
+async function assertNativeReceipt(f, request, material, used) {
+  assert.equal(typeof used.value, "string");
+  assert.ok(used.value.length > 0);
+  assert.equal(used.exchangeId, request.exchangeId);
+  assert.equal(used.preparationAttemptId, material.preparationAttemptId);
+  assert.equal(used.materialVersion, material.materialVersion);
+  const deadline = Date.parse(used.sendStartBy);
+  assert.ok(deadline > Date.now());
+  assert.ok(
+    deadline <=
+      Math.min(Date.parse(request.deadlineAt), f.deadlineWallMs, Date.parse(material.expiresAt)),
+  );
+  const expected = [
+    {
+      admission_id: f.admissionId,
+      exchange_id: request.exchangeId,
+      attempt_id: material.preparationAttemptId,
+      material_version: material.materialVersion,
+      operation: request.operation,
+      request_digest_sha256: request.requestDigestSha256,
+      send_start_by: new Date(used.sendStartBy),
+    },
+  ];
+  assert.deepEqual(await nativeReceipts(f), expected);
+  return expected;
+}
 
 test(
   "prepared Git use binds durable admission, exact ref, session and one exchange before retirement",
@@ -115,6 +116,15 @@ test(
     await prepare(f);
     const request = f.request({ operation: "receive-pack" });
     const beforeUse = f.gh.trace.length;
+    const prepared = await currentNativeMetadata(f);
+    // An already-aborted request leaves this fresh exchange available for its first use.
+    await assert.rejects(f.owner.use(request, AbortSignal.abort()), {
+      message: "Prepared GitHub custody transaction did not complete (guard).",
+    });
+    assert.deepEqual(await nativeReceipts(f), [], "aborted use must not record authorization");
+    assert.deepEqual(await currentNativeMetadata(f), prepared);
+    assert.equal(f.gh.issuesOfTokens.length, 1, "aborted use must not rotate material");
+    assert.equal(f.gh.trace.length, beforeUse, "aborted use must not contact the provider");
     const used = await f.owner.use(request);
     assert.equal(used.exchangeId, request.exchangeId);
     assert.equal(typeof used.value, "string");
@@ -232,12 +242,14 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
     async (t) => {
       const f = await fixture(t, change === "session expired" ? { sessionLifetimeMs: 4200 } : {});
       await prepare(f);
-      const installed = await f.owner.use(f.request());
-      const { store } = await openShellStore(f);
-      assert.equal(
-        await store.authorizeOpenShellRequest(f.request(), installed, new AbortController().signal),
-        true,
-      );
+      const material = await currentNativeMetadata(f);
+      const request = f.request();
+      const beforeUse = f.gh.trace.length;
+      const installed = await f.owner.use(request);
+      const expected = await assertNativeReceipt(f, request, material, installed);
+      assert.equal(f.gh.trace.length, beforeUse, "native use must not contact the provider");
+      assert.equal(f.gh.issuesOfTokens.length, 1);
+      assert.equal(await f.providerStatus(installed.value), 200);
       const { agent, revision, sessionId } = f;
       if (change === "session expired") {
         await new Promise((resolve) =>
@@ -275,15 +287,7 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
         });
       }
       await assertUseGuarded(f);
-      // The OpenShell route tells the Agent its access ended (finding 2149).
-      assert.deepEqual(
-        await f.owner.readOpenShellMaterial(f.revision.id, new AbortController().signal),
-        { absent: "withdrawn" },
-      );
-      assert.equal(
-        await store.authorizeOpenShellRequest(f.request(), installed, new AbortController().signal),
-        "access_withdrawn",
-      );
+      assert.deepEqual(await nativeReceipts(f), expected, "denial must preserve the use receipt");
       assert.equal(
         await f.providerStatus(installed.value),
         200,
@@ -294,12 +298,19 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
         [sessionId],
       );
       assert.equal(receipt.rows[0].state, "active");
+      assert.equal(f.gh.issuesOfTokens.length, 1, "denial must not issue a replacement");
       await f.owner.maintain();
       await assertUseGuarded(f);
+      assert.deepEqual(
+        await nativeReceipts(f),
+        expected,
+        "maintenance must preserve the use receipt",
+      );
       const family = await f.pool.query(
         "SELECT enabled FROM occ.prepared_github_families WHERE source_id=$1",
         [f.familyId],
       );
+      assert.equal(f.gh.issuesOfTokens.length, 1, "maintenance must not replace the old token");
       assert.equal(
         family.rows[0].enabled,
         false,
@@ -309,344 +320,103 @@ for (const change of ["repository binding withdrawn", "revision superseded", "se
   );
 }
 
-// Storage-boundary proof: use the production owner's admitted source, with an exact
-// immutable session match. This does not establish supervisor authentication or sending.
-async function openShellStore(f, pool = f.pool) {
-  const {
-    rows: [family],
-  } = await f.pool.query(
-    "SELECT source, admission FROM occ.prepared_github_families WHERE source_id=$1",
-    [f.familyId],
-  );
-  const source = family.source;
-  return {
-    source,
-    // An unrelated custody key makes accidental unsealing fail; authorization needs no key bytes.
-    store: new PreparedRepositoryGitStore(
-      pool,
-      Buffer.alloc(32),
-      family.admission.issuerAuthority,
-      (session) => (isDeepStrictEqual(session, source.session) ? source : undefined),
-    ),
-  };
-}
-
-test(
-  "OpenShell prepared Git authorization pins installed material before recording and denies withdrawal while the token is valid",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (t) => {
-    const f = await fixture(t);
-    await prepare(f);
-    const installed = await f.owner.use(f.request());
-    const { store } = await openShellStore(f);
-    const signal = new AbortController().signal;
-    const request = f.request({ operation: "receive-pack" });
-    const receipts = () =>
-      f.pool.query(
-        "SELECT attempt_id, material_version, request_digest_sha256 FROM occ.prepared_repository_git_uses WHERE exchange_id=$1",
-        [request.exchangeId],
-      );
-    const before = f.gh.trace.length;
-    for (const wrong of [
-      { ...installed, materialVersion: randomUUID() },
-      { ...installed, preparationAttemptId: randomUUID() },
-    ]) {
-      assert.equal(await store.authorizeOpenShellRequest(request, wrong, signal), false);
-      assert.deepEqual(
-        (await receipts()).rows,
-        [],
-        "a mismatched installation must not consume an exchange",
-      );
-    }
-    // A session that is not live reads as withdrawn access (finding 2149).
-    assert.equal(
-      await store.authorizeOpenShellRequest(
-        f.request({ sessionId: `session-${randomUUID()}` }),
-        installed,
-        signal,
-      ),
-      "access_withdrawn",
-    );
-    for (const changes of [
-      { pushRef: "refs/heads/forbidden" },
-      { repositoryId: "other-repository" },
-      { providerInstanceId: "other-provider" },
-      { grantId: "other-grant" },
-      { deadlineAt: new Date(Date.now() - 1).toISOString() },
-      { deadlineAt: new Date(Date.now() + 60_000).toISOString() },
-    ]) {
-      assert.equal(
-        await store.authorizeOpenShellRequest(f.request(changes), installed, signal),
-        false,
-      );
-    }
-    assert.equal(
-      await store.authorizeOpenShellRequest(request, installed, AbortSignal.abort()),
-      false,
-    );
-    assert.equal(await store.authorizeOpenShellRequest(request, installed, signal), true);
-    assert.deepEqual((await receipts()).rows, [
-      {
-        attempt_id: installed.preparationAttemptId,
-        material_version: installed.materialVersion,
-        request_digest_sha256: request.requestDigestSha256,
-      },
-    ]);
-    assert.equal(await store.authorizeOpenShellRequest(request, installed, signal), false);
-    assert.equal(
-      f.gh.trace.length,
-      before,
-      "authorization must not contact the issuer or provider",
-    );
-    await f.withdraw();
-    assert.equal(
-      await store.authorizeOpenShellRequest(f.request(), installed, signal),
-      "access_withdrawn",
-    );
-    assert.equal(
-      await f.providerStatus(installed.value),
-      200,
-      "withdrawing OCE authority does not depend on revocation",
-    );
-    assert.equal(f.gh.issuesOfTokens.length, 1);
-  },
-);
-
-test(
-  "OpenShell prepared Git rejects expired and superseded material while renewal keeps the old provider token valid",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (t) => {
-    const f = await fixture(t);
-    await prepare(f);
-    const installed = await f.owner.use(f.request());
-    const { store } = await openShellStore(f);
-    const signal = new AbortController().signal;
-    // Move current material into the renewal window while it remains usable.
-    // This distinguishes supersession from expiry and provider retirement.
-    await f.pool.query(
-      "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()+interval '5 minutes' WHERE id=$1",
-      [installed.preparationAttemptId],
-    );
-    assert.equal(await store.authorizeOpenShellRequest(f.request(), installed, signal), true);
-    await f.pool.query(
-      "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE source_id=$1",
-      [f.familyId],
-    );
-    await f.owner.maintain();
-    const replacement = await f.owner.use(f.request());
-    const delivered = await f.owner.readOpenShellMaterial(f.revision.id, signal);
-    assert.equal(delivered?.preparationAttemptId, replacement.preparationAttemptId);
-    assert.equal(delivered?.value, replacement.value);
-    assert.notEqual(replacement.preparationAttemptId, installed.preparationAttemptId);
-    assert.notEqual(replacement.materialVersion, installed.materialVersion);
-    assert.equal(await store.authorizeOpenShellRequest(f.request(), installed, signal), false);
-    assert.equal(await store.authorizeOpenShellRequest(f.request(), replacement, signal), true);
-    assert.equal(
-      await f.providerStatus(installed.value),
-      200,
-      "supersession is enforced before provider retirement",
-    );
-    assert.equal(f.gh.issuesOfTokens.length, 2);
-    // Expiry independently denies the newly current material with no worker pass.
-    await f.pool.query(
-      "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()-interval '1 second' WHERE id=$1",
-      [replacement.preparationAttemptId],
-    );
-    assert.equal(await store.authorizeOpenShellRequest(f.request(), replacement, signal), false);
-    assert.deepEqual(await f.owner.readOpenShellMaterial(f.revision.id, signal), {
-      absent: "unprepared",
-    });
-  },
-);
-
-for (const loseCommitAcknowledgment of [false, true]) {
+for (const draftPullLimit of [undefined, "none"]) {
   test(
-    `OpenShell draft authorization preserves one unknown receipt${loseCommitAcknowledgment ? " after a lost commit acknowledgment" : ""}`,
+    `native draft authorization spends one allowance and preserves recorded replay${draftPullLimit === "none" ? " with draftPullLimit none" : ""}`,
     { ...requiresPostgres, timeout: 60_000 },
     async (t) => {
-      const f = await fixture(t, { draftPull: true });
+      const f = await fixture(t, { draftPull: true, draftPullLimit });
       await prepare(f);
-      const installed = await f.owner.use(f.request());
-      // Commit on real PostgreSQL, then fault only the client's acknowledgment. This
-      // proves durable uncertainty handling, not a genuine PostgreSQL network outage.
-      let lose = loseCommitAcknowledgment;
-      const pool = loseCommitAcknowledgment
-        ? {
-            async connect() {
-              const client = await f.pool.connect();
-              return {
-                async query(...args) {
-                  const result = await client.query(...args);
-                  if (args[0] === "COMMIT" && lose) {
-                    lose = false;
-                    throw Object.assign(new Error("commit acknowledgment lost"), { code: "08007" });
-                  }
-                  return result;
-                },
-                release: (discard) => client.release(discard),
-              };
-            },
-          }
-        : f.pool;
-      const { store, source } = await openShellStore(f, pool);
+      if (draftPullLimit === "none") {
+        assert.deepEqual(
+          (
+            await f.pool.query(
+              "SELECT source->>'draftPullLimit' AS draft_pull_limit FROM occ.prepared_github_families WHERE source_id=$1",
+              [f.familyId],
+            )
+          ).rows,
+          [{ draft_pull_limit: "none" }],
+        );
+      }
+      const material = await currentNativeMetadata(f, { draftPull: true });
       const request = f.request({
         operation: "create-draft-pull",
         pull: {
           operationId: randomUUID(),
           apiOrigin: f.gh.origin,
-          repository: source.grant.repository,
-          head: source.grant.pushRef.slice("refs/heads/".length),
-          base: source.grant.pullRequestBase,
+          repository: fixtureRepository,
+          head: "prepared-fixture",
+          base: "main",
         },
       });
-      const signal = new AbortController().signal;
-      assert.equal(
-        await store.authorizeOpenShellRequest(
-          request,
-          { ...installed, materialVersion: randomUUID() },
-          signal,
-        ),
-        false,
-      );
-      assert.deepEqual(
+      const before = f.gh.trace.length;
+      const used = await f.owner.use(request, t.signal);
+      const expectedUses = await assertNativeReceipt(f, request, material, used);
+      const claims = async () =>
         (
           await f.pool.query(
-            "SELECT receipt_id FROM occ.prepared_repository_draft_pulls WHERE grant_id=$1",
+            `SELECT receipt_id, operation_id, admission_id, attempt_id, material_version,
+                request_digest_sha256, send_start_by, outcome, settled_at, projection
+         FROM occ.prepared_repository_draft_pulls WHERE grant_id=$1`,
             [request.grantId],
           )
-        ).rows,
-        [],
-      );
-      assert.equal(
-        await store.authorizeOpenShellRequest(request, installed, signal),
-        !loseCommitAcknowledgment,
-      );
-      const receipt = (
-        await f.pool.query(
-          "SELECT receipt_id, attempt_id, material_version, outcome, settled_at, projection FROM occ.prepared_repository_draft_pulls WHERE grant_id=$1",
-          [request.grantId],
-        )
-      ).rows;
+        ).rows;
+      const receipt = await claims();
+      const deadline = new Date(used.sendStartBy);
       assert.deepEqual(receipt, [
         {
           receipt_id: request.exchangeId,
-          attempt_id: installed.preparationAttemptId,
-          material_version: installed.materialVersion,
+          operation_id: request.pull.operationId,
+          admission_id: f.admissionId,
+          attempt_id: material.preparationAttemptId,
+          material_version: material.materialVersion,
+          request_digest_sha256: request.requestDigestSha256,
+          send_start_by: deadline,
           outcome: "outcome_unknown",
           settled_at: null,
           projection: null,
         },
       ]);
-      // A repeated decision, a new request ID, or a new operation cannot cause a second create.
-      // The refusal names the spent draft so the helper can say so (finding 2147).
+      for (const retry of [request, { ...request, exchangeId: randomUUID() }]) {
+        assert.deepEqual(await f.owner.use(retry), {
+          kind: "recorded",
+          status: 409,
+          body: {
+            operationId: request.pull.operationId,
+            receiptId: request.exchangeId,
+            error: "outcome_unknown",
+          },
+        });
+      }
       for (const retry of [
-        request,
-        { ...request, exchangeId: randomUUID() },
         {
           ...request,
           exchangeId: randomUUID(),
           pull: { ...request.pull, operationId: randomUUID() },
         },
+        {
+          ...request,
+          exchangeId: randomUUID(),
+          requestDigestSha256:
+            (request.requestDigestSha256[0] === "0" ? "1" : "0") +
+            request.requestDigestSha256.slice(1),
+        },
       ]) {
-        assert.equal(
-          await store.authorizeOpenShellRequest(retry, installed, signal),
-          "draft_already_opened",
-        );
+        assert.deepEqual(await f.owner.use(retry), {
+          kind: "recorded",
+          status: 409,
+          body: { error: "operation_conflict" },
+        });
       }
-      const native = await f.owner.use(request);
-      assert.equal(native.kind, "recorded");
-      assert.equal(native.body.error, "outcome_unknown");
-      await store.finishPull(request.exchangeId, "not-submitted");
-      assert.equal(
-        await store.authorizeOpenShellRequest(
-          { ...request, exchangeId: randomUUID() },
-          installed,
-          signal,
-        ),
-        "draft_already_opened",
-      );
-      assert.equal(
-        (
-          await f.pool.query(
-            "SELECT count(*)::integer AS count FROM occ.prepared_repository_draft_pulls WHERE grant_id=$1",
-            [request.grantId],
-          )
-        ).rows[0].count,
-        1,
-      );
+      assert.deepEqual(await claims(), receipt, "replay cannot claim a second draft");
+      assert.deepEqual(await nativeReceipts(f), expectedUses);
+      assert.equal(f.gh.trace.length, before, "native draft use must not contact the provider");
+      assert.equal(f.gh.issuesOfTokens.length, 1, "replay must not issue again");
+      assert.equal(await f.providerStatus(used.value), 200);
+      // This proves provider acceptance, not a Git subprocess push or a draft creation.
     },
   );
 }
-
-test(
-  "an operator's opt-out records every OpenShell draft use without spending a one-draft allowance",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (t) => {
-    // Finding 2147 (owner 10-20): with draftPullLimit "none" the OpenShell route admits each
-    // draft create its live session, grant and material authorize; the draft-only, head and base
-    // checks are unchanged. The broker route keeps its one replayable receipt per grant.
-    const f = await fixture(t, { draftPull: true, draftPullLimit: "none" });
-    await prepare(f);
-    const installed = await f.owner.use(f.request());
-    const { store, source } = await openShellStore(f);
-    assert.equal(source.draftPullLimit, "none");
-    const signal = new AbortController().signal;
-    const create = () =>
-      f.request({
-        operation: "create-draft-pull",
-        pull: {
-          operationId: randomUUID(),
-          apiOrigin: f.gh.origin,
-          repository: source.grant.repository,
-          head: source.grant.pushRef.slice("refs/heads/".length),
-          base: source.grant.pullRequestBase,
-        },
-      });
-    const rows = async (grantId) =>
-      (
-        await f.pool.query(
-          "SELECT receipt_id, outcome, settled_at FROM occ.prepared_repository_draft_pulls WHERE grant_id=$1",
-          [grantId],
-        )
-      ).rows;
-    const first = create();
-    assert.equal(await store.authorizeOpenShellRequest(first, installed, signal), true);
-    const second = create();
-    assert.equal(await store.authorizeOpenShellRequest(second, installed, signal), true);
-    assert.deepEqual(await rows(second.grantId), []);
-    const uses = async () =>
-      (
-        await f.pool.query(
-          "SELECT exchange_id FROM occ.prepared_repository_git_uses WHERE admission_id=$1 AND operation='create-draft-pull'",
-          [f.admissionId],
-        )
-      ).rows
-        .map(({ exchange_id }) => exchange_id)
-        .sort();
-    const allowed = [first.exchangeId, second.exchangeId].sort();
-    assert.deepEqual(await uses(), allowed);
-    assert.equal(await store.authorizeOpenShellRequest(second, installed, signal), false);
-    // The other checks still hold: another base or a stale material is refused, writing nothing.
-    const otherBase = create();
-    otherBase.pull = { ...otherBase.pull, base: "release" };
-    assert.equal(await store.authorizeOpenShellRequest(otherBase, installed, signal), false);
-    assert.equal(
-      await store.authorizeOpenShellRequest(
-        create(),
-        { ...installed, materialVersion: randomUUID() },
-        signal,
-      ),
-      false,
-    );
-    assert.deepEqual(await uses(), allowed);
-    // The native grant still permits just one draft, independently of those possible uses.
-    const once = await f.owner.use(create());
-    assert.ok(once.exchangeId);
-    const native = await f.owner.use(create());
-    assert.equal(native.kind, "recorded");
-    assert.equal(native.status, 409);
-  },
-);
 
 test(
   "discovery retires a replaced version's family from an earlier issuer authority without revoking it elsewhere",
@@ -772,6 +542,44 @@ test(
     });
     assert.equal(f.gh.issuesOfTokens.length, 0, "an unusable key never reaches the issuer");
     assert.deepEqual(f.gh.errors, []);
+  },
+);
+
+test(
+  "a native revision's token state stays pending until GitHub issues it and quarantined after a refusal",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    // Finding 2415: maintenance issues a version's first token only once its active pointer is
+    // published, so a deployment reads this state before it reports success. A version whose
+    // token GitHub refused is never prepared again, so its deployment can fail at once.
+    const issued = await fixture(t);
+    assert.equal(await issued.owner.revisionMaterial(issued.revision.id), "pending");
+    await prepare(issued);
+    assert.equal(await issued.owner.revisionMaterial(issued.revision.id), "ready");
+    const prepared = await currentNativeMetadata(issued);
+    const calls = issued.gh.trace.length;
+    const tokens = issued.gh.issuesOfTokens.length;
+    assert.equal(await issued.owner.revisionMaterial(issued.revision.id), "ready");
+    // Another revision has no open session of this owner: nothing is ready for it.
+    assert.equal(await issued.owner.revisionMaterial("rev_" + randomUUID()), "pending");
+    assert.deepEqual(await currentNativeMetadata(issued), prepared);
+    assert.equal(issued.gh.trace.length, calls, "status must not contact the provider");
+    assert.equal(issued.gh.issuesOfTokens.length, tokens, "status must not rotate material");
+    assert.deepEqual(await nativeReceipts(issued), [], "status must not authorize use");
+
+    // A rejected App key: GitHub answers 401 and mints nothing.
+    const refused = await fixture(t);
+    refused.gh.setIssueStatus(401);
+    // Discovery and issuance may be separate passes.
+    await refused.owner.maintain();
+    await refused.owner.maintain();
+    assert.equal(await refused.owner.revisionMaterial(refused.revision.id), "quarantined");
+    // Restoring the key does not reopen this version's preparation; only a new version does.
+    refused.gh.setIssueStatus(201);
+    await refused.owner.maintain();
+    assert.equal(await refused.owner.revisionMaterial(refused.revision.id), "quarantined");
+    assert.equal(refused.gh.issuesOfTokens.length, 0);
+    assert.deepEqual(refused.gh.errors, []);
   },
 );
 

@@ -95,15 +95,12 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err != nil {
 		return err
 	}
-	browserPort := 0
-	if sandboxDriver == "none" {
-		browserPort, err = positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
-		if err != nil {
-			return err
-		}
-		if browserPort == apiPort || browserPort == kubernetesPort {
-			return fmt.Errorf("browser, development API, and Kubernetes API ports must differ")
-		}
+	browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
+	if err != nil {
+		return err
+	}
+	if browserPort == apiPort || browserPort == kubernetesPort {
+		return fmt.Errorf("browser, development API, and Kubernetes API ports must differ")
 	}
 	if signIn == developmentSignInKeycloak && (browserPort == developmentKeycloakHostPort || apiPort == developmentKeycloakHostPort || kubernetesPort == developmentKeycloakHostPort) {
 		return fmt.Errorf("port 443 is reserved for Keycloak; browser, development API, and Kubernetes API ports must use other ports")
@@ -138,6 +135,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
+	}
+	if sandboxDriver == "openshell" {
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
+		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
+		state.NativeAdminDomain = agentDomain
 	}
 	if signIn == developmentSignInKeycloak {
 		if err := checkDevelopmentKeycloakHostPort(fmt.Sprintf("127.0.0.1:%d", developmentKeycloakHostPort)); err != nil {
@@ -214,6 +216,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	defer func() {
 		defer lock.Close()
 		if result == nil {
+			return
+		}
+		if os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
+			// Inspection override: keep the failed stack, the state directory, and
+			// any copied service key for diagnosis; occ dev down with the same
+			// state directory performs the cleanup.
+			fmt.Fprintf(r.opts.Out, "OCC_DEVELOPMENT_KEEP_ON_FAILURE is set; kept the failed stack and %s for inspection. Run occ dev down with the same state directory to clean up.\n", directory)
 			return
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -800,17 +809,20 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		return err
 	}
 	values := map[string]any{
-		"images":       map[string]string{"controller": controllerImage},
-		"installation": map[string]string{"name": "Kubernetes development"},
-		"auth":         map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
-		"bootstrap":    map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
-		"database":     map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
-		"cluster":      map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
-		"api":          map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
-		"resources":    resources,
+		"images":         map[string]string{"controller": controllerImage},
+		"installation":   map[string]string{"name": "Kubernetes development"},
+		"auth":           map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
+		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
+		"database":       map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
+		"cluster":        map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
+		"api":            map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
+		"resources":      resources,
+		"gatewayRouting": map[string]any{"enabled": routing},
+	}
+	if state.authenticatedOpenShell() {
+		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
 	}
 	if state.ProtectedEgress {
-		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
 		values["egressAuthority"] = developmentEgressChartValues(state)
 	}
 	if routing {
@@ -822,8 +834,6 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "gateway-api-key", gatewaySecret); err != nil {
 			return err
 		}
-		// Private Agent routing does not imply a published HTTPS Console. The
-		// OpenShell profile signs in through the loopback HTTP API instead.
 		if state.BrowserPort != 0 {
 			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
 			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
@@ -842,10 +852,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 				return err
 			}
 			values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
-			// OpenShell-owned Harnesses do not serve the native admin UI.
-			if state.SandboxDriver == "none" {
-				values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
-			}
+			values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
 		}
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 		if hostname := developmentRoutingHostname(state); hostname != "" {

@@ -4,17 +4,26 @@ import test from "node:test";
 import type { Page } from "playwright";
 import type { RuntimeLogRecord, SandboxNetworkGrant } from "../../packages/contracts/src/index.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
-import { PLACEHOLDER_DESTINATION } from "../helpers/refusal-text.mjs";
+import {
+  callerDenied,
+  DEPLOY_SANDBOX_POLICY_READ_DENIED,
+  PLACEHOLDER_DESTINATION,
+} from "../helpers/refusal-text.mjs";
 import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
 
 import {
   apiRequests,
   detailUrl,
+  expectNoHorizontalScroll,
+  focusKeptOverClose,
+  hasFocus,
   login,
   newPage,
   nextFrames,
   pathRequests,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 const grants: SandboxNetworkGrant[] = ["one", "two", "three"].map((name) => ({
   id: `python-${name}`,
@@ -91,6 +100,22 @@ async function logWindow(
   );
 }
 
+test("read-only Installation defaults display formatted JSON within the policy card", async (t) => {
+  // The literal backslash and quotes in this executable name must survive copying the JSON.
+  const binary = `/opt/${"a".repeat(180)}/tool-"\\u000a"`;
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [], binary);
+  const { defaults } = (await fixture.request("GET", base)).data;
+  const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "policy"));
+  const card = page.locator(".sandbox-network-card");
+  await card.getByText("Policy details", { exact: true }).click();
+  await card.getByText("Read-only Installation defaults", { exact: true }).click();
+  const block = card.locator("pre");
+  assert.equal(await block.innerText(), JSON.stringify(defaults, null, 2));
+  await expectNoHorizontalScroll(page);
+});
+
 test("the Policy denials page controls policy editing and disabling preserves saved rules", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
   assert.equal(
@@ -114,21 +139,34 @@ test("the Policy denials page controls policy editing and disabling preserves sa
   await limits.getByText(grants[0]!.binary, { exact: true }).first().waitFor();
   assert.equal(await limits.getByRole("button", { name: "Add rule", exact: true }).count(), 0);
   await limits.getByRole("button", { name: "Done", exact: true }).click();
+  const viewLimits = card.getByRole("button", { name: "View network limits", exact: true });
+  assert.equal(await hasFocus(viewLimits), true);
+  // Focus the reader moves on before the close event fires stays where they put it.
+  const tab = page.getByRole("tab", { selected: true });
+  await viewLimits.click();
   assert.equal(
-    await card
-      .getByRole("button", { name: "View network limits", exact: true })
-      .evaluate((node) => node === document.activeElement),
+    await focusKeptOverClose(limits.getByRole("button", { name: "Done", exact: true }), tab),
     true,
+    "closing Network limits keeps focus on the tab",
   );
   assert.equal(await page.getByLabel("Select page", { exact: true }).isVisible(), false);
-  await card.getByRole("button", { name: /^(Manage|View) rules$/ }).click();
+  const manage = card.getByRole("button", { name: /^(Manage|View) rules$/ });
+  await manage.click();
   const dialog = page.getByRole("dialog", { name: /^(Manage|View) network rules$/ });
   assert.equal(await dialog.getByRole("switch", { name: "Policy editing" }).count(), 0);
   assert.equal(
     await dialog.getByRole("button", { name: "Add rule", exact: true }).isVisible(),
     false,
   );
+  // Closing redraws the policy card, which moves its rules button, yet focus returns to it.
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  assert.equal(await hasFocus(manage), true);
+  await manage.click();
+  assert.equal(
+    await focusKeptOverClose(dialog.getByRole("button", { name: "Done", exact: true }), tab),
+    true,
+    "closing the rules dialog keeps focus on the tab",
+  );
   await enable.click();
   const disable = card.getByRole("switch", { name: "Policy editing", checked: true });
   await disable.waitFor();
@@ -184,13 +222,9 @@ test("the Policy denials page controls policy editing and disabling preserves sa
 
   // Administration can be revoked after the page read. The real IAM refusal must remain
   // visible and focused on the page, with the saved editing setting unchanged.
-  fixture.policy.restrictions.push({
-    id: "deny-policy-editing-administration",
+  restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: agent.id,
-    action: "administer",
-    effect: "deny",
   });
   await enable.click();
   const alert = card.getByRole("alert");
@@ -218,6 +252,7 @@ test("denial selection spans pages, keeps the inspected window, and saves a dedu
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
   const tab = page.locator(".sandbox-policy");
   await tab.getByText("200 in loaded window", { exact: true }).waitFor();
+  assert.equal(await tab.getByText("About this window", { exact: true }).count(), 0);
   assert.equal(await tab.locator(".sandbox-decision").count(), 5);
   // Refresh denials replaces the window, so a selection of the old records must not survive it:
   // Allow selected would otherwise stage denials that are no longer displayed.
@@ -247,10 +282,14 @@ test("denial selection spans pages, keeps the inspected window, and saves a dedu
   await tab.getByRole("button", { name: "Show denial details", exact: true }).first().click();
   const inspected = await tab.locator(".sandbox-decisions").innerText();
   await tab.getByRole("checkbox", { name: "Follow policy denials", exact: true }).check();
-  await tab.getByRole("button", { name: "12 new denials · Show newest", exact: true }).waitFor();
+  const newest = tab.getByRole("button", { name: "12 new denials · Show newest", exact: true });
+  await newest.waitFor();
   assert.equal(await tab.locator(".sandbox-decisions").innerText(), inspected);
   assert.equal(await tab.locator(".sandbox-decision-details:visible").count(), 1);
   await tab.getByRole("checkbox", { name: "Follow policy denials", exact: true }).uncheck();
+  await newest.click();
+  await tab.getByText("212 in loaded window", { exact: true }).waitFor();
+  await tab.getByText("Page 1 of 43", { exact: true }).waitFor();
 
   await tab.getByRole("button", { name: "Allow selected (6)", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Review policy changes", exact: true });
@@ -649,4 +688,74 @@ test("an older version and a same-version apply do not claim the deployed policy
     "Saved version: v1",
     "Live version unconfirmed",
   ]);
+});
+
+// Finding 2874: live application also needs SandboxPolicy read, since it admits and returns the
+// saved rules. A read revoked after the page loaded is refused by the real API, and the refusal
+// names every grant apply checks, not only the ones a save checks.
+test("an application refused for a revoked SandboxPolicy read names the read grant", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  assert.equal(
+    (await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [grants[0]] } }))
+      .status,
+    200,
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  const card = page.locator(".sandbox-network-card");
+  const apply = card.getByRole("button", { name: "Apply saved rules", exact: true });
+  await apply.waitFor();
+  restrict(fixture.policy, "read", "sandbox_policy", { namespaceId: namespace.id });
+  await apply.click();
+  await card
+    .getByRole("alert")
+    .filter({
+      hasText:
+        "Your access does not include applying this Agent’s policy. Ask an Installation administrator for Agent manage_policy and SandboxPolicy update and read on it.",
+    })
+    .waitFor();
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
+  fixture.policy.restrictions.pop();
+  assert.equal((await fixture.request("GET", base)).data.policy.application, undefined);
+});
+
+// Finding D801. Deploy checks SandboxPolicy read on the Agent's network policy when it has saved
+// rules (finding 2151). The API's denial names that policy by its raw ID; the Deploy alert names
+// it in words and who grants the read. The permission answer cannot tell whether saved rules
+// exist, so Deploy stays enabled up front and the API decides.
+test("a deploy refused for SandboxPolicy read names the network policy in words", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
+  assert.equal(
+    (await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [grants[0]] } }))
+      .status,
+    200,
+  );
+  restrict(fixture.policy, "read", "sandbox_policy", { namespaceId: namespace.id });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  await waitForEnabled(deploy);
+  const refused = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${path}/deploy` &&
+      response.request().method() === "POST",
+  );
+  await deploy.click();
+  const response = await refused;
+  assert.equal(response.status(), 403);
+  const policyId = `sbp_${agent.id.slice(4)}`;
+  assert.equal(
+    (await response.json()).error.message,
+    callerDenied("SandboxPolicy read", `SandboxPolicy ${policyId}`),
+  );
+  const alert = page.getByRole("alert").filter({ hasText: DEPLOY_SANDBOX_POLICY_READ_DENIED });
+  await alert.waitFor();
+  assert.equal(await alert.textContent(), DEPLOY_SANDBOX_POLICY_READ_DENIED);
+  assert.equal(await page.locator("main").getByText(policyId).count(), 0);
+  // Nothing was admitted, so Deploy is available again once the read is granted.
+  await waitForEnabled(deploy);
+  assert.equal((await fixture.request("GET", `${path}/revisions`)).data.length, 0);
 });

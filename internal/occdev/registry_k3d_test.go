@@ -885,7 +885,18 @@ func TestDownDetachesARecordedRegistryAttachment(t *testing.T) {
 				container, recordedNetwork = registryTestContainer, network
 			}
 			directory := developmentDownFixture(t, container, recordedNetwork)
-			commands := fakeProfileCommands(t, map[string]string{"docker": tc.docker, "k3d": k3d})
+			t.Setenv("DOCKER_HOST", "unix:///wrong.sock")
+			t.Setenv("DOCKER_CONTEXT", "wrong-context")
+			t.Setenv("DOCKER_TLS_VERIFY", "1")
+			t.Setenv("DOCKER_CERT_PATH", "/wrong-certs")
+			volumeCommand := "docker volume ls --filter label=k3d.cluster=occ-dev-recorded --format {{.Name}}"
+			volumeCase := `"volume ls --filter label=k3d.cluster=occ-dev-recorded --format {{.Name}}")
+[ "$DOCKER_HOST" = unix:///fixture/docker.sock ] || exit 91
+[ -z "$DOCKER_CONTEXT$DOCKER_TLS_VERIFY$DOCKER_CERT_PATH" ] || exit 92
+;;`
+			commands := fakeProfileCommands(t, map[string]string{"docker": tc.docker + "\n" + volumeCase, "k3d": k3d})
+			// Restrict lookup to these inert executables, including on unexpected calls.
+			t.Setenv("PATH", strings.Split(os.Getenv("PATH"), string(os.PathListSeparator))[0])
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			err := Down(ctx, Options{Repository: filepath.Dir(directory), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
@@ -901,7 +912,23 @@ func TestDownDetachesARecordedRegistryAttachment(t *testing.T) {
 			} else if err != nil {
 				t.Fatalf("%v %v", err, calls)
 			}
-			if countCalls(calls, disconnect) != tc.disconnects || countCalls(calls, "docker ") > 0 && !tc.recorded {
+			volumeCalls := 0
+			registryCalls := 0
+			for _, call := range calls {
+				if call == volumeCommand {
+					volumeCalls++
+				} else if strings.HasPrefix(call, "docker ") {
+					registryCalls++
+				}
+			}
+			wantVolumeCalls := 1
+			if tc.want != "" {
+				wantVolumeCalls = 0
+			}
+			if volumeCalls != wantVolumeCalls {
+				t.Fatalf("want %d volume observations, got %d: %v", wantVolumeCalls, volumeCalls, calls)
+			}
+			if countCalls(calls, disconnect) != tc.disconnects || registryCalls > 0 && !tc.recorded {
 				t.Fatalf("unexpected registry commands: %v", calls)
 			}
 			// The delete runs only after any disconnect. A failed detach keeps
@@ -911,7 +938,7 @@ func TestDownDetachesARecordedRegistryAttachment(t *testing.T) {
 				if i >= 0 {
 					t.Fatalf("deleted the cluster with the registry still attached: %v", calls)
 				}
-			} else if i < 0 || (tc.disconnects > 0 && slices.Index(calls, disconnect) > i) {
+			} else if i < 0 || slices.Index(calls, volumeCommand) < i || (tc.disconnects > 0 && slices.Index(calls, disconnect) > i) {
 				t.Fatalf("the registry was not detached before the cluster delete: %v", calls)
 			}
 		})

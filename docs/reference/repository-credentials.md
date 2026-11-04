@@ -50,9 +50,10 @@ and [anonymous public reads](public-github-reads.md).
 
 ## Repo Driver contract
 
-The GitHub Backend selects its Repo Driver by ID in `drivers.repo`. The
-[contract](../../packages/contracts/src/repo.ts) defines `RepositoryPolicyDriver`
-and `GitHubRepositoryPolicy`.
+The GitHub Backend selects [GitHub repository policy](../../apps/controller/src/drivers/repo/github/policy.ts)
+by ID in `drivers.repo`. Its [contract](../../packages/contracts/src/drivers/repo/index.ts) is separate from
+`NativeRepositorySender`. For protected Git, [installation composition](../../apps/controller/src/composition/installation-config.ts)
+supplies the resolver that checks the admitted grant and selects its destination.
 
 - `listOptions` lists approved repositories and profiles for the Namespace.
 - `resolve` checks the selection against Namespace policy and returns the bindings and duration.
@@ -192,18 +193,19 @@ Keep the App key there and retain the existing approval scope. The development
 
 ## Token Service lifecycle
 
-The worker signs a short-lived JSON Web Token (JWT) with the App key. For
-repository-scoped Git, it requests the numeric repository ID and approved
-permissions from GitHub. It verifies the returned scope and expiry, encrypts
-the token and commits it to PostgreSQL. Renewal and retirement belong to the
-worker. Renewal cannot extend the session.
+The worker signs an App JSON Web Token (JWT), requests approved repository IDs
+and permissions, verifies scope and expiry, and saves the encrypted token in
+PostgreSQL. It owns renewal and retirement; renewal cannot extend the session.
+See [token preparation and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
+Protected metadata reads use `metadata: read`; OCC separately authorizes the
+sender's exact GET.
 
-For a protected metadata read, the worker prepares the repository's
-`metadata: read` grant. OCC must separately authorize the sender's exact GET.
-See [token preparation, expiry and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
-If the worker reports `PREPARED_GITHUB_RECOVERY_REQUIRED` (`quarantined` or
-`blocked`), [recover on the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
-An uncertain issuance blocks automatic minting.
+`PREPARED_GITHUB_RECOVERY_REQUIRED` (`quarantined` or `blocked`) stops automatic
+minting. [Recover on the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key),
+preserving the original attempt and custody. Preserve its original bound:
+72 minutes after starting, or known provider expiry plus clock skew, whichever
+is later. A GET does not settle it. Never replay, reset custody, or
+change profiles, families or clusters to bypass recovery.
 
 ## Sessions and closure
 
@@ -252,13 +254,12 @@ read observes expiry without starting cleanup or cancellation. Clock rollback
 cannot restore even a reserved exchange. The bearer requires a live broker
 and upstream authorization.
 
-An exchange keeps its original credential through replacement. The replacement
-must cover the remaining exchange budget and safety margin. After verifying TLS,
-the sender runs any configured standing callback before its first write. For
-prepared Git, it checks the original one-use permit, cancellation and send
-deadline. Withdrawal blocks new permits. A permitted send can still start
-within its deadline. If a push or API mutation may have reached GitHub,
-inspect the outcome. Never replay it automatically.
+An exchange retains its original credential through replacement. Replacement
+must cover the remaining budget and safety margin. After TLS verification, the
+sender rechecks the owned lease before writing. Prepared sends instead check the
+original one-use permit, cancellation and deadline. Withdrawal blocks new
+permits; an issued permit can still start one send before its deadline.
+Reconcile uncertain GitHub writes without replaying them.
 
 Authentication and cleanup have separate monotonic deadlines from capture.
 Delayed settlement extends neither. Authentication stops 60 seconds before

@@ -13,7 +13,10 @@ Namespace control. Check each story at 1440, 1024 and 390.
 2. Open **Pages / Agent detail / Page header with a long name**. At 1024 the
    name wraps to two lines on the left. Refresh and Open draft stays at
    its right, and nothing overlaps. Select **Copy Agent ID**: "Copied" shows
-   beside it.
+   beside it. Enter on the focused button copies the same ID.
+   In the Controller-backed Console, also hold the button on one Agent, go Back
+   to a different Agent, and release over its copy button. No copy should occur
+   until you press that Agent’s button yourself.
 3. In the same story, select **Open draft**. The draft's header shows
    Refresh only. Select **Edit Configuration**, change a value, and select
    **← Agents**. The page stays and says why.

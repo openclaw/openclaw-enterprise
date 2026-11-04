@@ -20,7 +20,7 @@ import {
   AGENT_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 
 // Reads a JSON-lines file; a file that does not exist yet has no rows. Children append
@@ -79,24 +79,39 @@ const pendingIdentityProbe = [
 // Runs the supervisor program the container receives; supervision, signals and
 // environments run unchanged.
 // - Stubbed: native initialization (the runtime-image test covers it), and every child
-//   the supervisor spawns, which runs `child` (the lines of child.cjs) with the events
-//   path, "node" or "codex", and its JSON arguments. `stubs` are extra program lines
-//   that replace other external bodies; `realSpawnSync` is the unstubbed spawnSync.
+//   the supervisor spawns. Native setup runs `setup` (the lines of setup.cjs; by default
+//   it succeeds at once) with the events path, with the options (stdio included) the
+//   supervisor passes. Every other child runs `child` (the lines of child.cjs) with the
+//   events path, "node" or "codex", and its JSON arguments. `stubs` are extra program
+//   lines that replace other external bodies; `realSpawnSync` is the unstubbed spawnSync.
 // - Events: children append JSON rows to `directory`/events.jsonl.
 // - Cleanup kills the supervisor and every recorded pid, then removes `directory`.
 async function startSupervisor(
   t,
   directory,
-  { child, stubs = [], env, entrypoint = AGENT_WITH_NODE_ENTRYPOINT },
+  {
+    child,
+    setup = [],
+    stubs = [],
+    env,
+    entrypoint = AGENT_WITH_NODE_ENTRYPOINT,
+    statusReservation,
+  },
 ) {
   const eventsPath = join(directory, "events.jsonl");
   const childPath = join(directory, "child.cjs");
+  const setupPath = join(directory, "setup.cjs");
   await writeFile(childPath, child.join("\n"));
+  await writeFile(setupPath, setup.join("\n"));
   const launch = [
     'const cp = require("node:child_process"); const realSpawn = cp.spawn;',
     "const realSpawnSync = cp.spawnSync;",
     "cp.spawnSync = () => ({ status: 0 });",
-    "cp.spawn = (command, args, options) => realSpawn(command, [" +
+    'cp.spawn = (command, args, options) => realSpawn(command, args[1] === "setup" ? [' +
+      JSON.stringify(setupPath) +
+      ", " +
+      JSON.stringify(eventsPath) +
+      "] : [" +
       JSON.stringify(childPath) +
       ", " +
       JSON.stringify(eventsPath) +
@@ -106,8 +121,11 @@ async function startSupervisor(
       .replace("\ninitializeRuntimeAssets();\n", "\n")
       .replace("\npublishAgentPluginSkillPath();\n", "\n"),
   ].join("\n");
-  // Launch through the same bounded program pieces the container receives.
-  const supervisor = spawn(process.execPath, ["-e", ...nodeProgramArguments(launch)], {
+  // Launch through the same bounded program pieces the container receives. A reserved
+  // status port stays held by the test until the supervisor's own listener answers; the
+  // preload lets that listener bind the held port.
+  const preload = statusReservation === undefined ? [] : reservedPortArgs(statusReservation);
+  const supervisor = spawn(process.execPath, [...preload, "-e", ...nodeProgramArguments(launch)], {
     env: {
       PATH: process.env.PATH,
       HOME: directory,
@@ -215,7 +233,13 @@ test(
         'if (kind === "codex") spawn(process.execPath, [__filename, events, "grandchild"], { stdio: "inherit" });',
         "setInterval(() => {}, 1_000);",
       ],
-      stubs: pendingIdentityProbe,
+      stubs: [
+        ...pendingIdentityProbe,
+        // Simulate a broken sink for node-exit diagnostics while preserving real supervision.
+        "const savedConsoleError = console.error; console.error = (line) => {",
+        '  if (typeof line === "string" && line.includes("runtime.process_exit") && line.includes("workspace-node")) throw new Error("sentinel-private-exit-log-secret");',
+        "  savedConsoleError(line); };",
+      ],
       env: {
         OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath,
         OPENCLAW_NODE_CA_PEM: "gateway-public-ca",
@@ -251,6 +275,33 @@ test(
       (rows) => rows.filter(({ kind }) => kind === "codex").length === 2,
     );
     assert.equal(afterCodex.filter(({ kind }) => kind === "node").length, 1);
+    const exitEvents = output()
+      .split("\n")
+      .flatMap((line) => {
+        try {
+          const value = JSON.parse(line);
+          return value.event === "runtime.process_exit" ? [value] : [];
+        } catch {
+          return [];
+        }
+      });
+    assert.deepEqual(
+      exitEvents.find((e) => e.component === "codex-wrapper"),
+      {
+        event: "runtime.process_exit",
+        component: "codex-wrapper",
+        exitCode: null,
+        signal: "SIGKILL",
+        stopping: false,
+      },
+    );
+    for (const secret of [
+      "synthetic-model-key",
+      "synthetic-transport-token",
+      "sentinel-private-exit-log-secret",
+    ]) {
+      assert.equal(JSON.stringify(exitEvents).includes(secret), false);
+    }
     process.kill(node.pid, 0);
     const descendant = initial.find(({ kind }) => kind === "grandchild");
     await waitFor("old Codex descendant exited", () => pidGone(descendant.pid));
@@ -532,10 +583,14 @@ for (const topology of ["Compute-owned", "provider-owned"]) {
           },
         },
       };
-      const statusPort =
-        topology === "Compute-owned" ? await availablePort({ host: "0.0.0.0" }) : undefined;
+      // The supervisor binds its status port on every interface; hold it there.
+      const statusReservation =
+        topology === "Compute-owned" ? await reservePort({ host: "0.0.0.0" }) : undefined;
+      t.after(() => statusReservation?.release());
+      const statusPort = statusReservation?.port;
       const { supervisor, exited, waitFor, output } = await startSupervisor(t, directory, {
         entrypoint: NATIVE_WORKER_ENTRYPOINT,
+        statusReservation,
         child: [
           'const { appendFileSync } = require("node:fs");',
           "const [events, kind, args] = process.argv.slice(2);",
@@ -583,7 +638,18 @@ for (const topology of ["Compute-owned", "provider-owned"]) {
       );
       assert.equal((await stat(targetPath)).mode & 0o777, 0o600);
       if (statusPort !== undefined) {
-        assert.equal((await fetch(`http://127.0.0.1:${statusPort}/readyz`)).status, 503);
+        // A connection that reaches the reservation is reset; retry until the supervisor answers.
+        const ready = await waitFor(
+          "status port answered",
+          (status) => status !== undefined,
+          () =>
+            fetch(`http://127.0.0.1:${statusPort}/readyz`).then(
+              (response) => response.status,
+              () => undefined,
+            ),
+        );
+        await statusReservation.release();
+        assert.equal(ready, 503);
       }
       supervisor.kill("SIGTERM");
       assert.deepEqual(await exited, [0, null], output());
@@ -774,7 +840,9 @@ test(
       child: [],
       stubs: [
         // Every child fails to start, so Codex is only ever between restarts.
-        'cp.spawn = (command, args, options) => realSpawn(process.env.HOME + "/missing", [], options);',
+        'cp.spawn = (command, args, options) => args[1] === "setup"',
+        '  ? realSpawn(process.execPath, ["-e", ""], options)',
+        '  : realSpawn(process.env.HOME + "/missing", [], options);',
         ...pendingIdentityProbe,
       ],
       env: { OPENCLAW_NODE_SETUP_PATH: join(directory, "setup", "setup-code") },
@@ -786,15 +854,10 @@ test(
   },
 );
 
-// Native setup as a real child process that prints the value of the JavaScript
-// expression `stdout` and exits with `status`, with the options (stdio included) the
-// supervisor passes.
+// Native setup that prints the value of the JavaScript expression `stdout` and exits
+// with `status`.
 function setupStub(stdout, status) {
-  return [
-    "cp.spawnSync = (command, args, options) => realSpawnSync(process.execPath, ['-e', " +
-      JSON.stringify(`process.stdout.write(${stdout}); process.exitCode = ${status};`) +
-      "], options);",
-  ];
+  return [`process.stdout.write(${stdout}); process.exitCode = ${status};`];
 }
 
 const recordingChild = [
@@ -808,12 +871,12 @@ test(
   "Harness starts its children after a native setup whose result outgrows a pipe buffer",
   { timeout: 15_000 },
   async (t) => {
-    // spawnSync kills a child whose piped output passes its buffer (1 MiB by default),
-    // which would fail a setup that succeeded (review-3817).
+    // A buffered pipe (spawnSync's 1 MiB default) killed a setup whose result outgrew
+    // it, which failed a setup that succeeded (review-3817).
     const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-baseline-"));
     const { waitFor } = await startSupervisor(t, directory, {
       child: recordingChild,
-      stubs: setupStub('JSON.stringify({ ok: true, padding: "x".repeat(3 * 1024 * 1024) })', 0),
+      setup: setupStub('JSON.stringify({ ok: true, padding: "x".repeat(3 * 1024 * 1024) })', 0),
       env: { OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup" },
     });
     await waitFor(
@@ -832,7 +895,10 @@ test(
     // workspace: the supervisor serves the hold there itself, so Compute fails the
     // revision with the check instead of waiting for its deadline (finding 2686).
     const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-held-"));
-    const port = await availablePort();
+    // The supervisor binds its status port on every interface; hold it there.
+    const statusReservation = await reservePort({ host: "0.0.0.0" });
+    t.after(() => statusReservation.release());
+    const { port } = statusReservation;
     const result = {
       ok: false,
       error: { type: "cli_error", message: `bad\n\u001b]0;title\u0007${"y".repeat(600)}` },
@@ -840,7 +906,8 @@ test(
     };
     const { supervisor, events, waitFor, output } = await startSupervisor(t, directory, {
       child: recordingChild,
-      stubs: setupStub(JSON.stringify(JSON.stringify(result, null, 2)), 1),
+      statusReservation,
+      setup: setupStub(JSON.stringify(JSON.stringify(result, null, 2)), 1),
       env: {
         OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup",
         OPENCLAW_RUNTIME_STATUS_PORT: String(port),
@@ -857,11 +924,13 @@ test(
         return undefined;
       }
     };
+    // A connection that reaches the reservation is reset, which read() reports as no answer.
     const answer = await waitFor(
       "held status served",
       (served) => served?.status === 200,
       () => read("/openclaw/runtime/status"),
     );
+    await statusReservation.release();
     const status = JSON.parse(answer.body);
     const { checkedAt, ...failure } = status.runtimeFailure;
     assert.ok(!Number.isNaN(Date.parse(checkedAt)));
@@ -892,5 +961,57 @@ test(
     // Held: alive, and neither child started.
     assert.equal(supervisor.exitCode, null);
     assert.deepEqual(await events(), []);
+  },
+);
+
+test(
+  "a Harness stopped during native setup lets setup finish before it exits",
+  {
+    timeout: 15_000,
+    skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
+  },
+  async (t) => {
+    // Native setup holds the node state's lock on the Agent's workspace claim. If the
+    // supervisor exited on SIGTERM first, the container would end and the kernel would
+    // kill setup while it holds the lock, which no later Pod can then take (finding
+    // 3104). OpenClaw's launcher kills the CLI about 2 s after a forwarded stop, so the
+    // supervisor keeps the stop to itself and waits for setup to end on its own.
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-setup-stop-"));
+    const release = join(directory, "release-setup");
+    const { supervisor, exited, events, waitFor, output } = await startSupervisor(t, directory, {
+      child: recordingChild,
+      setup: [
+        'const { appendFileSync, existsSync } = require("node:fs");',
+        "const [events] = process.argv.slice(2);",
+        "const row = (kind) => appendFileSync(events, JSON.stringify({ kind, pid: process.pid }) + '\\n');",
+        'process.on("SIGTERM", () => row("setup-signal"));',
+        'row("setup");',
+        // Setup holds its lock until the test lets it finish; releasing takes a moment.
+        "const timer = setInterval(() => {",
+        `  if (!existsSync(${JSON.stringify(release)})) return;`,
+        "  clearInterval(timer);",
+        '  setTimeout(() => row("setup-done"), 100);',
+        "}, 10);",
+      ],
+      env: { OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup" },
+    });
+    const [setup] = await waitFor("native setup started", (rows) =>
+      rows.some(({ kind }) => kind === "setup"),
+    );
+    supervisor.kill("SIGTERM");
+    // While setup holds its lock, the stopped supervisor must not exit. The real
+    // supervisor cannot exit before setup does, so this wait cannot fail it; one
+    // that exits on the stop does so well within the wait.
+    const early = await Promise.race([exited, delay(500).then(() => "running")]);
+    assert.equal(early, "running", output());
+    await writeFile(release, "");
+    assert.deepEqual(await exited, [0, null], output());
+    // The supervisor exited after setup ended: setup was gone when it exited.
+    assert.ok(pidGone(setup.pid), "native setup outlived the supervisor");
+    // Setup finished undisturbed, and the stopped Harness started neither child.
+    assert.deepEqual(
+      (await events()).map(({ kind }) => kind),
+      ["setup", "setup-done"],
+    );
   },
 );

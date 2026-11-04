@@ -5,7 +5,7 @@ import {
 // Runs the real Driver and host helper. SSH and systemd are replaced by fixtures;
 // only tests/integration/ssh-compute-real.test.mjs provides opt-in host proof.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -39,6 +39,11 @@ import { withComputeAbortSignal } from "../../apps/controller/src/drivers/comput
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
+import {
+  sshGatewayPasswordRefusal,
+  unreadableGatewayPasswordRefusal,
+  unreadableSecretRefProblem,
+} from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { Check } = require("typebox/value");
@@ -223,6 +228,28 @@ function closeServer(server) {
 // gitignored test-results directory instead.
 const fixtureHosts = fileURLToPath(new URL("../../test-results/ssh-compute/", import.meta.url));
 
+async function stopFixtureUnits(state) {
+  // Detached unit processes survive helper exit, as systemd services would.
+  for (const name of await readdir(state)) {
+    if (!name.endsWith(".pid")) {
+      continue;
+    }
+    const pid = Number(await readFile(join(state, name), "utf8").catch(() => ""));
+    // A pid file read between create and write is empty (0): kill(0) would signal
+    // this runner's own process group. A removed file reads as empty too.
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      continue;
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  }
+}
+
 async function fixture(t, selection = {}) {
   await mkdir(fixtureHosts, { recursive: true });
   const base = await mkdtemp(join(fixtureHosts, "occ-ssh-"));
@@ -292,25 +319,7 @@ async function fixture(t, selection = {}) {
   };
   const driver = createSshComputeDriver(configured, { executor, ...selection });
   t.after(async () => {
-    // Detached unit processes survive helper exit, as systemd services would.
-    for (const name of await readdir(state)) {
-      if (!name.endsWith(".pid")) {
-        continue;
-      }
-      const pid = Number(await readFile(join(state, name), "utf8").catch(() => ""));
-      // A pid file read between create and write is empty (0): kill(0) would signal
-      // this runner's own process group. A removed file reads as empty too.
-      if (!Number.isSafeInteger(pid) || pid <= 0) {
-        continue;
-      }
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch (error) {
-        if (error.code !== "ESRCH") {
-          throw error;
-        }
-      }
-    }
+    await stopFixtureUnits(state);
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
@@ -789,6 +798,7 @@ Environment=HOME=${dir}/home
 Environment=OPENCLAW_STATE_DIR=${dir}/state
 Environment=OPENCLAW_CONFIG_PATH=${dir}/current/openclaw.json
 Environment=OPENCLAW_GATEWAY_PORT=${port}
+Environment=OPENCLAW_NO_AUTO_UPDATE=1
 EnvironmentFile=${dir}/gateway-password.env
 EnvironmentFile=-${dir}/env
 ExecStart=${process.execPath} ${f.configured.runtime.openclawPath} gateway --port ${port}
@@ -1012,6 +1022,130 @@ test("SSH trusted-proxy can opt into direct loopback password authentication", a
   assert.doesNotMatch(await readFile(join(f.units, f.unit(rev)), "utf8"), /gateway\.env/);
   await missing(join(f.agentDir(rev), "gateway.env"));
   assert.deepEqual(await json(join(f.revisionDir(rev), "openclaw.json")), rev.configuration);
+});
+
+// The unit's EnvironmentFile sets OPENCLAW_GATEWAY_PASSWORD, which every env provider reads, so SSH
+// renders a readable SecretRef to it on a custom default alias as written (finding 3065), and
+// refuses an unset password whose default-provider rendering that alias leaves unreadable. A
+// revision SSH admitted before, with the old rendering, still stops and retires: teardown renders
+// it as before, so its snapshot hash matches.
+test("SSH renders a readable custom-alias gateway password and still tears down older snapshots", async (t) => {
+  const f = await fixture(t);
+  const custom = { source: "env", provider: "custom", id: "OPENCLAW_GATEWAY_PASSWORD" };
+  const rev = revision(f.driver, 1, "agent-ssh-custom-reference", {
+    gateway: { tls: { enabled: false }, auth: { mode: "password", password: custom } },
+    secrets: { defaults: { env: "custom" } },
+  });
+  await prepare(f, rev);
+  assert.match(
+    await readFile(join(f.agentDir(rev), "gateway-password.env"), "utf8"),
+    /^OPENCLAW_GATEWAY_PASSWORD=[a-f0-9]{64}\n$/,
+  );
+  assert.deepEqual(await json(join(f.revisionDir(rev), "openclaw.json")), rev.configuration);
+
+  const unset = revision(f.driver, 1, "agent-ssh-unset-reference", {
+    gateway: { tls: { enabled: false } },
+    secrets: { defaults: { env: "custom" } },
+  });
+  await f.driver.ensureNamespace(tenant);
+  bind(f.driver, unset);
+  const before = f.calls.length;
+  await assert.rejects(f.driver.prepareRevision(unset), {
+    message: sshGatewayPasswordRefusal.rendered(
+      "custom",
+      unreadableSecretRefProblem("defaultAlias", "custom"),
+    ),
+  });
+  assert.equal(f.calls.length, before);
+  // Trusted proxy renders the expression as written, which the runtime substitutes from the
+  // unit's environment whatever the alias, so it needs no SecretRef.
+  const proxy = revision(f.driver, 1, "agent-ssh-proxy-custom-alias", {
+    gateway: {
+      auth: {
+        mode: "trusted-proxy",
+        password: "${OPENCLAW_GATEWAY_PASSWORD}",
+        trustedProxy: { userHeader: "x-user" },
+      },
+    },
+    secrets: { defaults: { env: "custom" } },
+  });
+  await prepare(f, proxy);
+  assert.deepEqual(await json(join(f.revisionDir(proxy), "openclaw.json")), proxy.configuration);
+
+  // The old producer admitted the default-provider reference under a custom alias and rendered it
+  // as written; seed that snapshot through the real host helper.
+  const legacy = revision(f.driver, 1, "agent-ssh-legacy-reference", {
+    gateway: {
+      tls: { enabled: false },
+      auth: { password: { ...custom, provider: "default" } },
+    },
+    secrets: { defaults: { env: "custom" } },
+  });
+  bind(f.driver, legacy);
+  await assert.rejects(f.driver.prepareRevision(legacy), {
+    message: unreadableGatewayPasswordRefusal("defaultAlias", "custom"),
+  });
+  const configuration = expectedRuntimeConfiguration(legacy);
+  await f.driver.execute(f.configured.hosts.stable, {
+    operation: "prepare-revision",
+    namespace: tenant,
+    revision: { ...legacy, configuration },
+    configurationHash: digest(JSON.stringify(configuration)),
+  });
+  await f.driver.deactivateRevision(legacy);
+  await f.driver.stopRevision(legacy);
+  await access(f.revisionDir(legacy));
+  await f.driver.retireRevision(legacy);
+  await missing(f.revisionDir(legacy));
+
+  // A revision admitted with a custom-provider reference also tears down: teardown renders it as
+  // written again, so its snapshot hash matches.
+  await f.driver.deactivateRevision(rev);
+  await f.driver.stopRevision(rev);
+  await f.driver.retireRevision(rev);
+  await missing(f.revisionDir(rev));
+
+  // Teardown checks only the password's shape, never whether OpenClaw reads it: a revision admitted
+  // under a reader that a later OpenClaw pin tightens must still stop and retire. The current reader
+  // refuses this one (the allowlist omits the variable), standing in for that later reader; seed its
+  // as-written snapshot through the real host helper, as the legacy Agent's next version (the
+  // fixture's port range holds three Agents).
+  const tightened = revision(f.driver, 2, "agent-ssh-legacy-reference", {
+    gateway: {
+      tls: { enabled: false },
+      auth: { mode: "password", password: { ...custom, provider: "vault" } },
+    },
+    secrets: { providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } } },
+  });
+  bind(f.driver, tightened);
+  await assert.rejects(f.driver.prepareRevision(tightened), {
+    message: unreadableGatewayPasswordRefusal("allowlist", "OPENCLAW_GATEWAY_PASSWORD", "vault"),
+  });
+  await f.driver.execute(f.configured.hosts.stable, {
+    operation: "prepare-revision",
+    namespace: tenant,
+    revision: tightened,
+    configurationHash: digest(JSON.stringify(tightened.configuration)),
+  });
+  await f.driver.deactivateRevision(tightened);
+  await f.driver.stopRevision(tightened);
+  await access(f.revisionDir(tightened));
+  await f.driver.retireRevision(tightened);
+  await missing(f.revisionDir(tightened));
+  // Teardown still checks the shape: a reference to another variable never named the password
+  // SSH Compute generates, so stop refuses it before any host call.
+  const misshapen = revision(f.driver, 1, "agent-ssh-misshapen-reference", {
+    gateway: {
+      tls: { enabled: false },
+      auth: { mode: "password", password: { ...custom, provider: "default", id: "OTHER_SECRET" } },
+    },
+  });
+  bind(f.driver, misshapen);
+  const beforeStop = f.calls.length;
+  await assert.rejects(f.driver.stopRevision(misshapen), {
+    message: sshGatewayPasswordRefusal.reference(),
+  });
+  assert.equal(f.calls.length, beforeStop);
 });
 
 test("SSH activation invokes lifecycle start hooks and cleans them up after activation failure", async (t) => {
@@ -1685,4 +1819,75 @@ test("system SSH executor settles when a descendant of ssh keeps its stderr open
     ),
     /cancelled or timed out/,
   );
+});
+
+// Direct fixture checks keep unit-file discovery separate from process liveness.
+async function unitFileFixture(t) {
+  const base = await mkdtemp(join(tmpdir(), "occ-unit-file-"));
+  const units = join(base, "units");
+  const state = join(base, "state");
+  await Promise.all([mkdir(units), mkdir(state)]);
+  const ctl = (...args) => {
+    const result = spawnSync(join(fixtureBin, "systemctl"), args, {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {
+        PATH: process.env.PATH,
+        OCC_SSH_FIXTURE_STATE: state,
+        OCC_SSH_FIXTURE_UNIT_DIRECTORY: units,
+      },
+    });
+    assert.ifError(result.error);
+    return result.status;
+  };
+  t.after(async () => {
+    await stopFixtureUnits(state);
+    await rm(base, { recursive: true, force: true });
+  });
+  const unit = "discovery.service";
+  const path = join(units, unit);
+  await writeFile(path, "[Service]\nEnvironment=OPENCLAW_GATEWAY_PORT=31443\n");
+  return { ctl, unit, path, units, state };
+}
+
+test("SSH fixture rejects bare-name link without loading or enabling a unit", async (t) => {
+  const { ctl, unit, path, units, state } = await unitFileFixture(t);
+  assert.equal(ctl("link", unit), 1);
+  await missing(join(units, "absent.service"));
+  assert.equal(ctl("link", "absent.service"), 1);
+  assert.deepEqual(
+    (await readdir(state)).filter((name) => name !== "systemctl.log"),
+    [],
+  );
+  assert.equal(ctl("stop", unit), 5);
+  assert.equal(ctl("link", path), 0);
+  assert.equal(ctl("enable", unit), 0);
+  assert.equal(ctl("stop", unit), 0);
+  assert.equal(ctl("disable", unit), 0);
+  assert.equal(ctl("link", path), 0);
+  assert.equal(ctl("stop", unit), 0);
+});
+
+test("SSH fixture requires a discoverable file to enable a disabled running unit", async (t) => {
+  const { ctl, unit, path, state } = await unitFileFixture(t);
+  assert.equal(ctl("enable", path), 0);
+  assert.equal(ctl("start", unit), 0);
+  assert.equal(ctl("disable", unit), 0);
+  assert.equal(ctl("is-active", "--quiet", unit), 0);
+  const pid = await readFile(join(state, `${unit}.pid`), "utf8");
+  // Neither rejected operation may rediscover the disabled file or disturb its live unit.
+  for (const operation of ["enable", "link"]) {
+    assert.equal(ctl(operation, unit), 1);
+    await missing(join(state, `${unit}.linked`));
+    await missing(join(state, `${unit}.enabled`));
+    assert.equal(ctl("is-enabled", unit), 1);
+    assert.equal(await readFile(join(state, `${unit}.pid`), "utf8"), pid);
+    assert.equal(ctl("is-active", "--quiet", unit), 0);
+  }
+  assert.equal(ctl("stop", unit), 0);
+  await missing(join(state, `${unit}.pid`));
+  assert.equal(ctl("is-active", "--quiet", unit), 1);
+  assert.equal(ctl("stop", unit), 5);
+  assert.equal(ctl("enable", path), 0);
+  assert.equal(ctl("is-enabled", unit), 0);
 });

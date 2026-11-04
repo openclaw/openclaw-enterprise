@@ -24,6 +24,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   accessBindingPostRequests,
   apiRequests,
+  CHANNEL_SECRETS_SAVED_DEPLOY,
   detailUrl,
   expectNoText,
   fileBrowser,
@@ -48,6 +49,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
+  LIVE_BUTTON,
   createRepositoryLaunchFixture,
   focusedDescription,
   focusedText,
@@ -239,6 +241,100 @@ test("saving a Configuration with negative zero confirms the value sent as JSON"
   assert.equal(await saved.isVisible(), true);
 });
 
+// The collaboration and safety toggles stage each change in the Configuration JSON, through the
+// editor's own draft and save checks, so the two never disagree and one Save keeps both. Unset
+// settings show what a deployment runs with: OpenClaw leaves collaborative steering on,
+// and deployment admission keeps apply_patch in the workspace.
+test("collaboration and safety toggles stage their settings in the Configuration JSON and save with it", async (t) => {
+  const c = await plainAgent(t, "Gateway Safety");
+  const page = await openTab(t, c.fixture, c.namespace, c.agent, "configuration");
+  const toggle = (name: string) => page.getByRole("checkbox", { name, exact: true });
+  const strict = toggle("Strict mode");
+  const steering = toggle("Other participants can steer a running turn");
+  const applyPatch = toggle("apply_patch changes files only in the workspace");
+  const source = (id: string) => page.locator(`#gateway-safety-${id}-hint .gateway-safety-source`);
+  await steering.waitFor();
+  assert.deepEqual(
+    [await strict.isChecked(), await steering.isChecked(), await applyPatch.isChecked()],
+    [false, true, true],
+  );
+  assert.equal(await source("collaborative-steering").textContent(), "Default: on. ");
+  assert.equal(await source("apply-patch-workspace").textContent(), "Default: on. ");
+
+  // Strict mode opens the editor with every locked-down value written, and keeps focus.
+  await strict.check();
+  const json = page.getByLabel("Configuration JSON");
+  await json.waitFor();
+  const strictValues = JSON.parse(await json.inputValue());
+  assert.deepEqual(strictValues, {
+    ...nativeValues("before"),
+    messages: { queue: { allowCollaborativeSteering: false } },
+    tools: { exec: { applyPatch: { workspaceOnly: true } } },
+  });
+  assert.equal(await strict.evaluate((node) => node === globalThis.document.activeElement), true);
+  assert.equal(await steering.isChecked(), false);
+  assert.equal(await source("collaborative-steering").textContent(), "Set in Configuration. ");
+
+  // A JSON edit shows in the toggles; unreadable JSON leaves them unavailable, with the reason.
+  await json.fill(
+    JSON.stringify({ ...strictValues, messages: { queue: { allowCollaborativeSteering: true } } }),
+  );
+  await page.locator("#gateway-safety-collaborative-steering:checked").waitFor();
+  assert.equal(await strict.isChecked(), false);
+  // The Gateway queues another participant's message unless the owner explicitly selects reject.
+  const steeringHint = page.locator("#gateway-safety-collaborative-steering-hint");
+  const sharedIdentityHelp =
+    "OCE native admin and workspace access share one Gateway identity, so this setting does not separate OCE users.";
+  assert.match(
+    (await steeringHint.textContent()) ?? "",
+    /Participants are channel users or local operators with distinct Gateway identities\./,
+  );
+  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
+  assert.match(
+    (await steeringHint.textContent()) ?? "",
+    /Off: their message runs as a separate turn after it\.$/,
+  );
+  const rejectSteering = {
+    ...strictValues,
+    messages: {
+      queue: { allowCollaborativeSteering: false, collaborativeSteeringFallback: "reject" },
+    },
+  };
+  await json.fill(JSON.stringify(rejectSteering));
+  await steeringHint.filter({ hasText: "Off: the Gateway refuses their message" }).waitFor();
+  assert.ok((await steeringHint.textContent())?.includes(sharedIdentityHelp));
+  await json.fill("{");
+  await page
+    .getByText("Correct the Configuration JSON to change these settings.", { exact: true })
+    .waitFor();
+  assert.equal(await steering.isDisabled(), true);
+  assert.match(
+    (await steering.getAttribute("aria-describedby")) ?? "",
+    /\bgateway-safety-reason\b/,
+  );
+
+  // Returning steering to its default removes only that setting and preserves the fallback.
+  await json.fill(JSON.stringify(rejectSteering, null, 2));
+  await page
+    .locator('#gateway-safety-strict:checked:enabled:not([aria-disabled="true"])')
+    .waitFor();
+  await steering.check();
+  const edited = JSON.parse(await json.inputValue());
+  assert.deepEqual(edited, {
+    ...nativeValues("before"),
+    messages: { queue: { collaborativeSteeringFallback: "reject" } },
+    tools: { exec: { applyPatch: { workspaceOnly: true } } },
+  });
+  const url = c.fixture.origin + configurationPath(c);
+  const patched = page.waitForResponse((r) => r.url() === url && r.request().method() === "PATCH");
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  assert.deepEqual((await patched).request().postDataJSON().values, edited);
+  await page.getByText("Configuration saved.", { exact: true }).waitFor();
+  // The saved Configuration now sets apply_patch; steering follows the default again.
+  assert.equal(await source("apply-patch-workspace").textContent(), "Set in Configuration. ");
+  assert.equal(await source("collaborative-steering").textContent(), "Default: on. ");
+});
+
 // Configuration save refuses an enabled channel's token reference without a Secret binding
 // (finding 2319). The Slack drawer names the missing token under its picker and sends nothing; the
 // JSON editor, which cannot bind Secrets, shows the API's refusal, naming the setting and the
@@ -408,6 +504,7 @@ const inPlaceCases: {
   viewport?: Viewport;
   beforeLogin?(page: Page, context: Draft): Promise<void>;
   prepare(page: Page, context: Draft): Promise<Locator>;
+  holdReloadGrants?: boolean;
   saved: string;
   focus: string;
   described?: boolean;
@@ -432,11 +529,7 @@ const inPlaceCases: {
     viewport: { width: 1280, height: 720 },
     async prepare(page) {
       await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLButtonElement>(".agent-draft-actions .primary")
-            ?.disabled === false,
-      );
+      await page.locator(".agent-draft-actions .primary").and(page.locator(LIVE_BUTTON)).waitFor();
       await page.getByRole("button", { name: "Edit Configuration" }).click();
       await openAdvancedSettings(page);
       const editor = page.getByLabel("Configuration JSON");
@@ -486,6 +579,7 @@ const inPlaceCases: {
   },
   {
     name: "Reload draft after a lost channel save updates the Agent page in place",
+    holdReloadGrants: true,
     setup: (t) => slackAgent(t, "Channel Reload In Place"),
     tab: "channels",
     // The API commits, but the browser cannot know that the response was lost.
@@ -554,6 +648,16 @@ for (const c of inPlaceCases) {
     });
     const control = await c.prepare(page, context);
     const place = await watchPlace(page, fixture, control);
+    // A reloaded draft is announced before its bound-Secret grant read settles. Hold the real
+    // response to exercise that ordering even when Slack has just been disabled.
+    const grants = c.holdReloadGrants
+      ? await holdRequests(
+          t,
+          page,
+          `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+          { once: true, method: "GET", afterServer: true },
+        )
+      : undefined;
 
     await control.click();
     await page.getByRole("status").filter({ hasText: c.saved }).waitFor();
@@ -563,10 +667,18 @@ for (const c of inPlaceCases) {
     if (c.described) {
       assert.equal(await focusedDescription(page), c.description ?? c.saved);
     }
-    assert.equal(
-      await page.getByRole("button", { name: "Deploy new version" }).isEnabled(),
-      c.deployable ?? true,
-    );
+    if (grants) {
+      await grants.requested;
+      assert.equal(
+        await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
+        true,
+      );
+      grants.release();
+    }
+    // The saved status, generation, focus and placement do not synchronize the grant gate.
+    await page
+      .getByRole("button", { name: "Deploy new version", disabled: !(c.deployable ?? true) })
+      .waitFor();
     await c.verify?.(page, context, place.requests);
   });
 }
@@ -694,7 +806,7 @@ test("the Credentials and Repositories tabs are one card each with a heading gap
     await card.evaluate((node) => {
       const picker = node.querySelector<HTMLElement>(":scope > .repository-selection")!;
       const style = getComputedStyle(picker);
-      const last = picker.querySelector(".repository-access-details")!.getBoundingClientRect();
+      const last = picker.querySelector('[role="status"]')!.getBoundingClientRect();
       const box = node.getBoundingClientRect();
       return {
         border: style.borderTopWidth,
@@ -890,12 +1002,32 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
   );
   const page = await openTab(t, fixture, namespace, agent, "repositories");
   await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
+  assert.equal(await page.locator(".repository-access-details").count(), 0);
   const save = page.getByRole("button", { name: "Save repository access" });
   const cancel = page.getByRole("button", { name: "Cancel", exact: true });
   const place = await watchPlace(page, fixture, save);
+  // Save, Cancel and Reload draft each read the permission answer again while they read the
+  // Configuration, and that reread can land last. Each rebuild waits for it: rebuilt before it,
+  // the tab had no editor yet, so the saved status was lost, the tab strip took focus and the
+  // page lost its place (finding 2892). Hold the reread until the Configuration is back.
+  const rereadPermissionsLast = async (action: () => Promise<void>) => {
+    const permissions = await holdRequests(t, page, `${fixture.origin}${agentPath}/permissions`, {
+      once: true,
+      method: "GET",
+    });
+    const configurationRead = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        response.url() ===
+          `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    );
+    await action();
+    await Promise.all([permissions.requested, configurationRead]);
+    permissions.release();
+  };
 
   await page.locator("#repository-default-git-read").check();
-  await save.click();
+  await rereadPermissionsLast(() => save.click());
   await page.getByRole("status").filter({ hasText: "Repository access saved." }).waitFor();
   await place.check();
   assert.equal(await focusedText(page), "Repository access saved.");
@@ -908,7 +1040,7 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
   // Cancel drops the edit and rebuilds from the saved state in place.
   await page.locator("#repository-default-git-full").check();
   assert.equal(await save.isEnabled(), true);
-  await cancel.click();
+  await rereadPermissionsLast(() => cancel.click());
   await page.waitForFunction(
     () =>
       globalThis.document.querySelector<HTMLInputElement>("#repository-default-git-read")
@@ -930,7 +1062,7 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
   await save.click();
   await page.getByText(REPOSITORY_ACCESS_CHANGED).waitFor();
   const reload = page.getByRole("button", { name: "Reload draft", exact: true });
-  await reload.click();
+  await rereadPermissionsLast(() => reload.click());
   await page.getByRole("status").filter({ hasText: "Draft reloaded." }).waitFor();
   await place.check();
   await page
@@ -1036,8 +1168,8 @@ const outcomeFocusCases = [
       await selectNewSlackSecrets(page, c);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
     },
-    message: "Channel Secret bindings saved. Deploy the new version to deliver them.",
-    focus: "Channel Secret bindings saved. Deploy the new version to deliver them.",
+    message: CHANNEL_SECRETS_SAVED_DEPLOY,
+    focus: CHANNEL_SECRETS_SAVED_DEPLOY,
   },
   {
     name: "a channel Secrets conflict focuses Reload draft",
@@ -1705,9 +1837,7 @@ test("an unsaved channel Secret choice blocks Deploy new version until it is sav
   await selectSecret(page, "Slack bot token", secondBot);
   await page.getByText(UNSAVED_SECRETS_GATE).waitFor();
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
   assert.equal(await page.getByText(UNSAVED_SECRETS_GATE).count(), 0);
 });
@@ -1919,9 +2049,7 @@ test("a channel Secrets conflict carries the chosen Secret over the reread bindi
   await waitForInputValue(page.getByLabel("Slack bot token"), "Second bot token");
   await waitForInputValue(page.getByLabel("Slack app token"), "Other app token");
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
   assert.deepEqual(saved.secretBindings.SLACK_BOT_TOKEN, envBinding(secondBot));
   assert.deepEqual(saved.secretBindings.SLACK_APP_TOKEN, envBinding(otherApp));
@@ -2035,9 +2163,7 @@ test("carried channel Secret choices survive the page load after a failed reread
   await waitForInputValue(page.getByLabel("Slack bot token"), "Second bot token");
   await waitForInputValue(page.getByLabel("Slack app token"), "Other app token");
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page
-    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
-    .waitFor();
+  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
   assert.deepEqual(saved.secretBindings.SLACK_BOT_TOKEN, envBinding(secondBot));
   assert.deepEqual(saved.secretBindings.SLACK_APP_TOKEN, envBinding(otherApp));

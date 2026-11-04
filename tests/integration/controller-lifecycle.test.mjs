@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -5,7 +6,6 @@ import {
   PRODUCTION_HARNESS_DESCRIPTOR,
   resolveApprovedHarness as resolveApprovedDevelopmentHarness,
 } from "../../apps/controller/src/composition/production-harness.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AgentPrincipalAuthorizationError,
@@ -26,6 +26,7 @@ import { bindRole, permissionsFor } from "../helpers/iam-grants.mjs";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
+import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
 
 const installation = {
   id: "installation-a",
@@ -151,6 +152,7 @@ function createSandboxDriver(options = {}) {
     id: options.id ?? "sandbox-driver-a",
     capability: "sandbox",
     implementation: options.implementation ?? "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: options.facets ?? ["networking", "filesystem", "process"],
     ...(options.configureAgent === undefined ? {} : { configureAgent: options.configureAgent }),
     async provisionHarness(context) {
@@ -307,6 +309,28 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
   const containmentOnly = createSandboxDriver({ id: "containment-only" });
   delete containmentOnly.provisionHarness;
   controller.registerDriver(containmentOnly);
+
+  // A missing or malformed declaration cannot silently advertise support or fail on a read.
+  for (const supportsHarnessExecutionMode of [
+    undefined,
+    { openclaw: { embedded: { supported: false }, dedicated: { supported: true } } },
+    Object.freeze({ openclaw: Object.freeze({ embedded: Object.freeze({ supported: false }) }) }),
+    Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({ supported: false }),
+        dedicated: Object.freeze({ supported: true, reason: "Contradictory refusal" }),
+      }),
+    }),
+  ]) {
+    assert.throws(
+      () =>
+        controller.registerDriver({
+          ...createSandboxDriver({ id: "invalid-support" }),
+          supportsHarnessExecutionMode,
+        }),
+      DriverSelectionError,
+    );
+  }
 
   for (const facets of [
     [],
@@ -609,7 +633,7 @@ test("authorized resources retain exact Namespace ownership without metadata-onl
   assert.equal(Object.isFrozen(firstRevision.configuration), true);
   assert.deepEqual(
     firstRevision.configuration,
-    admitLoggingConfiguration(servedAs({ model: "gpt-test", tool: "lookup" }, agent.name), "info"),
+    admittedConfiguration(servedAs({ model: "gpt-test", tool: "lookup" }, agent.name)),
   );
 
   const nextConfiguration = await createConfiguration(controller, namespace.id, {
@@ -868,10 +892,7 @@ test("Agent configuration references stay mutable while deployment admits deeply
   assert.equal(first.configurationKind, "agent");
   assert.equal(first.configurationGeneration, 1);
   assert.equal(first.servicePrincipalId, agent.servicePrincipalId);
-  assert.deepEqual(
-    first.configuration,
-    admitLoggingConfiguration(servedAs(savedValues, agent.name), "info"),
-  );
+  assert.deepEqual(first.configuration, admittedConfiguration(servedAs(savedValues, agent.name)));
   assert.deepEqual(first.harness, { ...harness, mode: "embedded" });
   assert.deepEqual(first.compute, {
     id: "compute-driver-a",
@@ -899,7 +920,7 @@ test("Agent configuration references stay mutable while deployment admits deeply
   };
   assert.deepEqual(
     first.configuration,
-    admitLoggingConfiguration(servedAs(expectedFirstConfiguration, agent.name), "info"),
+    admittedConfiguration(servedAs(expectedFirstConfiguration, agent.name)),
   );
 
   const replacementValues = {
@@ -911,7 +932,7 @@ test("Agent configuration references stay mutable while deployment admits deeply
         },
       },
     },
-    agents: { defaults: { sandbox: { mode: "all" } } },
+    agents: { defaults: { sandbox: { mode: "off" } } },
   };
   const replacementConfiguration = await createConfiguration(
     controller,
@@ -936,11 +957,11 @@ test("Agent configuration references stay mutable while deployment admits deeply
   assert.equal(second.servicePrincipalId, first.servicePrincipalId);
   assert.deepEqual(
     second.configuration,
-    admitLoggingConfiguration(servedAs(replacementValues, agent.name), "info"),
+    admittedConfiguration(servedAs(replacementValues, agent.name)),
   );
   assert.deepEqual(
     first.configuration,
-    admitLoggingConfiguration(servedAs(expectedFirstConfiguration, agent.name), "info"),
+    admittedConfiguration(servedAs(expectedFirstConfiguration, agent.name)),
   );
   assert.deepEqual(
     controller.pendingOperations().map(({ kind }) => kind),
@@ -983,10 +1004,28 @@ async function createDedicatedAgentForSandboxAdmission(controller, namespaceName
 }
 
 test("Sandbox admission applies provider-owned Agent configuration before freezing its revision", async () => {
-  const { controller } = createController();
+  const iam = createIAMDriver({
+    roles: [
+      {
+        id: "installation-reader",
+        permissions: [{ action: "read", resourceKind: "installation" }],
+      },
+    ],
+    bindings: [
+      {
+        id: "installation-reader-binding",
+        subjectKind: "identity",
+        subjectId: "principal-admin",
+        roleId: "installation-reader",
+      },
+    ],
+  });
+  const { controller } = createController(iam);
+  let transformations = 0;
   const sandbox = createSandboxDriver({
     implementation: "custom-containment",
     configureAgent(configuration, harness) {
+      transformations += 1;
       assert.equal(Object.isFrozen(configuration), true);
       assert.equal(Object.isFrozen(configuration.plugins.entries.codex.config.appServer), true);
       assert.deepEqual(harness, {
@@ -1002,6 +1041,13 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
   });
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
+
+  // This transform requires real Codex Configuration content. Installation discovery must
+  // still succeed and use the Driver's OpenClaw support declaration without invoking it.
+  assert.deepEqual((await controller.getInstallation("principal-admin")).capabilities.openclaw, {
+    executionModes: ["dedicated"],
+  });
+  assert.equal(transformations, 0);
 
   const values = {
     ...codexSandboxConfiguration(),
@@ -1041,8 +1087,65 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
     },
   });
   assert.equal(Object.isFrozen(revision), true);
+  assert.equal(
+    Object.isFrozen(revision.configuration.plugins.entries.codex.config.appServer),
+    true,
+  );
+  assert.ok(transformations > 0);
+  const saved = await controller.getConfiguration(
+    "principal-admin",
+    target.namespaceId,
+    revision.configurationId,
+  );
+  assert.deepEqual(saved.values, values);
   assert.equal(values.plugins.entries.codex.enabled, false);
   assert.equal(values.plugins.entries.codex.config.appServer.sandbox, "read-only");
+});
+
+test("deployment refuses stored OpenClaw after the Installation selects unsupported Sandbox settings", async () => {
+  const { controller } = createController();
+  const supported = createSandboxDriver();
+  controller.registerDriver(supported);
+  controller.selectDriver("sandbox", supported.id);
+  const target = await createDedicatedAgentForSandboxAdmission(
+    controller,
+    "OpenClaw support change",
+    "Stored OpenClaw Agent",
+    {
+      agents: {
+        defaults: {
+          model: "openai/gpt-5",
+          models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+    },
+  );
+  const reason = "Ask an operator to enable OpenClaw in the Sandbox settings.";
+  const refused = {
+    ...createSandboxDriver({ id: "unsupported-openclaw" }),
+    supportsHarnessExecutionMode: Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({ supported: false }),
+        dedicated: Object.freeze({ supported: false, reason }),
+      }),
+    }),
+    configureAgent() {
+      assert.fail("an unsupported mode must not reach real Configuration transformation");
+    },
+  };
+  // A newly constructed selected Driver replaces the Installation's former support decision.
+  controller.registerDriver(refused);
+  controller.selectDriver("sandbox", refused.id);
+  await assert.rejects(
+    controller.deployAgent("principal-admin", target, resolveApprovedDevelopmentHarness),
+    { name: "ConfigurationHarnessError", message: reason },
+  );
+  assert.deepEqual(
+    await controller.transact((state) =>
+      state.revisions.listRevisions(target.namespaceId, target.agentId),
+    ),
+    [],
+  );
 });
 
 test("Sandbox Drivers without an Agent configuration hook preserve the admitted configuration", async () => {
@@ -1074,7 +1177,7 @@ test("Sandbox Drivers without an Agent configuration hook preserve the admitted 
 
   assert.deepEqual(
     revision.configuration,
-    admitLoggingConfiguration(servedAs(values, "Unmodified dedicated Agent"), "info"),
+    admittedConfiguration(servedAs(values, "Unmodified dedicated Agent")),
   );
   assert.equal(revision.configuration.plugins.entries.codex.config.appServer.sandbox, "read-only");
 });

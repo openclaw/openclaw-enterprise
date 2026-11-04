@@ -211,6 +211,7 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
+    policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
     approvers: Type.Optional(
       Type.Object(
         { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
@@ -249,6 +250,26 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
+        credentialSlots: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                pluginId: Type.String(),
+                releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+                id: Type.String(),
+                label: Type.String(),
+                toolDiscovery: Type.Optional(Type.Literal(true)),
+                sources: Type.Array(
+                  Type.Object(
+                    { id: CredentialSourceId, name: Type.String() },
+                    { additionalProperties: false },
+                  ),
+                ),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        ),
       },
       { additionalProperties: false },
     ),
@@ -295,6 +316,7 @@ const CredentialSourceCatalogSchema = Type.Object(
 
 const InstallationCapabilitiesSchema = Type.Object(
   {
+    nativeAdmin: Type.Optional(Type.Literal(true)),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },
@@ -828,6 +850,10 @@ export const NamespaceCallerPermissionsResponse = Type.Object(
   {
     data: Type.Object(
       {
+        delete: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion.",
+        }),
         agents: Type.Object(
           {
             create: Type.Boolean({

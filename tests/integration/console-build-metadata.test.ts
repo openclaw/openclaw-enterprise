@@ -54,6 +54,7 @@ async function serveRelease(t: TestContext, release: Release) {
     leafKeyPem: undefined,
     caName: "Console fixture CA",
     commonName: "localhost",
+    subject: undefined,
     subjectAltName: "IP:127.0.0.1",
   });
   let override: ResponseOverride = {};

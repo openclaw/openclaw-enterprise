@@ -124,9 +124,6 @@ for (const [delivery, settle] of [
       config,
       clock,
       factory: {
-        resolve: () => {
-          throw new Error("unbound selection is unavailable");
-        },
         resolveBound: () => ({
           binding,
           client: {

@@ -56,8 +56,7 @@ The Agent's native Configuration selects a Harness through model/provider
 owns supported runtime selections, model catalogs, transport, and credential
 boundaries. OCC rejects conflicting, unknown, missing, or mode-incompatible
 selections before admitting a version: deploy returns `400 INVALID_REQUEST`
-with the specific reason, such as "The configured Agent model requires an
-explicit supported Harness runtime." A selected SandboxDriver currently requires
+with a reason that names the setting to change. A selected SandboxDriver currently requires
 `dedicated` Codex execution; it does not support embedded OpenClaw.
 
 An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
@@ -214,10 +213,11 @@ continues, or past its convergence deadline stops the candidate and fails
 newer version supersedes still finishes the stop, even of a lifted refusal,
 then ends superseded.
 
-`AGENT_STOP_YIELDED` means the Agent was stopped and its gateway is
-still draining; `PREDECESSOR_STOP_YIELDED` means a dedicated replacement waits for
-the previous version's gateway to drain. Meanwhile the worker runs other due work,
-then repeats the stop without spending attempts.
+`AGENT_STOP_YIELDED` (the Agent was stopped), `PREDECESSOR_STOP_YIELDED` (a
+dedicated replacement waits for the previous version) and
+`SUPERSEDED_STOP_YIELDED` (a newer version replaced this dedicated one) mean a
+gateway is still draining. Meanwhile the worker runs other due work, then
+repeats the stop without spending attempts.
 
 ### Model check failure cause
 
@@ -291,8 +291,7 @@ finished. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the immutable
-Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
+Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
 Agent revision nor calls destructive version retirement. Repeated stop requests
 converge safely, and one Agent's stop does not affect siblings.
 

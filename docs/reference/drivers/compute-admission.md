@@ -85,6 +85,41 @@ Agent that fails a check still reads; its next update must fix the pair.
   or provider key whose provider waits on a variable, or an `apiKey` whose
   value or `secrets` source does: the launch checks them once filled. A draft
   whose model policy selects no Harness is left to deployment.
+- a reference OpenClaw cannot read in an active plugin's
+  [secret input](../harness-execution.md#native-runtime-selection), with the
+  deployment refusal's text. A Preset save leaves it to the launch when
+  `plugins` or `secrets` waits on a variable.
+- once the model policy selects Codex, which runs only as Dedicated Codex, a
+  plugin policy that turns off the `codex` plugin every Dedicated Codex Gateway
+  enables, which would stop that Gateway at every start: `plugins.enabled: false`,
+  a `plugins.deny` that lists `codex`, or a non-empty `plugins.allow` without it
+  (IDs compared trimmed and lowercased, blank items ignored). Except at
+  provisioning, an item that is not text gets the [save rule](../configuration.md)
+  first. `plugins.entries.codex.enabled: false` passes:
+  startup turns that entry back on. A Preset save leaves an item that waits on a
+  variable to the launch. `validateHarnessAuth` applies this rule to every
+  Dedicated Codex Agent, after the rule that keeps file-transfer on for a
+  Gateway that hosts the Agent's workspace node. Configuration save and
+  deployment run this save rule first, so when both apply they name `codex`
+  first; Agent save and provisioning run `validateHarnessAuth` first and name
+  file-transfer.
+- a `gateway.auth.trustedProxy.allowUsers` without `occ-workspace-files`, or
+  with an identity [Gateway authentication](kubernetes-compute/gateway-authentication.md)
+  refuses, and a `trustedProxy.deviceAutoApprove` the Gateway's schema refuses.
+  Deployment runs this save rule first (`400`) and `validateGatewaySettings`
+  after it (`409`); provisioning applies the rule through
+  `validateAgentProvisioning` (`409`). Either way a dedicated Agent's running
+  revision keeps serving. A Preset save leaves a setting that waits on a variable to the launch.
+- once the model policy selects Codex, a missing `gateway.auth.password` when
+  the Installation sets `runtime`, `gatewayRouting` and
+  `network.pluginStatusProxySourceCidrs`. The Gateway then applies the Agent's
+  workspace node at runtime and confirms it through its own Gateway client,
+  which signs in with the
+  [generated password](kubernetes-compute/storage-and-credentials.md#runtime-credentials);
+  without it every activation failed with `AGENT_GATEWAY_UNAUTHORIZED` after
+  the running revision stopped. Deployment refuses a stored one with the same
+  `400` before any revision. OpenClaw Agents, and Installations without private
+  status (the node is then in the pod spec), need no password.
 
 This Compute delivers channel credentials only from Configuration Secret
 bindings. OCC, not a Driver member, refuses at Configuration create and update,
@@ -120,7 +155,11 @@ takes `api_key`, dedicated OpenClaw also `credential_source`, and dedicated
 Codex also `codex_pat` and `oauth`), then the model provider rule above, a
 channel credential reference without a Configuration Secret binding (for a
 row stored before Configuration save checked it), and the dedicated
-OpenClaw model catalog settings. Whether the Installation supplies
+OpenClaw model catalog settings. On OpenClaw it also names a `${` or SecretRef in
+the selected provider's settings (other than `apiKey`) or the primary model's
+`agents.defaults.models` entry: the startup model check gets only the binding's
+credential. Configuration save accepts these, since another Compute may resolve
+them. Whether the Installation supplies
 what a method needs (OAuth needs no Sandbox Driver; a credential source needs
 its paired Sandbox) stays a fixed `409`.
 The channel runtime rule stays at deployment: it depends on the execution mode

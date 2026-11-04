@@ -31,6 +31,7 @@ import {
 import { withComputeOperationDeadline } from "../../compute/operation-context.ts";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import { kubernetesRequest } from "../../kubernetes/request.ts";
+import { withoutMutationDeadline } from "../../../admission/mutation-deadline.ts";
 import {
   createKubernetesAuthenticationOptionsSchema,
   validateKubernetesAuthentication,
@@ -54,6 +55,8 @@ export class SecretOwnershipError extends ScopeViolationError {}
 export class SecretBackendUnavailableError extends DependencyUnavailableError {}
 export class SecretConflictError extends ResourceConflictError {}
 class SecretBackendMissingError extends SecretBackendUnavailableError {}
+// A request refused before it was sent: the API write's deadline left too little time.
+class SecretRequestNotSentError extends SecretBackendUnavailableError {}
 
 const MANAGER = "openclaw-enterprise";
 const IMPLEMENTATION = "occ/kubernetes-secret";
@@ -233,7 +236,14 @@ export class KubernetesSecretDriver implements SecretDriver {
         { mutating: true },
       );
     } catch (error) {
-      await this.discardFailedCreate(client, namespace, name, identity);
+      // A create refused before it was sent stored nothing: a cleanup read would only delay
+      // the answer and, if it failed, report a clean "not sent" as "outcome unknown". Any other
+      // failure is cleaned up, even when the request's deadline ended the create.
+      if (!(error instanceof SecretRequestNotSentError)) {
+        await withoutMutationDeadline(() =>
+          this.discardFailedCreate(client, namespace, name, identity),
+        );
+      }
       throw error;
     }
     try {
@@ -245,7 +255,9 @@ export class KubernetesSecretDriver implements SecretDriver {
       }
       return reference;
     } catch (error) {
-      await this.discardRefusedCreate(client, namespace, name, observed);
+      await withoutMutationDeadline(() =>
+        this.discardRefusedCreate(client, namespace, name, observed),
+      );
       throw error;
     }
   }
@@ -614,6 +626,10 @@ export class KubernetesSecretDriver implements SecretDriver {
         cancelled: () =>
           new SecretBackendUnavailableError(`The Kubernetes Secret ${action} was cancelled.`),
         timedOut: () => timeoutFailure(action),
+        deadlineElapsed: () =>
+          new SecretRequestNotSentError(
+            `The Kubernetes Secret ${action} was not sent: the request ran out of time.`,
+          ),
         failed: (error) => sanitizedFailure(error, action),
       },
       options,

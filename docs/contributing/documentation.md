@@ -12,14 +12,14 @@ see [Documentation hosting](documentation-hosting.md).
 The menu bar selects a sidebar. Put each page in one section and link to it from
 other pages that need it:
 
-| Menu            | What belongs here                                                    |
-| --------------- | -------------------------------------------------------------------- |
-| Getting Started | Orientation, concepts, local setup, and the first Agent.             |
-| Topics          | Product behavior, configuration, and feature troubleshooting.        |
-| Integrations    | Named Drivers, Backends, and channels; setup and support limits.     |
-| Operate         | Production installation, monitoring, and ongoing administration.     |
-| Reference       | CLI and HTTP API commands, inputs, outputs, and errors.              |
-| Contribute      | Architecture, internals, local development, tests, and writing docs. |
+| Menu             | What belongs here                                                       |
+| ---------------- | ----------------------------------------------------------------------- |
+| Getting Started  | Orientation, concepts, local and Kubernetes setup, and the first Agent. |
+| Topics           | Product behavior, configuration, and feature troubleshooting.           |
+| Integrations     | Named Drivers, Backends, and channels; setup and support limits.        |
+| Deploy & Operate | Production installation, monitoring, and ongoing administration.        |
+| Reference        | CLI and HTTP API commands, inputs, outputs, and errors.                 |
+| Contribute       | Architecture, internals, local development, tests, and writing docs.    |
 
 The menu is independent of the file path. See [Repository layout](../layout.md#documentation-placement)
 for source ownership; published links and heading anchors should survive a
@@ -29,6 +29,8 @@ registered as hidden in navigation when a contributor index already links them;
 they keep their URLs and remain searchable.
 
 ## Write and name the page
+
+Use the [documentation taxonomy](../taxonomy.md) to select a kind and its template.
 
 For proposals and implementation planning, follow
 [RFCs and implementation plans](specifications.md), including numbering,

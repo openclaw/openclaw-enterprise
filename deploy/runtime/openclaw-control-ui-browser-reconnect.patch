@@ -1,5 +1,5 @@
 diff --git a/ui/src/api/gateway-browser-socket.ts b/ui/src/api/gateway-browser-socket.ts
-index 0ba4108dfcb2e14d929419e896ecc0f4a2a29155..c4a8670f7b6504e74c95b9db4e285eaaeaf3fe6d 100644
+index 38da3458db1566c6c593f8a1a5ee7f14461f8601..6334b7acee58cf2eb8a0f050d6296ae70e6b9fc5 100644
 --- a/ui/src/api/gateway-browser-socket.ts
 +++ b/ui/src/api/gateway-browser-socket.ts
 @@ -37,7 +37,10 @@ export function formatBrowserWebSocketConstructorError(err: unknown, url: string
@@ -23,7 +23,7 @@ index 0ba4108dfcb2e14d929419e896ecc0f4a2a29155..c4a8670f7b6504e74c95b9db4e285eaa
      }
      const response = await fetch(probe, {
        cache: "no-store",
-@@ -54,20 +57,25 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
+@@ -55,20 +58,25 @@ export async function probeGatewayReachability(url: string, signal: AbortSignal)
        redirect: "error",
        signal,
      });
@@ -92,10 +92,10 @@ index 1f70fd5f455d69e12b9769061e295a5c8d632044..3e89cfec94a66623f7c80bb95c4428a9
  
  it.each(["cross-origin", "opened"])("does not probe a %s transport", async (kind) => {
 diff --git a/ui/src/api/gateway.ts b/ui/src/api/gateway.ts
-index 4beb67b0d9af855971a6ce2cf498ce1634545bfd..0f9285251bd9876680ac3205dde2f9f0d4b3d05f 100644
+index 18148532607e27b555f7fa990b16bcf043c5646f..d90d53158281ca4ee18ab210e896216edefea625 100644
 --- a/ui/src/api/gateway.ts
 +++ b/ui/src/api/gateway.ts
-@@ -214,14 +214,17 @@ export class GatewayBrowserClient {
+@@ -217,14 +217,17 @@ export class GatewayBrowserClient {
              this.reachabilityProbe = probe;
              const timeout = setTimeout(() => probe.abort(), 1_000);
              void probeGatewayReachability(this.opts.url, probe.signal)
@@ -116,7 +116,7 @@ index 4beb67b0d9af855971a6ce2cf498ce1634545bfd..0f9285251bd9876680ac3205dde2f9f0
                  }
                })
 diff --git a/ui/src/app/app-shell-view.test.ts b/ui/src/app/app-shell-view.test.ts
-index 8bb8e0ac47d79aee7e331cdf9859be71024bb968..2fe608d2ee56eca8aae871ad8a0645b419ca966a 100644
+index 2708f32ef422ea9b6881005c190b3aceba53d80a..a498cbdcc3db389bc444faba94c36ed75c622f46 100644
 --- a/ui/src/app/app-shell-view.test.ts
 +++ b/ui/src/app/app-shell-view.test.ts
 @@ -316,6 +316,24 @@ it("keeps pages interactive through transport loss and fences reload-required",
@@ -145,12 +145,12 @@ index 8bb8e0ac47d79aee7e331cdf9859be71024bb968..2fe608d2ee56eca8aae871ad8a0645b4
    let mobile = false;
    mockMobile(() => mobile);
 diff --git a/ui/src/app/app-shell-view.tsx b/ui/src/app/app-shell-view.tsx
-index d6bcbd1be7ceb0624a7220b7bc6796f60b6e2fb9..4b2fefdad9fcc68b2d2909f804dd7e007edcfb1f 100644
+index 5117367f576956dc6c1f1aa39e68d7730500d364..522c770a6f823dd076cc442c205ed323954a02ac 100644
 --- a/ui/src/app/app-shell-view.tsx
 +++ b/ui/src/app/app-shell-view.tsx
-@@ -96,6 +96,11 @@ export function ApplicationShell(props: {
-     return readShellView(props.host);
-   });
+@@ -101,6 +101,11 @@ export function ApplicationShell(props: {
+     projectOwner(sessionOwner(), (sessions) => sessions.state.result?.sessions),
+   );
    const shellConnectionStatus = createMemo(() => view().shellConnectionStatus);
 +  // The browser can reopen the Agent root for sign-in while the tab keeps its local draft.
 +  const offerBrowserReconnect = () =>
@@ -160,7 +160,7 @@ index d6bcbd1be7ceb0624a7220b7bc6796f60b6e2fb9..4b2fefdad9fcc68b2d2909f804dd7e00
    const footerStatus = createMemo(() =>
      shellConnectionStatus() || view().connectionRecovery ? view().gatewayStatus : null,
    );
-@@ -358,6 +363,19 @@ export function ApplicationShell(props: {
+@@ -363,6 +368,19 @@ export function ApplicationShell(props: {
            onMouseDown={beginNativeWindowDragFromTopInset}
            inert={view().mobileNavLayout && view().navDrawerOpen}
          >
@@ -180,7 +180,7 @@ index d6bcbd1be7ceb0624a7220b7bc6796f60b6e2fb9..4b2fefdad9fcc68b2d2909f804dd7e00
            <Show
              when={
                floatingSidebarAttentionVisible(view().floatingUpdateCard) ||
-@@ -381,8 +399,9 @@ export function ApplicationShell(props: {
+@@ -386,8 +404,9 @@ export function ApplicationShell(props: {
            >
              <RouterOutlet
                ref={(element) => (props.host.routeOutlet = element)}
@@ -192,6 +192,42 @@ index d6bcbd1be7ceb0624a7220b7bc6796f60b6e2fb9..4b2fefdad9fcc68b2d2909f804dd7e00
                router={view().runtime.router}
                retryContext={view().context}
                retryEnabled={view().gatewayConnected}
+diff --git a/ui/src/app/gateway-page-activation.test.ts b/ui/src/app/gateway-page-activation.test.ts
+index 6b01e8f70ae1ced8ea00efcfe46ff6e3abb182c8..7ad3624bc5828f3c29a3cc32e50bbe8960f4be66 100644
+--- a/ui/src/app/gateway-page-activation.test.ts
++++ b/ui/src/app/gateway-page-activation.test.ts
+@@ -183,6 +183,15 @@ it("cuts short transport backoff after a successful fresh probe", async () => {
+   expect(connect).toHaveBeenCalledOnce();
+ });
+ 
++it("does not treat a refused reachability probe as a live Gateway", async () => {
++  const { connect, fetchProbe } = setupRecovery();
++  // A sign-in proxy refusal is browser-access evidence, not Gateway liveness.
++  fetchProbe.mockImplementation(async () => Response.json({}, { status: 401 }));
++  await vi.advanceTimersByTimeAsync(20_000);
++  expect(fetchProbe).toHaveBeenCalled();
++  expect(connect).not.toHaveBeenCalled();
++});
++
+ it.each([
+   "young opening",
+   "opened socket",
+diff --git a/ui/src/app/gateway-page-activation.ts b/ui/src/app/gateway-page-activation.ts
+index 48f5744f7258685b41a22025a6cd5543cc314e0a..8ad772395e67ebe0f78ff0cf321c5c8da10547b8 100644
+--- a/ui/src/app/gateway-page-activation.ts
++++ b/ui/src/app/gateway-page-activation.ts
+@@ -69,9 +69,9 @@ export function startGatewayPageActivation(
+       probe = controller;
+       const timeout = setTimeout(() => controller.abort(), 1_500);
+       try {
+-        const reachable = await probeGatewayReachability(client.gatewayUrl, controller.signal);
++        const reachability = await probeGatewayReachability(client.gatewayUrl, controller.signal);
+         if (
+-          reachable &&
++          reachability === "live" &&
+           !controller.signal.aborted &&
+           shouldProbe() &&
+           gateway.snapshot.client === client &&
 diff --git a/ui/src/app/gateway-store.observers.test.ts b/ui/src/app/gateway-store.observers.test.ts
 index 8adcff4da2675804542eb7977d68fa12105d3f20..a5125ca83842490eae4731feed13bb6a808f4b75 100644
 --- a/ui/src/app/gateway-store.observers.test.ts
@@ -221,10 +257,10 @@ index 8adcff4da2675804542eb7977d68fa12105d3f20..a5125ca83842490eae4731feed13bb6a
      const otherGateway = "wss://other-gateway.example.test";
      const selection = {
 diff --git a/ui/src/app/gateway-store.ts b/ui/src/app/gateway-store.ts
-index 5f776c1dc61b5c2d40261c909912ec230b999a6b..005c03ee89dc4ed72e3cf53000949b8a2ebe119b 100644
+index 8fa1879e4d4fbc89cb659cd84f68aeaa54677f83..1c58df9c09f730ce9ca7cc590d0daafb3d8e68a7 100644
 --- a/ui/src/app/gateway-store.ts
 +++ b/ui/src/app/gateway-store.ts
-@@ -186,6 +186,7 @@ export function createApplicationGateway(
+@@ -190,6 +190,7 @@ export function createApplicationGateway(
    };
    const setConnectionSnapshot = (patch: Partial<ApplicationGatewaySnapshot>) =>
      setSnapshot({
@@ -232,16 +268,16 @@ index 5f776c1dc61b5c2d40261c909912ec230b999a6b..005c03ee89dc4ed72e3cf53000949b8a
        hello: null,
        pluginCapabilities: null,
        canvasPluginSurfaceUrl: null,
-@@ -514,7 +515,7 @@ export function createApplicationGateway(
-           setSnapshot({ reconnectAt: Date.now() + delayMs });
-         }
-       },
+@@ -516,7 +517,7 @@ export function createApplicationGateway(
+       onConnecting: () => client === nextClient && setSnapshot({ reconnectAt: undefined }),
+       onReconnectScheduled: (delayMs) =>
+         client === nextClient && setSnapshot({ reconnectAt: Date.now() + delayMs }),
 -      onClose: ({ code, reason, error, willRetry, busy }) => {
 +      onClose: ({ code, reason, error, willRetry, busy, browserAccessDenied }) => {
          if (client !== nextClient) {
            return;
          }
-@@ -588,6 +589,7 @@ export function createApplicationGateway(
+@@ -590,6 +591,7 @@ export function createApplicationGateway(
                  : t(willRetry ? "connection.interruptedRetrying" : "connection.interrupted", {
                      code: String(code),
                    }),
@@ -283,7 +319,7 @@ index cfe905152f8d70f15df13fe2ce3103a530e69e43..106573515193c39fb9279c9b6a284ab0
        aria-disabled={props["aria-disabled"]}
        onOpenclaw-route-element={elements.register}
 diff --git a/ui/src/i18n/locales/en.ts b/ui/src/i18n/locales/en.ts
-index 0660916d05026b7be117be1caa51b909db2fbb5d..4043db137f4c922e44c8624bbaec3330ef709010 100644
+index ca35a766a3002b5a6e8923fcc1694b9cc65609fd..e598e1a4ad5e132e7ea41a0957cd7b96092f2215 100644
 --- a/ui/src/i18n/locales/en.ts
 +++ b/ui/src/i18n/locales/en.ts
 @@ -1361,6 +1361,9 @@ const startupEnglish = {
@@ -297,10 +333,10 @@ index 0660916d05026b7be117be1caa51b909db2fbb5d..4043db137f4c922e44c8624bbaec3330
        "Connection to the Gateway was interrupted. Reconnecting automatically. (WebSocket {code})",
      interrupted:
 diff --git a/ui/src/styles/layout.css b/ui/src/styles/layout.css
-index f9d7e1114076780b2b0a593c29d675cd69fe1341..bf6d3460d91fb18f19b50c9141c87881766fbd38 100644
+index 995470c81ff714a6d085de86316ba57ddbabaeaf..92a6fb5909064172ad5aa2e1be1a38b8574c95b7 100644
 --- a/ui/src/styles/layout.css
 +++ b/ui/src/styles/layout.css
-@@ -3462,6 +3462,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
+@@ -3395,6 +3395,10 @@ openclaw-tooltip.sidebar-hover-tooltip {
    min-height: 0;
  }
  

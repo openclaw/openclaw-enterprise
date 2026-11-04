@@ -7,7 +7,6 @@ to deploy; while it provisions, drafts needing no new Secret or sign-in still sa
 [adopts](../namespaces.md#lifecycle) an existing namespace. Creating tokens requires Secret creation permission. Provisioning grants accepted
 Secret access; drafts also need Installation `administer` to grant Agent key access; members without it save drafts an administrator finishes. After deployment, [verify the same
 Agent and version](../../guides/deploy/production-agents.md#verify-production-workloads).
-The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
 
 ## Create an Agent
 
@@ -15,9 +14,11 @@ Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
 `OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
-**Open Agent UI** requires [native admin setup](../../guides/deploy/native-admin.md):
-trusted-proxy authentication and the exact Agent HTTPS origin. Loopback origins alone
-are insufficient. Presets and edited Configuration JSON retain their settings.
+For browser access, select **Enable Native admin UI** (initially unchecked).
+It requires [installation setup](../../guides/deploy/native-admin.md) and supported
+Dedicated provisioning; opening the UI requires Agent `administer`.
+See [creation-time preparation](../agent-native-admin.md#enable-during-creation)
+for the exact Agent HTTPS origin, trusted-proxy settings, and refused conflicts.
 
 Experimental Dedicated OpenClaw requires [native worker support](../harness-execution.md#native-worker-support)
 and full-facet Sandbox provisioning. The pinned runtime enables it. Compute
@@ -205,6 +206,16 @@ starting again.
 Repository discovery, default and custom access levels, policy checks, and save
 recovery are in [Choose repository access in the console](repository-access.md).
 
+If a password Preset's model Secret name already exists, the form offers
+**Choose existing Secret** or **Use another Secret name** under **Model provider**.
+The notice names the attempted collision. Name edits and new attempts clear old
+feedback, preserving an edited alternate. Credential changes clear
+recovery; switching back does not restore it. Select a readable Secret deliberately,
+or enter a valid **New Secret name** and select **Create Agent** again. Other draft fields stay unchanged. Selecting an existing
+Secret clears the entered key and uses metadata only; it does not read or replace
+the stored value. An Agent-name conflict still requires a different Agent name.
+An uncertain Secret write does not enable this recovery or another create attempt.
+
 ## Use repositories and Slack on the same Agent
 
 Combine approved repositories and Slack on one Codex Dedicated Agent with
@@ -258,8 +269,8 @@ Open **Open draft** and select **Deploy new version** after storing
 credentials, saving channel Secret bindings, and selecting harness authentication.
 To change plugins, edit **Plugins**, select **Save plugin selections**, then
 deploy. Deployment uses saved Configuration, plugins, and [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode); it does
-not redeploy or roll back viewed snapshots. Every accepted request creates an
-immutable Agent revision, even with unchanged Configuration generation. Earlier versions
+not redeploy or roll back viewed snapshots. Each accepted deployment creates a new
+Agent revision, even when the Configuration generation is unchanged. Earlier versions
 retain their snapshots; see the
 [Plugins tab guide](../../guides/console/configuration-plugins-and-files.md#plugins-tab).
 
