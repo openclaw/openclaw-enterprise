@@ -10,6 +10,7 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   collectNativeWorkerFailure,
+  nativePlacementReadRetryable,
   nativeWorkerHistoryEvidence,
   nativeWorkerPlacementObservation,
   nativeWorkerTurnObservation,
@@ -6068,4 +6069,40 @@ test("native history proof keeps exact run, explicit success and marker predicat
       /private-host|private-value|FIRST_AGENT_NATIVE/,
     );
   }
+});
+
+test("native placement retries only the correlated pinned read-generation signal", async () => {
+  const message = "Error: Session changed while preparing its description; retry the request";
+  const error = Object.assign(new Error(message), { code: "UNAVAILABLE" });
+  assert.equal(nativePlacementReadRetryable(error, true), true);
+  assert.equal(
+    nativePlacementReadRetryable(error, false),
+    false,
+    "local/transport errors cannot opt into a retry by text",
+  );
+  for (const rejected of [
+    Object.assign(new Error(message), { code: "FORBIDDEN" }),
+    Object.assign(new Error("Session repository binding changed while preparing its description"), {
+      code: "UNAVAILABLE",
+    }),
+    Object.assign(new Error("gateway request timed out"), { code: "UNAVAILABLE" }),
+    Object.assign(new Error("private peer text"), { code: "UNAVAILABLE" }),
+    Object.assign(new Error(message + "; private suffix"), { code: "UNAVAILABLE" }),
+  ]) {
+    assert.equal(nativePlacementReadRetryable(rejected, true), false);
+  }
+  const observed = await collectNativeWorkerFailure({
+    error,
+    elapsedMs: 1,
+    request: async (method) => {
+      assert.equal(method, "node.list");
+      return { nodes: [] };
+    },
+  });
+  assert.equal(
+    observed.proofError,
+    "session-read-changed",
+    "pre-turn failures must retain safe classification",
+  );
+  assert.doesNotMatch(JSON.stringify(observed), /Session changed|private peer/);
 });

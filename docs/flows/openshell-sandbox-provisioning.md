@@ -203,9 +203,12 @@ Template Pod labels outside `allowed_pod_labels` fail deployment immediately
 with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
 
 `provisionHarness` creates or adopts the provider. Renewal checks its version
-and updates only `node_setup_json` through `UpdateProvider`. Codex route exposure
-follows the configured delay, at most 120 seconds. Compute rolls the Gateway
-before checking enrollment.
+and updates only `node_setup_json` through `UpdateProvider`.
+`internal/occdev/kubernetes.go:openShellInstallationConfiguration` omits the
+optional startup delay in development. `harnessStatus` treats a service that
+does not listen yet as starting and requires an authenticated WebSocket
+handshake before it reports serving. Compute rolls the Gateway before checking
+enrollment; a reported Harness failure still blocks readiness.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
 each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
@@ -241,8 +244,8 @@ Workspace, node identity, sessions and images stay separate. The supervisor prob
 `prepareNativeWorkspace` uses a restricted Deployment for the Agent revision to privatize
 writable PVC subpaths, preserving retained entries. Mode and process ownership checks precede
 UID-fenced foreground deletion and writer Pod termination. After synchronous preparation,
-the process handles SIGTERM with a successful exit. Kubernetes keeps its normal grace
-period; the Driver still waits until all writer Pods are gone before creating the Sandbox.
+the process exits successfully on SIGTERM. Kubernetes keeps its normal grace
+period; the Driver waits until all writer Pods are gone before creating the Sandbox.
 Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
 and the pinned Gateway's default identity, without model credentials, ServiceAccount
 tokens, capabilities, or direct Pod creation. Mode support and admission report
@@ -395,6 +398,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 12:10: Use observed Harness readiness without the development startup delay. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - 0268defcf69d3d368d983f7dd2b4b973671fdaf1)
 
 - 2026-11-04 11:18: Exit native workspace preparation cleanly on SIGTERM after its synchronous writes. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - bb0314249dfee342458615a0d624d3342e8233f6)
 

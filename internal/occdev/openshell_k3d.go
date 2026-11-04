@@ -298,8 +298,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 
 	// Nothing below needs the controller, PostgreSQL or repository images until
 	// the network check, so import them while the Codex sandbox check and the
-	// routing controller rollouts wait on the cluster. The runtime image is
-	// imported outside this overlap, so no two image builds run at once. The
+	// routing controller rollouts wait on the cluster. OpenShell's runtime follows
+	// PostgreSQL/repository imports in the same sibling, so builds stay serial. The
 	// network check needs only the controller image and runs in this overlap
 	// too; the platform install below still waits for it.
 	var codexSeccompProfile, routingPodCIDR string
@@ -346,17 +346,17 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 					return fmt.Errorf("import the development repository service image: %w", err)
 				}
 			}
+			if sandboxDriver == "openshell" {
+				runtimeImage, err = r.importRuntime(ctx, state)
+				if err != nil {
+					return err
+				}
+			}
 			return nil
 		})
 	})
 	if err != nil {
 		return err
-	}
-	if sandboxDriver == "openshell" {
-		runtimeImage, err = r.importRuntime(ctx, state)
-		if err != nil {
-			return err
-		}
 	}
 	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
 		return err

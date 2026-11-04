@@ -181,6 +181,9 @@ the registry attachment for `occ dev down` to detach. Kubernetes-only uses its
 owned k3d network; Compose uses its exact recorded Compose network and selects
 only a runtime image with the current checkout label. Both detach after imports
 and on rollback, including recovery after interrupted startup.
+For Kubernetes-only OpenShell, runtime import follows PostgreSQL/repository imports
+in their existing concurrent branch, while the network check runs. Image builds
+remain serial. OpenShell installation still waits for both that check and all imports.
 
 ### 5. Prepare the optional OpenShell development profile
 

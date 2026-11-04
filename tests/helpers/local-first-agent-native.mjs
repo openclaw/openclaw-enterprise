@@ -786,6 +786,14 @@ export function nativeWorkerTurnObservation({ outcome, error, messages, runId, h
     const detail = value.slice(0, 4096);
     const patterns = [
       [
+        "session-read-changed",
+        /^(?:Error: )?Session changed while preparing its description; retry the request$/,
+      ],
+      [
+        "session-binding-changed",
+        /^(?:Error: )?Session repository binding changed while preparing its description$/,
+      ],
+      [
         "model-authentication",
         /invalid.api.key|incorrect.api.key|authentication_error|No API key/i,
       ],
@@ -951,7 +959,9 @@ export async function collectNativeWorkerFailure({
     elapsedMs,
   });
   if (runId === undefined) {
-    return worker;
+    return error === undefined
+      ? worker
+      : { ...worker, proofError: nativeWorkerTurnObservation({ error }).proofError };
   }
   const history = await historyObservation;
   let historyLookup = "unavailable";
@@ -981,6 +991,16 @@ export function nativeWorkerSessionPlacement(description, sessionId) {
     throw new Error("Native worker session identity mismatch");
   }
   return description.session.placement;
+}
+
+// The pinned Gateway returns this plain read-generation error through
+// UNAVAILABLE + formatForLog. The SDK separately proves response correlation.
+export function nativePlacementReadRetryable(error, correlatedResponse) {
+  return (
+    correlatedResponse === true &&
+    error?.code === "UNAVAILABLE" &&
+    error.message === "Error: Session changed while preparing its description; retry the request"
+  );
 }
 
 // Keep exact run, explicit success, standalone tool output and final-marker
@@ -1104,8 +1124,13 @@ async function nativeWorkerProof({
   const { setTimeout: delay } = await import("node:timers/promises");
   const { pathToFileURL } = await import("node:url");
   const require = createRequire(resolve("apps/controller/package.json"));
-  const { GatewayClient } = await import(
+  const { GatewayClient, isGatewayProtocolResponseError } = await import(
     pathToFileURL(require.resolve("@openclaw/gateway-client"))
+  );
+  assert.equal(
+    typeof isGatewayProtocolResponseError,
+    "function",
+    "The controller SDK must recognize correlated Gateway errors",
   );
   const { loadYaml } = await import(pathToFileURL(require.resolve("@kubernetes/client-node")));
   let stage = "startup";
@@ -1117,6 +1142,7 @@ async function nativeWorkerProof({
   let outcome;
   let historyPredicates;
   let historySignal;
+  let placementReadRetries = 0;
   const proofStarted = performance.now();
   const emit = (data) =>
     process.stdout.write("OCE_NATIVE_FIRST_AGENT_PROOF " + JSON.stringify(data) + "\n");
@@ -1163,20 +1189,35 @@ async function nativeWorkerProof({
     assert.equal(required.inference, "worker");
     assert.ok(required.executionModes.includes("worker-turn"));
     let session = existingSession;
-    collectFailure = async (error) => ({
-      ...(await collectNativeWorkerFailure({
-        request: (method, params, options) => client.request(method, params, options),
-        session,
-        lastPlacement,
-        expectedNodeId,
-        elapsedMs: Math.round(performance.now() - proofStarted),
-        runId,
-        outcome,
-        error,
-      })),
-      ...historyPredicates,
-      historySettleExpired: historySignal?.aborted === true,
-    });
+    collectFailure = async (error) => {
+      let proofRpcCode = "other";
+      if (error?.code == null) {
+        proofRpcCode = "absent";
+      } else if (
+        ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"].includes(
+          error.code,
+        )
+      ) {
+        proofRpcCode = error.code;
+      }
+      return {
+        ...(await collectNativeWorkerFailure({
+          request: (method, params, options) => client.request(method, params, options),
+          session,
+          lastPlacement,
+          expectedNodeId,
+          elapsedMs: Math.round(performance.now() - proofStarted),
+          runId,
+          outcome,
+          error,
+        })),
+        ...historyPredicates,
+        historySettleExpired: historySignal?.aborted === true,
+        proofRpcCode,
+        proofRpcResponse: isGatewayProtocolResponseError(error),
+        placementReadRetries,
+      };
+    };
     if (session === undefined) {
       stage = "create";
       const key = `agent:main:first-agent-native-${randomUUID()}`;
@@ -1195,10 +1236,18 @@ async function nativeWorkerProof({
       session = { key, sessionId };
       stage = "required-placement";
       while (!signal.aborted) {
-        const described = await call("sessions.describe", { key, agentId: "main" }).catch(() => {
+        let described;
+        try {
+          described = await call("sessions.describe", { key, agentId: "main" });
+        } catch (error) {
           stage = "required-placement-describe-rejected";
-          assert.fail();
-        });
+          if (!nativePlacementReadRetryable(error, isGatewayProtocolResponseError(error))) {
+            throw error;
+          }
+          placementReadRetries++;
+          await delay(500, undefined, { signal });
+          continue;
+        }
         stage = "session-identity";
         lastPlacement = nativeWorkerSessionPlacement(described, session.sessionId);
         stage = "required-placement";
@@ -1368,7 +1417,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"

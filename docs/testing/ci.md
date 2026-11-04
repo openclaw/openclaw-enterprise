@@ -403,7 +403,11 @@ standalone tool-proof line, and exact final nonce. After a turn is terminal, his
 has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
 report only predicate counts and flags, not marker values, commands or transcripts.
 This settling bound does not reduce the model-execution budget or count a failed
-proof as a performance improvement.
+proof as a performance improvement. Before a turn, placement polling retries only
+a correlated `UNAVAILABLE` response with the pinned Gateway's explicit
+read-generation invalidation message. All other describe rejections fail with
+allowlisted error classification; they are not converted to an assertion that
+loses the cause. The same session identity and active placement remain required.
 
 The credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
 

@@ -632,6 +632,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "bundle-file-changed",
   ];
   const turnErrors = [
+    "session-read-changed",
+    "session-binding-changed",
     "model-authentication",
     "model-rate-or-quota",
     "model-unavailable",
@@ -647,6 +649,7 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "http-rate-limit",
   ];
   const vocabularies = {
+    proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
     historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
@@ -699,6 +702,7 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     }
   }
   for (const field of [
+    "proofRpcResponse",
     "historyToolProofPresent",
     "historyFinalProofPresent",
     "historySettleExpired",
@@ -715,6 +719,7 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     }
   }
   for (const field of [
+    "placementReadRetries",
     "historyMessageCount",
     "historyRunMessageCount",
     "historyExecCount",

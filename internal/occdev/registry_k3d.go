@@ -417,7 +417,10 @@ func (r *runner) pullDevelopmentImage(ctx context.Context, s *developmentState, 
 	pull := r.command(ctx, r.engine, "exec", server, "ctr", "-n", "k8s.io", "images", "pull", "--plain-http", "--platform", platform, source)
 	pull.Stdout = io.Discard
 	pull.Stderr = r.opts.Err
-	if err := pull.Run(); err != nil {
+	started := time.Now()
+	err = pull.Run()
+	r.commandTiming(r.engine, pull.Args[1:], started, err)
+	if err != nil {
 		return "", fmt.Errorf("pull %s into the cluster: %w", image, err)
 	}
 	if err := r.run(ctx, r.engine, "exec", server, "ctr", "-n", "k8s.io", "images", "tag", source, image); err != nil {
