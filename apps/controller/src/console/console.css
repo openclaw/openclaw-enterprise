@@ -360,6 +360,9 @@ p {
      400 ms (finding 1519). Visibility, not opacity: it appears whole, never half-faded. */
   animation: loading-delay 400ms;
 }
+#app > p.startup[role="status"]:has(+ .startup-recovery > button:not([hidden])) {
+  padding-block-end: var(--space-4);
+}
 #app > .startup-recovery {
   padding: 0 var(--space-8) var(--space-8);
   color: var(--muted);
