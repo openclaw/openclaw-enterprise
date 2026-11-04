@@ -448,7 +448,6 @@ export async function bindLocalRehearsalCluster(
       await docker(
         "exec",
         server.id,
-        "k3s",
         "kubectl",
         "--kubeconfig=/output/kubeconfig.yaml",
         "--server=https://127.0.0.1:6443",
@@ -511,7 +510,6 @@ export async function bindLocalRehearsalCluster(
           dockerHost,
           "exec",
           server.id,
-          "k3s",
           "crictl",
           "inspect",
           "--output=go-template",
