@@ -47,6 +47,7 @@ import {
   assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
 import { relaySockets } from "../helpers/socket-relay.mjs";
+import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 
 // Only the trusted staging verifier selects the reviewed historical expectations.
 const stagingCodexVersion = process.env.OCC_TEST_STAGING_CODEX_VERSION ?? "0.164.0";
@@ -2023,5 +2024,371 @@ const deadline = setTimeout(() => {
       JSON.stringify(source),
     ]);
     assert.match(stdout, /shared-reviewed-codex-ready/);
+  },
+);
+
+test(
+  "runtime image applies the repository profile to a native thread shell turn",
+  imageTestOptions,
+  async () => {
+    // Unlike command/exec qualification, this starts with the actual OCE native
+    // config and supplies the broker profile only through thread/start.config.
+    // The provider chooses one command; the real Codex owns its execution and sandbox.
+    // This does not start the complete Gateway or prove model behavior.
+    const runtime = {
+      kind: "codex",
+      selections: {},
+      approvalPolicy: "never",
+      repositoryBrokerNetworkPolicy: { host: "git.oce.svc", domains: {} },
+      modelEndpoint: {
+        baseUrl: "http://127.0.0.1:4711/v1",
+        modelProvider: "openai-compatible",
+      },
+    };
+    const brokerConfiguration = codexOpenClawConfiguration({}, [], {
+      ...runtime,
+      dedicatedCodex: true,
+    }).plugins.entries.codex.config;
+    Object.assign(brokerConfiguration.appServer, {
+      approvalPolicy: "never",
+      sandbox: "workspace-write",
+      remoteWorkspaceRoot: "/home/node/workspace",
+    });
+
+    async function probeNativeThread() {
+      const assert = (await import("node:assert/strict")).default;
+      const cp = await import("node:child_process");
+      const fs = await import("node:fs");
+      const { createServer } = await import("node:http");
+      const { createConnection } = await import("node:net");
+      const { syntheticResponsesEvents, encodeSyntheticEvents } =
+        await import("/tmp/synthetic-egress-provider.mjs");
+      const payload = JSON.parse(process.argv[1]);
+      const workspace = "/home/node/workspace";
+      const codexHome = "/home/node/.codex";
+      fs.mkdirSync(workspace, { recursive: true });
+      fs.mkdirSync(codexHome, { recursive: true });
+      fs.mkdirSync("/home/node/.openclaw/plugin-skills", { recursive: true });
+      fs.mkdirSync("/home/node/openclaw-runtime-assets/plugin-skills", { recursive: true });
+      fs.writeFileSync(
+        codexHome + "/auth.json",
+        JSON.stringify({ OPENAI_API_KEY: payload.syntheticApiKey }),
+        { mode: 0o600 },
+      );
+      const sentinel = codexHome + "/skill-access-sentinel-thread";
+      fs.writeFileSync(sentinel, "synthetic-owned-sentinel", { mode: 0o600 });
+      const probePath = workspace + "/thread-sandbox-probe.cjs";
+      // A sibling read is a failure even when a later outside write is denied.
+      // Emit only access results; never include contents from a protected file.
+      fs.writeFileSync(
+        probePath,
+        `
+const fs = require("node:fs");
+const skill = "/home/node/.codex/skills/.system/skill-creator/SKILL.md";
+const report = {};
+report.systemSkillReadable = /name: skill-creator/.test(fs.readFileSync(skill, "utf8"));
+function denied(operation) {
+  try { operation(); return false; }
+  catch (error) {
+    if (!["EACCES", "EPERM", "EROFS", "ENOENT"].includes(error.code)) throw error;
+    return true;
+  }
+}
+report.systemSkillWriteDenied = denied(() => fs.appendFileSync(skill, "\\nsynthetic-thread-probe\\n"));
+report.siblingReadDenied = denied(() => fs.readFileSync(${JSON.stringify(sentinel)}));
+report.authReadDenied = denied(() => fs.readFileSync("/home/node/.codex/auth.json"));
+report.outsideWriteDenied = denied(() => fs.writeFileSync("/home/node/thread-outside-write", "synthetic"));
+fs.writeFileSync("/home/node/workspace/thread-workspace-write", "synthetic-workspace-write");
+console.log(JSON.stringify(report));
+process.exit(Object.values(report).every(Boolean) ? 0 : 74);
+`,
+      );
+      const dist = "/app/node_modules/openclaw/dist/";
+      async function bundled(prefix, name) {
+        const chunk = fs
+          .readdirSync(dist)
+          .find(
+            (file) =>
+              file.startsWith(prefix + "-") &&
+              file.endsWith(".mjs") &&
+              fs.readFileSync(dist + file, "utf8").includes(" " + name),
+          );
+        assert.ok(chunk, "missing packaged helper " + name);
+        const exports = await import(dist + chunk);
+        const result = Object.values(exports).find(
+          (value) => typeof value === "function" && value.name === name,
+        );
+        assert.ok(result, "missing packaged export " + name);
+        return result;
+      }
+      const { resolveProviderIdForAuth } =
+        await import("openclaw/plugin-sdk/provider-auth-aliases");
+      const createConfig = await bundled("config-options", "createCodexAppServerConfig");
+      const threadPermissions = await bundled("thread-requests", "codexThreadSandboxOrPermissions");
+      const options = createConfig({
+        resolveProviderIdForAuth,
+      }).resolveCodexAppServerRuntimeOptions({
+        pluginConfig: payload.brokerConfiguration,
+      });
+      const threadConfig = await bundled("thread-requests", "buildCodexRuntimeThreadConfig");
+      assert.ok(options.networkProxy?.configPatch);
+      assert.deepEqual(threadPermissions(options), {});
+      let shellCalls = 0;
+      let providerFailure;
+      const provider = createServer(async (request, response) => {
+        try {
+          assert.equal(request.url, "/v1/responses");
+          assert.equal(request.method, "POST");
+          const chunks = [];
+          for await (const chunk of request) {
+            chunks.push(chunk);
+          }
+          const body = JSON.parse(Buffer.concat(chunks));
+          const events = syntheticResponsesEvents(body.model, "READY");
+          if (
+            shellCalls === 0 &&
+            JSON.stringify(body.input).includes("Run the synthetic sandbox probe once.")
+          ) {
+            shellCalls += 1;
+            const tools = (body.tools ?? []).flatMap((tool) => tool.tools ?? [tool]);
+            assert.ok(
+              tools.some((tool) => tool.name === "exec" && tool.type === "custom"),
+              "native code-mode exec must be advertised",
+            );
+            const command = {
+              cmd: "node " + probePath,
+              yield_time_ms: 10000,
+              max_output_tokens: 1024,
+              login: false,
+              sandbox_permissions: "use_default",
+            };
+            const call = {
+              type: "custom_tool_call",
+              id: "ctc_thread_probe",
+              call_id: "call_thread_probe",
+              name: "exec",
+              status: "completed",
+              input:
+                '// @exec: {"yield_time_ms": 10000}\ntext(await tools.exec_command(' +
+                JSON.stringify(command) +
+                "));",
+            };
+            events.splice(
+              1,
+              events.length - 2,
+              {
+                type: "response.output_item.added",
+                output_index: 0,
+                item: { ...call, input: "", status: "in_progress" },
+              },
+              {
+                type: "response.custom_tool_call_input.delta",
+                item_id: call.id,
+                output_index: 0,
+                delta: call.input,
+              },
+              { type: "response.output_item.done", output_index: 0, item: call },
+            );
+            events.at(-1).response.output = [call];
+          }
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          response.end(encodeSyntheticEvents(events));
+        } catch {
+          providerFailure = "synthetic-provider-contract-failed";
+          response.writeHead(500).end();
+        }
+      });
+      await new Promise((resolve) => provider.listen(4711, "127.0.0.1", resolve));
+      const environment = {
+        ...payload.environment,
+        PATH: process.env.PATH,
+        HOME: "/home/node",
+        CODEX_HOME: codexHome,
+        CODEX_LOGIN_MODE: "api_key",
+        OPENAI_API_KEY: payload.syntheticApiKey,
+        OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
+        APP_SERVER_TOKEN: "synthetic-transport-token",
+        APP_SERVER_PORT: "4500",
+      };
+      const Client = await bundled("client", "CodexAppServerClient");
+      const notifications = [];
+      let client;
+      let deadline;
+      let closing = false;
+      // Run the complete OCE entrypoint, including synthetic API-key login and
+      // readiness. Its real authenticated WebSocket is consumed by the packaged client.
+      const native = cp.spawn(process.execPath, ["-e", payload.entrypoint], {
+        env: environment,
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      native.stderr.resume();
+      try {
+        const expired = new Promise((_, reject) => {
+          deadline = setTimeout(
+            () =>
+              reject(
+                new Error("native-thread-probe-timeout; provider=" + (providerFailure ?? "ok")),
+              ),
+            90_000,
+          );
+        });
+        await Promise.race([
+          expired,
+          (async () => {
+            for (;;) {
+              if (closing || native.exitCode !== null) {
+                throw new Error("native-entrypoint-stopped-before-ready");
+              }
+              const listening = await new Promise((resolve) => {
+                const socket = createConnection({ host: "127.0.0.1", port: 4500 });
+                socket.once("connect", () => {
+                  socket.destroy();
+                  resolve(true);
+                });
+                socket.once("error", () => {
+                  socket.destroy();
+                  resolve(false);
+                });
+              });
+              if (listening) {
+                break;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            client = await Client.start({
+              transport: "websocket",
+              url: "ws://127.0.0.1:4500",
+              authToken: environment.APP_SERVER_TOKEN,
+            });
+            client.addNotificationHandler((notification) => {
+              notifications.push(notification);
+            });
+            await client.initialize();
+            const thread = await client.request("thread/start", {
+              cwd: workspace,
+              ephemeral: true,
+              model: "gpt-5",
+              approvalPolicy: "never",
+              approvalsReviewer: "user",
+              ...threadPermissions(options),
+              config: threadConfig(
+                { ...options.networkProxy.configPatch, "features.memories": false },
+                { nativeCodeModeEnabled: true },
+              ),
+            });
+            const provenance = {
+              cwdMatchesExpectedWorkspace: thread.cwd === workspace,
+              activePermissionProfileId: thread.activePermissionProfile?.id?.slice(0, 128) ?? null,
+              expectedPermissionProfile: options.networkProxy.profileName,
+              legacySandboxType: thread.sandbox?.type ?? null,
+            };
+            console.error("openclaw-ci-thread-sandbox-provenance=" + JSON.stringify(provenance));
+            assert.equal(provenance.cwdMatchesExpectedWorkspace, true);
+            const turn = await client.request("turn/start", {
+              threadId: thread.thread.id,
+              input: [
+                { type: "text", text: "Run the synthetic sandbox probe once.", text_elements: [] },
+              ],
+              approvalPolicy: "never",
+              approvalsReviewer: "user",
+            });
+            for (;;) {
+              if (closing) {
+                throw new Error("native-thread-probe-closed");
+              }
+              const completed = notifications.find(
+                (message) =>
+                  message.method === "turn/completed" && message.params.turn.id === turn.turn.id,
+              );
+              if (completed) {
+                assert.equal(
+                  completed.params.turn.status,
+                  "completed",
+                  "native turn must complete",
+                );
+                break;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+            assert.equal(providerFailure, undefined);
+            assert.equal(shellCalls, 1);
+            const commands = notifications.filter(
+              (message) =>
+                message.method === "item/completed" &&
+                message.params.item.type === "commandExecution",
+            );
+            assert.equal(commands.length, 1, "one real native shell command must run");
+            const command = commands[0].params.item;
+            // The probe prints only booleans. Keep that evidence even when exit 74
+            // reproduces the live sibling-read failure.
+            const access = JSON.parse(command.aggregatedOutput.trim());
+            console.error("openclaw-ci-thread-sandbox-access=" + JSON.stringify(access));
+            assert.equal(thread.activePermissionProfile?.id, options.networkProxy.profileName);
+            assert.equal(command.exitCode, 0, "native per-thread filesystem isolation failed");
+            assert.deepEqual(access, {
+              systemSkillReadable: true,
+              systemSkillWriteDenied: true,
+              siblingReadDenied: true,
+              authReadDenied: true,
+              outsideWriteDenied: true,
+            });
+            assert.equal(
+              fs.readFileSync(workspace + "/thread-workspace-write", "utf8"),
+              "synthetic-workspace-write",
+            );
+            console.log("native-thread-sandbox-confirmed");
+          })(),
+        ]);
+      } finally {
+        closing = true;
+        clearTimeout(deadline);
+        client?.close();
+        native.kill("SIGTERM");
+        provider.closeAllConnections();
+        await new Promise((resolve) => provider.close(resolve));
+      }
+    }
+
+    const security = await reviewedCodexSeccompSecurityOptions({
+      codexVersion: stagingCodexVersion,
+    });
+    const { stdout } = await runDocker(
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "node",
+        "--cap-drop",
+        "ALL",
+        ...security,
+        "--tmpfs",
+        "/tmp",
+        "--tmpfs",
+        "/home/node:uid=1000,gid=1000,mode=700",
+        "--tmpfs",
+        "/run/oce/repository-credentials:uid=1000,gid=1000,mode=700",
+        "--volume",
+        `${join(import.meta.dirname, "../fixtures/synthetic-egress-provider.mjs")}:/tmp/synthetic-egress-provider.mjs:ro`,
+        "--workdir",
+        "/app",
+        "--entrypoint",
+        "node",
+        image,
+        "--input-type=module",
+        "-e",
+        "(" + probeNativeThread.toString() + ")()",
+        JSON.stringify({
+          entrypoint: AGENT_RUNTIME_ENTRYPOINT,
+          environment: pluginRuntimeEnvironment(runtime),
+          brokerConfiguration,
+          syntheticApiKey: syntheticCodexApiKey,
+        }),
+      ],
+      { timeout: cpuScaledImageTimeoutMs(120_000) },
+    );
+    assert.match(stdout, /native-thread-sandbox-confirmed/);
   },
 );
