@@ -54,7 +54,7 @@ import {
   expectVersionRecord as legacyExpectVersionRecord,
   openDeploymentActivity as legacyOpenDeploymentActivity,
   showDeploymentTab,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 import {
