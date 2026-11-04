@@ -114,30 +114,16 @@ function frozenCopy(value: unknown): unknown {
   }
   return value;
 }
-function copyDiagnostic(value: Diagnostic): Diagnostic {
-  const extras = Object.fromEntries<unknown>(
-    Object.entries<unknown>(value).map(([key, item]) => [key, frozenCopy(item)]),
+type CopiedDiagnostic = Partial<Diagnostic> & Record<string, unknown>;
+function copyDiagnostic(value: Diagnostic): CopiedDiagnostic {
+  return Object.freeze(
+    Object.fromEntries<unknown>(
+      Object.entries<unknown>(value).map(([key, item]) => [key, frozenCopy(item)]),
+    ),
   );
-  return Object.freeze({
-    ...extras,
-    category: value.category,
-    rule: value.rule,
-    from: value.from,
-    to: value.to,
-    specifier: value.specifier,
-    kind: value.kind,
-    typeOnly: value.typeOnly,
-    bindings: Object.freeze(value.bindings.map((name) => name)),
-    line: value.line,
-    message: value.message,
-  });
 }
-function copyBaseline(value: Baseline): Baseline {
-  return Object.freeze({
-    ...copyDiagnostic(value),
-    owner: value.owner,
-    removeWhen: value.removeWhen,
-  });
+function copyBaseline(value: Baseline): CopiedDiagnostic {
+  return copyDiagnostic(value);
 }
 function compare(a: Diagnostic, b: Diagnostic): number {
   if (a.from === undefined) {

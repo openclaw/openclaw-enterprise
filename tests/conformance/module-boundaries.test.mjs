@@ -235,6 +235,15 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.equal(Object.isFrozen(result.violations[0].extra.nested), true);
     assert.equal(Object.isFrozen(entry.extra), false);
     assert.equal(Object.isFrozen(entry.bindings), false);
+    const inherited = Object.create({ from: "src", rule: "r", bindings: [] });
+    const hidden = Object.defineProperty({ from: "src", bindings: [] }, "rule", {
+      value: "hidden",
+      enumerable: false,
+    });
+    assert.deepEqual(applyExceptions([inherited], { version: 1, exceptions: [] }).violations, [{}]);
+    assert.deepEqual(applyExceptions([hidden], { version: 1, exceptions: [] }).violations, [
+      { from: "src", bindings: [] },
+    ]);
   });
   test("keeps native package error diagnostics independent of the workspace path", async (t) => {
     const { root, write, cli: verify, link } = await workspace(t);
