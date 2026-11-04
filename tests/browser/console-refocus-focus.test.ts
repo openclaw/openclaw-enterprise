@@ -505,6 +505,72 @@ for (const view of ["Agent page", "Create Agent"] as const) {
   });
 }
 
+test("a session reply missing its binding blocks private reads until Retry", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Session binding");
+  const agentName = "Session binding Agent";
+  await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
+  const { page } = await newPage(t, fixture, { browser });
+  const agentLink = page.getByRole("link", { name: agentName, exact: true });
+  const account = page.locator(".account-toggle");
+  const sessionPath = "/api/auth/session";
+  const agentsPath = `/namespaces/${namespace.id}/agents`;
+  const requests = apiRequests(page, fixture.origin);
+  let genuineBinding: string | undefined;
+  await page.route(
+    `**${sessionPath}`,
+    async (route) => {
+      const actual = await route.fetch();
+      assert.equal(actual.status(), 200);
+      const payload: unknown = await actual.json();
+      assert.ok(payload !== null && typeof payload === "object" && "data" in payload);
+      const data = payload.data;
+      assert.ok(data !== null && typeof data === "object" && "sessionKey" in data);
+      const { sessionKey, ...withoutBinding } = data;
+      assert.ok(typeof sessionKey === "string" && sessionKey.length > 0);
+      genuineBinding = sessionKey;
+      await route.fulfill({
+        response: actual,
+        json: { ...payload, data: withoutBinding },
+      });
+    },
+    { times: 1 },
+  );
+
+  // Sign in through the fixture on a fresh tab. Only the first Console session read is malformed.
+  const firstSession = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === sessionPath,
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  assert.equal((await firstSession).status(), 200);
+  await page.getByRole("heading", { name: "Session unavailable", exact: true }).waitFor();
+  assert.equal(await account.count(), 0);
+  assert.equal(await agentLink.count(), 0);
+  assert.equal(
+    requests.some(({ path }) => path.startsWith("/namespaces") || path === "/observability"),
+    false,
+    "malformed admission sends no private reads",
+  );
+
+  const recoveredSession = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === sessionPath,
+  );
+  const namespaceRead = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === "/namespaces",
+  );
+  const agentRead = page.waitForResponse((result) => new URL(result.url()).pathname === agentsPath);
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  assert.equal((await recoveredSession).status(), 200);
+  for (const read of [await namespaceRead, await agentRead]) {
+    assert.equal(read.status(), 200);
+    assert.ok(
+      genuineBinding && read.request().headers()["x-occ-session-key"] === genuineBinding,
+      "Retry pins the genuine session binding before requesting private data",
+    );
+  }
+  await agentLink.waitFor();
+  assert.ok((await account.innerText()).includes(fixture.credentials.email));
+});
+
 // Initial admission allows Agent metadata without Configuration read. Refocus must preserve
 // that same partial view instead of replacing the accessible Agent with a page-wide denial.
 test("mounted Agent refocus preserves a stable Configuration denial", async (t) => {

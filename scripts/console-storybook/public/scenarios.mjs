@@ -1056,6 +1056,31 @@ export const scenarios = {
     rules: [{ path: "/api/auth/session", status: 503 }],
     description: "The console cannot verify the session. Private data stays hidden.",
   },
+  missingSessionBindingRetry: {
+    group: "Pages/Sign in",
+    name: "Missing session binding, retry",
+    rules: [
+      {
+        path: "/api/auth/session",
+        method: "GET",
+        once: true,
+        data: {
+          authenticated: true,
+          user: {
+            id: "storybook-operator",
+            name: "Demo Operator",
+            email: "operator@example.com",
+          },
+        },
+      },
+    ],
+    description:
+      "Simulated session recovery: the first authenticated response has no session binding. Retry uses the ordinary bound fixture session.",
+    steps: [
+      "Observe Session unavailable with private content and console navigation hidden.",
+      "Choose Retry and confirm the Agents page appears.",
+    ],
+  },
   loading: {
     group: "Pages/Sign in",
     name: "Checking session",
