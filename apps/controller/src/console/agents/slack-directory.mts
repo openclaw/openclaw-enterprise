@@ -688,7 +688,7 @@ export function createSlackDirectoryField({
           workspaceIdentity !== page.workspaceId
         ) {
           // A newer name lookup observed a different workspace while this search was pending.
-          return startSearch();
+          return startSearch(activateFirst);
         }
         if (index > 0 && workspaceIdentity && workspaceIdentity !== page.workspaceId) {
           status.textContent = "The Slack bot workspace changed. Search again.";

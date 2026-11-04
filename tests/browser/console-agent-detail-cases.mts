@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import type { Locator, Page, Request } from "playwright";
+import type { Locator, Page } from "playwright";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { isResourceKind, PERMISSION_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type {
@@ -3246,7 +3246,6 @@ export function registerSharingCredentialsAndChannelsCases(
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     const directoryBodies: DirectoryBody[] = [];
-    const pendingDirectory = deferred<Request>();
     const releaseDirectory = deferred<void>();
     const releaseChangedQuery = deferred<void>();
     t.after(() => {
@@ -3261,7 +3260,6 @@ export function registerSharingCredentialsAndChannelsCases(
         const ids = body.ids;
         directoryBodies.push(body);
         if (body.query === "pending") {
-          pendingDirectory.resolve(route.request());
           await releaseDirectory.promise;
         }
         if (body.query === "pending-query") {
@@ -3355,13 +3353,20 @@ export function registerSharingCredentialsAndChannelsCases(
     // Escape cancels a keyboard reopen while its synthetic directory response is held.
     await channelSearch.fill("pending");
     await channelSearch.press("Escape");
+    const pendingDirectory = page.waitForRequest(
+      (request) =>
+        request.url() === `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup` &&
+        request.method() === "POST" &&
+        directoryBody(request.postDataJSON()).query === "pending",
+      { timeout: 10_000 },
+    );
     await channelSearch.press("ArrowDown");
-    const pendingRequest = await pendingDirectory.promise;
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    const pendingRequest = await pendingDirectory;
     await channelSearch.press("ArrowDown");
     await channelSearch.press("ArrowDown");
     await page.clock.runFor(300);
     assert.equal(directoryBodies.filter((body) => body.query === "pending").length, 1);
-    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
     assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
     const canceledRequest = page.waitForEvent(
       "requestfailed",
