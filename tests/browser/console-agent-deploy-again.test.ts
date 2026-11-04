@@ -34,7 +34,7 @@ import {
   deploymentDetailsOpen,
   deploymentRecordUrl,
   showDeploymentTab,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
