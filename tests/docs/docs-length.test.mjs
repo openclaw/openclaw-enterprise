@@ -121,6 +121,33 @@ title: ${words(2000)}
   assert.equal(json.rows[0].totalWords, 9);
 });
 
+test("word-count CLI characterizes comment delimiters in prose and fenced examples", async (t) => {
+  const directory = await fixture(t);
+  const cases = {
+    "adjacent.md": "a<!-- hidden -->b",
+    "fenced.md": "```html\n<!<!-- cut -->-- hidden -->visible\n```\n",
+    "nested-closed.md": "<!<!-- cut -->-- hidden -->visible",
+    "nested-multiple.md": "<!<!-- a -->-<!-- b -->- hidden words",
+    "nested-open.md": "<!<!-- cut -->-- hidden words",
+  };
+  for (const [file, content] of Object.entries(cases)) {
+    await writeFile(join(directory, file), content);
+  }
+
+  const json = readJson(runWordCount(directory, ["--json"]));
+  assert.deepEqual(
+    json.rows.map((row) => row.path),
+    Object.keys(cases),
+  );
+  for (const row of json.rows) {
+    for (const count of [row.proseWords, row.codeWords, row.totalWords]) {
+      assert.ok(Number.isInteger(count) && count >= 0);
+    }
+    assert.equal(row.totalWords, row.proseWords + row.codeWords);
+  }
+  t.diagnostic(`comment delimiter counts: ${JSON.stringify(json.rows)}`);
+});
+
 test("word-count CLI includes table text and fenced examples", async (t) => {
   const directory = await fixture(t);
   await writeFile(
