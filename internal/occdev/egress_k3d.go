@@ -52,7 +52,7 @@ func (r *runner) selectedDevelopmentDatabase(controlPlane string) (string, error
 }
 
 func developmentAuthenticatedOpenShellValues() map[string]any {
-	values := map[string]any{
+	return map[string]any{
 		"pkiInitJob": map[string]any{"enabled": true},
 		"server": map[string]any{
 			"disableTls": false,
@@ -61,7 +61,6 @@ func developmentAuthenticatedOpenShellValues() map[string]any {
 		},
 		"gatewayConfig": map[string]any{"openshell.supervisor.middleware": []any{}},
 	}
-	return values
 }
 
 func (r *runner) writeOpenShellGatewayValues(state *developmentState) (string, error) {
