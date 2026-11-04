@@ -252,7 +252,14 @@ directory when finished.
 ### Guided native OpenClaw redeployment
 
 `tests/integration/local-first-agent-real.test.mjs` runs in both Compose-plus-k3d
-and Kubernetes-only first-Agent stacks. It first proves Codex with a `codex-pat`
+and Kubernetes-only first-Agent stacks. Each stack is created by the public Local
+Setup installer, including the pinned image builds and OpenShell installation.
+The initial invocation checks a fresh nonce and a custom prompt. Reuse checks a
+new nonce without repeating the custom prompt, with credentials removed from the
+helper environment. It must retain the exact Agent, revision, Namespace, and
+model. Stage timings are retained in the [CI results](ci.md).
+
+The test first proves Codex with a `codex-pat`
 source, then creates a separate `openai` source from `OPENAI_API_KEY` for guided
 native OpenClaw provisioning. The native case uses the pinned runtime and
 production Drivers without the k3d helper's compatibility bridge.

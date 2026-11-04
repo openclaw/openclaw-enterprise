@@ -11,7 +11,14 @@ import type {
   TabNavigation,
 } from "./page-context.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
-import { element, button, requestIdDisclosure, statusBlock, trackVisualViewport } from "./dom.mjs";
+import {
+  element,
+  button,
+  requestIdDisclosure,
+  setUnavailable,
+  statusBlock,
+  trackVisualViewport,
+} from "./dom.mjs";
 import {
   agentPageReadRefusal,
   clearResolvedSecretNames,
@@ -1386,7 +1393,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
         return;
       }
       pending = true;
-      setDisabled(true);
+      setButtonsUnavailable(true);
       feedback.textContent = "";
       try {
         const result = await request(`/api/auth/providers/${provider}/start`, { method: "POST" });
@@ -1415,7 +1422,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
         }
         feedback.textContent = providerStartFailure(error, label, recoveryOnly);
         pending = false;
-        setDisabled(false);
+        setButtonsUnavailable(false);
       }
     });
     const icon = providerIcon(provider);
@@ -1440,12 +1447,12 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     },
     { tone: "link", className: "auth-recovery", hidden: true },
   );
-  function setDisabled(disabled: boolean) {
-    submit.disabled = disabled;
-    github.disabled = disabled;
-    google.disabled = disabled;
+  function setButtonsUnavailable(unavailable: boolean) {
+    setUnavailable(submit, unavailable, null);
+    setUnavailable(github, unavailable, null);
+    setUnavailable(google, unavailable, null);
     if (oidc !== null) {
-      oidc.disabled = disabled;
+      setUnavailable(oidc, unavailable, null);
     }
   }
   const providers = element("div", { className: "auth-providers" });
@@ -1456,7 +1463,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       return;
     }
     pending = true;
-    setDisabled(true);
+    setButtonsUnavailable(true);
     feedback.textContent = "";
     takeExternalAttempt();
     const active = lifetime.capture();
@@ -1481,7 +1488,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     } finally {
       if (lifetime.isCurrent(active)) {
         pending = false;
-        setDisabled(false);
+        setButtonsUnavailable(false);
       }
     }
   });
@@ -1511,7 +1518,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
         }
         if (available?.oidc === true && configureOidc(available.oidcSignIn)) {
           oidc = providerButton("oidc");
-          oidc.disabled = pending;
+          setUnavailable(oidc, pending, null);
           providers.append(oidc);
         }
         // Only an explicit false hides the form: failed or older discovery keeps it.
@@ -1525,7 +1532,12 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
           }
           usernameHint.textContent = "Use the recovery account's email.";
           // Never pull the form away from someone already using it.
-          if (!pending && username.value === "" && password.value === "") {
+          if (
+            !pending &&
+            username.value === "" &&
+            password.value === "" &&
+            !form.contains(document.activeElement)
+          ) {
             form.hidden = true;
             usernameHint.hidden = true;
             providers.after(feedback);

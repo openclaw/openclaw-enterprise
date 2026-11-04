@@ -9,7 +9,7 @@ import { createConnection } from "node:net";
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { createOpenShellOnlineGitAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts";
-import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
+import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
@@ -83,12 +83,12 @@ test(
         identities.push(identity);
         return binding;
       },
-      approve: async (q, installed) => {
+      authorizeOnlineRequest: async (q, installed) => {
         if (unavailable) {
           throw new Error("owner unavailable");
         }
         approvals.push({ q, installed });
-        return current;
+        return current ? onlineGitAllow(q, installed) : { kind: "denied", reason: "unavailable" };
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -198,9 +198,9 @@ test(
     const denials = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async () => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals++;
-        return true;
+        return onlineGitAllow(q, installed);
       },
       onDeny: (denial) => denials.push(denial.reason),
     });
@@ -283,9 +283,11 @@ test(
     let allow = true;
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async (q) => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals.push(q);
-        return allow;
+        return allow === true
+          ? onlineGitAllow(q, installed)
+          : { kind: "denied", reason: allow === false ? "unavailable" : allow };
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -394,9 +396,9 @@ test(
     const denials = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => lookup,
-      approve: async () => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals++;
-        return true;
+        return onlineGitAllow(q, installed);
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -436,9 +438,9 @@ test(
     const approvals = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async (q) => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals.push(q);
-        return true;
+        return onlineGitAllow(q, installed);
       },
     });
     const bearer = token(keys, "supervisor", binding.sandboxId);
@@ -516,10 +518,14 @@ test(
   },
 );
 
-test("Git authority cannot be constructed without both trusted owner callbacks", () => {
+test("Git authority cannot be constructed without both trusted owner callbacks", async (t) => {
   assert.throws(() => createOpenShellOnlineGitAuthority({}), /live binding and durable approval/);
   assert.throws(
     () => createOpenShellOnlineGitAuthority({ lookupBinding: async () => binding }),
+    /live binding and durable approval/,
+  );
+  await assert.rejects(
+    openShellOnlineGitWire(t, { lookupBinding: async () => binding, approve: async () => true }),
     /live binding and durable approval/,
   );
 });
@@ -558,7 +564,7 @@ test("protected Git replies to this online decision before its authority deadlin
     assert.equal(result.decision, expected, decision);
   }
   // The trusted owner can return malformed runtime values despite its TypeScript contract.
-  // A structured denial must never enter the separate legacy boolean approval path.
+  // A structured denial must never be treated as an allow, even with a truthy reason.
   for (const [reason, reasonCode] of [
     ["draft_already_opened", "draft_already_opened"],
     ["access_withdrawn", "access_withdrawn"],
@@ -583,9 +589,9 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
       lookupAborted.resolve();
       return binding;
     },
-    approve: async () => {
+    authorizeOnlineRequest: async (q, installed) => {
       approvals++;
-      return true;
+      return onlineGitAllow(q, installed);
     },
   });
   const result = await invoke(
@@ -908,9 +914,9 @@ test(
               lookups++;
               return undefined;
             },
-            approve: async () => {
+            authorizeOnlineRequest: async () => {
               approvals++;
-              return false;
+              return { kind: "denied", reason: "unavailable" };
             },
           });
           const bearer = token(keys, "supervisor", binding.sandboxId);

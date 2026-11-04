@@ -2418,11 +2418,11 @@ revisionTest(
     // and then hold the container unready with nothing to restart it, so the
     // default 900-second deadline could only report the same failure later.
     const probeStatusFailure = {
-      component: "gateway",
+      component: "agent",
       check: "model-probe",
       checkedAt: "2026-10-01T08:00:00.000Z",
       code: "MODEL_PROBE_FAILED",
-      cause: { kind: "PROBE_STATUS", detail: "format" },
+      cause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     };
     const wrapperFailure = {
       ...probeStatusFailure,

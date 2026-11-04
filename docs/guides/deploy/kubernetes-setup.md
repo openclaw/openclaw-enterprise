@@ -74,12 +74,6 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" wait gatewayclass/eg --f
 
 ## 4. Prepare the operator session
 
-Set `MODEL` to a model your credential can use. Choose the credential when you deploy the Agent. A Linear connection and GitHub App are not needed for installation setup. See the [operator session](quickstart-session.md).
-
-```bash
-export MODEL=gpt-5.4
-```
-
 Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 
 To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Kubernetes cleanup](kubernetes-cleanup.md).

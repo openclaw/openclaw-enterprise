@@ -26,7 +26,7 @@ import {
   waitForIdleFetches,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
-import { confirmAgentAction } from "./console-action-helpers.ts";
+import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   focusedLabel,
   fulfillMethod,
@@ -38,6 +38,7 @@ import {
   waitForFocusedLabel,
 } from "./console-refocus-helpers.mjs";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { within } from "../helpers/wait-for.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -46,6 +47,121 @@ import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
+
+test("a pending sign-in keeps keyboard focus without taking it back after a refusal", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  for (const attempt of ["password", "provider", "move", "late OIDC"] as const) {
+    const provider = attempt === "provider";
+    const lateDiscovery = attempt === "late OIDC";
+    const { page } = await newPage(t, fixture, {
+      browser,
+      context: { viewport: provider ? { width: 390, height: 844 } : { width: 1440, height: 900 } },
+    });
+    const outsideOrigins: string[] = [];
+    await page.route("**/*", (route) => {
+      const origin = new URL(route.request().url()).origin;
+      if (origin === fixture.origin) {
+        return route.fallback();
+      }
+      outsideOrigins.push(origin);
+      return route.abort();
+    });
+    // Only discovery is simulated. The local Controller refuses GitHub start with no provider
+    // configured, and it rejects the wrong password through the real sign-in route.
+    await page.route("**/api/auth/providers", (route) =>
+      route.fulfill({ json: { data: { password: true, github: true }, meta: {} } }),
+    );
+    const discovery = lateDiscovery
+      ? await holdRequests(t, page, `${fixture.origin}/api/auth/providers`, {
+          once: true,
+          method: "GET",
+          fulfill: {
+            json: {
+              data: {
+                password: true,
+                github: true,
+                oidc: true,
+                oidcSignIn: {
+                  label: "Example SSO",
+                  authorizationUrl: "https://sso.example.invalid/authorize",
+                },
+              },
+              meta: {},
+            },
+          },
+        })
+      : null;
+    await page.goto(`${fixture.origin}/console/login`);
+    const submit = page.getByRole("button", { name: "Sign in", exact: true });
+    const github = page.getByRole("button", { name: "Continue with GitHub", exact: true });
+    const password = page.getByLabel("Password", { exact: true });
+    if (discovery) {
+      await discovery.requested;
+    } else {
+      await github.waitFor();
+    }
+    await page.getByLabel("Email", { exact: true }).fill("synthetic@example.invalid");
+    await password.fill("not-the-password");
+    await page.keyboard.press("Tab");
+    if (provider) {
+      await page.keyboard.press("Tab");
+    }
+    const trigger = provider ? github : submit;
+    const sibling = provider ? submit : github;
+    assert.equal(await hasFocus(trigger), true, `${attempt}: keyboard reaches the control`);
+
+    const path = provider ? "/api/auth/providers/github/start" : "/api/auth/sign-in/email";
+    const url = `${fixture.origin}${path}`;
+    const requests = apiRequests(page, fixture.origin);
+    const held = await holdRequests(t, page, url, {
+      once: true,
+      method: "POST",
+      afterServer: true,
+    });
+    const answered = responseTo(page, "POST", url);
+    await page.keyboard.press("Enter");
+    const upstream = await held.requested;
+    assert.ok(upstream, "the real Controller must answer before the hold");
+    const expectedStatus = provider ? 403 : 401;
+    assert.equal(upstream.status(), expectedStatus);
+    assert.equal(await hasFocus(trigger), true, `${attempt}: focus stays during the request`);
+    const oidc = page.getByRole("button", { name: "Continue with Example SSO", exact: true });
+    if (discovery) {
+      // Discovery can add a provider while a password request is already pending.
+      discovery.release();
+      await oidc.waitFor();
+      assert.notEqual(await oidc.getAttribute("disabled"), null);
+      assert.equal(await hasFocus(trigger), true);
+    }
+    assert.equal(await trigger.getAttribute("aria-disabled"), "true");
+    assert.notEqual(await sibling.getAttribute("disabled"), null);
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Space");
+    if (attempt === "move") {
+      await page.keyboard.press("Shift+Tab");
+      assert.equal(await hasFocus(password), true);
+    }
+
+    held.release();
+    assert.equal((await answered).status(), expectedStatus);
+    const refusal = provider
+      ? "GitHub sign-in is unavailable. Try again or use your password."
+      : "Could not sign in. Check your email and password.";
+    await page.getByText(refusal, { exact: true }).waitFor();
+    assert.equal(await hasFocus(attempt === "move" ? password : trigger), true);
+    assert.equal(await trigger.isEnabled(), true);
+    assert.equal(await sibling.isEnabled(), true);
+    if (discovery) {
+      assert.equal(await oidc.isEnabled(), true);
+    }
+    assert.equal(
+      requests.filter((request) => request.method === "POST" && request.path === path).length,
+      1,
+    );
+    assert.deepEqual(outsideOrigins, []);
+    await page.close();
+  }
+});
 
 // A navigation that holds the shown page keeps focus on its heading (findings 1626, 1636), but a
 // refocus recheck does not: the list stays inert while we check access, then the reader can
@@ -569,6 +685,45 @@ test("a session reply missing its binding blocks private reads until Retry", asy
   }
   await agentLink.waitFor();
   assert.ok((await account.innerText()).includes(fixture.credentials.email));
+});
+
+test("recovery-only discovery keeps focus on the empty sign-in form", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  const providersPath = "/api/auth/providers";
+  const discovery = await holdRequests(t, page, `**${providersPath}`, {
+    method: "GET",
+    once: true,
+    fulfill: {
+      status: 200,
+      json: {
+        data: { github: true, google: false, password: false, sessionBinding: true },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      },
+    },
+  });
+  const response = responseTo(page, "GET", `${fixture.origin}${providersPath}`);
+  await page.goto(`${fixture.origin}/console/login`);
+  await discovery.requested;
+  const email = page.getByLabel("Email", { exact: true });
+  await email.waitFor();
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(email), true);
+  assert.equal(await email.inputValue(), "");
+
+  discovery.release();
+  assert.equal((await response).status(), 200);
+  await page.getByRole("button", { name: "Continue with GitHub", exact: true }).waitFor();
+  assert.equal(await hasFocus(email), true);
+  await page.getByText("Use the recovery account's email.", { exact: true }).waitFor();
+  await page.keyboard.type("recovery@example.com");
+  assert.equal(await email.inputValue(), "recovery@example.com");
+  assert.equal(
+    requests.some(({ method, path }) => method === "POST" && path === "/api/auth/sign-in/email"),
+    false,
+  );
 });
 
 // Initial admission allows Agent metadata without Configuration read. Refocus must preserve

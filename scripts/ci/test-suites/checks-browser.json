@@ -12,8 +12,9 @@
     "tests/browser/console-shell.test.ts",
     "tests/browser/console-json-error-feedback.test.ts",
     "tests/browser/console-agent-detail-2.test.mjs",
+    "tests/browser/console-workspace-editor.test.ts",
     "tests/browser/console-agent-detail.test.mjs",
-    "tests/browser/console-agent-deploy-again.test.mjs",
+    "tests/browser/console-agent-deploy-again.test.ts",
     "tests/browser/console-agent-logs.test.ts",
     "tests/browser/console-agent-repositories.test.ts",
     "tests/integration/repository-credentials-github-prepared.test.mjs",
@@ -24,8 +25,8 @@
     "tests/integration/repository-credentials-client-config.test.mjs",
     "tests/browser/console-agent-overview.test.mjs",
     "tests/browser/console-deployment-activity.test.ts",
-    "tests/browser/console-agent-plugin-approvers.test.mjs",
-    "tests/browser/console-agent-plugin-refusals.test.mjs",
+    "tests/browser/console-agent-plugin-approvers.test.ts",
+    "tests/browser/console-agent-plugin-refusals.test.ts",
     "tests/browser/docs-compute-matrix.test.mjs",
     "tests/browser/console-namespace-not-ready.test.ts",
     "tests/browser/console-secrets.test.ts",
@@ -43,10 +44,13 @@
       "path": "tests/browser/console-agent-detail.test.mjs"
     },
     {
-      "path": "tests/browser/console-agent-deploy-again.test.mjs"
+      "path": "tests/browser/console-agent-deploy-again.test.ts"
     },
     {
       "path": "tests/browser/console-agent-detail-2.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-workspace-editor.test.ts"
     },
     {
       "path": "tests/browser/console-agent-logs.test.ts"
@@ -55,10 +59,10 @@
       "path": "tests/browser/console-json-error-feedback.test.ts"
     },
     {
-      "path": "tests/browser/console-agent-plugin-approvers.test.mjs"
+      "path": "tests/browser/console-agent-plugin-approvers.test.ts"
     },
     {
-      "path": "tests/browser/console-agent-plugin-refusals.test.mjs"
+      "path": "tests/browser/console-agent-plugin-refusals.test.ts"
     },
     {
       "path": "tests/browser/console.test.mjs"

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { cp, mkdir, copyFile, rm, readFile, writeFile, readdir } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
@@ -28,7 +29,9 @@ await copyFile(
 );
 await writeFile(
   new URL("agents/plugin-fields.mjs", assets),
-  await readFile(new URL("./plugin-fields.storybook-wrapper.mjs", import.meta.url), "utf8"),
+  stripTypeScriptTypes(
+    await readFile(new URL("./plugin-fields.storybook-wrapper.mts", import.meta.url), "utf8"),
+  ),
 );
 
 // Preview shipped Presets so screenshots follow their current contracts.
@@ -46,9 +49,22 @@ for (const [name, file] of [
 
 // Version the entire static module graph so an existing rehearsal browser cannot
 // mix cached Console/preset modules with a newly built Storybook manager.
+const fixtureSource = new URL("./public/", import.meta.url);
 const fixtureAssets = new URL("./dist/assets/storybook-fixtures/", import.meta.url);
 await rm(fixtureAssets, { recursive: true, force: true });
-await cp(new URL("./public/", import.meta.url), fixtureAssets, { recursive: true });
+await cp(fixtureSource, fixtureAssets, {
+  recursive: true,
+  filter: (path) => !path.endsWith(".mts"),
+});
+for (const path of await readdir(fixtureSource, { recursive: true })) {
+  if (!path.endsWith(".mts")) {
+    continue;
+  }
+  const source = await readFile(new URL(`./${path}`, fixtureSource), "utf8");
+  const output = new URL(`./${path.replace(/\.mts$/, ".mjs")}`, fixtureAssets);
+  // A generated module must never replace an authored fixture at the same URL.
+  await writeFile(output, stripTypeScriptTypes(source), { flag: "wx" });
+}
 // Use the production loader and shell renderer; only resource/API state is simulated.
 const theme = await loadConsoleTheme(
   process.env.OCC_CONSOLE_THEME_DIR ??
@@ -91,8 +107,8 @@ for (const file of files) {
   let { content } = file;
   if (path.endsWith(".mjs") && !path.endsWith("-preset.mjs")) {
     content = content.replace(
-      /((?:from\s*|import\s*\(\s*|import\s*)["'])([./][^"']+\.mjs)(["'])/g,
-      `$1$2?v=${version}$3`,
+      /((?:from\s*|import\s*\(\s*|import\s*)["'])([./][^"']+)\.m[jt]s(["'])/g,
+      `$1$2.mjs?v=${version}$3`,
     );
   } else if (path.endsWith(".html")) {
     content = content.replace(/((?:src|href)="[^"?]+\.(?:mjs|css))"/g, `$1?v=${version}"`);
