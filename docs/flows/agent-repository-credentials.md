@@ -401,9 +401,9 @@ denied before reaching the provider, and chat continues.
 
 - 2026-11-04 07:04: Trace symlink-safe native Git hook launchers. (authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195 - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
-- 2026-11-03 13:50: Clarify validation and recovery. (01a1a347-0985-76c2-8271-9a448c4224d5 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
-
 - 2026-11-03 16:24: Document bound repository admission. (authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7 - 47a126079e6037a1ad1d27db1b514fde1cde345c)
+
+- 2026-11-03 13:50: Clarify validation and recovery. (authoring-run/ba39ab24-0fa9-473c-a144-634f38a40c46 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
 
 - 2026-10-30 15:01: Reuse validated policy owner identity. (authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88 - 5b20ec5b1501bf1c6c2254ec36d9dc1e0e0bd730)
 

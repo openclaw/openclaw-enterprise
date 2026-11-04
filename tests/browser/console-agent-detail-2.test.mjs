@@ -2657,7 +2657,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await panel
-    .getByText("We couldn't confirm whether your change was saved.", { exact: false })
+    .getByText("We couldn't confirm the result of your request.", { exact: false })
     .waitFor();
   await panel.getByText("Namespace discovery is enabled.", { exact: true }).waitFor();
   await panel.getByText("Direct grants need a fresh read.", { exact: false }).waitFor();
@@ -3352,7 +3352,7 @@ test("Credentials blocks repeat saves after losing an authentication PATCH respo
   await page.getByRole("button", { name: "Save authentication source" }).click();
   await page
     .locator("form.agent-card")
-    .getByText("We couldn't confirm whether your change was saved.", { exact: false })
+    .getByText("We couldn't confirm the result of your request.", { exact: false })
     .waitFor();
   assert.equal(
     await page.getByRole("button", { name: "Save authentication source" }).isDisabled(),

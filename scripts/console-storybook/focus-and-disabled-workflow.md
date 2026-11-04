@@ -169,3 +169,8 @@ expiry. Use the late Stop response story to inspect its generic result.
 These previews use simulated API responses. The browser regressions verify
 wrong-origin refusal and an accepted Agent save whose response is lost through
 the real controller with in-memory storage; they do not verify a running Agent.
+
+For **Pages / Agent detail / Deployment outcome unknown** and **Sharing outcome
+uncertain**, read the message about the request result. It applies to the operation
+that was submitted. Inspect deployment status or refresh sharing before retrying;
+the failed response must not be treated as proof that nothing happened.

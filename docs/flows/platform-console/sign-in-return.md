@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-03"
-last_updated_session: 01a1a347-0985-76c2-8271-9a448c4224d5
+last_updated_session: authoring-run/ba39ab24-0fa9-473c-a144-634f38a40c46
 ---
 
 # Console sign-in and destination recovery
@@ -133,7 +133,7 @@ native-gateway integration.
 
 ## Changelog
 
-- 2026-11-03 13:50: Explain recovery from an untrusted sign-in origin. (01a1a347-0985-76c2-8271-9a448c4224d5 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
+- 2026-11-03 13:50: Explain recovery from an untrusted sign-in origin. (authoring-run/ba39ab24-0fa9-473c-a144-634f38a40c46 - 54f83409c8ee37fcd54f00d09e57898021f7e812)
 
 - 2026-10-26 18:00: A Secrets page link's Secret ID survives sign-in. (2645)
 

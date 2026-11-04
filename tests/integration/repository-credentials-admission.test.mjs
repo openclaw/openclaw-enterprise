@@ -2044,7 +2044,7 @@ test("Deploy names the Proxy's limit when a protected source sits beside reposit
   assert.equal(gitOnly.error.code, "RESOURCE_CONFLICT");
   assert.equal(
     gitOnly.error.message,
-    "This installation's Credential Proxy is configured for repository Git, not this credential source type. Ask an administrator to configure support for this source type.",
+    "This Credential Proxy's middleware serves only Git, not this source type. Ask an administrator to check `drivers.credential_proxy` and its middleware registration in the Credential Proxy guide.",
   );
   assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
   const outsider = await f.requestWithoutGrants(f.app);
@@ -2132,7 +2132,7 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
         label === "stock 0.1.5"
           ? [
               409,
-              "This installation's Credential Proxy is configured for repository Git, not this credential source type. Ask an administrator to configure support for this source type.",
+              "This Credential Proxy's middleware serves only Git, not this source type. Ask an administrator to check `drivers.credential_proxy` and its middleware registration in the Credential Proxy guide.",
             ]
           : [503, PROXY_REGISTRATION_UNAVAILABLE];
       assert.equal(created.status, status, `${label}: ${JSON.stringify(created)}`);

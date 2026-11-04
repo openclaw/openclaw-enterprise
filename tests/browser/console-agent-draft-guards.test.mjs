@@ -1912,7 +1912,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     await page
       .getByText(
         mutation === "authentication"
-          ? "We couldn't confirm whether your change was saved."
+          ? "We couldn't confirm the result of your request."
           : "Outcome unknown.",
         { exact: false },
       )
@@ -2357,7 +2357,7 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
   await page.getByRole("button", { name: "Disable Slack" }).click();
   await page
-    .getByText("We couldn't confirm whether your change was saved.", { exact: false })
+    .getByText("We couldn't confirm the result of your request.", { exact: false })
     .first()
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);

@@ -908,7 +908,7 @@ test("an uncertain Create outcome keeps no draft", async (t) => {
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page
     .getByText(
-      "We couldn't confirm whether your change was saved. Refresh the page and check before submitting it again.",
+      "We couldn't confirm the result of your request. Refresh the page and check before submitting it again.",
     )
     .waitFor();
   await expectNoKeptDraft(page);

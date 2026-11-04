@@ -232,7 +232,7 @@ export function message(cause: unknown, mutation = false, need?: AccessNeed): st
     return "Too many requests. Wait before trying again.";
   }
   return mutation
-    ? "We couldn't confirm whether your change was saved. Refresh the page and check before submitting it again."
+    ? "We couldn't confirm the result of your request. Refresh the page and check before submitting it again."
     : error.name === "TypeError" || error.name === "TimeoutError"
       ? "Request interrupted. Retry to check current access and saved state."
       : "Service unavailable. The read could not be completed. Try again.";

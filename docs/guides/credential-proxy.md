@@ -1,30 +1,30 @@
 # Set up and operate Credential Proxy
 
-Credential Proxy lets an Agent use an approved credential through an enforcing
-transport without putting provider material in the Agent's configuration. OCC
-controls access to the execution; the selected Driver enforces the request and
-credential delivery. For prepared GitHub access, Token Service also maintains
-the short-lived credential. The setup and verification depend on the selected
-delivery profile. The [architecture walkthrough](../design/credential-proxy.md)
-shows what a child process can request and what it can read in the response.
+Credential Proxy lets Agents use approved credentials through an enforcing
+transport without putting provider material in their configuration.
+OpenClaw Control Plane (OCC) authorizes execution; the selected Driver enforces requests and
+credential delivery. For prepared GitHub access, Token Service maintains the
+short-lived credential. See the [architecture walkthrough](../design/credential-proxy.md)
+for custody boundaries.
 
-Use matching OpenShell 0.1.6 components and mandatory pre-credential middleware
-for [repository enrollment](repository-credentials/openshell-enrollment.md).
-A rollout or source registration alone does not establish enforcement. Missing
-request hooks are refused before credential release. Older or unqualified
-compositions can return `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`. Ask an
-administrator to enable protected Git access on this installation, then deploy
-again. Do not broaden a ref-limited grant to bypass that error. The
-[Credential Proxy reference](../reference/drivers/credential-proxy.md) describes
-the delivery contracts.
+`409 REPOSITORY_GIT_SENDER_UNQUALIFIED` requires a sender that enforces the selected
+Git profile. Follow the [qualified OpenShell configuration](../reference/repository-credentials/protected-openshell-git.md#configuration-for-a-qualified-release),
+then complete [middleware enrollment](repository-credentials/openshell-enrollment.md)
+with matching OpenShell 0.1.6 components and mandatory pre-credential hooks.
+Verify enforcement before deploying. Registering a service or source alone is
+not proof. Do not broaden a ref-limited grant to bypass the refusal.
 
 ## Choose the path before changing an installation
 
-| Intended use               | Requirement and limit                                                                                                                                                                                                                                                                              |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protected static inference | New local launches are retired; the following controller requirements remain for existing installations and owners. Kubernetes Compute and the same installed Driver for Sandbox and Credential Proxy; explicit whole-execution authority. The bundled legacy OpenShell release cannot enforce it. |
-| Prepared GitHub App access | Worker Token Service prepares credentials; OCC authorizes scope and lifetime; Credential Proxy installs and fences delivery. Protected delivery requires a qualified sender.                                                                                                                       |
-| Native prepared Git        | A separate explicit Kubernetes/dedicated Codex path without Sandbox or Credential Proxy; it does not provide OpenShell isolation. See [native Git](../reference/repository-credentials/prepared-native-git.md).                                                                                    |
+A Git-only middleware registration cannot serve an execution-profile source.
+Choose the required delivery path:
+
+| Intended use                                   | Action and limits                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protected static inference                     | For existing qualified installations, use Kubernetes Compute, matching Sandbox/Proxy and whole-execution authority. Select a build qualified for the source profile and configure its [execution middleware](#prepare-enforcement-trust-and-custody) under `drivers.credential_proxy`. The bundled legacy release cannot enforce this profile; new local launches remain retired. |
+| Prepared GitHub App access                     | Configure the qualified protected sender and complete middleware enrollment above. Token Service prepares the credential; Credential Proxy enforces delivery.                                                                                                                                                                                                                     |
+| Native prepared Git                            | Select the [native profile](../reference/repository-credentials/prepared-native-git.md#install-and-check), including `repository.nativeSender` and `repository.preparedGitHub`. Omit `repository.openShell`, `drivers.sandbox` and `drivers.credential_proxy`. This path provides no OpenShell isolation.                                                                         |
+| Ordinary Gateway sources without protected Git | For a source type offered by the selected [Credential Gateway](../reference/drivers/openshell-credential-gateway.md), use its ordinary profile. Remove unused `repository` configuration (including `repository.openShell`) and `drivers.credential_proxy`. Protected Git and Proxy execution protection are lost; Proxy-only source types remain unsupported.                    |
 
 For a packaged Driver, select its Sandbox and Credential Proxy capabilities
 from the same registration. The [Driver selection guide](../reference/drivers/selection.md#select-a-protected-sender)
@@ -32,8 +32,9 @@ shows the Installation settings and profile requirements. Selection establishes
 which implementation OCC loads; qualification establishes what the installed
 sender actually enforces.
 
-Use the [upgrade procedure](deploy/credential-proxy-upgrade.md) for an existing
-installation, including when a Gateway source or its owner must remain.
+For existing bindings or sources, complete the owner-preserving
+[upgrade and withdrawal procedure](deploy/credential-proxy-upgrade.md) before
+changing these selections.
 
 ## Prepare enforcement, trust, and custody
 

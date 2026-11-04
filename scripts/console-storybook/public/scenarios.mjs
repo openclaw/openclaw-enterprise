@@ -5225,7 +5225,7 @@ export const scenarios = {
     actions: shareExistingPerson,
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
     description:
-      "A failed mutation response leaves the outcome uncertain. Refresh current policy before explicitly retrying; no automatic replay occurs.",
+      "A failed sharing response reports an unconfirmed request result. Refresh current policy before explicitly retrying; no automatic replay occurs.",
     steps: [
       "Tab to the Principal ID, the acknowledgement and Share Agent. Each takes focus and looks unavailable, described by the alert that asks for Refresh sharing; typing, Enter, Space or a click changes nothing.",
     ],
@@ -7856,7 +7856,7 @@ export const scenarios = {
       "The browser gets a 503 after submitting a deployment. It cannot tell whether the Controller accepted the request.",
     steps: [
       "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
-      "When the recovery message takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
+      "When the message about the request result takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
     ],
   },
   deployRepositoryRequired: {

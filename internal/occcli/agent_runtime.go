@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occclient"
@@ -112,8 +113,8 @@ func (app *application) agentRevision(
 		}
 		noticef(
 			notices,
-			"notice: Showing active revision %s. Could not read runtime status for %s %s: %v. To retry that revision, pass --revision %s.",
-			active, other, probe.latest, probe.err, probe.latest,
+			"notice: showing active revision %s. Could not read runtime status for %s %s: %s. To retry that revision, pass --revision %s.",
+			active, other, probe.latest, strings.TrimSuffix(probe.err.Error(), "."), probe.latest,
 		)
 	case probe.unlisted && revisionAdvice != "":
 		// The list is filtered by revision read and the active revision is not in

@@ -251,7 +251,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
         code: "DEPENDENCY_UNAVAILABLE",
         message: DEPENDENCY_UNAVAILABLE,
       },
-      text: "We couldn't confirm whether your change was saved.",
+      text: "We couldn't confirm the result of your request.",
       available: false,
     },
     {
@@ -261,20 +261,20 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
         message:
           "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
       },
-      text: "We couldn't confirm whether your change was saved.",
+      text: "We couldn't confirm the result of your request.",
       available: false,
     },
     {
       // A 503 without a code, such as a proxy's, names no refusal whatever it says.
       error: { message: "Channel credential validation is temporarily unavailable." },
-      text: "We couldn't confirm whether your change was saved.",
+      text: "We couldn't confirm the result of your request.",
       available: false,
     },
     {
       // Only a 503 names a refusal: a gateway's 502 says nothing about the request.
       status: 502,
       error: { code: "CHANNEL_CREDENTIAL_UNAVAILABLE", message: "Synthetic named outage." },
-      text: "We couldn't confirm whether your change was saved.",
+      text: "We couldn't confirm the result of your request.",
       available: false,
     },
   ]) {
@@ -286,7 +286,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
     await alert.waitFor();
     assert.equal(
       await page
-        .getByText("We couldn't confirm whether your change was saved.", { exact: false })
+        .getByText("We couldn't confirm the result of your request.", { exact: false })
         .count(),
       available ? 0 : 1,
       label,
@@ -483,7 +483,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   await waitForEnabled(deploy);
   await deploy.click();
   await page
-    .getByText("We couldn't confirm whether your change was saved.", { exact: false })
+    .getByText("We couldn't confirm the result of your request.", { exact: false })
     .waitFor();
   assert.equal(await deploy.isDisabled(), true);
   assert.equal(deploymentRequests, 1);

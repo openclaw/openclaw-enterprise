@@ -2093,7 +2093,7 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
     .or(
       page
         .getByRole("alert")
-        .filter({ hasText: "We couldn't confirm whether your change was saved." }),
+        .filter({ hasText: "We couldn't confirm the result of your request." }),
     )
     .waitFor();
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
@@ -2665,7 +2665,7 @@ for (const swapped of ["Agent", "service principal"]) {
     const warning = page.getByRole("alert").filter({
       hasText:
         swapped === "Agent"
-          ? "We couldn't confirm whether your change was saved."
+          ? "We couldn't confirm the result of your request."
           : "service principal could not be confirmed",
     });
     // If creation incorrectly continues to Agent details, inspect the actual grant before failing.
@@ -2764,7 +2764,7 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     await page.getByRole("button", { name: "Create Agent" }).click();
     await page
       .getByRole("alert")
-      .filter({ hasText: "We couldn't confirm whether your change was saved." })
+      .filter({ hasText: "We couldn't confirm the result of your request." })
       .waitFor();
     assert.ok(committed?.id);
     assert.equal((await fixture.request("GET", `${path}/${committed.id}`)).status, 200);

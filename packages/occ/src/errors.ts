@@ -658,7 +658,7 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
  */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "This installation's Credential Proxy is configured for repository Git, not this credential source type. Ask an administrator to configure support for this source type.";
+    "This Credential Proxy's middleware serves only Git, not this source type. Ask an administrator to check `drivers.credential_proxy` and its middleware registration in the Credential Proxy guide.";
   static readonly repositoryRequired =
     "This installation requires a repository. Ask an administrator to confirm protected Git access is ready. Then select an approved repository, save this Agent, and deploy again.";
 

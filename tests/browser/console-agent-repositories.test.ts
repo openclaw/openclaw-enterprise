@@ -873,7 +873,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   committed.release();
   await page
     .getByText(
-      "We couldn't confirm whether your change was saved. Refresh the page and check before submitting it again.",
+      "We couldn't confirm the result of your request. Refresh the page and check before submitting it again.",
     )
     .waitFor();
   assert.equal(await save.isDisabled(), true);

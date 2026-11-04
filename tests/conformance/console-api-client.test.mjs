@@ -80,7 +80,7 @@ test("a disconnected JSON body reaches the caller's interrupted-read recovery", 
     );
     assert.equal(
       message(error, true),
-      "We couldn't confirm whether your change was saved. Refresh the page and check before submitting it again.",
+      "We couldn't confirm the result of your request. Refresh the page and check before submitting it again.",
     );
     return true;
   });

@@ -521,7 +521,7 @@ func TestAgentLogsDefaultToANewerRevisionWithPodsAndNameTheRevision(t *testing.T
 		{"newer revision has no Pods", []string{"rev_00000000-0000-4000-8000-000000000002"}, nil, "rev_00000000-0000-4000-8000-000000000001", "notice: reading the active revision rev_00000000-0000-4000-8000-000000000001\n"},
 		// A log reader without Agent operate cannot read the runtime description;
 		// the notice still names the newer revision it may read with --revision.
-		{"newer revision runtime is refused", nil, []string{"rev_00000000-0000-4000-8000-000000000002"}, "rev_00000000-0000-4000-8000-000000000001", "notice: Showing active revision rev_00000000-0000-4000-8000-000000000001. Could not read runtime status for newer revision rev_00000000-0000-4000-8000-000000000002: OCC operation failed (HTTP 403): FORBIDDEN: fixed message. To retry that revision, pass --revision rev_00000000-0000-4000-8000-000000000002."},
+		{"newer revision runtime is refused", nil, []string{"rev_00000000-0000-4000-8000-000000000002"}, "rev_00000000-0000-4000-8000-000000000001", "notice: showing active revision rev_00000000-0000-4000-8000-000000000001. Could not read runtime status for newer revision rev_00000000-0000-4000-8000-000000000002: OCC operation failed (HTTP 403): FORBIDDEN: fixed message. To retry that revision, pass --revision rev_00000000-0000-4000-8000-000000000002."},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stub := &runtimeLogStub{t: t, activeID: "rev_00000000-0000-4000-8000-000000000001", revisions: revisions, podless: test.podless, forbidden: test.forbidden, pages: []func(http.ResponseWriter, url.Values){
@@ -596,7 +596,7 @@ func TestAgentLogsNameTheOrderOfAnUnprobedOtherRevision(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "notice: Showing active revision rev_00000000-0000-4000-8000-000000000002. Could not read runtime status for " + test.other
+			want := "notice: showing active revision rev_00000000-0000-4000-8000-000000000002. Could not read runtime status for " + test.other
 			if !strings.Contains(errOut, want) || strings.Contains(errOut, "newer") {
 				t.Fatalf("notice = %q, want %q", errOut, want)
 			}
