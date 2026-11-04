@@ -12,6 +12,7 @@ import (
 )
 
 func TestImportRuntimePassesTheCheckoutSourceIdentity(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_BUILD_CA_FILE", "")
 	t.Setenv("OCC_KUBERNETES_RUNTIME_IMAGE", "")
 	repository := t.TempDir()
 	source := map[string]string{
@@ -50,6 +51,38 @@ build*) printf '%s\n' "$@" > build-args; exit 17 ;;
 	if got := strings.Split(strings.TrimSpace(string(arguments)), "\n"); !slices.Equal(got, want) {
 		t.Fatalf("runtime build arguments = %q, want %q", got, want)
 	}
+	// Send only the host path as a build secret. The bundle is never a build argument.
+	certDir := t.TempDir()
+	if err := writeDevelopmentRepositoryTLS(certDir, "test.local"); err != nil {
+		t.Fatal(err)
+	}
+	caFile := filepath.Join(certDir, "repository-ca.crt")
+	r.env["OCC_DEVELOPMENT_BUILD_CA_FILE"] = caFile
+	if _, err := r.importRuntime(context.Background(), &developmentState{}); err == nil {
+		t.Fatal("the failed build was reported as success")
+	}
+	arguments, err = os.ReadFile(filepath.Join(repository, "build-args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = slices.Insert(want, len(want)-3, "--secret", "id=build-ca,src="+caFile)
+	if got := strings.Split(strings.TrimSpace(string(arguments)), "\n"); !slices.Equal(got, want) {
+		t.Fatalf("runtime build arguments = %q, want %q", got, want)
+	}
+	// An unreadable bundle or accidental private key must stop before the engine runs.
+	if err := os.Remove(filepath.Join(repository, "build-args")); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{caFile + ".missing", certDir, filepath.Join(certDir, "repository-tls.key")} {
+		r.env["OCC_DEVELOPMENT_BUILD_CA_FILE"] = invalid
+		if _, err := r.importRuntime(context.Background(), &developmentState{}); err == nil || !strings.Contains(err.Error(), "OCC_DEVELOPMENT_BUILD_CA_FILE") {
+			t.Fatalf("unexpected build CA validation result: %v", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repository, "build-args")); !os.IsNotExist(err) {
+		t.Fatal("the engine ran with an invalid build CA")
+	}
+
 }
 
 func TestImportRuntimeRejectsInvalidSourceIdentityBeforeTheBuild(t *testing.T) {

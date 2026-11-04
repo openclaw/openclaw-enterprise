@@ -52,6 +52,47 @@ check the effective policy and a normal Agent turn; a saved selection alone does
 not prove approval routing. See the [approval policy](../../reference/agent-plugins.md#approval-policy)
 and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
 
+<a id="configure-slack-search"></a>
+
+## Configure a hosted MCP plugin
+
+A hosted MCP package pins its server endpoint and declares a credential slot.
+OCE discovers available tools using the selected account. On a dedicated OpenClaw
+Agent, select an attached credential for that slot and the upstream tool names
+the Agent may call. The worker advertises those tools; the Sandbox enforces the
+selection for both worker and script calls.
+[Managed MCP plugins](../../reference/agent-plugins.md#current-support)
+
+The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
+Drivers. Configure `/usr/local/bin/node` in `toolBinaries`, then register a
+`bearer-token` source with the package's MCP host, port, path and placeholder name.
+Reference the saved access token as its `token` Secret and set `protocol: mcp`.
+Attach the source to the Agent draft and grant the operator and Agent service
+principal `credential_source:operate` on it.
+[OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
+· [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
+
+Allow the OCE API to reach the MCP endpoint for **Load tools**. For HTTPS port 443,
+set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refresh
+them when DNS changes. Other ports need the Installation's managed egress policy.
+This setting is separate from model discovery. Worker calls use the Sandbox policy.
+
+Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
+Choose the tools to enable, then save and deploy. Loading tools again refreshes
+the inventory. Additional tools require selection and deployment before the Agent
+can use them. An empty selection leaves the worker server disabled.
+Removing the plugin keeps its independently attached
+credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
+to revoke a running version's credential access.
+
+For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
+`env_var: SLACK_MCP_TOKEN`. Select `slack_search_public` if the account advertises
+it. Inspect its worker server and tool filter:
+
+```sh
+OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
+```
+
 ## Before you start
 
 - [Connect the OCC CLI](../cli.md#connect-to-your-installation) to your

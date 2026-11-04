@@ -1,297 +1,30 @@
-import networkPolicySchema from "./network-policy-schema.mjs";
+import { createConfigurationStore } from "./configuration-store.mts";
+import { candidateDeploymentError } from "./deployment-fixture.mts";
+import { createAgentLifecycle } from "./agent-lifecycle.mts";
+import { installationDriverConfigurations, installationFixture } from "./installation-fixture.mts";
+import { configurationValues } from "./configuration-fixture.mts";
+import { serveChannelDirectory } from "./channel-directory-fixture.mts";
+import networkPolicySchema from "./network-policy-schema.mts";
+import { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
+import {
+  createFixtureFetch,
+  fixtureError as error,
+  fixtureResponse as response,
+} from "./preview-rules.mts";
 import swePreset from "/console/swe-preset.mjs";
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
-const currentRevisionId = "rev_00000000-0000-4000-8000-000000000006";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
-const hiddenRevisionId = "rev_00000000-0000-4000-8000-000000000008";
-// v8, deployed from elsewhere after the page loaded (failedRedeployOnReread).
-const redeployRevisionId = "rev_00000000-0000-4000-8000-000000000018";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
 
-function initialDeploymentProgress(status) {
-  if (status !== "queued" && status !== "running") {
-    return null;
-  }
-  return { lastAttempt: null, nextAttemptAt: status === "queued" ? createdAt : null };
-}
-
-// Another browser's save in configurationChangedElsewhere: objects merge, other values replace.
-function mergeElsewhere(target, changes) {
-  for (const [key, value] of Object.entries(changes)) {
-    const current = target[key];
-    if (
-      value !== null &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      current !== null &&
-      typeof current === "object" &&
-      !Array.isArray(current)
-    ) {
-      mergeElsewhere(current, value);
-    } else {
-      target[key] = structuredClone(value);
-    }
-  }
-}
-
-function slackChannels(scenario) {
-  if (scenario.slackChannels !== undefined) {
-    return structuredClone(scenario.slackChannels);
-  }
-  return {
-    CDEMO123: {
-      requireMention: true,
-      users: scenario.slackAllowEveryone ? ["*"] : ["UDEMO123"],
-    },
-  };
-}
-
-function configurationValues(scenario) {
-  const values = {
-    gateway: { mode: "local" },
-    agents: {
-      defaults: {
-        model: "codex/gpt-4.1",
-        models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
-      },
-    },
-    channels: {},
-  };
-  if (scenario.gatewayPassword) {
-    values.gateway.auth = {
-      password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
-    };
-  }
-  if (scenario.gatewayPasswordProviderless) {
-    // A reference an older release saved without a provider, which OpenClaw cannot read.
-    values.gateway.auth = { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } };
-  }
-  if (scenario.secretProviderAliasRefused) {
-    // An env alias an older release saved in upper case, which OpenClaw's config check refuses.
-    values.secrets = { defaults: { env: "BAD" } };
-  }
-  if (scenario.pluginSecretInputProviderless) {
-    // A Google web search header an older release saved as a SecretRef without a provider, which
-    // OpenClaw cannot read, so the Gateway exits at startup.
-    values.plugins = {
-      entries: {
-        google: {
-          config: {
-            webSearch: { headers: { "X-Goog-User-Project": { source: "env", id: "GOOG_TOKEN" } } },
-          },
-        },
-      },
-    };
-  }
-  if (scenario.pluginDeny !== undefined) {
-    values.plugins = { ...values.plugins, deny: structuredClone(scenario.pluginDeny) };
-  }
-  if (scenario.configInclude) {
-    // An OpenClaw $include an older release saved, which would merge settings OCE never checked.
-    values.agents.defaults.$include = "./defaults.json";
-  }
-  if (scenario.pluginEntryKeyVariant) {
-    // A Codex entry an older release saved beside codex, which OpenClaw merges into codex.
-    values.plugins = {
-      entries: {
-        codex: { config: { appServer: { approvalPolicy: "on-request" } } },
-        Codex: { enabled: true },
-      },
-    };
-  }
-  if (scenario.openClawSandbox) {
-    // OpenClaw's own sandbox, which an older release saved and the OCE runtime cannot run.
-    values.agents.defaults.sandbox = { mode: "all" };
-  }
-  if (scenario.providerKeyVariant) {
-    // An OpenAI model provider key an older release saved, which OpenClaw applies to openai.
-    values.models = { providers: { OpenAI: { baseUrl: "https://models.example.test/v1" } } };
-  }
-  if (scenario.codexPluginsDisabled) {
-    // plugins.enabled false saved before Kubernetes Compute refused it on Dedicated Codex, whose
-    // Gateway runs the codex plugin.
-    values.plugins = { ...values.plugins, enabled: false };
-  }
-  if (scenario.trustedProxyWithoutMachine) {
-    // A trusted-proxy allowlist without occ-workspace-files, saved before Kubernetes Compute
-    // refused it.
-    values.gateway = {
-      ...values.gateway,
-      auth: {
-        ...values.gateway?.auth,
-        mode: "trusted-proxy",
-        trustedProxy: { userHeader: "x-occ-identity", allowUsers: ["oidc:member-01"] },
-      },
-    };
-  }
-  if (scenario.kubernetesEntryKeyVariant) {
-    // A File-Transfer entry saved before Kubernetes Compute refused it, which OpenClaw merges into
-    // file-transfer, the entry Kubernetes Compute enables for the workspace node.
-    values.plugins = { entries: { "File-Transfer": { enabled: true } } };
-  }
-  if (scenario.gatewayPasswordAllowlistOmits) {
-    // A default env alias on a configured env provider whose allowlist leaves out the generated
-    // password, so OpenClaw cannot read the reference Enable gateway password access would write.
-    values.secrets = {
-      defaults: { env: "vault" },
-      providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } },
-    };
-  }
-  if (scenario.messageQueue !== undefined) {
-    values.messages = { queue: structuredClone(scenario.messageQueue) };
-  }
-  if (scenario.retiredSetting) {
-    // A setting an older release saved and the pinned OpenClaw has since retired.
-    values.security = { preset: "corporate" };
-  }
-  if (scenario.slack) {
-    values.channels.slack = {
-      // `slackOff`: Disable Slack saved the channel off and kept its bindings.
-      enabled: scenario.slackOff !== true,
-      mode: scenario.slackMode ?? "socket",
-      ...(scenario.slackReplyToMode === undefined
-        ? {}
-        : { replyToMode: scenario.slackReplyToMode }),
-      ...(scenario.slackEnterpriseOrgInstall ? { enterpriseOrgInstall: true } : {}),
-      dmPolicy: scenario.slackPolicy ?? "pairing",
-      groupPolicy: scenario.slackPolicy === "open" ? "open" : "allowlist",
-      ...(scenario.slackTokens ?? {
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-      }),
-      allowFrom:
-        scenario.slackAllowFrom ?? (scenario.slackPolicy === "open" ? ["*"] : ["UDEMO123"]),
-      channels: slackChannels(scenario),
-    };
-  }
-  return values;
-}
-
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
-function candidateDeploymentError(scenario, checkedAt) {
-  if (scenario.bootstrapFailure) {
-    return {
-      code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
-      message: "Harness credential initialization failed. Correct the cause and deploy again.",
-      data: {
-        preparation: {
-          workload: {
-            kind: "Job",
-            name: "oauth-bootstrap-demo",
-            uid: "job-demo-uid",
-            namespace: "oce-tenant-demo",
-          },
-          reason: "retry_limit",
-          observedAt: checkedAt,
-          startedAt: checkedAt,
-          finishedAt: checkedAt,
-          pods: [
-            {
-              name: "oauth-bootstrap-demo-pod",
-              uid: "bootstrap-demo-uid",
-              phase: "Failed",
-              scheduling: "scheduled",
-              containers: [
-                {
-                  name: "prepare-oauth-home",
-                  kind: "init",
-                  state: "terminated",
-                  reason: "Completed",
-                  exitCode: 0,
-                  startedAt: checkedAt,
-                  finishedAt: checkedAt,
-                },
-                {
-                  name: "oauth-bootstrap",
-                  kind: "main",
-                  state: "terminated",
-                  reason: "Error",
-                  exitCode: 1,
-                  startedAt: checkedAt,
-                  finishedAt: checkedAt,
-                },
-              ],
-            },
-          ],
-        },
-      },
-    };
-  }
-  if (scenario.candidateSuperseded) {
-    return {
-      code: "REVISION_SUPERSEDED",
-      message: "Deployment was superseded by a newer revision.",
-    };
-  }
-  if (scenario.candidateStopped) {
-    return {
-      code: "REVISION_STOPPED",
-      message: "Deployment ended because the Agent was stopped.",
-    };
-  }
-  // Deployment error messages copy deploymentErrorMessage in
-  // packages/occ/src/state/controller-work.ts; keep them in step.
-  if (scenario.candidateCredentialRejected) {
-    return {
-      code: "RUNTIME_AUTHENTICATION_FAILED",
-      message:
-        "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
-    };
-  }
-  if (scenario.candidateModelProbeCause) {
-    return {
-      code: "RUNTIME_MODEL_PROBE_FAILED",
-      message:
-        "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.",
-      data: {
-        runtimeFailure: {
-          component: "gateway",
-          check: "model-probe",
-          code: "MODEL_PROBE_FAILED",
-          checkedAt,
-          cause: scenario.candidateModelProbeCause,
-        },
-      },
-    };
-  }
-  // A scenario can name any failure code with the message OCC returns for it.
-  if (scenario.candidateFailure) {
-    return scenario.candidateFailure;
-  }
-  if (scenario.candidateDependencyUnavailable) {
-    return {
-      code: "DEPENDENCY_UNAVAILABLE",
-      message:
-        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
-    };
-  }
-  if (scenario.candidateSelected) {
-    return {
-      code: "REVISION_FINALIZATION_INCOMPLETE",
-      message:
-        "Deployment failed. Check this version's logs; if they show nothing, ask an Installation administrator to check the controller worker log for this code.",
-    };
-  }
-  return {
-    code: "CONVERGENCE_DEADLINE_EXCEEDED",
-    message:
-      "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
-    data: {
-      timeoutMs: 60000,
-      runtimeFailure: { component: "harness", check: "readiness", code: "TIMEOUT", checkedAt },
-    },
-  };
-}
-
 export function installFixture(scenario, evidence) {
-  const rules = structuredClone(scenario.rules ?? []);
   const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
@@ -314,25 +47,15 @@ export function installFixture(scenario, evidence) {
   let serial = 100;
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
-  const configs = new Map();
-  // Reads of each Configuration before another browser's save (configurationChangedElsewhere).
-  const configurationReads = new Map();
-  let configurationChangedElsewhere = false;
-  const agents = new Map();
-  const revisions = new Map();
-  const deployments = new Map();
-  const provisioning = new Map();
+  const configurationStore = createConfigurationStore(scenario, namespaceId, createdAt, nextId);
+  const { configs } = configurationStore;
   const credentials = new Map();
   const credentialSources = new Map();
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map();
-  const files = new Map();
   const secrets = new Map();
-  const stagedWorkspaceFiles = new Map();
   const roles = [];
   const bindings = [];
-  const deleted = new Set();
-  const clearRevisionOnRead = new Set();
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
@@ -472,235 +195,16 @@ export function installFixture(scenario, evidence) {
       resourceId: harnessCredential.id,
     });
   }
-  let selectedRevisionId = null;
-  if (scenario.candidateSuperseded) {
-    // A newer v8 the viewer cannot read superseded v7 and is now selected.
-    selectedRevisionId = hiddenRevisionId;
-  } else if (scenario.candidateDeploymentStatus) {
-    selectedRevisionId =
-      scenario.candidateDeploymentStatus === "succeeded" || scenario.candidateSelected
-        ? candidateRevisionId
-        : currentRevisionId;
-  } else if (scenario.deployed) {
-    selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
-  }
-  let agentReadCount = 0;
-  let agentListReadCount = 0;
-  let runtimeStatusReads = 0;
-  let runtimeLogReads = 0;
-  const agent = {
-    id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
+  const lifecycle = createAgentLifecycle(scenario, {
     namespaceId,
-    name: scenario.agentName ?? "Research assistant",
-    status: scenario.deleting ? "deleting" : "active",
-    desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
-    configurationId: config.id,
-    executionMode: "dedicated",
-    gatewayManagedMode: true,
-    harnessAuth: selectedAuth,
-    credentialSources: structuredClone(
-      scenario.credentialSources ??
-        (selectedAuth?.method === "credential_source" ? [{ sourceId: selectedAuth.sourceId }] : []),
-    ),
-    ...(scenario.agentPlugins ? { plugins: structuredClone(scenario.agentPlugins) } : {}),
-    ...(scenario.agentPluginApprovers !== undefined
-      ? { pluginApprovers: structuredClone(scenario.agentPluginApprovers) }
-      : {}),
-    servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId:
-      scenario.stopNoSelection || scenario.firstDeploymentFailed || scenario.firstDeploymentQueued
-        ? null
-        : selectedRevisionId,
-    ...(scenario.repositoryAccess
-      ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
-      : {}),
-    ...(scenario.repositoryBindings
-      ? { repositoryBindings: structuredClone(scenario.repositoryBindings) }
-      : {}),
-  };
-  for (const [name, content] of Object.entries(scenario.workspaceFiles ?? {})) {
-    files.set(`${agent.id}/${name}`, content);
-  }
-
-  agents.set(agent.id, agent);
-  credentials.set(agent.id, { transportConfigured: scenario.transport !== false });
-  function snapshot(owner, id, revision) {
-    const configuration = configs.get(owner.configurationId);
-    const model = configuration.values.agents?.defaults?.model;
-    const primaryModel = typeof model === "string" ? model : model?.primary;
-    const harnessId =
-      configuration.values.agents?.defaults?.models?.[primaryModel]?.agentRuntime?.id ??
-      (primaryModel?.startsWith("codex/") ? "codex" : "openclaw");
-    return {
-      id,
-      namespaceId,
-      agentId: owner.id,
-      revision,
-      backendId: owner.backendId ?? null,
-      gatewayManagedMode: owner.gatewayManagedMode,
-      configurationId: configuration.id,
-      configurationKind: configuration.kind,
-      configurationGeneration: configuration.generation,
-      createdAt,
-      configuration: structuredClone(configuration.values),
-      secretBindings: structuredClone(configuration.secretBindings),
-      harnessAuth: structuredClone(owner.harnessAuth),
-      credentialSources: structuredClone(owner.credentialSources),
-      ...(owner.pluginApprovers !== undefined
-        ? { pluginApprovers: structuredClone(owner.pluginApprovers) }
-        : {}),
-      ...(owner.plugins
-        ? {
-            plugins: {
-              driver: structuredClone(scenario.pluginCapabilities.driver),
-              plugins: structuredClone(owner.plugins),
-            },
-          }
-        : {}),
-      harness: { id: harnessId, version: "demo", mode: owner.executionMode },
-      compute: { id: "kubernetes-demo", implementation: "kubernetes" },
-      ...(scenario.policyState ? { sandboxDriverId: "sandbox-story" } : {}),
-      servicePrincipalId: owner.servicePrincipalId,
-      ...(owner.repositoryBindings?.length
-        ? {
-            repositoryCredentials: {
-              driver: { id: "github-demo", implementation: "github" },
-              deadlineWallMs: Date.parse(createdAt) + 3600000,
-              bindings: owner.repositoryBindings.map((binding) => ({
-                ...binding,
-                backendId: "github-demo",
-                grant: {
-                  providerInstanceId: "github-demo",
-                  repositoryId: `demo-${binding.repositoryRef}`,
-                  grantId: `demo-${binding.repositoryRef}-${binding.profile}`,
-                },
-              })),
-            },
-          }
-        : {}),
-    };
-  }
-  if (scenario.deployed) {
-    const revisionId = scenario.candidateDeploymentStatus
-      ? currentRevisionId
-      : "rev_00000000-0000-4000-8000-000000000001";
-    const currentRevision = snapshot(agent, revisionId, scenario.candidateDeploymentStatus ? 6 : 1);
-    if (scenario.candidateDeploymentStatus) {
-      currentRevision.createdAt = "2026-09-25T12:00:00.000Z";
-      currentRevision.configurationGeneration = 1;
-      currentRevision.configuration.agents.defaults.model = "codex/gpt-4.1";
-    }
-    revisions.set(revisionId, currentRevision);
-    if (scenario.revisionHistory) {
-      // Earlier deploys of the same Agent, one per day before the current version.
-      currentRevision.revision = scenario.revisionHistory;
-      for (let number = 1; number < scenario.revisionHistory; number += 1) {
-        const older = snapshot(
-          agent,
-          `rev_00000000-0000-4000-8000-${String(100 + number).padStart(12, "0")}`,
-          number,
-        );
-        older.createdAt = new Date(
-          Date.parse(createdAt) - (scenario.revisionHistory - number) * 86_400_000,
-        ).toISOString();
-        revisions.set(older.id, older);
-        // An earlier version whose deployment failed, or that a newer one superseded
-        // (earlierVersionError), before a later one succeeded.
-        if (scenario.earlierFailedVersion === number) {
-          deployments.set(older.id, {
-            deploymentId: older.id,
-            namespaceId,
-            agentId: agent.id,
-            status: "failed",
-            cleanup: null,
-            progress: null,
-            error:
-              scenario.earlierVersionError ?? candidateDeploymentError(scenario, older.createdAt),
-            warnings: [],
-          });
-        }
-      }
-    }
-    deployments.set(revisionId, {
-      deploymentId: revisionId,
-      namespaceId,
-      agentId: agent.id,
-      // A failed or still queued first deployment selects no version for service.
-      status: scenario.firstDeploymentFailed
-        ? "failed"
-        : scenario.firstDeploymentQueued
-          ? "queued"
-          : "succeeded",
-      progress: null,
-      error: scenario.firstDeploymentFailed
-        ? candidateDeploymentError(scenario, currentRevision.createdAt)
-        : null,
-      warnings: [],
-    });
-    if (scenario.candidateDeploymentStatus) {
-      const candidate = snapshot(agent, candidateRevisionId, 7);
-      candidate.createdAt = "2026-09-26T22:52:53.000Z";
-      revisions.set(candidate.id, candidate);
-      deployments.set(candidate.id, {
-        deploymentId: candidate.id,
-        namespaceId,
-        agentId: agent.id,
-        status: scenario.candidateDeploymentStatus,
-        cleanup: scenario.cleanupStatus
-          ? { status: scenario.cleanupStatus, nextAttemptAt: null }
-          : null,
-        progress: ["queued", "running"].includes(scenario.candidateDeploymentStatus)
-          ? {
-              lastAttempt: scenario.deploymentLastAttempt ?? null,
-              nextAttemptAt:
-                scenario.candidateDeploymentStatus === "queued" ? "2026-09-26T22:53:01.000Z" : null,
-            }
-          : null,
-        error:
-          scenario.candidateDeploymentStatus === "failed"
-            ? candidateDeploymentError(scenario, candidate.createdAt)
-            : null,
-        warnings: scenario.candidateDeploymentWarnings ?? [],
-        // The next status poll records success and selects v7 for service.
-        ...(scenario.candidateActivates ? { reads: 0 } : {}),
-      });
-    }
-  }
-  if (scenario.emptyAgents) {
-    agents.clear();
-  } else {
-    agents.set("agt_00000000-0000-4000-8000-000000000002", {
-      ...agent,
-      id: "agt_00000000-0000-4000-8000-000000000002",
-      name: "Documentation assistant",
-      activeRevisionId: null,
-    });
-  }
-  if (scenario.unreadableAgentConfiguration) {
-    for (const field of ["harnessAuth", "plugins", "pluginApprovers", "repositoryBindings"]) {
-      delete agent[field];
-    }
-    agent.configurationReadError = {
-      code: "SAVED_CONFIGURATION_UNREADABLE",
-      field: scenario.unreadableAgentConfiguration,
-    };
-  }
-  if (scenario.unreadableRevisionConfiguration) {
-    const saved = revisions.get(selectedRevisionId);
-    revisions.set(saved.id, {
-      id: saved.id,
-      namespaceId: saved.namespaceId,
-      agentId: saved.agentId,
-      revision: saved.revision,
-      backendId: saved.backendId,
-      createdAt: saved.createdAt,
-      configurationReadError: {
-        code: "SAVED_CONFIGURATION_UNREADABLE",
-        field: scenario.unreadableRevisionConfiguration,
-      },
-    });
-  }
+    nextId,
+    configs,
+    config,
+    selectedAuth,
+    credentials,
+    deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
+  });
   const preset = {
     id: scenario.swePreset ? "pre_swe_codex" : "pre_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -869,7 +373,7 @@ export function installFixture(scenario, evidence) {
   let sandboxPolicy = {
     id: "sbp_00000000-0000-4000-8000-000000000001",
     namespaceId,
-    agentId: agent.id,
+    agentId: lifecycle.seedAgent().id,
     version: 1,
     additions:
       scenario.policyState === "protected"
@@ -927,117 +431,8 @@ export function installFixture(scenario, evidence) {
           : "SANDBOX_POLICY_CEILING_CHANGED",
     };
   }
-  const response = (
-    data,
-    status = 200,
-    errorCode,
-    meta = {},
-    errorMessage,
-    details,
-    remainingResources,
-  ) =>
-    new Response(
-      JSON.stringify({
-        ...(errorCode
-          ? {
-              error: {
-                code: errorCode,
-                message: errorMessage ?? "The selected preview simulates this failure.",
-                ...(details ? { details } : {}),
-                ...(remainingResources ? { remainingResources } : {}),
-              },
-            }
-          : { data }),
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000001", ...meta },
-      }),
-      { status, headers: { "content-type": "application/json" } },
-    );
-  const error = (status, code, message) => response(null, status, code, {}, message);
-  const answer = async (input, options = {}, call = {}) => {
-    const url = new URL(typeof input === "string" ? input : input.url, location.origin);
+  const answer = async (url, method, body) => {
     const path = url.pathname;
-    const method = options.method ?? "GET";
-    const body = options.body ? JSON.parse(options.body) : {};
-    evidence.requests.push({ method, path });
-    for (const rule of rules) {
-      if (
-        rule.used ||
-        (rule.method ?? "GET") !== method ||
-        (rule.path && rule.path !== path) ||
-        (rule.prefix && !path.startsWith(rule.prefix)) ||
-        (rule.pathIncludes && !path.includes(rule.pathIncludes)) ||
-        (rule.suffix && !path.endsWith(rule.suffix)) ||
-        (rule.queryParam && !url.searchParams.has(rule.queryParam)) ||
-        (rule.bodyHasIds !== undefined && rule.bodyHasIds !== Array.isArray(body.ids))
-      ) {
-        continue;
-      }
-      if (rule.skip > 0) {
-        rule.skip -= 1;
-        continue;
-      }
-      rule.used = rule.once === true;
-      if (rule.lostAnswer) {
-        call.lost = true;
-        break;
-      }
-      if (rule.delayMs) {
-        await new Promise((resolve, reject) => {
-          const finish = () => {
-            options.signal?.removeEventListener("abort", abort);
-            resolve();
-          };
-          const timer = setTimeout(finish, rule.delayMs);
-          const abort = () => {
-            clearTimeout(timer);
-            reject(options.signal?.reason ?? new DOMException("Aborted", "AbortError"));
-          };
-          if (options.signal?.aborted) {
-            abort();
-          } else {
-            options.signal?.addEventListener("abort", abort, { once: true });
-          }
-        });
-      }
-      if (rule.hold) {
-        return new Promise((_resolve, reject) => {
-          const abort = () =>
-            reject(options.signal?.reason ?? new DOMException("Aborted", "AbortError"));
-          if (options.signal?.aborted) {
-            abort();
-          } else {
-            options.signal?.addEventListener("abort", abort, { once: true });
-          }
-        });
-      }
-      if (rule.networkError) {
-        // The browser's own failure for a request that never reaches the API (offline).
-        throw new TypeError("Failed to fetch");
-      }
-      if (rule.bodyError) {
-        // A simulated after-headers failure exercises the production body reader.
-        // Real socket interruption is proved separately by the transport tests.
-        return new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(new TextEncoder().encode('{"data":'));
-              queueMicrotask(() => controller.error(new TypeError("Response body interrupted")));
-            },
-          }),
-          { headers: { "content-type": "application/json" } },
-        );
-      }
-      if (rule.status) {
-        const failure = response(null, rule.status, rule.code, {}, rule.message, rule.details);
-        if (rule.retryAfter !== undefined) {
-          failure.headers.set("retry-after", String(rule.retryAfter));
-        }
-        return failure;
-      }
-      if (rule.data !== undefined) {
-        return response(rule.data);
-      }
-    }
     if (path === "/api/auth/providers" && method === "GET") {
       return response({
         github: scenario.githubEnabled === true,
@@ -1073,162 +468,10 @@ export function installFixture(scenario, evidence) {
       return response({});
     }
     if (path === "/installation/driver-configurations" && method === "GET") {
-      return response({
-        configurations: [
-          ...(scenario.installationNestedValues
-            ? [
-                {
-                  capability: "configuration",
-                  driverId: "config-example-package",
-                  implementation: "example-configuration-driver",
-                  scope: "installation",
-                  key: "startup",
-                  binding: "installation-startup",
-                  configurationSchema: {
-                    type: "object",
-                    properties: { operatorResources: { writeOnly: true } },
-                  },
-                  startupConfiguration: {
-                    endpoint: "/configuration/read",
-                    optionalValues: {
-                      enabled: false,
-                      capacity: 0,
-                      fallback: null,
-                      emptyText: "",
-                      list: [],
-                      record: {},
-                      ["customfield".repeat(8)]: "configurationvalue".repeat(20),
-                      nested: Array.from({ length: 12 }).reduce(
-                        (value, _, index) => ({ [`level${index + 1}`]: [value] }),
-                        "Nested leaf",
-                      ),
-                    },
-                    operatorResources: "[redacted]",
-                    workerGroups: Array.from({ length: 8 }, (_, index) => ({
-                      name: `Group ${index + 1}`,
-                      routes: ["/workspace/read", "/workspace/write"],
-                      description:
-                        index === 0
-                          ? "<b>Literal configuration text</b>"
-                          : "Configured worker group",
-                    })),
-                  },
-                  actions: {},
-                },
-              ]
-            : []),
-          {
-            capability: "credential_gateway",
-            driverId: "credential-gateway-openshell",
-            implementation: "openshell",
-            scope: "installation",
-            key: "startup",
-            binding: "installation-startup",
-            configurationSchema: {
-              type: "object",
-              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
-              required: ["binaries"],
-              additionalProperties: false,
-              properties: {
-                binaries: { type: "array", items: { type: "string" }, minItems: 1 },
-                toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
-              },
-            },
-            ...(scenario.installationValuesUnavailable
-              ? {}
-              : {
-                  startupConfiguration: {
-                    binaries: ["/usr/bin/git", "/usr/bin/curl"],
-                    toolBinaries: ["/usr/bin/python3"],
-                  },
-                }),
-            actions: {},
-          },
-          {
-            capability: "sandbox",
-            driverId: "sandbox-openshell",
-            implementation: "openshell",
-            scope: "installation",
-            key: "startup",
-            binding: "installation-startup",
-            configurationSchema: {
-              type: "object",
-              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
-              additionalProperties: false,
-              properties: {
-                gateway: {
-                  type: "object",
-                  properties: {
-                    workspaceMode: { type: "string" },
-                    operatorWorkspaceResources: { type: "array", writeOnly: true },
-                  },
-                },
-              },
-            },
-            ...(scenario.installationValuesUnavailable
-              ? {}
-              : {
-                  startupConfiguration: {
-                    gateway: {
-                      workspaceMode: "operator",
-                      operatorWorkspaceResources: "[redacted]",
-                    },
-                  },
-                }),
-            actions: {},
-          },
-          {
-            capability: "iam",
-            driverId: "native-iam",
-            implementation: "native",
-            scope: "installation",
-            key: "startup",
-            binding: "installation-startup",
-            configurationSchema: {
-              type: "object",
-              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
-              additionalProperties: false,
-              properties: {},
-            },
-            ...(scenario.installationValuesUnavailable ? {} : { startupConfiguration: {} }),
-            actions: {},
-          },
-        ],
-      });
+      return response(installationDriverConfigurations(scenario));
     }
     if (path === "/installation" && method === "GET") {
-      return response({
-        id: "ins_00000000-0000-4000-8000-000000000001",
-        name: "Demo installation",
-        createdAt,
-        capabilities: {
-          ...(scenario.nativeAdminSetup ? { nativeAdmin: true } : {}),
-          ...(scenario.unsupportedProvisioning === true
-            ? {}
-            : { agentProvisioning: { executionModes: ["dedicated"] } }),
-          ...(scenario.nativeWorkerSupport === false
-            ? {}
-            : { nativeWorkers: { support: scenario.nativeWorkerSupport ?? "pinned-runtime" } }),
-          ...(scenario.openclawExecutionModes === undefined
-            ? {}
-            : {
-                openclaw: {
-                  executionModes: scenario.openclawExecutionModes,
-                  ...(scenario.openclawSettingRefusal
-                    ? { settingRefusals: { dedicated: scenario.openclawSettingRefusal } }
-                    : {}),
-                  ...(scenario.sandboxDriverUnavailable ? { sandboxDriverUnavailable: true } : {}),
-                },
-              }),
-          ...(scenario.credentialSourceTypes !== undefined
-            ? { credentialSources: { types: scenario.credentialSourceTypes } }
-            : {}),
-          ...(scenario.pluginCapabilities ? { pluginPolicies: scenario.pluginCapabilities } : {}),
-          ...(scenario.pluginDiscoveryCredential
-            ? { pluginDiscovery: { credential: scenario.pluginDiscoveryCredential } }
-            : {}),
-        },
-      });
+      return response(installationFixture(scenario, createdAt));
     }
     if (path === "/namespaces" && method === "POST") {
       if (namespaces.some((item) => item.name === body.name)) {
@@ -1433,89 +676,30 @@ export function installFixture(scenario, evidence) {
         return selectedPreset ? response(selectedPreset) : error(404);
       }
       if (resource === "agents/plugins" && method === "POST" && scenario.pluginDiscovery) {
-        const query = body.q?.trim().toLowerCase();
-        if (query) {
-          const matches = Object.values(scenario.pluginDiscovery.pages)
-            .flatMap((page) => page.plugins)
-            .filter((entry) =>
-              [entry.name, entry.id, entry.description ?? ""].some((value) =>
-                value.toLowerCase().includes(query),
-              ),
-            );
-          const offset = body.cursor ? Number(body.cursor.slice("search-".length)) : 0;
-          return response({
-            plugins: matches.slice(offset, offset + 20),
-            nextCursor: offset + 20 < matches.length ? `search-${offset + 20}` : null,
-            setup: scenario.pluginDiscovery.pages.initial.setup,
-          });
-        }
-        const page = scenario.pluginDiscovery.pages[body.cursor ?? "initial"];
-        return page ? response(page) : error(400, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
+        return servePluginDiscovery(scenario.pluginDiscovery, "catalog", body, response, error);
       }
       if (resource === "agents/plugins/details" && method === "POST" && scenario.pluginDiscovery) {
-        const entry = scenario.pluginDiscovery.details[body.pluginId];
-        return entry ? response(entry) : error(503, "PLUGIN_DISCOVERY_UNAVAILABLE");
+        return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
       }
       if (resource === "channel-directory/lookup" && method === "POST") {
-        if (!secrets.has(body.secretId) || !["users", "channels"].includes(body.kind)) {
-          return error(400);
-        }
-        const candidates =
-          body.kind === "users"
-            ? [
-                { id: "UDEMO123", name: "alex.chen", displayName: "Alex Chen" },
-                { id: "UDEMO124", name: "alex.ops", displayName: "Alex Chen" },
-                { id: "WDEMO125", name: "sam.rivers", displayName: "Sam Rivers" },
-                { id: "UDEMO126", name: "riley.park", displayName: "Riley Park" },
-                { id: "UDEMO127", name: "morgan.lee", displayName: "Morgan Lee" },
-                { id: "UDEMO128", name: "jordan.bell", displayName: "Jordan Bell" },
-                { id: "UDEMO129", name: "taylor.reed", displayName: "Taylor Reed" },
-                { id: "UDEMO130", name: "casey.wong", displayName: "Casey Wong" },
-                { id: "UDEMO131", name: "jamie.stone", displayName: "Jamie Stone" },
-              ]
-            : [
-                { id: "CDEMO123", name: "general" },
-                { id: "GDEMO124", name: "incident-private" },
-                { id: "CDEMO125", name: "platform" },
-                { id: "CDEMO126", name: "releases" },
-                { id: "CDEMO127", name: "support" },
-                { id: "CDEMO128", name: "design" },
-                { id: "CDEMO129", name: "engineering" },
-                { id: "CDEMO130", name: "product" },
-                { id: "CDEMO131", name: "announcements" },
-              ];
-        const query = (body.query ?? "").toLowerCase();
-        const matches = candidates.filter((candidate) =>
-          body.ids
-            ? body.ids.includes(candidate.id)
-            : [candidate.id, candidate.name, candidate.displayName ?? ""].some((value) =>
-                value.toLowerCase().includes(query),
-              ),
-        );
-        const offset = body.cursor === "page-2" ? 7 : 0;
-        if (body.cursor && body.cursor !== "page-2") {
-          return error(400);
-        }
-        const nextCursor = !body.ids && matches.length > offset + 7 ? "page-2" : undefined;
-        evidence.directoryResponses.push({
-          kind: body.kind,
-          query: body.query ?? "",
-          cursor: body.cursor ?? null,
-          ids: body.ids ?? null,
-        });
-        return response({
-          workspaceId: "TDEMO123",
-          workspaceName: "Demo workspace",
-          candidates: body.ids ? matches : matches.slice(offset, offset + 7),
-          ...(nextCursor ? { nextCursor } : {}),
-          complete: !nextCursor,
-        });
+        return serveChannelDirectory(body, secrets, evidence);
       }
       if (resource === "credential-sources") {
         if (method === "GET") {
           return response([...credentialSources.values()]);
         }
         if (method === "POST") {
+          if (
+            scenario.credentialRegistrationOutcome === "invalid-config" &&
+            !credentialRegistrationFailed
+          ) {
+            credentialRegistrationFailed = true;
+            return error(
+              400,
+              "INVALID_REQUEST",
+              "Credential destination authorization must match the Installation model provider.",
+            );
+          }
           const uncertain = scenario.credentialRegistrationOutcome && !credentialRegistrationFailed;
           const id = nextId("csr");
           const saved = {
@@ -1566,41 +750,9 @@ export function installFixture(scenario, evidence) {
           return new Response(null, { status: 204 });
         }
       }
-      if (resource === "configurations" && method === "POST") {
-        const saved = {
-          ...body,
-          id: nextId("cfg"),
-          namespaceId,
-          generation: 1,
-          createdAt,
-        };
-        configs.set(saved.id, saved);
-        return response(saved, 201);
-      }
-      if (resource.startsWith("configurations/")) {
-        const saved = configs.get(resource.split("/")[1]);
-        if (!saved) {
-          return error(404);
-        }
-        if (method === "GET") {
-          // Another browser saves this Configuration once the page has read it `afterReads` times
-          // (configurationChangedElsewhere; 1 by default), so the next save preflight finds a
-          // newer generation.
-          if (scenario.configurationChangedElsewhere && !configurationChangedElsewhere) {
-            const reads = configurationReads.get(saved.id) ?? 0;
-            if (reads >= (scenario.configurationChangedElsewhere.afterReads ?? 1)) {
-              configurationChangedElsewhere = true;
-              saved.generation += 1;
-              mergeElsewhere(saved.values, scenario.configurationChangedElsewhere.values ?? {});
-            }
-            configurationReads.set(saved.id, reads + 1);
-          }
-          return response(saved);
-        }
-        if (method === "PATCH") {
-          Object.assign(saved, body, { generation: saved.generation + 1 });
-          return response({ ...saved, id: scenario.configurationSaveResponseId ?? saved.id });
-        }
+      const configurationReply = configurationStore.serve(resource, method, body);
+      if (configurationReply !== undefined) {
+        return configurationReply;
       }
       if (resource === "permissions" && method === "GET") {
         return response({
@@ -1622,247 +774,20 @@ export function installFixture(scenario, evidence) {
       if (resource === "permissions/secrets" && method === "GET") {
         return response({ operateDenied: scenario.secretOperateDenied ?? [] });
       }
-      if (resource === "agents") {
-        if (method === "GET") {
-          const reread = ++agentListReadCount > 1;
-          // Another person's stop completes after the list's first read: no version is selected.
-          if (scenario.stoppedOnListReread && reread) {
-            for (const listed of agents.values()) {
-              listed.desiredRuntimeState = "stopped";
-              listed.activeRevisionId = null;
-            }
-          }
-          // Another person's deletion of the first Agent started after the list's first read.
-          if (scenario.deletingOnListReread && reread) {
-            agent.status = "deleting";
-          }
-          return response([...agents.values()]);
-        }
-        if (method === "POST") {
-          const {
-            initialWorkspaceFiles = {},
-            workspaceDefaultsId: _workspaceDefaultsId,
-            ...agentBody
-          } = body;
-          const saved = {
-            ...agentBody,
-            id: nextId("agt"),
-            namespaceId,
-            status: "active",
-            desiredRuntimeState: "stopped",
-            createdAt,
-            activeRevisionId: null,
-            servicePrincipalId: "identity_demo_created",
-          };
-          agents.set(saved.id, saved);
-          stagedWorkspaceFiles.set(saved.id, initialWorkspaceFiles);
-          credentials.set(saved.id, { transportConfigured: false });
-          return response(saved, 201);
-        }
-      }
-      // Create Agent's preflight accepts unless a scenario rule refuses it.
-      if (resource === "agents/validate" && method === "POST") {
-        return new Response(null, { status: 204 });
-      }
-      if (resource === "agents/provision" && method === "POST") {
-        const {
-          configuration,
-          initialWorkspaceFiles = {},
-          workspaceDefaultsId: _workspaceDefaultsId,
-          requestId,
-          ...agentBody
-        } = body;
-        const workId = nextId("work");
-        const savedConfig = {
-          ...configuration,
-          id: nextId("cfg"),
-          namespaceId,
-          generation: configuration?.secretBindings ? 2 : 1,
-          createdAt,
-        };
-        configs.set(savedConfig.id, savedConfig);
-        const saved = {
-          ...agentBody,
-          id: nextId("agt"),
-          namespaceId,
-          configurationId: savedConfig.id,
-          status: "active",
-          desiredRuntimeState: "running",
-          createdAt,
-          activeRevisionId: null,
-          servicePrincipalId: "identity_demo_provisioned",
-          ...(agentBody.harnessAuth?.method === "credential_source"
-            ? { credentialSources: [{ sourceId: agentBody.harnessAuth.sourceId }] }
-            : {}),
-        };
-        agents.set(saved.id, saved);
-        credentials.set(saved.id, { transportConfigured: true });
-        for (const [filename, content] of Object.entries(initialWorkspaceFiles)) {
-          files.set(`${saved.id}/${filename}`, content);
-        }
-        // A Stop before the first revision cancels provisioning; the stopped Agent keeps its name.
-        const revision = scenario.provisioningCancelledByStop
-          ? null
-          : snapshot(saved, nextId("rev"), 1);
-        if (scenario.provisionedDeploymentStopped || scenario.provisioningCancelledByStop) {
-          saved.desiredRuntimeState = "stopped";
-        }
-        if (revision) {
-          revisions.set(revision.id, revision);
-          deployments.set(revision.id, {
-            deploymentId: revision.id,
-            namespaceId,
-            agentId: saved.id,
-            status: scenario.provisionedDeploymentStatus ?? "queued",
-            progress:
-              scenario.provisionedDeploymentAttempt === undefined
-                ? initialDeploymentProgress(scenario.provisionedDeploymentStatus ?? "queued")
-                : {
-                    lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
-                    nextAttemptAt: createdAt,
-                  },
-            reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
-            error:
-              scenario.provisionedDeploymentStatus !== "failed"
-                ? null
-                : scenario.provisionedDeploymentStopped
-                  ? {
-                      code: "REVISION_STOPPED",
-                      message: "Deployment ended because the Agent was stopped.",
-                    }
-                  : (scenario.provisionedDeploymentError ?? {
-                      code: "DEPENDENCY_UNAVAILABLE",
-                      message:
-                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
-                    }),
-            warnings: [],
-          });
-        }
-        provisioning.set(saved.id, {
-          requestId,
-          workId,
-          reads: 0,
-          status: scenario.provisioningStatus ?? "queued",
-          agentId: saved.id,
-          configurationId: savedConfig.id,
-          revisionId: revision?.id,
-          url: `/namespaces/${namespaceId}/agents/provision/${workId}`,
-        });
-        provisioning.set(workId, provisioning.get(saved.id));
-        return response(
-          {
-            provisioning: {
-              requestId,
-              workId,
-              status: scenario.provisioningStatus ?? "queued",
-              phase: "admitted",
-              attemptCount: 1,
-              updatedAt: createdAt,
-              url: `/namespaces/${namespaceId}/agents/provision/${workId}`,
-            },
-          },
-          202,
-        );
-      }
-      const provisioningMatch = resource.match(/^agents\/provision\/([^/]+)(\/retry)?$/);
-      if (provisioningMatch) {
-        const [, workId, retrySuffix] = provisioningMatch;
-        const current = provisioning.get(workId);
-        if (!current) {
-          return error(404);
-        }
-        if (retrySuffix === "/retry" && method === "POST") {
-          current.status = "queued";
-          current.reads = 0;
-          return response(
-            {
-              provisioning: {
-                requestId: current.requestId,
-                workId: current.workId,
-                status: current.status,
-                phase: "admitted",
-                attemptCount: 2,
-                updatedAt: createdAt,
-                url: current.url,
-              },
-            },
-            202,
-          );
-        }
-        if (retrySuffix === undefined && method === "GET") {
-          current.reads += 1;
-          if (current.status !== "failed") {
-            current.status =
-              scenario.provisionedDeploymentStatus === "running"
-                ? "running"
-                : current.reads > 1
-                  ? scenario.provisionedDeploymentStatus === "failed" ||
-                    scenario.provisioningCancelledByStop
-                    ? "failed"
-                    : "succeeded"
-                  : "running";
-          }
-          return response({
-            provisioning: {
-              requestId: current.requestId,
-              workId: current.workId,
-              status: current.status,
-              phase: current.reads > 1 ? "handoff" : "configuration",
-              attemptCount: 1,
-              updatedAt: createdAt,
-              url: current.url,
-              ...(current.status === "failed"
-                ? {
-                    error: scenario.provisioningCancelledByStop
-                      ? {
-                          code: "PROVISIONING_CANCELLED",
-                          message: "Provisioning was cancelled because the Agent was stopped.",
-                        }
-                      : scenario.provisionedDeploymentStopped
-                        ? {
-                            code: "REVISION_STOPPED",
-                            message: "The Agent was stopped before its first deployment finished.",
-                          }
-                        : (scenario.provisionedDeploymentError ?? {
-                            code:
-                              scenario.provisionedDeploymentStatus === "failed"
-                                ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
-                                : "PROVISIONING_FAILED",
-                            message:
-                              scenario.provisionedDeploymentStatus === "failed"
-                                ? "Harness credential initialization failed. Correct the cause and deploy again."
-                                : "The worker could not finish provisioning.",
-                          }),
-                  }
-                : {}),
-              ...(current.status === "succeeded" || current.reads > 1
-                ? {
-                    configurationId: current.configurationId,
-                    agentId: current.agentId,
-                    revisionId: current.revisionId,
-                  }
-                : {}),
-              // After handoff the job names its first deployment's wait, as it does for a
-              // reader of that deployment (#2744).
-              ...(scenario.provisioningNamesDeploymentWait &&
-              current.reads > 1 &&
-              (current.status === "queued" || current.status === "running")
-                ? {
-                    progress: {
-                      phase: "deployment",
-                      lastAttempt:
-                        deployments.get(current.revisionId)?.progress?.lastAttempt ?? null,
-                    },
-                  }
-                : {}),
-            },
-          });
+      if (
+        resource === "agents" ||
+        resource === "agents/validate" ||
+        resource.startsWith("agents/provision")
+      ) {
+        const reply = await lifecycle.serve(resource, method, body, url);
+        if (reply !== undefined) {
+          return reply;
         }
       }
       const agentMatch = resource.match(/^agents\/([^/]+)(.*)$/);
       if (agentMatch) {
         const [, id, suffix] = agentMatch;
-        const saved = agents.get(id);
+        const saved = lifecycle.lookupAgent(id);
         if (!saved) {
           return error(404);
         }
@@ -2004,7 +929,7 @@ export function installFixture(scenario, evidence) {
             return error(403, "AUTHORIZATION_DENIED");
           }
           policyEditing = body.enabled;
-          return response({ ...agent, sandboxPolicyEditing: policyEditing });
+          return response({ ...lifecycle.seedAgent(), sandboxPolicyEditing: policyEditing });
         }
         if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "PUT") {
           if (scenario.policyState === "ceilingDenied") {
@@ -2166,7 +1091,7 @@ export function installFixture(scenario, evidence) {
                     })),
                   ],
             cursor: "simulated-policy-cursor",
-            withheld: 0,
+            withheld: scenario.policyWithheld ?? 0,
             truncated: false,
           });
         }
@@ -2177,71 +1102,10 @@ export function installFixture(scenario, evidence) {
           });
         }
         if (suffix === "/plugins" && method === "POST" && scenario.pluginDiscovery) {
-          const page = scenario.pluginDiscovery.pages[body.cursor ?? "initial"];
-          return page ? response(page) : error(400, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
+          return servePluginDiscovery(scenario.pluginDiscovery, "catalog", body, response, error);
         }
         if (suffix === "/plugins/details" && method === "POST" && scenario.pluginDiscovery) {
-          const entry = scenario.pluginDiscovery.details[body.pluginId];
-          return entry ? response(entry) : error(503, "PLUGIN_DISCOVERY_UNAVAILABLE");
-        }
-        if (suffix === "") {
-          if (method === "GET") {
-            if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
-              saved.status = "deleting";
-            }
-            // Once the open Logs view has read output, another person stops the Agent and the
-            // stop completes: no version is selected for service (stopElsewhereOnReread).
-            if (scenario.stopElsewhereOnReread && runtimeLogReads > 0 && saved.activeRevisionId) {
-              saved.desiredRuntimeState = "stopped";
-              delete saved.activeRevisionId;
-            }
-            // By the open Logs view's second runtime status poll, another person has deployed v8,
-            // whose startup model check timed out: the Agent runs again with no version selected.
-            if (
-              scenario.failedRedeployOnReread &&
-              runtimeStatusReads > 1 &&
-              !revisions.has(redeployRevisionId)
-            ) {
-              const redeploy = snapshot(saved, redeployRevisionId, 8);
-              redeploy.createdAt = "2026-09-26T23:10:00.000Z";
-              revisions.set(redeploy.id, redeploy);
-              deployments.set(redeploy.id, {
-                deploymentId: redeploy.id,
-                namespaceId,
-                agentId: saved.id,
-                status: "failed",
-                cleanup: null,
-                progress: null,
-                error: {
-                  code: "RUNTIME_MODEL_PROBE_TIMEOUT",
-                  message:
-                    "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
-                },
-                warnings: [],
-              });
-              saved.desiredRuntimeState = "running";
-              // The API omits the field when no version is selected.
-              delete saved.activeRevisionId;
-            }
-            if (deleted.has(id)) {
-              agents.delete(id);
-              return error(404);
-            }
-            if (clearRevisionOnRead.delete(id)) {
-              saved.activeRevisionId = null;
-            }
-            return response(saved);
-          }
-          if (method === "PATCH") {
-            Object.assign(saved, body);
-            return response(saved);
-          }
-          if (method === "DELETE") {
-            saved.status = "deleting";
-            saved.desiredRuntimeState = "stopped";
-            deleted.add(id);
-            return response(saved, 202);
-          }
+          return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
         }
         if (suffix === "/permissions" && method === "GET") {
           const allowed = !scenario.readOnlyPermissionSummary;
@@ -2265,18 +1129,11 @@ export function installFixture(scenario, evidence) {
         if (suffix === "/permissions/secrets" && method === "GET") {
           return response({ operateDenied: scenario.secretOperateDenied ?? [] });
         }
-        if (suffix === "/stop" && method === "POST") {
-          saved.desiredRuntimeState = "stopped";
-          if (scenario.clearRevisionOnStopReadback) {
-            clearRevisionOnRead.add(id);
-          }
-          return response(saved, 202);
-        }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
             url:
-              (id === agent.id ? scenario.nativeAdminUrl : undefined) ??
+              (id === lifecycle.seedAgent().id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",
           });
         }
@@ -2303,79 +1160,12 @@ export function installFixture(scenario, evidence) {
             return response(credentials.get(id) ?? { transportConfigured: true });
           }
         }
-        if (suffix === "/deploy" && method === "POST") {
-          const lastRevision = Math.max(
-            0,
-            ...[...revisions.values()]
-              .filter((item) => item.agentId === id)
-              .map((item) => item.revision),
-          );
-          const next = snapshot(saved, nextId("rev"), lastRevision + 1);
-          revisions.set(next.id, next);
-          const stagedFiles = stagedWorkspaceFiles.get(id);
-          for (const [filename, content] of Object.entries(stagedFiles ?? {})) {
-            files.set(`${id}/${filename}`, content);
-          }
-          stagedWorkspaceFiles.delete(id);
-          saved.desiredRuntimeState = "running";
-          deployments.set(next.id, {
-            deploymentId: next.id,
-            namespaceId,
-            agentId: id,
-            status: "queued",
-            progress: initialDeploymentProgress("queued"),
-            reads: 0,
-            error: null,
-            warnings: [],
-          });
-          return response(next, 202);
-        }
-        if (suffix === "/revisions" && method === "GET") {
-          if (scenario.latestDeploymentReadStatus) {
-            return error(scenario.latestDeploymentReadStatus);
-          }
-          if (scenario.latestDeploymentReadDelay) {
-            await new Promise((resolve) => setTimeout(resolve, scenario.latestDeploymentReadDelay));
-          }
-          // Summaries, newest first, one page at a time; a cursor continues below a revision.
-          const limit = Number(url.searchParams.get("limit") ?? scenario.revisionPageSize ?? 50);
-          const cursor = url.searchParams.get("cursor");
-          const before = cursor ? Number(cursor.slice("v1.".length)) : Infinity;
-          const remaining = [...revisions.values()]
-            .filter((item) => item.agentId === id && item.revision < before)
-            .sort((left, right) => right.revision - left.revision);
-          const page = remaining.slice(0, limit);
-          return response(
-            page.map((item) => ({
-              id: item.id,
-              namespaceId: item.namespaceId,
-              agentId: item.agentId,
-              revision: item.revision,
-              backendId: item.backendId,
-              configurationId: item.configurationId,
-              configurationGeneration: item.configurationGeneration,
-              harness: item.harness,
-              createdAt: item.createdAt,
-              // The API lists each version's deployment outcome and error code (finding 2422).
-              deploymentStatus: deployments.get(item.id)?.status ?? null,
-              deploymentErrorCode: deployments.get(item.id)?.error?.code ?? null,
-            })),
-            200,
-            undefined,
-            { nextCursor: remaining.length > limit ? `v1.${page.at(-1).revision}` : null },
-          );
-        }
-        if (suffix.startsWith("/revisions/") && method === "GET") {
-          return revisions.has(suffix.split("/")[2])
-            ? response(revisions.get(suffix.split("/")[2]))
-            : error(404);
-        }
         if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime") && method === "GET") {
-          runtimeStatusReads += 1;
           const revisionId = suffix.split("/")[2];
-          if (!revisions.has(revisionId)) {
-            return error(404);
+          if (!lifecycle.hasAgentRevision(id, revisionId)) {
+            return error(404, "NOT_FOUND", "The requested platform resource was not found.");
           }
+          lifecycle.recordRuntimeStatusRead();
           if (scenario.bootstrapRuntime) {
             const terminated = (name, reason, exitCode) => ({
               name,
@@ -2588,7 +1378,7 @@ export function installFixture(scenario, evidence) {
           suffix.endsWith("/runtime/logs") &&
           method === "GET"
         ) {
-          runtimeLogReads += 1;
+          lifecycle.recordRuntimeLogRead();
           const revisionId = suffix.split("/")[2];
           if (url.searchParams.get("download") === "true") {
             // Downloads are a text/plain attachment, not a JSON envelope.
@@ -2713,8 +1503,8 @@ export function installFixture(scenario, evidence) {
           method === "POST"
         ) {
           const revisionId = suffix.split("/")[2];
-          if (!revisions.has(revisionId)) {
-            return error(404);
+          if (!lifecycle.hasAgentRevision(id, revisionId)) {
+            return error(404, "NOT_FOUND", "The requested platform resource was not found.");
           }
           if (scenario.diagnosticsState === "noSlack") {
             // The gateway's answer for a version with no Slack channel.
@@ -2783,40 +1573,9 @@ export function installFixture(scenario, evidence) {
                   ],
           });
         }
-        if (suffix.startsWith("/deployments/") && method === "GET") {
-          const deployment = deployments.get(suffix.split("/")[2]);
-          if (!deployment) {
-            return error(404);
-          }
-          if (scenario.cleanupCompletes && deployment.cleanup) {
-            deployment.cleanupReads = (deployment.cleanupReads ?? 0) + 1;
-            if (deployment.cleanupReads >= 3) {
-              deployment.cleanup = { status: "succeeded", nextAttemptAt: null };
-            }
-          }
-          if (deployment.reads !== undefined && ++deployment.reads > 1) {
-            deployment.status = "succeeded";
-            deployment.progress = null;
-            saved.desiredRuntimeState = "running";
-            saved.activeRevisionId = deployment.deploymentId;
-          }
-          const { reads: _reads, cleanupReads: _cleanupReads, ...status } = deployment;
-          return response(status);
-        }
-        if (suffix.startsWith("/workspace/files/")) {
-          const filename = decodeURIComponent(suffix.split("/").at(-1));
-          const key = `${id}/${filename}`;
-          if (method === "PUT") {
-            files.set(key, body.content);
-          }
-          if (["GET", "PUT"].includes(method)) {
-            return response({
-              name: filename,
-              content:
-                files.get(key) ??
-                `# ${filename}\n\nDemo workspace guidance. Edit this text and save to the local fixture.\n`,
-            });
-          }
+        const reply = await lifecycle.serve(resource, method, body, url);
+        if (reply !== undefined) {
+          return reply;
         }
       }
       if (resource === "iam/roles") {
@@ -2922,14 +1681,5 @@ export function installFixture(scenario, evidence) {
     console.error(`Unconfigured story request: ${method} ${path}`);
     return error(501);
   };
-  // A rule with `lostAnswer` lets the simulated API apply the request, then loses its answer, as
-  // when the connection drops after a write lands.
-  window.fetch = async (input, options = {}) => {
-    const call = {};
-    const reply = await answer(input, options, call);
-    if (call.lost) {
-      throw new TypeError("Failed to fetch");
-    }
-    return reply;
-  };
+  window.fetch = createFixtureFetch(scenario.rules ?? [], evidence.requests, answer);
 }

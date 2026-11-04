@@ -63,7 +63,7 @@ type Material = {
 type Owner = {
   material: Material;
   readOpenShellMaterial: () => Promise<Material>;
-  authorizeOpenShellRequest: () => Promise<boolean>;
+  authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
   sandbox: {
@@ -339,7 +339,7 @@ export function openShellGitRuntimeFixture({
       return owner.material;
     },
     material,
-    authorizeOpenShellRequest: async () => true,
+    authorizeOnlineRequest: async () => ({ kind: "denied", reason: "unavailable" }),
   };
   const entry: Entry = {
     revision,

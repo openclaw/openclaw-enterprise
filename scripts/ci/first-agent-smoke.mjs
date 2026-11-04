@@ -3,6 +3,7 @@
 //
 //   node scripts/ci/first-agent-smoke.mjs images   build the checkout's images
 //   node scripts/ci/first-agent-smoke.mjs run      install, deploy, chat, stop, start
+//   node scripts/ci/first-agent-smoke.mjs release-selection <file>  record build selection
 //
 // `images` builds the controller and runtime images from this checkout (reading
 // the hosted image caches when available), adds a private test CA to the
@@ -33,7 +34,7 @@ import { fileURLToPath } from "node:url";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { PUBLIC_GITHUB_READ_SKILL } from "../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { createHarnessConfiguration } from "../../tests/helpers/harness-configuration.mjs";
 import { installPublicGithubReadFixture } from "../../tests/helpers/public-github-read-k3d.mjs";
 import {
@@ -41,13 +42,13 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
-import { ensureImage } from "./image-pull.mjs";
+import { ensureImage } from "./image-pull.ts";
 import {
   openclawBuildArguments,
   openclawBuildValues,
   readOpenclawSource,
 } from "../lib/openclaw-source.mjs";
-import { compareEvents, eventObservedTime } from "./kubernetes-event-time.mjs";
+import { compareEvents, eventObservedTime } from "./kubernetes-event-time.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");
@@ -351,7 +352,7 @@ async function recordedDigest(tag) {
 export const postgresImage =
   "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae";
 
-// The image-pull.mjs retry helper over `run`.
+// The image-pull.ts retry helper over `run`.
 async function pullExecFile(command, args, { timeoutMs }) {
   try {
     return await run(command, args, { timeout: timeoutMs });
@@ -466,6 +467,50 @@ export function smokeImageEnvironment({
   };
 }
 
+function smokeImageRepository(role) {
+  return `${registry}/oce-smoke/${role}`;
+}
+
+// Record the build's selected manifests before the installer produces its own receipt.
+async function writeReleaseSelection(file) {
+  if (!file || process.argv.length !== 4) {
+    throw new Error("Usage: node scripts/ci/first-agent-smoke.mjs release-selection <file>");
+  }
+  const images = {};
+  for (const [role, name] of [
+    ["controller", "OCC_DEVELOPMENT_CONTROLLER_IMAGE"],
+    ["runtime", "OCC_KUBERNETES_RUNTIME_IMAGE"],
+    ["repository", "OCC_DEVELOPMENT_REPOSITORY_IMAGE"],
+  ]) {
+    const reference = process.env[name];
+    const prefix = `${smokeImageRepository(role)}@`;
+    const digest = reference?.startsWith(prefix) ? reference.slice(prefix.length) : "";
+    if (!/^sha256:[a-f0-9]{64}$/.test(digest)) {
+      throw new Error(`${name} must be a SHA-256 image digest reference`);
+    }
+    images[role] = digest;
+  }
+  let sourceSha;
+  try {
+    sourceSha = (
+      await run("git", ["rev-parse", "--verify", "HEAD"], { timeout: 10_000 })
+    ).stdout.trim();
+  } catch {
+    throw new Error("Cannot read checked-out HEAD for release selection");
+  }
+  if (!/^[a-f0-9]{40}$/.test(sourceSha)) {
+    throw new Error("Checked-out HEAD must be a full source SHA");
+  }
+  try {
+    await writeFile(file, `${JSON.stringify({ sourceSha, images })}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    });
+  } catch {
+    throw new Error("Cannot write a fresh release selection file");
+  }
+}
+
 async function buildImages({ preparedGit = false } = {}) {
   const revision = (await run("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
@@ -496,8 +541,8 @@ async function buildImages({ preparedGit = false } = {}) {
       registryImage,
     ]),
   );
-  const controllerTag = `${registry}/oce-smoke/controller:${revision}`;
-  const smokeRuntimeTag = `${registry}/oce-smoke/runtime:${revision}`;
+  const controllerTag = `${smokeImageRepository("controller")}:${revision}`;
+  const smokeRuntimeTag = `${smokeImageRepository("runtime")}:${revision}`;
   // The only difference from the checkout's runtime image: the stand-in
   // provider's private CA in the system store (Codex) and for Node (OpenClaw).
   // Labels, user, entrypoint and every other layer are inherited unchanged.
@@ -528,7 +573,7 @@ async function buildImages({ preparedGit = false } = {}) {
   const [[controller, runtime, providerImage], postgres] = settled.map(({ value }) => value);
   const repository = {};
   if (preparedGit) {
-    const tag = `${registry}/oce-smoke/repository:${revision}`;
+    const tag = `${smokeImageRepository("repository")}:${revision}`;
     await step("repository service image build", () =>
       run(
         "docker",
@@ -2244,19 +2289,23 @@ async function summarize() {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const command = process.argv[2];
   try {
-    if (command === "images" || command === "prepared-git-images") {
+    if (command === "release-selection") {
+      await writeReleaseSelection(process.argv[3]);
+    } else if (command === "images" || command === "prepared-git-images") {
       await buildImages({ preparedGit: command === "prepared-git-images" });
     } else if (command === "run") {
       await smoke();
     } else {
       throw new Error(
-        "Usage: node scripts/ci/first-agent-smoke.mjs images|prepared-git-images|run",
+        "Usage: node scripts/ci/first-agent-smoke.mjs images|prepared-git-images|run|release-selection <file>",
       );
     }
   } catch (error) {
     process.stderr.write(`first-agent-smoke: ${error.stack ?? error.message}\n`);
     process.exitCode = 1;
   } finally {
-    await summarize();
+    if (command !== "release-selection") {
+      await summarize();
+    }
   }
 }

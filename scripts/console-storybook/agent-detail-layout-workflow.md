@@ -47,11 +47,20 @@ simulated API state; they do not prove persistence or live runtime behavior.
    is a terminal result and can expand the details. In **Deployment activity
    unavailable**, fold the error and press **Refresh deployment**: the repeated
    error is revealed again.
+   In **Diagnostics focus when deployment completes**, open the preview in its
+   own tab. Fold **Deployment details** and Tab to **Run diagnostics for this
+   version**. Scroll up until the focused button sits fully inside the lower
+   edge of the viewport. After the delayed poll reports **Completed**, the
+   details open and the same button stays visible and focused. Check desktop and
+   phone widths. At phone width, reload and repeat. This time, scroll to the top
+   after tabbing to the button. The details still open and the reader stays at
+   the top.
    These stories simulate responses. The real Controller browser regression in
    `tests/browser/console-deployment-activity.test.ts` additionally checks queued →
-   503 → queued, queued → running, a final 403/404, and a delayed success delivered
-   after refusal. Run it for the actual controls and response envelopes; Storybook
-   is not proof of those Controller responses.
+   503 → queued, queued → running, terminal completion with the diagnostics
+   button focused, a final 403/404, and a delayed success delivered after refusal.
+   Run it for the actual controls and response envelopes. Storybook simulates
+   those Controller responses.
 
 9. Open **Rejected credential, binding editor cannot deploy**
    (`credentialRejectedBindingEditor`). Recovery must offer **Open Credentials**
@@ -71,3 +80,18 @@ simulated API state; they do not prove persistence or live runtime behavior.
 
 These two previews require an owner build and walkthrough. Fixture permission
 answers are not IAM enforcement; saved feedback is not backend persistence proof.
+
+Open **Pages / Agent detail / Danger zone on Configuration** on desktop and phone.
+Switch from Workspace files to Configuration to see stop status and deletion controls.
+Switch back to verify the entire card disappears.
+
+11. Open **Components / Stop Agent / First Deployment Failed**. The Agent has no
+    selected version and its latest readable deployment failed. Check that **Stop
+    Agent** remains enabled: a newer queued deployment can be unreadable. Open the
+    confirmation, then Cancel. Check **Denied** still offers no Stop control.
+    These stories do not prove revision filtering or Stop authorization; the mixed-history
+    browser regression exercises those through the Controller and Native IAM.
+    Confirm Stop: its result replaces the action description, without repeating it.
+    In **First deployment queued**, confirm Stop and check **Deployment cancellation
+    requested**, not a claim that cleanup finished. The lifecycle browser regression
+    covers another actor deploying and stopping later; that read must remove the old result.

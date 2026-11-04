@@ -84,6 +84,11 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     this.#duration = options.sessionDurationSeconds;
   }
   async listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
+    return this.listCatalog(input);
+  }
+
+  /** Provider catalog shared by the Installation picker and the legacy Driver adapter. */
+  async listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
     const options: RepositoryOption[] = [];
     this.#registry.repositories.forEach((repository) => {
       const policy = repository.namespaces.find(
@@ -128,6 +133,14 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   }
 
   resolve(input: {
+    readonly namespaceId: string;
+    readonly bindings: readonly RepositoryBindingRequest[];
+  }): RepositoryCredentialResolution {
+    return this.resolveBindings(input);
+  }
+
+  /** Provider policy shared by Installation admission and the legacy Driver adapter. */
+  resolveBindings(input: {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
   }): RepositoryCredentialResolution {

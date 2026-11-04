@@ -14,6 +14,7 @@ import { openShellSandboxRecords } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   detailUrl,
+  expectNoHorizontalScroll,
   focusKeptOverClose,
   hasFocus,
   login,
@@ -98,6 +99,22 @@ async function logWindow(
     },
   );
 }
+
+test("read-only Installation defaults display formatted JSON within the policy card", async (t) => {
+  // The literal backslash and quotes in this executable name must survive copying the JSON.
+  const binary = `/opt/${"a".repeat(180)}/tool-"\\u000a"`;
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [], binary);
+  const { defaults } = (await fixture.request("GET", base)).data;
+  const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, undefined, "policy"));
+  const card = page.locator(".sandbox-network-card");
+  await card.getByText("Policy details", { exact: true }).click();
+  await card.getByText("Read-only Installation defaults", { exact: true }).click();
+  const block = card.locator("pre");
+  assert.equal(await block.innerText(), JSON.stringify(defaults, null, 2));
+  await expectNoHorizontalScroll(page);
+});
 
 test("the Policy denials page controls policy editing and disabling preserves saved rules", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t, grants);
@@ -235,6 +252,7 @@ test("denial selection spans pages, keeps the inspected window, and saves a dedu
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
   const tab = page.locator(".sandbox-policy");
   await tab.getByText("200 in loaded window", { exact: true }).waitFor();
+  assert.equal(await tab.getByText("About this window", { exact: true }).count(), 0);
   assert.equal(await tab.locator(".sandbox-decision").count(), 5);
   // Refresh denials replaces the window, so a selection of the old records must not survive it:
   // Allow selected would otherwise stage denials that are no longer displayed.
@@ -264,10 +282,14 @@ test("denial selection spans pages, keeps the inspected window, and saves a dedu
   await tab.getByRole("button", { name: "Show denial details", exact: true }).first().click();
   const inspected = await tab.locator(".sandbox-decisions").innerText();
   await tab.getByRole("checkbox", { name: "Follow policy denials", exact: true }).check();
-  await tab.getByRole("button", { name: "12 new denials · Show newest", exact: true }).waitFor();
+  const newest = tab.getByRole("button", { name: "12 new denials · Show newest", exact: true });
+  await newest.waitFor();
   assert.equal(await tab.locator(".sandbox-decisions").innerText(), inspected);
   assert.equal(await tab.locator(".sandbox-decision-details:visible").count(), 1);
   await tab.getByRole("checkbox", { name: "Follow policy denials", exact: true }).uncheck();
+  await newest.click();
+  await tab.getByText("212 in loaded window", { exact: true }).waitFor();
+  await tab.getByText("Page 1 of 43", { exact: true }).waitFor();
 
   await tab.getByRole("button", { name: "Allow selected (6)", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Review policy changes", exact: true });
