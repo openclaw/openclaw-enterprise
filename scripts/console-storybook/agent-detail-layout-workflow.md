@@ -8,7 +8,13 @@ simulated API state; they do not prove persistence or live runtime behavior.
    serving. Choose another **Viewing version**; the service target stays the same.
    Choose **Open draft**. Check the new-version notice has an even, neutral border
    without a blue stripe. Open **Edit Configuration**; the notice stays visible.
-   Repeat this check at phone width.
+   Repeat this check at phone width. For the narrow layout check, open this story's
+   Console frame in its own tab. Set the browser content area to 390 pixels wide
+   and use 200% browser zoom (195 CSS pixels of layout width). Tab to **Viewing
+   version** and check that its label wraps above the picker. Use Home to view
+   **Draft**, then Tab back to the picker and select a numbered version. Both
+   choices stay readable without horizontal scrolling, and neither changes the
+   version selected for service.
 2. Open **Deployment**. Expand **Deployment details**, read the viewed version's
    record, and run diagnostics. Switch to Configuration and back: the record and
    results remain. **Logs** still opens the viewed version's output.
