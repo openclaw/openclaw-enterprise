@@ -30,13 +30,13 @@ export function selectQaMatrix(env = process.env) {
     "plugin-install",
     "openshell-linear-read",
     "sandbox-native-github",
-    "codex-search-config",
   ]);
+  const defaultScenarios = allScenarios.filter(
+    (name) => !prepared.has(name) && name !== "codex-search-config",
+  );
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
   const scenarios =
-    input === "all"
-      ? allScenarios.filter((name) => !prepared.has(name))
-      : input.split(",").map((name) => name.trim());
+    input === "all" ? defaultScenarios : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
     "invalid QA scenario selection",
@@ -154,9 +154,7 @@ export function selectQaMatrix(env = process.env) {
     repository,
     browser: activeScenarios.some((name) => ["model-ui", "console-secrets"].includes(name)),
     scope:
-      installation === "all" &&
-      preset === "all" &&
-      scenarios.length === allScenarios.length - prepared.size
+      installation === "all" && preset === "all" && scenarios.length === defaultScenarios.length
         ? "full"
         : "partial:selected",
   };

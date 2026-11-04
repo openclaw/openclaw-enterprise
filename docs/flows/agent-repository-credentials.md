@@ -8,12 +8,12 @@ last_updated_session: authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195
 
 ## Overview
 
-Deployment freezes repository grants.
-Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver. On the
-[OpenShell path](../reference/repository-credentials/protected-openshell-git.md), the sandbox gets a placeholder.
-The worker delivers the credential to the provider and checks signed requests against the live grant.
-See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
-[service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
+Compute-owned Codex uses prepared native sessions
+without a Sandbox Driver. [OpenShell](../reference/repository-credentials/protected-openshell-git.md)
+receives a placeholder; the worker delivers credentials to its provider and verifies
+signed requests against live grants.
+See [enrollment](../guides/repository-credentials/openshell-enrollment.md),
+[service lifecycle](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
@@ -116,9 +116,7 @@ Nonempty selections without a configured Repo Driver return `409 RESOURCE_CONFLI
 OCC saves normalized selections in request order. GitHub’s registry defaults legacy profiles to
 `git-write` without GitHub or control-socket calls.
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:validateRepositoryCredentials`
-requires protected `repositoryAccess` for dedicated native OpenClaw; otherwise
-save/deploy refuse before work. Proxy profile/preview checks remain deployment gates.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:validateRepositoryCredentials` rejects unprotected native repository access before work; deployment checks profile and preview.
 
 `apps/controller/src/drivers/repo/github/credentials/registry.ts:resolveGitHubRepositoryBinding`
 requires an exact Namespace/ref/profile. The fingerprint binds provider, App,
