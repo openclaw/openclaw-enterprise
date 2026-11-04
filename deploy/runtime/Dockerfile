@@ -331,7 +331,7 @@ WORKDIR /app
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 
 RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
-    apt-get update \
+    apt-get update --error-on=any \
     && candidate="$(apt-cache policy curl | sed -n 's/^  Candidate: //p')" \
     && expected="$(cat /tmp/curl-packages/debian-version)" \
     && { [ "$candidate" = "$expected" ] || { echo "Refresh the curl backport: Debian candidate is $candidate, source is $expected" >&2; exit 1; }; } \

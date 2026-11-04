@@ -7,8 +7,8 @@ set -eu
 for backend in build build-gnutls; do
   log="/out/upstream-$backend.log"
   if ! (
-    cd "/build/curl/source/debian/$backend/tests"
-    make -C server -j2 all
+    cd "/build/curl/source/debian/$backend/tests" &&
+    make -C server -j2 all &&
     perl ./runtests.pl -a -n -v 80 83 206 217 310 311 2173
   ) > "$log" 2>&1; then
     cat "$log"
