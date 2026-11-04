@@ -749,6 +749,7 @@ export interface AgentPluginCredentialSlot {
   readonly releaseSha256: string;
   readonly id: string;
   readonly label: string;
+  readonly toolDiscovery?: true;
   readonly sources: readonly { readonly id: string; readonly name: string }[];
 }
 

@@ -1,3 +1,4 @@
+import { googleWorkspaceCredentialPolicy } from "../plugin/google-workspace/credential-policy.ts";
 import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
@@ -25,12 +26,14 @@ import {
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
+import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
 import {
-  googleAttachmentConflict,
   managedCredentialBinding,
-  managedGoogleInstall,
-  managedSlotAcceptsSource,
+  managedMcpCredentialBinding,
+  managedMcpInstallForSourceConfig,
+  managedMcpSlotAcceptsSource,
 } from "../plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 
 import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
 import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-endpoint.ts";
@@ -145,6 +148,15 @@ const ENDPOINT_CONFIG = Object.freeze([
     name: "env_var",
     required: true,
     description: "Environment variable that holds the token placeholder in the Sandbox.",
+  }),
+]);
+
+const BEARER_TOKEN_CONFIG = Object.freeze([
+  ...ENDPOINT_CONFIG,
+  Object.freeze({
+    name: "protocol",
+    required: false,
+    description: "Use mcp for a reviewed managed MCP connection. If omitted, the protocol is REST.",
   }),
 ]);
 
@@ -619,19 +631,57 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
   {
     catalog: Object.freeze({
       type: "bearer-token",
-      config: ENDPOINT_CONFIG,
+      config: BEARER_TOKEN_CONFIG,
       secrets: Object.freeze([
         Object.freeze({ name: "token", required: true, description: "Static bearer token." }),
       ]),
       rotation: "none",
     }),
-    validate: (config) => validateEndpointConfig("bearer-token", config),
+    validate: (config, options) => {
+      validateEndpointConfig("bearer-token", config);
+      if (config.protocol === undefined) {
+        return;
+      }
+      const install = managedMcpInstallForSourceConfig(config);
+      if (!install) {
+        throw new CredentialSourceConfigError(
+          "protocol",
+          "Use the reviewed settings for a managed MCP connection.",
+        );
+      }
+      if (!allowsOAuthBinary(options, install.binaryPath)) {
+        throw new CredentialSourceConfigError(
+          "protocol",
+          "Managed MCP requires the worker Node executable in the installation toolBinaries.",
+        );
+      }
+    },
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
     profile: (sourceId, config, options) => {
       checkStoredHost(config);
-      return bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
-        name: "token",
-      });
+      const profile = bearerProfile(
+        sourceId,
+        config,
+        options,
+        "Bearer token (OpenClaw Enterprise)",
+        {
+          name: "token",
+        },
+      );
+      if (config.protocol === undefined) {
+        return profile;
+      }
+      const install = managedMcpInstallForSourceConfig(config);
+      if (!install) {
+        throw new StoredCredentialSourceConfigError("protocol");
+      }
+      return {
+        ...profile,
+        // The provider projects the access token at the exact endpoint. Only the
+        // revision's Sandbox rule grants access to selected tools.
+        endpoints: [managedMcpProviderEndpoint(install)],
+        binaries: requiredToolBinaries(options, install.binaryPath),
+      };
     },
   },
   oauth2SourceType(
@@ -1163,14 +1213,46 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const binding = managedCredentialBinding(context.revision.plugins?.plugins);
+    const mcpBinding = managedMcpCredentialBinding(context.revision.plugins?.plugins);
+    const mcpSource = context.sources.find(({ id }) => id === mcpBinding?.sourceId);
+    if (mcpBinding && mcpSource && !managedMcpSlotAcceptsSource(mcpBinding.install, mcpSource)) {
+      throw new ScopeViolationError(
+        "The attached MCP account does not match the reviewed credential slot.",
+      );
+    }
+    for (const source of context.sources.filter(({ config }) => config.protocol === "mcp")) {
+      const install = managedMcpInstallForSourceConfig(source.config);
+      if (!install || !managedMcpSlotAcceptsSource(install, source)) {
+        throw new ScopeViolationError(
+          "The attached credential does not match a reviewed MCP slot.",
+        );
+      }
+      const conflict = context.sources.some((other) => {
+        const baseUrl = other.config[OPENAI_BASE_URL_CONFIG];
+        const host =
+          other.config.host ?? (baseUrl && URL.canParse(baseUrl) ? new URL(baseUrl).hostname : "");
+        return (
+          other.id !== source.id &&
+          (host.toLowerCase().replace(/\.$/, "") === install.endpoint.host ||
+            other.config.env_var === install.credentialEnvironment)
+        );
+      });
+      if (conflict) {
+        throw new ScopeViolationError(
+          "The managed MCP credential conflicts with another credential for its host or placeholder.",
+        );
+      }
+    }
     const selected = context.sources.find(({ id }) => id === binding?.sourceId);
     if (binding && selected) {
-      if (!managedSlotAcceptsSource(binding.credential, selected)) {
+      if (
+        !googleWorkspaceCredentialPolicy.accepts(managedGoogleInstall, binding.credential, selected)
+      ) {
         throw new ScopeViolationError(
           "The attached Google account does not match the reviewed credential slot.",
         );
       }
-      const conflict = googleAttachmentConflict(selected, context.sources);
+      const conflict = googleWorkspaceCredentialPolicy.conflict(selected, context.sources);
       if (conflict) {
         throw new ScopeViolationError(conflict);
       }
@@ -1237,7 +1319,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         Object.freeze({
           sourceId: source.id,
           ref: name,
-          ...(source.id === binding?.sourceId && {
+          ...((source.id === binding?.sourceId || source.config.protocol === "mcp") && {
             requestScope: {
               ...bearerTokenEndpoint(source.config),
               scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),

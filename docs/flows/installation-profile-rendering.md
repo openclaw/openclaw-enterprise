@@ -185,6 +185,11 @@ when that name is a DNS-1035 Service label of at most 63 characters. The
 chart's upgrade guard still requires an explicit current broker Service name,
 and the same DNS-1035 check cannot fail after a successful preflight.
 
+Helm merges `dns.podLabels` over the chart default `k8s-app: kube-dns`. When the
+selector lacks `k8s-app`, `values.yaml` sets it to `null` so Helm deletes it.
+`installation.yaml` keeps the exact selector: Compute does not merge, and the
+profile schema accepts only string labels.
+
 ### 5. Build Installation startup YAML
 
 `scripts/render-installation-profile.mjs:buildRendered`

@@ -117,6 +117,9 @@ In **Components → Navigation → Namespace switcher**, switch Engineering/Rese
 and check URL, collection, and Back behavior. **Mobile Namespace selector** checks
 long names and direct switching. In **Mobile drawer**, widen past 760px while open:
 Agents search must work without Escape. Shrink and check reopening and dismissal.
+In **Compact drawer scroll position** at 390×480, press Page Down and wheel over
+the overlay. Visit Namespaces and return with Back: Secrets keeps its heading and
+search in view. Escape and widening to desktop restore page scrolling.
 No-readable, unavailable, loading, and denied stories cover restrictions.
 
 In **Pages → Namespaces → Unavailable selection**, check the warning's reason, recover
