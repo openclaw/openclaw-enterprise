@@ -11,14 +11,14 @@ container, platform, or live-provider boundary. Run commands from the repository
 root with Node.js 24, Git, OpenSSL, Docker, and installed workspace dependencies.
 The controlled tests use disposable fixtures and do not use ambient GitHub credentials.
 
-## GitLab client checks
+## GitLab provider checks
 
-Run the component checks with `node --test tests/conformance/gitlab-repository-{client,config,policy,credentials}.test.mjs`.
-All four files run in `checks-baseline-1`. They cover request restrictions, Namespace
-policy, draft confirmation, uncertain response-body outcomes, token ownership, and
-Backend validation ownership.
+Run the component checks with `node --test tests/conformance/gitlab-repository-{config,policy,credentials}.test.mjs`.
+All three files run in `checks-baseline-1`. They cover project and request policy,
+Namespace policy, draft and quick-action rules, token ownership, and Backend
+validation ownership.
 
-The `gitlab-repository-live` lane registers the client and Agent-session tests.
+The `gitlab-repository-live` lane registers the composed Agent-session tests.
 It requires these explicit inputs:
 
 | Variable                   | Required input                                                |
@@ -30,7 +30,7 @@ It requires these explicit inputs:
 | `GITLAB_TEST_PROJECT_ID`   | Numeric GitLab project ID.                                    |
 | `GITLAB_TEST_WRITE_BRANCH` | Existing source branch with changes against `main`.           |
 
-With these variables set, run `node --test tests/integration/gitlab-repository-live.test.mjs tests/integration/gitlab-repository-agent.test.mjs`.
+With these variables set, run `node --test tests/integration/gitlab-repository-agent.test.mjs`.
 A selected live case fails on missing inputs. With live selection unset, both
 cases skip. The write case creates a draft merge request. The operator must
 remove that test artifact through GitLab after checking it; the client does not

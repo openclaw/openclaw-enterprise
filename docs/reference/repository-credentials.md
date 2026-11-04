@@ -100,7 +100,7 @@ operator-supplied PAT; registry entries bind projects to Namespaces and profiles
 Native Agent sessions can read, push approved refs, and create drafts.
 OpenShell delivery and durable receipts are excluded. See the
 [proposal](../../specs/rfcs/0029-gitlab-repository-credentials.md) and
-[checks](../testing/repository-credentials.md#gitlab-client-checks).
+[checks](../testing/repository-credentials.md#gitlab-provider-checks).
 
 ## Configuration
 
