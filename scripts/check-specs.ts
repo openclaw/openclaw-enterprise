@@ -27,7 +27,7 @@ const historicalArtifacts = new Set([
   "/private/tmp/enterprise-audit-a1hg863_/docker-token-retry-stdout.log",
 ]);
 
-function markdownFiles(directory) {
+function markdownFiles(directory: string): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const file = path.join(directory, entry.name);
     if (entry.isDirectory()) {
@@ -45,7 +45,7 @@ const rfcEntries = new Set(
     return entry.name.endsWith(".md") ? [path.join(rfcs, entry.name)] : [];
   }),
 );
-const rfcIds = new Set();
+const rfcIds = new Set<number>();
 for (const file of rfcEntries) {
   const name =
     path.basename(file) === "index.md"
@@ -77,8 +77,8 @@ for (const [index, id] of [...rfcIds].sort((a, b) => a - b).entries()) {
   }
 }
 
-function localTarget(file, href) {
-  const pathname = decodeURIComponent(href.split(/[?#]/, 1)[0]);
+function localTarget(file: string, href: string) {
+  const pathname = decodeURIComponent(href.split(/[?#]/, 1)[0] ?? "");
   const target = pathname
     ? path.resolve(
         pathname.startsWith("/") ? root : path.dirname(file),
@@ -163,7 +163,7 @@ for (const file of files) {
       links++;
     }
   } catch (error) {
-    errors.push(`${source}: ${error.message}`);
+    errors.push(`${source}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

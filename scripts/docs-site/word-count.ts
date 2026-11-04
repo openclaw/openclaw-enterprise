@@ -265,7 +265,7 @@ function parseCliArgs(argv) {
     } else if (arg === "--max") {
       options.maxWords = Number(argv[++index]);
     } else {
-      throw new Error("Usage: word-count.mjs [--root <path>] [--max <words>] [--json]");
+      throw new Error("Usage: word-count.ts [--root <path>] [--max <words>] [--json]");
     }
   }
   if (!Number.isInteger(options.maxWords) || options.maxWords < 1) {

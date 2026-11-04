@@ -262,7 +262,7 @@ test("spec validation rejects links to missing headings", async (t) => {
   await writeFile(join(fixture, "docs/guide.md"), "# Guide\n\n## Setup\n\n## Setup\n");
   const validate = async (target) => {
     await writeFile(join(fixture, "specs/plan.md"), `# Plan\n\n## Scope\n\n[Link](${target})\n`);
-    return spawnSync(process.execPath, [join(root, "scripts/check-specs.mjs")], {
+    return spawnSync(process.execPath, [join(root, "scripts/check-specs.ts")], {
       cwd: fixture,
       encoding: "utf8",
       timeout: 30_000,

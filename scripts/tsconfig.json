@@ -20,6 +20,7 @@
     "ci/**/*.ts",
     "lib/**/*.ts",
     "docs-site/compute-matrix.ts",
+    "docs-site/word-count.ts",
     "module-boundaries/*.ts"
   ],
   "references": [
