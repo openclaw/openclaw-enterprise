@@ -159,6 +159,21 @@ export interface DraftMergeRequestRequest {
   readonly body: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * GitLab executes quick actions in note bodies and descriptions. Those commands can ready,
+ * approve, merge, close, or relabel a merge request or issue, which this provider must never do.
+ * Refuse a line whose first non-space character starts a command rather than treating a note as a
+ * comment-only effect.
+ */
+export function refuseGitLabQuickActions(value: string, field: string): string {
+  if (/^[ \t]*\//mu.test(value)) {
+    throw new GitLabProviderError(`GitLab ${field} must not contain a quick action line.`, {
+      operation: "mergeRequest.note",
+    });
+  }
+  return value;
+}
+
 function branchName(value: string, field: string): string {
   const name = value.trim();
   if (name.length === 0 || /[\0-\x20\x7f~^:?*[\\]/u.test(name) || name.includes("..")) {
@@ -190,7 +205,11 @@ export function draftMergeRequestRequest(input: DraftMergeRequestInput): DraftMe
       operation: "mergeRequest.draft.create",
     });
   }
-  const draftTitle = /^draft\b/iu.test(title) ? title : `Draft: ${title}`;
+  // GitLab recognizes Draft:, Draft -, [Draft], and (Draft). An ordinary word such as
+  // "Draft release notes" is not a draft marker, so it must be prefixed.
+  const draftTitle = /^(?:draft\s*:|draft\s+-|\[draft\]|\(draft\))/iu.test(title)
+    ? title
+    : `Draft: ${title}`;
   return Object.freeze({
     method: "POST",
     path: "/merge_requests",
@@ -198,7 +217,11 @@ export function draftMergeRequestRequest(input: DraftMergeRequestInput): DraftMe
       source_branch: sourceBranch,
       target_branch: targetBranch,
       title: draftTitle,
-      ...(input.description === undefined ? {} : { description: input.description }),
+      ...(input.description === undefined
+        ? {}
+        : {
+            description: refuseGitLabQuickActions(input.description, "merge request description"),
+          }),
     }),
   });
 }
@@ -211,7 +234,6 @@ export interface GitLabClientOptions {
   readonly token: string;
   readonly signal?: AbortSignal;
   readonly fetch?: Fetch;
-  readonly origin?: string;
 }
 
 /**
@@ -223,7 +245,6 @@ export class GitLabRepositoryClient {
   readonly profile: GitLabProfile;
   readonly #token: string;
   readonly #fetch: Fetch;
-  readonly #origin: string;
   readonly #signal: AbortSignal | undefined;
 
   constructor(options: GitLabClientOptions) {
@@ -235,7 +256,6 @@ export class GitLabRepositoryClient {
     }
     this.#token = token;
     this.#fetch = options.fetch ?? fetch;
-    this.#origin = options.origin ?? GITLAB_ORIGIN;
     this.#signal = options.signal;
   }
 
@@ -248,7 +268,8 @@ export class GitLabRepositoryClient {
   }
 
   #url(path: string): string {
-    return `${this.#origin}/api/v4/projects/${encodeURIComponent(this.projectPath)}${path}`;
+    // The destination is not configurable: every request targets the fixed GitLab.com origin.
+    return `${GITLAB_ORIGIN}/api/v4/projects/${encodeURIComponent(this.projectPath)}${path}`;
   }
 
   async #request<T>(
@@ -285,7 +306,16 @@ export class GitLabRepositoryClient {
         possiblySent: method === "POST" && response.status >= 500,
       });
     }
-    return (await response.json()) as T;
+    try {
+      return (await response.json()) as T;
+    } catch {
+      // A POST whose body fails after the headers may already have been applied.
+      throw new GitLabProviderError("The GitLab response could not be read.", {
+        operation,
+        status: response.status,
+        possiblySent: method === "POST",
+      });
+    }
   }
 
   async project(): Promise<GitLabProject> {
@@ -391,13 +421,17 @@ export class GitLabRepositoryClient {
   }
 
   async addMergeRequestNote(iid: number, body: string): Promise<void> {
-    await this.#request("mergeRequest.note", "POST", `/merge_requests/${iid}/notes`, { body });
+    await this.#request("mergeRequest.note", "POST", `/merge_requests/${iid}/notes`, {
+      body: refuseGitLabQuickActions(body, "merge request note"),
+    });
   }
 
   async createIssue(title: string, description?: string): Promise<GitLabIssue> {
     const raw = await this.#request<Record<string, unknown>>("issue.create", "POST", "/issues", {
       title,
-      ...(description === undefined ? {} : { description }),
+      ...(description === undefined
+        ? {}
+        : { description: refuseGitLabQuickActions(description, "issue description") }),
     });
     return Object.freeze({
       iid: Number(raw.iid),
@@ -408,6 +442,8 @@ export class GitLabRepositoryClient {
   }
 
   async addIssueNote(iid: number, body: string): Promise<void> {
-    await this.#request("issue.note", "POST", `/issues/${iid}/notes`, { body });
+    await this.#request("issue.note", "POST", `/issues/${iid}/notes`, {
+      body: refuseGitLabQuickActions(body, "issue note"),
+    });
   }
 }

@@ -130,7 +130,10 @@
     "tests/integration/protected-source-refusals.test.mjs",
     "tests/integration/refusal-answers.test.mjs",
     "tests/integration/namespace-deletion-console-api.test.ts",
-    "tests/integration/github-selected-repositories.test.ts"
+    "tests/integration/github-selected-repositories.test.ts",
+    "tests/conformance/gitlab-repository-client.test.mjs",
+    "tests/conformance/gitlab-repository-config.test.mjs",
+    "tests/conformance/gitlab-repository-policy.test.mjs"
   ],
   "files": [
     {

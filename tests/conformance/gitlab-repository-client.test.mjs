@@ -7,6 +7,7 @@ import {
   GitLabRepositoryClient,
   draftMergeRequestRequest,
   gitLabOperationAllowed,
+  refuseGitLabQuickActions,
   normalizeGitLabProjectPath,
 } from "../../apps/controller/src/drivers/repo/gitlab/client.ts";
 
@@ -150,4 +151,72 @@ test("read profiles cannot reach write operations", async () => {
     /does not allow mergeRequest\.draft\.create/,
   );
   await assert.rejects(api.createIssue("Title"), /does not allow issue\.create/);
+});
+
+test("GitLab quick actions are refused in notes and descriptions", async () => {
+  for (const command of ["/ready", "/approve", "text\n/merge", "  /close"]) {
+    assert.throws(
+      () => refuseGitLabQuickActions(command, "note"),
+      /must not contain a quick action line/,
+      command,
+    );
+  }
+  // A slash inside a sentence is not a quick action line.
+  assert.equal(
+    refuseGitLabQuickActions("Read /usr/bin/env first", "note"),
+    "Read /usr/bin/env first",
+  );
+  const api = client("git-write", async () => {
+    throw new Error("no request expected");
+  });
+  await assert.rejects(api.addMergeRequestNote(1, "/ready"), /quick action/);
+  await assert.rejects(
+    api.createDraftMergeRequest({
+      sourceBranch: "feature/readme",
+      targetBranch: "main",
+      title: "Add README",
+      description: "/approve",
+    }),
+    /quick action/,
+  );
+});
+
+test("only a recognized draft marker is preserved", () => {
+  const title = (value) =>
+    draftMergeRequestRequest({
+      sourceBranch: "feature/readme",
+      targetBranch: "main",
+      title: value,
+    }).body.title;
+  assert.equal(title("Add README"), "Draft: Add README");
+  assert.equal(title("Draft: Add README"), "Draft: Add README");
+  assert.equal(title("[Draft] Add README"), "[Draft] Add README");
+  // "Draft release notes" is not a recognized marker; GitLab would treat it as ready.
+  assert.equal(title("Draft release notes"), "Draft: Draft release notes");
+});
+
+test("a response body failure after a write is possibly sent", async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("terminated");
+      },
+    };
+  };
+  await assert.rejects(
+    client("git-write", fetchImpl).createDraftMergeRequest({
+      sourceBranch: "feature/readme",
+      targetBranch: "main",
+      title: "Add README",
+    }),
+    (error) => {
+      assert.equal(error.possiblySent, true);
+      return true;
+    },
+  );
+  assert.equal(calls, 1, "the client must not retry");
 });

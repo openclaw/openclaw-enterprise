@@ -6,10 +6,10 @@ author: cooktheryan
 
 # Proposal: Support GitLab.com repository credentials
 
-- **ID:** RFC-0030
+- **ID:** RFC-0029
 - **Created:** 2026-10-21
 - **RFC PR:** [#3137](https://github.com/openclaw/openclaw-enterprise/pull/3137)
-- **Implementation plan:** [0030-gitlab-repository-credentials](../plans/0030-gitlab-repository-credentials.md)
+- **Implementation plan:** [0029-gitlab-repository-credentials](../plans/0029-gitlab-repository-credentials.md)
 - **Related:** [Feature request #3135](https://github.com/openclaw/openclaw-enterprise/issues/3135), [RFC-0023: Credential Proxy and credential lifecycle](0023-egress-proxy-credential-lifecycle/index.md), [implementation PR #2487](https://github.com/openclaw/openclaw-enterprise/pull/2487)
 
 ## Summary
@@ -104,7 +104,7 @@ Use one running Agent, the selected Credential Proxy and paired Sandbox, and an 
 2. Attempt a forbidden push. Verify no upload reaches GitLab and that the denial is attributable in OCE audit. Withdraw the OCE binding while the PAT is still valid. Try a fresh fetch from the same Agent. Verify denial while its conversation still works. Use an observer that saw the allowed Git traffic to confirm zero upstream fetch requests. Record any gap in that observation.
 3. Verify successful writes and uncertain creates have attributable audit evidence with the provider, project, actor, and OCE operation identity. Confirm audit records contain no PAT or request body. Submit a revision with both provider selections and verify admission refuses it while single-provider GitHub and GitLab revisions remain independently supported.
 
-The [implementation plan](../plans/0030-gitlab-repository-credentials.md) covers credential failures and token non-disclosure. This spike ran no live GitLab operations. Stock OpenShell’s refusal of unqualified Git access is a separate result.
+The [implementation plan](../plans/0029-gitlab-repository-credentials.md) covers credential failures and token non-disclosure. This spike ran no live GitLab operations. Stock OpenShell’s refusal of unqualified Git access is a separate result.
 
 ## Rationale and alternatives
 

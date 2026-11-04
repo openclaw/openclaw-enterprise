@@ -5,6 +5,7 @@ export {
   draftMergeRequestRequest,
   gitLabOperationAllowed,
   gitLabProfileOperations,
+  refuseGitLabQuickActions,
   normalizeGitLabProjectPath,
 } from "./client.ts";
 export type {
