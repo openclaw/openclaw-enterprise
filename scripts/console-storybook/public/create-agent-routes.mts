@@ -1,16 +1,15 @@
+import type { StoredDeployment, CreatedRevision } from "./agent-lifecycle.mts";
 import type {
   AgentDeploymentStatusWire,
   AgentProvisioningStatusWire,
   AgentWire,
-  AgentRevisionWire,
 } from "@openclaw-enterprise/contracts";
 import { configurationInput } from "./configuration-store.mts";
 import type { StoredConfiguration } from "./configuration-store.mts";
 import { deploymentFailureMessages, initialDeploymentProgress } from "./deployment-fixture.mts";
 import { fixtureError as error, fixtureResponse as response } from "./preview-rules.mts";
 
-// Only the creation lifecycle is owned here. The responder still owns Agent settings,
-// revision snapshots and subsequent Agent routes; pass-through settings remain uninspected.
+// Admission retains uninspected optional settings; the lifecycle owner stores snapshots.
 export type CreatedAgent = Pick<
   AgentWire,
   | "id"
@@ -23,7 +22,6 @@ export type CreatedAgent = Pick<
   | "servicePrincipalId"
 > & { activeRevisionId: string | null };
 
-type Deployment = AgentDeploymentStatusWire & { reads?: number | undefined; cleanupReads?: number };
 type ProvisioningJob = Pick<AgentProvisioningStatusWire, "workId" | "status" | "url"> & {
   requestId: string;
   reads: number;
@@ -51,18 +49,15 @@ type CreateDependencies = {
   createdAt: string;
   nextId: (prefix: string) => string;
   configs: Map<string, StoredConfiguration>;
-  saveAgent: (agent: CreatedAgent) => void;
-  // Snapshot construction stays with the remaining Agent/revision simulation.
-  snapshot: (
-    agent: CreatedAgent,
-    revisionId: string,
-    revision: number,
-  ) => Pick<AgentRevisionWire, "id">;
-  saveRevision: (revision: Pick<AgentRevisionWire, "id">) => void;
-  deployments: Map<string, Deployment>;
   credentials: Map<string, { transportConfigured: boolean }>;
-  files: Map<string, string>;
-  stagedWorkspaceFiles: Map<string, Record<string, string>>;
+  lifecycle: {
+    saveAgent: (agent: CreatedAgent) => void;
+    snapshot: (agent: CreatedAgent, revisionId: string, revision: number) => CreatedRevision;
+    saveRevision: (revision: CreatedRevision) => void;
+    deployments: Map<string, StoredDeployment>;
+    files: Map<string, unknown>;
+    stagedWorkspaceFiles: Map<string, Record<string, string>>;
+  };
 };
 
 function isWorkspaceFiles(value: unknown): value is Record<string, string> {
@@ -123,19 +118,8 @@ function credentialSourceProjection(body: object) {
 }
 
 export function createAgentRoutes(scenario: CreateScenario, dependencies: CreateDependencies) {
-  const {
-    namespaceId,
-    createdAt,
-    nextId,
-    configs,
-    saveAgent,
-    snapshot,
-    saveRevision,
-    deployments,
-    credentials,
-    files,
-    stagedWorkspaceFiles,
-  } = dependencies;
+  const { namespaceId, createdAt, nextId, configs, credentials, lifecycle } = dependencies;
+  const { saveAgent, snapshot, saveRevision, deployments, files, stagedWorkspaceFiles } = lifecycle;
   const provisioning = new Map<string, ProvisioningJob>();
   return function serve(resource: string, method: string, body: unknown): Response | undefined {
     if (resource === "agents" && method === "POST") {

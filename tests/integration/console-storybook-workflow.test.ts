@@ -483,6 +483,131 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     );
   });
 
+  await t.test(
+    "deployment snapshots, one-time staging, stop readback and deferred deletion",
+    async () => {
+      installFixture({ clearRevisionOnStopReadback: true }, evidence());
+      const agentPath = `agents/${id("agt", 100)}`;
+      await request("agents", "POST", {
+        name: "Staged Agent",
+        configurationId: id("cfg", 1),
+        executionMode: "dedicated",
+        initialWorkspaceFiles: { "AGENTS.md": "Initial guidance" },
+      });
+      const firstRevision = id("rev", 101);
+      assert.equal((await request(`${agentPath}/deploy`, "POST", {})).status, 202);
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/deployments/${firstRevision}`)).json(),
+        {
+          data: { status: "queued" },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/deployments/${firstRevision}`)).json(),
+        {
+          data: { status: "succeeded" },
+        },
+      );
+      // Editing current inputs must not alter the admitted snapshot; staged files
+      // are consumed once, so redeploy must preserve a later workspace edit.
+      await request(`configurations/${id("cfg", 1)}`, "PATCH", {
+        values: { agents: { defaults: { model: "codex/gpt-5.1" } } },
+      });
+      await request(agentPath, "PATCH", {
+        executionMode: "embedded",
+        extraSetting: { retained: true },
+      });
+      await request(`${agentPath}/workspace/files/AGENTS.md`, "PUT", {
+        content: "Edited guidance",
+      });
+      await request(`${agentPath}/deploy`, "POST", {});
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions/${firstRevision}`)).json(),
+        {
+          data: {
+            revision: 1,
+            configurationGeneration: 1,
+            harness: { mode: "dedicated" },
+            configuration: { agents: { defaults: { model: "codex/gpt-4.1" } } },
+          },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions/${id("rev", 102)}`)).json(),
+        {
+          data: { revision: 2, configurationGeneration: 2, harness: { mode: "embedded" } },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/workspace/files/AGENTS.md`)).json(),
+        {
+          data: { content: "Edited guidance" },
+        },
+      );
+      // Stop acknowledges the old selection; only the following detail read clears it.
+      assert.partialDeepStrictEqual(await (await request(`${agentPath}/stop`, "POST", {})).json(), {
+        data: { desiredRuntimeState: "stopped", activeRevisionId: firstRevision },
+      });
+      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
+        data: { activeRevisionId: null, extraSetting: { retained: true } },
+      });
+      assert.equal((await request(agentPath, "DELETE")).status, 202);
+      assert.equal((await request(agentPath)).status, 404);
+    },
+  );
+
+  await t.test(
+    "seeded revision pagination and runtime reads drive the failed redeploy race",
+    async () => {
+      installFixture(
+        {
+          deployed: true,
+          revisionHistory: 3,
+          stopElsewhereOnReread: true,
+          failedRedeployOnReread: true,
+        },
+        evidence(),
+      );
+      const agentPath = `agents/${id("agt", 1)}`;
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions?limit=2`)).json(),
+        {
+          data: [{ revision: 3 }, { revision: 2 }],
+          meta: { nextCursor: "v1.2" },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions?limit=2&cursor=v1.2`)).json(),
+        {
+          data: [{ revision: 1 }],
+          meta: { nextCursor: null },
+        },
+      );
+      const runtime = `${agentPath}/deployments/${id("rev", 1)}/runtime`;
+      await request(`${runtime}/logs`);
+      // The diagnostic module only signals a read. The lifecycle owner performs the
+      // competing stop and preserves omission rather than converting it to null.
+      const stopped = await request(agentPath);
+      assert.partialDeepStrictEqual(await stopped.clone().json(), {
+        data: { desiredRuntimeState: "stopped" },
+      });
+      assert.doesNotMatch(await stopped.text(), /"activeRevisionId"/);
+      await request(runtime);
+      await request(runtime);
+      const restarted = await request(agentPath);
+      assert.partialDeepStrictEqual(await restarted.clone().json(), {
+        data: { desiredRuntimeState: "running" },
+      });
+      assert.doesNotMatch(await restarted.text(), /"activeRevisionId"/);
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/deployments/${id("rev", 18)}`)).json(),
+        {
+          data: { status: "failed", error: { code: "RUNTIME_MODEL_PROBE_TIMEOUT" } },
+        },
+      );
+    },
+  );
+
   for (const malformedProvisioningReply of ["revision-id", "error-message"] as const) {
     await t.test(
       `failed job preserves stored deployment with ${malformedProvisioningReply}`,
