@@ -856,9 +856,15 @@ export async function createConsoleAppFixture(t, options = {}) {
     return { agent, revision };
   }
 
-  async function createSecret(namespaceId, name, value) {
+  async function createSecret(namespaceId, name, value, options = {}) {
     const secret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
-      body: { name, value },
+      body: {
+        name,
+        value,
+        ...(options.authorizedEndpoint === undefined
+          ? {}
+          : { authorizedEndpoint: options.authorizedEndpoint }),
+      },
     });
     return fixtureResponse(secret, 201, SecretResponse, "create Secret").data;
   }

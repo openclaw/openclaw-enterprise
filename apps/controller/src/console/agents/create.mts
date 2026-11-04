@@ -1076,10 +1076,12 @@ function renderAgentForm(
     if (nativeProvider.value === "custom") {
       return normalizeOpenAiBaseUrl(customEndpoint.value);
     }
+    // Routing is Installation-owned: Codex and Embedded OpenClaw both deliver an OpenAI API
+    // key to runtime.modelProvider.baseUrl, so both need that endpoint's authorization.
     if (
       nativeProvider.value === "openai" &&
-      harness.value === "codex" &&
       authMethod.value === "api_key" &&
+      codexApiKeyBaseUrl !== undefined &&
       codexApiKeyBaseUrl !== "https://api.openai.com/v1"
     ) {
       return codexApiKeyBaseUrl;
