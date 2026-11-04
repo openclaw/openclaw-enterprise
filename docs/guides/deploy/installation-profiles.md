@@ -141,7 +141,8 @@ one `@` and a dotted domain.
 most 253 characters: the existing GatewayClass that Envoy Gateway serves, the
 Secret that holds the `occ` key, and the database CA Secret.
 
-For the `codex` profile, add the reviewed Codex seccomp profile to the base input:
+For the `codex` profile, optionally add a reviewed Codex seccomp profile when
+the cluster's `RuntimeDefault` profile blocks the Codex sandbox:
 
 ```json
 {
@@ -372,8 +373,8 @@ the install as ready:
   admin, wildcard DNS and TLS for native admin and the shared cookie parent domain.
 - A default ReadWriteOnce storage class for dedicated Codex workspace claims and
   `runtime.gatewayStorageClassName` for gateway state.
-- For Codex, the configured localhost seccomp profile installed and verified on
-  every node selected by `runtime.nodeSelector`.
+- For Codex, when `runtime.codexSeccompProfile` is configured, the localhost
+  profile installed and verified on every node selected by `runtime.nodeSelector`.
 - For Slack, a proxy route for both gateway runtime traffic and Console
   directory lookup. The managed proxy serves both; external proxies need both
   URLs. Rendering proxy wiring does not enable a Slack consumer. Either profile

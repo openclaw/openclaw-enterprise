@@ -2843,10 +2843,26 @@ test("preflight rejects Codex seccomp paths the compute driver refuses", async (
       message,
     );
   }
+  await assertPreflightFailure(
+    "codex",
+    codexInput({ runtime: { codexSeccompProfile: "" } }),
+    /runtime\.codexSeccompProfile must be a nonempty string when supplied/,
+  );
   const accepted = await render("codex", codexInput());
   const installation = loadYaml(accepted.installation);
   requireConfiguration(KubernetesComputeDriver, installation.drivers.compute.configuration);
   assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
+});
+
+test("Codex profile accepts an omitted seccomp profile", async () => {
+  const output = await render("codex", codexInput({ runtime: { codexSeccompProfile: undefined } }));
+  const installation = loadYaml(output.installation);
+  requireConfiguration(KubernetesComputeDriver, installation.drivers.compute.configuration);
+  assert.equal(installation.drivers.compute.configuration.runtime.codexSeccompProfile, undefined);
+  assert.doesNotMatch(
+    output.preflight.prerequisites.join("\n"),
+    /Configured Codex seccomp profile installed/,
+  );
 });
 
 test("both profiles carry the shared model endpoint under Compute startup's rule", async () => {

@@ -1598,6 +1598,13 @@ function buildRendered(profile, parsed, diagnostics) {
       diagnostics.errors.push(`runtime.${key} is only consumed by the codex profile.`);
     }
   }
+  const codexSeccompProfile =
+    profile.name === "codex"
+      ? optionalString(runtime, ["runtime", "codexSeccompProfile"], diagnostics, {
+          validate: isCodexSeccompProfile,
+          description: "a relative localhost profile path without traversal or unconfined mode",
+        })
+      : undefined;
   if (!repositoryEnabled && Object.keys(repository).some((key) => key !== "enabled")) {
     diagnostics.errors.push(
       "repository fields other than enabled are only consumed when repository.enabled is true.",
@@ -1959,20 +1966,7 @@ function buildRendered(profile, parsed, diagnostics) {
             ...(runtime.modelProvider === undefined
               ? {}
               : { modelProvider: sharedModelProvider(runtime, diagnostics) }),
-            ...(profile.name === "codex"
-              ? {
-                  codexSeccompProfile: asString(
-                    runtime,
-                    ["runtime", "codexSeccompProfile"],
-                    diagnostics,
-                    {
-                      validate: isCodexSeccompProfile,
-                      description:
-                        "a relative localhost profile path without traversal or unconfined mode",
-                    },
-                  ),
-                }
-              : {}),
+            ...(codexSeccompProfile === undefined ? {} : { codexSeccompProfile }),
             ...(managedSlackProxyEnabled
               ? {
                   channels: {
@@ -2214,8 +2208,12 @@ function buildRendered(profile, parsed, diagnostics) {
     }
   }
   if (profile.name === "codex") {
+    if (codexSeccompProfile !== undefined) {
+      diagnostics.prerequisites.push(
+        "Configured Codex seccomp profile installed and verified on every node selected by runtime.nodeSelector.",
+      );
+    }
     diagnostics.prerequisites.push(
-      "Configured Codex seccomp profile installed and verified on every node selected by runtime.nodeSelector.",
       "Hosted discovery and codex_pat runtime tokens stored later as Namespace Secrets or entered in the Console; the renderer does not create or verify those credentials.",
     );
     if (Object.keys(managedServiceAccounts).length === 0) {
