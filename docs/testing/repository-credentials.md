@@ -43,7 +43,12 @@ between the reader and credential owners; its boundary test uses a local TLS
 provider. PR CI's Image Runtime Startup lane checks that stock Codex reads the
 projected skill through its limited native proxy, with local binding disabled,
 and returns a random title available only at the TLS provider. This needs no
-model or repository credentials.
+model or repository credentials. Both native and K3d reader fixtures serve a
+separate `CA:false` server-auth leaf and project only its public issuer as trust.
+Fixture metadata checks do not establish native Rustls success. The native test
+captures at most 64 passive TLS/HTTP event receipts before teardown, with collection
+and truncation flags. Model-tool diagnostics retain fixed preflight stages, exit
+status and known error classes; unknown failures remain unknown without raw stderr.
 
 `node --test tests/integration/public-github-git-transport.test.mjs` checks the
 actual launcher and Git/API helper with verified loopback TLS. Consecutive peer

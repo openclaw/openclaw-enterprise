@@ -12,8 +12,12 @@ export async function createModelProviderFiles({ directory, caName, run }) {
     new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url),
     file("endpoint.mjs"),
   );
+  await copyFile(
+    new URL("../fixtures/public-read-model.mjs", import.meta.url),
+    file("public-read-model.mjs"),
+  );
   await chmod(directory, 0o755);
-  for (const name of ["ca.pem", "cert.pem", "key.pem", "endpoint.mjs"]) {
+  for (const name of ["ca.pem", "cert.pem", "key.pem", "endpoint.mjs", "public-read-model.mjs"]) {
     await chmod(file(name), 0o644);
   }
 }

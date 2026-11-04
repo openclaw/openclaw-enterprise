@@ -11,6 +11,7 @@ import {
   AGENT_RUNTIME_ENTRYPOINT,
   PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { readPublicReadReceipts } from "../helpers/public-github-read-fixture.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import {
   image,
@@ -39,8 +40,6 @@ assert.equal(
 // the real reader constructs the request and verifies the provider's TLS identity.
 async function readerWithPrivateProvider() {
   const assert = (await import("node:assert/strict")).default;
-  const { execFileSync } = await import("node:child_process");
-  const { readFileSync } = await import("node:fs");
   const { writeFile } = await import("node:fs/promises");
   const { startPublicGithubProvider, publicProviderGit } =
     await import("/tmp/test-helpers/public-github-provider.mjs");
@@ -55,33 +54,13 @@ async function readerWithPrivateProvider() {
     .flat()
     .find((entry) => entry.family === "IPv4" && !entry.internal).address;
   const name = "api.github.com";
-  const keyFile = "/tmp/provider.key";
-  const certFile = "/tmp/provider.pem";
-  execFileSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:P-256",
-      "-nodes",
-      "-keyout",
-      keyFile,
-      "-out",
-      certFile,
-      "-days",
-      "1",
-      "-subj",
-      "/CN=" + name,
-      "-addext",
-      "subjectAltName=DNS:" + name + ",IP:" + address,
-    ],
-    { stdio: "ignore" },
-  );
-  const cert = readFileSync(certFile);
-  const provider = https.createServer({ key: readFileSync(keyFile), cert }, async (req, res) => {
+  const { publicReaderTls, publicReadReceipts } =
+    await import("/tmp/test-helpers/public-github-read-fixture.mjs");
+  const observe = publicReadReceipts((line) => console.log(line));
+  observe(gitProvider.provider, "git-provider");
+  const { ca, cert, key } = await publicReaderTls(address, name);
+  await writeFile("/tmp/provider.pem", ca);
+  const provider = https.createServer({ key, cert }, async (req, res) => {
     assert.equal(req.socket.servername, name);
     assert.equal(req.headers.authorization ?? req.headers.cookie, undefined);
     assert.equal(req.url, "/repos/example/public-project/pulls/27");
@@ -98,6 +77,7 @@ async function readerWithPrivateProvider() {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ title: process.argv[1] }));
   });
+  observe(provider, "api-provider");
   await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
   const { createConnection } = https.Agent.prototype;
   https.Agent.prototype.createConnection = function (options, callback) {
@@ -110,7 +90,7 @@ async function readerWithPrivateProvider() {
         host: "127.0.0.1",
         port: options.host === name ? provider.address().port : gitProvider.port,
         servername: options.host,
-        ca: options.host === name ? cert : gitProvider.cert,
+        ca: options.host === name ? ca : gitProvider.cert,
       },
       callback,
     );
@@ -119,8 +99,8 @@ async function readerWithPrivateProvider() {
   const capability = process.env.OCE_TEST_PUBLIC_CAPABILITY;
   const revisionId = capability.split(".")[0];
   const policy = { mode: "repositories", repositories: ["example/public-project"] };
-  createPublicGithubReadServer({
-    tls: { cert, key: readFileSync(keyFile) },
+  const reader = createPublicGithubReadServer({
+    tls: { cert, key },
     policy,
     loadAuthorizations: () => ({
       [revisionId]: {
@@ -133,7 +113,9 @@ async function readerWithPrivateProvider() {
         validUntil: new Date(Date.now() + 600_000).toISOString(),
       },
     }),
-  }).listen(8080, () => console.log("public-reader-ready"));
+  });
+  observe(reader, "reader");
+  reader.listen(8080, () => console.log("public-reader-ready"));
 }
 
 // Runs as the stock runtime user with the reviewed seccomp profile. Resolve the real
@@ -324,6 +306,16 @@ test(
     await runDocker(["network", "create", "--internal", owner]);
     t.after(async () => {
       try {
+        // Collect passive receipts before teardown, including on the original
+        // command failure. Diagnostic collection must not replace that failure.
+        let receipts = readPublicReadReceipts(undefined);
+        try {
+          const logs = await runDocker(["logs", "--tail", "70", reader], { maxBuffer: 64 * 1024 });
+          receipts = readPublicReadReceipts(logs.stdout);
+        } catch {
+          // No raw container/engine error enters the fixed receipt.
+        }
+        t.diagnostic("public-read-causal " + JSON.stringify(receipts));
         await runDocker(["rm", "-f", "-v", reader]);
       } finally {
         await runDocker(["network", "rm", owner]);

@@ -25,6 +25,7 @@ const echoPattern =
     : new RegExp(process.env.PROBE_ENDPOINT_ECHO_PATTERN, "g");
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
 const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
+const publicReadFixture = publicReadJourney ? await import("./public-read-model.mjs") : undefined;
 const skipperFixture =
   process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
     ? (await import("./skipper-prepared-compute-model.mjs")).skipperPreparedComputeEvents
@@ -183,25 +184,14 @@ function publicReadEvents(model, request) {
     (item) => item.type === "function_call_output" && item.call_id === "public-read-call",
   );
   if (output) {
-    const result = JSON.stringify(output.output);
-    const title = result.match(/public-pull-[0-9a-f-]{36}/u)?.[0];
-    const curlCode = result.match(/curl: \(([0-9]{1,3})\)/u)?.[1];
-    emit({
-      event: "public-read-tool-result",
-      result: title ? "title-returned" : curlCode ? `curl-${curlCode}` : "no-title",
-    });
+    const { title, ...receipt } = publicReadFixture.publicReadToolResult(output.output);
+    emit({ event: "public-read-tool-result", ...receipt });
     return answerEvents(model, title ?? "PUBLIC_READ_TOOL_FAILED");
   }
   if (!request.includes("OCE_PUBLIC_READ_JOURNEY")) {
     return undefined;
   }
-  const command = [
-    "set -eu",
-    'test "$CODEX_NETWORK_PROXY_ACTIVE" = 1',
-    'test "$CODEX_NETWORK_ALLOW_LOCAL_BINDING" = 0',
-    'grep -q -- "--api-get" /home/node/.openclaw/skills/public-github-read/SKILL.md',
-    'node "$GIT_EXEC_PATH/transport.mjs" --api-get "/repos/example/public-project/pulls/27"',
-  ].join("\n");
+  const command = publicReadFixture.publicReadCommand();
   const item = {
     type: "function_call",
     call_id: "public-read-call",

@@ -11,7 +11,7 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { chartTooling, helmTemplate } from "../helpers/production-chart.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, X509Certificate } from "node:crypto";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
 
@@ -574,6 +574,7 @@ test("reader fixture waits for a current ready endpoint owned by its Service", a
   const serviceUid = "reader-service-uid";
   const podUid = "reader-pod-uid";
   let selector;
+  let fixtureItems;
   let sliceReads = 0;
   const slice = (ownerUid, targetUid, endpoints = true) => ({
     metadata: { ownerReferences: [{ kind: "Service", uid: ownerUid }] },
@@ -593,6 +594,7 @@ test("reader fixture waits for a current ready endpoint owned by its Service", a
     if (manifest.kind === "Service") {
       assert.equal(manifest.spec.selector, undefined, "reservation must not add a stale selector");
     } else {
+      fixtureItems = manifest.items;
       selector = manifest.items.find((item) => item.kind === "Service").spec.selector;
     }
   };
@@ -637,8 +639,101 @@ test("reader fixture waits for a current ready endpoint owned by its Service", a
     applyManifest,
     waitFor,
   });
+  // Inspect actual generated Secret/chart material, not authored certificate options.
+  const secret = fixtureItems.find((item) => item.kind === "Secret");
+  const leaf = new X509Certificate(Buffer.from(secret.data["tls.crt"], "base64"));
+  const issuer = new X509Certificate(reader.peer.caBundle);
+  assert.equal(leaf.ca, false, "the reader must serve an end-entity certificate");
+  assert.equal(issuer.ca, true);
+  assert.notEqual(leaf.fingerprint256, issuer.fingerprint256);
+  assert.ok(leaf.verify(issuer.publicKey));
+  assert.ok(issuer.verify(issuer.publicKey));
+  assert.equal(leaf.checkIP(reader.peer.address), reader.peer.address);
+  assert.deepEqual(leaf.keyUsage, ["1.3.6.1.5.5.7.3.1"]);
+  assert.deepEqual(Object.keys(secret.data).sort(), ["tls.crt", "tls.key"]);
+  assert.ok(leaf.checkPrivateKey(createPrivateKey(Buffer.from(secret.data["tls.key"], "base64"))));
+  const publicMaterial = JSON.stringify(fixtureItems.filter((item) => item.kind !== "Secret"));
+  assert.ok(publicMaterial.includes(JSON.stringify(reader.peer.caBundle).slice(1, -1)));
+  assert.doesNotMatch(publicMaterial + reader.peer.caBundle, /PRIVATE KEY/);
+  assert.equal(publicMaterial.includes(JSON.stringify(leaf.toString()).slice(1, -1)), false);
   assert.equal(sliceReads, observations.length);
   assert.deepEqual(reader.peer.podLabels, selector);
   assert.equal(reader.peer.address, "10.43.0.19");
   assert.equal(reader.peer.installationId, undefined);
+});
+
+test("native reader material serves a verified leaf and receipts expose only bounded event classes", async (t) => {
+  const { publicReaderTls, publicReadReceipts, readPublicReadReceipts } =
+    await import("../helpers/public-github-read-fixture.mjs");
+  const { createServer, get } = await import("node:https");
+  const { listen } = await import("../helpers/listen.mjs");
+  const tls = await publicReaderTls("127.0.0.1", "api.github.com");
+  const leaf = new X509Certificate(tls.cert);
+  const issuer = new X509Certificate(tls.ca);
+  assert.equal(leaf.ca, false);
+  assert.equal(issuer.ca, true);
+  assert.ok(leaf.verify(issuer.publicKey));
+  assert.notEqual(leaf.fingerprint256, issuer.fingerprint256);
+  assert.equal(leaf.checkHost("api.github.com"), "api.github.com");
+  assert.equal(leaf.checkIP("127.0.0.1"), "127.0.0.1");
+  assert.deepEqual(leaf.keyUsage, ["1.3.6.1.5.5.7.3.1"]);
+  assert.doesNotMatch(tls.ca, /PRIVATE KEY/);
+  const lines = [];
+  const server = createServer({ key: tls.key, cert: tls.cert }, (_req, res) => {
+    res.writeHead(502).end("private-response-must-not-escape");
+  });
+  publicReadReceipts((line) => lines.push(line))(server, "reader");
+  const port = await listen(t, server);
+  const request = (ca) =>
+    new Promise((resolve, reject) => {
+      get(
+        {
+          hostname: "127.0.0.1",
+          port,
+          ca,
+          path: "/private-path",
+          headers: { authorization: "private-header" },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", resolve);
+        },
+      ).on("error", reject);
+    });
+  const { once } = await import("node:events");
+  const failedTls = once(server, "tlsClientError");
+  await assert.rejects(request((await publicReaderTls("127.0.0.1")).ca), {
+    code: /^(UNABLE_TO_VERIFY_LEAF_SIGNATURE|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|CERT_SIGNATURE_FAILURE)$/,
+  });
+  await failedTls;
+  await request(tls.ca);
+  const first = readPublicReadReceipts(lines.join("\n"));
+  assert.equal(first.collected, true);
+  assert.ok(first.events.some((event) => event.event === "tls-error"));
+  assert.ok(first.events.some((event) => event.event === "tls-accepted"));
+  assert.ok(first.events.some((event) => event.event === "http-entry"));
+  assert.ok(first.events.some((event) => event.event === "http-finish" && event.status === 502));
+  for (let i = 0; i < 40; i++) {
+    await request(tls.ca);
+  }
+  const bounded = readPublicReadReceipts(lines.join("\n"));
+  assert.equal(bounded.events.length, 64);
+  assert.equal(bounded.truncated, true);
+  assert.equal(lines.length, 66);
+  assert.doesNotMatch(
+    JSON.stringify(bounded) + lines.join("\n"),
+    /private-|PRIVATE KEY|BEGIN CERTIFICATE/,
+  );
+  for (const raw of [
+    "{",
+    '{"role":"reader","event":"http-finish","status":502,"secret":"private-value"}',
+    "null",
+  ]) {
+    const malformed = readPublicReadReceipts(lines[0] + "\npublic-read-receipt " + raw);
+    assert.equal(malformed.collected, false);
+    assert.equal(malformed.malformed, true);
+    assert.doesNotMatch(JSON.stringify(malformed), /private-value/);
+  }
+  assert.equal(readPublicReadReceipts(undefined).collected, false);
+  assert.equal(readPublicReadReceipts("x".repeat(65537)).collected, false);
 });

@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { selfSigned } from "./certificates.mjs";
+import { publicReaderTls } from "./public-github-read-fixture.mjs";
 import { parseProductionChart, renderProductionChart } from "./production-chart.mjs";
 
 /** Install the chart reader in this journey's disposable namespace. Replace only GitHub. */
@@ -37,13 +34,7 @@ export async function installPublicGithubReadFixture({
   const address = allocated.spec.clusterIP;
   const tlsSecretName = `${name}-tls`;
   const authorizationConfigMapName = `${name}-authorizations`;
-  const tlsDirectory = await mkdtemp(join(tmpdir(), "oce-reader-k3d-tls-"));
-  let tls;
-  try {
-    tls = await selfSigned(tlsDirectory, { subjectAltName: `IP:${address}` });
-  } finally {
-    await rm(tlsDirectory, { recursive: true, force: true });
-  }
+  const tls = await publicReaderTls(address);
   let upstreamCidrs = ["192.0.2.1/32"];
   if (liveGithub) {
     const response = await fetch("https://api.github.com/meta", {
@@ -75,7 +66,7 @@ export async function installPublicGithubReadFixture({
         upstreamCidrs.map((cidr, index) => [`publicGithubRead.upstreamCidrs[${index}]`, cidr]),
       ),
     },
-    { namespace, release, strings: { "publicGithubRead.caBundle": tls.cert } },
+    { namespace, release, strings: { "publicGithubRead.caBundle": tls.ca } },
   );
   const items = (await parseProductionChart(stdout)).filter((item) =>
     item.metadata.name.startsWith(name),
@@ -247,7 +238,7 @@ export async function installPublicGithubReadFixture({
       podLabels: liveService.spec.selector,
       address,
       authorizationConfigMapName,
-      caBundle: tls.cert,
+      caBundle: tls.ca,
     },
     marker,
   };
