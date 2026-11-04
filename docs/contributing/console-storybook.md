@@ -225,7 +225,9 @@ seven-day release-age policy, independently of root dependencies.
 - `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured
   requests report an error and return 501, never reaching a server. Preview CSP
   also blocks network connections. Authentication and authorization
-  responses are examples, not a security implementation.
+  responses are examples, not a security implementation. Its typed
+  `public/configuration-store.mts` owns Configuration persistence;
+  `public/create-agent-routes.mts` owns Create and provisioning job routes.
 - `public/frame.mts` starts the production console and opens configured controls.
   The asset builder emits it as `/storybook-fixtures/frame.mjs` with an asset
   version in the URL.
