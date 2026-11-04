@@ -2024,7 +2024,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (typeof profile?.id !== "string" || profile.id !== id) {
       throw new OpenShellGatewayFailure("OpenShell GetProviderProfile returned another profile.");
     }
-    return storedProviderProfile(profile, profile.id);
+    // The wire decoder omits empty repeated fields. Files-only profiles have neither
+    // endpoints nor credential declarations.
+    const { endpoints = [], credentials = [] } = profile;
+    return storedProviderProfile({ ...profile, endpoints, credentials }, profile.id);
   }
 
   async listProviderProfiles(
