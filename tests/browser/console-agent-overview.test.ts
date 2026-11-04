@@ -2333,11 +2333,11 @@ test("A failed deployment's banner offers no Deploy again once the Configuration
       : route.fallback(),
   );
   const denied = page.waitForResponse(
-    (response) => response.url() === configurationPath && response.status() === 403,
+    (response) => response.url() === configurationPath && response.request().method() === "GET",
   );
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
-  await denied;
+  assert.equal((await denied).status(), 403);
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
     .getByText(persistedDeploymentError("DEPENDENCY_UNAVAILABLE").message, { exact: false })
