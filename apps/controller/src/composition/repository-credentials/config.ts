@@ -15,7 +15,6 @@ import type {
   GitHubStaticTokenOwner,
   GitHubDriverFactory,
 } from "../../drivers/repo/github/credentials/types.ts";
-import { createProviderQueue } from "../../drivers/repo/credentials/provider-queue.ts";
 import { loadPublicCa } from "./public-ca.ts";
 import { readProtectedFile } from "./protected-file.ts";
 
@@ -184,7 +183,6 @@ export async function loadConfiguration(
         configuration,
       });
     }
-    const providerQueue = createProviderQueue(config.limits.providerQueue);
     const ownedCert = cert;
     const ownedTlsKey = tlsKey;
     const ownedAuthority = owner;
@@ -192,7 +190,6 @@ export async function loadConfiguration(
       config,
       tls: Object.freeze({ cert: ownedCert, key: ownedTlsKey }),
       factory,
-      providerQueue,
       trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
       ...(upstreamCa === undefined ? {} : { upstreamCa }),
       ...(ownedAuthority?.kind === "github-token"
