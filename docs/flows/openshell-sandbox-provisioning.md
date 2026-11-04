@@ -182,10 +182,10 @@ PAT bootstrap (`prepareHarnessAuth`;
 writes an opaque placeholder to private `auth.json`, clears the child override and validates
 native login. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
 admit bootstrap/model traffic; failure keeps versions inactive.
-API-key profiles bind immutable `config.base_url` plus `/**` (default OpenAI `/v1`),
-preserving prefixes such as `/api/v1`. [Registration](credential-source-lifecycle.md#1-admit-the-registration-request)
-rejects invalid endpoints. `attachForRevision` requires native OpenClaw's selected
-model endpoints to match the source. For Codex,
+`requireModelSourceDestination` checks immutable `config.authorized_base_url`
+before API-key profiles bind the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
+URL plus `/**`, preserving `/api/v1` prefixes. `attachForRevision` translates native
+OpenClaw configuration and matches selected endpoints to this URL. For Codex,
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexConfigurationToml`
 selects a named provider and HTTPS Responses transport.
 
@@ -392,6 +392,8 @@ model execution.
 - 2026-11-04 03:10: Bind persistent tenant ingress to namespace ownership. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - 7446e87d35b0fdaa7a80d01dead82fec488b66d5)
 
 - 2026-11-04 01:57: Preserve quickstart management callers across tenant policy updates. (authoring-run/142bbf24-9a49-48de-816c-9898b58c311b - fdca6e74421067adc66dce4f141d153af0355f68)
+
+- 2026-11-03 18:15: Correct provider ownership. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
 
 - 2026-10-30 16:09: Preserve capability-based repository admission while integrating patched runtime provenance. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
 
