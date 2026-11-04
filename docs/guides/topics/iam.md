@@ -42,6 +42,26 @@ current identity, scope, grant, or a Restriction did not permit the operation.
 Have an administrator check the exact resource and action; access to a Namespace
 does not give access to every resource in it.
 
+## Stage an Agent Operator Group
+
+A human administrator can select one existing OCE Group in a ready Namespace
+as the intended operator of all its Agents. Staging records that choice. It
+grants no access and does not change Group membership.
+
+Use a [human administrator session](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator)
+with Installation `administer` and exact Namespace `read`. Send requests to
+`/namespaces/:namespaceId/iam/agent-operator`.
+
+| Request               | What to send                                                                                                  | Result                                                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`                 | The Namespace ID in the path.                                                                                 | Returns the status and generation. The initial status is `off` with a null generation. A staged profile includes the selected Group ID. |
+| `PUT`                 | The immutable `groupId`, `acknowledgeAllAgents: true`, and the generation from `GET` in `expectedGeneration`. | Stages the Group when the profile is off or withdrawn. A missing Group or one outside this Namespace returns `404`.                     |
+| `POST` to `/withdraw` | The staged profile's `expectedGeneration`.                                                                    | Clears the Group selection and returns `withdrawn` with a new generation.                                                               |
+
+After a `409`, read the current profile before sending another request. To
+replace a staged Group, withdraw it first, then use the returned generation to
+stage the new Group.
+
 ## Add a person
 
 A new account starts with no access. As a human Installation administrator:

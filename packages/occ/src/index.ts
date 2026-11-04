@@ -175,6 +175,8 @@ import type {
   Installation,
   InstallationDeploymentInventory,
   Namespace,
+  NamespaceAgentOperatorProfile,
+  NamespaceAgentOperatorProfileChange,
   NamespaceDeleteResult,
   NamespaceEnsureResult,
   LoggingLevel,
@@ -184,6 +186,7 @@ import type {
   Preset,
   PresetSummary,
   PresetTemplate,
+  Principal,
   PermissionAction,
   PluginDesiredSelection,
   PluginDesiredState,
@@ -2490,6 +2493,54 @@ export class OpenClawController {
         driver.listNamespaceRoles!({ policy: state.iamPolicy }, namespace.id),
       ),
     );
+  }
+
+  async getNamespaceAgentOperatorProfile(
+    actor: Pick<Principal, "id" | "issuer" | "subject">,
+    namespaceId: string,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile> | undefined> {
+    return this.read(async (state) => {
+      await this.admitNamespaceAgentOperatorProfile(actor, namespaceId, state);
+      const driver = this.iamPolicyDriver("getNamespaceAgentOperatorProfile");
+      return this.iamPolicyOperation(() =>
+        driver.getNamespaceAgentOperatorProfile!({ policy: state.iamPolicy }, namespaceId),
+      );
+    });
+  }
+
+  async stageNamespaceAgentOperatorProfile(
+    actor: Pick<Principal, "id" | "issuer" | "subject">,
+    namespaceId: string,
+    input: {
+      readonly expectedGeneration: string | null;
+      readonly groupId: string;
+      readonly acknowledgeAllAgents: true;
+    },
+  ): Promise<Readonly<NamespaceAgentOperatorProfile>> {
+    return this.changeNamespaceAgentOperatorProfile(actor, namespaceId, (namespace) => {
+      if (namespace.status !== "ready") {
+        throw new ResourceStateConflictError(
+          "The Namespace must be ready to stage Agent Operator.",
+        );
+      }
+      return {
+        action: "stage",
+        expectedGeneration: input.expectedGeneration,
+        acknowledgeAllAgents: input.acknowledgeAllAgents,
+        groupId: input.groupId,
+      };
+    });
+  }
+
+  async withdrawNamespaceAgentOperatorProfile(
+    actor: Pick<Principal, "id" | "issuer" | "subject">,
+    namespaceId: string,
+    expectedGeneration: string,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile>> {
+    return this.changeNamespaceAgentOperatorProfile(actor, namespaceId, () => ({
+      action: "withdraw",
+      expectedGeneration,
+    }));
   }
 
   async createIAMRole(principalId: string, input: CreateIAMRoleInput): Promise<Readonly<Role>> {
@@ -14767,6 +14818,7 @@ export class OpenClawController {
   private async admitIAMPolicyOperation(
     principalId: string,
     namespaceId: string,
+    state?: PlatformReadView,
   ): Promise<Readonly<Namespace>> {
     if (!isNonEmptyString(namespaceId)) {
       throw new ScopeViolationError("The exact Namespace identity is missing.");
@@ -14780,7 +14832,52 @@ export class OpenClawController {
       id: namespaceId,
       namespaceId,
     });
-    return this.read((state) => this.exactNamespace(state, namespaceId));
+    return state === undefined
+      ? this.read((view) => this.exactNamespace(view, namespaceId))
+      : this.exactNamespace(state, namespaceId);
+  }
+
+  private async admitNamespaceAgentOperatorProfile(
+    actor: Pick<Principal, "id" | "issuer" | "subject">,
+    namespaceId: string,
+    state?: PlatformReadView,
+  ): Promise<void> {
+    await this.admitIAMPolicyOperation(actor.id, namespaceId, state);
+    const driver = this.iamPolicyDriver("lookupIdentity");
+    const identity = await this.iamPolicyOperation(() =>
+      driver.lookupIdentity({ issuer: actor.issuer, subject: actor.subject }),
+    );
+    if (identity?.kind !== "principal" || identity.id !== actor.id) {
+      throw new CallerStateDeniedError(
+        "A current human session is required to manage Agent Operator.",
+      );
+    }
+  }
+
+  private async changeNamespaceAgentOperatorProfile(
+    actor: Pick<Principal, "id" | "issuer" | "subject">,
+    namespaceId: string,
+    buildChange: (namespace: Readonly<Namespace>) => NamespaceAgentOperatorProfileChange,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile>> {
+    await this.admitNamespaceAgentOperatorProfile(actor, namespaceId);
+    const driver = this.iamPolicyDriver("changeNamespaceAgentOperatorProfile");
+    return this.mutate(async (state) => {
+      const namespace = await this.holdIAMPolicyAuthority(state, actor.id, namespaceId);
+      const change = buildChange(namespace);
+      const profile = await this.iamPolicyOperation(() =>
+        driver.changeNamespaceAgentOperatorProfile!(
+          { policy: state.iamPolicy },
+          namespaceId,
+          change,
+        ),
+      );
+      if (profile === undefined) {
+        throw new ResourceStateConflictError(
+          "The Agent Operator profile changed or the requested transition does not apply. Read its current status and generation.",
+        );
+      }
+      return profile;
+    });
   }
 
   /**
@@ -14795,8 +14892,8 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     target?: ResourceRef,
-  ): Promise<void> {
-    await this.lockNamespace(state, namespaceId);
+  ): Promise<Readonly<Namespace>> {
+    const namespace = await this.lockNamespace(state, namespaceId);
     await this.holdNamespacePolicyActor(state, principalId);
     await this.authorize(principalId, "administer", {
       kind: "installation",
@@ -14806,6 +14903,7 @@ export class OpenClawController {
     if (target !== undefined) {
       await this.authorize(principalId, "read", target);
     }
+    return namespace;
   }
 
   /** Called with the policy writer's Namespace lock; hold the acting account through commit. */

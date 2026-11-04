@@ -22,6 +22,8 @@ import {
   type IdentityLookup,
   type JSONSchema,
   type ManagedIAMResourceKind,
+  type NamespaceAgentOperatorProfile,
+  type NamespaceAgentOperatorProfileChange,
   type Permission,
   type PermissionAction,
   type Principal,
@@ -1188,6 +1190,60 @@ export class NativeIAMDriver implements IAMDriver {
       return false;
     }
     return identityAccessCovered(request, policy);
+  }
+
+  async getNamespaceAgentOperatorProfile(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile> | undefined> {
+    const repository = this.policyRepository(context, ["getAgentOperatorProfile"]);
+    this.assertNamespace(namespaceId);
+    return repository.getAgentOperatorProfile(namespaceId);
+  }
+
+  async changeNamespaceAgentOperatorProfile(
+    context: IAMPolicyManagementContext,
+    namespaceId: string,
+    change: NamespaceAgentOperatorProfileChange,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile> | undefined> {
+    const repository = this.policyRepository(context, [
+      "getAgentOperatorProfile",
+      "saveAgentOperatorProfile",
+    ]);
+    this.assertNamespace(namespaceId);
+    const current = await repository.getAgentOperatorProfile(namespaceId);
+    if ((current?.generation ?? null) !== change.expectedGeneration) {
+      return undefined;
+    }
+
+    let profile: Readonly<NamespaceAgentOperatorProfile>;
+    if (change.action === "stage") {
+      assertCondition(
+        change.acknowledgeAllAgents === true && isNonEmptyString(change.groupId),
+        "Staging Agent Operator requires a Group ID and acknowledgement of all Agents.",
+      );
+      if (current?.status === "staged") {
+        return undefined;
+      }
+      profile = Object.freeze({
+        namespaceId,
+        generation: randomUUID(),
+        status: "staged",
+        groupId: change.groupId,
+      });
+    } else if (change.action === "withdraw" && current?.status === "staged") {
+      profile = Object.freeze({
+        namespaceId,
+        generation: randomUUID(),
+        status: "withdrawn",
+        groupId: null,
+      });
+    } else {
+      return undefined;
+    }
+    return (await repository.saveAgentOperatorProfile(profile, change.expectedGeneration))
+      ? profile
+      : undefined;
   }
 
   async listNamespaceRoles(

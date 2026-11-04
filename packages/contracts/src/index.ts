@@ -1376,6 +1376,8 @@ export type {
   IAMManagedRoleInput,
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
+  NamespaceAgentOperatorProfile,
+  NamespaceAgentOperatorProfileChange,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
 export type { SecretDriver } from "./drivers/secret/index.ts";

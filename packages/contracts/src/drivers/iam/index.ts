@@ -25,6 +25,19 @@ export interface IAMDriver extends Driver {
    * a Driver without it cannot issue such credentials.
    */
   coversIdentityAccess?(request: IdentityAccessCoverageRequest): Promise<boolean>;
+  getNamespaceAgentOperatorProfile?(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile> | undefined>;
+  /**
+   * Staging records administrative intent only. It never supplies Group membership or grants.
+   * Returns undefined when the generation or the requested transition no longer applies.
+   */
+  changeNamespaceAgentOperatorProfile?(
+    context: IAMPolicyManagementContext,
+    namespaceId: string,
+    change: NamespaceAgentOperatorProfileChange,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile> | undefined>;
   listNamespaceRoles?(
     context: IAMPolicyReadContext,
     namespaceId: string,
@@ -77,6 +90,9 @@ export interface IAMDriver extends Driver {
 }
 
 export interface IAMPolicyReadRepository {
+  getAgentOperatorProfile(
+    namespaceId: string,
+  ): Promise<Readonly<NamespaceAgentOperatorProfile> | undefined>;
   listRoles(namespaceId: string): Promise<readonly Readonly<Role>[]>;
   getRole(namespaceId: string, roleId: string): Promise<Readonly<Role> | undefined>;
   listAccessBindings(namespaceId: string): Promise<readonly Readonly<AccessBinding>[]>;
@@ -103,6 +119,10 @@ export interface IAMPolicyReadRepository {
 }
 
 export interface IAMPolicyRepository extends IAMPolicyReadRepository {
+  saveAgentOperatorProfile(
+    profile: NamespaceAgentOperatorProfile,
+    expectedGeneration: string | null,
+  ): Promise<boolean>;
   createRole(role: Role): Promise<Readonly<Role>>;
   deleteRole(namespaceId: string, roleId: string): Promise<boolean>;
   createAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
@@ -117,6 +137,24 @@ export interface IAMPolicyReadContext {
 export interface IAMPolicyManagementContext {
   readonly policy: IAMPolicyRepository;
 }
+
+/** The Namespace retains its profile generation after withdrawal and releases the Group. */
+export type NamespaceAgentOperatorProfile = {
+  readonly namespaceId: string;
+  readonly generation: string;
+} & (
+  | { readonly status: "staged"; readonly groupId: string }
+  | { readonly status: "withdrawn"; readonly groupId: null }
+);
+
+export type NamespaceAgentOperatorProfileChange =
+  | {
+      readonly action: "stage";
+      readonly expectedGeneration: string | null;
+      readonly groupId: string;
+      readonly acknowledgeAllAgents: true;
+    }
+  | { readonly action: "withdraw"; readonly expectedGeneration: string };
 
 export type ManagedIAMResourceKind =
   | "namespace"

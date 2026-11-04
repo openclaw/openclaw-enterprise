@@ -651,6 +651,26 @@ export const CreateIAMRoleBody = Type.Object(
 
 export const CreateIAMServicePrincipalBody = Type.Object({}, { additionalProperties: false });
 
+export const AgentOperatorProfileGeneration = Type.String({ pattern: `^${UUID_V4}$` });
+export const IAMGroupId = Type.String({ minLength: 1, maxLength: 200 });
+
+export const StageNamespaceAgentOperatorProfileBody = Type.Object(
+  {
+    expectedGeneration: Type.Union([AgentOperatorProfileGeneration, Type.Null()]),
+    groupId: IAMGroupId,
+    acknowledgeAllAgents: Type.Literal(true),
+  },
+  { additionalProperties: false },
+);
+export type StageNamespaceAgentOperatorProfileBody = Type.Static<
+  typeof StageNamespaceAgentOperatorProfileBody
+>;
+
+export const WithdrawNamespaceAgentOperatorProfileBody = Type.Object(
+  { expectedGeneration: AgentOperatorProfileGeneration },
+  { additionalProperties: false },
+);
+
 export const CreateIAMAccessBindingBody = Type.Object(
   {
     subjectKind: Type.Literal("identity"),

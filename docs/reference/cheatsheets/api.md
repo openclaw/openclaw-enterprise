@@ -19,6 +19,7 @@
 - [IAM access bindings](#iam-access-bindings)
 - [IAM roles](#iam-roles)
 - [IAM service principals](#iam-service-principals)
+- [IAM](#iam)
 - [Secrets](#secrets)
 - [Service accounts](#service-accounts)
 - [Service account credentials](#service-account-credentials)
@@ -181,6 +182,12 @@
 - [`listIAMServicePrincipals`](../api.md#get-namespacesnamespaceidiamserviceprincipals): List the Namespace's non-Agent ServicePrincipals.
 - [`getIAMServicePrincipal`](../api.md#get-namespacesnamespaceidiamserviceprincipalsserviceprincipalid): Get an exact Namespace ServicePrincipal.
 - [`createIAMServicePrincipal`](../api.md#post-namespacesnamespaceidiamserviceprincipals): Create a Namespace ServicePrincipal with no grants for automation or CLI keys.
+
+### IAM
+
+- [`getNamespaceAgentOperatorProfile`](../api.md#get-namespacesnamespaceidiamagentoperator): Inspect the Namespace's Agent Operator profile status.
+- [`stageNamespaceAgentOperatorProfile`](../api.md#put-namespacesnamespaceidiamagentoperator): Stage a Namespace Group for Agent Operator without granting access.
+- [`withdrawNamespaceAgentOperatorProfile`](../api.md#post-namespacesnamespaceidiamagentoperatorwithdraw): Withdraw the staged Agent Operator profile at its current generation.
 
 ### Secrets
 

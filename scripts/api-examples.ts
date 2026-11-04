@@ -54,6 +54,13 @@ export const configuration = {
 };
 
 const namespace = { id: namespaceId, name: "engineering", status: "ready", createdAt: time };
+const agentOperatorGroupId = "group-engineering";
+const stagedAgentOperator = {
+  namespaceId,
+  status: "staged",
+  generation: uuid,
+  groupId: agentOperatorGroupId,
+};
 const agent = {
   id: agentId,
   namespaceId,
@@ -260,6 +267,12 @@ export const requestExamples = {
     secretRef: { name: "model-api-key", key: "value" },
   },
   createIAMRole: { name: role.name, permissions: role.permissions },
+  stageNamespaceAgentOperatorProfile: {
+    groupId: agentOperatorGroupId,
+    expectedGeneration: null,
+    acknowledgeAllAgents: true,
+  },
+  withdrawNamespaceAgentOperatorProfile: { expectedGeneration: stagedAgentOperator.generation },
   createIAMAccessBinding: {
     subjectKind: "identity",
     subjectId: principal.id,
@@ -543,6 +556,14 @@ export const responseExamples = {
   createServiceAccountCredential: { ...account, credential: { kind: "access_token" } },
   updateServiceAccountCredential: { ...account, credential: { kind: "api_key" } },
   listIAMRoles: [role],
+  getNamespaceAgentOperatorProfile: { namespaceId, status: "off", generation: null },
+  stageNamespaceAgentOperatorProfile: stagedAgentOperator,
+  withdrawNamespaceAgentOperatorProfile: {
+    ...stagedAgentOperator,
+    status: "withdrawn",
+    groupId: null,
+    generation: "123e4567-e89b-42d3-a456-426614174001",
+  },
   getIAMRole: role,
   createIAMRole: role,
   listIAMAccessBindings: [binding],

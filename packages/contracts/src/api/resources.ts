@@ -4,6 +4,7 @@ import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.
 
 import {
   AgentId,
+  AgentOperatorProfileGeneration,
   AgentProvisioningWorkId,
   PresetId,
   PresetTemplateSchema,
@@ -17,6 +18,7 @@ import {
   CredentialSourceSecrets,
   CredentialSourceType,
   GatewayManagedModeSchema,
+  IAMGroupId,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
@@ -973,6 +975,36 @@ export const IAMRoleSchema = Type.Object(
     name: Type.Optional(Name),
     permissions: Type.Array(IAMPermissionSchema, { minItems: 1, maxItems: 64 }),
   },
+  { additionalProperties: false },
+);
+
+const NamespaceAgentOperatorProfileSchema = Type.Union([
+  Type.Object(
+    { namespaceId: NamespaceId, status: Type.Literal("off"), generation: Type.Null() },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      namespaceId: NamespaceId,
+      status: Type.Literal("staged"),
+      generation: AgentOperatorProfileGeneration,
+      groupId: IAMGroupId,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      namespaceId: NamespaceId,
+      status: Type.Literal("withdrawn"),
+      generation: AgentOperatorProfileGeneration,
+      groupId: Type.Null(),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+export const NamespaceAgentOperatorProfileResponse = Type.Object(
+  { data: NamespaceAgentOperatorProfileSchema, meta: Meta },
   { additionalProperties: false },
 );
 

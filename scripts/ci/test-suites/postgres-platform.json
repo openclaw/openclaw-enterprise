@@ -20,6 +20,7 @@
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
+    "tests/integration/postgres-namespace-agent-operator.test.ts",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/workspace-setup-worker.test.mjs",
     "tests/integration/postgres-repository-sessions.test.mjs",
@@ -151,6 +152,12 @@
         "PostgreSQL native IAM rejects foreign subjects, broad grants, and absent targets",
         "native IAM reads the policy once per unit of work and never across units",
         "listing 2000 Agents reads the policy once for the whole list"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-namespace-agent-operator.test.ts",
+      "expectedTests": [
+        "Agent Operator staging uses the human admin's exact Namespace and original PostgreSQL transaction"
       ]
     },
     {

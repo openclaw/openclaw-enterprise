@@ -259,6 +259,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 64) {
     return "preSelectedRepositorySet";
   }
+  if (count === 66 && completedCount > 66) {
+    return "preNamespaceAgentOperatorProfiles";
+  }
   if (count === 63) {
     return "preGatewayManagedMode";
   }

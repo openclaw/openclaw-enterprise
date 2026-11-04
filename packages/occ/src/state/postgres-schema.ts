@@ -2277,6 +2277,31 @@ export const credentialDeliveryReductions = occSchema.table(
   ],
 );
 
+export const namespaceAgentOperatorProfiles = occSchema.table(
+  "namespace_agent_operator_profiles",
+  {
+    namespaceId: text("namespace_id")
+      .primaryKey()
+      .references(() => namespaces.id, { onUpdate: "restrict", onDelete: "restrict" }),
+    generation: uuid("generation").notNull(),
+    status: text("status").notNull(),
+    groupId: text("group_id"),
+  },
+  (table) => [
+    check(
+      "namespace_agent_operator_profiles_status_check",
+      sql`(${table.status} = 'staged' AND ${table.groupId} IS NOT NULL) OR (${table.status} = 'withdrawn' AND ${table.groupId} IS NULL)`,
+    ),
+    foreignKey({
+      name: "namespace_agent_operator_profiles_group_fk",
+      columns: [table.namespaceId, table.groupId],
+      foreignColumns: [iamGroups.namespaceId, iamGroups.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+  ],
+);
+
 export const sandboxPolicies = occSchema.table(
   "sandbox_policies",
   {
