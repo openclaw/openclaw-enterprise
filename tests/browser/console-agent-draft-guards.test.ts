@@ -56,6 +56,7 @@ import {
   focusedText,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
@@ -3018,14 +3019,9 @@ test("a refocus after a Secret operate grant updates the Deploy note", async (t)
   assert.equal(await deploy.isDisabled(), true);
   await settlePageRequests(page);
   const refocus = async () => {
-    const answered = page.waitForResponse(
-      (reply) =>
-        reply.url() === `${fixture.origin}${path}/permissions/secrets` &&
-        reply.request().method() === "GET" &&
-        reply.status() === 200,
-    );
+    const answered = responseTo(page, "GET", `${fixture.origin}${path}/permissions/secrets`);
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-    await answered;
+    assert.equal((await answered).status(), 200, "Secret permissions GET status");
     await settlePageRequests(page);
   };
 
