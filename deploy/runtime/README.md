@@ -343,6 +343,10 @@ Before enabling Slack in an Installation, run the
 credentials, and the required proxy configuration. It must prove a real mention,
 Codex turn, and gateway-authored reply; gateway readiness alone is insufficient.
 
+The runtime includes a Debian-compatible curl security backport for both curl
+and Git. See the [publication flow](../../docs/flows/container-publication.md)
+for its provenance, verification, and scanner limitations.
+
 ## Build provenance
 
 The publisher passes the checked Enterprise source SHA as `OCC_BUILD_REVISION`.
