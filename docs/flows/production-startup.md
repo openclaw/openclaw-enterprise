@@ -165,8 +165,8 @@ receipt namespace, release and reader's cluster connection before a named Job re
 and terminal status. Missing UID, replacement, refusal or inconclusive status
 leaves the original checkpoint unknown. Doctor reports Helm's recorded outcome
 separately. Plan adds read-only recovery steps. Both buffer their report, including
-Helm outcome, and check `WriteTo` before returning Job status. On write errors,
-`cmd/occ/main.go:main` reports stderr diagnostics and exits `1`.
+Helm outcome, and check `WriteTo` before returning Job status. Returned write
+errors reach `cmd/occ/main.go:main`, which reports stderr diagnostics and exits `1`.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
