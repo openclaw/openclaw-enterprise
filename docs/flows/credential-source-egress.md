@@ -8,11 +8,9 @@ last_updated_session: authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b
 
 ## Overview
 
-A process in a dedicated Agent asks GitHub for a repository's identity. The
-supervisor sends the authorized request and holds the reply until OpenClaw
-Control Plane (OCC) approves what the process may receive. This flow describes
-the exchange required of the supervisor. The bundled legacy supervisor lacks
-it. See the [release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+A dedicated Agent requests GitHub repository identity. The supervisor holds the
+reply until OpenClaw Control Plane (OCC) permits release. The bundled legacy
+supervisor lacks this exchange; see the [release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
@@ -248,11 +246,11 @@ stream. Recovery can renew before expiry. A shorter authenticated peer lifetime 
 and held responses despite later progress.
 Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
-For Responses, `openai-responses.ts:isResponsesEvent` admits null local-tool metadata
-only in responses and validates the optional effective image policy as a closed object.
-Unknown members or invalid policy values withhold the whole response. Protection checks SDK snapshots, joined assistant text and
-completed/streamed Codex Plans; ambiguous order or indexes refuse. It parses
-function arguments once as bounded JSON. The
+`openai-responses.ts:isResponsesEvent` validates Responses envelopes, including
+response-only null local-tool metadata and the optional effective image policy.
+Invalid or unknown fields withhold all bytes. Protection scans SDK snapshots,
+joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes
+refuse. Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 preserves safe bytes. The origin already received the credential.
 
