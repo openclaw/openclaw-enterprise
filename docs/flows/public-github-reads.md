@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-04"
-last_updated_session: authoring-run/77414b6b-7f99-44c9-a206-b3778ec3010f
+last_updated_session: authoring-run/cd9c1598-6e1e-48d1-8f87-5e3a2118ce9d
 ---
 
 # Public GitHub read flow
@@ -136,9 +136,17 @@ including a fresh tool interception CA. Selected CA files are regular files of
 at most 1 MiB each; total input is at most 4 MiB and the deduplicated bundle at
 most 1 MiB. Missing, malformed or oversized trust fails closed. Standard hash
 comments and underlined certificate labels are accepted; keys are rejected.
-The operation uses a private mode-0700 temporary directory and mode-0400 bundle,
-removed on completion, failure or handled cancellation. Uncatchable process
-termination relies on runtime temporary-state removal.
+The operation selects the existing absolute `OPENCLAW_WORKSPACE_DIR`, supplied by
+Compute and used by the Harness as its workspace, including OpenShell relocation.
+The restricted native profile admits this root for writes but need not expose
+`/tmp`. A missing or unwritable selected workspace fails without fallback. Only
+standalone callers without that runtime variable use `os.tmpdir()`; the helper
+never selects its cwd, which Git may move into protected `.git` metadata.
+Each operation creates a unique mode-0700 directory and exclusive mode-0400
+public-CA file in that root. Completion, failure and handled cancellation remove
+only that directory. Concurrent operations remain independent. Uncatchable
+termination can leave public certificates in the workspace; no scavenger removes
+other operations' state. Capabilities never enter these files.
 
 `transport.mjs:apiGet` accepts only reader-relative `/repos/` GET routes. The
 managed skill invokes it without supplying an origin, proxy, credentials or curl
@@ -218,6 +226,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 15:52: Select admitted runtime workspace for private operation trust files (accompanying correction; authoring-run/cd9c1598-6e1e-48d1-8f87-5e3a2118ce9d - 69e6005ea0f4b05c284b568867e91a455b64929c)
 
 - 2026-11-04 13:22: Retain fixed managed-refusal phases and distinguish native method-policy qualification (accompanying correction; authoring-run/77414b6b-7f99-44c9-a206-b3778ec3010f - e4e54f5b80e82c4258de30572e21cfe123e2444b)
 

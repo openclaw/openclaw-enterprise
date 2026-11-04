@@ -59,7 +59,14 @@ failures remain unknown without raw stderr.
 actual launcher and Git/API helper with verified loopback TLS. Consecutive peer
 roots introduced after installation prove current-tool trust composition;
 wrong-hostname/unrelated roots, malformed trust, redirects and denied capabilities
-remain failures. Cancellation checks remove private operation bundles. The tests
+remain failures. Real API reads and Git clone/fetch also use the admitted runtime
+workspace when ambient temporary roots are missing or read-only. Invalid selected
+workspaces fail without fallback or private diagnostic output; authenticated Git
+delegation does not depend on public scratch. Concurrent cancellation checks
+verify private directory/file modes and independent cleanup of public-only bundles.
+The native fixture supplies the same existing workspace variable as production,
+without changing its filesystem grants. These tests do not establish cleanup after
+uncatchable termination; public-CA residue can remain in that case. The tests
 also follow a real reader's two-page list through the fixed metadata mode,
 reject malformed/oversized continuation data and suppress unrelated headers.
 These host checks do not prove Codex's interception or its upstream store: require the stock

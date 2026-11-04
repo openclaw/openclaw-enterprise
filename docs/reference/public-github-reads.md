@@ -229,6 +229,20 @@ optional hash comments or underlined certificate labels, and be at most 1 MiB
 each. Combined input is limited to 4 MiB; the deduplicated bundle to 1 MiB.
 Missing, malformed or oversized trust fails before contact.
 
+Managed operations create a unique private directory in the existing runtime
+workspace selected by `OPENCLAW_WORKSPACE_DIR`. This works within the native
+workspace write grant even when `/tmp` is absent. The helper does not use its
+current directory, which Git may move into `.git`. A selected workspace must be
+absolute and writable; failure stops the operation without retrying elsewhere.
+Standalone callers without that runtime variable retain the host temporary root.
+
+Only public CA certificates enter these transient workspace files: directory
+mode is `0700`, bundle mode is `0400`, and the capability stays in memory and
+the child environment/input. Completion, failure and handled cancellation remove
+that operation's directory. Uncatchable termination can leave a public-CA
+residue in the workspace; the helper does not scavenge other operations' files.
+It does not change Git configuration or index state.
+
 The launcher also supplies reader trust through `CODEX_CA_CERTIFICATE` before
 Codex starts so its proxy can verify the upstream reader. This affects only the
 selected process, but its upstream root store is shared across allowed

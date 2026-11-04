@@ -153,7 +153,14 @@ function composeTrust(readerTrust) {
 function operationTrust(config) {
   const bundle = composeTrust(readTrust(config.caPath, 1024 * 1024));
   refusalPhase = "trust-files";
-  trustDirectory = mkdtempSync(join(tmpdir(), "oce-public-trust-"));
+  // A restricted native profile admits the runtime workspace, not ambient
+  // /tmp. Git may run its helper inside .git, so do not use the helper cwd.
+  // A selected runtime root is authoritative; never retry elsewhere.
+  const root = process.env.OPENCLAW_WORKSPACE_DIR ?? tmpdir();
+  if (!isAbsolute(root)) {
+    throw new Error("Operation trust requires an absolute scratch root.");
+  }
+  trustDirectory = mkdtempSync(join(root, "oce-public-trust-"));
   chmodSync(trustDirectory, 0o700);
   const file = join(trustDirectory, "ca.pem");
   writeFileSync(file, bundle, { mode: 0o400, flag: "wx" });

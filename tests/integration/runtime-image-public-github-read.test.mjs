@@ -235,7 +235,13 @@ async function readWithStockCodex() {
     startOptions: {
       ...start,
       args: [...start.args, ...overrides],
-      env: { HOME: "/home/node", CODEX_HOME: "/tmp/public-codex", ...publicEnvironment },
+      env: {
+        HOME: "/home/node",
+        CODEX_HOME: "/tmp/public-codex",
+        // Match the production Harness root used by managed operation scratch.
+        OPENCLAW_WORKSPACE_DIR: workspace,
+        ...publicEnvironment,
+      },
       clearEnv: ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"],
     },
   });
