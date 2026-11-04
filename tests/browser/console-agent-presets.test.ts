@@ -61,6 +61,7 @@ import {
   waitForInputValue,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { normalizeProvisioningConfiguration } from "../../packages/occ/src/agent-provisioning.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -454,7 +455,10 @@ test("Changing a Preset model keeps explicit and inherited roster selections dep
     };
     // All explicit entries share the primary; an entry without a model inherits it.
     const baseline = await fixture.createConfiguration(namespace.id, values);
-    assert.equal(resolveConfiguredHarnessId(baseline.values), "openclaw");
+    assert.equal(
+      resolveConfiguredHarnessId(normalizeProvisioningConfiguration(baseline).values),
+      "openclaw",
+    );
     const preset: FixtureResponse<Preset> = await fixture.request(
       "POST",
       `/namespaces/${namespace.id}/presets`,

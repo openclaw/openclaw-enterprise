@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-26
-last_updated_session: fix-2643
+updated: "2026-11-04"
+last_updated_session: authoring-run/7c749514-77cf-4f76-8822-81beeecabf08
 ---
 
 # Console external observability link
@@ -64,7 +64,7 @@ The console settles the probe once per session owner: an allowed response or a `
 
 - `node --test tests/integration/console-api.test.mjs` verifies the real API route, Installation IAM denial, and absent URL.
 - The focused `tests/browser/console.test.mjs` case verifies administrator visibility, Namespace-only hiding with no probe, one probe per session across navigation and reload, and safe new-tab attributes in Chrome.
-- `tests/browser/console-agent-state.test.mjs` verifies that a reader's page loads audit no observability, IAM, Backends or bound Secret denial, and that an administrator still reads each. It also verifies that a Restriction on Agent create leaves an administrator the Installation pages, and that Refresh and reload on the Backends refusal find a new grant. For a revoked administrator, it verifies one audited refusal whether the first page is the Access tab, Agent detail or Settings, and that a Restriction on Secret read settles nothing, also when the permission answer fails. It verifies that **Back** to a kept Agent page after a revoke adds no audited refusal after the first, that a revoke with the page open adds no refusal after the Access tab's on Credentials or Plugins and takes away Deploy, Stop and Delete, that the header selector then drops the Namespaces only administration could read, with one list read, and keeps its Namespace when another sorts first. A reread the page left writes nothing, and a settle during a page load adds no list read. **Refresh** there finds a new grant.
+- `tests/browser/console-agent-state.test.ts` verifies that a reader's page loads audit no observability, IAM, Backends or bound Secret denial, and that an administrator still reads each. It also verifies that a Restriction on Agent create leaves an administrator the Installation pages, and that Refresh and reload on the Backends refusal find a new grant. For a revoked administrator, it verifies one audited refusal whether the first page is the Access tab, Agent detail or Settings, and that a Restriction on Secret read settles nothing, also when the permission answer fails. It verifies that **Back** to a kept Agent page after a revoke adds no audited refusal after the first, that a revoke with the page open adds no refusal after the Access tab's on Credentials or Plugins and takes away Deploy, Stop and Delete, that the header selector then drops the Namespaces only administration could read, with one list read, and keeps its Namespace when another sorts first. A reread the page left writes nothing, and a settle during a page load adds no list read. **Refresh** there finds a new grant.
 - These tests do not verify access at the external observability service.
 
 ## Related docs
@@ -79,6 +79,8 @@ The console settles the probe once per session owner: an allowed response or a `
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 13:24: Correct the typed Agent State browser-suite pointer. (authoring-run/7c749514-77cf-4f76-8822-81beeecabf08 - 81e2cb43e04c361654e7e47d40df8f867751cc96)
 
 - 2026-10-30: A view sends the first of its bound Secret reads by ID alone, also after administration was confirmed, the rest once one succeeds, and none after the page is left. (2938)
 
