@@ -258,12 +258,13 @@ default-deny. Pre-install initialization has only its hook DNS/database grants.
 Destinations must be explicit IPv4 `/32` hosts; refresh them when managed
 endpoint addresses change. Chart ports take no leading zeros: `0443` fails.
 
-`deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` also renders
-an API-only TCP 443 egress policy when `api.modelDiscoveryCidrs` contains
-provider IPv4 `/32` hosts. Empty defaults grant no provider egress. Operators
-maintain those addresses for the optional
-[model-discovery API](../reference/console/create-and-deploy.md#create-an-agent);
-Console model selection and Harness egress do not depend on this policy.
+`deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` renders separate
+API-only TCP 443 policies for `api.modelDiscoveryCidrs` and
+`api.pluginDiscoveryCidrs`. Each accepts explicit IPv4 `/32` hosts and defaults to
+no egress. Operators maintain addresses for
+[model discovery](../reference/console/create-and-deploy.md#create-an-agent) and
+[MCP tool discovery](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin)
+independently. Console model selection and Harness egress do not depend on these policies.
 
 When `api.channelDirectoryProxyUrl` names an approved HTTP(S) proxy at a
 literal IPv4 address and port, the chart passes it to the API and grants only
@@ -377,6 +378,8 @@ until tenant deployment/TUI procedures run.
 ## Changelog
 
 - 2026-11-04 00:26: Check chart-managed private Gateway identity and hostname before rollout. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
+
+- 2026-11-03 18:03: Separate managed MCP discovery egress from model discovery. (authoring-run/0e69d668-c39a-4a60-b4ce-5556acb848b0 - c6be564e9f8b6186c53874ea26833a36f037c3db)
 
 - 2026-11-03 11:28: Reconcile PostgreSQL compatibility checks with default Helm private routing. (authoring-run/e9eeaa5b-19a6-4496-9c6e-98357b25ef83 - ccc8f0359924ed62b12e619b2ef9f3ef57a3dd7a)
 

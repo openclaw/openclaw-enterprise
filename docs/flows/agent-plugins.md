@@ -33,6 +33,7 @@ graph TD
   D0 -->|Saved| E0["Authorize Agent read/update"]
   E0 -->|no credential| D6
   E0 -->|bound| E1["Caller and Agent operate"] --> D6
+  E0 -->|managed MCP| M0["Check credential and discover server tools"] --> D5
   E0 -->|credentialSource| D2
   D1 -->|stored source| D2["Caller source operate"] --> D6["Check PluginDriver support"]
   D1 -->|token or none| D6
@@ -68,17 +69,22 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) checks
-Agent `create`. Stored credentials must share the Namespace. OCC checks caller
-source `operate` before use. Cross-Namespace references return `400`, missing
-Secrets `404`, and unavailable explicit CredentialSources `409`. Unsupported
-discovery reads no credential.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires
+Agent `create`. Stored sources require caller `operate`. Cross-Namespace references
+return `400`, missing Secrets `404`, and unavailable explicit CredentialSources `409`.
 
 Saved discovery requires a dedicated Agent and caller `read` and `update`. OCC
 offers only plugins it would admit on save. For bound credentials OCC rechecks
 the attachment and both caller and Agent `operate`. For explicit sources it
 rechecks caller `operate`. Missing or non-ready bound sources return `404`.
-Credential Gateway supplies the current bearer. Curated discovery uses no credential.
+Hosted catalogs use the saved bearer. Curated catalogs require no credential.
+
+`packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
+
+For managed MCP, the Plugin Driver matches the release slot. OCC reads the bearer
+through the Secret Driver and rechecks both grants and attachment before
+`tools/list`. Operators save upstream names in `driverPolicy.toolNames`.
+Deployment applies that selection to the worker, Gateway and OpenShell.
 
 Console cancels hosted reads when a picker or view closes. Changing the account
 clears results. Hosted reads reject redirects and credential echoes, bound
@@ -356,6 +362,10 @@ establish starvation.
 - 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
 
 - 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
+
+- 2026-11-02 23:59: Discover live MCP tools. (authoring-run/f6c72b81-af00-4c3d-9758-96b1d6ca64b1 - 6f95625048a1d20ebb5cc6e26368192b3300849c)
+
+- 2026-11-02 23:45: Describe discovery and deployment from a managed MCP release. (authoring-run/39268f6b-739c-4af1-82dd-3ecfe85d6ffa - 5d58446a2a6e200510da738698ef832612aab50d)
 
 - 2026-11-02 22:29: Trace the Slack account and tool selection through dedicated Agent deployment. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
 
