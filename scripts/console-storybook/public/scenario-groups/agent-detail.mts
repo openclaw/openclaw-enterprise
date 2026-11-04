@@ -2698,7 +2698,35 @@ export function createAgentDetailScenarios({
             status: 404,
           },
         ],
-        description: "A deleted or inaccessible Agent link returns a resource-unavailable panel.",
+        description:
+          "A simulated 404 shows Agent details and Resource unavailable without an Agent name.",
+        actions: [{ text: "Agent details" }],
+        steps: [
+          "Confirm the page heading is Agent details and the panel says Resource unavailable, without an Agent name.",
+          "Choose ← Agents and confirm the collection heading is Agents.",
+        ],
+      },
+      agentReadInterrupted: {
+        group: "Pages/Agent detail",
+        name: "Retry a direct Agent link",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+            once: true,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "A simulated interruption shows Agent details and Request unavailable. Retry reads the fixture's Research assistant.",
+        actions: [{ text: "Agent details" }, { text: "Request unavailable" }],
+        steps: [
+          "Open the preview directly in its own tab, without navigating from the Agents list.",
+          "Confirm the heading is Agent details and the panel says Request unavailable, without an Agent name.",
+          "Use Tab to reach Retry and press Enter. Confirm the H1 becomes Research assistant and receives keyboard focus.",
+        ],
       },
       configurationError: {
         group: "Pages/Agent detail",

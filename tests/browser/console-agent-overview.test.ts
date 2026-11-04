@@ -180,6 +180,54 @@ async function agentPage(
   return { fixture, namespace, agent, page };
 }
 
+test("an individual Agent keeps its fallback heading through a failed read and keyboard Retry", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Heading recovery",
+    "Recovered Agent",
+  );
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const waitForAgentRead = (): ReturnType<Page["waitForResponse"]> =>
+    page.waitForResponse(
+      (response) => response.url() === agentUrl && response.request().method() === "GET",
+    );
+  const requests = apiRequests(page, fixture.origin);
+  // Hold only the exact Agent read; the Controller still handles session and Namespace access.
+  const first = await holdRequests(t, page, agentUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable."),
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await first.requested;
+  const heading = page.getByRole("heading", { level: 1 });
+  assert.equal(await heading.textContent(), "Agent details");
+  assert.equal(await page.getByRole("heading", { name: agent.name, exact: true }).count(), 0);
+
+  const failed = waitForAgentRead();
+  first.release();
+  assert.equal((await failed).status(), 503);
+  await page.getByText("Request unavailable", { exact: true }).waitFor();
+  assert.equal(await heading.textContent(), "Agent details");
+
+  // Keyboard Retry must focus the neutral destination while waiting, then the real name.
+  const retry = await holdRequests(t, page, agentUrl, { once: true, method: "GET" });
+  await page.getByRole("button", { name: "Retry", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await retry.requested;
+  await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "H1");
+  assert.equal(await heading.textContent(), "Agent details");
+  const recovered = waitForAgentRead();
+  retry.release();
+  assert.equal((await recovered).status(), 200);
+  await page.getByRole("heading", { level: 1, name: agent.name, exact: true }).waitFor();
+  assert.equal(await heading.evaluate((node) => node.matches(":focus")), true);
+  assert.deepEqual(
+    requests.filter((request) => !["GET", "HEAD"].includes(request.method)),
+    [],
+  );
+});
+
 // A runtime log Compute Driver with the Agent runtime log API enabled.
 function runtimeLogs() {
   const computeDriver = createRuntimeLogComputeDriver();
