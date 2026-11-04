@@ -181,6 +181,12 @@ export function createAgentDetailPolicyScenarios({
           description:
             "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
           steps: [
+            ...(state === "populated"
+              ? [
+                  "At 1440px and 390px, open Manage rules and Tab to Add rule. Press Enter: Executable path receives focus. Tab to Add Port ranges and press Enter: the new Start port receives focus. Type 443; focus stays there and Tab reaches End port.",
+                  "Tab to Add Port ranges and press Space: focus moves to the second Start port. Tab to Remove Port ranges 1 and press Enter: focus moves to the surviving Start port. Add another range, then remove the last range with Space: focus returns to the previous Start port. With one range left, Remove is disabled and Tab from End port reaches Add Port ranges. Do not review, save, or apply during this check. Reset the story before other checks.",
+                ]
+              : []),
             ...(state === "many"
               ? [
                   "Scroll to Denials. The pager is the last control below the five rows. Go to page 2 and turn on Follow. The page stays in place when 12 new denials arrive. Choose Show newest to see page 1 of 43 with 212 loaded denials.",

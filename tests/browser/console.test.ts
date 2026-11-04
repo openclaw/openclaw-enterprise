@@ -25,6 +25,7 @@ import {
   expectNoText,
   expireSessions,
   expireSessionsWhenSettled,
+  holdRequests,
   login,
   loginThroughForm,
   newPage,
@@ -39,6 +40,7 @@ import {
   waitForSettledFetches,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   NO_READABLE_NAMESPACES,
@@ -3128,6 +3130,154 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
       null,
     );
   }
+});
+
+test("a late startup observer offers Reload after a native entry failure without retrying modules", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const url = `${fixture.origin}/console/login`;
+  const entryUrl = `${fixture.origin}/console/console.mjs`;
+  const dependencyUrl = `${fixture.origin}/console/view-lifetime.mjs`;
+  const observerUrl = `${fixture.origin}/console/startup-recovery.mjs`;
+  const requests = { entry: 0, dependency: 0 };
+  page.on("request", (request) => {
+    if (request.method() !== "GET") {
+      return;
+    }
+    if (request.url() === entryUrl) {
+      requests.entry += 1;
+    }
+    if (request.url() === dependencyUrl) {
+      requests.dependency += 1;
+    }
+  });
+  // Capture the browser's actual parser-entry error before the observer can arrive.
+  await page.addInitScript(() => {
+    document.addEventListener(
+      "error",
+      (event) => {
+        const entry = event.target;
+        if (
+          event.isTrusted &&
+          entry instanceof HTMLScriptElement &&
+          entry.id === "console-entry" &&
+          entry.src === `${location.origin}/console/console.mjs`
+        ) {
+          entry.dataset.nativeStartupErrors = String(
+            Number(entry.dataset.nativeStartupErrors ?? "0") + 1,
+          );
+        }
+      },
+      true,
+    );
+  });
+  const observer = await holdRequests(t, page, observerUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  let aborted = false;
+  await page.route(dependencyUrl, async (route) => {
+    if (route.request().method() === "GET" && !aborted) {
+      aborted = true;
+      await route.abort("failed");
+    } else {
+      await route.fallback();
+    }
+  });
+  const entryResponse = responseTo(page, "GET", entryUrl);
+  const documentResponse = await page.goto(url, { waitUntil: "commit" });
+  assert.equal(documentResponse?.status(), 200);
+  assert.equal((await entryResponse).status(), 200);
+  assert.equal((await observer.requested)?.status(), 200);
+  await page
+    .locator('#console-entry[data-native-startup-errors="1"]')
+    .waitFor({ state: "attached" });
+  assert.equal(aborted, true);
+  assert.deepEqual(requests, { entry: 1, dependency: 1 });
+
+  const observerResponse = responseTo(page, "GET", observerUrl);
+  observer.release();
+  assert.equal((await observerResponse).status(), 200);
+  await page.waitForLoadState("load");
+  const reload = page.getByRole("button", { name: "Reload page", exact: true });
+  await reload.waitFor();
+  assert.equal(await reload.isEnabled(), true);
+  assert.equal(
+    await page.locator("#app > p.startup[role='status']").textContent(),
+    "OpenClaw Enterprise could not load. Reload the page to try again.",
+  );
+  assert.deepEqual(requests, { entry: 1, dependency: 1 }, "recovery must not retry either module");
+  assert.equal(
+    await page.locator("#console-entry").getAttribute("data-native-startup-errors"),
+    "1",
+  );
+
+  // Only the explicit user action may start another document and module graph.
+  const reloadedDocument = responseTo(page, "GET", url);
+  const reloadedEntry = responseTo(page, "GET", entryUrl);
+  const reloadedDependency = responseTo(page, "GET", dependencyUrl);
+  await reload.click();
+  assert.equal((await reloadedDocument).status(), 200);
+  assert.equal((await reloadedEntry).status(), 200);
+  assert.equal((await reloadedDependency).status(), 200);
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Email", { exact: true }).isEnabled(), true);
+  assert.equal(page.url(), url);
+  assert.deepEqual(requests, { entry: 2, dependency: 2 });
+  assert.equal(await page.locator("#app > .startup-recovery").count(), 0);
+});
+
+test("a late startup observer does not report failure while the real session response is held", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const url = `${fixture.origin}/console/login`;
+  const observerUrl = `${fixture.origin}/console/startup-recovery.mjs`;
+  const sessionUrl = `${fixture.origin}/api/auth/session`;
+  // Keep both routes registered: one-shot route removal can release the other held response.
+  const observer = await holdRequests(t, page, observerUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  const session = await holdRequests(t, page, sessionUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  let sessionDelivered = false;
+  page.on("response", (response) => {
+    if (response.request().method() === "GET" && response.url() === sessionUrl) {
+      sessionDelivered = true;
+    }
+  });
+  const documentResponse = await page.goto(url, { waitUntil: "commit" });
+  assert.equal(documentResponse?.status(), 200);
+  assert.equal((await observer.requested)?.status(), 200);
+  assert.equal((await session.requested)?.status(), 200);
+  assert.equal(await page.locator("#app > .startup-recovery").count(), 0);
+
+  const observerResponse = responseTo(page, "GET", observerUrl);
+  observer.release();
+  assert.equal((await observerResponse).status(), 200);
+  await page.waitForLoadState("load");
+  await page
+    .locator("#app > p.startup[role='status']")
+    .getByText("Checking session…", { exact: true })
+    .waitFor();
+  assert.equal(sessionDelivered, false, "the real session response must still be held");
+  assert.equal(await page.getByRole("button", { name: "Reload page", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Sign in", exact: true }).count(), 0);
+
+  const sessionResponse = responseTo(page, "GET", sessionUrl);
+  session.release();
+  assert.equal((await sessionResponse).status(), 200);
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Email", { exact: true }).isEnabled(), true);
+  assert.equal(page.url(), url);
+  assert.equal(await page.locator("#app > .startup-recovery").count(), 0);
 });
 
 test("a cold console visit shows neither navigation nor sign-in until its session is known", async (t) => {

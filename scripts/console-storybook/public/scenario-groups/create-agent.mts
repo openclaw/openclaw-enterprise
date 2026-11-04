@@ -2479,6 +2479,8 @@ export const createAgentOutcomeScenarios = {
       "Select Choose a model from the list. Confirm the custom ID is cleared and Choose a model is selected, then select a listed model.",
       "Select Enter model ID manually again. Confirm Model ID keeps the selected model and receives focus. Edit it to another listed model, then return to the list and confirm that model is selected.",
       "Repeat the switch and edit Model ID to an ID outside the list. Return to the list and confirm a new selection is required; credentials and other form values remain.",
+      'With a Codex model selected, open Advanced settings and set plugins.allow to "codex", then to 7, null, and ["keep-plugin", 7]. For each value, select Choose a model from the list. Confirm Configuration JSON receives focus and an array-of-strings remedy; the JSON text and manual model choice stay unchanged.',
+      'Correct plugins.allow to [], then ["keep-plugin"], or remove the field. Retry the switch and select gpt-6-sol or gpt-6-luna. Confirm the selected model and whole plugin entries are preserved. Repeat at 1440 px and 390 px without creating an Agent.',
       "Under Advanced settings, edit Configuration JSON to use an anthropic/ model. Select Choose a model from the list and confirm it offers Anthropic models.",
     ],
   },

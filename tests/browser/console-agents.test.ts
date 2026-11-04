@@ -82,7 +82,7 @@ import {
 import {
   expectDeploymentOutcome,
   openFailureDetails,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,

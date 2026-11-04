@@ -53,7 +53,7 @@ import {
   expectDeploymentOutcome,
   expectVersionRecord,
   openFailureDetails,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 import {
   openAdvancedSettings,
   assertRevisionUrl,

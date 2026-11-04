@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: 2026-11-04
-last_updated_session: authoring-run/f3ac7737-494a-40ed-834e-194dbd804522
+last_updated_session: authoring-run/b22db461-d5cf-40f5-b1c1-43443569364c
 ---
 
 # Console sign-in and destination recovery
@@ -44,8 +44,20 @@ graph TD
 
 On a cold visit, the shell's static “Loading OpenClaw Enterprise…” status paints
 before any script runs; CSS shows it only after 400 ms, so a fast load never
-flashes it. `loadPage` takes that status over in place while checking the session
-and announces “Checking session…” only if still pending after 400 ms.
+flashes it. The independent async observer in
+`apps/controller/src/console/startup-recovery.mts` handles the native entry-module
+load error from `#console-entry` in `apps/controller/src/console/index.html`.
+If the observer arrives after the error, it checks at window `load` (or immediately
+if the document is already complete). While the `.startup-recovery` marker remains,
+it reports that the Console could not load and offers **Reload page**. Clicking
+the button reloads the same URL. If the observer is unavailable, the static text
+still directs the reader to browser Reload. Recovery never automatically reloads
+the page or retries API requests.
+
+The healthy `console.mts` entry removes the marker synchronously before session
+reads, so a slow or unavailable session follows its own path below. `loadPage`
+takes the status over in place while checking the session and announces
+“Checking session…” only if still pending after 400 ms.
 
 `readSession` reads `GET /api/auth/session`. Of successful replies, only
 `null` confirms that the browser is signed out. A non-null reply must include
@@ -134,7 +146,8 @@ See the [parent flow](../platform-console.md#3-authorize-the-selected-page-resou
 ## Debugging and Verification
 
 The focused cases in `tests/browser/console.test.ts` exercise the console
-against controller sessions and resource reads. Their external provider exchange
+against controller sessions and resource reads, including a late startup observer
+after a native entry failure and during a pending session read. Their external provider exchange
 and recovery endpoint are modeled; they do not establish a deployed OAuth or
 native-gateway integration.
 
@@ -154,11 +167,13 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 
 ## Changelog
 
-- 2026-11-04 10:50: Correct the browser-suite pointer after its TypeScript rename. (authoring-run/f3ac7737-494a-40ed-834e-194dbd804522 - 9ca96ac4489e91f6df131ef8561be39233edb774)
+- 2026-11-04 22:07: Document Console startup failure and reload recovery. (authoring-run/b22db461-d5cf-40f5-b1c1-43443569364c - f18e8948b89cdeaabec5ae0f5824b23b7c82b906)
 
 - 2026-11-04 12:53: Explain keyboard focus while sign-in is pending. (authoring-run/1ca69282-ea7b-4b53-8db4-3fdb81fc30e1 - 15f0c1d443090f1346dc3d94444dad2397cb4fdc)
 
 - 2026-11-04 12:29: Document recovery from a malformed Console session reply. (authoring-run/e5be3034-9c43-4cba-9ba7-e7e2f487f042 - 9f1dcbeb2361006e7bea52d0cee595d9616ed16a)
+
+- 2026-11-04 10:50: Correct the browser-suite pointer after its TypeScript rename. (authoring-run/f3ac7737-494a-40ed-834e-194dbd804522 - 9ca96ac4489e91f6df131ef8561be39233edb774)
 
 - 2026-11-04 04:08: Follow the Console entry source pointers after its TypeScript conversion. (authoring-run/fafbdaa9-0149-45da-b434-59f2f68b1950 - 72f7f2b807d635edb1653cfbf0a8ad7e7e2ab49f)
 
