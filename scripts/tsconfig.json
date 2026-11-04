@@ -22,7 +22,7 @@
     "docs-site/compute-matrix.ts",
     "module-boundaries/*.ts",
     "console-storybook/prepare-assets.ts",
-    "console-storybook/public/scenario-groups/*.mts"
+    "console-storybook/public/**/*.mts"
   ],
   "references": [
     {
