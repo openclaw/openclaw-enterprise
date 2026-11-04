@@ -24,6 +24,22 @@ const staleReplacement = process.env.OCC_TEST_GATEWAY_SCENARIO === "stale-replac
 const writableInitialConfig = process.env.OCC_TEST_WRITABLE_INITIAL_CONFIG === "true";
 let initialGateway;
 let replacementPeerReads = 0;
+let stalePhase = "initial";
+
+function breadcrumb(phase, value, extra) {
+  if (!["initial-ready", "peer2-switch", "replacement-request", "third-request-entry", "identity-check", "credential-check", "native-ready", "wrapper-ready", "peer3-switch", "peer3-response", "deadline"].includes(phase)) return;
+  const record = { event: "stale-peer-diagnostic", phase };
+  if (phase === "replacement-request" || phase === "deadline") record.ordinal = value;
+  if (phase === "deadline") record.lastPhase = extra;
+  if (phase === "identity-check") {
+    record.singleProcess = value;
+    record.sameIdentity = extra;
+  }
+  if (phase === "credential-check") record.sameCredential = value;
+  if (phase === "native-ready" || phase === "wrapper-ready") record.ready = value;
+  stalePhase = phase;
+  console.log(JSON.stringify(record));
+}
 let trackSamePeerOutage = false;
 let trackSamePeerRecovery = false;
 let samePeerOutageResponses = 0;
@@ -53,19 +69,24 @@ const server = createServer(async (request, response) => {
   }
   if (staleReplacement && peer.startupId === "harness-startup-2") {
     replacementPeerReads++;
+    breadcrumb("replacement-request", replacementPeerReads);
     if (replacementPeerReads === 3) {
+      breadcrumb("third-request-entry");
       // The verification read follows the replacement's native readiness.
       const processes = await gatewayProcess();
+      breadcrumb("identity-check", processes.length === 1, processes.length === 1 && processes[0].startTicks + processes[0].pid === initialGateway.startTicks + initialGateway.pid);
       assert.equal(processes.length, 1);
       assert.notEqual(
         processes[0].startTicks + processes[0].pid,
         initialGateway.startTicks + initialGateway.pid,
       );
+      breadcrumb("credential-check", processes[0].token === appServerToken("harness-startup-2"));
       assert.equal(processes[0].token, appServerToken("harness-startup-2"));
       const native = await fetch(`http://127.0.0.1:${process.env.OPENCLAW_GATEWAY_PORT}/readyz`, {
         signal: AbortSignal.timeout(3_000),
         redirect: "error",
       });
+      breadcrumb("native-ready", native.status === 200);
       assert.equal(native.status, 200);
       const status = await (
         await fetch(`http://127.0.0.1:${statusPort}/openclaw/plugin-runtime/status`, {
@@ -74,8 +95,11 @@ const server = createServer(async (request, response) => {
         })
       ).json();
       assert.equal(status.phase, "starting");
-      assert.equal(await ready(), false);
+      const wrapperReady = await ready();
+      breadcrumb("wrapper-ready", wrapperReady);
+      assert.equal(wrapperReady, false);
       peer = { ...peer, startupId: "harness-startup-3", podUid: "harness-pod-3" };
+      breadcrumb("peer3-switch");
       await new Promise((resolve, reject) => {
         process.stdout.write(
           `${JSON.stringify({ phase: "stale-peer-verified", pid: processes[0].pid })}\n`,
@@ -86,7 +110,9 @@ const server = createServer(async (request, response) => {
   }
   response.writeHead(200, { "content-type": "application/json" });
   const countRecovery = trackSamePeerRecovery;
+  const thirdPeerResponse = staleReplacement && peer.startupId === "harness-startup-3";
   response.end(JSON.stringify(peer), () => {
+    if (thirdPeerResponse) breadcrumb("peer3-response");
     if (countRecovery) {
       samePeerRecoveryResponses++;
     }
@@ -190,6 +216,7 @@ function linearEnabled(config) {
 
 try {
   await waitFor("the first Gateway to become ready", 240_000, ready);
+  if (staleReplacement) breadcrumb("initial-ready");
   const [before] = await gatewayProcess();
   initialGateway = before;
   assert.equal(before.token, appServerToken("harness-startup-1"));
@@ -229,7 +256,9 @@ try {
       successfulPluginIds: ["codex-plugin:linear@openai-curated-remote"],
       failures: [],
     };
+    breadcrumb("peer2-switch");
     await setTimeout(60_000);
+    breadcrumb("deadline", replacementPeerReads, stalePhase);
     throw new Error("Gateway wrapper did not reject the stale replacement peer.");
   }
 
