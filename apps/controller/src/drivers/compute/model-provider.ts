@@ -5,10 +5,44 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   ConfigurationHarnessError,
+  keyedSettingPath,
   StoredCredentialSourceConfigError,
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
+
+export const MODEL_PROVIDER_REFERENCE_REQUIREMENT =
+  "must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential";
+
+// The setting under `setting` (`value`'s path) that holds a `${` or is a SecretRef, if any.
+export function modelProviderReferenceSetting(value: unknown, setting: string): string | undefined {
+  if (typeof value === "string") {
+    return value.includes("${") ? setting : undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const found = modelProviderReferenceSetting(item, `${setting}.${index}`);
+      if (found !== undefined) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (record === undefined) {
+    return undefined;
+  }
+  if (typeof record.source === "string" && typeof record.id === "string") {
+    return setting;
+  }
+  for (const [key, item] of Object.entries(record)) {
+    const found = modelProviderReferenceSetting(item, keyedSettingPath(setting, key));
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
+}
 
 export interface ModelProviderConfiguration {
   readonly protocol: "openai-responses" | "openai-completions";
@@ -48,15 +82,8 @@ export function modelProviderConfiguration(
 ): OpenClawConfigurationDocument {
   const models = asRecord(configuration.models);
   const providers = asRecord(models?.providers);
-  const agents = asRecord(configuration.agents);
-  const defaults = asRecord(agents?.defaults);
-  const selection =
-    typeof defaults?.model === "string" ? defaults.model : asRecord(defaults?.model)?.primary;
-  if (
-    harness.id === "openclaw" &&
-    typeof selection === "string" &&
-    !selection.startsWith("openai/")
-  ) {
+  const selections = nativeOpenAiModelSelections(configuration);
+  if (harness.id === "openclaw" && selections?.[0]?.provider !== "openai") {
     return configuration;
   }
   if (
@@ -73,8 +100,16 @@ export function modelProviderConfiguration(
   }
   const endpoint = modelProviderBaseUrl(provider);
   const native = asRecord(providers?.openai);
+  const probeProvider = { ...native };
+  delete probeProvider.apiKey;
+  const reference = modelProviderReferenceSetting(probeProvider, "models.providers.openai");
+  if (reference !== undefined) {
+    throw new ConfigurationHarnessError(
+      `Configuration setting ${reference} ${MODEL_PROVIDER_REFERENCE_REQUIREMENT}.`,
+    );
+  }
   const entries =
-    nativeOpenAiModelSelections(configuration)?.flatMap((selection) =>
+    selections?.flatMap((selection) =>
       selection.matches.length === 1 ? selection.matches.map(({ entry }) => entry) : [],
     ) ?? [];
   for (const value of [native, ...entries]) {

@@ -1540,6 +1540,38 @@ test("shared providers render OpenClaw adapters and refuse unsupported Codex pro
   assert.deepEqual([...codex.objects], before);
 });
 
+test("shared OpenAI provider leaves a roster-selected Anthropic provider unchanged", async () => {
+  const configuration = createHarnessConfiguration("openclaw", "gpt-5");
+  delete configuration.agents.defaults.model;
+  configuration.agents.defaults.models = {
+    "anthropic/claude-fixture": { agentRuntime: { id: "openclaw" } },
+  };
+  configuration.agents.entries = { main: { model: "anthropic/claude-fixture" } };
+  configuration.models.providers.openai.baseUrl = "https://unselected.example.test/v1";
+  configuration.models.providers.anthropic = {
+    baseUrl: "https://api.anthropic.com",
+    api: "anthropic-messages",
+    models: [{ id: "claude-fixture", name: "Fixture" }],
+  };
+  const fixture = dedicatedFirstDeployFixture({
+    modelEndpoint: "https://models.example.test/v1",
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      configuration,
+      plugins: undefined,
+    },
+  });
+  await fixture.prepare();
+  const document = [...fixture.objects.values()].find(
+    (object) => object.kind === "ConfigMap" && object.data?.["openclaw.json"] !== undefined,
+  );
+  assert.ok(document);
+  const providers = JSON.parse(document.data["openclaw.json"]).models.providers;
+  assert.equal(providers.anthropic.baseUrl, "https://api.anthropic.com");
+  assert.equal(providers.openai.baseUrl, "https://unselected.example.test/v1");
+  assert.equal(fixture.revision.compute.admission, undefined);
+});
+
 test("prepared direct-Secret workloads refuse provider changes before either activation path delivers credentials", async (t) => {
   for (const harness of ["openclaw", "codex"]) {
     const fixture = dedicatedFirstDeployFixture({
@@ -16211,9 +16243,7 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
   // selected provider's settings or the primary model's entry cannot resolve. The refusal names
   // the setting, never its value (finding 2828).
   const probeReference = (setting) =>
-    setting === "models.providers.openai.baseUrl"
-      ? "OpenAI model baseUrl must match the Installation runtime.modelProvider.baseUrl."
-      : `Configuration setting ${setting} must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential.`;
+    `Configuration setting ${setting} must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential.`;
   for (const [transport, setting, modelEntry] of [
     [{ baseUrl: "${PROVIDER_URL}" }, "models.providers.openai.baseUrl"],
     [

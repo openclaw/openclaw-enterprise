@@ -1,5 +1,7 @@
 import {
   modelProviderBaseUrl,
+  modelProviderReferenceSetting,
+  MODEL_PROVIDER_REFERENCE_REQUIREMENT,
   modelProviderConfiguration,
   requireModelSourceDestination,
   type ModelProviderConfiguration,
@@ -2649,36 +2651,6 @@ function harnessPrimaryModel(
   return model;
 }
 
-// The setting under `setting` (`value`'s path) that holds a `${` or is a SecretRef, if any.
-function referenceSetting(value: unknown, setting: string): string | undefined {
-  if (typeof value === "string") {
-    return value.includes("${") ? setting : undefined;
-  }
-  if (Array.isArray(value)) {
-    for (const [index, item] of value.entries()) {
-      const found = referenceSetting(item, `${setting}.${index}`);
-      if (found !== undefined) {
-        return found;
-      }
-    }
-    return undefined;
-  }
-  const record = asRecord(value);
-  if (record === undefined) {
-    return undefined;
-  }
-  if (typeof record.source === "string" && typeof record.id === "string") {
-    return setting;
-  }
-  for (const [key, item] of Object.entries(record)) {
-    const found = referenceSetting(item, keyedSettingPath(setting, key));
-    if (found !== undefined) {
-      return found;
-    }
-  }
-  return undefined;
-}
-
 // The startup model probe gets only the selected provider's settings, the primary model's entry
 // and the binding's credential, so a reference there (other than the binding's apiKey) cannot
 // resolve. Another Compute may resolve it, so Configuration save accepts it; Kubernetes admission
@@ -2705,13 +2677,10 @@ function harnessProbeConfiguration(
   const defaults = asRecord(asRecord(configuration.agents)?.defaults);
   const modelEntry = asRecord(asRecord(defaults?.models)?.[model]);
   const reference =
-    referenceSetting(fragment, keyedSettingPath("models.providers", providerId)) ??
-    referenceSetting(modelEntry, keyedSettingPath("agents.defaults.models", model));
+    modelProviderReferenceSetting(fragment, keyedSettingPath("models.providers", providerId)) ??
+    modelProviderReferenceSetting(modelEntry, keyedSettingPath("agents.defaults.models", model));
   if (reference !== undefined) {
-    throw settingError(
-      reference,
-      "must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential",
-    );
+    throw settingError(reference, MODEL_PROVIDER_REFERENCE_REQUIREMENT);
   }
   // A custom provider has no ambient native key name. Its isolated probe uses only
   // the Compute-owned process environment, not caller Secret provider configuration.

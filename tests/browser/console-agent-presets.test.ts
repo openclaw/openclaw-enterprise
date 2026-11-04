@@ -141,6 +141,7 @@ const createConsoleAppFixture = (
   options: {
     defaultPresets?: (typeof defaultCodexPreset)[];
     filesystemConfiguration?: boolean;
+    modelProvider?: import("../../apps/controller/src/drivers/compute/model-provider.ts").ModelProviderConfiguration;
   } = {},
 ) => createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 
@@ -1956,7 +1957,9 @@ test("API-key Presets keep their credential provider fixed while allowing model 
 });
 
 test("Dedicated OpenClaw Presets preserve custom provider transport across execution mode changes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const fixture = await createConsoleAppFixture(t, {
+    modelProvider: { protocol: "openai-completions", baseUrl: "https://models.example.test/v1" },
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Dedicated OpenClaw Preset", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "dedicated-key");
