@@ -220,7 +220,12 @@ seven-day release-age policy, independently of root dependencies.
   requests report an error and return 501, never reaching a server. Preview CSP
   also blocks network connections. Authentication and authorization
   responses are examples, not a security implementation.
-- `public/frame.mjs` starts the production console and opens configured controls.
+- `public/frame.mts` starts the production console and opens configured controls.
+  The asset builder emits it as `/storybook-fixtures/frame.mjs` with an asset
+  version in the URL.
+- Edit Namespace scenarios in `public/scenario-groups/namespaces.mts`. Imports
+  within Storybook's `public/` fixture source use the `.mts` path for a typed
+  fixture. Asset preparation rewrites those imports to versioned `.mjs` URLs.
 - `*.stories.ts` exports named stories by group. `story.ts` adds instructions,
   UI-gap notices, the preview, and Reset story. The repository's `pnpm typecheck`
   checks these files without installing the separate Storybook dependencies.
