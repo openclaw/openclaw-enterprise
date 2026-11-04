@@ -44,8 +44,20 @@ graph TD
 
 On a cold visit, the shell's static “Loading OpenClaw Enterprise…” status paints
 before any script runs; CSS shows it only after 400 ms, so a fast load never
-flashes it. `loadPage` takes that status over in place while checking the session
-and announces “Checking session…” only if still pending after 400 ms.
+flashes it. The independent async observer in
+`apps/controller/src/console/startup-recovery.mts` handles the native entry-module
+load error from `#console-entry` in `apps/controller/src/console/index.html`.
+If the observer arrives after the error, it checks at window `load` (or immediately
+if the document is already complete). While the `.startup-recovery` marker remains,
+it reports that the Console could not load and offers **Reload page**. Clicking
+the button reloads the same URL. If the observer is unavailable, the static text
+still directs the reader to browser Reload. Recovery never automatically reloads
+the page or retries API requests.
+
+The healthy `console.mts` entry removes the marker synchronously before session
+reads, so a slow or unavailable session follows its own path below. `loadPage`
+takes the status over in place while checking the session and announces
+“Checking session…” only if still pending after 400 ms.
 
 `readSession` reads `GET /api/auth/session`. Of successful replies, only
 `null` confirms that the browser is signed out. A non-null reply must include
@@ -131,8 +143,9 @@ See the [parent flow](../platform-console.md#3-authorize-the-selected-page-resou
 
 ## Debugging and Verification
 
-The focused cases in `tests/browser/console.test.mjs` exercise the console
-against controller sessions and resource reads. Their external provider exchange
+The focused cases in `tests/browser/console.test.ts` exercise the console
+against controller sessions and resource reads, including a late startup observer
+after a native entry failure and during a pending session read. Their external provider exchange
 and recovery endpoint are modeled; they do not establish a deployed OAuth or
 native-gateway integration.
 
