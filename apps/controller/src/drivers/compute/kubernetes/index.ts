@@ -343,6 +343,11 @@ const callerSettingError = (setting: string, requirement: string) =>
 const preparationSettingError = (setting: string, requirement: string) =>
   new ConfigurationFailure(configurationSettingMessage(setting, requirement));
 
+// Harness authentication belongs to the Agent, so Agent save, provisioning and deployment name
+// it as an Agent setting even when the same rule runs while reading a Configuration document.
+const harnessAuthSettingError = (setting: string, requirement: string) =>
+  new ConfigurationHarnessError(`Agent setting ${setting} ${requirement}.`);
+
 // Initial workspace files land in the managed workspace; a dedicated Harness also mounts that
 // storage at its working directory.
 const kubernetesSetupWorkspaces = (mode: "embedded" | "dedicated"): readonly string[] =>
@@ -4903,7 +4908,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
       if (native && endpoint !== undefined && endpoint !== "https://api.openai.com/v1") {
-        throw callerSettingError(
+        throw harnessAuthSettingError(
           "harnessAuth.authorizedEndpoint",
           "must match the Dedicated OpenClaw model endpoint",
         );

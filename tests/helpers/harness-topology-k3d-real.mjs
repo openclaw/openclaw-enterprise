@@ -1107,10 +1107,11 @@ function assertSecretMetadata(secret, { namespaceId, name }) {
   }
 }
 
-async function createApiSecret(request, namespaceId, name, value) {
+async function createApiSecret(request, namespaceId, name, value, authorizedEndpoint) {
   const response = await request("POST", `/namespaces/${namespaceId}/secrets`, {
     name,
     value,
+    ...(authorizedEndpoint === undefined ? {} : { authorizedEndpoint }),
   });
   assertNoSecretMaterial(
     response,
@@ -1909,7 +1910,13 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   });
 
   let secretApi;
+  // The Installation's custom Codex model endpoint is the only destination this harness reaches.
+  // The model Secret must authorize it, or admission refuses the Agent under the destination contract.
+  let modelAuthorizedEndpoint;
   {
+    if ((options.harnessId ?? (mode === "dedicated" ? "codex" : "openclaw")) === "codex") {
+      modelAuthorizedEndpoint = process.env.OCC_TEST_CODEX_OPENAI_BASE_URL;
+    }
     const secretAssignmentCaller = await createSecretAssignmentCallerRequest({
       pool: observerPool,
       createPostgresControllerAuth,
@@ -1927,6 +1934,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       namespaceId,
       "model-key",
       process.env.OPENAI_API_KEY,
+      modelAuthorizedEndpoint,
     );
     secretApi = { assignmentPrincipalId: secretAssignmentPrincipalId, model: modelSecret };
     if (slack !== undefined) {
@@ -2134,6 +2142,14 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     secretId: secretApi.model.ref.id,
   });
   assert.deepEqual(launch.configuration.values, launchValues);
+  if (modelAuthorizedEndpoint !== undefined) {
+    // A Preset template cannot carry endpoint authorization, so the demo binds it on the
+    // rendered launch. Admission requires the binding to equal the model Secret's destination.
+    launch.agent.harnessAuth = {
+      ...launch.agent.harnessAuth,
+      authorizedEndpoint: modelAuthorizedEndpoint,
+    };
+  }
   async function assertPresetIndependent(configuration) {
     const changedPreset = await adminRequest("PATCH", presetPath, { template: {} });
     assert.equal(changedPreset.status, 200, JSON.stringify(changedPreset.error));
@@ -2207,7 +2223,13 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       configurationId: configuration.data.id,
     });
     assert.equal(agent.status, 201, JSON.stringify(agent.error));
-    assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secretApi.model.ref });
+    assert.deepEqual(agent.data.harnessAuth, {
+      method: "api_key",
+      source: secretApi.model.ref,
+      ...(modelAuthorizedEndpoint === undefined
+        ? {}
+        : { authorizedEndpoint: modelAuthorizedEndpoint }),
+    });
     await assertPresetIndependent(configuration);
     const persistedAgent = await storedAgent(observerPool, namespaceId, agent.data.id);
     const provisionedGatewayPassword = await provisionAgentTransportSecret(
