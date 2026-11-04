@@ -1632,6 +1632,8 @@ export class OpenShellGitRuntime {
           reason: "environment_not_installed",
           ...this.identity(entry),
         }),
+      reportSupervisorChange: (check) =>
+        this.reportContinuity(entry, [{ check, result: "changed" }]),
       reportExecutionChange: ({ restartCount, neverRestartPolicy, sandboxIdChanged }) =>
         this.reportContinuity(entry, [
           { check: "sandbox-restart-count", result: restartCount ?? "invalid" },
