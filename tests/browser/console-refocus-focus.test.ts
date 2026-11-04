@@ -37,7 +37,7 @@ import {
   viewTag,
   waitForFocusedLabel,
 } from "./console-refocus-helpers.mjs";
-import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
+import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { within } from "../helpers/wait-for.mjs";

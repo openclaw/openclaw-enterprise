@@ -3,11 +3,17 @@
 package occcli
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -110,4 +116,84 @@ func (w *handoffFailingWriter) Write(p []byte) (int, error) {
 		return n, w.err
 	}
 	return n, nil
+}
+
+// The receipt branch adds a Helm outcome line before the Job report. An output
+// error on that first line must not be hidden by later successful writes.
+func TestInstallationReceiptOutput(t *testing.T) {
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		t.Skip("requires kubectl")
+	}
+	const attempt = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const job = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade","openclaw.dev/installation-attempt":"` + attempt + `"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && serveJobDiscovery(w, r.URL.Path) {
+			return
+		}
+		requests.Add(1)
+		if r.Method != http.MethodGet || r.URL.RequestURI() != "/apis/batch/v1/namespaces/operations/jobs/demo-initialization" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.RequestURI())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, job)
+	}))
+	defer server.Close()
+	config := installationDoctorKubeconfig(t, server.URL)
+	_, cluster, err := snapshotInstallationConfig(context.Background(), config, "read", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Use the persisted production format and original Job UID, so a healthy
+	// output writer reaches the genuine successful receipt reconciliation path.
+	for name, value := range map[string]any{
+		"intent.json":      installationIntent{Version: 1, Operation: "helm-install", Attempt: attempt, ClusterSHA256: cluster, Namespace: "operations", Release: "demo", ChartSHA256: strings.Repeat("c", 64), ValuesSHA256: strings.Repeat("d", 64)},
+		"job.json":         installationJobReceipt{Attempt: attempt, UID: "id"},
+		"helm-result.json": map[string]string{"outcome": "succeeded"},
+	} {
+		if err := writeInstallationRecord(directory, name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, action := range []string{"doctor", "plan"} {
+		for _, fail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/fail-first-write=%t", action, fail), func(t *testing.T) {
+				requests.Store(0)
+				failure := errors.New("synthetic first output failure")
+				var output strings.Builder
+				var writer io.Writer = &output
+				if fail {
+					writer = &handoffFirstWriteFailure{err: failure}
+				}
+				cmd := New(writer, io.Discard)
+				cmd.SetArgs([]string{"installation", action, "--kubeconfig", config, "--context", "read", "--kube-namespace", "operations", "--release", "demo", "--receipt", directory})
+				err := cmd.Execute()
+				if requests.Load() != 1 {
+					t.Fatalf("Job requests = %d; want one read", requests.Load())
+				}
+				if fail {
+					if !errors.Is(err, failure) {
+						t.Fatalf("error = %v; want first output failure", err)
+					}
+				} else if err != nil || !strings.HasPrefix(output.String(), "Helm outcome: succeeded.\n") || !strings.Contains(output.String(), "matches the recorded UID") {
+					t.Fatalf("healthy receipt: output=%q error=%v", output.String(), err)
+				}
+			})
+		}
+	}
+}
+
+type handoffFirstWriteFailure struct{ err error }
+
+func (w *handoffFirstWriteFailure) Write(p []byte) (int, error) {
+	if w.err != nil {
+		err := w.err
+		w.err = nil
+		return 0, err
+	}
+	return len(p), nil
 }

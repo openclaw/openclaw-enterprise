@@ -4,6 +4,8 @@ Use this page when local startup, the Kubernetes installation, the control plane
 or several Agents are affected. For a problem with one Agent, start with
 [Agent troubleshooting](../topics/agent-troubleshoot.md).
 
+For pnpm and Helm setup issues, see [Troubleshoot local k3d setup](local-setup-troubleshooting.md).
+
 ## Local K3s cannot find the cpuset controller
 
 If the k3d server logs report `failed to find cpuset cgroup (v2)`, inspect
@@ -139,13 +141,18 @@ A production node uses the separate
 [Codex sandbox profile](../deploy/codex-sandbox.md) procedure. Do not copy this
 sysctl change onto a shared cluster.
 
+## Source build fails TLS certificate verification
+
+If HTTPS inspection causes a certificate error during a runtime download, install the approved proxy CA in the host trust store. Before retrying `occ dev up`, select a PEM bundle containing both public roots and the proxy CA. The build mounts it only for downloads.
+
+```bash
+# Fedora 44 system bundle after the approved CA has been installed.
+export OCC_DEVELOPMENT_BUILD_CA_FILE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+```
+
 ## The local console reports a certificate error
 
-If the printed HTTPS console URL shows `NET::ERR_CERT_AUTHORITY_INVALID` or an
-unknown-issuer warning, check the certificate using the public CA from the same
-installation. Set `BROWSER_CA` to its path on the computer running these commands
-(`./browser-ca.crt` if copied from the startup machine), and `CONSOLE_URL` to
-startup's **Browser console** URL; keep the printed hostname and port:
+For `NET::ERR_CERT_AUTHORITY_INVALID` or an unknown issuer, check the Console URL against this installation’s public CA. Set `BROWSER_CA` to the local certificate path and use the exact **Browser console** URL printed at startup.
 
 ```bash
 BROWSER_CA='<local-browser-ca.crt-path>'
@@ -155,11 +162,7 @@ curl --fail --show-error --max-time 10 --cacert "$BROWSER_CA" \
   -o /dev/null -w 'HTTP %{http_code}; TLS verify %{ssl_verify_result}\n' "$CONSOLE_URL"
 ```
 
-Expect HTTP `200` and TLS verify `0`. This checks the served certificate chain
-and exact hostname. It does not add browser trust. When this check succeeds but
-the browser still rejects the issuer, trust that installation's public CA in
-the browser's local trust store. `occ dev up` never changes that store. Importing
-a certificate without enabling SSL trust may leave the warning unchanged.
+HTTP `200` and TLS verify `0` confirm the chain and hostname. If the browser still rejects the issuer, enable SSL trust for this installation’s CA in the browser’s trust store. `occ dev up` leaves browser trust settings unchanged.
 
 ### Trust the CA on macOS
 
@@ -187,11 +190,7 @@ that cause resolved. Do not use `curl -k` as a successful verification result.
 
 ### Remove trust when discarding the installation
 
-Record the CA fingerprint before `occ dev down` deletes the state files. In the
-same trust store, locate the certificate with that exact fingerprint, remove
-its explicit trust setting, and delete it. Do not remove every certificate named
-**OCC development browser CA**; another installation may still use one. A new
-installation generates a new CA and requires its own trust step.
+Before `occ dev down` deletes the state files, record the CA fingerprint. Remove trust and delete only the matching certificate. Other installations use the same CA name. Trust each new installation’s CA separately.
 
 ## Open the console from another machine
 

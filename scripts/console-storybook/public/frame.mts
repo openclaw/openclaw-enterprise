@@ -1,7 +1,7 @@
 import type { PluginFieldsOptions } from "/console/agents/plugin-fields.mjs";
 import type { StoryAction } from "../story-action.mts";
-import { scenarios } from "./scenarios.mjs";
-import { installFixture } from "./fixtures.mjs";
+import { scenarios } from "./scenarios.mts";
+import { installFixture } from "./fixtures.mts";
 
 interface FrameScenarioBase {
   name: string;
@@ -13,6 +13,7 @@ interface FrameScenarioBase {
 }
 
 type FrameScenario = FrameScenarioBase &
+  Parameters<typeof installFixture>[0] &
   (
     | { component?: undefined }
     | {

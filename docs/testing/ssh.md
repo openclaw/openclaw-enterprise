@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # SSH host tests
 
 ## Overview

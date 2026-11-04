@@ -96,58 +96,52 @@ input is not supported. The server validates document fields against the
 | `occ agent runtime ID`                                                              | Reads Pod status, restarts, last termination, log sources and Events for a version. See [runtime logs](#runtime-status-and-logs).                                                                                                                                                                                                                                                                 |
 | `occ agent logs ID --source SOURCE`                                                 | Prints one redacted page of container output, or follows it. See [runtime logs](#runtime-status-and-logs).                                                                                                                                                                                                                                                                                        |
 
-Use the [HTTP API](api.md) to work with ServiceAccounts and configured
-Backends, and to create or update [Presets](presets.md#crud-and-permissions);
-the CLI has no commands for these. Neither the CLI nor the HTTP API
-offers Configuration listing. An accepted ordinary deploy returns a version; `agent get`
-shows desired state, `LIFECYCLE` (`active` or `deleting`), and the selected
-version, not runtime health. Run `occ agent deployment-status ID` for the
-latest deployment's status and error, and verify the model separately.
+Use the [HTTP API](api.md) for configured Backends, ServiceAccount operations
+outside this inventory and [Preset writes](presets.md#crud-and-permissions).
+Configuration listing is unavailable. After deployment, `agent get` reports
+desired state, lifecycle and selected version. Use `agent deployment-status ID`
+for the latest status and error. Verify model execution separately.
 
-For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
-`agent get` and `agent list` retain metadata and show
-`CONFIGURATION ERROR` with the affected field. JSON and YAML retain the typed
-`configurationReadError`. Version history lists summaries, so it leaves
-deployment status null for an unreadable version and names it on stderr; if
-the Agent itself is unreadable, it skips all status reads and explains why. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
+For [unreadable saved settings](agents.md#unreadable-saved-settings), Agent
+reads retain metadata and identify the field in `CONFIGURATION ERROR` or
+structured `configurationReadError`. History leaves unreadable versions' status
+null and reports them on stderr. An unreadable Agent skips all status reads.
+See the [CLI browsing flow](../flows/cli-agent-browsing.md).
 
-`service-key create --out FILE` sets the new file to `0600` before requesting a
-key, including under a restrictive umask. Existing files and symlinks are refused.
+`service-key create --out FILE` creates a new `0600` file before issuance,
+including under a restrictive umask. Existing files and symlinks fail.
+`--expires-in-days` accepts 1–365 and defaults to 30. Explicit zero fails
+before creating the file.
 
-`service-key create --expires-in-days N` accepts 1–365. Omit the flag for 30 days;
-explicit zero is refused before output-file creation or API issuance.
+Resource IDs require the correct prefix and UUID. Validation errors identify
+the resource kind and its list command.
 
-Commands take IDs, not names. The CLI rejects a value without the expected
-prefix, such as `ns_` or `agt_`, and names the list command that shows the ID
-and, for an ID of another kind, that kind.
-It also rejects a prefixed value that is not the prefix plus a UUID, such as
-`agt_../x`, before sending anything.
-
-The `installation get`, `installation deployment-inventory`, and `namespace
-list` commands require an Installation-scoped service key. With a
-Namespace-scoped key, use `namespace get ID` to read that exact Namespace
-instead.
-
-`installation deployment-inventory` requires Installation `administer`, exact
-`read` access to every Namespace and Agent, exact `read` access to each selected
-Agent's selected version, and exact `deploy` access to every running Agent that is
-eligible for coordinated deployment. It fails instead of silently omitting an
-unauthorized resource. JSON and YAML output include each Agent's desired runtime
-state, execution mode, selected version, and whether deployment work is queued or
-claimed.
+`installation get`, `installation deployment-inventory` and `namespace list`
+require an Installation-scoped service key. A Namespace-scoped key can read
+its Namespace with `namespace get ID`. Inventory requires Installation
+`administer`, `read` on every Namespace, Agent and selected revision, and
+`deploy` on each running Agent eligible for coordinated deployment. Any missing
+grant fails the inventory. JSON and YAML include desired runtime state, execution
+mode, selected version and queued or claimed deployment work.
 
 ## Installation handoff
 
-`occ installation doctor` and `plan` inspect one chart initialization Job through
-`kubectl`; they do not use the OCC API or change cluster resources. Both require
-`--kubeconfig`, `--context`, `--kube-namespace`, and `--release`. Optional
-`--expect-job-uid` binds the observation to the originally recorded Job.
+All three commands require `--kubeconfig`, `--context`, `--kube-namespace` and
+`--release`. Use the CLI matching the chart. Output is text.
 
-Use the CLI matching the chart's source revision. Output is text only. Exit `0`
-means the recognized Job reports consistent completion and the report was written
-successfully. Other states and output write failures exit `1`. Neither result
-proves current release or workload readiness.
-[Resume with the original Job UID](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
+- `occ installation install` requires Helm, `kubectl`, a local `--chart`
+  (directory or archive, up to 64 MiB, no symlinks), `--values` (up to 4 MiB)
+  and a new `--receipt` directory. It snapshots inputs and syncs the intent
+  before one Helm install. Use Secret release storage and unset `HELM_KUBE*`
+  overrides. Credentials must work without interactive input. Helm applies
+  `--wait-timeout` per operation (default `5m`, positive, at most `24h`).
+  A successful install exit records Helm success. Check the Job separately.
+- `occ installation doctor` reports the named Job. `plan` adds next steps.
+  Optional `--receipt` requires the original target, install marker and captured
+  UID for exit zero on completion. Alternatively, use `--expect-job-uid` for a
+  recorded UID. With neither flag, exit zero describes the current Job only.
+  Both commands are read-only. Output write failures exit `1`, including when the
+  Job completed. [Interpret receipt files and resume an interrupted installation](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
 
 ## Runtime status and logs
 

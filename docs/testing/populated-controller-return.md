@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Rehearse a populated controller return
 
 Use this local test to check whether the previous OpenClaw Control Plane (OCC)

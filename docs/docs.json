@@ -374,10 +374,10 @@
                             "page": "reference/drivers/kubernetes-compute/configuration",
                             "label": "Configuration"
                           },
-                        {
+                          {
                             "page": "reference/drivers/kubernetes-compute/model-provider",
                             "label": "Model Provider"
-                        },
+                          },
                           {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
@@ -848,6 +848,98 @@
             ]
           },
           {
+            "tab": "Testing & CI",
+            "groups": [
+              {
+                "group": "Testing",
+                "pages": [
+                  {
+                    "page": "testing/README",
+                    "label": "Overview"
+                  },
+                  {
+                    "page": "testing/local",
+                    "label": "Local Tests"
+                  },
+                  {
+                    "page": "testing/manual-tests",
+                    "label": "Manual Tests"
+                  },
+                  {
+                    "page": "testing/fixtures-and-scenarios",
+                    "label": "Fixtures and Scenarios"
+                  }
+                ]
+              },
+              {
+                "group": "CI",
+                "pages": [
+                  {
+                    "page": "testing/ci",
+                    "label": "Overview"
+                  },
+                  {
+                    "page": "testing/ci/configuration",
+                    "label": "Configuration"
+                  },
+                  {
+                    "page": "testing/ci/run-lanes",
+                    "label": "Find and Run Lanes"
+                  },
+                  {
+                    "group": "Tests",
+                    "pages": [
+                      {
+                        "page": "testing/ci/required-checks",
+                        "label": "Required Checks"
+                      },
+                      {
+                        "page": "testing/ci/first-agent-smoke",
+                        "label": "First Agent Smoke"
+                      },
+                      {
+                        "page": "testing/ci/qa-advisory",
+                        "label": "QA Matrix Advisory"
+                      },
+                      {
+                        "page": "testing/ci/full-integration",
+                        "label": "Full Integration"
+                      },
+                      {
+                        "page": "testing/ci/observability-demo",
+                        "label": "Observability Demo"
+                      },
+                      {
+                        "page": "testing/ci/staging-qualification",
+                        "label": "Staging Qualification"
+                      },
+                      {
+                        "page": "testing/ci/k3d-quickstart",
+                        "label": "Local k3d Quickstart"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "hidden": [
+              "testing/postgresql",
+              "testing/docker",
+              "testing/ssh",
+              "testing/kubernetes",
+              "testing/populated-controller-return",
+              "testing/slack",
+              "testing/plugins",
+              "testing/openshell",
+              "testing/openshell-oauth",
+              "testing/openshell-coverage",
+              "testing/ci/openshell-execution",
+              "testing/repository-credentials",
+              "testing/static-egress",
+              "testing/protected-repository-custody"
+            ]
+          },
+          {
             "tab": "Contribute",
             "groups": [
               {
@@ -1007,43 +1099,36 @@
                   {
                     "page": "testing/autoreview",
                     "label": "Code Review"
-                  },
-                  {
-                    "group": "Testing and CI",
-                    "pages": [
-                      {
-                        "page": "testing/README",
-                        "label": "Overview"
-                      },
-                      {
-                        "page": "testing/local",
-                        "label": "Local Tests"
-                      },
-                      {
-                        "page": "testing/module-boundaries",
-                        "label": "Module Boundaries"
-                      },
-                      {
-                        "page": "testing/fixtures-and-scenarios",
-                        "label": "Fixtures and Scenarios"
-                      },
-                      {
-                        "page": "testing/ci",
-                        "label": "CI"
-                      }
-                    ]
                   }
                 ]
               },
               {
                 "group": "Release",
                 "pages": [
-                  { "page": "release/README", "label": "Overview" },
-                  { "page": "release/configuration", "label": "Configuration" },
-                  { "page": "release/containers", "label": "Containers" },
-                  { "page": "release/chart-publication", "label": "Helm Chart" },
-                  { "page": "release/cli-publication", "label": "OCC CLI" },
-                  { "page": "release/container-promotion", "label": "Docker Hub Promotion" }
+                  {
+                    "page": "release/README",
+                    "label": "Overview"
+                  },
+                  {
+                    "page": "release/configuration",
+                    "label": "Configuration"
+                  },
+                  {
+                    "page": "release/containers",
+                    "label": "Containers"
+                  },
+                  {
+                    "page": "release/chart-publication",
+                    "label": "Helm Chart"
+                  },
+                  {
+                    "page": "release/cli-publication",
+                    "label": "OCC CLI"
+                  },
+                  {
+                    "page": "release/container-promotion",
+                    "label": "Docker Hub Promotion"
+                  }
                 ]
               },
               {
@@ -1052,6 +1137,10 @@
                   {
                     "page": "layout",
                     "label": "Repository Layout"
+                  },
+                  {
+                    "page": "testing/module-boundaries",
+                    "label": "Module Boundaries"
                   }
                 ]
               },
@@ -1077,6 +1166,10 @@
                   {
                     "page": "base-driver-docs-template",
                     "label": "Driver Docs"
+                  },
+                  {
+                    "page": "contributing/ci-check-template",
+                    "label": "CI Check Template"
                   }
                 ]
               }
@@ -1089,6 +1182,7 @@
               "guides/deploy/openshell-credential-sources",
               "guides/deploy/local-openshell-images",
               "guides/deploy/local-kubernetes-tools",
+              "guides/operate/local-setup-troubleshooting",
               "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",
@@ -1148,25 +1242,12 @@
               "flows/cli-publication",
               "flows/cli-agent-browsing",
               "flows/github-actions-testing/preparation",
-              "testing/postgresql",
-              "testing/docker",
-              "testing/ssh",
-              "testing/kubernetes",
-              "testing/populated-controller-return",
-              "testing/slack",
-              "testing/plugins",
-              "testing/openshell",
-              "testing/openshell-oauth",
-              "testing/openshell-coverage",
               "flows/agent-repository-credentials",
               "flows/public-github-reads",
               "flows/repository-credentials",
               "flows/repository-credential-configuration",
-              "testing/repository-credentials",
               "flows/agent-presets",
               "flows/credential-source-egress",
-              "testing/static-egress",
-              "testing/protected-repository-custody",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
               "flows/agent-sandbox-policy"
@@ -1227,6 +1308,20 @@
         "set-the-production-browser-origins-before-installing-occ": "/guides/deploy/eks-openshell-setup/#set-the-production-browser-origins-before-installing-occ",
         "read-the-protected-initial-owner-files": "/guides/deploy/eks-openshell-setup/#read-the-protected-initial-owner-files",
         "install-the-loopback-tls-listener": "/guides/deploy/eks-openshell-setup/#install-the-loopback-tls-listener"
+      }
+    },
+    {
+      "from": "/testing/ci/documentation-publication/",
+      "to": "/contributing/documentation-hosting/#deploy-private-documentation",
+      "anchors": {
+        "overview": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "trigger": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "when-it-runs": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "scenarios": "/contributing/documentation-hosting/#build-and-deployment-stages",
+        "execution": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "run-it": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "results-and-limits": "/contributing/documentation-hosting/#verify-a-deployment",
+        "files": "/contributing/documentation-hosting/#publication-source-files"
       }
     }
   ]

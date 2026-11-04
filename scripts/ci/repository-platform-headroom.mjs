@@ -20,6 +20,7 @@ const runtimeOnlyRoots = [
 ];
 const minimumRuntimeAvailableBytes = 36 * 1024 ** 3;
 const largeImageLane = [
+  "openshell",
   "container-runtime-build",
   "k3d-quickstart",
   "k3d-observability",
@@ -185,6 +186,18 @@ async function main() {
   assert(await guardRemovalRoot(androidRoot, rootInfo, mounts, true));
   if (largeImageLane) {
     for (const root of runtimeOnlyRoots) {
+      // OpenShell tests still use the installed Go and Python toolchains.
+      if (
+        receipt.lane === "openshell" &&
+        [
+          "/opt/hostedtoolcache/go",
+          "/opt/hostedtoolcache/Python",
+          "/opt/hostedtoolcache/PyPy",
+        ].includes(root)
+      ) {
+        receipt.rootsSkipped.push(root);
+        continue;
+      }
       if (await guardRemovalRoot(root, rootInfo, mounts, false)) {
         removalRoots.push(root);
       } else {
