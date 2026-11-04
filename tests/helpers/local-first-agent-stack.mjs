@@ -30,6 +30,26 @@ const setupPoints = [
   ["OpenClaw Enterprise development stack is ready.", "ready"],
 ];
 
+// CI verifies the manifest/config digest and current checkout label before this
+// selection. Compose must remove inherited builds, not merely add an image name.
+export function firstAgentComposeImages(image) {
+  if (
+    !/^127\.0\.0\.1:[1-9][0-9]{0,4}\/openclaw-ci-first-images-[a-z0-9-]+\/controller@sha256:[a-f0-9]{64}$/.test(
+      image,
+    )
+  ) {
+    throw new Error("Prepared Compose controller requires an owned immutable image.");
+  }
+  return (
+    "services:\n" +
+    ["migrate", "bootstrap", "controller", "worker-kubernetes", "browser-proxy"]
+      .map(
+        (service) => `  ${service}:\n    build: !reset null\n    image: ${JSON.stringify(image)}\n`,
+      )
+      .join("")
+  );
+}
+
 // Register before Local Setup's teardown. A cancelled Node subtest can settle
 // before its async body, so retain the actual operations until their work stops.
 export function ownFirstAgentWork(context) {
@@ -439,32 +459,18 @@ export async function localFirstAgentStack(context) {
     context.after(() => rm(policyFile, { force: true }));
     startupArguments.push("--sandbox-network-policy-file", policyFile);
   }
-  const buildRevision = environment.OCC_TEST_LOCAL_FIRST_AGENT_BUILD_REVISION;
-  if (buildRevision !== undefined) {
-    if (
-      controlPlane !== "compose" ||
-      !/^[a-f0-9]{40}$/.test(buildRevision) ||
-      !environment.BUILDX_BUILDER
-    ) {
-      throw new Error("Invalid prepared Compose build selection.");
+  const controllerImage = environment.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
+  if (controllerImage !== undefined) {
+    if (controlPlane !== "compose") {
+      throw new Error("Prepared controller images require the Compose control plane.");
     }
-    const buildFile = `${directory}-build.json`;
-    await writeFile(
-      buildFile,
-      JSON.stringify({
-        services: Object.fromEntries(
-          ["migrate", "bootstrap", "controller", "worker-kubernetes", "browser-proxy"].map(
-            (service) => [
-              service,
-              { build: { args: { SOURCE_DATE_EPOCH: "0", OCC_BUILD_REVISION: buildRevision } } },
-            ],
-          ),
-        ),
-      }),
-      { mode: 0o600, flag: "wx" },
-    );
-    context.after(() => rm(buildFile, { force: true }));
-    startupArguments.push("--", "-f", buildFile);
+    const imageFile = `${directory}-images.yaml`;
+    await writeFile(imageFile, firstAgentComposeImages(controllerImage), {
+      mode: 0o600,
+      flag: "wx",
+    });
+    context.after(() => rm(imageFile, { force: true }));
+    startupArguments.push("--", "-f", imageFile);
   }
   let initializationAttempted = false;
   context.after(async () => {

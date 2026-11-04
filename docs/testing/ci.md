@@ -347,13 +347,17 @@ database, routing setup, OpenShell installation, or Keycloak instance. The
 Kubernetes case selects the resulting immutable controller/runtime pair. The
 builder pushes cached layers directly to an owned loopback registry, without
 loading or recompressing the images in the host engine. Both profiles import the
-runtime from that registry. Compose warms its development target in the same
-builder with cache-only output; its controller is neither loaded during preparation
-nor published to the registry. With a selected runtime, Docker Compose overlaps
+runtime from that registry. Compose also selects the verified development controller
+by digest through a Compose override that removes inherited builds. All five
+controller-side services share this image; Compose pulls it once instead of
+rebuilding/loading per-service images. Cleanup removes only the recorded owned
+controller reference. This selection is test-only
+(`OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE`); local and setup-shard defaults
+still build the controller from the checkout. With a selected runtime, Docker Compose overlaps
 database/bootstrap work with cluster setup after creating its owned network.
 Kubernetes prepares OpenShell assets after image imports while network probes
-finish. Both profiles join preparation before starting the control plane; cold
-image builds remain serial. See the [development flow](../flows/docker-compose-development.md#4-start-and-clean-up-kubernetes-development).
+finish. Both profiles join preparation before starting the control plane. Local Setup
+keeps unselected controller/runtime source builds serial. See the [development flow](../flows/docker-compose-development.md#4-start-and-clean-up-kubernetes-development).
 Other files retain their lane preparation. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before

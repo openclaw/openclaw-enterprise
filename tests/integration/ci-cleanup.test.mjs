@@ -1393,11 +1393,19 @@ test("QA image cleanup reports an unavailable final inventory without inventing 
 // Test ownership decisions against Docker's inspect contract. The credentialed
 // first-Agent shards separately prove creation and removal of real resources.
 test("first-Agent registry cleanup refuses foreign ownership and replaced containers", async (t) => {
-  for (const scenario of ["owned", "foreign-container", "replaced-container", "foreign-owner"]) {
+  for (const scenario of [
+    "owned",
+    "absent-container",
+    "foreign-image",
+    "foreign-container",
+    "replaced-container",
+    "foreign-owner",
+  ]) {
     const root = await fixture(t);
     const prefix = "openclaw-ci-local-first-images-test";
     const name = "openclaw-ci-first-images-test";
     const containerId = "b".repeat(64);
+    const controllerImage = `127.0.0.1:5000/${name}/controller@sha256:${"d".repeat(64)}`;
     const log = join(root, "calls.jsonl");
     const container = {
       Id: scenario === "replaced-container" ? "c".repeat(64) : containerId,
@@ -1414,6 +1422,7 @@ test("first-Agent registry cleanup refuses foreign ownership and replaced contai
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (${JSON.stringify(scenario)} === 'absent-container' && args[0] === 'container' && args[1] === 'inspect') { console.error('No such container'); process.exit(1); }
 if (args[1] === 'inspect') { console.log(JSON.stringify([${JSON.stringify(container)}])); }
 else if (args[1] !== 'rm') { process.exit(99); }
 `,
@@ -1432,6 +1441,10 @@ else if (args[1] !== 'rm') { process.exit(99); }
           name,
           port: 5000,
           containerId,
+          controllerImage:
+            scenario === "foreign-image"
+              ? controllerImage.replace(name, "another-repository")
+              : controllerImage,
         },
       ],
     });
@@ -1442,12 +1455,13 @@ else if (args[1] !== 'rm') { process.exit(99); }
       }
       throw error;
     });
-    if (scenario === "owned") {
+    if (["owned", "absent-container"].includes(scenario)) {
       assert.equal(result.status, 0, result.stderr);
-      assert.match(calls, new RegExp(containerId));
       await assert.rejects(readFile(statePath), { code: "ENOENT" });
-      assert.ok(
+      assert.ok(calls.includes(JSON.stringify(["image", "rm", controllerImage])));
+      assert.equal(
         calls.includes(JSON.stringify(["container", "rm", "--force", "--volumes", containerId])),
+        scenario === "owned",
       );
     } else {
       assert.equal(result.status, 1, result.stderr);

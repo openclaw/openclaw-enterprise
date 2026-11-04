@@ -1247,7 +1247,6 @@ async function buildRuntimeImages(
     controllerTarget = "runtime",
     buildConcurrency,
     registryOutput,
-    cacheController = false,
   } = {},
 ) {
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
@@ -1426,16 +1425,14 @@ async function buildRuntimeImages(
     });
   }
   // Registry output reuses compressed cached layers directly, without loading
-  // and recompressing them through the host engine. Compose needs only its
-  // development leaf in the same builder's cache, not a published controller.
+  // and recompressing them through the host engine.
   for (const entry of builds) {
     if (registryOutput) {
-      entry.cacheOnly = cacheController && entry.role === "controller";
       entry.metadataFile = join(dirname(statePath), `first-agent-${entry.role}-build.json`);
       entry.args = [
         ...entry.args.slice(0, 2),
         "--output",
-        entry.cacheOnly ? "type=cacheonly" : "type=image,push=true,registry.insecure=true",
+        "type=image,push=true,registry.insecure=true",
         "--metadata-file",
         entry.metadataFile,
         ...entry.args.slice(2).filter((arg) => arg !== "--load"),
@@ -1450,21 +1447,12 @@ async function buildRuntimeImages(
     builds.map((entry) => async () => {
       if (registryOutput) {
         const result = await laneImageCommand(entry.role, entry.args);
-        firstAgentCacheObservation(
-          state,
-          entry.role,
-          entry.cacheOnly ? "cache-only" : "direct-publish",
-          result.stderr,
-        );
-        if (entry.cacheOnly) {
-          entry.env = {};
-        } else {
-          const metadata = JSON.parse(await readFile(entry.metadataFile, "utf8"));
-          const digest = metadata["containerimage.digest"];
-          const reference = `${entry.tag.slice(0, entry.tag.lastIndexOf(":"))}@${digest}`;
-          assertImmutableImageReference(reference, "first-Agent image export");
-          entry.env = Object.fromEntries(Object.keys(entry.env).map((name) => [name, reference]));
-        }
+        firstAgentCacheObservation(state, entry.role, "direct-publish", result.stderr);
+        const metadata = JSON.parse(await readFile(entry.metadataFile, "utf8"));
+        const digest = metadata["containerimage.digest"];
+        const reference = `${entry.tag.slice(0, entry.tag.lastIndexOf(":"))}@${digest}`;
+        assertImmutableImageReference(reference, "first-Agent image export");
+        entry.env = Object.fromEntries(Object.keys(entry.env).map((name) => [name, reference]));
         await rm(entry.metadataFile, { force: true });
       } else {
         // The warm job builds every step so its export has them all.
@@ -1550,14 +1538,13 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
       revision,
       controllerTarget: compose ? "development" : "runtime",
       registryOutput: `127.0.0.1:${port}/${registry.name}`,
-      cacheController: compose,
       // These two independent targets already share source/cache dependencies.
       // Keep the same two-build bound as ordinary image preparation.
       buildConcurrency: 2,
     }),
   );
   const selected = {
-    ...(compose ? {} : { controller: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE }),
+    controller: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
     runtime: built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
   };
   for (const reference of Object.values(selected)) {
@@ -1603,19 +1590,22 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
       throw new Error("First-Agent image does not match the checkout and runner platform.");
     }
   }
+  if (compose) {
+    // Record before Compose can pull it; cleanup removes only this owned digest.
+    registry.controllerImage = selected.controller;
+  }
   await markResourceReady(statePath, state, registry);
   env.NODE_BASE_IMAGE = nodeBaseImage;
   env.OCC_KUBERNETES_RUNTIME_IMAGE = selected.runtime;
   env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = selected.runtime;
   env.OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER = registry.name;
+  env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE = selected.controller;
   if (compose) {
-    // Compose builds the development target, whose leaf is not in the main
-    // runtime-target cache. Reuse this job's measured development build locally.
-    env.BUILDX_BUILDER = builder;
-    env.OCC_TEST_LOCAL_FIRST_AGENT_BUILD_REVISION = revision;
+    // Compose consumes the same verified development image for all five services.
+    // The default local/setup-shard path still builds from the checkout.
+    env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE = selected.controller;
   } else {
     env.OCC_DEVELOPMENT_CONTROLLER_IMAGE = selected.controller;
-    env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE = selected.controller;
   }
 }
 

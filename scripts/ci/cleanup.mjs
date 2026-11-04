@@ -471,6 +471,16 @@ async function cleanupFirstAgentImages(resource, state) {
   if (!Number.isInteger(resource.port) || resource.port < 1 || resource.port > 65535) {
     throw new Error("Invalid first-Agent image registry receipt.");
   }
+  if (resource.controllerImage !== undefined) {
+    const prefix = `127.0.0.1:${resource.port}/${resource.name}/controller@`;
+    if (
+      typeof resource.controllerImage !== "string" ||
+      !resource.controllerImage.startsWith(prefix) ||
+      !/^sha256:[a-f0-9]{64}$/.test(resource.controllerImage.slice(prefix.length))
+    ) {
+      throw new Error("Refusing to remove an unowned first-Agent controller image.");
+    }
+  }
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
   const inspect = async (kind, name) => {
     try {
@@ -491,6 +501,12 @@ async function cleanupFirstAgentImages(resource, state) {
     ) {
       throw new Error("First-Agent registry changed ownership.");
     }
+  }
+  if (resource.controllerImage && (await inspect("image", resource.controllerImage))) {
+    // Remove the exact owned reference, without forcing removal from live readers.
+    await execFile(docker, ["image", "rm", resource.controllerImage]);
+  }
+  if (container) {
     await execFile(docker, ["container", "rm", "--force", "--volumes", container.Id]);
   }
 }
