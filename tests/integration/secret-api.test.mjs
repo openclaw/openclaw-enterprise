@@ -802,6 +802,31 @@ test("Secret API denial and storage failures return value-free errors", async ()
   assert.equal(JSON.stringify(failingFixture.auditSink.events).includes(leakedBackendValue), false);
 });
 
+test("a direct codex_pat binding refuses an endpoint-authorized Secret", async () => {
+  const fixture = await createFixture();
+  const { namespace, configuration } = await bootstrapAgent(
+    fixture,
+    createHarnessConfiguration("codex", "gpt-5"),
+    "dedicated",
+  );
+  const endpoint = "https://models.example.test/v1";
+  const key = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "PAT key", value: "synthetic-pat-key", authorizedEndpoint: endpoint },
+  });
+  assert.equal(key.status, 201, JSON.stringify(key.body));
+  const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "direct-pat-agent",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "codex_pat", source: key.data.ref },
+    },
+  });
+  // The PAT binding carries no endpoint authorization, so the Secret metadata cannot match it.
+  assert.equal(created.status, 400, JSON.stringify(created.body));
+  assert.match(created.body.error.message, /does not authorize this endpoint/);
+});
+
 // These tests exercise API validation, Native IAM, OCC admission, and state ownership.
 // Passive Secret storage does not establish provider login or model execution proof.
 for (const [model, method, executionMode] of [
