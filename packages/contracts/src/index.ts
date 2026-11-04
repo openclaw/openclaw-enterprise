@@ -1115,6 +1115,16 @@ export interface AgentRevision extends Scope {
   readonly createdAt: string;
 }
 
+/** Minimal immutable admission receipt; contains no snapshot or caller intent. */
+export interface FirstDeploymentReceipt {
+  readonly revisionId: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly configurationId: string;
+  readonly configurationGeneration: number;
+  readonly createdAt: string;
+}
+
 export type AgentRevisionMetadata = Pick<
   AgentRevision,
   "id" | "namespaceId" | "agentId" | "revision" | "backendId" | "createdAt"

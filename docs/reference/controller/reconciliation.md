@@ -226,7 +226,10 @@ with `CONVERGENCE_DEADLINE_EXCEEDED`.
 For an intentional longer wait, configure the worker timeout before resuming
 (`worker.convergenceTimeoutMs` in Helm). It must cover the operation's total age
 plus remaining convergence time. The setting applies across that worker's
-Namespace and Agent deployment work; it cannot reopen terminal operations.
+Namespace and Agent deployment work and live SandboxPolicy applications.
+Extending it can delay `SANDBOX_POLICY_UNCONFIRMED`; the provider may already
+have applied the policy. Follow [SandboxPolicy recovery](../sandbox-policies.md#desired-and-applied-versions)
+for an unconfirmed outcome. The setting cannot reopen terminal operations.
 Restore the normal limit after affected work finishes.
 
 A runtime reporting a deterministic credential rejection fails deployment earlier with

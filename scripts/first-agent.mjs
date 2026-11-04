@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { privateOwned } from "./lib/private-owned-path.mjs";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
-import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mts";
 import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
 import { isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import {

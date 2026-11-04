@@ -182,26 +182,22 @@ installed native model-turn evidence.
 
 ## Protected launch packaging
 
-Historical protected-state fixtures still generate Installation and Helm inputs.
-For a retained packaging check, select the matching supplier chart through the test-only
-`OCC_TEST_OPENSHELL_CHART` and an installed Helm executable through `OCC_HELM_BIN`:
+The local protected-launch packaging recipe has been retired. The launcher no
+longer provisions the static-inference authority or its Gateway middleware.
+The independent loopback wire and production Kubernetes packaging checks remain:
 
 ```sh
-OCC_TEST_OPENSHELL_CHART=/absolute/supplier/deploy/helm/openshell \
-OCC_HELM_BIN=/absolute/bin/helm \
-GOEXPERIMENT=jsonv2 go test ./internal/occdev
 node --test --test-name-pattern='OpenShell mTLS|OpenShell service transport never' \
   tests/conformance/openshell-gateway-wire.test.mjs
 OCC_HELM_BIN=/absolute/bin/helm node --test --test-name-pattern='protected authority' \
   tests/integration/production-kubernetes-packaging.test.mjs
 ```
 
-The Go fixture checks controller configuration, credential projection, database
-selection, the generated certificate, and Helm rendering. It requests one worker
-only after successful Gateway rollout. The loopback gRPC cases check DNS and IP
-server identity, foreign-client refusal and absence of client credentials on the
-separate service transport. These checks do not establish cluster behavior,
-PostgreSQL execution, middleware negotiation or OpenShell role mapping.
+The loopback gRPC cases check DNS and IP server identity, foreign-client refusal
+and absence of client credentials on the separate service transport. The
+production packaging cases check the separately prepared authority configuration.
+These checks do not establish cluster behavior, PostgreSQL execution, middleware
+negotiation or OpenShell role mapping.
 
 Connected qualification additionally requires reviewed, revision-matched images,
 normal Agent admission, a disposable `openclaw_k8s_` database, and verified public
@@ -215,9 +211,10 @@ For upstream TLS, the supervisor uses its system CA bundle, regardless of
 Record both image digests and the CA fingerprint. Keep the CA private key out of
 images and Pods. Leave host trust and hostname verification intact.
 
-Recorded state may retain `server.hostGatewayIP` for `host.openshell.internal`.
-Verify reachability from the selected runtime, the exact certificate hostname,
-and admission of only the owned origin. Test recovery after Harness restart
+Old cleanup receipts may retain `openShellHostGatewayIP`; the launcher no longer
+applies it. For already-prepared installations using `server.hostGatewayIP` for
+`host.openshell.internal`, verify reachability from the selected runtime, the exact
+certificate hostname, and admission of only the owned origin. Test recovery after Harness restart
 separately. Packaging and loopback tests do not establish a connected model turn,
 supervisor enforcement or bypass prevention.
 

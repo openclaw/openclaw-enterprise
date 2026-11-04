@@ -405,6 +405,9 @@ const cacheDiagnostics: Validator = (value) =>
 // moderation, background execution) must echo their empty value. `billing` is not in that
 // model but is returned by the provider alongside the documented fields; it is declared
 // here with its observed shape rather than left to refuse every live response.
+// The image policy follows the Responses API response schema (2026-11-04):
+// https://developers.openai.com/api/reference/resources/responses/methods/create
+// Its effective policy excludes the request-only "auto" value.
 const response = object(
   {
     id: text,
@@ -449,6 +452,7 @@ const response = object(
     conversation: oneOf(null),
     prompt: oneOf(null),
     moderation: oneOf(null),
+    image: object({ context_compression: oneOf("enabled", "disabled") }),
     prompt_cache_key: nullable(text),
     prompt_cache_retention: nullable(text),
     prompt_cache_options: nullable(

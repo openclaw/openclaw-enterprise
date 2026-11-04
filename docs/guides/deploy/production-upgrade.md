@@ -382,8 +382,10 @@ workload inventories.
 [Verify production workloads](production-agents.md#verify-production-workloads)
 for each execution mode and provider in use. Require a fresh model response and
 check relevant channels, credentials, workspace data, and native UI access.
-If you retain conversations, reopen the test conversation on the new release,
-find the marker, and get a fresh reply there.
+For retained conversations, reopen the test conversation on the new release,
+find the marker and obtain a fresh reply.
+
+After promotion, [verify the served Console](../../release/container-promotion.md#verify-the-served-console).
 
 ## Recover from a partial failure
 

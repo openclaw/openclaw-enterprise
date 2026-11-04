@@ -1,3 +1,6 @@
+import { secretsScenarios } from "./scenario-groups/secrets.mts";
+import { signInScenarios } from "./scenario-groups/sign-in.mts";
+
 const draft =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=draft";
 const revision =
@@ -15,11 +18,6 @@ const soulVersion = (version) =>
   ).join("");
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
-const submitPassword = [
-  { selector: "#username", value: "operator@example.com" },
-  { selector: "#password", value: "demo-only" },
-  click("Sign in"),
-];
 const runtimeLogsPage = {
   group: "Pages/Agent detail",
   path: `${candidateVersion}&tab=logs`,
@@ -513,6 +511,8 @@ const devdayCreateCheckpoint = [
   { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
   click("Apply channel settings"),
   click("Create Agent"),
+  { text: "devday claw" },
+  { selector: '.agent-tabs button[role="tab"][aria-controls$="-deployment-panel"]', click: true },
   { selector: ".deployment-status" },
 ];
 const devdayAdminCheckpoint = [
@@ -528,260 +528,7 @@ const shareExistingPerson = [
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
 export const scenarios = {
-  secrets: {
-    group: "Pages/Secrets",
-    name: "Populated",
-    path: "/console/secrets",
-    description:
-      "The library shows names and IDs. The privacy notice explains why stored values are never returned. Simulated UI proof.",
-    steps: [
-      "Search by name or ID. Tab to a result and press Enter; its dialog names the Namespace and lists consumers.",
-      "Create a Secret with a dummy value, replace it, then delete it. Switch Namespace to inspect isolation in navigation.",
-    ],
-  },
-  secretsMobile: {
-    group: "Pages/Secrets",
-    name: "Mobile",
-    path: "/console/secrets",
-    mobile: true,
-    actions: [{ selector: "#secret-search", value: "sec_demo_model" }],
-    description:
-      "Compare the same 390 × 844 page with one search result, then with a list that scrolls.",
-    steps: [
-      "Open the one Secret, then Replace value. The top bar, dimmed page and sheet reach the right edge, with no empty strip. Press Escape without entering a value.",
-      "Clear Search Secrets, scroll to the last Secret and open it. The sheet reaches the available edge: beside a classic scrollbar, or under an overlay scrollbar. Escape returns focus to that Secret.",
-    ],
-  },
-  secretsSearch: {
-    group: "Pages/Secrets",
-    name: "No search matches",
-    path: "/console/secrets",
-    actions: [{ selector: '[aria-label="Search Secrets"]', value: "no-such-secret" }],
-    description: "Clear the search to see the Secrets in this Namespace again.",
-  },
-  secretsEmpty: {
-    group: "Pages/Secrets",
-    name: "Empty",
-    path: "/console/secrets",
-    emptySecrets: true,
-    description: "An authorized list without Secrets offers creation.",
-  },
-  secretsLoading: {
-    group: "Pages/Secrets",
-    name: "Loading",
-    path: "/console/secrets",
-    rules: [{ path: presetSecretsPath, hold: true }],
-    description: "Namespace admission succeeds while the Secret list is still loading.",
-  },
-  secretsUnavailable: {
-    group: "Pages/Secrets",
-    name: "Read unavailable",
-    path: "/console/secrets",
-    rules: [{ path: presetSecretsPath, status: 503 }],
-    description: "A failed Secret collection read shows recovery, with no stale rows.",
-  },
-  secretsNoNamespace: {
-    group: "Pages/Secrets",
-    name: "No readable Namespace",
-    path: "/console/secrets",
-    emptyNamespaces: true,
-    description: "Secret requests require an admitted Namespace selection.",
-  },
-  secretsNamespaceNotReady: {
-    group: "Pages/Secrets",
-    name: "Namespace provisioning",
-    path: "/console/secrets",
-    namespaceStatus: "provisioning",
-    description: "Metadata stays readable; creation and replacement wait for Namespace readiness.",
-  },
-  secretsCreate: {
-    group: "Pages/Secrets",
-    name: "Create",
-    path: "/console/secrets",
-    actions: [click("Create Secret")],
-    description:
-      "The header identifies the Namespace. The form preserves whitespace and explains that you can replace a saved value but cannot retrieve it.",
-    steps: [
-      "Enter a name and a dummy value. Use Show value beside the Value label, then hide it again.",
-      "Press Enter from Secret name to submit. After the save, Close is the only dialog action.",
-    ],
-  },
-  secretsMissingValue: {
-    group: "Pages/Secrets",
-    name: "Missing value",
-    path: "/console/secrets",
-    actions: [
-      click("Create Secret"),
-      { selector: "#secret-name", value: "Team API key" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description: "Required-value errors remain beside their field; no request is sent.",
-  },
-  secretsCreateNotPermitted: {
-    group: "Pages/Secrets",
-    name: "Create not permitted",
-    path: "/console/secrets",
-    secretCreateNotPermitted: true,
-    description:
-      "The caller's access does not include Secret creation. Create Secret is disabled and the note under the toolbar names the reason.",
-    steps: [
-      "Tab to Create Secret. It takes focus and looks unavailable, a screen reader names the note as its description, and Enter, Space or a click opens nothing.",
-    ],
-  },
-  secretsCreateDenied: {
-    group: "Pages/Secrets",
-    name: "Create denied",
-    path: "/console/secrets",
-    denySecretCreate: true,
-    actions: [
-      click("Create Secret"),
-      { selector: "#secret-name", value: "Team API key" },
-      { selector: "#secret-value", value: "synthetic-story-value" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
-    steps: [
-      "Tab to Secret name, Show value, Value and Create Secret. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing and the value stays masked (finding 2935).",
-      "Close the dialog. The page's Create Secret looks unavailable, described by the note under the toolbar that asks to select Refresh after access changes.",
-    ],
-  },
-  secretsUnknownSave: {
-    group: "Pages/Secrets",
-    name: "Unknown save outcome",
-    path: "/console/secrets",
-    rules: [{ path: presetSecretsPath, method: "POST", bodyError: true }],
-    actions: [
-      click("Create Secret"),
-      { selector: "#secret-name", value: "Team API key" },
-      { selector: "#secret-value", value: "synthetic-story-value" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "An unreadable reply leaves an amber warning that the outcome is unknown. The value is erased and this dialog cannot resubmit.",
-  },
-  secretsConsumers: {
-    group: "Pages/Secrets",
-    name: "Consumers and restricted references",
-    path: "/console/secrets",
-    secretConsumers: {
-      agents: [
-        "agt_00000000-0000-4000-8000-000000000001",
-        "agt_00000000-0000-4000-8000-000000000099",
-      ],
-      configurations: ["cfg_00000000-0000-4000-8000-000000000001"],
-      credentialSources: [],
-      provisioningRequests: [],
-      unreadable: 2,
-      truncated: true,
-    },
-    actions: [click("Demo model API key (simulated)")],
-    description:
-      "The readable Agent keeps its link. A previously listed Agent shows no identity or link and asks you to reopen the Secret to check again. Hidden count, incomplete-list warning and disabled deletion remain. Simulated UI proof.",
-  },
-  secretsReadOnly: {
-    group: "Pages/Secrets",
-    name: "Read only for this caller",
-    path: "/console/secrets",
-    secretCallerPermissions: { update: false, delete: false },
-    secretConsumers: {
-      agents: ["agt_00000000-0000-4000-8000-000000000001"],
-      configurations: [],
-      credentialSources: [],
-      provisioningRequests: [],
-      unreadable: 0,
-      truncated: false,
-    },
-    actions: [click("Demo model API key (simulated)")],
-    description:
-      "The Secret read says this caller may neither replace nor delete the Secret. Both buttons are disabled before any typing, and each names its reason. Consumers name the Agent, with its ID beside it. Simulated UI proof.",
-    steps: [
-      "Tab to Replace value and Delete Secret. Each takes focus and looks unavailable. Replace value is described by its note; Delete Secret by the blocked-deletion sentence and its note. Enter, Space or a click opens nothing.",
-    ],
-    gap: "The answer is advisory. The controller still authorizes each write.",
-  },
-  secretsLinkUnlisted: {
-    group: "Pages/Secrets",
-    name: "Link to an unlisted Secret",
-    path: "/console/secrets?secret=sec_not_listed",
-    description:
-      "A link to a Secret the readable list leaves out opens no dialog. For a member, a note says it may not exist or the caller may not read it, and who grants read. This simulated caller administers the Installation, so the note says only that no such Secret is in the readable list. Nothing reads the Secret.",
-  },
-  secretsReplace: {
-    group: "Pages/Secrets",
-    name: "Replace value",
-    path: "/console/secrets",
-    actions: [click("Demo model API key (simulated)"), click("Replace value")],
-    description:
-      "Replacement preserves the reference and explains deployment and CredentialSource handoff. Existing values are never loaded.",
-  },
-  secretsReplaceDenied: {
-    group: "Pages/Secrets",
-    name: "Replace denied",
-    path: "/console/secrets",
-    rules: [{ suffix: "/secrets/sec_demo_model", method: "PATCH", status: 403, code: "FORBIDDEN" }],
-    actions: [
-      click("Demo model API key (simulated)"),
-      click("Replace value"),
-      { selector: "#secret-value", value: "synthetic-story-value" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description: "A denied replacement clears the value, disables editing, and focuses Close.",
-  },
-  secretsDelete: {
-    group: "Pages/Secrets",
-    name: "Delete confirmation",
-    path: "/console/secrets",
-    actions: [click("Demo model API key (simulated)"), click("Delete Secret")],
-    description:
-      "Permanent storage deletion requires confirmation and explains upstream revocation and previously delivered values.",
-  },
-  secretsDeleteConflict: {
-    group: "Pages/Secrets",
-    name: "Concurrent reference conflict",
-    path: "/console/secrets",
-    rules: [
-      {
-        suffix: "/secrets/sec_demo_model",
-        method: "DELETE",
-        status: 409,
-        code: "RESOURCE_CONFLICT",
-        message:
-          "The Secret is still referenced by Agent agt_00000000-0000-4000-8000-000000000001. Remove those references first.",
-      },
-    ],
-    actions: [
-      click("Demo model API key (simulated)"),
-      click("Delete Secret"),
-      click("Permanently delete Secret"),
-    ],
-    description:
-      "A newly added reference can refuse deletion after the detail read. Reopen the detail to inspect current consumers.",
-    steps: [
-      "Tab to Permanently delete Secret. It takes focus and looks unavailable, described by the refusal; Enter, Space or a click sends nothing (finding 2935).",
-    ],
-  },
-  secretsDeletionUnconfirmed: {
-    group: "Pages/Secrets",
-    name: "Deletion could not be confirmed",
-    path: "/console/secrets",
-    rules: [
-      { suffix: "/secrets/sec_demo_model", method: "DELETE", bodyError: true },
-      {
-        suffix: "/secrets/sec_demo_model",
-        skip: 1,
-        data: { id: "sec_different", name: "Different Secret (simulated)" },
-      },
-    ],
-    actions: [
-      click("Demo model API key (simulated)"),
-      click("Delete Secret"),
-      click("Permanently delete Secret"),
-      click("Check deletion status"),
-    ],
-    description:
-      "The delete response was lost, then the status check returned a different Secret. The dialog leaves the outcome unknown and offers no second Delete.",
-  },
+  ...secretsScenarios({ presetSecretsPath, click }),
 
   runtimeImages: {
     group: "Pages/Navigation",
@@ -831,250 +578,7 @@ export const scenarios = {
       "Browse pages, component states, and guided Agent workflows. Every preview mounts the production console modules and styles in its own frame. Reset story discards all local changes.",
     gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. Namespace provisioning, Preset management, and experimental Backend setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
   },
-  login: {
-    group: "Pages/Sign in",
-    name: "Signed out",
-    path: "/console/login",
-    signedOut: true,
-    buildRevision: "1234567890abcdef1234567890abcdef12345678",
-    description:
-      "The email and password form, and a footer naming the build. Any nonempty demo email/password signs into this fixture.",
-  },
-  githubLogin: {
-    group: "Pages/Sign in",
-    name: "GitHub enabled",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    description:
-      "Provider discovery adds Continue with GitHub beside the password form. Clicking it demonstrates an unavailable provider; this fixture never navigates to GitHub.",
-    steps: [
-      "Check the GitHub icon and label, then select the button to see the unavailable message.",
-    ],
-    gap: "An administrator must attach the numeric GitHub identity to an existing account through the API. Enrollment, account creation, and recovery administration have no console controls. OAuth navigation and session issuance require backend verification.",
-  },
-  githubUnavailable: {
-    group: "Pages/Sign in",
-    name: "GitHub unavailable",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    actions: [click("Continue with GitHub")],
-    description: "A failed GitHub start leaves password sign-in and a deliberate retry available.",
-  },
-  githubRateLimited: {
-    group: "Pages/Sign in",
-    name: "GitHub rate limited",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    rules: [{ path: "/api/auth/providers/github/start", method: "POST", status: 429 }],
-    actions: [click("Continue with GitHub")],
-    description: "Admission refusal asks the user to wait without automatically retrying.",
-  },
-  recoveryOnlyLogin: {
-    group: "Pages/Sign in",
-    name: "Recovery-only password",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    googleEnabled: true,
-    passwordRecoveryOnly: true,
-    description:
-      "With OCC_AUTH_PASSWORD_SIGN_IN=recovery-only, ordinary accounts continue with GitHub or Google. The password form stays behind Recovery sign-in for the recovery account.",
-  },
-  recoveryOnlyForm: {
-    group: "Pages/Sign in",
-    name: "Recovery sign-in form",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    passwordRecoveryOnly: true,
-    rules: [{ path: "/api/auth/sign-in/email", method: "POST", status: 401 }],
-    actions: [
-      click("Recovery sign-in"),
-      { selector: "#username", value: "member@example.com" },
-      { selector: "#password", value: "demo-only" },
-      click("Sign in"),
-    ],
-    description:
-      "Recovery sign-in reveals the password form. A refused password explains that only the recovery account can use one.",
-  },
-  recoveryOnlyCallbackRejected: {
-    group: "Pages/Sign in",
-    name: "Recovery-only GitHub callback rejected",
-    path: "/console/?authError=github",
-    signedOut: true,
-    githubEnabled: true,
-    passwordRecoveryOnly: true,
-    description:
-      "Without a password to fall back on, a rejected callback points the user to an administrator.",
-  },
-  githubCallbackRejected: {
-    group: "Pages/Sign in",
-    name: "GitHub callback rejected",
-    path: "/console/?authError=github",
-    signedOut: true,
-    githubEnabled: true,
-    description:
-      "A rejected callback shows the generic sign-in error and keeps password recovery available.",
-  },
-  githubResultRejected: {
-    group: "Pages/Sign in",
-    name: "GitHub result not confirmed",
-    path: "/console/",
-    pendingGithubAttempt: true,
-    githubEnabled: true,
-    rules: [{ path: "/api/auth/providers/github/result", method: "POST", status: 401 }],
-    description:
-      "The tab that started GitHub sign-in could not confirm that the current session is the one its attempt created, so it shows the sign-in error instead of adopting that session.",
-  },
-  googleLogin: {
-    group: "Pages/Sign in",
-    name: "Google enabled",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    googleEnabled: true,
-    description:
-      "Provider discovery adds Continue with Google beside the password form and any other configured provider. Clicking it demonstrates an unavailable provider; this fixture never navigates to Google.",
-    steps: [
-      "Check the Google and GitHub icons and labels, then select either button to see the unavailable message.",
-    ],
-    gap: "An administrator must attach the Google subject identifier to an existing account through the API. Email addresses never match an account. OAuth navigation and session issuance require backend verification.",
-  },
-  googleUnavailable: {
-    group: "Pages/Sign in",
-    name: "Google unavailable",
-    path: "/console/login",
-    signedOut: true,
-    googleEnabled: true,
-    actions: [click("Continue with Google")],
-    description: "A failed Google start leaves password sign-in and a deliberate retry available.",
-  },
-  googleCallbackRejected: {
-    group: "Pages/Sign in",
-    name: "Google callback rejected",
-    path: "/console/?authError=google",
-    signedOut: true,
-    googleEnabled: true,
-    description:
-      "A rejected Google callback shows the generic sign-in error and keeps password recovery available.",
-  },
-  googleAccountDisabled: {
-    group: "Pages/Sign in",
-    name: "Google account disabled",
-    path: "/console/?authError=google&authReason=account-disabled",
-    signedOut: true,
-    googleEnabled: true,
-    description:
-      "Google authenticated an identity attached to a disabled account, so the page says the account is disabled and names an administrator, not a retry, password or identity attach.",
-  },
-  recoveryOnlyAccountDisabled: {
-    group: "Pages/Sign in",
-    name: "Recovery-only account disabled",
-    path: "/console/?authError=github&authReason=account-disabled",
-    signedOut: true,
-    githubEnabled: true,
-    passwordRecoveryOnly: true,
-    description:
-      "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
-  },
-  recoveryOnlyProviderUnavailable: {
-    group: "Pages/Sign in",
-    name: "Recovery-only provider outage",
-    path: "/console/?authError=github&authReason=provider-unavailable",
-    signedOut: true,
-    githubEnabled: true,
-    passwordRecoveryOnly: true,
-    description:
-      "The provider could not answer or refused the client, so the page says sign-in is unavailable right now and points administrators to Recovery sign-in, not to an identity attach.",
-  },
-  googleResultRejected: {
-    group: "Pages/Sign in",
-    name: "Google result not confirmed",
-    path: "/console/",
-    pendingGoogleAttempt: true,
-    googleEnabled: true,
-    rules: [{ path: "/api/auth/providers/google/result", method: "POST", status: 401 }],
-    description:
-      "The tab that started Google sign-in could not confirm that the current session is the one its attempt created, so it shows the sign-in error instead of adopting that session.",
-  },
-  providerDiscoveryUnavailable: {
-    group: "Pages/Sign in",
-    name: "Provider discovery unavailable",
-    path: "/console/login",
-    signedOut: true,
-    rules: [{ path: "/api/auth/providers", status: 503 }],
-    description:
-      "Failed provider discovery leaves the password form usable without provider buttons.",
-  },
-  loginError: {
-    group: "Pages/Sign in",
-    name: "Invalid credentials",
-    path: "/console/login",
-    signedOut: true,
-    rules: [{ path: "/api/auth/sign-in/email", method: "POST", status: 401 }],
-    actions: submitPassword,
-    description: "A rejected sign-in leaves the form available for retry.",
-  },
-  passwordSignInUnconfirmed: {
-    group: "Pages/Sign in",
-    name: "Password sign-in unconfirmed",
-    path: "/console/login",
-    signedOut: true,
-    rules: [{ path: "/api/auth/sign-in/email", method: "POST", bodyError: true }],
-    actions: submitPassword,
-    description:
-      "An interrupted password response leaves the result unknown. Reload to check the session before entering the password again.",
-  },
-  expired: {
-    group: "Pages/Sign in",
-    name: "Session expired",
-    path: draft,
-    signedOut: true,
-    expiredSession: true,
-    description:
-      "A protected deep link in a tab whose session expired says so, redirects to sign-in and retains the return destination.",
-    steps: [
-      "Sign in with the fixture credentials and confirm the Agent draft page returns.",
-      "Confirm no draft is saved or deployment started by signing in.",
-    ],
-  },
-  firstVisit: {
-    group: "Pages/Sign in",
-    name: "Deep link, first visit",
-    path: draft,
-    signedOut: true,
-    description:
-      "A first visit to a protected deep link asks to sign in without saying a session expired, and retains the return destination.",
-    steps: ["Sign in with the fixture credentials and confirm the Agent draft page returns."],
-  },
-  sessionUnavailable: {
-    group: "Pages/Sign in",
-    name: "Session unavailable",
-    rules: [{ path: "/api/auth/session", status: 503 }],
-    description: "The console cannot verify the session. Private data stays hidden.",
-  },
-  loading: {
-    group: "Pages/Sign in",
-    name: "Checking session",
-    rules: [{ path: "/api/auth/session", hold: true }],
-    description:
-      "Reload with the entry script throttled: “Loading OpenClaw Enterprise…” appears before it runs, then becomes “Checking session…” in the same place.",
-    steps: [
-      "Check that neither console navigation nor a sign-in form appears while the session is unknown.",
-      "Wait for Session unavailable, then choose Retry to repeat the check.",
-    ],
-  },
-  logoutFailure: {
-    group: "Pages/Sign in",
-    name: "Sign-out unconfirmed",
-    rules: [{ path: "/api/auth/sign-out", method: "POST", status: 503 }],
-    actions: [...account, click("Sign out")],
-    description:
-      "Failed sign-out with a still-active session hides private content until revocation can be confirmed.",
-  },
+  ...signInScenarios({ draft, click, account }),
   agents: {
     group: "Pages/Agents",
     name: "Populated",
@@ -6339,6 +5843,30 @@ export const scenarios = {
       "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
     ],
   },
+  deploymentCompletionFocus: {
+    group: "Pages/Agent detail",
+    name: "Diagnostics focus when deployment completes",
+    path: `${candidateVersion}&tab=deployment`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // Give the reader time to position the focused button before the terminal poll answers.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        delayMs: 12000,
+      },
+    ],
+    description:
+      "The automatic poll records a simulated completion and opens Deployment details. The focused diagnostics button stays in view if it was visible before the update.",
+    steps: [
+      "Collapse Deployment details, then Tab to Run diagnostics for this version. Scroll up just enough to put the entire focused button near the bottom edge of the viewport.",
+      "Wait for the recorded status to read Completed. The details open and the same button stays focused and fully in view. Repeat at desktop and phone widths.",
+      "At phone width, reload the preview and repeat, this time scrolling all the way to the top without changing focus. The details open on completion and the reader stays at the top with the focused button still offscreen.",
+    ],
+  },
   deploymentCompletesRereadFails: {
     group: "Pages/Agent detail",
     name: "New version completes, Agent reread fails",
@@ -9893,7 +9421,8 @@ export const scenarios = {
       { suffix: "/runtime", status: 403 },
       {
         suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
-        skip: 1,
+        // Keep the initial read and first Logs recheck denied.
+        skip: 2,
         once: true,
         data: { update: true, deploy: true, operate: true, delete: true },
       },
@@ -10387,7 +9916,7 @@ export const scenarios = {
   },
   devdayCreateCheckpoint: {
     group: "Flows",
-    name: "DevDay segment 1 checkpoint: deployed devday claw",
+    name: "DevDay segment 1 checkpoint: first deployment queued",
     path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
     agentName: "oceclaw",
     deployed: true,

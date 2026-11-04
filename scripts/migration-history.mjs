@@ -148,6 +148,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 25) {
     return "main";
   }
+  if (count === 65 && completedCount > 65) {
+    return "preAgentDeployIntent";
+  }
   if (count === completedCount) {
     return "completed";
   }

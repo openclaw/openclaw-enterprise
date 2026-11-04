@@ -710,3 +710,70 @@ test(
     assert.equal(iamAfter.bindings.length, iamBefore.bindings.length + 1);
   },
 );
+
+test(
+  "password-only logout waits for persisted revocation before clearing the session",
+  requiresPostgres,
+  async (context) => {
+    const observerPool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
+    const blocker = await observerPool.connect();
+    let app;
+    context.after(async () => {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+      await app?.close();
+      await observerPool.end();
+    });
+    const config = {
+      mode: "development",
+      host: "127.0.0.1",
+      databaseUrl,
+      authBaseURL: "http://127.0.0.1",
+      authSecret: "openclaw-postgres-local-auth-secret-minimum-32-bytes",
+    };
+    await ensureDevelopmentBootstrap(context, {
+      databaseUrl,
+      email: adminEmail,
+      password: adminPassword,
+      authSecret: config.authSecret,
+      authBaseURL: config.authBaseURL,
+      installationName: "PostgreSQL password logout",
+    });
+    const boundedDatabase = new URL(databaseUrl);
+    boundedDatabase.searchParams.set("options", "-c lock_timeout=100ms");
+    app = await composePostgresDevelopment(
+      { ...config, databaseUrl: boundedDatabase.toString() },
+      {
+        computeDriver: createDevelopmentComputeDriver(),
+        configurationDriver: createTestConfigurationDriver(),
+      },
+    );
+    const session = await signInToControllerApp(app, {
+      email: adminEmail,
+      password: adminPassword,
+    });
+
+    // The real database still permits session reads, but cannot complete deletion
+    // while another transaction holds its row. No authentication adapter is replaced.
+    await blocker.query("BEGIN");
+    const locked = await blocker.query(
+      `SELECT s.id FROM occ.session s JOIN occ."user" u ON u.id = s.user_id
+       WHERE u.email = $1 FOR UPDATE OF s`,
+      [adminEmail],
+    );
+    assert.ok(locked.rowCount > 0);
+    const refused = await injectJson(app, "POST", "/api/auth/sign-out", { session });
+    assertApiError(refused, 503, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(refused.headers["set-cookie"], undefined);
+    const retained = await injectJson(app, "GET", "/installation", { session });
+    assert.equal(retained.statusCode, 200, retained.body);
+
+    // A deliberate retry after storage recovers revokes the persisted session.
+    await blocker.query("ROLLBACK");
+    const completed = await injectJson(app, "POST", "/api/auth/sign-out", { session });
+    assert.equal(completed.statusCode, 200, completed.body);
+    assert.ok(completed.headers["set-cookie"]);
+    const revoked = await injectJson(app, "GET", "/installation", { session });
+    assertApiError(revoked, 401, "UNAUTHENTICATED");
+  },
+);

@@ -2574,4 +2574,13 @@ test("the checked-in suite index and manifests support test-only selection", asy
   const f = await fixture(t, ({ put }) => put(manifest.files[0].path, "// edited\n"), initial);
   const shallow = await shallowBootstrap(f);
   await settled([f.expectTests([lane]), shallow.expectTests([lane])]);
+  // The handoff proof must keep its real fixture lane and TypeScript check.
+  const handoff = await fixture(
+    t,
+    editTest("tests/integration/installation-handoff-k3d-real.test.ts"),
+    initial,
+  );
+  const handoffShallow = await shallowBootstrap(handoff);
+  const handoffLanes = ["checks-baseline-2", "k3d-fixture-configuration"];
+  await settled([handoff.expectTests(handoffLanes), handoffShallow.expectTests(handoffLanes)]);
 });

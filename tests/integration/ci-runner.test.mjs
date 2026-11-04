@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -642,6 +642,12 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
   ]);
+  const suiteSkip = summary.issues.find((entry) => entry.name === "skipped suite");
+  assert.equal(suiteSkip.file, "tests/integration/skips.test.mjs");
+  assert.equal(suiteSkip.source.file, suiteSkip.file);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.line) && suiteSkip.source.line > 0);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.column) && suiteSkip.source.column > 0);
+  assert.equal(suiteSkip.source.nesting, 0);
   // Every issue is named in the job log, which keeps every attempt.
   for (const line of [
     "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
@@ -650,6 +656,48 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected suite did not run its tests: skipped suite",
   ]) {
     assert.ok(selected.stderr.split("\n").includes(line), line);
+  }
+
+  // Filesystem traversal follows the symlink before '..'; lexical normalization
+  // instead points at the unrelated in-tree helper and must not supply a source.
+  const external = await temporaryDirectory(t, "ci-runner-source-");
+  await mkdir(join(external, "deep"));
+  await symlink(join(external, "deep"), join(root, "link"), "dir");
+  await writeFile(join(root, "helper.mjs"), "// Not the source of the skipped suite.\n");
+  await writeFile(
+    join(external, "helper.mjs"),
+    'describe("external skipped suite", { skip: true }, () => {});\n',
+  );
+  for (const filename of [`${root}/link/../helper.mjs`, "link/../helper.mjs"]) {
+    await writeFile(
+      join(root, "tests/integration/skips.test.mjs"),
+      [
+        'import { readFileSync } from "node:fs";',
+        'import { describe } from "node:test";',
+        'import { runInNewContext } from "node:vm";',
+        `const filename = ${JSON.stringify(filename)};`,
+        'runInNewContext(readFileSync(filename, "utf8"), { describe }, { filename });',
+      ].join("\n"),
+    );
+    const escaped = run(root, [
+      "run",
+      "lane",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/lane.jsonl",
+      "--results",
+      resultsPath,
+    ]);
+    const escapedSummary = JSON.parse(await readFile(resultsPath, "utf8"));
+    const escapedSkip = escapedSummary.issues.find(
+      (entry) => entry.name === "external skipped suite",
+    );
+    assert.equal(escaped.status, 1);
+    assert.equal(escapedSkip.code, "unexpected-skip");
+    assert.equal(escapedSkip.source, undefined, filename);
   }
 });
 
