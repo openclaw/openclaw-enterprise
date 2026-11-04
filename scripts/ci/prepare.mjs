@@ -835,6 +835,18 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   }
   assertImmutableEnvImages(prepare.immutableEnvImages ?? [], effectiveEnv);
   assertImmutableOptionalEnvImages(prepare.immutableOptionalEnvImages ?? [], effectiveEnv);
+  const runtimeImageInputs = [
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+  ];
+  if (
+    runtimeImageInputs.every((input) => prepare.immutableOptionalEnvImages?.includes(input)) &&
+    runtimeImageInputs.filter((input) => effectiveEnv[input]).length === 1
+  ) {
+    throw new Error(
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together; omit both to build the runtime images.",
+    );
+  }
   if (prepare.mode0600Env) {
     await requirePathMode0600(
       effectiveEnv[prepare.mode0600Env],
