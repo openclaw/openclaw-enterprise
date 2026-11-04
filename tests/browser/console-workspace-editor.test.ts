@@ -363,8 +363,8 @@ function checkedWorkspaceRevision(
 }
 
 // Opens the Workspace tab while the first of `count` versions serves. Each makeCurrent() selects
-// the next version for service and presses Refresh deployment, whose Agent read rereads the
-// Workspace files in place (finding 1836).
+// the next version for service. When it activates, the natural deployment poll reads the Agent
+// and rereads the Workspace files in place (finding 1836).
 async function openWorkspaceVersions(
   t: TestContext,
   name: string,
@@ -425,8 +425,7 @@ async function openWorkspaceVersions(
     filePath: (file: string) => `${agentPath}/workspace/files/${file}`,
     form: (file: string) =>
       page.locator("form").filter({ has: page.getByLabel(file, { exact: true }) }),
-    // keepFocus presses the button without moving focus to it, as the deployment poll reads.
-    async makeCurrent({ waitForPoll = true }: { waitForPoll?: boolean; keepFocus?: boolean } = {}) {
+    async makeCurrent({ waitForPoll = true }: { waitForPoll?: boolean } = {}) {
       await expectDeploymentOutcome(page, "Queued", { reveal: false });
       const nextRevision = versions[current + 1];
       const currentRevision = versions[current];
@@ -797,7 +796,7 @@ test("a Workspace reread keeps the caret and scroll of a focused, unedited edito
 
   // The next version serves different contents; the Agent read that rereads the file is started
   // without moving focus, as the deployment poll does.
-  await makeCurrent({ keepFocus: true });
+  await makeCurrent();
   await waitForInputValue(soul, after);
   await form("SOUL.md")
     .getByText("SOUL.md reloaded with its current contents.", { exact: true })
