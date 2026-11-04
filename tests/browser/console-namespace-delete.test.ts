@@ -377,13 +377,14 @@ test("a Namespace deletion confirmation opened during a background poll closes w
 test("returning to an unchanged Namespaces page reads each row's delete permission once", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
+  const firstNamespace = await fixture.createNamespace("First return", { ready: true });
   const namespaces = [
-    await fixture.createNamespace("First return", { ready: true }),
+    firstNamespace,
     await fixture.createNamespace("Second return", { ready: true }),
   ];
   const { page } = await newPage(t, fixture, { browser });
   await trackSettledFetches(page);
-  await login(page, fixture, `/console/namespaces?namespace=${namespaces[0].id}`);
+  await login(page, fixture, `/console/namespaces?namespace=${firstNamespace.id}`);
   const permissions = namespaces.map(({ id }) => `/namespaces/${id}/permissions`);
   const reads = () => Promise.all(permissions.map((path) => settledFetches(page, path)));
   for (const path of permissions) {

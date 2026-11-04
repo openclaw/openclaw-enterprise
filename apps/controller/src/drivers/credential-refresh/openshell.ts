@@ -14,6 +14,7 @@ import type {
   CredentialSourceBrowserAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
+import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 
@@ -336,7 +337,13 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   ): Promise<void> {
     this.requireBrowserSource(context);
     const state = browserAuthorizationState(context.source.id, privateState, callback);
-    const clientSecret = await this.readClientSecret(request.clientRegistrationId, context.signal);
+    let clientSecret: string | undefined;
+    if (request.tokenEndpointAuthMethod !== "none") {
+      if (!request.secretRegistrationId) {
+        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+      }
+      clientSecret = await this.readClientSecret(request.secretRegistrationId, context.signal);
+    }
     const grant = await exchangeAuthorizationCode(
       request,
       state.verifier,
@@ -465,7 +472,8 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     if (
       context.source.type !== "oauth2-refresh-token" ||
       context.source.namespaceId !== context.namespace.id ||
-      context.source.driverId !== this.backend.drivers.credential_gateway
+      context.source.ownerCapability !== "credential_refresh" ||
+      context.source.driverId !== this.id
     ) {
       throw new ScopeViolationError("Browser connections create oauth2-refresh-token sources.");
     }
@@ -554,7 +562,8 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     context: CredentialSourceContext,
   ): Promise<OpenShellProviderResponse | undefined> {
     if (
-      context.source.driverId !== this.backend.drivers.credential_gateway ||
+      context.source.ownerCapability !== "credential_refresh" ||
+      context.source.driverId !== this.id ||
       context.source.namespaceId !== context.namespace.id
     ) {
       throw new ScopeViolationError("The credential source is not owned by this gateway.");

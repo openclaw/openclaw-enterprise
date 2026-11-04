@@ -544,7 +544,7 @@ export interface OpenShellGatewayClient
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,
     signal: AbortSignal,
-    clearCredentialKey?: string,
+    clearCredentialKeys?: readonly string[],
   ): Promise<OpenShellProviderResponse>;
   /** Merges nonempty configuration into an existing provider with optimistic concurrency. */
   updateProviderConfig(
@@ -2245,11 +2245,13 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,
     signal: AbortSignal,
-    clearCredentialKey?: string,
+    clearCredentialKeys?: readonly string[],
   ): Promise<OpenShellProviderResponse> {
-    const clearing = clearCredentialKey !== undefined;
+    const clearing = clearCredentialKeys !== undefined;
     const validPayload = clearing
-      ? isNonEmptyString(clearCredentialKey) &&
+      ? clearCredentialKeys.length > 0 &&
+        clearCredentialKeys.every(isNonEmptyString) &&
+        new Set(clearCredentialKeys).size === clearCredentialKeys.length &&
         Object.keys(request.credentials).length === 0 &&
         Object.keys(request.credentialExpirationTimes ?? {}).length === 0
       : Object.keys(request.credentials).length > 0 &&
@@ -2269,7 +2271,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           },
           type: request.type,
           profile_workspace: request.workspace,
-          credentials: clearing ? { [clearCredentialKey]: "" } : { ...request.credentials },
+          credentials: clearing
+            ? Object.fromEntries(clearCredentialKeys.map((key) => [key, ""]))
+            : { ...request.credentials },
         },
         workspace_scope: { workspace: request.workspace },
         credential_expiration_times: Object.fromEntries(
@@ -2278,7 +2282,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
             timestampMessage(value),
           ]),
         ),
-        ...(clearing && { clear_credential_expiration_keys: [clearCredentialKey] }),
+        ...(clearing && { clear_credential_expiration_keys: clearCredentialKeys }),
         request_id: randomUUID(),
       },
       signal,

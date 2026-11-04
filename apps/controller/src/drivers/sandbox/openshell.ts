@@ -115,6 +115,7 @@ import type {
 import {
   isOpenShellProviderName,
   openShellProviderName,
+  revisionProviderSourceId,
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
@@ -2253,8 +2254,8 @@ function sandboxSpec(
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
   if (plugin) {
-    assertPluginNetworkInspection(defaults, plugin.hosts);
-    assertPluginNetworkInspection(additions, plugin.hosts);
+    assertPluginNetworkInspection(defaults, plugin.hosts, plugin.binaries);
+    assertPluginNetworkInspection(additions, plugin.hosts, plugin.binaries);
     if (Object.hasOwn(defaults, "oce-google-requests")) {
       throw new OpenShellSandboxConfigurationFailure(
         "The Google plugin network rule name is reserved.",
@@ -4582,7 +4583,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (
         binding &&
         Array.isArray(sandbox.spec?.providers) &&
-        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+        sandbox.spec.providers.includes(
+          openShellProviderName(revisionProviderSourceId(context.revision, binding.sourceId)),
+        )
       ) {
         throw new SandboxNetworkPolicyConflictError(
           "The attached Google account requires its admitted request guard.",
@@ -4598,7 +4601,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       } else if (
         binding &&
         Array.isArray(sandbox.spec?.providers) &&
-        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+        sandbox.spec.providers.includes(
+          openShellProviderName(revisionProviderSourceId(context.revision, binding.sourceId)),
+        )
       ) {
         throw new SandboxNetworkPolicyConflictError(
           "The managed MCP route differs from the admitted revision.",

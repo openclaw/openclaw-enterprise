@@ -1116,11 +1116,17 @@ function renderAgentForm(
   );
   const toggleModel = button("Enter model ID manually", () => {
     if (manualModel) {
-      resetModelChoices(false, model.value);
+      if (!resetModelChoices(false, model.value)) {
+        return;
+      }
     } else {
+      const values = readModelConfiguration();
+      if (values === "invalid-allow") {
+        return;
+      }
       manualModel = true;
       modelChoice.value = "";
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
       updateControls();
     }
     (manualModel ? model : modelChoice).focus();
@@ -1137,7 +1143,14 @@ function renderAgentForm(
     ...(useModelChoices ? [choiceField, toggleModel] : []),
     modelField,
   );
-  function resetModelChoices(resetTransport = false, selectedModel = "") {
+  function resetModelChoices(
+    resetTransport = false,
+    selectedModel = "",
+    values = readModelConfiguration(),
+  ) {
+    if (values === "invalid-allow") {
+      return false;
+    }
     manualModel = !useModelChoices;
     model.value = modelChoices().includes(selectedModel) ? selectedModel : "";
     modelChoice.replaceChildren(
@@ -1145,14 +1158,21 @@ function renderAgentForm(
       ...modelChoices().map((id) => element("option", { value: id }, id)),
     );
     modelChoice.value = model.value;
-    updateModelConfiguration(resetTransport);
+    updateModelConfiguration(resetTransport, values);
     updateControls();
+    return true;
   }
   if (useModelChoices) {
     modelChoice.addEventListener("change", () => {
+      const values = readModelConfiguration();
+      if (values === "invalid-allow") {
+        // The native select has already changed; keep the last applied choice visible.
+        modelChoice.value = model.value;
+        return;
+      }
       manualModel = false;
       model.value = modelChoice.value;
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
     });
   }
   const modelCredentialPicker = createSecretReferenceField({
@@ -1350,9 +1370,30 @@ function renderAgentForm(
     feedback.textContent = "";
     renderChannelEditor();
   });
-  function updateModelConfiguration(resetTransport = false) {
+  function readModelConfiguration(
+    targetHarness = harness.value,
+  ): LaunchValues | "invalid-json" | "invalid-allow" {
     const values = parseObject(configuration);
+    // Keep the existing control transitions for invalid JSON; only the merge is skipped.
     if (values === undefined) {
+      return "invalid-json";
+    }
+    // Only the Codex template merges this field. Do not validate unrelated draft settings.
+    if (targetHarness !== "codex" || !Object.hasOwn(values.plugins ?? {}, "allow")) {
+      return values;
+    }
+    const allow = values.plugins?.allow;
+    if (Array.isArray(allow) && allow.every((id) => typeof id === "string")) {
+      return values;
+    }
+    configurationError.show(
+      'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+    );
+    focusConfiguration();
+    return "invalid-allow";
+  }
+  function updateModelConfiguration(resetTransport = false, values = readModelConfiguration()) {
+    if (typeof values === "string") {
       return;
     }
     retainPendingModel(values);
@@ -1559,24 +1600,41 @@ function renderAgentForm(
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
-    harness.value =
+    const targetHarness =
       nativeProvider.value === "anthropic" || binding?.method === "runtime" ? "openclaw" : "codex";
+    const values = readModelConfiguration(targetHarness);
+    if (values === "invalid-allow") {
+      // The native select changed before preflight; retain the last applied provider.
+      nativeProvider.value = appliedProvider;
+      return;
+    }
+    appliedProvider = nativeProvider.value;
+    harness.value = targetHarness;
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     clearModelCredential();
     if (!binding) {
       authMethod.value = "api_key";
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
   });
   authMethod.addEventListener("change", () => {
     clearModelCredential();
-    resetModelChoices();
+    if (!resetModelChoices()) {
+      // The authentication choice still applies when the Configuration merge is blocked.
+      updateControls();
+    }
   });
   model.addEventListener("change", () => updateModelConfiguration());
   harness.addEventListener("change", () => {
+    const values = readModelConfiguration();
+    if (values === "invalid-allow") {
+      // Only Codex merges the allowlist; the other harness choice was OpenClaw.
+      harness.value = "openclaw";
+      return;
+    }
     // Embedded is OpenClaw's default because dedicated OpenClaw needs a provisioning
     // Sandbox Driver; operators opt into it through Execution mode. An Installation that
     // refuses Embedded preselects Dedicated when it accepts that (#2670).
@@ -1590,9 +1648,9 @@ function renderAgentForm(
     ) {
       authMethod.value = "api_key";
       clearModelCredential();
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
     updateControls();
   });
@@ -1647,6 +1705,7 @@ function renderAgentForm(
           clearModelCredential();
         }
         nativeProvider.value = selectedProvider;
+        appliedProvider = selectedProvider;
         if (selectedProvider === "anthropic") {
           harness.value = "openclaw";
           mode.value = "embedded";
@@ -2297,6 +2356,7 @@ function renderAgentForm(
       input.value = value;
     }
   }
+  let appliedProvider = nativeProvider.value;
   manualModel = draft.manualModel ?? manualModel;
   // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
   // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.

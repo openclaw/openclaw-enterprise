@@ -1,28 +1,29 @@
-import type {
-  AuditEvent,
-  ConnectionTemplate,
-  OccApiOperationId,
-} from "@openclaw-enterprise/contracts";
+import type { AuditEvent, OAuthClient, OccApiOperationId } from "@openclaw-enterprise/contracts";
 import type {
   CreateConnectionTemplateInput,
+  CreateOAuthClientInput,
   OpenClawController,
+  PlatformUnitOfWork,
   UpdateConnectionTemplateInput,
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-function present(template: Readonly<ConnectionTemplate>) {
-  const { templateId: _templateId, ...current } = template.current;
-  return {
-    id: template.id,
-    namespaceId: template.namespaceId,
-    displayName: template.displayName,
-    createdAt: template.createdAt,
-    current,
-  };
+import type { discoverMcpAuthorization } from "../connections/mcp-discovery.ts";
+
+function presentClient(client: OAuthClient) {
+  const {
+    secretRegistrationId: _secret,
+    credentialRefreshDriverId: _driver,
+    ...publicClient
+  } = client;
+  return publicClient;
 }
 
 type TemplateHandler = (input: {
   controller: OpenClawController;
+  meta: { requestId: string; redirectUri?: string };
+  holdSession?: (state: PlatformUnitOfWork) => Promise<void>;
+  discover: typeof discoverMcpAuthorization;
   actorId: string;
   request: FastifyRequest;
   reply: FastifyReply;
@@ -30,51 +31,129 @@ type TemplateHandler = (input: {
 }) => Promise<void>;
 
 export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, TemplateHandler>> = {
-  async listConnectionTemplates({ controller, actorId, request, reply }) {
+  async listConnectionTemplates({ meta, controller, actorId, reply }) {
     const templates = await controller.listConnectionTemplates(actorId);
-    reply.send({ data: templates.map(present), meta: { requestId: request.id } });
+    reply.send({ data: templates, meta });
   },
-  async createConnectionTemplate({ controller, actorId, request, reply, mutationEvent }) {
+  async createConnectionTemplate({
+    holdSession,
+    meta,
+    discover,
+    controller,
+    actorId,
+    request,
+    reply,
+    mutationEvent,
+  }) {
     const created = await controller.createConnectionTemplate(
       actorId,
       request.body as CreateConnectionTemplateInput,
+      discover,
       mutationEvent,
+      holdSession,
     );
-    reply.status(201).send({ data: present(created), meta: { requestId: request.id } });
+    reply.status(201).send({ data: created, meta });
   },
-  async getConnectionTemplate({ controller, actorId, request, reply }) {
+  async getConnectionTemplate({ meta, controller, actorId, request, reply }) {
     const { connectionTemplateId } = request.params as { connectionTemplateId: string };
     const template = await controller.getConnectionTemplate(actorId, connectionTemplateId);
-    reply.send({ data: present(template), meta: { requestId: request.id } });
+    reply.send({ data: template, meta });
   },
-  async updateConnectionTemplate({ controller, actorId, request, reply, mutationEvent }) {
+  async updateConnectionTemplate({
+    holdSession,
+    meta,
+    discover,
+    controller,
+    actorId,
+    request,
+    reply,
+    mutationEvent,
+  }) {
     const { connectionTemplateId } = request.params as { connectionTemplateId: string };
     const updated = await controller.updateConnectionTemplate(
       actorId,
       connectionTemplateId,
       request.body as UpdateConnectionTemplateInput,
+      discover,
       mutationEvent(connectionTemplateId),
+      holdSession,
     );
-    reply.send({ data: present(updated), meta: { requestId: request.id } });
+    reply.send({ data: updated, meta });
   },
-  async deleteConnectionTemplate({ controller, actorId, request, reply, mutationEvent }) {
+  async deleteConnectionTemplate({
+    holdSession,
+    controller,
+    actorId,
+    request,
+    reply,
+    mutationEvent,
+  }) {
     const { connectionTemplateId } = request.params as { connectionTemplateId: string };
     await controller.deleteConnectionTemplate(
       actorId,
       connectionTemplateId,
       mutationEvent(connectionTemplateId),
+      holdSession,
     );
     reply.status(204).send();
   },
-  async rotateConnectionClientSecret({ controller, actorId, request, reply, mutationEvent }) {
-    const { connectionTemplateId } = request.params as { connectionTemplateId: string };
-    const { clientSecret } = request.body as { clientSecret: string };
-    const template = await controller.rotateConnectionClientSecret(
+  async discoverConnectionTemplate({ meta, discover, controller, actorId, request, reply }) {
+    const data = await controller.discoverConnectionTemplate(
       actorId,
-      connectionTemplateId,
-      clientSecret,
-      mutationEvent(connectionTemplateId),
+      request.body as { serverUrl: string; issuer?: string },
+      discover,
     );
-    reply.send({ data: present(template), meta: { requestId: request.id } });
+    reply.send({ data, meta });
+  },
+  async listOAuthClients({ meta, controller, actorId, reply }) {
+    const clients = await controller.listOAuthClients(actorId);
+    reply.send({ data: clients.map(presentClient), meta });
+  },
+  async createOAuthClient({
+    holdSession,
+    meta,
+    controller,
+    actorId,
+    request,
+    reply,
+    mutationEvent,
+  }) {
+    const client = await controller.createOAuthClient(
+      actorId,
+      request.body as CreateOAuthClientInput,
+      mutationEvent,
+      holdSession,
+    );
+    reply.status(201).send({ data: presentClient(client), meta });
+  },
+  async rotateOAuthClientSecret({
+    holdSession,
+    meta,
+    controller,
+    actorId,
+    request,
+    reply,
+    mutationEvent,
+  }) {
+    const { oauthClientId } = request.params as { oauthClientId: string };
+    const { clientSecret } = request.body as { clientSecret: string };
+    const client = await controller.rotateOAuthClientSecret(
+      actorId,
+      oauthClientId,
+      clientSecret,
+      mutationEvent(oauthClientId),
+      holdSession,
+    );
+    reply.send({ data: presentClient(client), meta });
+  },
+  async deleteOAuthClient({ holdSession, controller, actorId, request, reply, mutationEvent }) {
+    const { oauthClientId } = request.params as { oauthClientId: string };
+    await controller.deleteOAuthClient(
+      actorId,
+      oauthClientId,
+      mutationEvent(oauthClientId),
+      holdSession,
+    );
+    reply.status(204).send();
   },
 };

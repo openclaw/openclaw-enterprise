@@ -1,9 +1,7 @@
 import type { PluginFieldsOptions } from "/console/agents/plugin-fields.mjs";
 import type { StoryAction } from "../story-action.mts";
-import { scenarios } from "./scenarios.mjs";
-import { installFixture } from "./fixtures.mjs";
-import type { createConfigurationStore } from "./configuration-store.mts";
-import type { createAgentRoutes } from "./create-agent-routes.mts";
+import { scenarios } from "./scenarios.mts";
+import { installFixture } from "./fixtures.mts";
 
 interface FrameScenarioBase {
   name: string;
@@ -15,14 +13,13 @@ interface FrameScenarioBase {
 }
 
 type FrameScenario = FrameScenarioBase &
-  Parameters<typeof createConfigurationStore>[0] &
-  Parameters<typeof createAgentRoutes>[0] &
+  Parameters<typeof installFixture>[0] &
   (
     | { component?: undefined }
     | {
         component: "plugins";
         pluginSelections?: string | undefined;
-        connectionPreview?: "choose" | "bound" | "empty" | "denied" | "loading";
+        connectionPreview?: "choose" | "bound" | "empty" | "denied" | "loading" | "named";
         pluginCatalog?: PluginFieldsOptions["catalog"];
         pluginCapabilities?: PluginFieldsOptions["capabilities"];
         disabled?: boolean | undefined;
@@ -128,19 +125,54 @@ if (scenario.component === "plugins") {
           if (scenario.connectionPreview === "loading") {
             return await new Promise<never>(() => {});
           }
+          if (scenario.connectionPreview === "named") {
+            return [
+              {
+                id: "support",
+                displayName: "Support server access",
+                version: 1,
+                mode: "mcp_discovery",
+                scopes: ["messages.read", "messages.write"],
+                requiredScopes: ["messages.read"],
+              },
+            ];
+          }
           if (scenario.connectionPreview === "empty") {
             return [];
           }
           return [
-            { id: "first", displayName: "Engineering Gmail", version: 2 },
-            { id: "second", displayName: "Shared Gmail", version: 1 },
+            {
+              id: "first",
+              displayName: "Engineering Gmail",
+              version: 2,
+              mode: "manual",
+              scopes: ["gmail.readonly"],
+              requiredScopes: [],
+            },
+            {
+              id: "second",
+              displayName: "Shared Gmail",
+              version: 1,
+              mode: "manual",
+              scopes: ["gmail.readonly"],
+              requiredScopes: [],
+            },
           ];
         },
-        async start(_slot, template) {
+        async start(_slot, template, selectedScopes) {
+          document.querySelector<HTMLDialogElement>("dialog[open]")?.close();
+          const receipt = document.createElement("section");
+          receipt.className = "agent-card agent-form";
           const output = document.createElement("p");
           output.setAttribute("role", "status");
           output.textContent = `Simulated provider handoff for ${template.displayName}. No account has been connected.`;
-          document.getElementById("app")?.append(output);
+          receipt.append(output);
+          if (selectedScopes) {
+            const permissions = document.createElement("p");
+            permissions.textContent = `Requested scopes: ${selectedScopes.join(", ")}`;
+            receipt.append(permissions);
+          }
+          document.getElementById("app")?.replaceChildren(receipt);
         },
       },
     }),

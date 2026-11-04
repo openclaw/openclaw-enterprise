@@ -16,22 +16,13 @@ to verify the installation with `gog --version`. To make Google API calls, choos
 **Google account**, save the selection and deploy. The worker receives an
 OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
 
-To connect a new Google account, first save the enabled plugin with an empty
-account slot. Open the slot, choose a compatible connection template and
-select **Connect and attach**. Approve access in the same browser. The Console
-returns to the Agent draft, where the picker shows the saved account. Deploy
-the draft when ready. The action requires permission to update the Agent and
-create credentials in its Namespace.
+Each account field names a plugin slot. Choose a saved account that you can read and use in this Namespace, then select **Save plugin selections**. OCC binds the selected account and grants this Agent access. If a plugin declares two slots, you can choose a different account for each one.
 
-If the slot or your permissions change during consent, the account stays
-saved. Open the draft again and attach the saved account when you have access.
-To switch Google accounts, clear the old binding and detach its source before
-connecting the new account. Each Google source uses the same worker placeholder.
+The picker shows accounts from issuers accepted by the slot. If the account needs consent for this server, select **Authorize for this server**. To connect a new account, save the enabled plugin, choose a compatible connection template, and select **Connect and attach**. The provider asks which account to authorize. After consent, the Console returns to the Agent draft. You can replace an existing binding this way.
 
-The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
-`read` and `operate` on the source, and the Agent needs `operate`. If the
-package digest changes, select the account again. Clearing the slot or removing
-the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+If the slot or your permission to update the Agent changes during consent, the account stays saved in the Namespace. You can attach it later. Deploy the Agent draft to apply new selections. Clearing a slot retains any separate grant to the account. To stop a running revision from using it, [withdraw the source](../../reference/credential-sources/withdrawal.md).
+
+The Google request guard limits operations at the approved destination. Enable it before deploying a credentialed Google plugin. [Configure the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
@@ -70,7 +61,7 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
 OCE discovers available tools using the selected account. On a dedicated OpenClaw
-Agent, select an attached credential for that slot and the upstream tool names
+Agent, choose an authorized account for that slot and the upstream tool names
 the Agent may call. The worker advertises those tools; the Sandbox enforces the
 selection for both worker and script calls.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)

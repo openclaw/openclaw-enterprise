@@ -34,9 +34,11 @@ export function createPlatformReadView(
       "listConnectionTemplates",
       "hasOtherConnectionIssuer",
       "countNamespaceConnectionTemplates",
-      "findConnectionTemplateVersion",
-      "findClientRegistration",
-      "findClientRegistrationById",
+      "findOAuthConnectionTemplateVersion",
+      "listRetiredOAuthClientSecrets",
+      "listOAuthClients",
+      "countNamespaceOAuthClients",
+      "findOAuthClient",
     ]),
     savedConnections: bindRepository(repositories.savedConnections, lifetime, [
       "findTokenCustody",
@@ -45,6 +47,7 @@ export function createPlatformReadView(
       "hasPendingConnectionWithdrawals",
       "listAgentConnections",
       "listNamespaceConnections",
+      "listDeliveryProfiles",
       "listRevokingConnections",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [

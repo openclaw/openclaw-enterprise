@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import { Meta, NamespaceId } from "./common.ts";
+import { RequestId, NamespaceId } from "./common.ts";
 
 export const ConnectionTemplateId = Type.String({
   pattern: "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -20,99 +20,135 @@ const ConnectionEndpointSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const ConnectionTemplateFields = {
-  displayName: Type.String({ minLength: 1, maxLength: 200 }),
+const Meta = Type.Object(
+  { requestId: RequestId, redirectUri: Type.Optional(Type.String()) },
+  { additionalProperties: false },
+);
+const OAuthClientId = Type.String({
+  pattern: "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+});
+const DisplayName = Type.String({ minLength: 1, maxLength: 200 });
+const ClientSecret = Type.String({ minLength: 1, maxLength: 4096, writeOnly: true });
+const AuthMethod = Type.Union([
+  Type.Literal("none"),
+  Type.Literal("client_secret_basic"),
+  Type.Literal("client_secret_post"),
+]);
+const Scopes = Type.Array(Scope, { minItems: 1, maxItems: 32, uniqueItems: true });
+const Parameters = Type.Record(
+  Type.String({ minLength: 1, maxLength: 128 }),
+  Type.String({ maxLength: 1024 }),
+  { maxProperties: 32 },
+);
+const fields = {
+  scopes: Scopes,
+  authorizationParameters: Type.Optional(Parameters),
+  oauthClientId: Type.Optional(OAuthClientId),
+};
+const manual = {
+  mode: Type.Literal("manual"),
   issuer: HttpsUrl,
   authorizationUrl: HttpsUrl,
   tokenUrl: HttpsUrl,
-  clientId: Type.String({ minLength: 1, maxLength: 256 }),
-  scopes: Type.Array(Scope, { minItems: 1, maxItems: 32 }),
-  authorizationParameters: Type.Optional(
-    Type.Record(Type.String({ minLength: 1, maxLength: 128 }), Type.String({ maxLength: 512 }), {
-      maxProperties: 16,
-    }),
-  ),
-  endpoint: ConnectionEndpointSchema,
-  envVar: Type.String({ pattern: "^[A-Z_][A-Z0-9_]{0,63}$" }),
+  revocationUrl: Type.Optional(HttpsUrl),
+  recipient: ConnectionEndpointSchema,
 };
-
-/** Write-only; never returned. Required only for an OAuth client that is not registered yet. */
-const ClientSecret = Type.String({ minLength: 1, maxLength: 4096 });
-
+const mcp = { mode: Type.Literal("mcp_discovery"), serverUrl: HttpsUrl, issuer: HttpsUrl };
+const strict = { additionalProperties: false };
+const create = { displayName: DisplayName, namespaceId: Type.Optional(NamespaceId) };
+const rename = { displayName: Type.Optional(DisplayName) };
+export const CreateConnectionTemplateBody = Type.Union([
+  Type.Object({ ...create, ...fields, ...manual }, strict),
+  Type.Object({ ...create, ...fields, ...mcp }, strict),
+]);
+export const UpdateConnectionTemplateBody = Type.Union([
+  Type.Object({ displayName: DisplayName }, strict),
+  Type.Object({ ...rename, ...fields, ...manual }, strict),
+  Type.Object({ ...rename, ...fields, ...mcp }, strict),
+]);
 export const ConnectionTemplateParams = Type.Object(
   { connectionTemplateId: ConnectionTemplateId },
-  { additionalProperties: false },
+  strict,
 );
-
-export const CreateConnectionTemplateBody = Type.Object(
+export const OAuthClientParams = Type.Object({ oauthClientId: OAuthClientId }, strict);
+const client = {
+  ...create,
+  issuer: HttpsUrl,
+  tokenUrl: HttpsUrl,
+  revocationUrl: Type.Optional(HttpsUrl),
+  clientId: Type.String({ minLength: 1, maxLength: 256 }),
+  tokenEndpointAuthMethod: AuthMethod,
+};
+export const CreateOAuthClientBody = Type.Object(
+  { ...client, clientSecret: Type.Optional(ClientSecret) },
+  strict,
+);
+export const RotateOAuthClientSecretBody = Type.Object({ clientSecret: ClientSecret }, strict);
+export const DiscoverTemplateBody = Type.Object(
+  { serverUrl: HttpsUrl, issuer: Type.Optional(HttpsUrl) },
+  strict,
+);
+const Observed = Type.Object(
   {
-    ...ConnectionTemplateFields,
-    namespaceId: Type.Optional(NamespaceId),
-    clientSecret: Type.Optional(ClientSecret),
+    serverUrl: HttpsUrl,
+    resource: HttpsUrl,
+    issuers: Type.Array(HttpsUrl),
+    requestedScopes: Type.Array(Scope),
+    resourceScopes: Type.Optional(Type.Array(Scope)),
+    issuer: Type.Optional(HttpsUrl),
+    authorizationUrl: Type.Optional(HttpsUrl),
+    tokenUrl: Type.Optional(HttpsUrl),
+    revocationUrl: Type.Optional(HttpsUrl),
+    registrationUrl: Type.Optional(HttpsUrl),
+    supportedScopes: Type.Optional(Type.Array(Scope)),
+    tokenEndpointAuthMethods: Type.Optional(Type.Array(Type.String())),
   },
-  { additionalProperties: false },
+  strict,
 );
-
-export const UpdateConnectionTemplateBody = Type.Object(
+const publicClient = Type.Object(
+  { ...client, id: OAuthClientId, createdAt: Type.String() },
+  strict,
+);
+export const OAuthConnectionTemplateVersionSchema = Type.Object(
   {
-    displayName: Type.Optional(ConnectionTemplateFields.displayName),
-    issuer: Type.Optional(ConnectionTemplateFields.issuer),
-    authorizationUrl: Type.Optional(ConnectionTemplateFields.authorizationUrl),
-    tokenUrl: Type.Optional(ConnectionTemplateFields.tokenUrl),
-    clientId: Type.Optional(ConnectionTemplateFields.clientId),
-    scopes: Type.Optional(ConnectionTemplateFields.scopes),
-    authorizationParameters: ConnectionTemplateFields.authorizationParameters,
-    endpoint: Type.Optional(ConnectionEndpointSchema),
-    envVar: Type.Optional(ConnectionTemplateFields.envVar),
-    clientSecret: Type.Optional(ClientSecret),
-  },
-  { additionalProperties: false, minProperties: 1 },
-);
-
-export const RotateConnectionClientSecretBody = Type.Object(
-  { clientSecret: ClientSecret },
-  { additionalProperties: false },
-);
-
-const ConnectionTemplateVersionSchema = Type.Object(
-  {
+    templateId: ConnectionTemplateId,
     version: Type.Integer({ minimum: 1 }),
-    issuer: Type.String(),
-    authorizationUrl: Type.String(),
-    tokenUrl: Type.String(),
-    clientId: Type.String(),
-    clientRegistrationId: Type.String(),
-    scopes: Type.Array(Type.String()),
-    authorizationParameters: Type.Record(Type.String(), Type.String()),
-    endpoint: Type.Object(
-      { host: Type.String(), port: Type.Integer(), path: Type.String(), access: EndpointAccess },
-      { additionalProperties: false },
-    ),
-    envVar: Type.String(),
     createdAt: Type.String(),
+    mode: Type.Union([Type.Literal("manual"), Type.Literal("mcp_discovery")]),
+    issuer: HttpsUrl,
+    authorizationUrl: HttpsUrl,
+    tokenUrl: HttpsUrl,
+    revocationUrl: Type.Optional(HttpsUrl),
+    recipient: Type.Object(
+      { host: Type.String(), port: Type.Integer(), path: Type.String(), access: EndpointAccess },
+      strict,
+    ),
+    scopes: Scopes,
+    authorizationParameters: Parameters,
+    oauthClientId: Type.Optional(OAuthClientId),
+    mcp: Type.Optional(Type.Object({ serverUrl: HttpsUrl, resource: HttpsUrl }, strict)),
+    observed: Type.Optional(Observed),
   },
-  { additionalProperties: false },
+  { $id: "OAuthConnectionTemplateVersion", title: "OAuth connection template version", ...strict },
 );
-
 export const ConnectionTemplateSchema = Type.Object(
   {
+    ...create,
     id: ConnectionTemplateId,
-    namespaceId: Type.Optional(NamespaceId),
-    displayName: Type.String(),
-    current: ConnectionTemplateVersionSchema,
+    current: Type.Ref("OAuthConnectionTemplateVersion"),
     createdAt: Type.String(),
   },
-  { $id: "ConnectionTemplate", title: "Connection template", additionalProperties: false },
+  { $id: "ConnectionTemplate", title: "OAuth connection template", ...strict },
 );
-
 const template = Type.Ref("ConnectionTemplate");
-
-export const ConnectionTemplateResponse = Type.Object(
-  { data: template, meta: Meta },
-  { additionalProperties: false },
-);
-
+export const ConnectionTemplateResponse = Type.Object({ data: template, meta: Meta }, strict);
 export const ConnectionTemplateListResponse = Type.Object(
   { data: Type.Array(template), meta: Meta },
-  { additionalProperties: false },
+  strict,
 );
+export const OAuthClientResponse = Type.Object({ data: publicClient, meta: Meta }, strict);
+export const OAuthClientListResponse = Type.Object(
+  { data: Type.Array(publicClient), meta: Meta },
+  strict,
+);
+export const DiscoverTemplateResponse = Type.Object({ data: Observed, meta: Meta }, strict);

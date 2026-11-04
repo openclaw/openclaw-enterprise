@@ -36,7 +36,7 @@ import {
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 import { waitForLiveControls } from "./console-agents-test-support.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {

@@ -11,8 +11,6 @@ import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { requestOAuthTokens } from "./oauth-token-endpoint.ts";
 
-/** Parameters the flow sets itself; a connection template cannot replace them. */
-
 interface BrowserAuthorizationState {
   readonly version: 1;
   readonly sourceId: string;
@@ -43,6 +41,9 @@ export function startBrowserAuthorization(
   url.searchParams.set("client_id", request.clientId);
   url.searchParams.set("redirect_uri", request.redirectUri);
   url.searchParams.set("scope", scope);
+  if (request.resource !== undefined) {
+    url.searchParams.set("resource", request.resource);
+  }
   url.searchParams.set("state", state);
   url.searchParams.set(
     "code_challenge",
@@ -94,7 +95,7 @@ export async function exchangeAuthorizationCode(
   request: CredentialBrowserAuthorizationRequest,
   verifier: string,
   code: string,
-  clientSecret: string,
+  clientSecret: string | undefined,
   signal: AbortSignal,
 ): Promise<OAuthConnectionGrant> {
   if (!isNonEmptyString(code)) {
@@ -106,11 +107,12 @@ export async function exchangeAuthorizationCode(
       grant_type: "authorization_code",
       code,
       redirect_uri: request.redirectUri,
-      client_id: request.clientId,
-      client_secret: clientSecret,
+
       code_verifier: verifier,
     }),
     request.scopes.join(" "),
+    request,
+    clientSecret,
     signal,
   );
   if (!tokens.refreshToken) {
@@ -119,9 +121,12 @@ export async function exchangeAuthorizationCode(
   return {
     issuer: request.issuer,
     tokenUrl: request.tokenUrl,
-    clientRegistrationId: request.clientRegistrationId,
+    oauthClientId: request.oauthClientId,
+    requestedScopes: request.scopes,
+    tokenEndpointAuthMethod: request.tokenEndpointAuthMethod,
+    ...(request.resource === undefined ? {} : { resource: request.resource }),
     clientId: request.clientId,
-    clientSecret,
+    ...(clientSecret === undefined ? {} : { clientSecret }),
     scope: tokens.scope,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,

@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { asRecord } from "@openclaw-enterprise/utils";
 import type { CredentialSourceAttachment } from "@openclaw-enterprise/contracts";
 
-export type GoogleRequestScope = NonNullable<CredentialSourceAttachment["requestScope"]>;
+export type GoogleRequestScope = Omit<
+  NonNullable<CredentialSourceAttachment["requestScope"]>,
+  "binaries"
+>;
 
 export interface GoogleParameter {
   type?: string;
@@ -136,10 +139,21 @@ export function googleSourcePathMatches(pattern: string, path: string) {
   return path === prefix || path.startsWith(prefix + "/");
 }
 
+/** The approved Google destination must contain a reviewed operation, independently of consented scopes. */
+export function isGoogleWorkspaceRecipient(host: string, port: number, path: string): boolean {
+  return port === 443 && googleOperationsAt({ host, path }).length > 0;
+}
+
 export function eligibleGoogleOperations(scope: GoogleRequestScope) {
+  return googleOperationsAt(scope).filter(([, op]) =>
+    op.scopes.some((value) => scope.scopes.includes(value)),
+  );
+}
+
+function googleOperationsAt(scope: Pick<GoogleRequestScope, "host" | "path">) {
   const origin = "https://" + scope.host;
   return Object.entries(googleCatalog.operations).filter(([id, op]) => {
-    if (op.origin !== origin || !op.scopes.some((s) => scope.scopes.includes(s))) {
+    if (op.origin !== origin) {
       return false;
     }
     if (!scope.path.endsWith("/**")) {

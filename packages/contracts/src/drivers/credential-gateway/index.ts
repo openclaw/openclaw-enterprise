@@ -78,6 +78,8 @@ export interface CredentialSourceAttachment {
     readonly port: number;
     readonly path: string;
     readonly scopes: readonly string[];
+    /** Sender-approved executables that share this saved account’s request guard. */
+    readonly binaries?: readonly string[];
   };
   /** External Codex authentication carries no refresh token into the workload. */
   readonly externalChatgptAuth?: ExternalChatgptAuth;

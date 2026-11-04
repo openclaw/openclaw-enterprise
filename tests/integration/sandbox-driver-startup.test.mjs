@@ -1,4 +1,12 @@
-import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  openShellPluginPolicy,
+  assertPluginRequestPolicy,
+  googleRequestPolicyFromSandbox,
+} from "../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts";
+import {
+  managedMcpInstalls,
+  managedPluginAccountSlot,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.mjs";
@@ -1292,6 +1300,116 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   assert.equal(created.spec.environment.OPENCLAW_MANAGED_CREDENTIAL_ENV, undefined);
   assert.equal(created.spec.policy.network_middlewares?.[registration], undefined);
   assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
+});
+
+test("a saved Google account sends each permitted executable through the same request guard", async () => {
+  const client = workspaceGatewayClient();
+  client.getGatewayInfo = async () => ({ extensions: [negotiatedGoogleGuard()] });
+  const senderBinaries = [managedGoogleInstall.binaryPath, "/usr/bin/curl"];
+  const backend = backendFor(client);
+  backend.drivers.credential_refresh = "credential-refresh-openshell";
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/opt/openclaw/bin/openclaw"], toolBinaries: senderBinaries },
+    { id: backend.drivers.credential_gateway, backend },
+  );
+  const { context, revision, requirements } = runtimeSandboxFixture(openShellDriver(client), {
+    harnessId: "openclaw",
+  });
+  const pluginId = managedGoogleInstall.id;
+  const sourceId = "cs_00000000-0000-4000-8000-000000000005";
+  const profileId = "account-integration-google";
+  const selections = {
+    [pluginId]: {
+      enabled: true,
+      driverPolicy: { releaseSha256: managedGoogleInstall.releaseSha256 },
+    },
+  };
+  const slot = managedPluginAccountSlot(managedGoogleInstall, selections, "account");
+  const target = {
+    issuer: managedGoogleInstall.credentials.account.issuer,
+    tokenUrl: managedGoogleInstall.credentials.account.tokenEndpoint,
+    recipient: {
+      host: "gmail.googleapis.com",
+      port: 443,
+      path: "/gmail/v1/users/me/**",
+      access: "full",
+    },
+  };
+  assert.equal(slot.acceptsRecipient(target), true);
+  assert.equal(
+    slot.acceptsRecipient({
+      ...target,
+      recipient: { ...target.recipient, path: "/unreviewed/path" },
+    }),
+    false,
+  );
+  const delivery = slot.delivery(target, ["https://www.googleapis.com/auth/gmail.metadata"]);
+  const config = { ...delivery.config, issuer: target.issuer, client_id: "test-google" };
+  const source = {
+    id: sourceId,
+    namespaceId: context.namespace.id,
+    state: "ready",
+    driverId: gateway.id,
+    type: delivery.type,
+    config,
+    ownerCapability: "credential_gateway",
+    secrets: {},
+  };
+  revision.plugins = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    plugins: { [pluginId]: slot.bind(sourceId) },
+  };
+  revision.credentialSources = [
+    {
+      sourceId,
+      sourceType: source.type,
+      credentialGatewayId: gateway.id,
+      accountDelivery: { refreshDriverId: backend.drivers.credential_refresh, profileId, config },
+    },
+  ];
+
+  // The real Credential Gateway creates the profile and supplies the Sandbox with its sender baseline.
+  await gateway.publishConnectionToken(
+    { ...context, source: { ...source, id: profileId } },
+    { accessToken: "synthetic-access", expiresAt: new Date(Date.now() + 60_000).toISOString() },
+  );
+  const attachments = await gateway.attachForRevision({ ...context, revision, sources: [source] });
+  const profile = client.profiles.get(attachments[0].ref).profile;
+  assert.deepEqual(profile.binaries, senderBinaries);
+  const guard = openShellPluginPolicy(
+    revision,
+    { ...requirements, credentialAttachments: attachments },
+    "https://authority.test:443",
+    [],
+  );
+  const providers = senderBinaries.map((path) => ({ path }));
+  assert.deepEqual(guard.providerRule.binaries, providers);
+  const google = guard.networks["oce-google-requests"];
+  assert.deepEqual(google.binaries, providers);
+  assert.equal(guard.middlewares["oce-plugin-requests"].on_error, "fail_closed");
+  const effective = {
+    network_middlewares: guard.middlewares,
+    network_policies: { ...guard.networks, [guard.providerRule.name]: guard.providerRule },
+  };
+  assert.deepEqual(googleRequestPolicyFromSandbox(effective).binaries, senderBinaries);
+  // A provider rule altered for just the script must fail adoption before any credential is used.
+  assert.throws(
+    () =>
+      assertPluginRequestPolicy(
+        {
+          ...effective,
+          network_policies: {
+            ...effective.network_policies,
+            [guard.providerRule.name]: {
+              ...guard.providerRule,
+              binaries: [{ path: "/usr/bin/curl" }],
+            },
+          },
+        },
+        guard,
+      ),
+    /bypass the managed plugin HTTP request guard/,
+  );
 });
 
 test("OpenShell builds managed MCP rules for the declared endpoint and upstream tool name", () => {

@@ -29,6 +29,12 @@ export interface PluginDiscoveryAuthentication {
   readonly isFedramp?: boolean;
 }
 
+/** Only the issuer selects candidate accounts. The receiver controls where a token may go. */
+export type PluginAccountTarget = Pick<
+  ConnectionTemplateValues,
+  "issuer" | "tokenUrl" | "recipient" | "mcp"
+>;
+
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   readonly policyCapabilities: PluginPolicyCapabilities;
@@ -44,8 +50,17 @@ export interface PluginDriver extends Driver {
       | {
           readonly releaseSha256: string;
           readonly credentialSourceId: string | null;
-          acceptsTemplate(template: ConnectionTemplateValues): boolean;
-          bind(source: CredentialSource): PluginDesiredSelection;
+          readonly issuers: readonly string[];
+          acceptsRecipient(target: PluginAccountTarget): boolean;
+          /** The release owns protected presentation. Account grants contain no workload variables. */
+          delivery(
+            target: PluginAccountTarget,
+            grantedScopes: readonly string[],
+          ): {
+            readonly type: string;
+            readonly config: Readonly<Record<string, string>>;
+          };
+          bind(sourceId: string): PluginDesiredSelection;
         }
       | undefined;
     /** Returns a reviewed MCP discovery target only for a compatible slot and source. */

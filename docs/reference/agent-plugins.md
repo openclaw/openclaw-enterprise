@@ -14,7 +14,7 @@ and supported controls before saving nonempty selections. Startup runs
 ## Current support
 
 On dedicated OpenClaw with Kubernetes, enable one managed package with `plugins[id].enabled`.
-[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
+[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and [worker CLI](connection-templates.md#use-a-saved-account-in-an-agent-plugin).
 MCP releases pin endpoints and credential slots. `tools/list` discovers tools.
 Agent selections govern worker, Gateway and OpenShell access.
 [Slack](../guides/topics/plugins-configure.md#configure-slack-search)

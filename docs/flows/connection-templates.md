@@ -1,17 +1,16 @@
 # How OCC saves an OAuth connection template
 
-The controller checks the caller's Installation `administer` permission. For a
-Namespace-scoped template it also checks the Namespace. The selected Credential
-Gateway validates the proposed destination before OCC accepts the settings.
+The administrator selects manual configuration or supplies an MCP server URL. OCC checks Installation administration before discovery. For MCP, the controller reads protected resource metadata over TLS, resolves each metadata host to public addresses and pins those addresses for the request. It contacts only the selected advertised authorization server. OCC stores the metadata it observed with the approved version.
 
-OCC looks up the client registration by scope, issuer, and client ID. When it
-needs a new registration, the selected Refresh Driver stores the client secret
-in its operator Workspace. OCC saves the registration reference, template
-version, and success audit in PostgreSQL. After a confirmed rollback OCC asks
-the Driver to remove the staged client. If the commit acknowledgment is lost,
-OCC keeps the client because a saved version may reference it.
+OCC checks scope and the client's allowed destinations before it references an OAuth client. PostgreSQL commits the template version and its audit together. A template can exist without a client. The Agent plugin release determines the local credential placeholder when the account is used.
+
+When an administrator creates or rotates a confidential client, OCC reserves a new private handle in its cleanup queue before the Refresh Driver stages the secret. The writer locks that reservation while it stores the secret. OCC commits the active handle and its audit, removes the reservation, and queues the previous handle in one transaction. If a writer stops before commit, the worker can remove the abandoned secret once its reservation is due. The worker retries removal through the Driver. The public OAuth client ID stays stable across rotation.
+
+See [OAuth connection templates and clients](../reference/connection-templates.md) for the supported operations.
 
 ## Consent and token custody
+
+The callback consumes the attempt once. OCC verifies the signed-in account and session after any database wait and before code exchange. It checks the session again before storing the grant or granting its owner access.
 
 OCC checks the caller's right to create a credential in the destination
 Namespace and pins the selected template version. It creates a pending source
@@ -20,28 +19,25 @@ session and principal. The callback consumes the attempt once, rechecks
 authorization, and reads the client registration and exchange URL from the
 pinned version.
 
-The Credential Refresh Driver exchanges the code and hands the first access
-token and reusable grant to the Token Service. The Secret Driver stores the
-private material. OCC records its internal reference, the account owner and the
-approved version. A shared callback verifies the issuer when multiple issuers
-are registered. A provider timeout cannot replay a consumed code.
+The Credential Refresh Driver exchanges the code using the pinned client and
+its registered authentication method. For an MCP connection it sends the
+approved resource at authorization, exchange, and refresh. The Token Service
+keeps the access token and refresh grant in a private Secret. OCC records the
+credential source ID, account owner, approved recipient, requested scopes, and
+granted scopes. A shared callback verifies the issuer when multiple issuers are
+configured. A provider timeout consumes the attempt.
 
-The worker renews the account through the Token Service. A conditional write
-fences concurrent rotations and disconnects. OpenShell receives an expiring
-access token for the approved destination. The account owner receives permission
-to use the saved credential source.
+The worker renews the saved account through the Token Service. A conditional
+write fences concurrent renewals and disconnects. OCC records the next renewal
+and any narrower scopes. Creating and renewing a saved account require no
+Agent or sender profile.
 
-When a user chooses **Connect and attach** in an Agent plugin slot, OCC checks
-Agent update permission and asks the Plugin Driver whether the template fits
-the selected release and slot. It records that target and the expected binding
-in the private browser attempt. After saving the account, OCC rechecks the
-Agent, release, slot and current permissions. It grants the Agent access and
-saves the Driver's updated selection in one transaction. If the attachment
-fails, the account remains available for the user to attach later.
+## Bind a saved account to a plugin
 
-A detach removes that Agent's grant and queues withdrawal for its deployed
-revisions. Until the worker finishes, the running revision can retain access.
-The same account can continue serving other authorized Agents.
+The Plugin Driver identifies the named accounts in the selected release. OCC lists ready accounts the caller can operate in the Namespace whose issuer the slot accepts. It marks an account for new authorization when the approved protected resource or destination differs. A grant's scopes are available to the provider and the request policy.
 
-See [OAuth connection templates](../reference/connection-templates.md) for the
-administrative operations.
+Saving a selection checks the exact slot, account and Agent permissions together. Starting OAuth from a saved slot also records the release and current binding. When the browser returns, OCC checks both before replacing that slot. The account stays with its owner if the binding changed during consent.
+
+Admission records the source grant and the Driver's approved delivery profile for the revision. The worker prepares an expiring access token through the Token Service and sends it to that profile. Detaching queues withdrawal for the affected Agent. Other Agents can keep their grants.
+
+For a saved Google account, the Credential Gateway passes the Installation’s tool executables and granted scopes to the Sandbox Driver. The Sandbox Driver checks that the sender and the guarded Google routes allow the same executables. The request guard applies the same operation checks to each executable.

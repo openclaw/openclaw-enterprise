@@ -101,9 +101,12 @@ export interface OAuthConnectionCustody {
 export interface OAuthConnectionGrant {
   readonly issuer: string;
   readonly tokenUrl: string;
-  readonly clientRegistrationId: string;
+  readonly oauthClientId: string;
+  readonly requestedScopes: readonly string[];
+  readonly tokenEndpointAuthMethod: "none" | "client_secret_post" | "client_secret_basic";
+  readonly resource?: string;
   readonly clientId: string;
-  readonly clientSecret: string;
+  readonly clientSecret?: string;
   /** Effective scope, initially verified against the approved template, then narrowed on renewal. */
   readonly scope: string;
   readonly accessToken: string;
@@ -113,6 +116,7 @@ export interface OAuthConnectionGrant {
 
 /** The only credential the trusted delivery path may install, with a deadline for its use. */
 export interface OAuthConnectionAccessToken {
+  readonly grantedScopes: readonly string[];
   readonly nextRefreshAt: string;
   readonly accessToken: string;
   readonly version: string;
@@ -120,6 +124,14 @@ export interface OAuthConnectionAccessToken {
 }
 
 export const PENDING_OAUTH_CONNECTION = "pending";
+
+export type OAuthConnectionStatus = CredentialRefreshStatus & {
+  readonly schedule?: {
+    readonly version: string;
+    readonly nextRefreshAt: string;
+    readonly grantedScopes: readonly string[];
+  };
+};
 
 export interface OAuthConnectionTokenService {
   accept(
@@ -131,12 +143,12 @@ export interface OAuthConnectionTokenService {
     custody: OAuthConnectionCustody,
     signal: AbortSignal,
   ): Promise<OAuthConnectionAccessToken | undefined>;
-  status(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<CredentialRefreshStatus>;
-  /** Renew when due, or early when custody still holds the specified published version. */
+  status(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<OAuthConnectionStatus>;
+  /** Renew when due, or early when custody still holds the previously scheduled version. */
   renew(
     custody: OAuthConnectionCustody,
     signal: AbortSignal,
-    publishedVersion?: string,
+    scheduledVersion?: string,
   ): Promise<CredentialRefreshStatus>;
   retire(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void>;
 }

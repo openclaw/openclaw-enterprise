@@ -11,7 +11,13 @@ import {
 } from "../../packages/contracts/src/api/common.ts";
 import { ChannelDirectoryLookupResponse } from "../../packages/contracts/src/api/resources.ts";
 import { serveChannelDirectory } from "../../scripts/console-storybook/public/channel-directory-fixture.mts";
-import { SandboxNetworkPolicyConfiguration } from "../../packages/contracts/src/sandbox-policy.ts";
+import {
+  SandboxNetworkPolicyConfiguration,
+  validateSandboxNetworkGrants,
+} from "../../packages/contracts/src/sandbox-policy.ts";
+import { ConfigurationValidationError } from "../../packages/contracts/src/configuration-definition.ts";
+import { SandboxPolicyValidateBody } from "../../packages/contracts/src/api/sandbox-policy.ts";
+import { ConfigurationValidationResponse } from "../../packages/contracts/src/api/driver-configurations.ts";
 import networkPolicySchema from "../../scripts/console-storybook/public/network-policy-schema.mts";
 import { createFixtureFetch } from "../../scripts/console-storybook/public/preview-rules.mts";
 
@@ -375,7 +381,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     },
   });
   t.after(() => hooks.deregister());
-  const { installFixture } = await import("../../scripts/console-storybook/public/fixtures.mjs");
+  const { installFixture } = await import("../../scripts/console-storybook/public/fixtures.mts");
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
   t.after(() => {
@@ -427,6 +433,441 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     harnessAuth: { method: "credential_source", sourceId: "cs_model" },
     initialWorkspaceFiles: { "AGENTS.md": "Synthetic workspace instructions" },
   };
+
+  await t.test("Credential Source registration survives a lost native Request answer", async () => {
+    installFixture(
+      { rules: [{ method: "POST", suffix: "/credential-sources", lostAnswer: true, once: true }] },
+      evidence(),
+    );
+    const registration = {
+      name: "Registered model",
+      type: "openai",
+      config: { authorized_base_url: "https://models.example.test/v1" },
+      secrets: { api_key: { kind: "secret", namespaceId: namespace, id: "sec_demo_model" } },
+    };
+    // A lost answer must leave the registration available to the Create form's
+    // recovery read. This exercises the router through the native Request body.
+    await assert.rejects(
+      frame.fetch(
+        new Request(`https://preview.example.test${path}credential-sources`, {
+          method: "POST",
+          body: JSON.stringify(registration),
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+      { name: "TypeError", message: "Failed to fetch" },
+    );
+    const sourcePath = `credential-sources/${id("csr", 100)}`;
+    assert.partialDeepStrictEqual(await (await request(sourcePath)).json(), {
+      data: { ...registration, id: id("csr", 100), state: "ready" },
+    });
+    const listed: unknown = await (await request("credential-sources")).json();
+    assert.ok(
+      listed !== null &&
+        typeof listed === "object" &&
+        "data" in listed &&
+        Array.isArray(listed.data),
+    );
+    assert.equal(listed.data.length, 1);
+    assert.equal((await request(sourcePath, "DELETE")).status, 204);
+    assert.equal((await request(sourcePath)).status, 404);
+  });
+
+  await t.test(
+    "Network policy save and application keep separate versions and poll state",
+    async () => {
+      installFixture(
+        { policyState: "ready", deployed: true, candidateDeploymentStatus: "succeeded" },
+        evidence(),
+      );
+      const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
+      const additions = [
+        {
+          id: "python-web",
+          binary: "/usr/bin/python3.11",
+          host: "example.org",
+          ports: [{ from: 443, to: 443 }],
+        },
+      ];
+      assert.equal(
+        (await request(policyPath, "PUT", { expectedVersion: 0, additions })).status,
+        409,
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(policyPath, "PUT", { expectedVersion: 1, additions })).json(),
+        {
+          data: { version: 2, additions },
+        },
+      );
+      const applied = await request(`${policyPath}/apply`, "POST", {
+        expectedVersion: 2,
+        revisionId: id("rev", 7),
+      });
+      assert.equal(applied.status, 202);
+      assert.partialDeepStrictEqual(await applied.json(), {
+        data: { application: { state: "pending", policyVersion: 2 } },
+      });
+      // Polling changes the application outcome, not the saved policy version.
+      assert.partialDeepStrictEqual(await (await request(policyPath)).json(), {
+        data: { policy: { version: 2, application: { state: "pending" } } },
+      });
+      assert.partialDeepStrictEqual(await (await request(policyPath)).json(), {
+        data: {
+          policy: { version: 2, application: { state: "applied" }, applied: { policyVersion: 2 } },
+        },
+      });
+      assert.partialDeepStrictEqual(
+        await (await request(policyPath, "PUT", { expectedVersion: 2, additions: [] })).json(),
+        { data: { version: 3, additions: [] } },
+      );
+      const saved: unknown = await (await request(policyPath)).json();
+      assert.ok(
+        saved !== null &&
+          typeof saved === "object" &&
+          "data" in saved &&
+          saved.data !== null &&
+          typeof saved.data === "object" &&
+          "policy" in saved.data &&
+          saved.data.policy !== null &&
+          typeof saved.data.policy === "object",
+      );
+      assert.equal("application" in saved.data.policy, false);
+      assert.partialDeepStrictEqual(saved.data.policy, { applied: { policyVersion: 2 } });
+    },
+  );
+
+  await t.test("Malformed Namespace names return 400 before allocation", async () => {
+    installFixture({}, evidence());
+    const namespaceRequest = (method: string, body?: unknown) =>
+      frame.fetch("https://preview.example.test/namespaces", {
+        method,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    const before = await (await namespaceRequest("GET")).text();
+    for (const body of [{ name: 17 }, {}, { name: null }, null, []]) {
+      const rejected = await namespaceRequest("POST", body);
+      assert.equal(rejected.status, 400);
+      assert.partialDeepStrictEqual(await rejected.json(), { error: { code: "INVALID_REQUEST" } });
+    }
+    assert.equal(await (await namespaceRequest("GET")).text(), before);
+    const valid = await namespaceRequest("POST", { name: "New team" });
+    assert.equal(valid.status, 201);
+    assert.partialDeepStrictEqual(await valid.json(), {
+      data: { id: id("ns", 100), name: "New team" },
+    });
+  });
+
+  await t.test(
+    "Malformed Secret names return 400 without fallback or value disclosure",
+    async () => {
+      installFixture({}, evidence());
+      const before = await (await request("secrets")).text();
+      for (const body of [{ name: 17 }, {}, { name: null }, null, []]) {
+        await invalidRequest("secrets", "POST", body);
+      }
+      assert.equal(await (await request("secrets")).text(), before);
+      const valid = await request("secrets", "POST", {
+        name: "New model",
+        value: "simulated-private-value",
+      });
+      assert.equal(valid.status, 201);
+      const created: unknown = await valid.json();
+      assert.partialDeepStrictEqual(created, { data: { id: id("sec", 100), name: "New model" } });
+      // Secret material must never appear in create, list, or detail responses.
+      assert.equal(JSON.stringify(created).includes("simulated-private-value"), false);
+      assert.equal(
+        (await (await request("secrets")).text()).includes("simulated-private-value"),
+        false,
+      );
+      assert.equal(
+        (await (await request(`secrets/${id("sec", 100)}`)).text()).includes(
+          "simulated-private-value",
+        ),
+        false,
+      );
+      assert.equal((await request("secrets", "POST", { name: " New model " })).status, 409);
+
+      installFixture({ denySecretCreate: true }, evidence());
+      assert.equal((await request("secrets", "POST", null)).status, 403);
+      installFixture(
+        { rules: [{ method: "POST", suffix: "/secrets", status: 503, once: true }] },
+        evidence(),
+      );
+      assert.equal((await request("secrets", "POST", null)).status, 503);
+      await invalidRequest("secrets", "POST", null);
+    },
+  );
+
+  await t.test("Null Credential Source registration returns 400 before allocation", async () => {
+    installFixture({}, evidence());
+    await invalidRequest("credential-sources", "POST", null);
+    assert.partialDeepStrictEqual(await (await request("credential-sources")).json(), { data: [] });
+    // Config and Secret bindings are opaque here: the fixture must not normalize
+    // or disclose the referenced Secret while saving the ordinary Create request.
+    const registration = {
+      name: "New model",
+      type: "openai",
+      config: { authorized_base_url: "https://models.example.test/v1" },
+      secrets: { api_key: { kind: "secret", namespaceId: namespace, id: "sec_demo_model" } },
+    };
+    const valid = await request("credential-sources", "POST", registration);
+    assert.equal(valid.status, 201);
+    assert.partialDeepStrictEqual(await valid.json(), {
+      data: { ...registration, id: id("csr", 100), state: "ready" },
+    });
+  });
+
+  await t.test("Opaque IAM replies retain payload order and binding identity", async () => {
+    installFixture({ harnessGrantMissing: true }, evidence());
+    const role = {
+      name: "Model access",
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    };
+    const createdRole = await request("iam/roles", "POST", role);
+    assert.equal(createdRole.status, 201);
+    const roleWire = { ...role, id: "role_100", namespaceId: namespace };
+    const meta = { requestId: id("req", 1) };
+    assert.equal(await createdRole.text(), JSON.stringify({ data: roleWire, meta }));
+    assert.equal(
+      await (await request("iam/roles")).text(),
+      JSON.stringify({ data: [roleWire], meta }),
+    );
+    const binding = {
+      subjectKind: "identity",
+      subjectId: "identity_demo_agent",
+      roleId: "role_100",
+      resourceKind: "secret",
+      resourceId: "sec_demo_model",
+    };
+    const createdBinding = await request("iam/access-bindings", "POST", binding);
+    assert.equal(createdBinding.status, 201);
+    const bindingWire = { ...binding, id: "binding_101", namespaceId: namespace };
+    assert.equal(await createdBinding.text(), JSON.stringify({ data: bindingWire, meta }));
+    assert.equal(
+      await (await request("iam/access-bindings")).text(),
+      JSON.stringify({ data: [bindingWire], meta }),
+    );
+    assert.equal((await request("iam/access-bindings/binding_101", "DELETE")).status, 204);
+    assert.partialDeepStrictEqual(await (await request("iam/access-bindings")).json(), {
+      data: [],
+    });
+  });
+
+  await t.test("Malformed policy editing flags return 400 without changing the flag", async () => {
+    installFixture({ policyState: "ready" }, evidence());
+    const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
+    const before = await (await request(policyPath)).text();
+    for (const body of [{ enabled: "false" }, { enabled: 0 }, {}, null]) {
+      await invalidRequest(`${policyPath}/editing`, "PATCH", body);
+    }
+    assert.equal(await (await request(policyPath)).text(), before);
+    assert.equal((await request(`${policyPath}/editing`, "PATCH", { enabled: false })).status, 200);
+    assert.partialDeepStrictEqual(await (await request(policyPath)).json(), {
+      data: { editingEnabled: false },
+    });
+  });
+
+  await t.test(
+    "Policy validation distinguishes request envelopes from rejected additions",
+    async () => {
+      const { Check }: { Check(schema: unknown, value: unknown): boolean } =
+        controller("typebox/value");
+      installFixture({ policyState: "ready" }, evidence());
+      const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
+      const before = await (await request(policyPath)).text();
+      const grant = {
+        id: "python-web",
+        binary: "/usr/bin/python3.11",
+        host: "example.org",
+        ports: [{ from: 443, to: 443 }],
+      };
+      // The HTTP body accepts unknown additions. Admission reports field errors inside 200 data.
+      for (const [additions, field, required] of [
+        [null, "/additions", false],
+        [{}, "/additions", false],
+        ["invalid", "/additions", false],
+        [[null], "/additions/0", false],
+        [[[]], "/additions/0", false],
+        [[{ ...grant, ports: [null] }], "/additions/0/ports/0", false],
+        [[{ ...grant, ports: [[]] }], "/additions/0/ports/0", false],
+        [[{ ...grant, host: 42 }], "/additions/0/host", false],
+        [[{ ...grant, ports: [{ from: "443", to: 443 }] }], "/additions/0/ports/0/from", false],
+        [[{ binary: grant.binary, host: grant.host, ports: grant.ports }], "/additions/0/id", true],
+        [[{ ...grant, ports: [{ from: 443 }] }], "/additions/0/ports/0/to", true],
+      ] as const) {
+        const body = { expectedVersion: 1, additions };
+        assert.equal(Check(SandboxPolicyValidateBody, body), true);
+        const detail = {
+          path: field,
+          code: required ? "REQUIRED" : "INVALID_TYPE",
+          message: required
+            ? "This configuration field is required."
+            : "Configuration does not satisfy type.",
+        };
+        // Verify the fixture's bounded detail against the actual shared admission validator.
+        assert.throws(
+          () => validateSandboxNetworkGrants(additions),
+          (error: unknown) => {
+            assert.ok(error instanceof ConfigurationValidationError);
+            assert.ok(
+              error.error.details.some(
+                (actual) =>
+                  actual.path === detail.path &&
+                  actual.code === detail.code &&
+                  actual.message === detail.message,
+              ),
+            );
+            return true;
+          },
+        );
+        const result = await request(`${policyPath}/validate`, "POST", body);
+        assert.equal(result.status, 200);
+        const envelope = await result.json();
+        assert.equal(Check(ConfigurationValidationResponse, envelope), true);
+        assert.deepEqual(envelope, {
+          data: { success: false, error: { details: [detail] } },
+          meta: { requestId: id("req", 1) },
+        });
+      }
+      for (const body of [
+        null,
+        [],
+        {},
+        { expectedVersion: 1 },
+        { additions: [] },
+        { expectedVersion: 1, additions: [], extra: true },
+        ...[null, "1", 0, -1, 1.5, 2147483648].map((expectedVersion) => ({
+          expectedVersion,
+          additions: [],
+        })),
+      ]) {
+        assert.equal(Check(SandboxPolicyValidateBody, body), false);
+        await invalidRequest(`${policyPath}/validate`, "POST", body);
+      }
+      for (const additions of [[], [grant]]) {
+        const body = { expectedVersion: 1, additions };
+        assert.equal(Check(SandboxPolicyValidateBody, body), true);
+        const result = await request(`${policyPath}/validate`, "POST", body);
+        assert.equal(result.status, 200);
+        const wire = await result.text();
+        assert.equal(Check(ConfigurationValidationResponse, JSON.parse(wire)), true);
+        assert.equal(
+          wire,
+          JSON.stringify({
+            data: { success: true, data: { additions } },
+            meta: { requestId: id("req", 1) },
+          }),
+        );
+      }
+      assert.equal(await (await request(policyPath)).text(), before);
+    },
+  );
+
+  await t.test("Malformed network additions return 400 before saving", async () => {
+    installFixture({ policyState: "ready" }, evidence());
+    const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
+    const before = await (await request(policyPath)).text();
+    const grant = {
+      id: "python-web",
+      binary: "/usr/bin/python3.11",
+      host: "example.org",
+      ports: [{ from: 443, to: 443 }],
+    };
+    for (const additions of [
+      null,
+      {},
+      "invalid",
+      [null],
+      [{ ...grant, host: 42 }],
+      [{ ...grant, ports: [{ from: "443", to: 443 }] }],
+    ]) {
+      const body = { expectedVersion: 1, additions };
+      await invalidRequest(policyPath, "PUT", body);
+    }
+    await invalidRequest(policyPath, "PUT", null);
+    assert.equal(await (await request(policyPath)).text(), before);
+    const valid = await request(policyPath, "PUT", { expectedVersion: 1, additions: [grant] });
+    assert.equal(valid.status, 200);
+    assert.partialDeepStrictEqual(await valid.json(), { data: { version: 2, additions: [grant] } });
+  });
+
+  await t.test(
+    "Malformed policy application revision IDs return 400 before application",
+    async () => {
+      installFixture(
+        { policyState: "ready", deployed: true, candidateDeploymentStatus: "succeeded" },
+        evidence(),
+      );
+      const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
+      const before = await (await request(policyPath)).text();
+      for (const body of [{ revisionId: 17 }, { revisionId: null }, {}, null]) {
+        await invalidRequest(`${policyPath}/apply`, "POST", body);
+      }
+      assert.equal(await (await request(policyPath)).text(), before);
+      const valid = await request(`${policyPath}/apply`, "POST", {
+        expectedVersion: 1,
+        revisionId: id("rev", 7),
+      });
+      assert.equal(valid.status, 202);
+      assert.partialDeepStrictEqual(await valid.json(), {
+        data: { application: { revisionId: id("rev", 7), state: "pending" } },
+      });
+    },
+  );
+
+  await t.test("Authored policy refusals and incomplete replies precede input checks", async () => {
+    const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
+    installFixture({ policyState: "editDenied" }, evidence());
+    assert.equal((await request(policyPath, "PUT", null)).status, 403);
+    assert.equal((await request(`${policyPath}/validate`, "POST", null)).status, 403);
+    installFixture({ policyState: "conflict" }, evidence());
+    assert.equal((await request(`${policyPath}/validate`, "POST", null)).status, 409);
+    for (const policyState of ["ceilingDenied", "invalid"]) {
+      installFixture({ policyState }, evidence());
+      const reply = await request(`${policyPath}/validate`, "POST", null);
+      assert.equal(reply.status, 200);
+      assert.partialDeepStrictEqual(await reply.json(), {
+        data: {
+          success: false,
+          error: {
+            details: [
+              {
+                path: "/additions/0/host",
+                code: "OUTSIDE_CEILING",
+                message: "The grant exceeds the Installation delegation ceiling.",
+              },
+            ],
+          },
+        },
+      });
+    }
+    // Authored replies remain ahead of both envelope checks and scenario refusals.
+    installFixture(
+      {
+        policyState: "editDenied",
+        rules: [
+          {
+            method: "POST",
+            suffix: "/sandbox-policy/networking/validate",
+            data: { success: true, data: {} },
+          },
+        ],
+      },
+      evidence(),
+    );
+    const authored = await request(`${policyPath}/validate`, "POST", null);
+    assert.equal(authored.status, 200);
+    assert.partialDeepStrictEqual(await authored.json(), { data: { success: true, data: {} } });
+    installFixture({ policyState: "ready", policyAdminDenied: true }, evidence());
+    assert.equal((await request(`${policyPath}/editing`, "PATCH", null)).status, 403);
+    installFixture({ policyState: "applyRejected" }, evidence());
+    assert.equal((await request(`${policyPath}/apply`, "POST", null)).status, 409);
+    installFixture({ policyState: "incompletePreview" }, evidence());
+    assert.partialDeepStrictEqual(
+      await (await request(`${policyPath}/validate`, "POST", null)).json(),
+      { data: { success: true, data: {} } },
+    );
+  });
 
   await t.test("Configuration merge, partial save and Create staging", async () => {
     installFixture(
@@ -482,6 +923,267 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
       { data: { content: provisionBody.initialWorkspaceFiles["AGENTS.md"] } },
     );
   });
+
+  await t.test(
+    "deployment snapshots, one-time staging, stop readback and deferred deletion",
+    async () => {
+      installFixture({ clearRevisionOnStopReadback: true }, evidence());
+      const agentPath = `agents/${id("agt", 100)}`;
+      await request("agents", "POST", {
+        name: "Staged Agent",
+        configurationId: id("cfg", 1),
+        executionMode: "dedicated",
+        initialWorkspaceFiles: { "AGENTS.md": "Initial guidance" },
+      });
+      const firstRevision = id("rev", 101);
+      assert.equal((await request(`${agentPath}/deploy`, "POST", {})).status, 202);
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/deployments/${firstRevision}`)).json(),
+        {
+          data: { status: "queued" },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/deployments/${firstRevision}`)).json(),
+        {
+          data: { status: "succeeded" },
+        },
+      );
+      // Editing current inputs must not alter the admitted snapshot; staged files
+      // are consumed once, so redeploy must preserve a later workspace edit.
+      await request(`configurations/${id("cfg", 1)}`, "PATCH", {
+        values: { agents: { defaults: { model: "codex/gpt-5.1" } } },
+      });
+      await request(agentPath, "PATCH", {
+        executionMode: "embedded",
+        extraSetting: { retained: true },
+      });
+      await request(`${agentPath}/workspace/files/AGENTS.md`, "PUT", {
+        content: "Edited guidance",
+      });
+      await request(`${agentPath}/deploy`, "POST", {});
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions/${firstRevision}`)).json(),
+        {
+          data: {
+            revision: 1,
+            configurationGeneration: 1,
+            harness: { mode: "dedicated" },
+            configuration: { agents: { defaults: { model: "codex/gpt-4.1" } } },
+          },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions/${id("rev", 102)}`)).json(),
+        {
+          data: { revision: 2, configurationGeneration: 2, harness: { mode: "embedded" } },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/workspace/files/AGENTS.md`)).json(),
+        {
+          data: { content: "Edited guidance" },
+        },
+      );
+      // Stop acknowledges the old selection; only the following detail read clears it.
+      assert.partialDeepStrictEqual(await (await request(`${agentPath}/stop`, "POST", {})).json(), {
+        data: { desiredRuntimeState: "stopped", activeRevisionId: firstRevision },
+      });
+      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
+        data: { activeRevisionId: null, extraSetting: { retained: true } },
+      });
+      assert.equal((await request(agentPath, "DELETE")).status, 202);
+      assert.equal((await request(agentPath)).status, 404);
+    },
+  );
+
+  await t.test("version lookups and deployment polls stay with their owning Agent", async () => {
+    const { Check }: { Check(schema: unknown, value: unknown): boolean } =
+      controller("typebox/value");
+    const agentA = id("agt", 100);
+    const revisionA = id("rev", 101);
+    const agentB = id("agt", 102);
+    const revisionB = id("rev", 103);
+    installFixture(
+      {
+        rules: [
+          {
+            method: "GET",
+            suffix: `/agents/${agentB}/revisions/${revisionA}`,
+            status: 403,
+            code: "FORBIDDEN",
+            once: true,
+          },
+        ],
+      },
+      evidence(),
+    );
+    for (const agentId of [agentA, agentB]) {
+      assert.equal(
+        (
+          await request("agents", "POST", {
+            name: agentId,
+            configurationId: id("cfg", 1),
+            executionMode: "dedicated",
+          })
+        ).status,
+        201,
+      );
+      assert.equal((await request(`agents/${agentId}/deploy`, "POST", {})).status, 202);
+    }
+    // An authored denial still wins before the ownership check.
+    assert.equal((await request(`agents/${agentB}/revisions/${revisionA}`)).status, 403);
+    const notFound = {
+      error: { code: "NOT_FOUND", message: "The requested platform resource was not found." },
+      meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+    };
+    for (const [agentId, ownRevision, otherRevision] of [
+      [agentA, revisionA, revisionB],
+      [agentB, revisionB, revisionA],
+    ]) {
+      for (const revisionId of [otherRevision, id("rev", 999)]) {
+        for (const [suffix, method] of [
+          [`revisions/${revisionId}`, "GET"],
+          [`deployments/${revisionId}`, "GET"],
+          [`deployments/${revisionId}/runtime`, "GET"],
+          [`deployments/${revisionId}/diagnostics`, "POST"],
+        ]) {
+          const reply = await request(`agents/${agentId}/${suffix}`, method);
+          assert.equal(reply.status, 404, `${agentId}/${suffix}`);
+          const body: unknown = await reply.json();
+          assert.equal(Check(ErrorResponse, body), true);
+          assert.deepEqual(body, notFound);
+        }
+      }
+      const collection: unknown = await (await request(`agents/${agentId}/revisions`)).json();
+      assert.ok(
+        collection &&
+          typeof collection === "object" &&
+          "data" in collection &&
+          Array.isArray(collection.data),
+      );
+      assert.equal(collection.data.length, 1);
+      assert.partialDeepStrictEqual(collection, { data: [{ id: ownRevision, agentId }] });
+      assert.partialDeepStrictEqual(
+        await (await request(`agents/${agentId}/revisions/${ownRevision}`)).json(),
+        {
+          data: { id: ownRevision, agentId },
+        },
+      );
+      assert.equal(
+        (await request(`agents/${agentId}/deployments/${ownRevision}/runtime`)).status,
+        200,
+      );
+      assert.equal(
+        (await request(`agents/${agentId}/deployments/${ownRevision}/diagnostics`, "POST")).status,
+        200,
+      );
+    }
+    // Neither rejected lookups nor runtime/diagnostic reads may poll a deployment
+    // or select a version. Each owner's first actual poll must still be queued.
+    for (const [agentId, revisionId] of [
+      [agentA, revisionA],
+      [agentB, revisionB],
+    ]) {
+      assert.partialDeepStrictEqual(await (await request(`agents/${agentId}`)).json(), {
+        data: { activeRevisionId: null },
+      });
+      assert.partialDeepStrictEqual(
+        await (await request(`agents/${agentId}/deployments/${revisionId}`)).json(),
+        {
+          data: { status: "queued", agentId },
+        },
+      );
+    }
+    assert.partialDeepStrictEqual(
+      await (await request(`agents/${agentA}/deployments/${revisionA}`)).json(),
+      {
+        data: { status: "succeeded" },
+      },
+    );
+    assert.partialDeepStrictEqual(await (await request(`agents/${agentA}`)).json(), {
+      data: { activeRevisionId: revisionA },
+    });
+    assert.partialDeepStrictEqual(await (await request(`agents/${agentB}`)).json(), {
+      data: { activeRevisionId: null },
+    });
+    assert.partialDeepStrictEqual(
+      await (await request(`agents/${agentB}/deployments/${revisionB}`)).json(),
+      {
+        data: { status: "succeeded" },
+      },
+    );
+    assert.partialDeepStrictEqual(await (await request(`agents/${agentB}`)).json(), {
+      data: { activeRevisionId: revisionB },
+    });
+  });
+
+  await t.test(
+    "seeded revision pagination and runtime reads drive the failed redeploy race",
+    async () => {
+      installFixture(
+        {
+          deployed: true,
+          revisionHistory: 3,
+          stopElsewhereOnReread: true,
+          failedRedeployOnReread: true,
+        },
+        evidence(),
+      );
+      const agentPath = `agents/${id("agt", 1)}`;
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions?limit=2`)).json(),
+        {
+          data: [{ revision: 3 }, { revision: 2 }],
+          meta: { nextCursor: "v1.2" },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions?limit=2&cursor=v1.2`)).json(),
+        {
+          data: [{ revision: 1 }],
+          meta: { nextCursor: null },
+        },
+      );
+      const runtime = `${agentPath}/deployments/${id("rev", 1)}/runtime`;
+      await request(`${runtime}/logs`);
+      // The diagnostic module only signals a read. The lifecycle owner performs the
+      // competing stop and preserves omission rather than converting it to null.
+      const stopped = await request(agentPath);
+      assert.partialDeepStrictEqual(await stopped.clone().json(), {
+        data: { desiredRuntimeState: "stopped" },
+      });
+      assert.doesNotMatch(await stopped.text(), /"activeRevisionId"/);
+      // Rejected runtime reads must not contribute to the two-read redeploy race.
+      assert.equal(
+        (await request(`${agentPath}/deployments/${id("rev", 999)}/runtime`)).status,
+        404,
+      );
+      assert.equal(
+        (await request(`agents/${id("agt", 2)}/deployments/${id("rev", 1)}/runtime`)).status,
+        404,
+      );
+      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
+        data: { desiredRuntimeState: "stopped" },
+      });
+      await request(runtime);
+      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
+        data: { desiredRuntimeState: "stopped" },
+      });
+      await request(runtime);
+      const restarted = await request(agentPath);
+      assert.partialDeepStrictEqual(await restarted.clone().json(), {
+        data: { desiredRuntimeState: "running" },
+      });
+      assert.doesNotMatch(await restarted.text(), /"activeRevisionId"/);
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/deployments/${id("rev", 18)}`)).json(),
+        {
+          data: { status: "failed", error: { code: "RUNTIME_MODEL_PROBE_TIMEOUT" } },
+        },
+      );
+    },
+  );
 
   for (const malformedProvisioningReply of ["revision-id", "error-message"] as const) {
     await t.test(
@@ -577,7 +1279,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     "authored boolean race and Slack-only credential projection remain intact",
     async () => {
       const { scenarios: catalog } =
-        await import("../../scripts/console-storybook/public/scenarios.mjs");
+        await import("../../scripts/console-storybook/public/scenarios.mts");
       installFixture(catalog.channelChangedElsewhere, evidence());
       const configurationPath = `configurations/${id("cfg", 1)}`;
       const before: unknown = await (await request(configurationPath)).json();

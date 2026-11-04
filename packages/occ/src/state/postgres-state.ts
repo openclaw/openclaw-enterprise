@@ -613,6 +613,7 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   const ownerCapability = text(row, "owner_capability");
   if (
     (ownerCapability !== "credential_gateway" &&
+      ownerCapability !== "credential_refresh" &&
       (ownerCapability !== "credential_proxy" || row.egress == null)) ||
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
@@ -3774,6 +3775,9 @@ export class PostgresPlatformState implements PlatformStateStore {
       return found;
     };
 
+    const savedConnections = postgresSavedConnections(client, () =>
+      this.requireInitialized(context),
+    );
     const revisions: AgentRevisionRepository = {
       findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
         const row = rows(
@@ -3901,7 +3905,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
         }
         await assertRevisionAuthAvailable(
-          { secrets, serviceAccounts, credentialSources },
+          { secrets, serviceAccounts, credentialSources, savedConnections },
           revision,
           async (ids) =>
             rows(
@@ -3931,7 +3935,12 @@ export class PostgresPlatformState implements PlatformStateStore {
           owner.backendId !== revision.backendId ||
           revision.gatewayManagedMode !== owner.gatewayManagedMode ||
           !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
-          !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
+          !(await credentialSourcesMatch(
+            savedConnections,
+            revision.namespaceId,
+            owner.credentialSources,
+            revision.credentialSources,
+          ))
         ) {
           throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
         }
@@ -4333,7 +4342,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       installations,
       namespaces,
       configurations,
-      savedConnections: postgresSavedConnections(client, () => this.requireInitialized(context)),
+      savedConnections,
       connectionTemplates: postgresConnectionTemplates(client, () =>
         this.requireInitialized(context),
       ),

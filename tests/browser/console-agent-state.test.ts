@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Page, Locator, Route } from "playwright";
+import type {
+  AuditEvent,
+  Permission,
+  ResourceKind,
+  SecretBinding,
+} from "../../packages/contracts/src/index.ts";
 
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
@@ -44,7 +51,7 @@ import {
   expectVersionRecord,
   openFailureDetails,
   showDeploymentTab,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
@@ -74,14 +81,66 @@ import {
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { responseTo } from "./console-action-helpers.ts";
+
+type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type NamespaceFixture = Awaited<ReturnType<ConsoleFixture["createNamespace"]>>;
+type AgentFixture = Awaited<ReturnType<ConsoleFixture["createAgent"]>>;
+type RevisionFixture = Awaited<ReturnType<ConsoleFixture["deployAgent"]>>;
+type SecretFixture = Awaited<ReturnType<ConsoleFixture["createSecret"]>>;
+type Requests = ReturnType<typeof apiRequests>;
+type DeploymentError = NonNullable<ReturnType<typeof persistedDeploymentError>>;
+
+declare global {
+  var summaryRewrites: (string | null)[];
+  var diagnosticsSeen: string[];
+}
+
+function requiredText(value: string | null): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function lookupSecretId(body: unknown): string {
+  assert.ok(typeof body === "object" && body !== null && "secretId" in body);
+  assert.ok(typeof body.secretId === "string");
+  return body.secretId;
+}
+
+function identifiedResource(value: unknown) {
+  const hasId = (resource: unknown): resource is { readonly id: string } =>
+    typeof resource === "object" &&
+    resource !== null &&
+    "id" in resource &&
+    typeof resource.id === "string";
+  assert.ok(hasId(value));
+  return value;
+}
+
+function agentState(value: unknown) {
+  const isAgentState = (
+    candidate: unknown,
+  ): candidate is Readonly<
+    Pick<AgentFixture, "status" | "desiredRuntimeState" | "activeRevisionId">
+  > =>
+    typeof candidate === "object" &&
+    candidate !== null &&
+    "status" in candidate &&
+    (candidate.status === "active" || candidate.status === "deleting") &&
+    "desiredRuntimeState" in candidate &&
+    (candidate.desiredRuntimeState === "running" || candidate.desiredRuntimeState === "stopped") &&
+    (!("activeRevisionId" in candidate) || typeof candidate.activeRevisionId === "string");
+  assert.ok(isAgentState(value));
+  return value;
+}
 
 function deploymentBody(
-  namespaceId,
-  agentId,
-  deploymentId,
-  status,
-  error = null,
-  cleanup = undefined,
+  namespaceId: string,
+  agentId: string,
+  deploymentId: string,
+  status: string,
+  error: DeploymentError | null = null,
+  cleanup: { status: string; nextAttemptAt: string | null } | undefined = undefined,
 ) {
   return JSON.stringify({
     data: {
@@ -99,6 +158,7 @@ function deploymentBody(
 }
 
 const authenticationFailure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");
+assert.ok(authenticationFailure);
 
 test("Refresh deployment also refreshes the viewed version's deployment record", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -204,7 +264,10 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   const agent = await fixture.createAgent(namespace.id, "Cleanup Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  let cleanup = { status: "queued", nextAttemptAt: "2026-09-30T12:00:00.000Z" };
+  let cleanup: { status: string; nextAttemptAt: string | null } = {
+    status: "queued",
+    nextAttemptAt: "2026-09-30T12:00:00.000Z",
+  };
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
     route.fulfill({
       status: 200,
@@ -309,7 +372,11 @@ test("Deployment polls leave an unchanged summary and status line untouched", as
       }
     });
     for (const selector of [".agent-current-summary", ".agent-status-line"]) {
-      observer.observe(globalThis.document.querySelector(selector), {
+      const target = globalThis.document.querySelector(selector);
+      if (!target) {
+        throw new Error(`Missing observed element: ${selector}`);
+      }
+      observer.observe(target, {
         childList: true,
         subtree: true,
         characterData: true,
@@ -346,8 +413,9 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url.pathname + url.search);
   await waitForChosenVersion(page, 1);
-  const activity = await expectDeploymentOutcome(page, "In progress");
+  const activity: Locator = await expectDeploymentOutcome(page, "In progress");
   const panel = await activity.elementHandle();
+  assert.ok(panel);
   // The Console caches the Agent view for Back only if its reads finished before it was left.
   await waitForIdleFetches(page);
 
@@ -445,7 +513,7 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
       body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
     }),
   );
-  const answer = (observedAt) => ({
+  const answer = (observedAt: string) => ({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
@@ -464,7 +532,7 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
       meta: { requestId: "req_test_diagnostics_fast" },
     }),
   });
-  const holdRun = (observedAt) =>
+  const holdRun = (observedAt: string) =>
     holdRequests(t, page, `${fixture.origin}${deploymentPath}/diagnostics`, {
       method: "POST",
       once: true,
@@ -485,10 +553,16 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
   // Every waiting line added and every element focused inside the panel, painted or not.
   await page.evaluate(() => {
     const panel = globalThis.document.querySelector(".version-diagnostics");
+    if (!panel) {
+      throw new Error("Missing diagnostics panel");
+    }
     globalThis.diagnosticsSeen = [];
     new globalThis.MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.addedNodes) {
+          if (node.textContent === null) {
+            throw new Error("Missing observed text");
+          }
           if (node.textContent.includes("Waiting for diagnostic results")) {
             globalThis.diagnosticsSeen.push("waiting line");
           } else if (node.textContent.startsWith("Observed ")) {
@@ -497,16 +571,22 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
         }
       }
     }).observe(panel, { childList: true, subtree: true });
-    panel.addEventListener("focusin", (event) =>
-      globalThis.diagnosticsSeen.push(`focus ${event.target.localName}`),
-    );
+    panel.addEventListener("focusin", (event) => {
+      if (!(event.target instanceof Element)) {
+        throw new Error("Missing focused element");
+      }
+      globalThis.diagnosticsSeen.push(`focus ${event.target.localName}`);
+    });
   });
   const seen = () => page.evaluate(() => globalThis.diagnosticsSeen.splice(0));
   const description = () =>
-    run.evaluate(
-      (node) =>
-        globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
-    );
+    run.evaluate((node) => {
+      const id = node.getAttribute("aria-describedby");
+      if (id === null) {
+        throw new Error("Missing description ID");
+      }
+      return globalThis.document.getElementById(id)?.textContent;
+    });
 
   await run.focus();
   assert.deepEqual(await seen(), ["focus button"]);
@@ -516,7 +596,7 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
     ["2026-09-30T12:00:04.000Z", false],
     ["2026-09-30T12:00:06.000Z", true],
     ["2026-09-30T12:00:06.000Z", false],
-  ]) {
+  ] as const) {
     const held = await holdRun(observedAt);
     await page.keyboard.press("Enter");
     try {
@@ -733,7 +813,7 @@ test("Only an administrator's session probes Installation administration and rea
   const reader = await fixture.createNamespaceMember("audited-reader", namespace.id, AGENT_READ);
   // A link to the Access tab, where sharing policy is read.
   const access = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
-  const adminReads = (requests) =>
+  const adminReads = (requests: Requests) =>
     requests
       .filter(({ path }) => path === "/observability" || path.includes("/iam/"))
       .map(({ method, path }) => `${method} ${path}`);
@@ -793,8 +873,8 @@ test("A member's Agent detail reads no bound Secret her Secret list leaves out",
   const reader = await fixture.createNamespaceMember("bound-reader", namespace.id, AGENT_READ);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   const secretPath = `/namespaces/${namespace.id}/secrets/${secret.id}`;
-  const secretReads = (requests) => requests.filter(({ path }) => path === secretPath);
-  const listReads = (requests) =>
+  const secretReads = (requests: Requests) => requests.filter(({ path }) => path === secretPath);
+  const listReads = (requests: Requests) =>
     requests.filter(({ path }) => path === `/namespaces/${namespace.id}/secrets`);
   const secretDenials = () => authorizationDenials(fixture.auditSink, /^openclaw\.secrets\./);
 
@@ -836,7 +916,7 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   const reader = await fixture.createNamespaceMember("link-reader", namespace.id, AGENT_READ);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
   const secretPage = `/console/secrets?namespace=${namespace.id}&secret=${secret.id}`;
-  const metadataLink = (page) =>
+  const metadataLink = (page: Page) =>
     page.getByRole("link", {
       name: "View harness authentication Secret metadata (opens in new tab)",
     });
@@ -869,6 +949,7 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   await waitForEnabled(editing.getByLabel("API key Secret", { exact: true }));
   await waitForIdleFetches(editing);
   const editorHint = await editing.locator("#harness-auth-secret-status").textContent();
+  assert.ok(editorHint !== null);
   assert.ok(editorHint.startsWith(`${BOUND_SECRET_UNLISTED} `), editorHint);
   assert.equal(await metadataLink(editing).count(), 0);
 
@@ -907,7 +988,7 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   // Finding 2645. The link keeps its Secret until the Secrets page shows it: through sign-in when
   // it opens signed out, through a failed first load's Retry, and through a session that expires
   // during the load. Each time the dialog opens and the parameter leaves the URL.
-  const expectLinkedDialog = async (page) => {
+  const expectLinkedDialog = async (page: Page) => {
     const linked = page.getByRole("dialog", { name: "Linked model key" });
     await linked.getByText(secret.id, { exact: true }).waitFor();
     assert.equal(new URL(page.url()).search, `?namespace=${namespace.id}`);
@@ -948,7 +1029,7 @@ test("Only an administrator's Backends page reads Backends", async (t) => {
   const namespace = await fixture.createNamespace("Backends access", { ready: true });
   const reader = await fixture.createNamespaceMember("backends-reader", namespace.id, AGENT_READ);
   const backendsPage = `/console/backends?namespace=${namespace.id}`;
-  const backendsReads = (requests) => requests.filter(({ path }) => path === "/backends");
+  const backendsReads = (requests: Requests) => requests.filter(({ path }) => path === "/backends");
   const backendsDenials = () => authorizationDenials(fixture.auditSink, /^openclaw\.backends\./);
 
   const { page: member } = await newPage(t, fixture);
@@ -970,11 +1051,9 @@ test("Only an administrator's Backends page reads Backends", async (t) => {
   const { page: admin } = await newPage(t, fixture);
   await trackSettledFetches(admin);
   const adminRequests = apiRequests(admin, fixture.origin);
-  const adminRead = admin.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/backends" && response.status() === 200,
-  );
+  const adminRead = responseTo(admin, "GET", `${fixture.origin}/backends`);
   await login(admin, fixture, backendsPage);
-  await adminRead;
+  assert.equal((await adminRead).status(), 200);
   await waitForIdleFetches(admin);
   assert.equal(backendsReads(adminRequests).length, 1);
   assert.equal(await admin.getByText(BACKENDS_DENIED, { exact: true }).count(), 0);
@@ -995,21 +1074,18 @@ test("A Restriction on Agent create leaves an administrator's Installation pages
   restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
-  const backendsRead = () =>
-    page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/backends" && response.status() === 200,
-    );
+  const backendsRead = () => responseTo(page, "GET", `${fixture.origin}/backends`);
   const observability = page.getByRole("link", { name: "Observability", exact: true });
 
   let read = backendsRead();
   await login(page, fixture, `/console/backends?namespace=${namespace.id}`);
-  await read;
+  assert.equal((await read).status(), 200);
   await waitForIdleFetches(page);
   assert.equal(await page.getByText(BACKENDS_DENIED, { exact: true }).count(), 0);
   assert.equal(await observability.getAttribute("href"), url);
   read = backendsRead();
   await page.reload();
-  await read;
+  assert.equal((await read).status(), 200);
   await waitForIdleFetches(page);
   assert.equal(await page.getByText(BACKENDS_DENIED, { exact: true }).count(), 0);
   assert.equal(await observability.getAttribute("href"), url);
@@ -1050,7 +1126,7 @@ test("Refresh and reload on the Backends refusal check Installation administrati
   const memberGrants = [
     ["read", "namespace"],
     ["create", "agent"],
-  ];
+  ] as const;
   const personas = [
     { label: "refreshed-member", grants: memberGrants, recheck: "refresh", probes: 0 },
     { label: "reloaded-member", grants: memberGrants, recheck: "reload", probes: 0 },
@@ -1064,7 +1140,7 @@ test("Refresh and reload on the Backends refusal check Installation administrati
     const { page } = await newPage(t, fixture);
     await trackSettledFetches(page);
     const requests = apiRequests(page, fixture.origin);
-    const reads = (path) => requests.filter((request) => request.path === path).length;
+    const reads = (path: string) => requests.filter((request) => request.path === path).length;
     const path =
       grants.length > 0 ? `/console/backends?namespace=${namespace.id}` : "/console/backends";
     await login(page, fixture, path, account.credentials);
@@ -1074,22 +1150,20 @@ test("Refresh and reload on the Backends refusal check Installation administrati
     assert.equal(reads("/observability"), probes, label);
 
     grantInstallationAdministration(fixture, account.principal);
-    const read = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/backends" && response.status() === 200,
-    );
+    const read = responseTo(page, "GET", `${fixture.origin}/backends`);
     if (recheck === "refresh") {
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
     } else {
       await page.reload();
     }
-    await read;
+    assert.equal((await read).status(), 200);
     await waitForIdleFetches(page);
     assert.equal(await page.getByText(BACKENDS_DENIED, { exact: true }).count(), 0, label);
   }
   // Only the outsider's first probe was refused; no Backends read was.
   assert.deepEqual(
     authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends)\./).map(
-      (event) => event.action,
+      (event: AuditEvent) => event.action,
     ),
     ["openclaw.observability.read"],
   );
@@ -1113,34 +1187,30 @@ test("A Backends refusal after administration is revoked is read and audited onc
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  const reads = (path) => requests.filter((request) => request.path === path).length;
+  const reads = (path: string) => requests.filter((request) => request.path === path).length;
   const permissionsPath = `/namespaces/${namespace.id}/permissions`;
   const observability = page.getByRole("link", { name: "Observability", exact: true });
   const refresh = () => page.getByRole("button", { name: "Refresh", exact: true }).click();
-  const backendsAnswer = (status) =>
-    page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/backends" && response.status() === status,
-    );
+  const backendsAnswer = () => responseTo(page, "GET", `${fixture.origin}/backends`);
 
-  let read = backendsAnswer(200);
+  let read = backendsAnswer();
   await login(page, fixture, `/console/backends?namespace=${namespace.id}`, account.credentials);
-  await read;
+  assert.equal((await read).status(), 200);
   for (const [index, recheck] of ["reload", "refresh"].entries()) {
     if (index > 0) {
       revoke = grantInstallationAdministration(fixture, account.principal);
-      read = backendsAnswer(200);
+      read = backendsAnswer();
       await refresh();
-      await read;
+      assert.equal((await read).status(), 200);
     }
     await waitForIdleFetches(page);
     assert.equal(await observability.getAttribute("href"), url, recheck);
 
     revoke();
     // The first Refresh after the revoke cannot know it: it reads Backends, which the API refuses.
-    read = backendsAnswer(403);
+    read = backendsAnswer();
     await refresh();
-    await read;
+    assert.equal((await read).status(), 403);
     await page.locator(".state-panel").getByText(BACKENDS_DENIED, { exact: true }).waitFor();
     await waitForIdleFetches(page);
     assert.equal(await observability.count(), 0, recheck);
@@ -1148,8 +1218,12 @@ test("A Backends refusal after administration is revoked is read and audited onc
 
     const asked = reads(permissionsPath);
     // The settled refusal asks the permission answer; a stale one would read Backends.
-    const answered = page.waitForResponse((response) =>
-      [permissionsPath, "/backends"].includes(new URL(response.url()).pathname),
+    const answered = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        [permissionsPath, "/backends"].some(
+          (path) => response.url() === `${fixture.origin}${path}`,
+        ),
     );
     if (recheck === "refresh") {
       await refresh();
@@ -1166,7 +1240,7 @@ test("A Backends refusal after administration is revoked is read and audited onc
   // One audited refusal per revocation.
   assert.deepEqual(
     authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends)\./).map(
-      (event) => event.action,
+      (event: AuditEvent) => event.action,
     ),
     ["openclaw.backends.list", "openclaw.backends.list"],
   );
@@ -1263,7 +1337,10 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   await configuration.locator("summary").getByText("4 fields", { exact: true }).waitFor();
   await jsonButton.click();
   assert.equal(await jsonButton.getAttribute("aria-pressed"), "true");
-  assert.deepEqual(JSON.parse(await configuration.locator("pre").textContent()), accepted);
+  assert.deepEqual(
+    JSON.parse(requiredText(await configuration.locator("pre").textContent())),
+    accepted,
+  );
   assert.equal(await fields.isVisible(), false);
   await fieldsButton.click();
   assert.equal(await fields.isVisible(), true);
@@ -1291,11 +1368,15 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   assert.equal(await secret.locator("pre").count(), 0);
   // Both columns belong to one document scroll; the profile reaches the long page's bottom.
   const desktop = await page.evaluate(() => {
-    const shell = globalThis.document.querySelector(".shell").getBoundingClientRect();
-    const sidebar = globalThis.document.querySelector(".sidebar").getBoundingClientRect();
-    const profile = globalThis.document
-      .querySelector(".sidebar .account-toggle")
-      .getBoundingClientRect();
+    const shellElement = globalThis.document.querySelector(".shell");
+    const sidebarElement = globalThis.document.querySelector(".sidebar");
+    const profileElement = globalThis.document.querySelector(".sidebar .account-toggle");
+    if (!shellElement || !sidebarElement || !profileElement) {
+      throw new Error("Missing layout elements");
+    }
+    const shell = shellElement.getBoundingClientRect();
+    const sidebar = sidebarElement.getBoundingClientRect();
+    const profile = profileElement.getBoundingClientRect();
     return {
       shellHeight: shell.height,
       sidebarHeight: sidebar.height,
@@ -1319,6 +1400,7 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   await page.locator(".sidebar nav").waitFor({ state: "visible" });
   const drawer = await page.locator(".sidebar").boundingBox();
+  assert.ok(drawer);
   assert.ok(drawer.height <= 844 && drawer.y === 0, JSON.stringify(drawer));
   await page.keyboard.press("Escape");
   await page.locator(".sidebar").waitFor({ state: "hidden" });
@@ -1332,11 +1414,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   );
 });
 
-// Settings shows the Installation Driver configuration heading while its configuration read is still in
-// flight. An administrator's Settings page has settled once the values are listed; a revoke
-// before then reaches that read and the API refuses and audits it (finding 2654).
-async function waitForDriverConfigurations(page) {
+// Settle all the Installation reads on Settings before revoking the administrator. A pending
+// template, OAuth client, or Driver configuration read would exercise a different race.
+async function waitForDriverConfigurations(page: Page) {
   await page.getByText(/^Inspect startup values accepted by the selected Drivers\./).waitFor();
+  await waitForIdleFetches(page);
 }
 
 // Finding D760. An administrator revoked while signed in keeps the tab's settled answer, so the
@@ -1364,14 +1446,14 @@ test("Installation-administration reads after a revoke are refused and audited o
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  const reads = (path) => requests.filter((request) => request.path === path).length;
+  const reads = (path: string) => requests.filter((request) => request.path === path).length;
   const observability = page.getByRole("link", { name: "Observability", exact: true });
   const driverSchemas = page.getByRole("heading", { name: "Installation Driver configuration" });
   const unlisted = page.getByText(BOUND_SECRET_UNLISTED, { exact: true });
   const adminDenials = () =>
     authorizationDenials(
       fixture.auditSink,
-      /^openclaw\.(observability|backends|iam|secrets|installation)\./,
+      /^openclaw\.(observability|backends|iam|secrets|installation|connection_templates|oauth_clients)\./,
     );
   const settingsUrl = `${fixture.origin}/console/settings?namespace=${namespace.id}`;
   const agentUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -1394,6 +1476,7 @@ test("Installation-administration reads after a revoke are refused and audited o
       await page.getByRole("heading", { name: "Signed-in account" }).waitFor();
       await waitForIdleFetches(page);
       assert.equal(await driverSchemas.count(), 0);
+      assert.equal(await page.getByRole("heading", { name: "Connection templates" }).count(), 0);
       assert.equal(await page.getByRole("alert").count(), 0);
     },
     backends: async () => {
@@ -1407,7 +1490,7 @@ test("Installation-administration reads after a revoke are refused and audited o
 
   let revoke = grantInstallationAdministration(fixture, account.principal);
   await login(page, fixture, settingsUrl, account.credentials);
-  for (const [round, first] of ["access", "agent", "settings"].entries()) {
+  for (const [round, first] of (["access", "agent", "settings"] as const).entries()) {
     if (round > 0) {
       // Administration again: a page load asks the permission answer, then the probe.
       revoke = grantInstallationAdministration(fixture, account.principal);
@@ -1419,7 +1502,7 @@ test("Installation-administration reads after a revoke are refused and audited o
     await pages[first]();
     assert.equal(await observability.count(), 0, first);
     assert.equal(adminDenials().length, round + 1, first);
-    for (const other of ["access", "agent", "settings", "backends"]) {
+    for (const other of ["access", "agent", "settings", "backends"] as const) {
       await pages[other]();
     }
     assert.equal(adminDenials().length, round + 1, first);
@@ -1470,7 +1553,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   assert.deepEqual(
     adminDenials()
       .slice(5)
-      .map((event) => event.action),
+      .map((event: AuditEvent) => event.action),
     ["openclaw.secrets.read"],
   );
 });
@@ -1508,7 +1591,7 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
     await page.waitForURL(/\/console\/agents\?/);
     await waitForIdleFetches(page);
   };
-  const backThreeTimes = async (denials) => {
+  const backThreeTimes = async (denials: number) => {
     for (let step = 0; step < 3; step += 1) {
       await page.goBack();
       await page.waitForURL(new RegExp(`/console/agents/${agent.id}\\?`));
@@ -1544,7 +1627,7 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
 });
 
 // The IAM policy reads among `requests`, without their Namespace prefix.
-function iamReads(requests) {
+function iamReads(requests: Requests) {
   return requests
     .filter(({ path }) => path.includes("/iam/"))
     .map(({ method, path }) => `${method} ${path.replace(/^\/namespaces\/[^/]+/, "")}`);
@@ -1578,7 +1661,7 @@ test("A first Credentials open after a revoke reads the grant policy once, audit
   // The page load's probe confirmed administration, so the console sends the grant read.
   assert.equal(requests.filter(({ path }) => path === "/observability").length, 1);
 
-  const openCredentialsAfterRevoke = async (end) => {
+  const openCredentialsAfterRevoke = async (end: () => void) => {
     end();
     const audited = authorizationDenials(fixture.auditSink).length;
     const sent = requests.length;
@@ -1589,7 +1672,7 @@ test("A first Credentials open after a revoke reads the grant policy once, audit
     assert.deepEqual(
       authorizationDenials(fixture.auditSink)
         .slice(audited)
-        .map(({ action }) => action),
+        .map(({ action }: AuditEvent) => action),
       ["openclaw.iam.roles.list"],
     );
     assert.deepEqual(iamReads(requests.slice(sent)), ["GET /iam/roles"]);
@@ -1609,7 +1692,7 @@ test("A first Credentials open after a revoke reads the grant policy once, audit
   });
   const permissionsPath = `/namespaces/${namespace.id}/permissions`;
   await page.route(
-    (address) => new URL(address).pathname === permissionsPath,
+    (address: string | URL) => new URL(address).pathname === permissionsPath,
     (route) =>
       rolesSent
         ? route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."))
@@ -1625,8 +1708,8 @@ test("A bound Slack Secret grant read after a revoke is refused and audited once
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Revoked Slack grants", { ready: true });
-  const secretBindings = {};
-  for (const token of ["app", "bot"]) {
+  const secretBindings: Record<string, SecretBinding> = {};
+  for (const token of ["app", "bot"] as const) {
     const secret = await fixture.createSecret(
       namespace.id,
       `Revoked Slack ${token} token`,
@@ -1672,7 +1755,9 @@ test("A bound Slack Secret grant read after a revoke is refused and audited once
   // Only the grant read's IAM denials count: the bound Secrets' metadata reads, sent alongside
   // it on the same page load, are a separate case (finding 2920).
   assert.deepEqual(
-    authorizationDenials(fixture.auditSink, /^openclaw\.iam\./).map(({ action }) => action),
+    authorizationDenials(fixture.auditSink, /^openclaw\.iam\./).map(
+      ({ action }: AuditEvent) => action,
+    ),
     ["openclaw.iam.roles.list"],
   );
   assert.deepEqual(iamReads(requests), ["GET /iam/roles"]);
@@ -1692,14 +1777,14 @@ const SLACK_TARGETS = {
   channels: { C123: { requireMention: true } },
 };
 
-async function slackAdministratorPage(t, name, tab) {
+async function slackAdministratorPage(t: TestContext, name: string, tab: string) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(name, { ready: true });
   const harness = await fixture.createSecret(namespace.id, `${name} model key`, "hidden-model");
-  const secretBindings = {};
-  const secrets = {};
-  for (const token of ["app", "bot"]) {
+  const secretBindings: Record<string, SecretBinding> = {};
+  const secrets: Partial<Record<"app" | "bot", SecretFixture>> = {};
+  for (const token of ["app", "bot"] as const) {
     const secret = await fixture.createSecret(
       namespace.id,
       `${name} Slack ${token} token`,
@@ -1739,13 +1824,22 @@ async function slackAdministratorPage(t, name, tab) {
   await waitForIdleFetches(page);
   // The page load's probe confirmed administration, so the console sends administrator reads.
   assert.equal(requests.filter(({ path }) => path === "/observability").length, 1);
-  return { fixture, namespace, page, requests, revoke, secrets };
+  assert.ok(secrets.app);
+  assert.ok(secrets.bot);
+  return {
+    fixture,
+    namespace,
+    page,
+    requests,
+    revoke,
+    secrets: { app: secrets.app, bot: secrets.bot },
+  };
 }
 
 // Bound Secret metadata reads by ID, and Slack name lookups, among `requests`.
-const secretReads = (requests) =>
+const secretReads = (requests: Requests) =>
   requests.filter(({ method, path }) => method === "GET" && /\/secrets\/[^/?]+$/.test(path));
-const nameLookups = (requests) =>
+const nameLookups = (requests: Requests) =>
   requests.filter(({ path }) => path.endsWith("/channel-directory/lookup"));
 // The fixture has no Slack workspace: a lookup the API allows fails at Slack. Tests that need an
 // allowed lookup to succeed simulate only this provider answer.
@@ -1786,7 +1880,7 @@ test("A first Channels open after a revoke reads one bound Secret, audited once"
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.secrets.read"],
   );
   assert.equal(secretReads(requests.slice(sent)).length, 1);
@@ -1844,7 +1938,7 @@ test("Edit Slack after a revoke looks Slack names up once, audited once", async 
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.channel_directory.lookup"],
   );
   assert.equal(nameLookups(requests.slice(sent)).length, 1);
@@ -1909,7 +2003,7 @@ test("A Restriction on one bound Secret still reads the Slack card's other Secre
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.secrets.read"],
   );
   assert.equal(secretReads(requests.slice(sent)).length, 2);
@@ -1951,12 +2045,12 @@ test("A lookup refusal for one Slack Secret does not answer another Secret's loo
   held.release();
   await waitForIdleFetches(page);
   const lookups = nameLookups(requests.slice(sent));
-  assert.equal(lookups.filter(({ body }) => body?.secretId === secrets.bot.id).length, 1);
-  assert.ok(lookups.some(({ body }) => body?.secretId === other.id));
+  assert.equal(lookups.filter(({ body }) => lookupSecretId(body) === secrets.bot.id).length, 1);
+  assert.ok(lookups.some(({ body }) => lookupSecretId(body) === other.id));
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.channel_directory.lookup"],
   );
   // Once no lookup waits, the refusal is forgotten: picking the bound Secret again asks again.
@@ -1964,7 +2058,7 @@ test("A lookup refusal for one Slack Secret does not answer another Secret's loo
   await selectSecret(drawer, "Slack bot token", secrets.bot);
   await waitForIdleFetches(page);
   const again = nameLookups(requests.slice(sent)).filter(
-    ({ body }) => body?.secretId === secrets.bot.id,
+    ({ body }) => lookupSecretId(body) === secrets.bot.id,
   );
   assert.ok(again.length > 1, `the bound Secret was looked up again (${again.length})`);
 });
@@ -1990,10 +2084,7 @@ test("Edit Slack sends its waiting lookups at once after the first succeeds", as
   let inFlight = 0;
   let mostInFlight = 0;
   let arrived = 0;
-  let allArrived;
-  const waiting = new Promise((resolve) => {
-    allArrived = resolve;
-  });
+  const { promise: waiting, resolve: allArrived } = Promise.withResolvers<void>();
   t.after(() => allArrived());
   // Registered before the hold, so it receives the lookups after the held first one.
   await page.route(lookupUrl, async (route) => {
@@ -2003,7 +2094,7 @@ test("Edit Slack sends its waiting lookups at once after the first succeeds", as
     if (arrived === 3) {
       allArrived();
     }
-    let timer;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       waiting,
       new Promise((resolve) => {
@@ -2073,12 +2164,12 @@ test("Each Slack Secret's first lookup waits alone after a refusal", async (t) =
   held.release();
   await waitForIdleFetches(page);
   const lookups = nameLookups(requests.slice(sent));
-  assert.equal(lookups.filter(({ body }) => body?.secretId === other.id).length, 1);
-  assert.equal(lookups.filter(({ body }) => body?.secretId === secrets.bot.id).length, 1);
+  assert.equal(lookups.filter(({ body }) => lookupSecretId(body) === other.id).length, 1);
+  assert.equal(lookups.filter(({ body }) => lookupSecretId(body) === secrets.bot.id).length, 1);
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.channel_directory.lookup", "openclaw.channel_directory.lookup"],
   );
 });
@@ -2104,7 +2195,7 @@ test("A failed permission answer after a Restriction refusal keeps an administra
 
   restrict(fixture.policy, "read", "secret", { namespaceId: namespace.id });
   const permissionsPath = `/namespaces/${namespace.id}/permissions`;
-  const isPermissions = (address) => new URL(address).pathname === permissionsPath;
+  const isPermissions = (address: string | URL) => new URL(address).pathname === permissionsPath;
   await page.route(isPermissions, (route) =>
     route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
   );
@@ -2115,11 +2206,13 @@ test("A failed permission answer after a Restriction refusal keeps an administra
       failedAnswers.push(response.url());
     }
   });
-  const refusal = page.waitForResponse(
-    (response) => /\/secrets\//.test(new URL(response.url()).pathname) && response.status() === 403,
+  const refusal = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/secrets/${secret.id}`,
   );
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")));
-  await refusal;
+  assert.equal((await refusal).status(), 403);
   await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
   await waitForIdleFetches(page);
   assert.ok(failedAnswers.length >= 1, "the permission answer failed");
@@ -2129,7 +2222,7 @@ test("A failed permission answer after a Restriction refusal keeps an administra
     authorizationDenials(
       fixture.auditSink,
       /^openclaw\.(observability|backends|iam|secrets|installation)\./,
-    ).map((event) => event.action),
+    ).map((event: AuditEvent) => event.action),
     ["openclaw.secrets.read"],
   );
 });
@@ -2155,11 +2248,12 @@ test("Reads waiting behind a pending administration read end with their page", a
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   // Sharing policy and a bound Secret by ID: the reads only an administrator's page sends.
-  const administrationPath = (path) => /\/iam\/|\/secrets\/sec_/.test(path);
+  const administrationPath = (path: string) => /\/iam\/|\/secrets\/sec_/.test(path);
   const adminDenials = () =>
     authorizationDenials(fixture.auditSink, /^openclaw\.(observability|backends|iam|secrets)\./);
   const accessUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
-  const sidebarLink = (name) => page.locator("nav").getByRole("link", { name, exact: true });
+  const sidebarLink = (name: string) =>
+    page.locator("nav").getByRole("link", { name, exact: true });
 
   const revoke = grantInstallationAdministration(fixture, account.principal);
   await login(page, fixture, `/console/settings?namespace=${namespace.id}`, account.credentials);
@@ -2186,7 +2280,9 @@ test("Reads waiting behind a pending administration read end with their page", a
       { once: true, afterServer: true },
     );
     await page.goto(accessUrl);
-    assert.equal((await first.requested).status(), 403);
+    const firstResponse = await first.requested;
+    assert.ok(firstResponse);
+    assert.equal(firstResponse.status(), 403);
     assert.equal(adminDenials().length, round + 1);
     const sent = requests.length;
     await leave();
@@ -2221,7 +2317,7 @@ test("A return to the Access tab after a revoke shows the member notice, audited
     body: {
       subjectKind: "identity",
       subjectId: account.principal.id,
-      roleId: role.data.id,
+      roleId: identifiedResource(role.data).id,
       resourceKind: "agent",
       resourceId: agent.id,
     },
@@ -2230,7 +2326,8 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  const policyReads = (from) => requests.slice(from).filter(({ path }) => path.includes("/iam/"));
+  const policyReads = (from: number) =>
+    requests.slice(from).filter(({ path }) => path.includes("/iam/"));
   const iamDenials = () => authorizationDenials(fixture.auditSink, /^openclaw\.iam\./);
   const revoke = grantInstallationAdministration(fixture, account.principal);
   await login(
@@ -2259,9 +2356,9 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   // what the panel said.
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   const shared = panel.getByText("Agent access is shared.", { exact: false });
-  await panel
-    .getByLabel("Existing person’s Principal ID")
-    .fill(fixture.provisionedAccounts[0].principal.id);
+  const recipient = fixture.provisionedAccounts[0];
+  assert.ok(recipient);
+  await panel.getByLabel("Existing person’s Principal ID").fill(recipient.principal.id);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await shared.waitFor();
@@ -2349,7 +2446,7 @@ test("A first Access open after a revoke shows the member notice, audited once",
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.iam.roles.list"],
   );
   assert.deepEqual(
@@ -2388,7 +2485,7 @@ test("A share after a revoke rereads the policy one list at a time, audited once
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.iam.roles.list"],
   );
   assert.deepEqual(
@@ -2423,7 +2520,7 @@ test("A share after a revoke rereads the policy one list at a time, audited once
 // read-only until the page's Refresh. Refresh sharing now rereads the Agent's permission answer
 // and the Namespace's, neither audited, and then the policy, one list at a time. Still revoked,
 // it sends no policy read and adds no audited refusal.
-async function shareRefusedAfterRevoke(t, name) {
+async function shareRefusedAfterRevoke(t: TestContext, name: string) {
   const opened = await openAsRevocableAdministrator(t, name, "draft");
   const { fixture, page, revoke } = opened;
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
@@ -2440,10 +2537,12 @@ async function shareRefusedAfterRevoke(t, name) {
   return { ...opened, panel, audited };
 }
 
-function permissionReads(requests, namespaceId, permissionsPath) {
+function permissionReads(requests: Requests, namespaceId: string, permissionsPath: string) {
   return requests
     .map(({ path }) => path)
-    .filter((path) => [permissionsPath, `/namespaces/${namespaceId}/permissions`].includes(path))
+    .filter((path: string) =>
+      [permissionsPath, `/namespaces/${namespaceId}/permissions`].includes(path),
+    )
     .sort();
 }
 
@@ -2482,7 +2581,7 @@ test("Refresh sharing after administration is granted again rereads access, then
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.iam.roles.list"],
   );
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
@@ -2513,7 +2612,7 @@ test("Refresh sharing while still revoked sends no policy read and adds no audit
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.iam.roles.list"],
   );
 });
@@ -2587,7 +2686,7 @@ test("A revoke the Access tab settles takes away administrator controls without 
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.iam.roles.list"],
   );
 });
@@ -2608,7 +2707,7 @@ test("A revoke the Access tab settles drops the Namespaces only administration c
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  const listReads = (from) =>
+  const listReads = (from: number) =>
     requests.slice(from).filter(({ method, path }) => method === "GET" && path === "/namespaces");
   let revoke = grantInstallationAdministration(fixture, account.principal);
   await login(
@@ -2646,7 +2745,7 @@ test("A revoke the Access tab settles drops the Namespaces only administration c
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.iam.roles.list"],
   );
 
@@ -2659,8 +2758,9 @@ test("A revoke the Access tab settles drops the Namespaces only administration c
   revoke();
   const agentPermissions = page.waitForResponse(
     (response) =>
-      new URL(response.url()).pathname ===
-      `/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+      response.request().method() === "GET" &&
+      response.url() ===
+        `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
   );
   const list = await holdRequests(t, page, `${fixture.origin}/namespaces`, {
     once: true,
@@ -2698,7 +2798,7 @@ test("After a revoke the selector keeps its Namespace, and a reread the page lef
   const agent = await fixture.createAgent(namespace.id, "Member team Agent", nativeValues("x"));
   const account = await fixture.createNamespaceMember("kept-lister", namespace.id, AGENT_READ);
   // Another Namespace binding for the same account: the Native IAM Driver reads the policy live.
-  const bindReader = (target, label) => {
+  const bindReader = (target: NamespaceFixture, label: string) => {
     fixture.policy.roles.push({
       id: `role-${label}`,
       namespaceId: target.id,
@@ -2716,7 +2816,7 @@ test("After a revoke the selector keeps its Namespace, and a reread the page lef
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  const listReads = (from) =>
+  const listReads = (from: number) =>
     requests.slice(from).filter(({ method, path }) => method === "GET" && path === "/namespaces");
   let revoke = grantInstallationAdministration(fixture, account.principal);
   await login(
@@ -2729,7 +2829,8 @@ test("After a revoke the selector keeps its Namespace, and a reread the page lef
   const choices = () => selector.locator("option").allTextContents();
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   const heading = page.getByRole("heading", { name: "Member team Agent", exact: true });
-  const nav = (name) => page.locator("nav").getByRole("link", { name, exact: true }).first();
+  const nav = (name: string) =>
+    page.locator("nav").getByRole("link", { name, exact: true }).first();
   const confirmAdministration = async () => {
     await accessTab.click();
     await page.getByText("Current policy loaded.", { exact: true }).waitFor();
@@ -2799,7 +2900,7 @@ test("A revoke that settles during a page load leaves the Namespace list to that
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  const listReads = (from) =>
+  const listReads = (from: number) =>
     requests.slice(from).filter(({ method, path }) => method === "GET" && path === "/namespaces");
   const revoke = grantInstallationAdministration(fixture, account.principal);
   await login(
@@ -2832,7 +2933,9 @@ test("A revoke that settles during a page load leaves the Namespace list to that
   await page.locator("nav").getByRole("link", { name: "Agents", exact: true }).first().click();
   await list.requested;
   const answered = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === permissionsPath,
+    (response) =>
+      response.request().method() === "GET" &&
+      response.url() === `${fixture.origin}${permissionsPath}`,
   );
   answer.release();
   await answered;
@@ -2850,7 +2953,7 @@ test("A revoke that settles during a page load leaves the Namespace list to that
 // it; the page learns of that only from a later read. Her own grant is Agent read, so her
 // permission answer changes from an administrator's to a reader's: no Stop, no Delete and a
 // read-only draft.
-async function openAsRevocableAdministrator(t, name, version = "active") {
+async function openAsRevocableAdministrator(t: TestContext, name: string, version = "active") {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(name, { ready: true });
@@ -2896,7 +2999,7 @@ async function openAsRevocableAdministrator(t, name, version = "active") {
 
 // Runtime status is refused, as it is without Agent operate. Logs then compares that refusal
 // with a fresh permission answer: a permission reread the test can hold.
-async function refuseRuntimeStatus(page, agentUrl, revisionId) {
+async function refuseRuntimeStatus(page: Page, agentUrl: string, revisionId: string) {
   await page.route(`${agentUrl}/deployments/${revisionId}/runtime`, (route) =>
     route.fulfill(apiErrorResponse(403, "FORBIDDEN", GENERIC_DENIAL)),
   );
@@ -2929,12 +3032,10 @@ test("An older permission reread that answers after a newer one failed applies t
     (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
     { times: 1 },
   );
-  const failed = page.waitForResponse(
-    (response) => response.url() === permissionsUrl && response.status() === 503,
-  );
+  const failed = responseTo(page, "GET", permissionsUrl);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
+  assert.equal((await failed).status(), 503);
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
-  await failed;
   older.release();
   // She holds Agent read only: Stop, Delete and the draft's access all follow the older answer.
   await stop.waitFor({ state: "hidden" });
@@ -3033,7 +3134,7 @@ test("Plugins opened while a newer permission reread is in flight waits for it",
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }) => action),
+      .map(({ action }: AuditEvent) => action),
     ["openclaw.iam.roles.list"],
   );
 });
@@ -3060,11 +3161,13 @@ test("A Restriction refusal after confirmed administration keeps an administrato
   await login(page, fixture, String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
   await page.getByText("Current policy loaded.", { exact: true }).waitFor();
   await waitForIdleFetches(page);
-  const refusal = page.waitForResponse(
-    (response) => /\/secrets\//.test(new URL(response.url()).pathname) && response.status() === 403,
+  const refusal = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/secrets/${secret.id}`,
   );
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await refusal;
+  assert.equal((await refusal).status(), 403);
   await page.getByText(BOUND_SECRET_READ_REFUSED, { exact: true }).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await observability.getAttribute("href"), url);
@@ -3073,7 +3176,7 @@ test("A Restriction refusal after confirmed administration keeps an administrato
     authorizationDenials(
       fixture.auditSink,
       /^openclaw\.(observability|backends|iam|secrets|installation)\./,
-    ).map((event) => event.action),
+    ).map((event: AuditEvent) => event.action),
     ["openclaw.secrets.read"],
   );
 });
@@ -3089,16 +3192,14 @@ test("A Backends failure other than a refusal keeps an administrator's answer", 
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const observability = page.getByRole("link", { name: "Observability", exact: true });
-  const isBackends = (address) => new URL(address).pathname === "/backends";
+  const isBackends = (address: string | URL) => new URL(address).pathname === "/backends";
   await page.route(isBackends, (route) =>
     route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
   );
 
-  const read = page.waitForResponse(
-    (response) => isBackends(response.url()) && response.status() === 503,
-  );
+  const read = responseTo(page, "GET", `${fixture.origin}/backends`);
   await login(page, fixture, `/console/backends?namespace=${namespace.id}`);
-  await read;
+  assert.equal((await read).status(), 503);
   await waitForIdleFetches(page);
   assert.equal(await page.getByText(BACKENDS_DENIED, { exact: true }).count(), 0);
   assert.equal(await observability.getAttribute("href"), url);
@@ -3203,7 +3304,15 @@ test("Back to a refused Access tab opens Configuration", async (t) => {
   assert.equal(await page.locator(".agent-access").count(), 0);
 });
 
-function routeDeploymentStatus(page, fixture, namespace, agent, revision, status, error = null) {
+function routeDeploymentStatus(
+  page: Page,
+  fixture: ConsoleFixture,
+  namespace: NamespaceFixture,
+  agent: AgentFixture,
+  revision: RevisionFixture,
+  status: string,
+  error: DeploymentError | null = null,
+) {
   return page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
     route.fulfill({
       status: 200,
@@ -3307,7 +3416,8 @@ test("A requested stop names an unreadable current version in words", async (t) 
     `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
   );
   assert.equal(stopped.status, 202);
-  assert.equal(stopped.data.activeRevisionId, second.revision.id);
+  const stoppedData = agentState(stopped.data);
+  assert.equal(stoppedData.activeRevisionId, second.revision.id);
   const { page } = await newPage(t, fixture);
   await routeDeploymentStatus(page, fixture, namespace, agent, first.revision, "succeeded");
 
@@ -3462,7 +3572,12 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Model check", { ready: true });
   const { page } = await newPage(t, fixture);
-  const cases = [
+  const cases: {
+    error: DeploymentError | null;
+    nextStep: RegExp;
+    cause?: string;
+    recoveryMessage?: string;
+  }[] = [
     {
       error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
         runtimeFailure: {
@@ -3526,16 +3641,18 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     },
     // Finding 1600: a Codex check retried once ends its detail -attempt2. The advice
     // follows the token without the suffix, and the text says the retry also failed.
-    ...[
+    ...(
       [
-        "rate_limit-attempt2",
-        "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version. The check was retried once and failed again.",
-      ],
-      [
-        "turn-failed-attempt2",
-        "The model provider check reported a failure (turn-failed). The check was retried once and failed again.",
-      ],
-    ].map(([detail, cause]) => ({
+        [
+          "rate_limit-attempt2",
+          "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version. The check was retried once and failed again.",
+        ],
+        [
+          "turn-failed-attempt2",
+          "The model provider check reported a failure (turn-failed). The check was retried once and failed again.",
+        ],
+      ] as const
+    ).map(([detail, cause]) => ({
       error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
         runtimeFailure: {
           component: "agent",
@@ -3570,6 +3687,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     } else {
       await page.goto(url.href);
     }
+    assert.ok(error);
     assert.match(error.message, nextStep);
     const activity = await openFailureDetails(page);
     await activity.getByText(`${error.code}: ${error.message}`, { exact: true }).waitFor();
@@ -3583,7 +3701,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       ? "v1 failed its startup model check"
       : "v1 did not deploy successfully";
     assert.ok(
-      (await recovery.locator(".status-body").textContent()).startsWith(
+      requiredText(await recovery.locator(".status-body").textContent()).startsWith(
         `${lead} (${error.code}). `,
       ),
       error.code,
@@ -3596,11 +3714,13 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       await activity.getByText(cause, { exact: true }).waitFor();
     }
     assert.match(
-      await recovery.getByRole("link", { name: "Open Configuration" }).getAttribute("href"),
+      requiredText(
+        await recovery.getByRole("link", { name: "Open Configuration" }).getAttribute("href"),
+      ),
       new RegExp(`agents/${agent.id}\\?revision=draft&tab=configuration`),
     );
     assert.match(
-      await recovery.getByRole("link", { name: "Open v1 Logs" }).getAttribute("href"),
+      requiredText(await recovery.getByRole("link", { name: "Open v1 Logs" }).getAttribute("href")),
       new RegExp(`revision=${revision.id}&tab=logs`),
     );
     assert.equal(await recovery.getByRole("link", { name: "Open Credentials" }).count(), 0);
@@ -3649,7 +3769,7 @@ const neutralDeployments = [
     },
     note: "Superseded by a newer version.",
     summaryNote: "Superseded by a newer version.",
-    explanation: (code) =>
+    explanation: (code: string) =>
       `Superseded by a newer version before this one became current (${code}). This version did not fail; no action is needed.`,
     stages: [
       "Deployment work stopped because a newer version superseded this one.",
@@ -3668,7 +3788,7 @@ const neutralDeployments = [
     },
     note: "Stopped before it finished.",
     summaryNote: "Stopped before it finished. Deploy a new version when you want it running.",
-    explanation: (code) =>
+    explanation: (code: string) =>
       `The Agent was stopped before this deployment finished (${code}). This version did not fail; deploy a new version when you want it running.`,
     stages: [
       "Deployment work ended because the Agent was stopped.",
@@ -3688,8 +3808,8 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
   const namespace = await fixture.createNamespace("Neutral deploys", { ready: true });
   const { page } = await newPage(t, fixture);
   // Each Agent's recorded deployment error and detail page, by Agent name.
-  const errors = new Map();
-  const urls = new Map();
+  const errors = new Map<string, DeploymentError>();
+  const urls = new Map<string, URL>();
   for (const c of neutralDeployments) {
     const agent = await fixture.createAgent(namespace.id, c.agent, nativeValues("v1"));
     const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -3748,7 +3868,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
   for (const c of neutralDeployments) {
     const row = page.getByRole("row").filter({ hasText: c.agent });
     await row
-      .getByRole("link", { name: `v1 · ${c.outcome[0].toUpperCase()}${c.outcome.slice(1)}` })
+      .getByRole("link", { name: `v1 · ${c.outcome.charAt(0).toUpperCase()}${c.outcome.slice(1)}` })
       .waitFor();
     await row.getByText(c.note, { exact: true }).waitFor();
     assert.equal(await row.getByText(/failed|Deployment (was|ended)/).count(), 0);
@@ -3764,8 +3884,12 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
   const absent = /\bv2\b|failed|Live serving is unverified|check the recorded error/i;
   // After a refresh from a failure, the hidden status line keeps its old text, so its text is
   // checked only when the page first renders the neutral record.
-  const expectNeutral = async (c, code, checkStatusLineText = true) => {
-    const label = `${c.outcome[0].toUpperCase()}${c.outcome.slice(1)}`;
+  const expectNeutral = async (
+    c: (typeof neutralDeployments)[number],
+    code: string,
+    checkStatusLineText = true,
+  ) => {
+    const label = `${c.outcome.charAt(0).toUpperCase()}${c.outcome.slice(1)}`;
     await summary.getByText(`v1 · ${label}`, { exact: true }).waitFor();
     await summary.getByText(c.summaryNote, { exact: true }).waitFor();
     await summary.getByText("Not verified", { exact: true }).waitFor();
@@ -3793,14 +3917,16 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     }
   };
   for (const c of neutralDeployments) {
-    await page.goto(urls.get(c.agent).href);
+    const url = urls.get(c.agent);
+    assert.ok(url);
+    await page.goto(url.href);
     await waitForChosenVersion(page, 1);
     await expectNeutral(c, c.error.code);
     // A neutral record is not a failure, so the version's notice does not call it failed. The
     // superseded v1 is not current (the hidden v2 is), so its notice names how it ended.
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     assert.equal(
-      (await page.locator(".version-selection-notice").textContent()).split(" ·")[0],
+      requiredText(await page.locator(".version-selection-notice").textContent()).split(" ·")[0],
       c.newerHidden ? "Superseded version" : "Current version",
     );
     // Diagnostics do not ask the reader to resolve a neutral record first.
@@ -3853,7 +3979,7 @@ test("Agent detail reads the selected version's deployment record once on load",
   const { page } = await newPage(t, fixture);
   let recordReads = 0;
   let failFirst = false;
-  const recovery = Promise.withResolvers();
+  const recovery = Promise.withResolvers<void>();
   t.after(() => recovery.resolve());
   await page.route(
     deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id),
@@ -3944,7 +4070,7 @@ test("Agent detail does not move shown sections when Deployment activity first s
   assert.ok(shift < 0.01, `layout shift ${shift}: ${JSON.stringify(shifts)}`);
 });
 
-const listUrl = (namespaceId) => `/console/agents?namespace=${namespaceId}`;
+const listUrl = (namespaceId: string) => `/console/agents?namespace=${namespaceId}`;
 
 for (const width of [1440, 390]) {
   test(`Agent row content opens its detail at ${width}px and Back restores the list`, async (t) => {
@@ -4018,6 +4144,9 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   await page.setViewportSize({ width: 800, height: 844 });
   const scrolledLeft = await page.evaluate(() => {
     const scroller = globalThis.document.querySelector(".table-scroll");
+    if (!scroller) {
+      throw new Error("Missing table scroller");
+    }
     scroller.scrollLeft = scroller.scrollWidth;
     return scroller.scrollLeft;
   });
@@ -4026,7 +4155,8 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
   const stopResponse = page.waitForResponse(
     (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${running.id}/stop`,
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${running.id}/stop` &&
+      response.request().method() === "POST",
   );
   await dialog.getByRole("button", { name: "Stop Agent" }).click();
   assert.equal((await stopResponse).status(), 202);
@@ -4044,7 +4174,13 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   });
   assert.equal(await accessibleDescription(stop), "Stop requested");
   assert.equal(
-    await page.evaluate(() => globalThis.document.querySelector(".table-scroll").scrollLeft),
+    await page.evaluate(() => {
+      const scroller = globalThis.document.querySelector(".table-scroll");
+      if (!scroller) {
+        throw new Error("Missing table scroller");
+      }
+      return scroller.scrollLeft;
+    }),
     scrolledLeft,
   );
   // The list stays in place: stopping from a row does not open the Agent.
@@ -4052,8 +4188,9 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   assert.equal(agentStopRequests(requests, namespace.id, running.id).length, 1);
   // Stop records only the requested state; the selected version is kept for the worker.
   const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${running.id}`);
-  assert.equal(stopped.data.desiredRuntimeState, "stopped");
-  assert.equal(stopped.data.activeRevisionId, active.revision.id);
+  const stoppedData = agentState(stopped.data);
+  assert.equal(stoppedData.desiredRuntimeState, "stopped");
+  assert.equal(stoppedData.activeRevisionId, active.revision.id);
 
   // Deletion names the kept Configuration and model Secret, then queues cleanup.
   await remove.click();
@@ -4066,6 +4203,7 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   assert.equal(await configuration.isVisible(), false);
   await dialog.getByText("View separate cleanup commands").click();
   await configuration.waitFor();
+  assert.ok(running.harnessAuth?.method === "api_key");
   await dialog.getByText(`${cli} secret delete ${running.harnessAuth.source.id}`).waitFor();
   const deleteResponse = page.waitForResponse(
     (response) =>
@@ -4080,11 +4218,11 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   assert.equal(await stop.isDisabled(), true);
   assert.equal(agentDeleteRequests(requests, namespace.id, running.id).length, 1);
   const deleting = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${running.id}`);
-  assert.equal(deleting.data.status, "deleting");
+  assert.equal(agentState(deleting.data).status, "deleting");
 
   // Each row acts on its own Agent: the other one stays active and deletable.
   const untouched = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${draft.id}`);
-  assert.equal(untouched.data.status, "active");
+  assert.equal(agentState(untouched.data).status, "active");
   assert.equal(
     await draftRow.getByRole("button", { name: "Delete Draft Agent" }).isDisabled(),
     false,
@@ -4115,14 +4253,18 @@ for (const action of ["Stop", "Delete"]) {
         // Let the real controller accept this write. Change only which Agent the reply identifies.
         const response = await route.fetch();
         assert.equal(response.status(), 202);
-        const json = await response.json();
-        assert.equal(json.data.id, target.id);
+        const json: unknown = await response.json();
+        assert.ok(typeof json === "object" && json !== null && "data" in json);
+        const data = json.data;
+        assert.ok(typeof data === "object" && data !== null);
+        assert.ok("id" in data && "desiredRuntimeState" in data && "status" in data);
+        assert.equal(data.id, target.id);
         assert.equal(
-          stopping ? json.data.desiredRuntimeState : json.data.status,
+          stopping ? data.desiredRuntimeState : data.status,
           stopping ? "stopped" : "deleting",
         );
-        json.data = { ...json.data, id: other.id, name: other.name };
-        await route.fulfill({ response, json });
+        const patched = { ...json, data: { ...data, id: other.id, name: other.name } };
+        await route.fulfill({ response, json: patched });
       },
       { times: 1 },
     );
@@ -4134,6 +4276,9 @@ for (const action of ["Stop", "Delete"]) {
     await invoke.waitFor();
     const scrolledLeft = await page.evaluate(() => {
       const scroller = globalThis.document.querySelector(".table-scroll");
+      if (!scroller) {
+        throw new Error("Missing table scroller");
+      }
       scroller.scrollLeft = scroller.scrollWidth;
       return scroller.scrollLeft;
     });
@@ -4155,13 +4300,27 @@ for (const action of ["Stop", "Delete"]) {
     assert.equal(await invoke.isDisabled(), true);
     // The unknown outcome disables the icon natively (its reason is the alert above the table),
     // so focus falls back to the Agent's name, off-screen to the left, without scrolling the table.
-    assert.equal(await invoke.evaluate((node) => node.disabled), true);
+    assert.equal(
+      await invoke.evaluate((node) => {
+        if (!(node instanceof HTMLButtonElement)) {
+          throw new Error("Expected action button");
+        }
+        return node.disabled;
+      }),
+      true,
+    );
     await page.waitForFunction(
       (name) => globalThis.document.activeElement?.textContent === name,
       target.name,
     );
     assert.equal(
-      await page.evaluate(() => globalThis.document.querySelector(".table-scroll").scrollLeft),
+      await page.evaluate(() => {
+        const scroller = globalThis.document.querySelector(".table-scroll");
+        if (!scroller) {
+          throw new Error("Missing table scroller");
+        }
+        return scroller.scrollLeft;
+      }),
       scrolledLeft,
     );
     await page
@@ -4194,7 +4353,7 @@ test("Agents list row Stop and Delete show the API's 400 and 409 reasons", async
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);
-  let answer;
+  let answer: Parameters<Route["fulfill"]>[0];
   await page.route(`${fixture.origin}${agentPath}/stop`, (route) => route.fulfill(answer));
   await page.route(`${fixture.origin}${agentPath}`, (route) =>
     route.request().method() === "DELETE" ? route.fulfill(answer) : route.fallback(),
@@ -4217,7 +4376,7 @@ test("Agents list row Stop and Delete show the API's 400 and 409 reasons", async
       "Refused Row changed while the request was sent. Select Refresh before trying again.",
     ],
     ["delete", 400, "The request does not match the operation contract.", MALFORMED_REQUEST],
-  ]) {
+  ] as const) {
     answer = apiErrorResponse(
       status,
       status === 400 ? "INVALID_REQUEST" : "RESOURCE_CONFLICT",
@@ -4255,21 +4414,26 @@ test("Agents list row actions explain missing access and still report a refused 
   const agent = await fixture.createAgent(namespace.id, "Guarded Agent", nativeValues("guard"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const person = fixture.provisionedAccounts[0];
+  assert.ok(person);
   const policyPath = `/namespaces/${namespace.id}/iam`;
-  const bind = async (permissions, resourceKind, resourceId) => {
+  const bind = async (
+    permissions: readonly Permission[],
+    resourceKind: ResourceKind,
+    resourceId: string,
+  ) => {
     const role = await fixture.request("POST", `${policyPath}/roles`, { body: { permissions } });
     assert.equal(role.status, 201);
     const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
       body: {
         subjectKind: "identity",
         subjectId: person.principal.id,
-        roleId: role.data.id,
+        roleId: identifiedResource(role.data).id,
         resourceKind,
         resourceId,
       },
     });
     assert.equal(binding.status, 201);
-    return binding.data;
+    return identifiedResource(binding.data);
   };
   // A reader who can list and open the Agent but holds neither operate nor delete on it.
   await bind([{ action: "read", resourceKind: "namespace" }], "namespace", namespace.id);
@@ -4282,7 +4446,11 @@ test("Agents list row actions explain missing access and still report a refused 
   const stopEnabled = () =>
     page.waitForFunction(() => {
       const stop = globalThis.document.querySelector('[aria-label="Stop Guarded Agent"]');
-      return stop?.disabled === false && stop.getAttribute("aria-disabled") !== "true";
+      return (
+        stop instanceof HTMLButtonElement &&
+        stop.disabled === false &&
+        stop.getAttribute("aria-disabled") !== "true"
+      );
     });
 
   // Hold the first permission read so the reader can open Stop before the real answer arrives.
@@ -4337,11 +4505,13 @@ test("Agents list row actions explain missing access and still report a refused 
   );
   assert.equal(await note.getAttribute("title"), bothDenied);
   assert.equal(
-    await stop.evaluate(
-      (node) =>
-        globalThis.document.getElementById(node.getAttribute("aria-describedby").split(" ")[0])
-          ?.textContent,
-    ),
+    await stop.evaluate((node) => {
+      const id = node.getAttribute("aria-describedby")?.split(" ")[0];
+      if (id === undefined) {
+        throw new Error("Missing description ID");
+      }
+      return globalThis.document.getElementById(id)?.textContent;
+    }),
     bothDenied,
   );
   assert.equal(await stop.isDisabled(), true);
@@ -4366,7 +4536,10 @@ test("Agents list row actions explain missing access and still report a refused 
     .click();
   await page.getByRole("alert").getByText(stopRefused("Guarded Agent")).waitFor();
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
-  assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "running");
+  assert.equal(
+    agentState((await fixture.request("GET", agentPath)).data).desiredRuntimeState,
+    "running",
+  );
 
   // A dropped connection leaves the outcome unknown, so the row refuses another write until
   // Refresh rereads the Agent; the console never resends the stop by itself.
@@ -4392,7 +4565,10 @@ test("Agents list row actions explain missing access and still report a refused 
   await refresh.click();
   await page.getByRole("alert").waitFor({ state: "detached" });
   await stopEnabled();
-  assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "running");
+  assert.equal(
+    agentState((await fixture.request("GET", agentPath)).data).desiredRuntimeState,
+    "running",
+  );
 
   await stop.click();
   await page
@@ -4400,7 +4576,10 @@ test("Agents list row actions explain missing access and still report a refused 
     .getByRole("button", { name: "Stop Agent" })
     .click();
   await row.getByText("Stop requested", { exact: true }).waitFor();
-  assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "stopped");
+  assert.equal(
+    agentState((await fixture.request("GET", agentPath)).data).desiredRuntimeState,
+    "stopped",
+  );
 });
 
 test("Agents list permission advice updates its own row without moving focus elsewhere", async (t) => {
@@ -4412,15 +4591,20 @@ test("Agents list permission advice updates its own row without moving focus els
   const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
   await fixture.seedActiveAgentRevision(namespace.id, other.id);
   const person = fixture.provisionedAccounts[0];
+  assert.ok(person);
   const policyPath = `/namespaces/${namespace.id}/iam`;
-  const bind = async (permissions, resourceKind, resourceId) => {
+  const bind = async (
+    permissions: readonly Permission[],
+    resourceKind: ResourceKind,
+    resourceId: string,
+  ) => {
     const role = await fixture.request("POST", `${policyPath}/roles`, { body: { permissions } });
     assert.equal(role.status, 201);
     const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
       body: {
         subjectKind: "identity",
         subjectId: person.principal.id,
-        roleId: role.data.id,
+        roleId: identifiedResource(role.data).id,
         resourceKind,
         resourceId,
       },
@@ -4470,7 +4654,11 @@ test("Agents list permission advice updates its own row without moving focus els
   // aria-disabled, not natively disabled (finding 2899).
   await page.waitForFunction(() => {
     const stop = globalThis.document.querySelector('[aria-label="Stop Guarded Agent"]');
-    return stop?.disabled === false && stop.getAttribute("aria-disabled") !== "true";
+    return (
+      stop instanceof HTMLButtonElement &&
+      stop.disabled === false &&
+      stop.getAttribute("aria-disabled") !== "true"
+    );
   });
   await guardedStop.focus();
   release();

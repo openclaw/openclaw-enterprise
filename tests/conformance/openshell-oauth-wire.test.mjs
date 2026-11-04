@@ -12,7 +12,10 @@ import { PENDING_OAUTH_CONNECTION } from "../../packages/contracts/src/index.ts"
 import { refreshPinnedOAuthGrant } from "../../apps/controller/src/drivers/credential-refresh/oauth-token-endpoint.ts";
 import { OAuthConnectionTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { exchangeAuthorizationCode } from "../../apps/controller/src/drivers/credential-refresh/browser-authorization.ts";
+import {
+  exchangeAuthorizationCode,
+  startBrowserAuthorization,
+} from "../../apps/controller/src/drivers/credential-refresh/browser-authorization.ts";
 import {
   createOpenShellBackend,
   openShellProviderName,
@@ -64,22 +67,35 @@ async function wireCertificates(t) {
 test("the browser code exchange passes only granted scopes to refresh", async (t) => {
   const request = {
     scopes: ["read", "write"],
+    resource: "https://mcp.example.test/mcp",
     tokenUrl: "https://issuer.example.test/token",
+    oauthClientId: "registration",
+    tokenEndpointAuthMethod: "none",
     clientId: "test-client",
     redirectUri: "https://oce.example.test/callback",
   };
+  const started = startBrowserAuthorization("source", {
+    ...request,
+    authorizationUrl: "https://issuer.example.test/auth",
+    authorizationParameters: {},
+  });
+  assert.equal(new URL(started.authorizationUrl).searchParams.get("resource"), request.resource);
   let responseScope;
-  t.mock.method(globalThis, "fetch", async () =>
-    Response.json({
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    assert.equal(init.headers.has("authorization"), false);
+    assert.equal(init.body.get("client_id"), request.clientId);
+    assert.equal(init.body.has("client_secret"), false);
+    assert.equal(init.body.get("resource"), request.resource);
+    return Response.json({
       access_token: randomUUID(),
       token_type: "Bearer",
       expires_in: 120,
       refresh_token: "test-refresh",
       scope: responseScope,
-    }),
-  );
+    });
+  });
   const exchange = () =>
-    exchangeAuthorizationCode(request, "test-verifier", "test-code", "test-secret", t.signal);
+    exchangeAuthorizationCode(request, "test-verifier", "test-code", undefined, t.signal);
 
   assert.equal((await exchange()).scope, "read write");
   responseScope = "read";
@@ -109,7 +125,7 @@ async function oauthCustody() {
   return { driver, custody, service, worker };
 }
 
-test("the Token Service publishes the first access token and serializes refresh-token rotation", async (t) => {
+test("the Token Service keeps the first access token in custody and serializes rotation", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
   const requests = [];
   const first = randomUUID();
@@ -123,12 +139,22 @@ test("the Token Service publishes the first access token and serializes refresh-
   ];
   const renewalSent = Promise.withResolvers();
   const respond = Promise.withResolvers();
+  const nonce = randomUUID();
+  const clientSecret = "test :+" + nonce;
   const server = createServer(async (req, res) => {
     const body = [];
     for await (const chunk of req) {
       body.push(chunk);
     }
-    requests.push(new URLSearchParams(Buffer.concat(body).toString()));
+    const parameters = new URLSearchParams(Buffer.concat(body).toString());
+    assert.equal(parameters.get("resource"), "https://mcp.example.test/mcp");
+    const expected = Buffer.from("test%3Aclient:test+%3A%2B" + nonce).toString("base64");
+    assert.ok(
+      req.headers.authorization === "Basic " + expected,
+      "OAuth Basic encodes both client credentials",
+    );
+    assert.equal(parameters.has("client_secret"), false);
+    requests.push(parameters);
     if (requests.length === 2) {
       renewalSent.resolve();
       await respond.promise;
@@ -146,9 +172,12 @@ test("the Token Service publishes the first access token and serializes refresh-
   const issuer = "http://127.0.0.1:" + server.address().port;
   const request = {
     issuer,
-    clientRegistrationId: "registration",
-    clientId: "test-client",
+    oauthClientId: "registration",
+    requestedScopes: ["read", "write"],
+    tokenEndpointAuthMethod: "client_secret_basic",
+    clientId: "test:client",
     scopes: ["read", "write"],
+    resource: "https://mcp.example.test/mcp",
     tokenUrl: issuer + "/token",
     redirectUri: "https://oce.example.test/callback",
   };
@@ -157,7 +186,7 @@ test("the Token Service publishes the first access token and serializes refresh-
     request,
     "test-verifier",
     "test-code",
-    randomUUID(),
+    clientSecret,
     t.signal,
   );
   await service.accept(custody, grant, t.signal);
@@ -166,6 +195,7 @@ test("the Token Service publishes the first access token and serializes refresh-
   assert.deepEqual(Object.keys(accepted).sort(), [
     "accessToken",
     "expiresAt",
+    "grantedScopes",
     "nextRefreshAt",
     "version",
   ]);
@@ -231,7 +261,9 @@ function connectionGrant(issuer) {
     issuer,
     tokenUrl: issuer + "/token",
     clientId: "test-client",
-    clientRegistrationId: "registration",
+    oauthClientId: "registration",
+    requestedScopes: ["read", "write"],
+    tokenEndpointAuthMethod: "client_secret_post",
     clientSecret: randomUUID(),
     refreshToken: randomUUID(),
     accessToken: randomUUID(),

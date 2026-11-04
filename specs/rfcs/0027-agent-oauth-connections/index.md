@@ -8,7 +8,7 @@ author: mrunalp
 
 - **ID:** RFC-0027
 - **Created:** 2026-10-20
-- **Last updated:** 2026-11-03
+- **Last updated:** 2026-11-04
 - **RFC PR:** [#3068](https://github.com/openclaw/openclaw-enterprise/pull/3068)
 - **Implementation plan:** [Backend implementation and plan, #3098](https://github.com/openclaw/openclaw-enterprise/pull/3098)
 - **Companion:** [Driver contracts, failure, and verification](contracts.md)
@@ -93,22 +93,24 @@ OCC checks scope and authority when listing usable templates, starting consent
 and handling the callback. The [per-template IAM proposal](contracts.md#iam-driver)
 can be reviewed independently.
 
-| Field                               | Why it is needed                                                                                                                                |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `displayName`                       | The label on the **Connect** button and consent warning.                                                                                        |
-| `issuer`                            | The authorization server's identifier, an exact `https` URL. It scopes the client ID and is the expected `iss` for `accountIdentity: oidc`.     |
-| `authorizationUrl`, `tokenUrl`      | Where OCC sends the user, and where the Driver exchanges the code. Exact `https` URLs.                                                          |
-| `clientId`, `clientSecret`          | For a preregistered client, its ID and any required secret. DCR supplies these for an MCP client registered at setup.                           |
-| `scopes`, `authorizationParameters` | Fixed scopes for configured OAuth. MCP owners pick a subset. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
-| `endpoint`                          | Credential destination (`host`, `port`, `path`). `access` is `read-only` or `full` for `oauth2`, and `full` for `mcp_oauth`.                    |
-| `envVar`                            | The placeholder variable supplied to an authorized Agent execution.                                                                             |
-| `accountIdentity`                   | `none` (default) or `oidc`. With `oidc`, OCC also requests `openid email` so it can show a verified address.                                    |
-| `jwksUri`                           | Optional with `oidc`. Without it, the Driver discovers the signing keys from `issuer`.                                                          |
+An OAuth template has two setup methods. For manual setup the administrator
+supplies the provider and approved recipient. For MCP discovery the administrator
+enters the server URL. The protected resource identifies its resource and accepted
+authorization servers. The administrator selects one issuer. OCC validates its
+metadata and shows the observed endpoints, capabilities and scopes separately
+from the administrator's choices. Saving pins the effective values. A later
+discovery can propose a new version.
 
-Existing templates use configured `oauth2` endpoints. For an `mcp_oauth`
-template, the administrator enters the MCP server URL and supplies a preregistered
-client or approves Dynamic Client Registration (DCR) when the issuer advertises
-it. At **Connect**, the owner chooses from the template's approved scopes. [MCP authorization contract](contracts.md#mcp-authorization)
+An OAuth client is a separate scoped resource. It records the issuer, client ID,
+token endpoint authentication method and trusted destinations for client
+authentication. Its protected credential belongs to the selected Driver. A
+template can be created before a client exists. Consent requires a compatible
+client and pins its identity. An administrator can allow listed OAuth parameters,
+select scopes, and associate a client without duplicating client credentials.
+
+A version records the approved recipient (for MCP, both the protected resource
+and the server URL). The Agent plugin release owns its named credential slots
+and their local delivery placeholders. [MCP authorization contract](contracts.md#mcp-authorization)
 
 OCC rejects non-HTTPS URLs. At deployment it verifies that the selected Sandbox
 and protected sender can enforce the approved request policy.
@@ -131,7 +133,7 @@ An edit never changes what an existing connection does. Changing any field excep
 `displayName` creates a new connection template version. The credential source
 records the version and the values its owner approved: issuer and its URLs, client
 registration, this connection's scopes, authorization parameters, endpoint and
-access, placeholder variable, and OIDC settings. OCC and both Drivers use only that
+access, and OIDC settings. OCC and both Drivers use only that
 record, so an administrator cannot redirect a user's refresh grant or credential.
 Source configuration is already immutable.
 

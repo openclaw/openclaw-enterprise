@@ -1,8 +1,10 @@
-import type { CredentialSource, ConnectionTemplateValues } from "@openclaw-enterprise/contracts";
+import type { CredentialSource } from "@openclaw-enterprise/contracts";
+import { credentialEnvironmentsOverlap } from "../credential-environment.ts";
 import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
 import {
   eligibleGoogleOperations,
   googleDiscoveryRequests,
+  isGoogleWorkspaceRecipient,
   googleRequestScope,
 } from "./operations.ts";
 
@@ -44,19 +46,18 @@ export const googleWorkspaceCredentialPolicy = {
       source.ownerCapability === "credential_gateway" &&
       source.egress === undefined &&
       source.type === "oauth2-refresh-token" &&
+      config.env_var_aliases === slot.delivery.envAliases?.join(",") &&
       (config.binary === undefined || config.binary === install.binaryPath) &&
-      acceptsRoute(slot, config.token_url, config.env_var, sourceScope(source))
-    );
-  },
-  acceptsTemplate(slot: ManagedCredentialSlot, template: ConnectionTemplateValues) {
-    return (
-      template.issuer === slot.issuer &&
-      acceptsRoute(
-        slot,
-        template.tokenUrl,
-        template.envVar,
-        googleRequestScope({ ...template.endpoint, scopes: template.scopes }),
-      )
+      (config.oauth_owner === "token_service"
+        ? config.issuer === slot.issuer &&
+          config.token_url === slot.tokenEndpoint &&
+          config.env_var === slot.delivery.env &&
+          isGoogleWorkspaceRecipient(
+            config.host ?? "",
+            Number(config.port ?? 443),
+            config.path ?? "/**",
+          )
+        : acceptsRoute(slot, config.token_url, config.env_var, sourceScope(source)))
     );
   },
   conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {
@@ -70,7 +71,8 @@ export const googleWorkspaceCredentialPolicy = {
       sources.some(
         (s) =>
           s.id !== selected.id &&
-          (s.config.env_var === selected.config.env_var || hosts.has(s.config.host ?? "")),
+          (credentialEnvironmentsOverlap(s.config, selected.config) ||
+            hosts.has(s.config.host ?? "")),
       )
     ) {
       return "This Google plugin binding conflicts with another attached credential's placeholder or guarded Google host. Use non-overlapping credential routes and distinct placeholder names, or clear the plugin binding.";

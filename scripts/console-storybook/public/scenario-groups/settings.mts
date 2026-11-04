@@ -1,3 +1,5 @@
+import type { StoryAction } from "../../story-action.mts";
+import { click } from "../create-agent-form-data.mts";
 import type { DriverConfigurationDescriptor } from "@openclaw-enterprise/contracts";
 import type { ErrorCode } from "../../../../packages/contracts/src/api/common.ts";
 
@@ -11,6 +13,8 @@ type SettingsRule =
 
 type SettingsScenario = {
   group: "Pages/Settings";
+  actions?: StoryAction[];
+  oauthCatalog?: "ready" | "error";
   name: string;
   path: "/console/settings";
   description: string;
@@ -20,11 +24,51 @@ type SettingsScenario = {
   installationValuesUnavailable?: true;
   readOnlyPermissionSummary?: true;
   sessionUser?: { id: string; name: string; email: string };
-  actions?: readonly { selector: string; click: true }[];
   rules?: readonly SettingsRule[];
 };
 
+const openTemplate = [click("Create connection template")];
+const discoverMcp = [
+  ...openTemplate,
+  { selector: "#connection-template-mode", value: "mcp_discovery" },
+  { selector: "#connection-template-server", value: "https://mcp.example.com/mcp" },
+  click("Discover OAuth settings"),
+];
 export const settingsScenarios = {
+  settingsTemplateCatalog: {
+    group: "Pages/Settings",
+    name: "OAuth connection templates",
+    path: "/console/settings",
+    oauthCatalog: "ready",
+    description:
+      "Create an OAuth template manually or discover a server’s metadata. The OAuth client and approved scopes are selected separately.",
+  },
+  settingsManualTemplate: {
+    group: "Pages/Settings",
+    name: "Manual OAuth template",
+    path: "/console/settings",
+    oauthCatalog: "ready",
+    actions: openTemplate,
+    description:
+      "Enter the authorization server and recipient, then associate a compatible OAuth client or save a draft.",
+  },
+  settingsMcpDiscovery: {
+    group: "Pages/Settings",
+    name: "Discovered MCP authorization",
+    path: "/console/settings",
+    oauthCatalog: "ready",
+    actions: discoverMcp,
+    description:
+      "Review the observed server metadata. Choose the OAuth scopes and client before saving. Provider discovery and persistence are simulated.",
+  },
+  settingsMcpDiscoveryError: {
+    group: "Pages/Settings",
+    name: "MCP discovery unavailable",
+    path: "/console/settings",
+    oauthCatalog: "error",
+    actions: discoverMcp,
+    description: "The simulated MCP server fails discovery. No template is created.",
+  },
   settings: {
     group: "Pages/Settings",
     name: "Account",

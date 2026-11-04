@@ -67,6 +67,7 @@ export type {
   OAuthConnectionAccessToken,
   OAuthConnectionCustody,
   OAuthConnectionGrant,
+  OAuthConnectionStatus,
   OAuthConnectionTokenService,
   PreparedTokenService,
 } from "./prepared-token.ts";
@@ -146,11 +147,13 @@ export {
 } from "./sandbox-policy.ts";
 
 export type {
-  ConnectionClientRegistration,
+  OAuthClient,
+  OAuthClientAuthMethod,
+  McpAuthorizationMetadata,
   ConnectionEndpoint,
   ConnectionTemplate,
   ConnectionTemplateValues,
-  ConnectionTemplateVersion,
+  OAuthConnectionTemplateVersion,
   ConnectionAttachmentIntent,
   ConnectionSession,
   SavedConnection,
@@ -531,7 +534,8 @@ export interface CredentialSourceType {
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
 /** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
-export type CredentialSourceOwnerCapability = "credential_gateway" | "credential_proxy";
+export type CredentialSourceOwnerCapability =
+  "credential_gateway" | "credential_proxy" | "credential_refresh";
 
 /** OCC source admission, including its owner and Secret references, never credential values. */
 export interface CredentialSource {
@@ -603,9 +607,47 @@ export type CredentialSourceSnapshot = {
   readonly sourceId: string;
   readonly sourceType: string;
 } & (
-  | { readonly credentialGatewayId: string; readonly credentialProxyId?: never }
-  | { readonly credentialProxyId: string; readonly credentialGatewayId?: never }
+  | {
+      readonly credentialGatewayId: string;
+      readonly credentialProxyId?: never;
+      readonly accountDelivery?: {
+        readonly refreshDriverId: string;
+        readonly profileId: string;
+        readonly config: Readonly<Record<string, string>>;
+      };
+    }
+  | {
+      readonly credentialProxyId: string;
+      readonly credentialGatewayId?: never;
+      readonly accountDelivery?: never;
+    }
 );
+
+/** Resolve only the frozen presentation admitted for this account and revision. */
+export function revisionCredentialSource(
+  source: CredentialSource,
+  snapshot: CredentialSourceSnapshot | undefined,
+): CredentialSource | undefined {
+  if (source.ownerCapability !== "credential_refresh") {
+    return credentialSourceMatchesSnapshot(source, snapshot) ? source : undefined;
+  }
+  const delivery = snapshot?.accountDelivery;
+  if (
+    !delivery ||
+    source.id !== snapshot.sourceId ||
+    source.driverId !== delivery.refreshDriverId ||
+    source.type !== "oauth2-refresh-token"
+  ) {
+    return undefined;
+  }
+  return {
+    ...source,
+    type: snapshot.sourceType,
+    config: delivery.config,
+    driverId: snapshot.credentialGatewayId!,
+    ownerCapability: "credential_gateway",
+  };
+}
 
 /** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
 export function credentialSourceMatchesSnapshot(
@@ -616,6 +658,9 @@ export function credentialSourceMatchesSnapshot(
     return false;
   }
   switch (source.ownerCapability) {
+    case "credential_refresh":
+      // A saved account has no runnable sender until a consumer receives its own binding.
+      return false;
     case "credential_gateway":
       return (
         snapshot.credentialProxyId === undefined && snapshot.credentialGatewayId === source.driverId
@@ -770,7 +815,12 @@ export interface AgentPluginCredentialSlot {
   readonly toolDiscovery?: true;
   /** OCC permits this caller to connect an account to the saved slot. */
   readonly connectAccount?: true;
-  readonly sources: readonly { readonly id: string; readonly name: string }[];
+  readonly sources: readonly {
+    readonly id: string;
+    readonly name: string;
+    /** Same issuer, but a new grant is needed for this receiver. */
+    readonly authorization?: "required";
+  }[];
 }
 
 export interface PluginCatalogLink {
@@ -1449,6 +1499,7 @@ export type {
 } from "./drivers/sandbox/index.ts";
 export type {
   PluginDriver,
+  PluginAccountTarget,
   PluginDriverContext,
   PluginDiscoveryAuthentication,
 } from "./drivers/plugin/index.ts";
@@ -1495,7 +1546,10 @@ export type JSONSchema = Readonly<Record<string, unknown>>;
 export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
-export { ConnectionTemplateSchema } from "./api/connection-templates.ts";
+export {
+  ConnectionTemplateSchema,
+  OAuthConnectionTemplateVersionSchema,
+} from "./api/connection-templates.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 

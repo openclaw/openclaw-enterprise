@@ -26,3 +26,6 @@ export const ExistingPluginAccount = story("pluginConnectBound");
 export const NoCompatibleTemplate = story("pluginConnectEmpty");
 export const ConnectionPermissionDenied = story("pluginConnectDenied");
 export const ConnectionTemplatesLoading = story("pluginConnectLoading");
+
+export const NamedSlotAccounts = story("namedSlotAccounts");
+export const AuthorizeForAnotherServer = story("namedSlotAuthorize");

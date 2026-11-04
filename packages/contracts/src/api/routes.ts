@@ -29,7 +29,13 @@ import {
   ConnectionTemplateParams,
   ConnectionTemplateResponse,
   CreateConnectionTemplateBody,
-  RotateConnectionClientSecretBody,
+  RotateOAuthClientSecretBody,
+  OAuthClientParams,
+  CreateOAuthClientBody,
+  OAuthClientListResponse,
+  OAuthClientResponse,
+  DiscoverTemplateBody,
+  DiscoverTemplateResponse,
   UpdateConnectionTemplateBody,
 } from "./connection-templates.ts";
 
@@ -192,7 +198,11 @@ export const occApiRoutes = [
         { harnessId: Type.String({ minLength: 1, maxLength: 100 }) },
         { additionalProperties: false },
       ),
-      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+      response: {
+        200: AgentDeviceAuthorizationResponse,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {
@@ -212,7 +222,11 @@ export const occApiRoutes = [
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
-      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+      response: {
+        200: AgentDeviceAuthorizationResponse,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {
@@ -254,7 +268,11 @@ export const occApiRoutes = [
         { harnessId: Type.String({ minLength: 1, maxLength: 100 }) },
         { additionalProperties: false },
       ),
-      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+      response: {
+        200: AgentDeviceAuthorizationResponse,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {
@@ -274,7 +292,11 @@ export const occApiRoutes = [
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
-      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+      response: {
+        200: AgentDeviceAuthorizationResponse,
+        501: ErrorResponseRef,
+        ...createErrors,
+      },
     },
   },
   {
@@ -502,22 +524,86 @@ export const occApiRoutes = [
     },
   },
   {
-    operationId: "rotateConnectionClientSecret",
+    operationId: "discoverConnectionTemplate",
     method: "POST",
-    path: "/connection-templates/:connectionTemplateId/rotate-client-secret",
-    action: "openclaw.connection_templates.rotate_client_secret",
+    path: "/connection-templates/discover",
+    action: "openclaw.connection_templates.discover",
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Rotate the secret for the template’s OAuth client registration",
+    summary: "Read public MCP resource and authorization server metadata",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
-      params: ConnectionTemplateParams,
-      body: RotateConnectionClientSecretBody,
-      response: { 200: ConnectionTemplateResponse, ...createErrors },
+      body: DiscoverTemplateBody,
+      response: { 200: DiscoverTemplateResponse, ...createErrors },
     },
   },
+  {
+    operationId: "listOAuthClients",
+    method: "GET",
+    path: "/oauth-clients",
+    action: "openclaw.oauth_clients.list",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "List registered OAuth clients",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      response: { 200: OAuthClientListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "createOAuthClient",
+    method: "POST",
+    path: "/oauth-clients",
+    action: "openclaw.oauth_clients.create",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Register a scoped OAuth client",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      body: CreateOAuthClientBody,
+      response: { 201: OAuthClientResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "rotateOAuthClientSecret",
+    method: "POST",
+    path: "/oauth-clients/:oauthClientId/rotate-secret",
+    action: "openclaw.oauth_clients.rotate_secret",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Rotate an OAuth client secret",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: OAuthClientParams,
+      body: RotateOAuthClientSecretBody,
+      response: { 200: OAuthClientResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "deleteOAuthClient",
+    method: "DELETE",
+    path: "/oauth-clients/:oauthClientId",
+    action: "openclaw.oauth_clients.delete",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Delete an unused OAuth client",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: OAuthClientParams,
+      response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+
   {
     operationId: "getInstallationDeploymentInventory",
     method: "GET",
@@ -1017,7 +1103,11 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: StartNamespaceConnectionBody,
-      response: { 201: ConnectionStartResponse, ...createErrors, 501: ErrorResponseRef },
+      response: {
+        201: ConnectionStartResponse,
+        ...createErrors,
+        501: ErrorResponseRef,
+      },
     },
   },
   {
@@ -1050,7 +1140,11 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       body: StartPluginConnectionBody,
-      response: { 201: ConnectionStartResponse, ...createErrors, 501: ErrorResponseRef },
+      response: {
+        201: ConnectionStartResponse,
+        ...createErrors,
+        501: ErrorResponseRef,
+      },
     },
   },
   {
@@ -1343,7 +1437,11 @@ export const occApiRoutes = [
     schema: {
       querystring: ServiceAccountDeleteQuery,
       params: ServiceAccountParams,
-      response: { 200: ServiceAccountForceDeletionResponse, 204: Type.Null(), ...mutationErrors },
+      response: {
+        200: ServiceAccountForceDeletionResponse,
+        204: Type.Null(),
+        ...mutationErrors,
+      },
     },
   },
   {
@@ -1679,12 +1777,19 @@ export const occApiRoutes = [
         {
           namespaceId: NamespaceId,
           agentId: AgentId,
-          approvalId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+          approvalId: Type.String({
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          }),
         },
         { additionalProperties: false },
       ),
       body: Type.Object(
-        { expectedGeneration: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) },
+        {
+          expectedGeneration: Type.Integer({
+            minimum: 1,
+            maximum: Number.MAX_SAFE_INTEGER,
+          }),
+        },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), ...createErrors },
@@ -1784,7 +1889,11 @@ export const occApiRoutes = [
     schema: {
       params: SandboxPolicyParams,
       querystring: EmptyQuery,
-      response: { 200: SandboxPolicyViewResponse, ...mutationErrors, 503: ErrorResponseRef },
+      response: {
+        200: SandboxPolicyViewResponse,
+        ...mutationErrors,
+        503: ErrorResponseRef,
+      },
     },
   },
   {
@@ -1892,7 +2001,11 @@ export const occApiRoutes = [
       params: AgentProvisioningParams,
       // A failed plan whose Secret or ServiceAccount was deleted, or whose Harness
       // authentication no longer fits, is a conflict naming the cause.
-      response: { 200: AgentProvisioningStatusResponse, ...readErrors, 409: ErrorResponseRef },
+      response: {
+        200: AgentProvisioningStatusResponse,
+        ...readErrors,
+        409: ErrorResponseRef,
+      },
     },
   },
   {
@@ -2058,7 +2171,10 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { ...AgentParams.properties, ...FirstDeploymentRecoveryTuple.properties },
+        {
+          ...AgentParams.properties,
+          ...FirstDeploymentRecoveryTuple.properties,
+        },
         { additionalProperties: false },
       ),
       response: {

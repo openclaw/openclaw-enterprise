@@ -6,50 +6,71 @@ export interface ConnectionEndpoint {
   readonly access: "read-only" | "full";
 }
 
-/** The values a person approves when they connect; any change creates a new version. */
-export interface ConnectionTemplateValues {
-  readonly issuer: string;
-  readonly authorizationUrl: string;
-  readonly tokenUrl: string;
-  readonly clientId: string;
-  readonly scopes: readonly string[];
-  readonly authorizationParameters: Readonly<Record<string, string>>;
-  readonly endpoint: Readonly<ConnectionEndpoint>;
-  readonly envVar: string;
-}
+export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
-export interface ConnectionTemplateVersion extends ConnectionTemplateValues {
-  readonly templateId: string;
-  readonly version: number;
-  /** The Credential Refresh Driver registration for this `issuer` and `clientId` pair. */
-  readonly clientRegistrationId: string;
-  readonly createdAt: string;
-}
-
-/** An administrator sets the template’s scope at creation. */
-export interface ConnectionTemplate {
+/** A client may send its credentials only to its explicitly approved provider endpoints. */
+export interface OAuthClient {
   readonly id: string;
-  /** Omitted for an Installation-wide template. */
   readonly namespaceId?: string;
   readonly displayName: string;
-  readonly current: Readonly<ConnectionTemplateVersion>;
-  readonly createdAt: string;
-}
-
-/**
- * One OAuth client at one authorization server. Its secret belongs to the Credential Refresh
- * Driver named here; OCC stores no secret value.
- */
-export interface ConnectionClientRegistration {
-  readonly id: string;
-  readonly namespaceId?: string;
   readonly issuer: string;
+  readonly tokenUrl: string;
+  readonly revocationUrl?: string;
   readonly clientId: string;
+  readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
+  readonly secretRegistrationId?: string;
+  /** Installation Driver that owns this client registration and its private material. */
   readonly credentialRefreshDriverId: string;
   readonly createdAt: string;
 }
 
+/** Public metadata observed during MCP discovery. The administrator approves a subset. */
+export interface McpAuthorizationMetadata {
+  readonly serverUrl: string;
+  readonly resource: string;
+  readonly issuers: readonly string[];
+  readonly resourceScopes?: readonly string[];
+  readonly requestedScopes: readonly string[];
+  readonly issuer?: string;
+  readonly authorizationUrl?: string;
+  readonly tokenUrl?: string;
+  readonly revocationUrl?: string;
+  readonly registrationUrl?: string;
+  readonly supportedScopes?: readonly string[];
+  readonly tokenEndpointAuthMethods?: readonly string[];
+}
+
+export interface ConnectionTemplateValues {
+  readonly mode: "manual" | "mcp_discovery";
+  readonly issuer: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly revocationUrl?: string;
+  readonly oauthClientId?: string;
+  readonly scopes: readonly string[];
+  readonly authorizationParameters: Readonly<Record<string, string>>;
+  readonly recipient: Readonly<ConnectionEndpoint>;
+  readonly mcp?: { readonly serverUrl: string; readonly resource: string };
+  readonly observed?: McpAuthorizationMetadata;
+}
+
+export interface OAuthConnectionTemplateVersion extends ConnectionTemplateValues {
+  readonly templateId: string;
+  readonly version: number;
+  readonly createdAt: string;
+}
+
+export interface ConnectionTemplate {
+  readonly id: string;
+  readonly namespaceId?: string;
+  readonly displayName: string;
+  readonly current: Readonly<OAuthConnectionTemplateVersion>;
+  readonly createdAt: string;
+}
+
 const flowParameters = new Set([
+  "resource",
+  "client_secret",
   "response_type",
   "client_id",
   "redirect_uri",
@@ -77,21 +98,30 @@ export class ConnectionTemplateValidationError extends Error {
 export function validateConnectionTemplateAuthorization(
   values: Pick<
     ConnectionTemplateValues,
-    "issuer" | "authorizationUrl" | "tokenUrl" | "authorizationParameters"
+    "issuer" | "authorizationUrl" | "tokenUrl" | "revocationUrl" | "authorizationParameters"
   >,
 ): void {
-  for (const field of ["issuer", "authorizationUrl", "tokenUrl"] as const) {
+  for (const field of ["issuer", "authorizationUrl", "tokenUrl", "revocationUrl"] as const) {
     const value = values[field];
+    if (value === undefined) {
+      continue;
+    }
     if (
       !/^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(value) ||
       !URL.canParse(value) ||
-      (field !== "authorizationUrl" && value.includes("?"))
+      (field === "issuer" && value.includes("?"))
     ) {
       throw new ConnectionTemplateValidationError(
         field,
-        `${field} must be a valid HTTPS URL without userinfo or a fragment${field === "authorizationUrl" ? "." : " or query."}`,
+        `${field} must be a valid HTTPS URL without userinfo or a fragment${field === "issuer" ? " or query." : "."}`,
       );
     }
+  }
+  if ([...new URL(values.authorizationUrl).searchParams.keys()].some(isFlowOwnedOAuthParameter)) {
+    throw new ConnectionTemplateValidationError(
+      "authorizationUrl",
+      "The authorization URL contains a parameter that the OAuth flow supplies.",
+    );
   }
   if (Object.keys(values.authorizationParameters).some(isFlowOwnedOAuthParameter)) {
     throw new ConnectionTemplateValidationError(
@@ -107,15 +137,18 @@ export function connectionValuesChanged(
   next: Readonly<ConnectionTemplateValues>,
 ): boolean {
   return (
+    current.mode !== next.mode ||
+    current.mcp?.serverUrl !== next.mcp?.serverUrl ||
+    current.mcp?.resource !== next.mcp?.resource ||
+    current.oauthClientId !== next.oauthClientId ||
     current.issuer !== next.issuer ||
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||
-    current.clientId !== next.clientId ||
-    current.envVar !== next.envVar ||
-    current.endpoint.host !== next.endpoint.host ||
-    current.endpoint.port !== next.endpoint.port ||
-    current.endpoint.path !== next.endpoint.path ||
-    current.endpoint.access !== next.endpoint.access ||
+    current.revocationUrl !== next.revocationUrl ||
+    current.recipient.host !== next.recipient.host ||
+    current.recipient.port !== next.recipient.port ||
+    current.recipient.path !== next.recipient.path ||
+    current.recipient.access !== next.recipient.access ||
     current.scopes.length !== next.scopes.length ||
     current.scopes.some((scope, index) => scope !== next.scopes[index]) ||
     !sameParameters(current.authorizationParameters, next.authorizationParameters)
@@ -142,6 +175,15 @@ export interface SavedConnection {
   readonly revocationRequestedBy?: string;
   readonly revokedAt?: string;
   readonly ownerPrincipalId: string;
+  readonly oauthClientId: string;
+  readonly clientId: string;
+  readonly issuer: string;
+  readonly tokenUrl: string;
+  readonly mcpServerUrl?: string;
+  readonly recipient: ConnectionTemplateValues["recipient"];
+  readonly resource?: string;
+  readonly requestedScopes: readonly string[];
+  readonly grantedScopes: readonly string[];
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
   readonly createdAt: string;
@@ -166,6 +208,7 @@ export interface ConnectionSession {
   readonly credentialSourceId: string;
   /** Server-private PKCE state, erased when the callback consumes the attempt. */
   readonly privateState: string;
+  readonly selectedScopes: readonly string[];
   readonly issuerRequired: boolean;
   readonly sessionId: string;
   readonly redirectUri: string;

@@ -6,6 +6,7 @@ import type {
   OAuthConnectionCustody,
   OAuthConnectionGrant,
   OAuthConnectionTokenService,
+  OAuthConnectionStatus,
   SecretDriver,
 } from "@openclaw-enterprise/contracts";
 import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
@@ -57,15 +58,21 @@ function material(value: string, custody: OAuthConnectionCustody): StoredConnect
       "version",
       "scope",
       "issuer",
-      "clientRegistrationId",
+      "oauthClientId",
       "clientId",
-      "clientSecret",
+      "tokenEndpointAuthMethod",
       "tokenUrl",
       "accessToken",
       "refreshToken",
       "expiresAt",
       "renewAt",
     ].every((key) => isNonEmptyString(data[key])) ||
+    !Array.isArray(data.requestedScopes) ||
+    !data.requestedScopes.every(isNonEmptyString) ||
+    !["none", "client_secret_post", "client_secret_basic"].includes(
+      String(data.tokenEndpointAuthMethod),
+    ) ||
+    (data.tokenEndpointAuthMethod !== "none" && !isNonEmptyString(data.clientSecret)) ||
     !Number.isFinite(Date.parse(data.expiresAt as string)) ||
     !Number.isFinite(Date.parse(data.renewAt as string)) ||
     (data.phase === "renewing" &&
@@ -98,7 +105,7 @@ function ready(
   };
 }
 
-function status(current: StoredConnection): CredentialRefreshStatus {
+function status(current: StoredConnection): OAuthConnectionStatus {
   if (!current) {
     return { state: "pending" };
   }
@@ -106,6 +113,11 @@ function status(current: StoredConnection): CredentialRefreshStatus {
     return {
       state: Date.now() < Date.parse(current.expiresAt) ? "ready" : "pending",
       nextRefreshAt: current.renewAt,
+      schedule: {
+        version: current.version,
+        nextRefreshAt: current.renewAt,
+        grantedScopes: current.scope.split(" "),
+      },
       expiresAt: current.expiresAt,
     };
   }
@@ -190,6 +202,7 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
       }
       return {
         accessToken: stored.accessToken,
+        grantedScopes: stored.scope.split(" "),
         expiresAt: stored.expiresAt,
         version: stored.version,
         nextRefreshAt: stored.renewAt,
@@ -200,7 +213,7 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
   async status(
     custody: OAuthConnectionCustody,
     signal: AbortSignal,
-  ): Promise<CredentialRefreshStatus> {
+  ): Promise<OAuthConnectionStatus> {
     return this.driver(custody, signal).withValue!(custody.secret, async (value) =>
       status(material(value, custody)),
     );
@@ -209,7 +222,7 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
   async renew(
     custody: OAuthConnectionCustody,
     signal: AbortSignal,
-    publishedVersion?: string,
+    scheduledVersion?: string,
   ): Promise<CredentialRefreshStatus> {
     const driver = this.driver(custody, signal);
     const previous = await driver.withValue!(custody.secret, async (value) => value);
@@ -232,9 +245,9 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
       );
       return fenced ? status(unknown) : this.status(custody, signal);
     }
-    // Repair delivery of an unexpired successor before consuming its refresh grant.
-    const renewAfter = publishedVersion === undefined ? current.renewAt : current.expiresAt;
-    if (current.version !== publishedVersion && Date.parse(renewAfter) > Date.now()) {
+    // Recover an already renewed grant before consuming its refresh token again.
+    const renewAfter = scheduledVersion === undefined ? current.renewAt : current.expiresAt;
+    if (current.version !== scheduledVersion && Date.parse(renewAfter) > Date.now()) {
       return observed;
     }
     signal.throwIfAborted();
@@ -264,9 +277,12 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
       next = ready(custody, {
         issuer: current.issuer,
         tokenUrl: current.tokenUrl,
-        clientRegistrationId: current.clientRegistrationId,
+        oauthClientId: current.oauthClientId,
+        requestedScopes: current.requestedScopes,
+        tokenEndpointAuthMethod: current.tokenEndpointAuthMethod,
+        ...(current.resource === undefined ? {} : { resource: current.resource }),
         clientId: current.clientId,
-        clientSecret: current.clientSecret,
+        ...(current.clientSecret === undefined ? {} : { clientSecret: current.clientSecret }),
         ...issued,
         refreshToken: issued.refreshToken ?? current.refreshToken,
       });

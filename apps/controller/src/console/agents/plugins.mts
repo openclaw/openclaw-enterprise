@@ -246,19 +246,24 @@ export function renderAgentPlugins(
           `${path}/plugins/${encodeURIComponent(slot.pluginId)}/credentials/${encodeURIComponent(slot.id)}/connection-templates`,
         )) as readonly SlotTemplate[];
       },
-      async start(slot, template) {
+      async start(slot, template, selectedScopes) {
         pending = true;
         updateState();
         try {
+          const originalSource = responseFields(
+            agent.plugins?.[slot.pluginId]?.driverPolicy?.credentials,
+          )[slot.id];
           const result = (await context.request(`${path}/connections`, {
             method: "POST",
             body: {
               pluginId: slot.pluginId,
               slotId: slot.id,
               releaseSha256: slot.releaseSha256,
-              expectedCredentialSourceId: null,
+              expectedCredentialSourceId:
+                typeof originalSource === "string" ? originalSource : null,
               connectionTemplateId: template.id,
               connectionTemplateVersion: template.version,
+              ...(selectedScopes && { selectedScopes }),
             },
           })) as { authorizationUrl: string };
           const provider = new URL(result.authorizationUrl);

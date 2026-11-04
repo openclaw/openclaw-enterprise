@@ -1,3 +1,8 @@
+import {
+  credentialEnvironmentNames,
+  credentialEnvironmentsOverlap,
+  validPluginCredentialNames,
+} from "../plugin/credential-environment.ts";
 import { googleWorkspaceCredentialPolicy } from "../plugin/google-workspace/credential-policy.ts";
 import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
@@ -47,6 +52,7 @@ import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 
 import {
   openShellProviderName,
+  revisionProviderSourceId,
   openShellWorkspaceName,
   type OpenShellGateway,
   type OpenShellGatewayPlacement,
@@ -316,14 +322,6 @@ function validateOAuth2Config(
   gateway: OpenShellGatewayPlacement | undefined,
 ): Readonly<Record<string, string>> | void {
   validateEndpointConfig(type, config);
-  // The placeholder resolver scopes a refreshed token by host, port and path. Another
-  // allowed network rule can admit a write even when the provider profile is read-only.
-  if ((config.access ?? "full") !== "full") {
-    throw new CredentialSourceConfigError(
-      "access",
-      "OpenShell cannot restrict this OAuth2 connection to read-only requests.",
-    );
-  }
   if (config.binary !== undefined && !allowsOAuthBinary(options, config.binary)) {
     throw new CredentialSourceConfigError(
       "binary",
@@ -396,7 +394,7 @@ function bearerProfile(
     credentials: [
       {
         ...credential,
-        envVars: [config.env_var ?? ""],
+        envVars: credentialEnvironmentNames(config),
         required: credential.required ?? true,
         authStyle: "bearer",
         headerName: "authorization",
@@ -431,9 +429,6 @@ function oauth2SourceType(
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
       checkStoredHost(config);
-      if ((config.access ?? "full") !== "full") {
-        throw new StoredCredentialSourceConfigError("access");
-      }
       // A source stored before the token_url host rules fails here until it is replaced.
       if (
         !tokenUrlHostAllowed(config.token_url ?? "") ||
@@ -706,6 +701,10 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
         "Bearer token (OpenClaw Enterprise)",
         {
           name: "token",
+          ...(config.oauth_owner === "token_service" && {
+            required: false,
+            stablePlaceholder: true,
+          }),
         },
       );
       if (config.protocol === undefined) {
@@ -1181,7 +1180,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (
       source.driverId !== this.id ||
       source.namespaceId !== context.namespace.id ||
-      source.type !== "oauth2-refresh-token" ||
+      (source.type !== "oauth2-refresh-token" && source.type !== "bearer-token") ||
       source.config.oauth_owner !== "token_service"
     ) {
       throw new ScopeViolationError(
@@ -1203,8 +1202,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     ) {
       throw new ScopeViolationError("The OpenShell provider belongs to a different source.");
     }
-    const key = source.config.env_var;
-    if (!key || !ENVIRONMENT_NAME.test(key)) {
+    const names = credentialEnvironmentNames(source.config);
+    if (!validPluginCredentialNames(names)) {
       throw new StoredCredentialSourceConfigError("env_var");
     }
     await this.ensureProfile(
@@ -1225,8 +1224,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         [SOURCE_ID_LABEL]: source.id,
         [NAMESPACE_ID_LABEL]: context.namespace.id,
       },
-      credentials: token ? { [key]: token.accessToken } : {},
-      ...(token && { credentialExpirationTimes: { [key]: token.expiresAt } }),
+      credentials: token ? Object.fromEntries(names.map((name) => [name, token.accessToken])) : {},
+      ...(token && {
+        credentialExpirationTimes: Object.fromEntries(names.map((name) => [name, token.expiresAt])),
+      }),
     };
     if (!existing) {
       await client.createProvider(provider, signal);
@@ -1241,7 +1242,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       provider,
       existing.resourceVersion,
       signal,
-      token ? undefined : key,
+      token ? undefined : names,
     );
   }
 
@@ -1334,7 +1335,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         return (
           other.id !== source.id &&
           (host.toLowerCase().replace(/\.$/, "") === install.endpoint.host ||
-            other.config.env_var === install.credentialEnvironment)
+            credentialEnvironmentsOverlap(source.config, other.config))
         );
       });
       if (conflict) {
@@ -1344,6 +1345,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
     }
     const selected = context.sources.find(({ id }) => id === binding?.sourceId);
+    const savedGoogleAccount =
+      binding &&
+      context.revision.credentialSources?.some(
+        (snapshot) =>
+          snapshot.sourceId === binding.sourceId && snapshot.accountDelivery !== undefined,
+      );
     if (binding && selected) {
       if (
         !googleWorkspaceCredentialPolicy.accepts(managedGoogleInstall, binding.credential, selected)
@@ -1357,9 +1364,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         throw new ScopeViolationError(conflict);
       }
       const binaries = requiredToolBinaries(this.options, selected.config.binary);
-      if (binaries.length !== 1 || binaries[0] !== managedGoogleInstall.binaryPath) {
+      if (
+        !binaries.includes(managedGoogleInstall.binaryPath) ||
+        (!savedGoogleAccount && binaries.length !== 1)
+      ) {
         throw new ScopeViolationError(
-          "The bound Google account must grant only the pinned Google executable. Set binary on this OAuth2 source when its installation allows other tools.",
+          "The sender must allow the pinned Google executable. A directly configured OAuth2 source must select that executable as its only binary.",
         );
       }
       await verifyManagedPluginRegistration(client, context.signal);
@@ -1402,9 +1412,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         }
         environment.add(name);
       }
-      const name = openShellProviderName(source.id);
+      const profileId = revisionProviderSourceId(context.revision, source.id);
+      const name = openShellProviderName(profileId);
       const provider = await client.getProvider(workspace, name, context.signal);
-      if (provider === undefined || !ownedBy(provider, source.id)) {
+      if (provider === undefined || !ownedBy(provider, profileId)) {
         throw new OpenShellCredentialGatewayFailure(
           "The OpenShell provider for a bound credential source is unavailable.",
         );
@@ -1415,7 +1426,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         client,
         workspace,
         type,
-        source.id,
+        profileId,
         source.config,
         this.placement(context),
         context.signal,
@@ -1428,6 +1439,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
             requestScope: {
               ...bearerTokenEndpoint(source.config),
               scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),
+              ...(savedGoogleAccount &&
+                source.id === binding?.sourceId && {
+                  binaries: requiredToolBinaries(this.options, source.config.binary),
+                }),
             },
           }),
           ...(source.type === CODEX_OAUTH_TYPE
@@ -1459,7 +1474,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       const status = await client.getSandboxProviderStatus(
         workspace,
         context.sandbox.resourceName,
-        openShellProviderName(source.id),
+        openShellProviderName(revisionProviderSourceId(context.revision, source.id)),
         context.signal,
       );
       statuses.push(
@@ -1489,7 +1504,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   async withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus> {
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
-    const provider = openShellProviderName(context.sourceId);
+    const provider = openShellProviderName(
+      revisionProviderSourceId(context.revision, context.sourceId),
+    );
     const sandbox = context.sandbox.resourceName;
     const unconfirmed = `the credential of Sandbox ${sandbox} cannot be confirmed withdrawn`;
     const refused = gatewayIdentityRefusal(workspace, unconfirmed);

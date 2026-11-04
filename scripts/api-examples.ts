@@ -15,7 +15,13 @@ export const configuration = {
     mode: "local",
     bind: "lan",
     controlUi: { enabled: false },
-    auth: { password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+    auth: {
+      password: {
+        source: "env",
+        provider: "default",
+        id: "OPENCLAW_GATEWAY_PASSWORD",
+      },
+    },
     http: { endpoints: { chatCompletions: { enabled: true } } },
   },
   agents: {
@@ -53,7 +59,12 @@ export const configuration = {
   },
 };
 
-const namespace = { id: namespaceId, name: "engineering", status: "ready", createdAt: time };
+const namespace = {
+  id: namespaceId,
+  name: "engineering",
+  status: "ready",
+  createdAt: time,
+};
 const agent = {
   id: agentId,
   namespaceId,
@@ -92,7 +103,12 @@ const revision = {
   harnessAuth,
   createdAt: time,
 };
-const secret = { id: secretRef.id, namespaceId, name: "model-api-key", ref: secretRef };
+const secret = {
+  id: secretRef.id,
+  namespaceId,
+  name: "model-api-key",
+  ref: secretRef,
+};
 const source = {
   id: id("cs"),
   namespaceId,
@@ -126,7 +142,10 @@ const preset = {
   namespaceId,
   name: "Documentation assistant",
   createdAt: time,
-  template: { configuration: { values: configuration }, agent: { executionMode: "dedicated" } },
+  template: {
+    configuration: { values: configuration },
+    agent: { executionMode: "dedicated" },
+  },
 };
 const provisioning = {
   workId: "provision-docs-assistant",
@@ -157,7 +176,13 @@ const repository = {
   displayName: "Documentation",
   allowedProfiles: ["read"],
 };
-const policy = { id: id("sbp"), namespaceId, agentId, version: 1, additions: [] };
+const policy = {
+  id: id("sbp"),
+  namespaceId,
+  agentId,
+  version: 1,
+  additions: [],
+};
 const withdrawal = {
   namespaceId,
   agentId,
@@ -179,29 +204,53 @@ const authAccount = {
 const sessionKey = "example-session-binding-not-a-credential";
 
 const connectionTemplateId = id("ctp");
-const connectionTemplateInput = {
-  displayName: "Example account",
+const oauthClientId = id("ccr");
+const oauthClientInput = {
+  displayName: "Example provider client",
   issuer: "https://accounts.example.com",
-  authorizationUrl: "https://accounts.example.com/authorize",
   tokenUrl: "https://accounts.example.com/token",
   clientId: "example-client",
-  scopes: ["profile.read"],
-  envVar: "EXAMPLE_ACCESS_TOKEN",
-  endpoint: { host: "api.example.com", port: 443, path: "/profile", access: "full" },
+  tokenEndpointAuthMethod: "client_secret_basic",
 };
-const { displayName, ...approvedValues } = connectionTemplateInput;
+const oauthClient = { ...oauthClientInput, id: oauthClientId, createdAt: time };
+const connectionTemplateInput = {
+  mode: "manual",
+  issuer: oauthClient.issuer,
+  authorizationUrl: "https://accounts.example.com/authorize",
+  tokenUrl: oauthClient.tokenUrl,
+  oauthClientId,
+  scopes: ["profile.read"],
+  recipient: {
+    host: "api.example.com",
+    port: 443,
+    path: "/profile",
+    access: "read-only",
+  },
+};
 const connectionTemplate = {
   id: connectionTemplateId,
   namespaceId,
-  displayName,
+  displayName: "Example account",
   createdAt: time,
   current: {
-    ...approvedValues,
+    ...connectionTemplateInput,
+    templateId: connectionTemplateId,
     authorizationParameters: {},
     version: 1,
-    clientRegistrationId: id("cr"),
     createdAt: time,
   },
+};
+const mcpServerUrl = "https://tools.example.com/mcp";
+const discovered = {
+  serverUrl: mcpServerUrl,
+  resource: mcpServerUrl,
+  issuers: [oauthClient.issuer],
+  issuer: oauthClient.issuer,
+  authorizationUrl: connectionTemplateInput.authorizationUrl,
+  tokenUrl: oauthClient.tokenUrl,
+  requestedScopes: ["profile.read"],
+  resourceScopes: ["profile.read"],
+  tokenEndpointAuthMethods: ["client_secret_basic"],
 };
 
 const savedAccount = {
@@ -214,6 +263,7 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  oauthClientId,
   pluginId: "occ-plugin:google@1.0.0",
   slotId: "account",
   connectionTemplateId,
@@ -271,10 +321,17 @@ export const requestExamples = {
   createConnectionTemplate: {
     ...connectionTemplateInput,
     namespaceId,
-    clientSecret: "example-client-secret",
+    displayName: connectionTemplate.displayName,
   },
   updateConnectionTemplate: { displayName: "Engineering account" },
-  rotateConnectionClientSecret: { clientSecret: "replacement-example-client-secret" },
+  discoverConnectionTemplate: { serverUrl: mcpServerUrl },
+  createOAuthClient: {
+    ...oauthClientInput,
+    clientSecret: "example-client-secret",
+  },
+  rotateOAuthClientSecret: {
+    clientSecret: "replacement-example-client-secret",
+  },
   deployAgentFirst: {
     key: "review-1",
     expectedConfigurationId: configurationId,
@@ -284,7 +341,12 @@ export const requestExamples = {
   createNamespace: { name: namespace.name },
   createConfiguration: { kind: "agent", values: configuration },
   updateConfiguration: { expectedGeneration: 1, values: configuration },
-  createAgent: { name: agent.name, configurationId, executionMode: "dedicated", harnessAuth },
+  createAgent: {
+    name: agent.name,
+    configurationId,
+    executionMode: "dedicated",
+    harnessAuth,
+  },
   updateAgent: { configurationId, executionMode: "dedicated", harnessAuth },
   provisionAgent: {
     name: agent.name,
@@ -299,7 +361,10 @@ export const requestExamples = {
     executionMode: "dedicated",
     harnessAuth,
   },
-  createSecret: { name: secret.name, value: "replace-with-your-authorized-model-key" },
+  createSecret: {
+    name: secret.name,
+    value: "replace-with-your-authorized-model-key",
+  },
   updateSecret: { value: "replace-with-your-rotated-model-key" },
   createCredentialSource: {
     name: source.name,
@@ -324,8 +389,13 @@ export const requestExamples = {
   },
   createIAMServicePrincipal: {},
   createPreset: { name: preset.name, template: preset.template },
-  updatePreset: { name: "Updated documentation assistant", template: preset.template },
-  putAgentWorkspaceFile: { content: "Explain your changes and verify the affected behavior.\n" },
+  updatePreset: {
+    name: "Updated documentation assistant",
+    template: preset.template,
+  },
+  putAgentWorkspaceFile: {
+    content: "Explain your changes and verify the affected behavior.\n",
+  },
   discoverAgentModels: {
     provider: "openai",
     authMethod: "api_key",
@@ -335,7 +405,11 @@ export const requestExamples = {
   discoverAgentPluginDetails: { secretRef, pluginId: plugin.id },
   discoverSavedAgentPlugins: {},
   discoverSavedAgentPluginDetails: { pluginId: plugin.id },
-  lookupChannelDirectory: { kind: "channels", secretId: secret.id, query: "engineering" },
+  lookupChannelDirectory: {
+    kind: "channels",
+    secretId: secret.id,
+    query: "engineering",
+  },
   startAgentDeviceAuthorization: { harnessId: "codex" },
   startSavedAgentDeviceAuthorization: { harnessId: "codex" },
   pollAgentDeviceAuthorization: {},
@@ -344,20 +418,31 @@ export const requestExamples = {
   updateAgentSandboxPolicy: { expectedVersion: 1, additions: [] },
   validateAgentSandboxPolicy: { expectedVersion: 1, additions: [] },
   applyAgentSandboxPolicy: { expectedVersion: 1, revisionId },
-  TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing: { enabled: true },
+  TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing: {
+    enabled: true,
+  },
   removeAgentStandingApproval: { expectedGeneration: 1 },
   createAuthAccount: {
     email: "admin@example.com",
     name: "Documentation administrator",
     password: "replace-with-a-unique-password",
   },
-  signInEmail: { email: "admin@example.com", password: "replace-with-a-unique-password" },
+  signInEmail: {
+    email: "admin@example.com",
+    password: "replace-with-a-unique-password",
+  },
   disableAuthAccount: { expectedVersion: 1 },
   enableAuthAccount: { expectedVersion: 2 },
   detachAuthMethod: { expectedVersion: 1 },
   attachGitHubIdentity: { expectedVersion: 1, subject: "12345678" },
-  attachGoogleIdentity: { expectedVersion: 1, subject: "123456789012345678901" },
-  attachOidcIdentity: { expectedVersion: 1, subject: "provider-subject-docs-admin" },
+  attachGoogleIdentity: {
+    expectedVersion: 1,
+    subject: "123456789012345678901",
+  },
+  attachOidcIdentity: {
+    expectedVersion: 1,
+    subject: "provider-subject-docs-admin",
+  },
   revokeAuthAccountSessions: { expectedVersion: 1 },
   replaceAuthRecovery: {
     expectedCurrentUserId: userId,
@@ -378,7 +463,14 @@ export const requestExamples = {
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
   listAgentPluginConnectionTemplates: [
-    { id: connectionTemplateId, displayName: "Engineering account", version: 1 },
+    {
+      id: connectionTemplateId,
+      displayName: "Engineering account",
+      version: 1,
+      mode: "manual",
+      scopes: ["profile"],
+      requiredScopes: [],
+    },
   ],
   startAgentPluginConnection: {
     credentialSourceId: source.id,
@@ -396,10 +488,20 @@ export const responseExamples = {
   listConnectionTemplates: [connectionTemplate],
   getConnectionTemplate: connectionTemplate,
   createConnectionTemplate: connectionTemplate,
-  updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
-  rotateConnectionClientSecret: connectionTemplate,
+  updateConnectionTemplate: {
+    ...connectionTemplate,
+    displayName: "Engineering account",
+  },
+  discoverConnectionTemplate: discovered,
+  listOAuthClients: [oauthClient],
+  createOAuthClient: oauthClient,
+  rotateOAuthClientSecret: oauthClient,
   getInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
-  bootstrapInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
+  bootstrapInstallation: {
+    id: id("ins"),
+    name: "Engineering",
+    createdAt: time,
+  },
   getInstallationDeploymentInventory: {
     installationId: id("ins"),
     namespaces: [
@@ -482,7 +584,14 @@ export const responseExamples = {
   diagnoseAgentDeployment: {
     revisionId,
     observedAt: time,
-    checks: [{ component: "harness", check: "running", state: "succeeded", checkedAt: time }],
+    checks: [
+      {
+        component: "harness",
+        check: "running",
+        state: "succeeded",
+        checkedAt: time,
+      },
+    ],
   },
   getAgentDeploymentRuntime: {
     revisionId,
@@ -550,7 +659,11 @@ export const responseExamples = {
     discoveryCredential: "required",
     driverPolicySchema: {},
     tools: { enabled: true, approval: ["all_actions"], reviewer: ["human"] },
-    toolDefaults: { enabled: true, approval: ["all_actions"], reviewer: ["human"] },
+    toolDefaults: {
+      enabled: true,
+      approval: ["all_actions"],
+      reviewer: ["human"],
+    },
   },
   listRepositoryOptions: [repository],
   listAgentRepositoryOptions: [repository],
@@ -616,8 +729,14 @@ export const responseExamples = {
   listServiceAccounts: [account],
   createServiceAccount: account,
   getServiceAccount: account,
-  createServiceAccountCredential: { ...account, credential: { kind: "access_token" } },
-  updateServiceAccountCredential: { ...account, credential: { kind: "api_key" } },
+  createServiceAccountCredential: {
+    ...account,
+    credential: { kind: "access_token" },
+  },
+  updateServiceAccountCredential: {
+    ...account,
+    credential: { kind: "api_key" },
+  },
   listIAMRoles: [role],
   getIAMRole: role,
   createIAMRole: role,
@@ -647,7 +766,12 @@ export const responseExamples = {
   attachGoogleIdentity: { userId },
   attachOidcIdentity: { userId },
   revokeAuthAccountSessions: { userId },
-  enrolAuthAccount: { userId, principalId: authAccount.principalId, version: 1, created: true },
+  enrolAuthAccount: {
+    userId,
+    principalId: authAccount.principalId,
+    version: 1,
+    created: true,
+  },
   getAuthProviders: {
     github: false,
     google: false,
@@ -658,7 +782,11 @@ export const responseExamples = {
   getAuthSession: null,
   signInEmail: { authenticated: true },
   signOut: {},
-  getAuthRecovery: { userId, methodId: "method-password", principalId: authAccount.principalId },
+  getAuthRecovery: {
+    userId,
+    methodId: "method-password",
+    principalId: authAccount.principalId,
+  },
   replaceAuthRecovery: {
     changed: true,
     userId: "user-recovery-admin",

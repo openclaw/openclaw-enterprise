@@ -1,7 +1,7 @@
 import type { AgentRevision, HarnessWorkloadRequirements } from "@openclaw-enterprise/contracts";
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
-import { openShellProviderName } from "../../backends/openshell.ts";
+import { openShellProviderName, revisionProviderSourceId } from "../../backends/openshell.ts";
 import {
   type ManagedMcpInstall,
   managedMcpCredentialBinding,
@@ -75,7 +75,7 @@ function openShellManagedMcpPolicy(
   if (
     attached.length !== 1 ||
     !selected ||
-    selected.ref !== openShellProviderName(selected.sourceId) ||
+    selected.ref !== openShellProviderName(revisionProviderSourceId(revision, selected.sourceId)) ||
     selected.requestScope?.host !== host ||
     selected.requestScope.port !== port ||
     selected.requestScope.path !== path ||

@@ -212,16 +212,20 @@
 - [`listAgentPluginConnectionTemplates`](../api.md#get-namespacesnamespaceidagentsagentidpluginspluginidcredentialsslotidconnectiontemplates): List compatible OAuth templates for a saved Agent plugin slot.
 - [`listConnectionTemplates`](../api.md#get-connectiontemplates): List all Installation-wide and Namespace-scoped connection templates.
 - [`listNamespaceConnections`](../api.md#get-namespacesnamespaceidconnections): List completed connections the caller can read in this Namespace.
+- [`listOAuthClients`](../api.md#get-oauthclients): List registered OAuth clients.
 - [`listUsableConnectionTemplates`](../api.md#get-namespacesnamespaceidconnectiontemplates): List connection templates the caller may connect in this Namespace.
 - [`completeNamespaceConnection`](../api.md#get-oauthcallback): Complete a browser connection for the signed-in person who started it.
 - [`getConnectionTemplate`](../api.md#get-connectiontemplatesconnectiontemplateid): Get one connection template.
 - [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation-wide or Namespace-scoped connection template.
+- [`createOAuthClient`](../api.md#post-oauthclients): Register a scoped OAuth client.
 - [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
 - [`attachAgentConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Attach a completed account and grant this Agent access to its source.
-- [`rotateConnectionClientSecret`](../api.md#post-connectiontemplatesconnectiontemplateidrotateclientsecret): Rotate the secret for the template’s OAuth client registration.
+- [`discoverConnectionTemplate`](../api.md#post-connectiontemplatesdiscover): Read public MCP resource and authorization server metadata.
+- [`rotateOAuthClientSecret`](../api.md#post-oauthclientsoauthclientidrotatesecret): Rotate an OAuth client secret.
 - [`startAgentPluginConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnections): Connect an account and attach it to a saved Agent plugin slot.
 - [`startNamespaceConnection`](../api.md#post-namespacesnamespaceidconnections): Start consent for a reusable account in this Namespace.
 - [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template.
+- [`deleteOAuthClient`](../api.md#delete-oauthclientsoauthclientid): Delete an unused OAuth client.
 - [`detachAgentConnection`](../api.md#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Detach an account from this Agent and withdraw its access.
 - [`disconnectNamespaceConnection`](../api.md#delete-namespacesnamespaceidconnectionscredentialsourceid): Disconnect a saved account and retire its OAuth grant.
 

@@ -1,4 +1,5 @@
 import type {
+  AgentRevision,
   Backend,
   Namespace,
   OpenShellBackendDefinition,
@@ -222,6 +223,13 @@ export function openShellWorkspaceName(namespace: Readonly<Namespace>): string {
 }
 
 /** One OpenShell provider per OCC credential source, named without exposing the source ID. */
+export function revisionProviderSourceId(revision: AgentRevision, sourceId: string): string {
+  return (
+    revision.credentialSources?.find((item) => item.sourceId === sourceId)?.accountDelivery
+      ?.profileId ?? sourceId
+  );
+}
+
 export function openShellProviderName(sourceId: string): string {
   return `oce-cs-${sha256Hex(sourceId, 24)}`;
 }
