@@ -7,7 +7,6 @@ import type { Locator, Page, Request } from "playwright";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { isResourceKind, PERMISSION_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type {
-  Backend,
   AccessBinding,
   Principal,
   Permission,
@@ -20,7 +19,7 @@ import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/g
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
-import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
@@ -1980,12 +1979,12 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
       });
     const expect = async (
       expected: { selected: string[]; stops: string[]; focused: string | null; tab: string },
-      message?: string,
+      message = "",
     ) =>
       assert.deepEqual(
         await state(),
         { panel: expected.selected[0], controls: true, ...expected },
-        message === undefined ? undefined : () => message,
+        message,
       );
     await expect({ selected: ["Plugins"], stops: ["Plugins"], focused: null, tab: "plugins" });
 
@@ -3807,12 +3806,15 @@ export function registerSharingCredentialsAndChannelsCases(
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
 
-    // Only Credential Gateway behavior is in scope, with the real OpenShell client.
-    const backend = Object.freeze({
+    const backend = createOpenShellBackend({
       id: "openshell-browser",
-      client: new OpenShellGateway({ endpoint: "http://127.0.0.1:9" }),
-      drivers: Object.freeze({ credential_gateway: "credential-gateway-openshell" }),
-    }) satisfies Backend<OpenShellGateway>;
+      type: "openshell",
+      configuration: { endpoint: "http://127.0.0.1:9" },
+      drivers: {
+        sandbox: "sandbox-openshell-local",
+        credential_gateway: "credential-gateway-openshell",
+      },
+    });
     t.after(() => backend.client.close());
     const gateway = new OpenShellCredentialGatewayDriver(
       { binaries: ["/usr/local/bin/openclaw"] },
