@@ -56,11 +56,15 @@ sequenceDiagram
    expiry. OCC then marks the source ready, records consent and grants the owner
    exact-source read and operate in one transaction. A worker expires abandoned
    attempts. An exchange with an uncertain outcome requires explicit recovery.
-3. `attachAgentConnection` checks Agent update permission and the caller's
+3. To rotate a connected account, OCC first marks its published token version due.
+   The API and the worker can both fulfill that request. If the Token Service
+   already holds a replacement, OCC delivers it to the sender. It records the
+   next renewal time after the sender accepts the replacement.
+4. `attachAgentConnection` checks Agent update permission and the caller's
    authority to use the completed source. It binds the source and grants the
    target service principal exact-source access. Other Agents can be attached
    individually. New deployments and queued work check the Agent's authority.
-4. `disconnectAgentConnection` detaches the source from that Agent and requests
+5. `disconnectAgentConnection` detaches the source from that Agent and requests
    withdrawal from revisions holding the credential. Those revisions can still
    send requests until the worker confirms withdrawal or they stop. Other attached Agents keep
    their grants. Disconnecting the saved account at the Namespace endpoint

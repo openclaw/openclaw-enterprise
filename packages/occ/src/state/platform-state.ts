@@ -414,7 +414,7 @@ export interface AgentConnectionReadRepository {
   findTokenCustody(
     namespaceId: string,
     sourceId: string,
-  ): Promise<Readonly<ConnectionTokenCustody> | undefined>;
+  ): Promise<Readonly<ConnectionTokenCustody & { due: boolean }> | undefined>;
   listDueConnectionTokens(
     installationId: string,
     limit: number,
@@ -2061,7 +2061,17 @@ function repositories(
   };
 
   const agentConnections: AgentConnectionRepository = {
-    findTokenCustody: async (ns, id) => snapshot.connectionTokenCustody.get(agentKey(ns, id)),
+    findTokenCustody: async (ns, id) => {
+      const custody = snapshot.connectionTokenCustody.get(agentKey(ns, id));
+      return (
+        custody &&
+        immutableCopy({
+          ...custody,
+          due:
+            custody.nextRefreshAt !== undefined && Date.parse(custody.nextRefreshAt) <= Date.now(),
+        })
+      );
+    },
     createTokenCustody: async (c) => {
       const key = agentKey(c.namespaceId, c.sourceId);
       if (snapshot.connectionTokenCustody.has(key)) {

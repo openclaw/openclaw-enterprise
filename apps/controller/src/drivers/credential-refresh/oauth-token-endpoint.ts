@@ -1,3 +1,4 @@
+import type { OAuthConnectionGrant } from "@openclaw-enterprise/contracts";
 import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 
@@ -96,4 +97,26 @@ export async function requestOAuthTokens(
     scope,
     expiresAt: expiresAt.toISOString(),
   };
+}
+
+/** Refresh one previously approved grant at the endpoint and scope pinned during consent. */
+export function refreshPinnedOAuthGrant(
+  grant: Pick<
+    OAuthConnectionGrant,
+    "tokenUrl" | "refreshToken" | "clientId" | "clientSecret" | "scope"
+  >,
+  signal: AbortSignal,
+) {
+  return requestOAuthTokens(
+    grant.tokenUrl,
+    new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: grant.refreshToken,
+      client_id: grant.clientId,
+      client_secret: grant.clientSecret,
+      scope: grant.scope,
+    }),
+    grant.scope,
+    signal,
+  );
 }

@@ -10,7 +10,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { requestOAuthTokens } from "./oauth-token-response.ts";
+import type { refreshPinnedOAuthGrant } from "../../drivers/credential-refresh/oauth-token-endpoint.ts";
 
 type OAuthMaterial = OAuthConnectionGrant & {
   readonly sourceId: string;
@@ -135,7 +135,10 @@ function failure(custody: OAuthConnectionCustody, failureCode: string): FailedRe
 export class OAuthConnectionTokens implements OAuthConnectionTokenService {
   private readonly secrets: SecretDriver;
 
-  constructor(secrets: SecretDriver) {
+  private readonly refreshGrant: typeof refreshPinnedOAuthGrant;
+
+  constructor(secrets: SecretDriver, refreshGrant: typeof refreshPinnedOAuthGrant) {
+    this.refreshGrant = refreshGrant;
     this.secrets = secrets;
   }
 
@@ -206,7 +209,7 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
   async renew(
     custody: OAuthConnectionCustody,
     signal: AbortSignal,
-    force = false,
+    publishedVersion?: string,
   ): Promise<CredentialRefreshStatus> {
     const driver = this.driver(custody, signal);
     const previous = await driver.withValue!(custody.secret, async (value) => value);
@@ -229,7 +232,9 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
       );
       return fenced ? status(unknown) : this.status(custody, signal);
     }
-    if (!force && Date.parse(current.renewAt) > Date.now()) {
+    // Repair delivery of an unexpired successor before consuming its refresh grant.
+    const renewAfter = publishedVersion === undefined ? current.renewAt : current.expiresAt;
+    if (current.version !== publishedVersion && Date.parse(renewAfter) > Date.now()) {
       return observed;
     }
     signal.throwIfAborted();
@@ -242,22 +247,18 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
     if (!(await driver.compareAndSwap!(custody.secret, previous, intent))) {
       return { state: "pending" };
     }
+    const remaining = deadline - Date.now();
+    if (signal.aborted || remaining <= 0) {
+      // The custody claim completed after cancellation. No issuer request was sent, so this
+      // owner can restore the original grant if its intent still owns the Secret.
+      await driver.compareAndSwap!(custody.secret, intent, previous);
+      signal.throwIfAborted();
+      return { state: "pending" };
+    }
     let next: OAuthMaterial | FailedRefresh;
     try {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        throw new Error("The OAuth renewal deadline elapsed.");
-      }
-      const issued = await requestOAuthTokens(
-        current.tokenUrl,
-        new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: current.refreshToken,
-          client_id: current.clientId,
-          client_secret: current.clientSecret,
-          scope: current.scope,
-        }),
-        current.scope,
+      const issued = await this.refreshGrant(
+        current,
         AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
       );
       next = ready(custody, {

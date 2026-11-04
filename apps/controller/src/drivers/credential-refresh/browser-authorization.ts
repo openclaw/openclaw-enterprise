@@ -8,7 +8,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { requestOAuthTokens } from "../../backends/token-service/oauth-token-response.ts";
+import { requestOAuthTokens } from "./oauth-token-endpoint.ts";
 
 /** Parameters the flow sets itself; a connection template cannot replace them. */
 const RESERVED_PARAMETERS = new Set([

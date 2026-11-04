@@ -9,6 +9,7 @@ import test from "node:test";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { PENDING_OAUTH_CONNECTION } from "../../packages/contracts/src/index.ts";
+import { refreshPinnedOAuthGrant } from "../../apps/controller/src/drivers/credential-refresh/oauth-token-endpoint.ts";
 import { OAuthConnectionTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { exchangeAuthorizationCode } from "../../apps/controller/src/drivers/credential-refresh/browser-authorization.ts";
@@ -103,8 +104,8 @@ async function oauthCustody() {
       backendRef: await driver.create(identity, PENDING_OAUTH_CONNECTION),
     },
   };
-  const service = new OAuthConnectionTokens(driver);
-  const worker = new OAuthConnectionTokens(driver);
+  const service = new OAuthConnectionTokens(driver, refreshPinnedOAuthGrant);
+  const worker = new OAuthConnectionTokens(driver, refreshPinnedOAuthGrant);
   return { driver, custody, service, worker };
 }
 
@@ -200,8 +201,15 @@ test("the Token Service publishes the first access token and serializes refresh-
   assert.equal(renewed.accessToken, second);
   assert.notEqual(renewed.version, accepted.version);
 
+  // The sender recovers after the successor's scheduled renewal time. Its earlier published
+  // version still identifies a delivery retry, so the worker can project the unexpired successor.
+  t.mock.timers.tick(65_000);
+  assert.equal((await worker.renew(custody, t.signal, accepted.version)).state, "ready");
+  assert.equal((await worker.warm(custody, t.signal)).version, renewed.version);
+  assert.equal(requests.length, 2);
+
   // A grant rotation persists across service instances. The issuer tries to add write back on the next refresh.
-  t.mock.timers.tick(125_000);
+  t.mock.timers.tick(60_000);
   assert.equal(await worker.warm(custody, t.signal), undefined);
   assert.equal((await worker.renew(custody, t.signal)).failureCode, "grant_scope_mismatch");
   assert.equal(requests[2].get("refresh_token"), rotatedGrant);
@@ -212,7 +220,7 @@ test("the Token Service publishes the first access token and serializes refresh-
     failureCode: "grant_scope_mismatch",
     recoveryAction: "fix_configuration",
   });
-  await worker.renew(custody, t.signal, true);
+  await worker.renew(custody, t.signal, renewed.version);
   assert.equal(requests.length, 3, "even an operator rotation cannot replay a refused grant");
   await service.retire(custody, t.signal);
   assert.equal(driver.has(custody.secret), false);
@@ -232,6 +240,53 @@ function connectionGrant(issuer) {
   };
 }
 
+test("OAuth renewal retries cancellation before dispatch and quarantines a lost issuer reply", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
+  const requests = [];
+  const server = createServer(async (req) => {
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    requests.push(new URLSearchParams(Buffer.concat(chunks).toString()));
+    // The issuer received the grant, but the worker cannot know whether it rotated.
+    req.socket.destroy();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const grant = connectionGrant("http://127.0.0.1:" + server.address().port);
+  const { driver, custody, service, worker } = await oauthCustody();
+  await service.accept(custody, grant, t.signal);
+  const accepted = await service.warm(custody, t.signal);
+  t.mock.timers.setTime(Date.parse(accepted.nextRefreshAt));
+  const stop = new AbortController();
+  const swap = driver.compareAndSwap.bind(driver);
+  // The control plane cancels while the Secret Driver is committing the intent.
+  t.mock.method(
+    driver,
+    "compareAndSwap",
+    async (...args) => {
+      stop.abort(new Error("Worker stopped during the custody claim."));
+      return swap(...args);
+    },
+    { times: 1 },
+  );
+  await assert.rejects(worker.renew(custody, stop.signal), {
+    message: "Worker stopped during the custody claim.",
+  });
+  assert.deepEqual(requests, []);
+  assert.deepEqual(await service.warm(custody, t.signal), accepted);
+
+  const failed = await worker.renew(custody, t.signal);
+  assert.equal(failed.failureCode, "refresh_outcome_unknown");
+  assert.deepEqual(await service.renew(custody, t.signal), failed);
+  assert.deepEqual(
+    requests.map((body) => body.get("refresh_token")),
+    [grant.refreshToken],
+  );
+});
+
 test("a retired OAuth client secret requires fresh consent for an existing connection", async (t) => {
   const issuer = "https://issuer.example.test";
   const { custody, service } = await oauthCustody();
@@ -240,7 +295,11 @@ test("a retired OAuth client secret requires fresh consent for an existing conne
   t.mock.method(globalThis, "fetch", async () =>
     Response.json({ error: "invalid_client" }, { status: 401 }),
   );
-  const failed = await service.renew(custody, t.signal, true);
+  const failed = await service.renew(
+    custody,
+    t.signal,
+    (await service.warm(custody, t.signal)).version,
+  );
   assert.deepEqual(failed, {
     state: "failed",
     failureCode: "client_refused",
@@ -287,7 +346,11 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
   const { driver, custody, service, worker } = await oauthCustody();
   await service.accept(custody, connectionGrant(issuer), t.signal);
   assert.equal((await worker.status(custody, t.signal)).state, "ready");
-  const refreshing = worker.renew(custody, t.signal, true);
+  const refreshing = worker.renew(
+    custody,
+    t.signal,
+    (await worker.warm(custody, t.signal)).version,
+  );
   await received.promise;
   // Retire the exact custody identity after the issuer consumed the old refresh token and before its reply.
   await service.retire(custody, t.signal);

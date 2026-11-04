@@ -7,6 +7,7 @@ import pg from "pg";
 
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
+import { refreshPinnedOAuthGrant } from "../../apps/controller/src/drivers/credential-refresh/oauth-token-endpoint.ts";
 import { OAuthConnectionTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -197,7 +198,9 @@ test(
     // the test moves OCC's clock forward instead of sleeping.
     let skewMs = 0;
     const secretDriver = createTestSecretDriver();
-    const tokenService = new TokenService(new OAuthConnectionTokens(secretDriver));
+    const tokenService = new TokenService(
+      new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
+    );
     const fixture = await createPostgresAgentApp(t, {
       secretDriver,
       controllerOptions: {
@@ -543,14 +546,53 @@ test(
     const subject = await subjectFor(accessToken);
     assert.ok(subject);
 
-    // Force one exchange through the source's rotation action. Keycloak recognizes the
-    // replacement bearer that OCC conditionally writes to the same worker provider.
+    // Pause the public rotate action at its first Secret read, after it commits the due marker.
+    // A competing maintenance pass must fulfill that request even though the original bearer is
+    // still fresh. Both callers must deliver the same replacement.
     const resourceVersion = prepared.resourceVersion;
-    const rotateSource = await inject(
+    const reading = Promise.withResolvers();
+    const resume = Promise.withResolvers();
+    const readSecret = secretDriver.withValue.bind(secretDriver);
+    t.mock.method(
+      secretDriver,
+      "withValue",
+      async (...args) => {
+        reading.resolve();
+        await resume.promise;
+        return readSecret(...args);
+      },
+      { times: 1 },
+    );
+    const rotating = inject(
       "POST",
       `/namespaces/${namespace.id}/credential-sources/${credentialSourceId}/rotate`,
     );
+    let workerToken;
+    try {
+      await Promise.race([
+        reading.promise,
+        rotating.then(() => {
+          throw new Error("Rotation ended before reading custody.");
+        }),
+      ]);
+      await controller.maintainConnectionToken(namespace.id, credentialSourceId);
+      workerToken = prepared.credentials.CONNECTION_TOKEN;
+      assert.equal(
+        workerToken !== accessToken,
+        true,
+        "the competing worker fulfilled the rotation",
+      );
+    } finally {
+      resume.resolve();
+      await rotating;
+    }
+    const rotateSource = await rotating;
     assert.equal(rotateSource.statusCode, 200, rotateSource.body);
+    assert.equal(
+      prepared.credentials.CONNECTION_TOKEN === workerToken,
+      true,
+      "the API reused the worker's replacement",
+    );
     const updatedProvider = openShell.providers.get(`${prepared.workspace}/${prepared.name}`);
     assert.notEqual(updatedProvider.resourceVersion, resourceVersion);
     const renewedToken = updatedProvider.credentials.CONNECTION_TOKEN;
@@ -983,7 +1025,9 @@ test(
     );
     assert.equal(due.rows[0]?.due, true, "failed publication committed an immediate retry");
 
-    const { computeDriver, configurationDriver, iamDriver } = fixture;
+    const { computeDriver } = fixture;
+    const configurationDriver = controller.selectedDriver("configuration");
+    const iamDriver = controller.selectedDriver("iam");
     const workerDrivers = [
       computeDriver,
       configurationDriver,

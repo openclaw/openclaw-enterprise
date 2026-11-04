@@ -196,17 +196,5 @@ export async function createPostgresAgentApp(
     return { namespace, secretRef, agent, revision };
   }
 
-  return {
-    pool,
-    state,
-    controller,
-    computeDriver,
-    configurationDriver,
-    iamDriver,
-    app,
-    createApp,
-    principal,
-    inject,
-    deployAgent,
-  };
+  return { pool, state, controller, computeDriver, app, createApp, principal, inject, deployAgent };
 }

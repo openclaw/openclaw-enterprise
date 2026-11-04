@@ -68,7 +68,8 @@ export function postgresAgentConnections(
     findTokenCustody: async (namespaceId, sourceId) => {
       const [row] = (
         await client.query(
-          "SELECT secret_ref, published_version FROM occ.connection_token_custody WHERE namespace_id=$1 AND credential_source_id=$2",
+          `SELECT secret_ref, published_version, next_refresh_at <= now() AS due
+           FROM occ.connection_token_custody WHERE namespace_id=$1 AND credential_source_id=$2`,
           [namespaceId, sourceId],
         )
       ).rows;
@@ -89,6 +90,7 @@ export function postgresAgentConnections(
         namespaceId,
         sourceId,
         secret,
+        due: record.due === true,
         ...(record.published_version === null
           ? {}
           : { publishedVersion: text(record, "published_version") }),

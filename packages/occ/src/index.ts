@@ -7232,7 +7232,7 @@ export class OpenClawController {
       const source = rotation.managedSource;
       return this.transact(async (unit) => {
         this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_ROTATION_FAILED");
-        const refresh = await this.maintainConnectionToken(source.namespaceId, source.id, true);
+        const refresh = await this.maintainConnectionToken(source.namespaceId, source.id);
         if (!refresh) {
           throw new ResourceStateConflictError("The connected account was retired.");
         }
@@ -8470,22 +8470,22 @@ export class OpenClawController {
         "No eligible access token is prepared for this connection.",
       );
     }
-    if (token.version !== custody.publishedVersion) {
-      const namespace = await this.credentialNamespace(
-        await this.exactNamespace(unit, namespaceId),
-      );
-      const gateway = this.ownedCredentialGatewayDriver(source);
-      if (!gateway.publishConnectionToken) {
-        throw new NotImplementedError(
-          "connection_templates",
-          "The selected sender cannot deliver expiring access tokens.",
-        );
-      }
-      const { accessToken, expiresAt } = token;
-      await this.credentialGatewayOperation(() =>
-        gateway.publishConnectionToken!({ namespace, source, signal }, { accessToken, expiresAt }),
+    if (token.version === custody.publishedVersion) {
+      // Another owner already delivered this version. Preserve any later request to rotate it.
+      return;
+    }
+    const namespace = await this.credentialNamespace(await this.exactNamespace(unit, namespaceId));
+    const gateway = this.ownedCredentialGatewayDriver(source);
+    if (!gateway.publishConnectionToken) {
+      throw new NotImplementedError(
+        "connection_templates",
+        "The selected sender cannot deliver expiring access tokens.",
       );
     }
+    const { accessToken, expiresAt } = token;
+    await this.credentialGatewayOperation(() =>
+      gateway.publishConnectionToken!({ namespace, source, signal }, { accessToken, expiresAt }),
+    );
     await unit.agentConnections.recordTokenSchedule(namespaceId, sourceId, {
       publishedVersion: token.version,
       nextRefreshAt: token.nextRefreshAt,
@@ -8493,7 +8493,7 @@ export class OpenClawController {
   }
 
   /** The trusted worker renews browser connections independently of requests made by Agents. */
-  async maintainConnectionToken(namespaceId: string, sourceId: string, force = false) {
+  async maintainConnectionToken(namespaceId: string, sourceId: string) {
     const custody = await this.read(async (view) => {
       const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
       if (source?.state !== "ready") {
@@ -8505,7 +8505,12 @@ export class OpenClawController {
       return undefined;
     }
     const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
-    const refreshed = await this.connectionTokenService().renew(custody, signal, force);
+    const tokens = this.connectionTokenService();
+    if (!custody.due) {
+      return tokens.status(custody, signal);
+    }
+    // Either owner may fulfill a forced rotation. A successor waiting for delivery is already renewed.
+    const refreshed = await tokens.renew(custody, signal, custody.publishedVersion);
     if (refreshed.state === "pending") {
       return refreshed;
     }

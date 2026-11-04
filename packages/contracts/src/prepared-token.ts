@@ -132,11 +132,11 @@ export interface OAuthConnectionTokenService {
     signal: AbortSignal,
   ): Promise<OAuthConnectionAccessToken | undefined>;
   status(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<CredentialRefreshStatus>;
-  /** Background maintenance. An operator can request early renewal of the current version. */
+  /** Renew when due, or early when custody still holds the specified published version. */
   renew(
     custody: OAuthConnectionCustody,
     signal: AbortSignal,
-    force?: boolean,
+    publishedVersion?: string,
   ): Promise<CredentialRefreshStatus>;
   retire(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void>;
 }
