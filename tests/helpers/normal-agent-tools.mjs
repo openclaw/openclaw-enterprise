@@ -218,6 +218,7 @@ export const sessionEvidenceScript = String.raw`
         turnPrefix: prefix,
         promptSeen: false,
         terminalAssistantSeen: false,
+        terminalAssistantDelivered: false,
         toolCallMirrorSeen: false,
         toolResultMirrorSeen: false,
       };
@@ -254,8 +255,13 @@ export const sessionEvidenceScript = String.raw`
         turn(promptPrefix).promptSeen = true;
       }
       const assistantPrefix = prefixForMirrorIdentity(mirrorIdentity, ":assistant");
-      if (message.role === "assistant" && hasMarker && assistantPrefix !== undefined) {
-        turn(assistantPrefix).terminalAssistantSeen = true;
+      if (message.role === "assistant" && assistantPrefix !== undefined) {
+        // Delivery is owned by the exact runtime mirror identity. The model's
+        // optional completion wording is a separate diagnostic fact.
+        turn(assistantPrefix).terminalAssistantDelivered = true;
+        if (hasMarker) {
+          turn(assistantPrefix).terminalAssistantSeen = true;
+        }
       }
       messages.push({
         seq,
@@ -400,7 +406,20 @@ export const codexRepositoryEvidenceScript = String.raw`
               // only its single non-login shell wrapper around one literal command.
               let args = standaloneArguments(item.command);
               if (args?.length === 3 && ["/bin/bash", "/bin/sh", "/usr/bin/bash"].includes(args[0]) && args[1] === "-c") args = standaloneArguments(args[2]);
-              const lines = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput.split(/\r?\n/).map(line => line.trim()) : [];
+              const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput.slice(-262144) : "";
+              const lines = output.split(/\r?\n/).map(line => line.trim());
+              // Hints from bounded native output, never raw output or verified causes.
+              const failureCategories = [
+                ["dns", /could not resolve host|ENOTFOUND|EAI_AGAIN/i],
+                ["connect-refused", /ECONNREFUSED|connection refused/i],
+                ["connect-failed", /failed to connect|ENETUNREACH|EHOSTUNREACH/i],
+                ["connect-timeout", /ETIMEDOUT|connection timed out|connection timeout/i],
+                ["connect-reset", /ECONNRESET|connection reset/i],
+                ["tls", /certificate verify failed|server certificate verification failed|SSL certificate problem|SSL_ERROR|unable to get local issuer|self.signed certificate|GnuTLS recv error|TLS connection.*terminated/i],
+                ["http-auth-rejected", /returned error: (?:401|403)\b|HTTP\/[0-9.]+ (?:401|403)\b|HTTP (?:error |status )?(?:401|403)\b/i],
+                ["local-path", /not a git repository|destination path.*already exists|no such file or directory|ENOENT/i],
+                ["filesystem-denied", /EACCES|EPERM|EROFS|permission denied|read.only file system/i],
+              ].filter(([, pattern]) => pattern.test(output)).map(([category]) => category);
               return {
                 id: item.id,
                 operations: expected.filter(command => item.cwd === command.workdir && args?.length === command.argv.length && args.every((arg, index) => arg === command.argv[index])).map(command => command.operation),
@@ -408,12 +427,19 @@ export const codexRepositoryEvidenceScript = String.raw`
                 exitCode: item.exitCode,
                 http400: /returned error: 400\b/i.test(item.aggregatedOutput ?? ""),
                 pushRefRefused: /repository-push-ref-not-allowed\b/.test(item.aggregatedOutput ?? ""),
-                sandboxDenied: /SANDBOX_DENIED:(?:EACCES|EPERM|EROFS)\b/.test(item.aggregatedOutput ?? ""),
+                sandboxDenied: /SANDBOX_DENIED:(?:EACCES|EPERM|EROFS)\b/.test(output),
+                failureCategories,
                 commitShas: lines.filter(line => /^[a-f0-9]{40}$/.test(line)),
                 pullUrls: lines.filter(line => /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(line)),
               };
             });
-            matches.push({ threadId: thread.id, turnId: turn.id, status: turn.status, commands });
+            matches.push({
+              threadId: thread.id,
+              turnId: turn.id,
+              status: turn.status,
+              cwdMatchesExpectedWorkspace: thread.cwd === expected[0]?.workdir,
+              commands,
+            });
           }
         }
         assert.equal(matches.length, 1, "the repository task must identify one native Codex turn");

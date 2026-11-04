@@ -280,12 +280,48 @@ ${nativeCommands}`;
       await exec(codexRepositoryEvidenceScript, [completionMarker, JSON.stringify(commandSpecs)]),
     );
   let nativeTrace = dedicated ? await readNativeTrace() : undefined;
-  // The gateway can finish its HTTP response while its native Codex turn is
-  // still running. Observe that same turn; never submit the task again.
-  while (nativeTrace?.status === "inProgress") {
-    assert.ok(Date.now() < taskDeadline, "native repository turn must finish within ten minutes");
-    await delay(1_000);
-    nativeTrace = await readNativeTrace();
+  try {
+    // The gateway can finish its HTTP response while its native Codex turn is
+    // still running. Observe that same turn; never submit the task again.
+    while (nativeTrace?.status === "inProgress") {
+      assert.ok(Date.now() < taskDeadline, "native repository turn must finish within ten minutes");
+      await delay(1_000);
+      nativeTrace = await readNativeTrace();
+    }
+  } finally {
+    if (nativeTrace) {
+      try {
+        await f.record("Captured native Codex command diagnostics; repository acceptance pending", {
+          evidenceKind: "diagnostic-only",
+          status: nativeTrace.status,
+          cwdMatchesExpectedWorkspace: nativeTrace.cwdMatchesExpectedWorkspace === true,
+          classificationMeaning: "text-pattern hints, not verified causes or successful operations",
+          threadId: nativeTrace.threadId,
+          turnId: nativeTrace.turnId,
+          commands: nativeTrace.commands.map(
+            ({
+              operations,
+              status,
+              exitCode,
+              http400,
+              pushRefRefused,
+              sandboxDenied,
+              failureCategories,
+            }) => ({
+              operations,
+              status,
+              exitCode,
+              http400,
+              pushRefRefused,
+              sandboxDenied,
+              failureCategories,
+            }),
+          ),
+        });
+      } catch {
+        // Evidence writes must not replace the actual native task failure.
+      }
+    }
   }
   const readTrace = async () =>
     JSON.parse(
@@ -301,34 +337,30 @@ ${nativeCommands}`;
       ]),
     );
   let trace = await readTrace();
+  const initialTurn = trace.codexTurns?.find((turn) => turn.turnPrefix === nativeTrace?.turnId);
+  try {
+    await f.record("Captured initial Gateway delivery diagnostics; repository acceptance pending", {
+      evidenceKind: "diagnostic-only",
+      nativeCompleted: nativeTrace?.status === "completed",
+      turnSeen: initialTurn !== undefined,
+      promptSeen: initialTurn?.promptSeen === true,
+      terminalAssistantDelivered: initialTurn?.terminalAssistantDelivered === true,
+      terminalAssistantMarkerSeen: initialTurn?.terminalAssistantSeen === true,
+    });
+  } catch {
+    // Diagnostics must not replace the native task or delivery failure.
+  }
   // Native completion and its gateway transcript are separate deliveries. Wait
-  // for this exact turn's terminal mirror before checking all evidence below.
+  // for this exact turn's runtime-owned terminal mirror, independent of wording.
   while (
     nativeTrace?.status === "completed" &&
     !trace.codexTurns?.some(
-      (turn) => turn.turnPrefix === nativeTrace.turnId && turn.terminalAssistantSeen,
+      (turn) => turn.turnPrefix === nativeTrace.turnId && turn.terminalAssistantDelivered,
     )
   ) {
     assert.ok(Date.now() < taskDeadline, "native repository completion must reach its gateway");
     await delay(1_000);
     trace = await readTrace();
-  }
-  if (nativeTrace) {
-    await f.record("Captured native Codex command diagnostics; repository acceptance pending", {
-      evidenceKind: "diagnostic-only",
-      threadId: nativeTrace.threadId,
-      turnId: nativeTrace.turnId,
-      commands: nativeTrace.commands.map(
-        ({ operations, status, exitCode, http400, pushRefRefused, sandboxDenied }) => ({
-          operations,
-          status,
-          exitCode,
-          http400,
-          pushRefRefused,
-          sandboxDenied,
-        }),
-      ),
-    });
   }
   // Preserve the normalized call/result evidence before any remote-state
   // assertion can fail and ordinary cleanup removes the Agent transcript.
@@ -422,6 +454,11 @@ ${nativeCommands}`;
     const probe = nativeTrace.commands.find((command) =>
       command.operations.includes("sandboxProbe"),
     );
+    assert.notEqual(
+      probe?.exitCode,
+      74,
+      "native sandbox unexpectedly read neighboring Codex state; outside-workspace write denial was not reached",
+    );
     assert.ok(
       probe?.status === "completed" && probe.exitCode === 0 && probe.sandboxDenied,
       "the actual native command must report an outside-workspace write denial",
@@ -460,13 +497,13 @@ ${nativeCommands}`;
     assert.equal(nativeTrace.status, "completed");
     assert.equal(trace.exists, true);
     assert.equal(trace.userMarkerSeen, true);
-    assert.equal(trace.terminalAssistantMarkerSeen, true);
+    assert.equal(trace.assistantError, false);
     const mirroredTurn = trace.codexTurns.find(
       ({ turnPrefix }) => turnPrefix === nativeTrace.turnId,
     );
     assert.ok(
       mirroredTurn?.promptSeen &&
-        mirroredTurn.terminalAssistantSeen &&
+        mirroredTurn.terminalAssistantDelivered &&
         mirroredTurn.toolCallMirrorSeen &&
         mirroredTurn.toolResultMirrorSeen,
     );
@@ -559,8 +596,10 @@ ${nativeCommands}`;
       assert.ok(trace.promptToolNames.includes("exec"));
     }
     assert.equal(trace.userMarkerSeen, true);
-    assert.equal(trace.assistantMarkerSeen, true);
-    assert.equal(trace.terminalAssistantMarkerSeen, true);
+    if (!dedicated) {
+      assert.equal(trace.assistantMarkerSeen, true);
+      assert.equal(trace.terminalAssistantMarkerSeen, true);
+    }
     assert.equal(trace.assistantError, false);
     let paired = trace.calls
       .filter((call) => call.name === "exec")
@@ -573,7 +612,7 @@ ${nativeCommands}`;
       );
       assert.ok(
         mirroredTurn?.promptSeen &&
-          mirroredTurn.terminalAssistantSeen &&
+          mirroredTurn.terminalAssistantDelivered &&
           mirroredTurn.toolCallMirrorSeen &&
           mirroredTurn.toolResultMirrorSeen,
         "native repository commands must belong to the Gateway's mirrored task turn",

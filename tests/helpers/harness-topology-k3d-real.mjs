@@ -1692,16 +1692,23 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           "--wait=true",
           `--timeout=${remainingMs}ms`,
         );
-        const pods = await resources(
-          "pods",
-          namespace,
-          "-l",
-          `${selector},openclaw.dev/workload-role in (gateway,agent)`,
-        );
-        assert.deepEqual(
-          pods.map(({ metadata }) => metadata.name),
-          [],
-          "owned Agent and Gateway Pods must stop before namespace cleanup",
+        // A Pod can still be terminating after its Deployment is removed.
+        // Require its disappearance before starting namespace deletion.
+        let remainingPodNames = [];
+        await waitFor(
+          () =>
+            `owned Agent and Gateway Pods to stop before namespace cleanup: ${remainingPodNames.join(", ")}`,
+          async () => {
+            const pods = await resources(
+              "pods",
+              namespace,
+              "-l",
+              `${selector},openclaw.dev/workload-role in (gateway,agent)`,
+            );
+            remainingPodNames = pods.map(({ metadata }) => metadata.name);
+            return remainingPodNames.length === 0 ? true : undefined;
+          },
+          Math.max(0, deadline - Date.now()),
         );
       }
     },
