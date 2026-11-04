@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Qualify the installed repository response and dispatch custody
 
 ## Check useful Git work and conversation continuity

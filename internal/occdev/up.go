@@ -273,7 +273,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := exclusiveWrite(filepath.Join(directory, "compose.yaml"), snapshot, 0600); err != nil {
 		return err
 	}
-	var reference, codexSeccompProfile string
+	var reference, codexSeccompProfile, routingPodCIDR string
 	var openShellAssets *openShellDevelopmentAssets
 	var routing *composeDevelopmentRouting
 	defer func() {
@@ -326,33 +326,57 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
 			return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
 		}
-		reference, err = r.importRuntime(ctx, state)
-		if err != nil {
-			return err
-		}
-		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
-			return err
-		}
-		if sandboxDriver == "openshell" {
-			// Import the large runtime first so image garbage collection cannot evict
-			// idle OpenShell images before their workloads are installed.
-			fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-			openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
+		prepareRuntime := func(ctx context.Context, r *runner) error {
+			var err error
+			reference, err = r.importRuntime(ctx, state)
 			if err != nil {
 				return err
 			}
-		}
-		if sandboxDriver == "openshell" {
-			fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
-			if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
+			if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
 				return err
 			}
-		}
-		if sandboxDriver == "none" {
-			codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, reference, timeout)
-			if err != nil {
-				return err
+			if sandboxDriver == "openshell" {
+				// Import the large runtime first so image garbage collection cannot evict
+				// idle OpenShell images before their workloads are installed.
+				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+				openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
+				if err != nil {
+					return err
+				}
 			}
+			if sandboxDriver == "openshell" {
+				fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
+				if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
+					return err
+				}
+			}
+			if sandboxDriver == "none" {
+				codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, reference, timeout)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		prepareRouting := func(ctx context.Context, r *runner) error {
+			if sandboxDriver != "openshell" {
+				return nil
+			}
+			fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
+			var err error
+			routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, time.Duration(timeout)*time.Second)
+			return err
+		}
+		// Controllers need only the cluster. Their rollouts can wait while selected
+		// images import and OpenShell starts; database-dependent routing waits below.
+		if sandboxDriver == "openshell" && r.engine == "docker" && r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
+			return r.concurrently(ctx, prepareRuntime, prepareRouting)
+		}
+		if err := prepareRuntime(ctx, r); err != nil {
+			return err
+		}
+		if err := prepareRouting(ctx, r); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -381,7 +405,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	// database/bootstrap as well as the cluster before configuring its allowlist.
 	if sandboxDriver == "openshell" {
 		fmt.Fprintln(r.opts.Out, "Installing pinned private routing for the Compose control plane...")
-		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, time.Duration(timeout)*time.Second)
+		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, routingPodCIDR, time.Duration(timeout)*time.Second)
 		if err != nil {
 			return err
 		}
