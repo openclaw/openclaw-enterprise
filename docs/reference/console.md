@@ -11,6 +11,10 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
+If the Console says it could not load, click **Reload page** to try the same
+address again. If it stays on the loading screen without that button, use your
+browser's Reload command. The Console does not automatically reload the page.
+
 Enter your provisioned account email and password, then select **Sign in**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
 your administrator for an account or password reset. A wrong email or password

@@ -111,10 +111,11 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)      | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
 
 The runner requires the selected files' credentials, expected tests, and cleanup.
-A failed job does not cancel its peers. The first-Agent files create and clean up
-their own resources through Local Setup; the runner does not prepare duplicate
-resources for them. See [CI resource preparation](../../flows/github-actions-testing/preparation.md)
-for setup and browser requirements.
+A failed job does not cancel its peers. Hosted preparation builds first-Agent
+images from the current checkout using read-only caches. Local Setup then creates
+and cleans up each installation without duplicate clusters. See
+[OpenShell CI preparation and timing](openshell-execution.md) for image selection,
+runner requirements, and interpretation of setup and model-execution timings.
 
 [Full Integration](full-integration.md) can also run this suite with
 `lane=openshell` or `lane=all`; that workflow runs the same files serially.
@@ -229,8 +230,8 @@ In `matrix.json`, `scope: full` means both installations and presets with the
 `all` scenarios; advisory QA has narrower coverage. See
 [Select scenarios](#select-scenarios) for the exclusions from `all`.
 
-First-Agent results include stage timings in `files[].measurements`. Parent test
-duration includes its native subtest; do not add them together. A Codex timeout
+[First-Agent timing results](openshell-execution.md#interpret-timing-and-proof)
+include overlapping stages; do not sum them as elapsed time. A Codex timeout
 alone does not permit a retry: the client must report model capacity exhaustion
 before any action started.
 

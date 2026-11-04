@@ -47,7 +47,7 @@ import {
   waitForShownInputValue,
   secretOptionLabel,
 } from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   LIVE_BUTTON,
   createRepositoryLaunchFixture,

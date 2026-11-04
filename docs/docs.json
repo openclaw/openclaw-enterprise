@@ -933,6 +933,7 @@
               "testing/openshell",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
+              "testing/ci/openshell-execution",
               "testing/repository-credentials",
               "testing/static-egress",
               "testing/protected-repository-custody"
