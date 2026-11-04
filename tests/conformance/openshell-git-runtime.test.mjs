@@ -76,6 +76,8 @@ async function expectDenied(f, reason, message) {
   assert.equal(f.denials().at(-1).reason, reason, message);
 }
 
+// The direct fixtures here characterize legacy routes. The admitted mandatory
+// and observed-preview paths have separate controls below.
 test("a gateway that does not answer closes the Git route and restores it without a tombstone", async () => {
   const f = await reconciledFixture();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
@@ -2275,11 +2277,9 @@ const legacyRegistrationBytes = Buffer.from(
 
 async function observedGitRoute(
   mandatoryPolicy,
-  legacy = false,
-  removeBinding = false,
-  changedStartup = false,
-  repositoryOnly = false,
+  { legacy = false, removeBinding = false, changedStartup = false, narrowRepository } = {},
 ) {
+  const repositoryOnly = narrowRepository !== undefined;
   const previewRegistry = validateGitHubRepositoryRegistry(
     {
       version: 1,
@@ -2306,7 +2306,14 @@ async function observedGitRoute(
     },
     registry.backendId,
   );
-  const resolve = createGitHubRepositoryDeliveryResolver(previewRegistry);
+  const resolveDelivery = createGitHubRepositoryDeliveryResolver(previewRegistry);
+  let resolvedPushRef;
+  const resolve = (revision) => {
+    const scope = resolveDelivery(revision);
+    return resolvedPushRef === undefined
+      ? scope
+      : { ...scope, repository: { ...scope.repository, pushRef: resolvedPushRef } };
+  };
   const f = fixture({ store: routeStore(), resolveDelivery: resolve });
   const repositoryProfile = repositoryOnly ? "git-write" : "github-repository";
   const binding = resolveGitHubRepositoryBinding(previewRegistry, {
@@ -2439,6 +2446,9 @@ async function observedGitRoute(
       materialVersion: "preview-material",
       apiOrigin: "https://api.github.com",
     };
+  } else {
+    assert.equal(f.entry.authorization.binding.profile, "git-write");
+    assert.equal("scope" in f.owner.material, false, "this control requires narrow material");
   }
   {
     const config = f.client.getSandboxConfig;
@@ -2575,6 +2585,23 @@ async function observedGitRoute(
   assert.equal(f.calls.material, 0, "a post-challenge downgrade must precede material selection");
   assert.equal(f.calls.rotate, 0);
   f.client.getSandboxConfig = qualifiedConfig;
+  if (narrowRepository === "foreign-repository-id") {
+    const original = f.owner.material;
+    assert.equal(typeof original.repositoryId, "string");
+    assert.equal(original.repositoryId, binding.grant.repositoryId);
+    assert.notEqual(original.repositoryId, "99999");
+    f.owner.material = { ...original, repositoryId: "99999" };
+    await f.reconcile();
+    await f.entry.previewClosure?.confirming;
+    assert.deepEqual(f.runtime.route(revision.id), {
+      state: "blocked",
+      reason: "material_mismatch",
+    });
+    assert.equal(f.store.rows.get(revision.id).blocked, "material_mismatch");
+    assert.equal(f.calls.rotate, 0, "foreign supplier material never reaches the provider");
+    await expectDenied(f, "route_blocked");
+    return;
+  }
   // The controlled supervisor delays the post-write observation. The production runtime
   // must nevertheless cross its own pre-write observation at the new reservation fence.
   f.faults.observeAfterRotate = true;
@@ -2646,6 +2673,80 @@ async function observedGitRoute(
   assert.ok(await f.lookup(), "later request uses the newly verified environment");
   assert.equal(f.calls.rotate, 1, "observation recovery does not reinstall credentials");
 
+  const changedMaterial = narrowRepository === "material-push-ref";
+  const changedDelivery = narrowRepository === "delivery-push-ref";
+  if (changedMaterial || changedDelivery) {
+    const original = f.owner.material;
+    const admittedPushRef = f.entry.authorization.repository.pushRef;
+    assert.match(admittedPushRef, /^refs\/heads\//);
+    assert.equal(original.pushRef, admittedPushRef);
+    assert.equal((await f.lookup()).pushRef, admittedPushRef);
+    assert.notEqual(admittedPushRef, "refs/heads/main");
+    const providerWrites = f.calls.providerWrites;
+    const prepare = () =>
+      f.runtime.prepare(
+        revision,
+        f.client,
+        f.sandbox.workspace,
+        f.sandbox.name,
+        signal,
+        f.entry.otherProviders,
+      );
+    if (changedDelivery) {
+      await prepare();
+      assert.equal(f.calls.rotate, 1, "the same admission does not reinstall material");
+      resolvedPushRef = "refs/heads/main";
+      await assert.rejects(prepare(), {
+        message: "OpenShell Git revision binding is unavailable.",
+      });
+    } else {
+      f.owner.material = { ...original, pushRef: "refs/heads/main" };
+    }
+    await f.reconcile();
+    await f.entry.previewClosure?.confirming;
+    const assertBlocked = async () => {
+      assert.deepEqual(f.runtime.route(revision.id), {
+        state: "blocked",
+        reason: "material_mismatch",
+      });
+      await expectDenied(f, "route_blocked");
+      assert.equal(f.calls.rotate, 1, "a mismatched route cannot install more material");
+      assert.equal(
+        f.calls.providerWrites,
+        providerWrites,
+        "a blocked route cannot write a provider",
+      );
+      assert.equal(f.store.rows.get(revision.id).blocked, "material_mismatch");
+    };
+    await assertBlocked();
+    assert.ok(
+      f.events.some(
+        (event) =>
+          event.event === "worker.openshell-preview-closure" &&
+          event.status === "confirmed" &&
+          event.reason === "material_mismatch",
+      ),
+    );
+    await assert.rejects(
+      prepare(),
+      (error) =>
+        error instanceof OpenShellGitRouteBlockedError && error.reason === "material_mismatch",
+    );
+    if (changedMaterial) {
+      f.owner.material = original;
+    } else {
+      resolvedPushRef = undefined;
+    }
+    await f.reconcile();
+    await assertBlocked();
+    assert.deepEqual(
+      f.errors().map(({ reason }) => reason),
+      ["material_mismatch"],
+    );
+  }
+
+  // Cold adoption closes healthy preview custody and preserves an existing terminal reason.
+  const coldReason = changedMaterial || changedDelivery ? "material_mismatch" : "worker_replaced";
   const replacement = new OpenShellGitRuntime(f.runtime.configuration, resolve);
   replacement.owner = f.owner;
   replacement.routes = f.store;
@@ -2653,9 +2754,9 @@ async function observedGitRoute(
     replacement.prepare(revision, f.client, f.sandbox.workspace, f.sandbox.name, signal, [
       "openai",
     ]),
-    { reason: "worker_replaced" },
+    { reason: coldReason },
   );
-  assert.equal(f.store.rows.get(revision.id).blocked, "worker_replaced");
+  assert.equal(f.store.rows.get(revision.id).blocked, coldReason);
   f.faults.observe = false;
   await f.reconcile();
   assert.equal(f.calls.rotate, 1, "neither the replacement nor the fenced original can replay");
@@ -2664,13 +2765,23 @@ async function observedGitRoute(
 for (const policy of [undefined, 2, 3]) {
   test(`an observed Git route (${policy ?? "preview"}) rotates only after its challenge in the original worker`, async () => {
     if (policy === undefined) {
-      await observedGitRoute(policy, true);
+      await observedGitRoute(policy, { legacy: true });
     }
     await observedGitRoute(policy);
     if (policy) {
-      await observedGitRoute(policy, false, false, false, true);
+      await observedGitRoute(policy, { narrowRepository: "healthy" });
     }
-    await observedGitRoute(policy, false, true);
-    await observedGitRoute(policy, false, false, true);
+    await observedGitRoute(policy, { removeBinding: true });
+    await observedGitRoute(policy, { changedStartup: true });
   });
 }
+
+test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
+  for (const narrowRepository of [
+    "material-push-ref",
+    "delivery-push-ref",
+    "foreign-repository-id",
+  ]) {
+    await observedGitRoute(2, { narrowRepository });
+  }
+});

@@ -16,6 +16,13 @@ import { backendSummariesFromDefinitions } from "../../apps/controller/src/compo
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import {
+  AgentResponse,
+  AgentRevisionResponse,
+  ConfigurationResponse,
+  NamespaceResponse,
+  SecretResponse,
+} from "../../packages/contracts/src/api/resources.ts";
 import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
@@ -25,6 +32,7 @@ import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { createFixtureResponse } from "./console-fixture-response.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export const backendFixtures = Object.freeze([
@@ -212,6 +220,7 @@ export async function startHttpsIngress({
 export function fileConsoleApp(options = {}) {
   const cleanups = [];
   let startPolicy;
+  /** @type {ReturnType<typeof createConsoleAppFixture> | undefined} */
   let created;
   after(async () => {
     await created?.catch(() => {});
@@ -346,6 +355,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       resolveIAMIdentity: (identityId) =>
         policy.identities.find((identity) => identity.id === identityId),
     });
+  /** @type {import("../../packages/occ/src/index.ts").PlatformStateStore} */
   const platformState = options.wrapState?.(basePlatformState) ?? basePlatformState;
   const iamDriver = new NativeIAMDriver(
     {
@@ -533,6 +543,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   }
 
   t.after(close);
+  const fixtureResponse = createFixtureResponse(app.getSchemas());
 
   if (options.https === true) {
     // Exercise browser Secure/Domain cookies through a real TLS ingress to the HTTP API.
@@ -626,11 +637,13 @@ export async function createConsoleAppFixture(t, options = {}) {
 
   async function createNamespace(name, { ready = false } = {}) {
     const result = await request("POST", "/namespaces", { body: { name } });
-    assert.equal(result.status, 201);
+    const namespace = fixtureResponse(result, 201, NamespaceResponse, "create Namespace").data;
     if (ready) {
-      await makeNamespaceReady(result.data.id);
+      await makeNamespaceReady(namespace.id);
+      const current = await request("GET", `/namespaces/${namespace.id}`);
+      return fixtureResponse(current, 200, NamespaceResponse, "read ready Namespace").data;
     }
-    return ready ? (await request("GET", `/namespaces/${result.data.id}`)).data : result.data;
+    return namespace;
   }
 
   async function makeNamespaceReady(namespaceId) {
@@ -652,8 +665,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.secretBindings === undefined ? {} : { secretBindings: options.secretBindings }),
       },
     });
-    assert.equal(configuration.status, 201);
-    return configuration.data;
+    return fixtureResponse(configuration, 201, ConfigurationResponse, "create Configuration").data;
   }
 
   async function updateConfiguration(namespaceId, configurationId, values = {}, options = {}) {
@@ -761,9 +773,15 @@ export async function createConsoleAppFixture(t, options = {}) {
     const configuration = await createConfiguration(namespaceId, values, {
       secretBindings: options.secretBindings,
     });
-    const namespace = await request("GET", `/namespaces/${namespaceId}`);
+    const namespaceResponse = await request("GET", `/namespaces/${namespaceId}`);
+    const namespace = fixtureResponse(
+      namespaceResponse,
+      200,
+      NamespaceResponse,
+      "read Agent Namespace",
+    ).data;
     const harnessAuth =
-      options.harnessAuth === undefined && secretDriver && namespace.data.status === "ready"
+      options.harnessAuth === undefined && secretDriver && namespace.status === "ready"
         ? {
             method: "api_key",
             source: (
@@ -786,33 +804,31 @@ export async function createConsoleAppFixture(t, options = {}) {
           : { gatewayManagedMode: defaultAgentGatewayManagedMode }),
       },
     });
-    assert.equal(agent.status, 201);
+    const created = fixtureResponse(agent, 201, AgentResponse, "create Agent").data;
     // An Installation administrator's console reads the model credential's grant as it reads bound
     // channel Secrets' grants, so it is listed too (finding 2260).
     if (harnessAuth?.method === "api_key") {
-      await grantAgentSecretOperate(agent.data, harnessAuth.source, { modelGrant: true });
+      await grantAgentSecretOperate(created, harnessAuth.source, { modelGrant: true });
     }
     // The console grants the Agent each Secret its Configuration binds when it binds it.
     for (const { source } of Object.values(options.secretBindings ?? {})) {
       if (source?.kind === "secret") {
-        await grantAgentSecretOperate(agent.data, source);
+        await grantAgentSecretOperate(created, source);
       }
     }
-    return agent.data;
+    return created;
   }
 
   async function updateAgent(namespaceId, agentId, body) {
     const agent = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
       body,
     });
-    assert.equal(agent.status, 200);
-    return agent.data;
+    return fixtureResponse(agent, 200, AgentResponse, "update Agent").data;
   }
 
   async function deployAgent(namespaceId, agentId) {
     const revision = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
-    assert.equal(revision.status, 202, JSON.stringify(revision.body));
-    return revision.data;
+    return fixtureResponse(revision, 202, AgentRevisionResponse, "deploy Agent").data;
   }
 
   async function activateRevision(namespaceId, agentId, revisionId, expectedRevisionId) {
@@ -836,8 +852,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     const secret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
       body: { name, value },
     });
-    assert.equal(secret.status, 201);
-    return secret.data;
+    return fixtureResponse(secret, 201, SecretResponse, "create Secret").data;
   }
 
   /**
