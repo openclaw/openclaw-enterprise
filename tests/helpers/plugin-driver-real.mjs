@@ -1084,7 +1084,28 @@ let catalogStage = "local app-server authentication";
   // RPC errors can contain upstream response text. Emit only locally classified facts.
   const timedOut = error.message?.startsWith("Codex app-server plugin runtime request timed out during ");
   const reason = timedOut ? "timed out" : "failed";
-  process.stderr.write("Native Codex catalog query " + reason + " during " + catalogStage + ".");
+  const categories = new Map([
+    ["Codex app-server plugin runtime transport failed.", "transport-failed"],
+    ["Codex app-server plugin runtime transport closed.", "transport-closed"],
+    ["Codex app-server plugin runtime response was invalid JSON.", "invalid-json"],
+    ["Codex app-server plugin runtime response was malformed.", "malformed-response"],
+    ["Codex plugin search deadline expired.", "search-deadline"],
+    ["Codex plugin search repeated its cursor.", "repeated-cursor"],
+    ["Local plugin runtime status is unavailable.", "local-status-unavailable"],
+    ["Local plugin runtime status is not ready.", "local-status-not-ready"],
+  ]);
+  const rpcError = error instanceof CodexAppServerRequestError;
+  const category = timedOut ? "request-timeout" :
+    rpcError ? "rpc-error" : categories.get(error.message) ?? "unknown";
+  // Keep only a numeric HTTP status, never the surrounding upstream text or URLs.
+  const httpStatus = rpcError && typeof error.message === "string"
+    ? error.message.slice(0, 4096).match(/\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?:\s+code)?[:=]?\s+)([45]\d{2})\b/i)?.[1]
+    : undefined;
+  const rpcMethod = rpcError && ["initialize", "plugin/search", "plugin/read"].includes(error.method)
+    ? ", RPC method: " + error.method : "";
+  const status = httpStatus === undefined ? "" : ", HTTP status: " + httpStatus;
+  process.stderr.write("Native Codex catalog query " + reason + " during " + catalogStage +
+    " (category: " + category + rpcMethod + status + ").");
   process.exitCode = 1;
 });
 `;

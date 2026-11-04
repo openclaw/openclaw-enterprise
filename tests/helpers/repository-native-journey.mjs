@@ -7,6 +7,71 @@ import {
   sessionEvidenceScript,
 } from "./normal-agent-tools.mjs";
 import { submitRepositoryTaskScript } from "./repository-credentials-installed.mjs";
+import { parseNativeRolloutProvenance } from "./native-rollout-provenance.mjs";
+
+// Read only the rollout named by the exact owned thread/read response. Raw
+// rollout data stays inside this process; only the parser's fixed
+// diagnostic schema and source-availability booleans leave the container.
+// TODO: remove this capture after the QA permission-profile mismatch is diagnosed.
+export const nativeRolloutProvenanceScript = String.raw`
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const parse = ${parseNativeRolloutProvenance.toString()};
+  let rolloutReaderAvailable = false;
+  let expectedProfileKnown = false;
+  let finished = false;
+  const finish = (receipt = parse({})) => {
+    if (finished) return;
+    finished = true;
+    process.stdout.write(JSON.stringify({ ...receipt, rolloutReaderAvailable, expectedProfileKnown }), () => process.exit(0));
+  };
+  const deadline = setTimeout(() => finish(), 10000);
+  (async () => {
+    const input = JSON.parse(process.argv[1]);
+    const root = "/home/node/.codex/sessions";
+    const file = input.rolloutPath;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    if (!uuid.test(input.expectedThreadId) || !uuid.test(input.expectedTurnId)
+        || typeof file !== "string" || file.length > 1024 || path.resolve(file) !== file
+        || !file.startsWith(root + "/") || !path.basename(file).startsWith("rollout-")
+        || !file.endsWith("-" + input.expectedThreadId + ".jsonl")) return finish();
+    const relative = path.relative(root, file).split(path.sep);
+    if (relative.length !== 4 || !/^\d{4}$/.test(relative[0]) || !/^\d{2}$/.test(relative[1]) || !/^\d{2}$/.test(relative[2])) return finish();
+    let current = root;
+    for (const part of relative) {
+      current = path.join(current, part);
+      if (fs.lstatSync(current).isSymbolicLink()) return finish();
+    }
+    if (fs.realpathSync(file) !== file) return finish();
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    let text;
+    try {
+      const before = fs.fstatSync(fd);
+      // The descriptor must still name that run-owned session file after open.
+      if (!before.isFile() || before.nlink !== 1 || before.size > 8 * 1024 * 1024 || before.uid !== process.getuid()
+          || (before.mode & 0o022) !== 0 || fs.realpathSync("/proc/self/fd/" + fd) !== file) return finish();
+      const bytes = Buffer.alloc(before.size);
+      let read = 0;
+      while (read < bytes.length) {
+        const count = fs.readSync(fd, bytes, read, bytes.length - read, read);
+        if (count === 0) return finish();
+        read += count;
+      }
+      const after = fs.fstatSync(fd);
+      if (after.nlink !== 1 || after.size !== before.size || after.ino !== before.ino || after.dev !== before.dev) return finish();
+      text = bytes.toString("utf8");
+      rolloutReaderAvailable = true;
+    } finally { fs.closeSync(fd); }
+    // Expected profile metadata must already be supplied by a trusted caller.
+    // Never open configuration or credential files to derive a diagnostic match.
+    const expectedProfileId = input.expectedProfileId;
+    expectedProfileKnown = typeof expectedProfileId === "string" && expectedProfileId.length > 0 && expectedProfileId.length <= 256;
+    const receipt = parse({ text, expectedThreadId: input.expectedThreadId, expectedTurnId: input.expectedTurnId,
+      expectedCwd: input.expectedCwd, ...(expectedProfileKnown ? { expectedProfileId } : {}) });
+    clearTimeout(deadline);
+    finish(receipt);
+  })().catch(() => { clearTimeout(deadline); finish(); });
+`;
 
 export const repositoryFailureSummaryScript = String.raw`
   ${expandTranscriptMessage.toString()}
@@ -290,6 +355,29 @@ ${nativeCommands}`;
     }
   } finally {
     if (nativeTrace) {
+      try {
+        const provenance = JSON.parse(
+          await consumerExec(
+            nativeRolloutProvenanceScript,
+            [
+              JSON.stringify({
+                rolloutPath: nativeTrace.rolloutPath,
+                expectedThreadId: nativeTrace.threadId,
+                expectedTurnId: nativeTrace.turnId,
+                expectedCwd: workspace,
+              }),
+            ],
+            undefined,
+            15_000,
+          ),
+        );
+        await f.record(
+          "Captured native turn permission provenance; repository acceptance pending",
+          provenance,
+        );
+      } catch {
+        // Source unavailability cannot replace the actual task or isolation failure.
+      }
       try {
         await f.record("Captured native Codex command diagnostics; repository acceptance pending", {
           evidenceKind: "diagnostic-only",

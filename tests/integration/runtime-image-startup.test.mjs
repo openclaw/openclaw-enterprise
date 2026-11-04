@@ -2070,6 +2070,9 @@ test(
       fs.mkdirSync(codexHome, { recursive: true });
       fs.mkdirSync("/home/node/.openclaw/plugin-skills", { recursive: true });
       fs.mkdirSync("/home/node/openclaw-runtime-assets/plugin-skills", { recursive: true });
+      const outsideControl = "/home/node/.openclaw/plugin-skills/thread-control";
+      const outsideWrite = "/home/node/.openclaw/plugin-skills/thread-outside-write";
+      fs.writeFileSync(outsideControl, "synthetic-read-only-control");
       fs.writeFileSync(
         codexHome + "/auth.json",
         JSON.stringify({ OPENAI_API_KEY: payload.syntheticApiKey }),
@@ -2097,7 +2100,10 @@ function denied(operation) {
 report.systemSkillWriteDenied = denied(() => fs.appendFileSync(skill, "\\nsynthetic-thread-probe\\n"));
 report.siblingReadDenied = denied(() => fs.readFileSync(${JSON.stringify(sentinel)}));
 report.authReadDenied = denied(() => fs.readFileSync("/home/node/.codex/auth.json"));
-report.outsideWriteDenied = denied(() => fs.writeFileSync("/home/node/thread-outside-write", "synthetic"));
+// Use an existing read-only host mount, as the live journey does. Creating a
+// file in an unbound parent can succeed only in the sandbox's private tmpfs.
+report.outsideControlReadable = fs.readFileSync(${JSON.stringify(outsideControl)}, "utf8") === "synthetic-read-only-control";
+report.outsideWriteDenied = denied(() => fs.writeFileSync(${JSON.stringify(outsideWrite)}, "synthetic"));
 fs.writeFileSync("/home/node/workspace/thread-workspace-write", "synthetic-workspace-write");
 console.log(JSON.stringify(report));
 process.exit(Object.values(report).every(Boolean) ? 0 : 74);
@@ -2330,8 +2336,15 @@ process.exit(Object.values(report).every(Boolean) ? 0 : 74);
               systemSkillWriteDenied: true,
               siblingReadDenied: true,
               authReadDenied: true,
+              outsideControlReadable: true,
               outsideWriteDenied: true,
             });
+            assert.equal(
+              fs.existsSync(outsideWrite),
+              false,
+              "outside write must not reach the host",
+            );
+            assert.equal(fs.readFileSync(outsideControl, "utf8"), "synthetic-read-only-control");
             assert.equal(
               fs.readFileSync(workspace + "/thread-workspace-write", "utf8"),
               "synthetic-workspace-write",

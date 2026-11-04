@@ -486,6 +486,16 @@
       "path": "tests/conformance/codex-native-startup.test.mjs"
     },
     {
+      "path": "tests/conformance/native-rollout-provenance.test.mjs",
+      "expectedTests": [
+        "native rollout diagnostics keep only the exact thread and turn policy",
+        "native rollout diagnostics preserve uncertainty about opaque code-mode escalation",
+        "native rollout diagnostics stop attributing unscoped calls at lifecycle boundaries",
+        "native rollout diagnostics reject conflicting policy even under the same named profile",
+        "native rollout diagnostics fail closed on malformed and oversized input after serialization"
+      ]
+    },
+    {
       "path": "tests/conformance/split-layout-tenants.test.mjs"
     },
     {

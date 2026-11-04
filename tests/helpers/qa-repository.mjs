@@ -1179,11 +1179,34 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
       ...(dedicated ? {} : { host: "gateway" }),
     },
   };
-  await f.api(
+  const savedConfiguration = await f.api(
     "PATCH",
     `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
     { values },
   );
+  if (dedicated) {
+    const saved = savedConfiguration?.values;
+    const appServer = saved?.plugins?.entries?.codex?.config?.appServer;
+    try {
+      await f.record(`${suffix}-saved-native-policy`, {
+        evidenceKind: "diagnostic-only",
+        source: "saved-configuration-response-not-effective-turn",
+        configurationResponseKnown: saved !== undefined,
+        savedOpenClawSandboxOff: saved
+          ? saved.agents?.defaults?.sandbox?.mode === "off"
+          : "unknown",
+        savedAppServerWorkspaceWrite: saved ? appServer?.sandbox === "workspace-write" : "unknown",
+        savedApprovalNever: saved ? appServer?.approvalPolicy === "never" : "unknown",
+        savedWorkspaceMatchesExpected: saved
+          ? appServer?.remoteWorkspaceRoot === "/home/node/workspace"
+          : "unknown",
+        savedExecFull: saved ? saved.tools?.exec?.mode === "full" : "unknown",
+        savedFsWorkspaceOnly: saved ? saved.tools?.fs?.workspaceOnly === true : "unknown",
+      });
+    } catch {
+      // Optional saved-policy evidence cannot replace the actual repository failure.
+    }
+  }
   await f.api("PATCH", path, {
     configurationId: agent.configuration.id,
     repositoryBindings: [{ repositoryRef: entry.repositoryRef, profile: "git-write" }],

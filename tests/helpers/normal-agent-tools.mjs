@@ -438,6 +438,7 @@ export const codexRepositoryEvidenceScript = String.raw`
               turnId: turn.id,
               status: turn.status,
               cwdMatchesExpectedWorkspace: thread.cwd === expected[0]?.workdir,
+              rolloutPath: thread.path,
               commands,
             });
           }
