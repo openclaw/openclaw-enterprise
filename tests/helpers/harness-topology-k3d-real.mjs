@@ -38,6 +38,7 @@ import {
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
+import { installManagedSlackProxyFixture } from "./managed-slack-proxy-k3d.mjs";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -86,7 +87,7 @@ const requiresNativeAdminRouting = {
 const requiresLiveSlack = {
   skip: slackSelected
     ? false
-    : "Set OCC_TEST_SLACK_LIVE=1 with the production k3d prerequisites, an approved exact Slack proxy, Slack app/bot credentials, a distinct sender bot token, and a shared test channel.",
+    : "Set OCC_TEST_SLACK_LIVE=1 with the production k3d prerequisites, Helm and yq, Slack app/bot credentials, a distinct sender bot token, and a shared test channel.",
 };
 const installationName = "OpenClaw Kubernetes harness topology integration";
 const authSecret = "kubernetes-harness-topology-auth-secret-32-bytes";
@@ -718,34 +719,15 @@ async function startInClusterControllers(
   workerIsolation.metadata.name = `${workerName}-isolation`;
   workerIsolation.spec.podSelector.matchLabels = workerLabels;
   manifests.items.push(workerIsolation);
-  const channelProxyUrl =
-    apiConfiguration.drivers.compute.configuration.runtime?.channels?.proxyUrl;
-  if (channelProxyUrl !== undefined) {
-    const channelProxy = new URL(channelProxyUrl);
-    assert.equal(
-      isIP(channelProxy.hostname),
-      4,
-      "the API Slack proxy requires an exact IPv4 address",
+  const channels = apiConfiguration.drivers.compute.configuration.runtime?.channels;
+  if (channels !== undefined) {
+    assert.ok(channels.managedProxy, "Slack topology requires the chart-managed proxy");
+    // Admission validates Slack credentials before deployment. The chart grants
+    // only the API this proxy route; the worker keeps its existing isolation.
+    apiContainer.env.push(
+      { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: channels.proxyUrl },
+      { name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST", value: channels.managedProxy.hostname },
     );
-    assert.notEqual(channelProxy.port, "", "the API Slack proxy requires an explicit port");
-    // Admission validates Slack credentials before deployment. Give only the API
-    // this approved proxy route; the worker keeps its existing isolation policy.
-    apiContainer.env.push({ name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: channelProxyUrl });
-    manifests.items.push({
-      apiVersion: "networking.k8s.io/v1",
-      kind: "NetworkPolicy",
-      metadata: { name: `${name}-channel-proxy`, namespace: platformNamespace },
-      spec: {
-        podSelector: { matchLabels: labels },
-        policyTypes: ["Egress"],
-        egress: [
-          {
-            to: [{ ipBlock: { cidr: `${channelProxy.hostname}/32` } }],
-            ports: [{ protocol: "TCP", port: Number(channelProxy.port) }],
-          },
-        ],
-      },
-    });
   }
   await applyManifest(JSON.stringify(manifests), {
     redactions: [databaseUrl, authSecret, workspaceGateway.apiKey],
@@ -946,6 +928,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   if (slack !== undefined) {
     configuration.drivers.compute.configuration.runtime.channels = {
       proxyUrl: slack.proxyUrl,
+      managedProxy: slack.managedProxy,
     };
   }
   return configuration;
@@ -1577,6 +1560,20 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     import("../../apps/controller/src/drivers/compute/kubernetes/index.ts"),
   ]);
 
+  if (slack !== undefined) {
+    assert.ok(workspaceGateway, "Slack topology requires the production Gateway");
+    Object.assign(
+      slack,
+      await installManagedSlackProxyFixture({
+        namespace: platformNamespace,
+        controllerImage,
+        workspaceGateway,
+        resource,
+        kubectl,
+        applyManifest,
+      }),
+    );
+  }
   const directory = await mkdtemp(join(tmpdir(), `oce-k3d-production-${mode}-`));
   const startupPath = join(directory, "api-installation.yaml");
   const workerStartupPath = join(directory, "worker-installation.yaml");
@@ -2630,17 +2627,17 @@ async function inspectProjectedIdentity(namespace, pod) {
   );
 }
 
-async function assertDeniedConnection(namespace, pod, targetIp) {
+async function assertDeniedConnection(namespace, pod, targetIp, port = deniedPort) {
   const script = String.raw`
     const socket = require("node:net").createConnection(
-      { host: ${JSON.stringify(targetIp)}, port: ${deniedPort}, timeout: 3500 },
+      { host: ${JSON.stringify(targetIp)}, port: ${port}, timeout: 3500 },
       () => { process.stdout.write("ALLOWED"); socket.destroy(); },
     );
     socket.on("timeout", () => { process.stdout.write("DENIED"); socket.destroy(); });
     socket.on("error", () => { process.stdout.write("DENIED"); });
   `;
   const outcome = await kubectl("exec", pod, "--namespace", namespace, "--", "node", "-e", script);
-  assert.equal(outcome, "DENIED", "enforced production tenant policies must deny unrelated Pods");
+  assert.equal(outcome, "DENIED", "enforced production tenant policies must deny this destination");
 }
 
 async function assertUnauthorizedCodexSocket(topology) {

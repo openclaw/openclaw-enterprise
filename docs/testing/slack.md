@@ -10,11 +10,12 @@ The [QA matrix](ci.md#qa-matrix) checks live ingress and a threaded reply. The f
 
 Use an authorized test channel in one Slack workspace. Both the gateway bot and a distinct sender bot must join it. Use an existing Socket Mode app, an immutable `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`, a gateway image containing the Slack plugin and its dependencies, and a compatible Codex app-server. Run the [image smoke](docker.md#images-and-helm) first; version output alone does not prove compatibility.
 
+Install Helm and yq. The fixture renders the production Helm chart and applies its Slack proxy Deployment, Service, ServiceAccount, and NetworkPolicies in the disposable namespace. The API and Gateway use the proxy Service DNS name; the proxy permits Slack HTTPS only. The test checks selector-scoped Gateway egress and denies Codex Agent access to the proxy. This proves the rendered resources, not a Helm release installation or upgrade lifecycle.
+
 Put these settings in the private environment file:
 
 | Variable                          | Value                                                                            |
 | --------------------------------- | -------------------------------------------------------------------------------- |
-| `OCC_TEST_SLACK_PROXY_URL`        | Approved literal IP URL with explicit port; the API and gateway use this proxy.  |
 | `OCC_TEST_SLACK_CHANNEL_ID`       | Shared test channel.                                                             |
 | `SLACK_APP_TOKEN`                 | Gateway Socket Mode token, starting with `xapp-`.                                |
 | `SLACK_BOT_TOKEN`                 | Gateway bot token, starting with `xoxb-`.                                        |

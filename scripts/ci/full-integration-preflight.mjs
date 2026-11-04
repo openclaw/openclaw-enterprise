@@ -17,36 +17,54 @@ export const fullIntegrationLanes = Object.freeze([
 ]);
 
 const lanes = new Set(fullIntegrationLanes);
-const branchEligibleLanes = new Set([
+const branchEligibleLanes = new Set(["dev-up-k3d", "skipper-prepared-git-installed"]);
+// TODO: Remove the cutover push route after integration-main verification is complete.
+const cutoverRef = "refs/heads/dev/kevinlin/integration-main-cutover";
+const credentialedLanes = new Set([
+  "qa-matrix",
+  "docker-model",
   "k3d-model",
+  "production-tui",
+  "k3d-otel",
+  "gateway-routing",
+  "slack",
   "openshell",
-  "dev-up-k3d",
-  "skipper-prepared-git-installed",
 ]);
-const laneEnvironments = Object.freeze({
-  "qa-matrix": "integration-qa",
-  "docker-model": "integration-model",
-  "k3d-model": "integration-model",
-  "production-tui": "integration-model",
-  "k3d-otel": "integration-otel",
-  "gateway-routing": "integration-routing",
-  slack: "integration-slack",
-  openshell: "integration-openshell",
-});
 
-export function selectLane({ eventName, inputLane }) {
+export function selectLane({ eventName, inputLane, ref, repositoryFixture }) {
   if (eventName === "workflow_dispatch") {
+    if (ref === cutoverRef && (inputLane !== "qa-matrix" || repositoryFixture !== "isolated")) {
+      throw new Error("Cutover branch dispatch must select qa-matrix with the isolated fixture.");
+    }
     return inputLane;
+  }
+  if (eventName === "push" && ref === cutoverRef) {
+    return "all";
   }
   throw new Error(`Unsupported full integration event: ${eventName}`);
 }
 
-export function assertSourceRef(ref, lane) {
-  if (branchEligibleLanes.has(lane) && /^refs\/heads\/.+/.test(ref ?? "")) {
+export function assertSourceRef(ref, lane, eventName = "workflow_dispatch", repositoryFixture) {
+  if (eventName === "push" && ref === cutoverRef) {
+    return;
+  }
+  if (
+    eventName === "workflow_dispatch" &&
+    ref === cutoverRef &&
+    lane === "qa-matrix" &&
+    repositoryFixture === "isolated"
+  ) {
+    return;
+  }
+  if (
+    eventName === "workflow_dispatch" &&
+    branchEligibleLanes.has(lane) &&
+    /^refs\/heads\/.+/.test(ref ?? "")
+  ) {
     return;
   }
   if (ref !== "refs/heads/main") {
-    throw new Error("Full integration must run from main at the approved github.sha.");
+    throw new Error("Full integration must run from main or the exact cutover push ref.");
   }
 }
 
@@ -54,13 +72,7 @@ export function requiredEnvironmentsForLane(selected) {
   if (!lanes.has(selected)) {
     throw new Error(`Unknown lane: ${selected}`);
   }
-  return [
-    ...new Set(
-      Object.entries(laneEnvironments)
-        .filter(([lane]) => selected === "all" || selected === lane)
-        .map(([, environment]) => environment),
-    ),
-  ];
+  return selected === "all" || credentialedLanes.has(selected) ? ["integration-main"] : [];
 }
 
 function requiredReviewersRule(environment) {
@@ -71,27 +83,37 @@ function branchPolicies(policies) {
   return policies?.branch_policies ?? [];
 }
 
-function hasMainBranchPolicy(policies) {
-  return branchPolicies(policies).some((branch) => branch.name === "main");
-}
-
-export function validateEnvironmentPolicy(environmentName, environment, policies) {
+export function validateEnvironmentPolicy(
+  environmentName,
+  environment,
+  policies,
+  sourceRef = "refs/heads/main",
+) {
   const reviewers = requiredReviewersRule(environment);
   if ((reviewers?.reviewers ?? []).length > 0) {
     throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
   }
-  const policy = environment.deployment_branch_policy;
-  if (policy?.protected_branches === true) {
-    return;
+  if (environment.can_admins_bypass !== undefined && environment.can_admins_bypass !== false) {
+    throw new Error(`Protected environment ${environmentName} must disable administrator bypass.`);
   }
-  if (policy?.custom_branch_policies !== true) {
+  const policy = environment.deployment_branch_policy;
+  if (policy?.custom_branch_policies !== true || policy?.protected_branches !== false) {
     throw new Error(
-      `Protected environment ${environmentName} is not restricted to protected branches or main.`,
+      `Protected environment ${environmentName} must use custom deployment branch rules.`,
     );
   }
-  if (!hasMainBranchPolicy(policies)) {
+  const allowed =
+    sourceRef === cutoverRef ? ["main", cutoverRef.slice("refs/heads/".length)] : ["main"];
+  const branches = branchPolicies(policies);
+  if (
+    policies?.total_count !== branches.length ||
+    branches.length !== allowed.length ||
+    !allowed.every((name) =>
+      branches.some((branch) => branch.name === name && branch.type === "branch"),
+    )
+  ) {
     throw new Error(
-      `Protected environment ${environmentName} has no main deployment branch policy.`,
+      `Protected environment ${environmentName} must allow only the selected main or cutover branch policy.`,
     );
   }
 }
@@ -115,8 +137,22 @@ export async function validateFullIntegrationPreflight({
   env = process.env,
   github = fetchGithubJson,
 } = {}) {
-  assertSourceRef(env.GITHUB_REF, env.INPUT_LANE);
-  const selected = selectLane({ eventName: env.GITHUB_EVENT_NAME, inputLane: env.INPUT_LANE });
+  if (env.GITHUB_REF === cutoverRef) {
+    if (
+      env.GITHUB_REPOSITORY !== "openclaw/openclaw-enterprise" ||
+      env.GITHUB_ACTOR !== "kevinlin-openai" ||
+      env.GITHUB_TRIGGERING_ACTOR !== "kevinlin-openai"
+    ) {
+      throw new Error("Cutover proof requires the approved repository, actor and rerun actor.");
+    }
+  }
+  const selected = selectLane({
+    eventName: env.GITHUB_EVENT_NAME,
+    inputLane: env.INPUT_LANE,
+    ref: env.GITHUB_REF,
+    repositoryFixture: env.INPUT_QA_REPOSITORY_FIXTURE,
+  });
+  assertSourceRef(env.GITHUB_REF, selected, env.GITHUB_EVENT_NAME, env.INPUT_QA_REPOSITORY_FIXTURE);
   const required = requiredEnvironmentsForLane(selected);
   for (const environmentName of required) {
     const environment = await github({
@@ -124,25 +160,12 @@ export async function validateFullIntegrationPreflight({
       token: env.GITHUB_TOKEN,
       path: `/environments/${environmentName}`,
     });
-    const policies =
-      environment.deployment_branch_policy?.custom_branch_policies === true
-        ? await github({
-            repository: env.GITHUB_REPOSITORY,
-            token: env.GITHUB_TOKEN,
-            path: `/environments/${environmentName}/deployment-branch-policies`,
-          })
-        : undefined;
-    validateEnvironmentPolicy(environmentName, environment, policies);
-    if (
-      env.GITHUB_REF !== "refs/heads/main" &&
-      (environment.deployment_branch_policy?.custom_branch_policies !== true ||
-        !branchPolicies(policies).some(
-          (branch) =>
-            branch.type === "branch" && branch.name === env.GITHUB_REF.slice("refs/heads/".length),
-        ))
-    ) {
-      throw new Error(`Protected environment ${environmentName} must allow this exact branch.`);
-    }
+    const policies = await github({
+      repository: env.GITHUB_REPOSITORY,
+      token: env.GITHUB_TOKEN,
+      path: `/environments/${environmentName}/deployment-branch-policies`,
+    });
+    validateEnvironmentPolicy(environmentName, environment, policies, env.GITHUB_REF);
   }
   return { selectedLane: selected, runAll: selected === "all" };
 }

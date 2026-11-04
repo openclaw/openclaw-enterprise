@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-04
-last_updated_session: authoring-run/390095eb-01a9-4e24-b609-791b49f19f81
+last_updated_session: authoring-run/79147f32-199a-48ad-9b7e-fbdf94bf9d60
 ---
 
 # GitHub Actions testing flow
@@ -14,7 +14,7 @@ The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage.
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci.md#qa-matrix).
-- `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
+- `.github/workflows/full-integration.yml:jobs`: manual integrations from main and the temporary named-branch proof routes, pinned to `github.sha`.
 
 ## Flow
 
@@ -38,7 +38,7 @@ graph TD
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
-  C["Manual integration dispatch"] --> P["Source and environment preflight"]
+  C["Integration dispatch or exact cutover push"] --> P["Source and environment preflight"]
   P -->|eligible source and environment| E["Protected test jobs"]
   P -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
@@ -91,16 +91,20 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration checks out immutable `github.sha`. `all` selects every dispatch
-lane and CI suite; preflight includes `integration-qa`. QA waits for Slack to finish, regardless of success.
-Aggregation requires QA and `dev-up-k3d` results. Cancellation stops QA.
-`all` requires `main`. Only `k3d-model`/`openshell` admit exact environment-granted
-branches; administrators remove temporary grants after verification.
-Credential-free `dev-up-k3d` also accepts branches and prepares Go, CLI, Chromium
-and k3d on Ubuntu 22.04, with 150/180-minute file/job deadlines.
-Dispatches serialize without cancellation: standalone `dev-up-k3d` per branch,
-others in `full-integration`. Preflight rejects required reviewers and retains
-branch restrictions. Dispatchers inspect commits; no approval is needed.
+Full Integration checks out `github.sha`. Preflight selects the dispatch lane
+or `all` for the exact cutover push. Credentialed jobs use `integration-main`;
+main dispatch requires the exact main-only policy.
+The temporary cutover push and isolated QA dispatch also verify the repository,
+actor and rerun actor before fetching environment policy. Only proof routes admit the additional branch rule. Invalid policy, required
+reviewers or an exposed enabled bypass flag fail preflight.
+
+`all` selects every dispatch lane and CI suite. QA waits for Slack to finish,
+regardless of success; cancellation stops QA. Aggregation requires the selected
+QA and installation results. Credential-free `dev-up-k3d` and
+`skipper-prepared-git-installed` retain reviewed-branch dispatch. The workflow serializes these installation runs per branch and other runs in
+`full-integration`, without cancellation. The
+[environment guide](../testing/ci.md#environments) owns the temporary proof route
+and its removal condition.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
@@ -259,6 +263,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 10:07: Consolidate Full Integration policy and bound the cutover proof routes. (authoring-run/79147f32-199a-48ad-9b7e-fbdf94bf9d60 - 2628dba73edd44e4980711129e48fb7842828019)
 
 - 2026-11-03 01:07: Bind staging tests to release source. (authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06 - d2fc28e1d6d70292e462956cedef0dae9281c48c)
 

@@ -2796,7 +2796,6 @@ if (args[0] === "pull") {
           NODE_BASE_IMAGE: nodeBaseImage,
           ...k3dImages,
           OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
-          OCC_TEST_SLACK_PROXY_URL: "http://127.0.0.1:3000",
           OCC_TEST_SLACK_CHANNEL_ID: "C0123456789",
           OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",
           SLACK_APP_TOKEN: "xapp-test",

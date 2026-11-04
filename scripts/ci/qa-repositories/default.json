@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "backendId": "github-qa",
+  "providerInstanceId": "github-openclaw-qa",
+  "appId": "5039902",
+  "githubInstallationId": "164218092",
+  "maximumDurationSeconds": 3600,
+  "repositories": [
+    {
+      "repositoryRef": "qa-repository",
+      "repositoryId": "1350208775",
+      "repository": "openclaw/openclaw-enterprise",
+      "namespaces": [
+        {
+          "namespaceId": "${OCC_INITIAL_NAMESPACE_ID}",
+          "profiles": ["git-write"]
+        }
+      ]
+    }
+  ]
+}

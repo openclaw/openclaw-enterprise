@@ -1,6 +1,9 @@
 name: Full Integration
 
 on:
+  # TODO: Remove this proof trigger after integration-main verification is complete.
+  push:
+    branches: [dev/kevinlin/integration-main-cutover]
   workflow_dispatch:
     inputs:
       lane:
@@ -46,6 +49,8 @@ env:
 
 jobs:
   preflight:
+    # The temporary proof route is restricted to the approved operator, including reruns.
+    if: ${{ github.ref != 'refs/heads/dev/kevinlin/integration-main-cutover' || (github.repository == 'openclaw/openclaw-enterprise' && github.actor == 'kevinlin-openai' && github.triggering_actor == 'kevinlin-openai') }}
     name: Dispatch Preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -62,6 +67,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           INPUT_LANE: ${{ inputs.lane }}
+          INPUT_QA_REPOSITORY_FIXTURE: ${{ inputs.qa_repository_fixture }}
         run: |
           node scripts/ci/full-integration-preflight.mjs
 
@@ -210,9 +216,9 @@ jobs:
     name: Docker Model Runtime
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'docker-model'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'docker-model'
     timeout-minutes: 40
-    environment: integration-model
+    environment: integration-main
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -235,9 +241,9 @@ jobs:
     name: k3d Model Runtime
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'k3d-model'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-model'
     timeout-minutes: 120
-    environment: integration-model
+    environment: integration-main
     env:
       CI_RUNNER_TEST_TIMEOUT_MS: "5400000"
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -262,9 +268,9 @@ jobs:
     name: Gateway Routing
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'gateway-routing'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'gateway-routing'
     timeout-minutes: 35
-    environment: integration-routing
+    environment: integration-main
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -288,9 +294,9 @@ jobs:
     name: Production TUI
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'production-tui'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'production-tui'
     timeout-minutes: 50
-    environment: integration-model
+    environment: integration-main
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -316,18 +322,17 @@ jobs:
     name: Slack Live
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'slack'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack'
     timeout-minutes: 35
-    environment: integration-slack
+    environment: integration-main
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
       OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
-      OCC_TEST_SLACK_PROXY_URL: ${{ vars.OCC_TEST_SLACK_PROXY_URL }}
-      OCC_TEST_SLACK_CHANNEL_ID: ${{ vars.OCC_TEST_SLACK_CHANNEL_ID }}
-      OCC_TEST_SLACK_SENDER_BOT_TOKEN: ${{ secrets.OCC_TEST_SLACK_SENDER_BOT_TOKEN }}
+      OCC_TEST_SLACK_CHANNEL_ID: ${{ vars.OCC_TEST_QA_SLACK_CHANNEL_ID }}
+      OCC_TEST_SLACK_SENDER_BOT_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
       SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
     steps:
@@ -347,9 +352,9 @@ jobs:
     name: OpenShell
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'openshell'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell'
     timeout-minutes: 120
-    environment: integration-openshell
+    environment: integration-main
     env:
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
@@ -378,9 +383,9 @@ jobs:
     name: k3d OTEL
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'k3d-otel'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-otel'
     timeout-minutes: 65
-    environment: integration-otel
+    environment: integration-main
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
@@ -404,7 +409,7 @@ jobs:
     name: Helper Timeout
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'helper-timeout'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'helper-timeout'
     # Its one test spends 300 s; the lane deadline stops tests five minutes before this.
     timeout-minutes: 15
     steps:
@@ -424,7 +429,7 @@ jobs:
     name: Logging Collector
     runs-on: ubuntu-24.04
     needs: preflight
-    if: inputs.lane == 'logging-collector'
+    if: needs.preflight.outputs.selected_lane == 'logging-collector'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -443,7 +448,7 @@ jobs:
     name: Local Kubernetes Installation
     runs-on: ubuntu-22.04
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'dev-up-k3d'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'dev-up-k3d'
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -466,7 +471,7 @@ jobs:
   skipper-prepared-git-installed:
     name: Installed Skipper private Git and live withdrawal
     needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'skipper-prepared-git-installed'
+    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'skipper-prepared-git-installed'
     # The First Agent Smoke runner supports the packaged Codex sandbox and k3d policy.
     # Only synthetic, job-local model and private Git credentials enter this installation.
     runs-on: ubuntu-22.04
@@ -625,9 +630,9 @@ jobs:
     name: Shipped Installation QA Matrix
     runs-on: blacksmith-16vcpu-ubuntu-2404
     needs: [preflight, slack]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && (inputs.lane == 'all' || inputs.lane == 'qa-matrix') }}
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'qa-matrix') }}
     timeout-minutes: 240
-    environment: integration-qa
+    environment: integration-main
     env:
       # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
       # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs. Job-scoped: dev-up.test.mjs
@@ -652,15 +657,14 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Materialize approved QA credentials
-        if: inputs.qa_repository_fixture == 'default'
+        if: (inputs.qa_repository_fixture || 'default') == 'default'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
           SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_SENDER_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
-          REPOSITORY_OBSERVER_TOKEN: ${{ secrets.REPOSITORY_OBSERVER_TOKEN }}
-          REPOSITORY_REGISTRY_JSON: ${{ secrets.REPOSITORY_REGISTRY_JSON }}
+          REPOSITORY_REGISTRY_FILE: scripts/ci/qa-repositories/default.json
           REPOSITORY_APP_KEY: ${{ secrets.REPOSITORY_APP_KEY }}
           REPOSITORY_UPSTREAM_CIDRS_JSON: ${{ vars.REPOSITORY_UPSTREAM_CIDRS_JSON }}
         run: node scripts/ci/qa-matrix-credentials.mjs
@@ -674,7 +678,7 @@ jobs:
           SLACK_SENDER_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
           QA_REPOSITORY_FIXTURE: isolated
           QA_ISOLATED_REPOSITORY_FULL_NAME: ${{ vars.QA_ISOLATED_REPOSITORY_FULL_NAME }}
-          REPOSITORY_REGISTRY_JSON: ${{ secrets.QA_ISOLATED_REPOSITORY_REGISTRY_JSON }}
+          REPOSITORY_REGISTRY_FILE: scripts/ci/qa-repositories/isolated.json
           REPOSITORY_APP_KEY: ${{ secrets.QA_ISOLATED_REPOSITORY_APP_KEY }}
           REPOSITORY_UPSTREAM_CIDRS_JSON: ${{ vars.REPOSITORY_UPSTREAM_CIDRS_JSON }}
         run: node scripts/ci/qa-matrix-credentials.mjs

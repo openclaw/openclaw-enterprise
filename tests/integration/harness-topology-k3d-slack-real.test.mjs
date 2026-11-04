@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { isIP } from "node:net";
 import test from "node:test";
 import { verifySingleSlackDelivery } from "../helpers/slack-delivery.mjs";
 import { sessionEvidenceScript } from "../helpers/normal-agent-tools.mjs";
@@ -27,7 +26,6 @@ test(
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
     for (const key of [
-      "OCC_TEST_SLACK_PROXY_URL",
       "OCC_TEST_SLACK_CHANNEL_ID",
       "OCC_TEST_SLACK_SENDER_BOT_TOKEN",
       "SLACK_APP_TOKEN",
@@ -35,11 +33,6 @@ test(
     ]) {
       assert.ok(process.env[key], `${key} is required for explicitly requested live Slack proof.`);
     }
-    const proxy = new URL(process.env.OCC_TEST_SLACK_PROXY_URL);
-    const address = proxy.hostname.replace(/^\[|\]$/g, "");
-    const family = isIP(address);
-    assert.notEqual(family, 0, "the approved channel proxy must use an exact literal IP");
-    assert.notEqual(proxy.port, "", "the approved channel proxy requires an explicit port");
     const [gatewayIdentity, senderIdentity] = await Promise.all([
       slackApi("auth.test", process.env.SLACK_BOT_TOKEN),
       slackApi("auth.test", process.env.OCC_TEST_SLACK_SENDER_BOT_TOKEN),
@@ -55,7 +48,6 @@ test(
       "Slack integration requires a distinct sender because OpenClaw rejects its own bot messages",
     );
     const slack = {
-      proxyUrl: process.env.OCC_TEST_SLACK_PROXY_URL,
       allowedUserId: senderIdentity.user_id,
       channelId: process.env.OCC_TEST_SLACK_CHANNEL_ID,
       appToken: process.env.SLACK_APP_TOKEN,
@@ -73,12 +65,35 @@ test(
       true,
       "Slack end-to-end proof requires an approved second bot token",
     );
-    const [gatewayChannel, senderChannel] = await Promise.all([
-      slackApi("conversations.info", slack.botToken, { channel: slack.channelId }),
-      slackApi("conversations.info", slack.senderBotToken, { channel: slack.channelId }),
-    ]);
-    assert.equal(gatewayChannel.channel?.is_member, true, "the gateway must join the test channel");
-    assert.equal(senderChannel.channel?.is_member, true, "the sender must join the test channel");
+    // Check both identities before provisioning or posting. Report membership
+    // separately so a missing channel invitation has an actionable failure.
+    const members = [
+      { role: "gateway", token: slack.botToken, userId: gatewayIdentity.user_id },
+      { role: "sender", token: slack.senderBotToken, userId: senderIdentity.user_id },
+    ];
+    const memberships = await Promise.allSettled(
+      members.map(({ token }) =>
+        slackApi("conversations.info", token, { channel: slack.channelId }),
+      ),
+    );
+    const membershipFailures = [];
+    for (const [index, result] of memberships.entries()) {
+      const { role, userId } = members[index];
+      let status = "unverified";
+      if (result.status === "fulfilled") {
+        status = result.value.channel?.is_member === true ? "member" : "not-member";
+      }
+      testContext.diagnostic(
+        `Slack ${role} channel membership=${status}; channel=${slack.channelId}; user=${userId}`,
+      );
+      if (status !== "member") {
+        const reason = result.status === "rejected" ? ` ${result.reason.message}` : "";
+        membershipFailures.push(
+          `Slack ${role} membership=${status}.${reason} Invite bot ${userId} to channel ${slack.channelId} and ensure it can read channel information before rerunning.`,
+        );
+      }
+    }
+    assert.equal(membershipFailures.length, 0, membershipFailures.join("\n"));
 
     const topology = await arrangeProductionTopology(context, "dedicated", slack);
     assert.ok(topology.harnessPod, "channels must preserve their separate dedicated Codex Agent");
@@ -147,8 +162,15 @@ test(
     });
     assert.deepEqual(policy.spec.egress, [
       {
-        to: [{ ipBlock: { cidr: `${address}/${family === 4 ? 32 : 128}` } }],
-        ports: [{ protocol: "TCP", port: Number(proxy.port) }],
+        to: [
+          {
+            namespaceSelector: {
+              matchLabels: { "kubernetes.io/metadata.name": slack.managedProxy.namespace },
+            },
+            podSelector: { matchLabels: slack.managedProxy.podLabels },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: slack.managedProxy.port }],
       },
     ]);
     const target = await resource("pod", topology.approvedClient, topology.platformNamespace);
@@ -157,6 +179,32 @@ test(
       topology.gatewayPod.metadata.name,
       target.status.podIP,
     );
+
+    // The proxy is ready, but a dedicated Codex Agent has no channel egress grant.
+    // Exercise the enforcing policy rather than checking selectors alone.
+    const proxyService = await resource(
+      "service",
+      "openclaw-enterprise-slack-proxy",
+      topology.platformNamespace,
+    );
+    await assertDeniedConnection(
+      topology.placement,
+      topology.harnessPod.metadata.name,
+      proxyService.spec.clusterIP,
+      slack.managedProxy.port,
+    );
+    const proxyDeployment = await resource(
+      "deployment",
+      "openclaw-enterprise-slack-proxy",
+      topology.platformNamespace,
+    );
+    for (const token of [slack.appToken, slack.botToken, slack.senderBotToken]) {
+      assert.equal(
+        JSON.stringify(proxyDeployment).includes(token),
+        false,
+        "the tunneling proxy must not receive Slack credentials",
+      );
+    }
 
     await waitFor("a genuine authenticated Slack Socket Mode connection", async () => {
       const logs = await kubectl(
