@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { readWorkspace, parseJSON } from "./module-boundaries/workspace.ts";
 import { freezeRecord } from "./module-boundaries/freeze-record.ts";
 import { collectSourceImports } from "./module-boundaries/source-imports.ts";
-import { resolveImports } from "./module-boundaries/resolve-import.mjs";
+import { resolveImports } from "./module-boundaries/resolve-import.ts";
 import { evaluatePolicy, validatePolicy } from "./module-boundaries/evaluate-policy.mjs";
 import { applyExceptions, validateExceptions } from "./module-boundaries/exceptions.mjs";
 

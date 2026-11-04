@@ -15,13 +15,13 @@ import { freezeRecord } from "./freeze-record.ts";
 import { slash } from "./source-path.ts";
 import { sourceExtension } from "./workspace.ts";
 
-type Snapshot = {
+export type SourceSnapshot = {
   root: string;
   files: readonly { absolutePath: string; path: string; text: string; packageType: string }[];
 };
 type Kind =
   "import" | "export" | "import-type" | "require" | "dynamic-import" | "dependency-anchor" | "path";
-type Reference = {
+export type SourceReference = {
   from: string;
   specifier: string;
   kind: Kind;
@@ -61,7 +61,7 @@ function normalizedSpecifier(root: string, value: string): string {
 }
 
 /** Parse/bind the snapshot only. Emit import references; make no resolution or policy decisions. */
-export function collectSourceImports(snapshot: Snapshot) {
+export function collectSourceImports(snapshot: SourceSnapshot) {
   const texts = new Map(snapshot.files.map((file) => [file.absolutePath, file.text]));
   const options = {
     allowJs: true,
@@ -81,7 +81,7 @@ export function collectSourceImports(snapshot: Snapshot) {
   };
   const program = ts.createProgram([...texts.keys()], options, host);
   const checker = program.getTypeChecker();
-  const references: Reference[] = [];
+  const references: SourceReference[] = [];
   const diagnostics: Diagnostic[] = [];
   for (const file of snapshot.files) {
     const loadedSource = program.getSourceFile(file.absolutePath);
