@@ -192,6 +192,7 @@ names its audit event, and any denial, `openclaw.agents.runtime_logs.download`.
 `apps/controller/src/http/runtime-logs.ts:runtimeLogPageBody` and `runtimeLogDownloadBody`
 reject reserved `content`. Container headers label `instance` without Pods. Console and `runtimeLogDownloadFileName`
 take `-previous.log` from the request.
+Console saves a file only for HTTP 200 plain text; other successful formats show retry feedback without saving a file, and JSON error envelopes retain applicable guidance.
 `runtimeLogPageAtLevel` filters after signing, preserving unknown levels, gaps and withheld counts.
 
 `console/agents/logs.mts` clears output when status selects another source, Pod or instance.
