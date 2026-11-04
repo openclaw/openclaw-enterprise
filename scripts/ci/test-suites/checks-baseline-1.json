@@ -96,7 +96,7 @@
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
     "tests/conformance/utils.test.mjs",
-    "tests/conformance/console-api-client.test.mjs",
+    "tests/conformance/console-api-client.test.ts",
     "tests/conformance/console-carry.test.mjs",
     "tests/conformance/console-namespace-name.test.mjs",
     "tests/conformance/console-agent-name-runs.test.mjs",
@@ -152,7 +152,7 @@
       "path": "tests/conformance/console-agent-name-runs.test.mjs"
     },
     {
-      "path": "tests/conformance/console-api-client.test.mjs"
+      "path": "tests/conformance/console-api-client.test.ts"
     },
     {
       "path": "tests/conformance/console-carry.test.mjs"

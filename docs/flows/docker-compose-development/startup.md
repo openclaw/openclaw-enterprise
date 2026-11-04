@@ -286,6 +286,10 @@ The host kubeconfig stays private. Non-root API/worker containers receive
 read-only configuration and kubeconfig for the TLS-verified internal load balancer,
 without the engine socket.
 
+Before importing a source-built runtime, `importRuntime` passes the optional
+[build CA file](../../reference/settings/development.md) to the engine as
+a build secret. Selecting an existing runtime image skips this build.
+
 `internal/occdev/kubernetes.go:engineImageReference` resolves engine-recorded names,
 including Podman `localhost/` and Docker Hub, defaults omitted tags to `:latest`,
 and rejects missing or ambiguous matches. Digest-pinned sources are usually

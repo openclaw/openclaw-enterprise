@@ -9,7 +9,7 @@
     "tests/integration/ci-impact.test.mjs",
     "tests/browser/console-agent-draft-guards.test.ts",
     "tests/browser/console-policy-denials.test.ts",
-    "tests/browser/console-agent-channels.test.mjs",
+    "tests/browser/console-agent-channels.test.ts",
     "tests/browser/console-dialogs.test.ts",
     "tests/browser/console-form-fields.test.ts",
     "tests/browser/console-form-fields-2.test.ts",
@@ -17,11 +17,11 @@
     "tests/browser/console-agent-state.test.mjs",
     "tests/browser/console-agent-saves.test.ts",
     "tests/browser/console-runtime-credentials.test.ts",
-    "tests/browser/console-codex-oauth.test.mjs",
+    "tests/browser/console-codex-oauth.test.ts",
     "tests/browser/console-agent-save-refusals.test.ts",
     "tests/browser/console-repository-dedicated.test.ts",
     "tests/browser/console-repository-picker-network.test.ts",
-    "tests/browser/console-create-agent-provisioning-400.test.mjs",
+    "tests/browser/console-create-agent-provisioning-400.test.ts",
     "tests/browser/console-agent-deploy-focus.test.ts",
     "tests/browser/console-agents-list-return.test.mjs",
     "tests/browser/console-refocus-focus.test.ts",
@@ -42,7 +42,7 @@
       "path": "tests/browser/console-agents-2.test.ts"
     },
     {
-      "path": "tests/browser/console-codex-oauth.test.mjs"
+      "path": "tests/browser/console-codex-oauth.test.ts"
     },
     {
       "path": "tests/browser/console-form-fields.test.ts"
@@ -63,13 +63,13 @@
       "path": "tests/browser/console-agent-presets.test.ts"
     },
     {
-      "path": "tests/browser/console-agent-channels.test.mjs"
+      "path": "tests/browser/console-agent-channels.test.ts"
     },
     {
       "path": "tests/browser/console-dialogs.test.ts"
     },
     {
-      "path": "tests/browser/console-create-agent-provisioning-400.test.mjs"
+      "path": "tests/browser/console-create-agent-provisioning-400.test.ts"
     },
     {
       "path": "tests/browser/console-repository-dedicated.test.ts"

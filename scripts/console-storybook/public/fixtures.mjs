@@ -1,13 +1,14 @@
+import { createConfigurationStore } from "./configuration-store.mts";
+import { createAgentRoutes } from "./create-agent-routes.mts";
+import { installationDriverConfigurations, installationFixture } from "./installation-fixture.mts";
+import { configurationValues } from "./configuration-fixture.mts";
+import { serveChannelDirectory } from "./channel-directory-fixture.mts";
 import networkPolicySchema from "./network-policy-schema.mts";
 import { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
-import {
-  candidateDeploymentError,
-  deploymentFailureMessages,
-  initialDeploymentProgress,
-} from "./deployment-fixture.mts";
+import { candidateDeploymentError, initialDeploymentProgress } from "./deployment-fixture.mts";
 import {
   createFixtureFetch,
   fixtureError as error,
@@ -24,163 +25,6 @@ const hiddenRevisionId = "rev_00000000-0000-4000-8000-000000000008";
 const redeployRevisionId = "rev_00000000-0000-4000-8000-000000000018";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
-
-// Another browser's save in configurationChangedElsewhere: objects merge, other values replace.
-function mergeElsewhere(target, changes) {
-  for (const [key, value] of Object.entries(changes)) {
-    const current = target[key];
-    if (
-      value !== null &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      current !== null &&
-      typeof current === "object" &&
-      !Array.isArray(current)
-    ) {
-      mergeElsewhere(current, value);
-    } else {
-      target[key] = structuredClone(value);
-    }
-  }
-}
-
-function slackChannels(scenario) {
-  if (scenario.slackChannels !== undefined) {
-    return structuredClone(scenario.slackChannels);
-  }
-  return {
-    CDEMO123: {
-      requireMention: true,
-      users: scenario.slackAllowEveryone ? ["*"] : ["UDEMO123"],
-    },
-  };
-}
-
-function configurationValues(scenario) {
-  const values = {
-    gateway: { mode: "local" },
-    agents: {
-      defaults: {
-        model: "codex/gpt-4.1",
-        models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
-      },
-    },
-    channels: {},
-  };
-  if (scenario.harnessId === "openclaw") {
-    const model = "openai/gpt-5.1";
-    values.agents.defaults.model = model;
-    values.agents.defaults.models = { [model]: { agentRuntime: { id: "openclaw" } } };
-  }
-  if (scenario.gatewayPassword) {
-    values.gateway.auth = {
-      password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
-    };
-  }
-  if (scenario.gatewayPasswordProviderless) {
-    // A reference an older release saved without a provider, which OpenClaw cannot read.
-    values.gateway.auth = { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } };
-  }
-  if (scenario.secretProviderAliasRefused) {
-    // An env alias an older release saved in upper case, which OpenClaw's config check refuses.
-    values.secrets = { defaults: { env: "BAD" } };
-  }
-  if (scenario.pluginSecretInputProviderless) {
-    // A Google web search header an older release saved as a SecretRef without a provider, which
-    // OpenClaw cannot read, so the Gateway exits at startup.
-    values.plugins = {
-      entries: {
-        google: {
-          config: {
-            webSearch: { headers: { "X-Goog-User-Project": { source: "env", id: "GOOG_TOKEN" } } },
-          },
-        },
-      },
-    };
-  }
-  if (scenario.pluginDeny !== undefined) {
-    values.plugins = { ...values.plugins, deny: structuredClone(scenario.pluginDeny) };
-  }
-  if (scenario.configInclude) {
-    // An OpenClaw $include an older release saved, which would merge settings OCE never checked.
-    values.agents.defaults.$include = "./defaults.json";
-  }
-  if (scenario.pluginEntryKeyVariant) {
-    // A Codex entry an older release saved beside codex, which OpenClaw merges into codex.
-    values.plugins = {
-      entries: {
-        codex: { config: { appServer: { approvalPolicy: "on-request" } } },
-        Codex: { enabled: true },
-      },
-    };
-  }
-  if (scenario.openClawSandbox) {
-    // OpenClaw's own sandbox, which an older release saved and the OCE runtime cannot run.
-    values.agents.defaults.sandbox = { mode: "all" };
-  }
-  if (scenario.providerKeyVariant) {
-    // An OpenAI model provider key an older release saved, which OpenClaw applies to openai.
-    values.models = { providers: { OpenAI: { baseUrl: "https://models.example.test/v1" } } };
-  }
-  if (scenario.codexPluginsDisabled) {
-    // plugins.enabled false saved before Kubernetes Compute refused it on Dedicated Codex, whose
-    // Gateway runs the codex plugin.
-    values.plugins = { ...values.plugins, enabled: false };
-  }
-  if (scenario.trustedProxyWithoutMachine) {
-    // A trusted-proxy allowlist without occ-workspace-files, saved before Kubernetes Compute
-    // refused it.
-    values.gateway = {
-      ...values.gateway,
-      auth: {
-        ...values.gateway?.auth,
-        mode: "trusted-proxy",
-        trustedProxy: { userHeader: "x-occ-identity", allowUsers: ["oidc:member-01"] },
-      },
-    };
-  }
-  if (scenario.kubernetesEntryKeyVariant) {
-    // A File-Transfer entry saved before Kubernetes Compute refused it, which OpenClaw merges into
-    // file-transfer, the entry Kubernetes Compute enables for the workspace node.
-    values.plugins = { entries: { "File-Transfer": { enabled: true } } };
-  }
-  if (scenario.gatewayPasswordAllowlistOmits) {
-    // A default env alias on a configured env provider whose allowlist leaves out the generated
-    // password, so OpenClaw cannot read the reference Enable gateway password access would write.
-    values.secrets = {
-      defaults: { env: "vault" },
-      providers: { vault: { source: "env", allowlist: ["OTHER_SECRET"] } },
-    };
-  }
-  if (scenario.messageQueue !== undefined) {
-    values.messages = { queue: structuredClone(scenario.messageQueue) };
-  }
-  if (scenario.retiredSetting) {
-    // A setting an older release saved and the pinned OpenClaw has since retired.
-    values.security = { preset: "corporate" };
-  }
-  if (scenario.slack) {
-    values.channels.slack = {
-      // `slackOff`: Disable Slack saved the channel off and kept its bindings.
-      enabled: scenario.slackOff !== true,
-      mode: scenario.slackMode ?? "socket",
-      ...(scenario.slackReplyToMode === undefined
-        ? {}
-        : { replyToMode: scenario.slackReplyToMode }),
-      ...(scenario.slackEnterpriseOrgInstall ? { enterpriseOrgInstall: true } : {}),
-      dmPolicy: scenario.slackPolicy ?? "pairing",
-      groupPolicy: scenario.slackPolicy === "open" ? "open" : "allowlist",
-      ...(scenario.slackTokens ?? {
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-      }),
-      allowFrom:
-        scenario.slackAllowFrom ?? (scenario.slackPolicy === "open" ? ["*"] : ["UDEMO123"]),
-      channels: slackChannels(scenario),
-    };
-  }
-  return values;
-}
 
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
@@ -207,14 +51,11 @@ export function installFixture(scenario, evidence) {
   let serial = 100;
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
-  const configs = new Map();
-  // Reads of each Configuration before another browser's save (configurationChangedElsewhere).
-  const configurationReads = new Map();
-  let configurationChangedElsewhere = false;
+  const configurationStore = createConfigurationStore(scenario, namespaceId, createdAt, nextId);
+  const { configs } = configurationStore;
   const agents = new Map();
   const revisions = new Map();
   const deployments = new Map();
-  const provisioning = new Map();
   const credentials = new Map();
   const credentialSources = new Map();
   let credentialRegistrationFailed = false;
@@ -821,6 +662,19 @@ export function installFixture(scenario, evidence) {
           : "SANDBOX_POLICY_CEILING_CHANGED",
     };
   }
+  const serveCreate = createAgentRoutes(scenario, {
+    namespaceId,
+    createdAt,
+    nextId,
+    configs,
+    deployments,
+    credentials,
+    files,
+    stagedWorkspaceFiles,
+    saveAgent: (saved) => agents.set(saved.id, saved),
+    snapshot,
+    saveRevision: (revision) => revisions.set(revision.id, revision),
+  });
   const answer = async (url, method, body) => {
     const path = url.pathname;
     if (path === "/api/auth/providers" && method === "GET") {
@@ -858,202 +712,10 @@ export function installFixture(scenario, evidence) {
       return response({});
     }
     if (path === "/installation/driver-configurations" && method === "GET") {
-      return response({
-        configurations: [
-          ...(scenario.installationModelProvider
-            ? [
-                {
-                  capability: "compute",
-                  driverId: "kubernetes-compute",
-                  implementation: "kubernetes",
-                  scope: "installation",
-                  key: "startup",
-                  binding: "installation-startup",
-                  configurationSchema: {
-                    type: "object",
-                    properties: {
-                      runtime: {
-                        type: "object",
-                        properties: {
-                          modelProvider: {
-                            type: "object",
-                            properties: {
-                              protocol: { type: "string" },
-                              baseUrl: { type: "string" },
-                              supportsStandaloneWebSearch: { type: "boolean" },
-                            },
-                          },
-                        },
-                      },
-                    },
-                  },
-                  startupConfiguration: {
-                    runtime: {
-                      modelProvider: {
-                        protocol: "openai-responses",
-                        baseUrl: "https://models.example.com/v1",
-                        supportsStandaloneWebSearch: false,
-                      },
-                    },
-                  },
-                  actions: {},
-                },
-              ]
-            : []),
-          ...(scenario.installationNestedValues
-            ? [
-                {
-                  capability: "configuration",
-                  driverId: "config-example-package",
-                  implementation: "example-configuration-driver",
-                  scope: "installation",
-                  key: "startup",
-                  binding: "installation-startup",
-                  configurationSchema: {
-                    type: "object",
-                    properties: { operatorResources: { writeOnly: true } },
-                  },
-                  startupConfiguration: {
-                    endpoint: "/configuration/read",
-                    optionalValues: {
-                      enabled: false,
-                      capacity: 0,
-                      fallback: null,
-                      emptyText: "",
-                      list: [],
-                      record: {},
-                      ["customfield".repeat(8)]: "configurationvalue".repeat(20),
-                      nested: Array.from({ length: 12 }).reduce(
-                        (value, _, index) => ({ [`level${index + 1}`]: [value] }),
-                        "Nested leaf",
-                      ),
-                    },
-                    operatorResources: "[redacted]",
-                    workerGroups: Array.from({ length: 8 }, (_, index) => ({
-                      name: `Group ${index + 1}`,
-                      routes: ["/workspace/read", "/workspace/write"],
-                      description:
-                        index === 0
-                          ? "<b>Literal configuration text</b>"
-                          : "Configured worker group",
-                    })),
-                  },
-                  actions: {},
-                },
-              ]
-            : []),
-          {
-            capability: "credential_gateway",
-            driverId: "credential-gateway-openshell",
-            implementation: "openshell",
-            scope: "installation",
-            key: "startup",
-            binding: "installation-startup",
-            configurationSchema: {
-              type: "object",
-              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
-              required: ["binaries"],
-              additionalProperties: false,
-              properties: {
-                binaries: { type: "array", items: { type: "string" }, minItems: 1 },
-                toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
-              },
-            },
-            ...(scenario.installationValuesUnavailable
-              ? {}
-              : {
-                  startupConfiguration: {
-                    binaries: ["/usr/bin/git", "/usr/bin/curl"],
-                    toolBinaries: ["/usr/bin/python3"],
-                  },
-                }),
-            actions: {},
-          },
-          {
-            capability: "sandbox",
-            driverId: "sandbox-openshell",
-            implementation: "openshell",
-            scope: "installation",
-            key: "startup",
-            binding: "installation-startup",
-            configurationSchema: {
-              type: "object",
-              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
-              additionalProperties: false,
-              properties: {
-                gateway: {
-                  type: "object",
-                  properties: {
-                    workspaceMode: { type: "string" },
-                    operatorWorkspaceResources: { type: "array", writeOnly: true },
-                  },
-                },
-              },
-            },
-            ...(scenario.installationValuesUnavailable
-              ? {}
-              : {
-                  startupConfiguration: {
-                    gateway: {
-                      workspaceMode: "operator",
-                      operatorWorkspaceResources: "[redacted]",
-                    },
-                  },
-                }),
-            actions: {},
-          },
-          {
-            capability: "iam",
-            driverId: "native-iam",
-            implementation: "native",
-            scope: "installation",
-            key: "startup",
-            binding: "installation-startup",
-            configurationSchema: {
-              type: "object",
-              ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
-              additionalProperties: false,
-              properties: {},
-            },
-            ...(scenario.installationValuesUnavailable ? {} : { startupConfiguration: {} }),
-            actions: {},
-          },
-        ],
-      });
+      return response(installationDriverConfigurations(scenario));
     }
     if (path === "/installation" && method === "GET") {
-      return response({
-        id: "ins_00000000-0000-4000-8000-000000000001",
-        name: "Demo installation",
-        createdAt,
-        capabilities: {
-          ...(scenario.nativeAdminSetup ? { nativeAdmin: true } : {}),
-          ...(scenario.unsupportedProvisioning === true
-            ? {}
-            : { agentProvisioning: { executionModes: ["dedicated"] } }),
-          ...(scenario.nativeWorkerSupport === false
-            ? {}
-            : { nativeWorkers: { support: scenario.nativeWorkerSupport ?? "pinned-runtime" } }),
-          ...(scenario.openclawExecutionModes === undefined
-            ? {}
-            : {
-                openclaw: {
-                  executionModes: scenario.openclawExecutionModes,
-                  ...(scenario.openclawSettingRefusal
-                    ? { settingRefusals: { dedicated: scenario.openclawSettingRefusal } }
-                    : {}),
-                  ...(scenario.sandboxDriverUnavailable ? { sandboxDriverUnavailable: true } : {}),
-                },
-              }),
-          ...(scenario.credentialSourceTypes !== undefined
-            ? { credentialSources: { types: scenario.credentialSourceTypes } }
-            : {}),
-          ...(scenario.pluginCapabilities ? { pluginPolicies: scenario.pluginCapabilities } : {}),
-          ...(scenario.pluginDiscoveryCredential
-            ? { pluginDiscovery: { credential: scenario.pluginDiscoveryCredential } }
-            : {}),
-        },
-      });
+      return response(installationFixture(scenario, createdAt));
     }
     if (path === "/namespaces" && method === "POST") {
       if (namespaces.some((item) => item.name === body.name)) {
@@ -1264,59 +926,7 @@ export function installFixture(scenario, evidence) {
         return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
       }
       if (resource === "channel-directory/lookup" && method === "POST") {
-        if (!secrets.has(body.secretId) || !["users", "channels"].includes(body.kind)) {
-          return error(400);
-        }
-        const candidates =
-          body.kind === "users"
-            ? [
-                { id: "UDEMO123", name: "alex.chen", displayName: "Alex Chen" },
-                { id: "UDEMO124", name: "alex.ops", displayName: "Alex Chen" },
-                { id: "WDEMO125", name: "sam.rivers", displayName: "Sam Rivers" },
-                { id: "UDEMO126", name: "riley.park", displayName: "Riley Park" },
-                { id: "UDEMO127", name: "morgan.lee", displayName: "Morgan Lee" },
-                { id: "UDEMO128", name: "jordan.bell", displayName: "Jordan Bell" },
-                { id: "UDEMO129", name: "taylor.reed", displayName: "Taylor Reed" },
-                { id: "UDEMO130", name: "casey.wong", displayName: "Casey Wong" },
-                { id: "UDEMO131", name: "jamie.stone", displayName: "Jamie Stone" },
-              ]
-            : [
-                { id: "CDEMO123", name: "general" },
-                { id: "GDEMO124", name: "incident-private" },
-                { id: "CDEMO125", name: "platform" },
-                { id: "CDEMO126", name: "releases" },
-                { id: "CDEMO127", name: "support" },
-                { id: "CDEMO128", name: "design" },
-                { id: "CDEMO129", name: "engineering" },
-                { id: "CDEMO130", name: "product" },
-                { id: "CDEMO131", name: "announcements" },
-              ];
-        const query = (body.query ?? "").toLowerCase();
-        const matches = candidates.filter((candidate) =>
-          body.ids
-            ? body.ids.includes(candidate.id)
-            : [candidate.id, candidate.name, candidate.displayName ?? ""].some((value) =>
-                value.toLowerCase().includes(query),
-              ),
-        );
-        const offset = body.cursor === "page-2" ? 7 : 0;
-        if (body.cursor && body.cursor !== "page-2") {
-          return error(400);
-        }
-        const nextCursor = !body.ids && matches.length > offset + 7 ? "page-2" : undefined;
-        evidence.directoryResponses.push({
-          kind: body.kind,
-          query: body.query ?? "",
-          cursor: body.cursor ?? null,
-          ids: body.ids ?? null,
-        });
-        return response({
-          workspaceId: "TDEMO123",
-          workspaceName: "Demo workspace",
-          candidates: body.ids ? matches : matches.slice(offset, offset + 7),
-          ...(nextCursor ? { nextCursor } : {}),
-          complete: !nextCursor,
-        });
+        return serveChannelDirectory(body, secrets, evidence);
       }
       if (resource === "credential-sources") {
         if (method === "GET") {
@@ -1384,41 +994,9 @@ export function installFixture(scenario, evidence) {
           return new Response(null, { status: 204 });
         }
       }
-      if (resource === "configurations" && method === "POST") {
-        const saved = {
-          ...body,
-          id: nextId("cfg"),
-          namespaceId,
-          generation: 1,
-          createdAt,
-        };
-        configs.set(saved.id, saved);
-        return response(saved, 201);
-      }
-      if (resource.startsWith("configurations/")) {
-        const saved = configs.get(resource.split("/")[1]);
-        if (!saved) {
-          return error(404);
-        }
-        if (method === "GET") {
-          // Another browser saves this Configuration once the page has read it `afterReads` times
-          // (configurationChangedElsewhere; 1 by default), so the next save preflight finds a
-          // newer generation.
-          if (scenario.configurationChangedElsewhere && !configurationChangedElsewhere) {
-            const reads = configurationReads.get(saved.id) ?? 0;
-            if (reads >= (scenario.configurationChangedElsewhere.afterReads ?? 1)) {
-              configurationChangedElsewhere = true;
-              saved.generation += 1;
-              mergeElsewhere(saved.values, scenario.configurationChangedElsewhere.values ?? {});
-            }
-            configurationReads.set(saved.id, reads + 1);
-          }
-          return response(saved);
-        }
-        if (method === "PATCH") {
-          Object.assign(saved, body, { generation: saved.generation + 1 });
-          return response({ ...saved, id: scenario.configurationSaveResponseId ?? saved.id });
-        }
+      const configurationReply = configurationStore.serve(resource, method, body);
+      if (configurationReply !== undefined) {
+        return configurationReply;
       }
       if (resource === "permissions" && method === "GET") {
         return response({
@@ -1456,229 +1034,10 @@ export function installFixture(scenario, evidence) {
           }
           return response([...agents.values()]);
         }
-        if (method === "POST") {
-          const {
-            initialWorkspaceFiles = {},
-            workspaceDefaultsId: _workspaceDefaultsId,
-            ...agentBody
-          } = body;
-          const saved = {
-            ...agentBody,
-            id: nextId("agt"),
-            namespaceId,
-            status: "active",
-            desiredRuntimeState: "stopped",
-            createdAt,
-            activeRevisionId: null,
-            servicePrincipalId: "identity_demo_created",
-          };
-          agents.set(saved.id, saved);
-          stagedWorkspaceFiles.set(saved.id, initialWorkspaceFiles);
-          credentials.set(saved.id, { transportConfigured: false });
-          return response(saved, 201);
-        }
       }
-      // Create Agent's preflight accepts unless a scenario rule refuses it.
-      if (resource === "agents/validate" && method === "POST") {
-        return new Response(null, { status: 204 });
-      }
-      if (resource === "agents/provision" && method === "POST") {
-        const {
-          configuration,
-          initialWorkspaceFiles = {},
-          workspaceDefaultsId: _workspaceDefaultsId,
-          requestId,
-          ...agentBody
-        } = body;
-        const workId = nextId("work");
-        const savedConfig = {
-          ...configuration,
-          id: nextId("cfg"),
-          namespaceId,
-          generation: configuration?.secretBindings ? 2 : 1,
-          createdAt,
-        };
-        configs.set(savedConfig.id, savedConfig);
-        const saved = {
-          ...agentBody,
-          id: nextId("agt"),
-          namespaceId,
-          configurationId: savedConfig.id,
-          status: "active",
-          desiredRuntimeState: "running",
-          createdAt,
-          activeRevisionId: null,
-          servicePrincipalId: "identity_demo_provisioned",
-          ...(agentBody.harnessAuth?.method === "credential_source"
-            ? { credentialSources: [{ sourceId: agentBody.harnessAuth.sourceId }] }
-            : {}),
-        };
-        agents.set(saved.id, saved);
-        credentials.set(saved.id, { transportConfigured: true });
-        for (const [filename, content] of Object.entries(initialWorkspaceFiles)) {
-          files.set(`${saved.id}/${filename}`, content);
-        }
-        // A Stop before the first revision cancels provisioning; the stopped Agent keeps its name.
-        const revision = scenario.provisioningCancelledByStop
-          ? null
-          : snapshot(saved, nextId("rev"), 1);
-        if (scenario.provisionedDeploymentStopped || scenario.provisioningCancelledByStop) {
-          saved.desiredRuntimeState = "stopped";
-        }
-        if (revision) {
-          revisions.set(revision.id, revision);
-          deployments.set(revision.id, {
-            deploymentId: revision.id,
-            namespaceId,
-            agentId: saved.id,
-            status: scenario.provisionedDeploymentStatus ?? "queued",
-            cleanup: null,
-            progress:
-              scenario.provisionedDeploymentAttempt === undefined
-                ? initialDeploymentProgress(
-                    scenario.provisionedDeploymentStatus ?? "queued",
-                    createdAt,
-                  )
-                : {
-                    lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
-                    nextAttemptAt: createdAt,
-                  },
-            reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
-            error:
-              scenario.provisionedDeploymentStatus !== "failed"
-                ? null
-                : scenario.provisionedDeploymentStopped
-                  ? {
-                      code: "REVISION_STOPPED",
-                      message: deploymentFailureMessages.stopped,
-                    }
-                  : (scenario.provisionedDeploymentError ?? {
-                      code: "DEPENDENCY_UNAVAILABLE",
-                      message: deploymentFailureMessages.dependencyUnavailable,
-                    }),
-            warnings: [],
-          });
-        }
-        provisioning.set(saved.id, {
-          requestId,
-          workId,
-          reads: 0,
-          status: scenario.provisioningStatus ?? "queued",
-          agentId: saved.id,
-          configurationId: savedConfig.id,
-          revisionId: revision?.id,
-          url: `/namespaces/${namespaceId}/agents/provision/${workId}`,
-        });
-        provisioning.set(workId, provisioning.get(saved.id));
-        return response(
-          {
-            provisioning: {
-              requestId,
-              workId,
-              status: scenario.provisioningStatus ?? "queued",
-              phase: "admitted",
-              attemptCount: 1,
-              updatedAt: createdAt,
-              url: `/namespaces/${namespaceId}/agents/provision/${workId}`,
-            },
-          },
-          202,
-        );
-      }
-      const provisioningMatch = resource.match(/^agents\/provision\/([^/]+)(\/retry)?$/);
-      if (provisioningMatch) {
-        const [, workId, retrySuffix] = provisioningMatch;
-        const current = provisioning.get(workId);
-        if (!current) {
-          return error(404);
-        }
-        if (retrySuffix === "/retry" && method === "POST") {
-          current.status = "queued";
-          current.reads = 0;
-          return response(
-            {
-              provisioning: {
-                requestId: current.requestId,
-                workId: current.workId,
-                status: current.status,
-                phase: "admitted",
-                attemptCount: 2,
-                updatedAt: createdAt,
-                url: current.url,
-              },
-            },
-            202,
-          );
-        }
-        if (retrySuffix === undefined && method === "GET") {
-          current.reads += 1;
-          if (current.status !== "failed") {
-            current.status =
-              scenario.provisionedDeploymentStatus === "running"
-                ? "running"
-                : current.reads > 1
-                  ? scenario.provisionedDeploymentStatus === "failed" ||
-                    scenario.provisioningCancelledByStop
-                    ? "failed"
-                    : "succeeded"
-                  : "running";
-          }
-          return response({
-            provisioning: {
-              requestId: current.requestId,
-              workId: current.workId,
-              status: current.status,
-              phase: current.reads > 1 ? "handoff" : "configuration",
-              attemptCount: 1,
-              updatedAt: createdAt,
-              url: current.url,
-              ...(current.status === "failed"
-                ? {
-                    error: scenario.provisioningCancelledByStop
-                      ? {
-                          code: "PROVISIONING_CANCELLED",
-                          message: "Provisioning was cancelled because the Agent was stopped.",
-                        }
-                      : scenario.provisionedDeploymentStopped
-                        ? {
-                            code: "REVISION_STOPPED",
-                            message: "The Agent was stopped before its first deployment finished.",
-                          }
-                        : (scenario.provisionedDeploymentError ?? {
-                            code:
-                              scenario.provisionedDeploymentStatus === "failed"
-                                ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
-                                : "PROVISIONING_FAILED",
-                            message:
-                              scenario.provisionedDeploymentStatus === "failed"
-                                ? deploymentFailureMessages.bootstrap
-                                : "The worker could not finish provisioning.",
-                          }),
-                  }
-                : {}),
-              ...(current.status === "succeeded" || current.reads > 1
-                ? {
-                    configurationId: current.configurationId,
-                    agentId: current.agentId,
-                    revisionId: current.revisionId,
-                  }
-                : {}),
-              // After handoff the job names its first deployment's wait, as it does for a
-              // reader of that deployment (#2744).
-              ...(scenario.provisioningNamesDeploymentWait &&
-              current.reads > 1 &&
-              (current.status === "queued" || current.status === "running")
-                ? {
-                    progress: {
-                      phase: "deployment",
-                      lastAttempt:
-                        deployments.get(current.revisionId)?.progress?.lastAttempt ?? null,
-                    },
-                  }
-                : {}),
-            },
-          });
-        }
+      const createReply = serveCreate(resource, method, body);
+      if (createReply !== undefined) {
+        return createReply;
       }
       const agentMatch = resource.match(/^agents\/([^/]+)(.*)$/);
       if (agentMatch) {

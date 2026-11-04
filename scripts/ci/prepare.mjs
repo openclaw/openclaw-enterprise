@@ -2682,6 +2682,12 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
 async function prepareLane({ lane, statePath, file }) {
   const name = assertLane(lane);
   const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
+  if (
+    relativeFile !== undefined &&
+    !laneDefinition(name).files.some((entry) => entry.path === relativeFile)
+  ) {
+    throw new Error("Selected file must belong to the lane manifest.");
+  }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
@@ -2691,6 +2697,7 @@ async function prepareLane({ lane, statePath, file }) {
     );
   }
   const state = baseState(name, resolvedStatePath);
+  state.selectedFile = relativeFile;
   const env = baseEnv(resolvedStatePath, state);
   await writeState(resolvedStatePath, state);
 
@@ -3082,6 +3089,11 @@ async function prepareLane({ lane, statePath, file }) {
       await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: true });
       break;
     case "openshell": {
+      // These files exercise the installer in their own Local Setup. Preparing a
+      // second stack here builds the same images and installs unused services.
+      if (lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
+        break;
+      }
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
@@ -3236,6 +3248,9 @@ async function prepareFile({ lane, file, statePath, template }) {
 async function prepareFileWithState({ name, relativeFile, resolvedStatePath, template }) {
   const state = await readState(resolvedStatePath);
   const prepare = lanePrepare(name);
+  if (state?.selectedFile !== undefined && state.selectedFile !== relativeFile) {
+    throw new Error("Selected file must match the prepared lane state.");
+  }
   if (!state && prepare.requiresPreparedStateForFile) {
     throw new Error(
       `prepareFile for ${name} requires a prior prepareLane call using the same state path.`,
@@ -3285,7 +3300,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     return { env: { ...env, ...prepared.env }, cleanup: prepared.cleanup };
   }
 
-  if (prepare.postgres) {
+  if (prepare.postgres && !prepare.selfProvisionedFiles?.includes(relativeFile)) {
     const dbKind = prepare.k3d ? "k8s" : "ci";
     const database = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
       kind: dbKind,
@@ -3456,7 +3471,7 @@ async function main() {
   }
   const result = args.file
     ? await prepareFile({ lane: args.lane, file: args.file, statePath: args.state })
-    : await prepareLane({ lane: args.lane, statePath: args.state });
+    : await prepareLane({ lane: args.lane, statePath: args.state, file: args["selected-file"] });
   await appendGithubEnv(args["github-env"] ?? process.env.GITHUB_ENV, result.env);
   process.stdout.write(
     `${JSON.stringify({ envNames: Object.keys(result.env).sort() }, null, 2)}\n`,

@@ -608,7 +608,10 @@ async function waitForProvisioning({
   const neutralOutcome =
     cancelledAgent === "kept"
       ? "stopped"
-      : neutralDeploymentOutcome({ status: current.status, error: current.error ?? null });
+      : neutralDeploymentOutcome({
+          status: current.status,
+          error: current.error?.code === undefined ? null : { code: current.error.code },
+        });
   // A failed job's reason leads the form's error line, so its status line would only repeat
   // that it failed (finding 2423).
   status.textContent =

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Locator, Page } from "playwright";
+import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -18,7 +20,7 @@ import {
   stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { confirmAgentAction } from "./console-action-helpers.ts";
+import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   heldView,
   refocus,
@@ -29,6 +31,49 @@ import {
 } from "./console-refocus-helpers.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
+type Agent = Pick<AgentWire, "id" | "name" | "configurationId">;
+type Namespace = Pick<NamespaceWire, "id">;
+function namespaceResource(value: unknown): Namespace {
+  const isNamespace = (input: unknown): input is Namespace =>
+    typeof input === "object" && input !== null && "id" in input && typeof input.id === "string";
+  assert.ok(isNamespace(value));
+  return value;
+}
+
+function agentResource(value: unknown): Agent {
+  const isAgent = (input: unknown): input is Agent =>
+    typeof input === "object" &&
+    input !== null &&
+    "id" in input &&
+    typeof input.id === "string" &&
+    "name" in input &&
+    typeof input.name === "string" &&
+    "configurationId" in input &&
+    typeof input.configurationId === "string";
+  assert.ok(isAgent(value));
+  return value;
+}
+
+type HoldOptions = Parameters<typeof holdRequests>[3];
+type ShownKind = "pages" | "frames";
+type PageAction = (page: Page) => Promise<unknown>;
+type HeldLoad = {
+  name: string;
+  prepare?: PageAction;
+  hold?: (namespace: Namespace) => string;
+  act: PageAction;
+};
+
+declare global {
+  var __shown: Partial<Record<ShownKind, string[]>> | undefined;
+  var __shownObservers: Partial<Record<ShownKind, MutationObserver>> | undefined;
+  var __cachedAgentSeen: string[];
+  var __focusLog: string[];
+  var __steps: number[];
+  // The browser record installed by recordFocusTrail().
+  var focusFrames: { trail: string[]; frames: number; loadingShown: boolean; stopped: boolean };
+}
+
 const SESSION = "**/api/auth/session";
 const activeView = '.content [aria-live="polite"]:not([inert])';
 // An Agent page rendering behind the page that stands in for it.
@@ -36,34 +81,35 @@ const hiddenView = '.content [aria-live="polite"][hidden]';
 const NAMESPACES = { name: "Namespaces", exact: true };
 const SUMMARY = { name: "Agent state at a glance" };
 // Holds only the first matching request (the session check unless named).
-const holdOnce = (t, page, url = SESSION) => holdRequests(t, page, url, { once: true });
+const holdOnce = (t: TestContext, page: Page, url = SESSION) =>
+  holdRequests(t, page, url, { once: true });
 // The Agent's own read; its overview's first reads are its deployment record reads.
-const agentPath = (namespace, agent) => `**/namespaces/${namespace.id}/agents/${agent.id}`;
-const holdAgent = (t, page, namespace, agent, options = { once: true }) =>
-  holdRequests(t, page, agentPath(namespace, agent), options);
-const holdOverview = (t, page, namespace, agent) =>
+const agentPath = (namespace: Namespace, agent: Agent) =>
+  `**/namespaces/${namespace.id}/agents/${agent.id}`;
+const holdAgent = (
+  t: TestContext,
+  page: Page,
+  namespace: Namespace,
+  agent: Agent,
+  options: HoldOptions = { once: true },
+) => holdRequests(t, page, agentPath(namespace, agent), options);
+const holdOverview = (t: TestContext, page: Page, namespace: Namespace, agent: Agent) =>
   holdRequests(t, page, `${agentPath(namespace, agent)}/deployments/*`);
-const agentsRead = (namespace) => `**/namespaces/${namespace.id}/agents`;
-const clickRefresh = (page) => page.getByRole("button", { name: "Refresh", exact: true }).click();
-const agentShown = (page) => page.locator(settledView).getByRole("region", SUMMARY).waitFor();
-const listShown = (page, name) => page.locator(settledView).getByRole("link", { name }).waitFor();
+const agentsRead = (namespace: Namespace) => `**/namespaces/${namespace.id}/agents`;
+const clickRefresh = (page: Page) =>
+  page.getByRole("button", { name: "Refresh", exact: true }).click();
+const agentShown = (page: Page) => page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+const listShown = (page: Page, name: string) =>
+  page.locator(settledView).getByRole("link", { name }).waitFor();
 
-async function showNamespaces(page) {
+async function showNamespaces(page: Page) {
   await page.getByRole("link", NAMESPACES).click();
   await page.locator(settledView).getByRole("list", NAMESPACES).waitFor();
 }
 
-async function openAgent(page, name) {
+async function openAgent(page: Page, name: string) {
   await page.getByRole("link", { name }).click();
   await agentShown(page);
-}
-
-// Serves the Agent with a changed description, so its retained page no longer matches.
-function changeAgent(page, namespace, agent) {
-  return page.route(agentPath(namespace, agent), async (route) => {
-    const response = await route.fetch();
-    await route.fulfill({ response, json: { ...(await response.json()), description: "changed" } });
-  });
 }
 
 // Records, after every DOM change, what the page shows. "pages" names the page in the content
@@ -71,10 +117,10 @@ function changeAgent(page, namespace, agent) {
 // whether the header has a Namespace selector, and the content shown (findings 1515, 1516): a
 // page held under another page's navigation or header, or an Agent heading over an empty page,
 // shows up there.
-function recordShown(kind) {
+function recordShown(kind: ShownKind) {
   const document = globalThis.document;
   const frames = kind === "frames";
-  const seen = [];
+  const seen: string[] = [];
   globalThis.__shown ??= {};
   globalThis.__shown[kind] = seen;
   globalThis.__shownObservers ??= {};
@@ -83,6 +129,9 @@ function recordShown(kind) {
     const view = document.querySelector(
       `.content [aria-live="polite"]${frames ? ":not([hidden])" : ""}`,
     );
+    if (view !== null && !(view instanceof HTMLElement)) {
+      throw new Error("Expected an HTML view");
+    }
     const status = view?.querySelector('[role="status"]')?.textContent;
     const body = !view
       ? frames
@@ -104,7 +153,11 @@ function recordShown(kind) {
                   ? "Opening Agent"
                   : `other: ${view.textContent.replace(/\s+/g, " ").trim().slice(0, 80)}`;
     const held = view?.inert ? " (held)" : "";
-    const nav = document.querySelector('.nav [aria-current="page"]')?.dataset.nav ?? "none";
+    const currentNav = document.querySelector('.nav [aria-current="page"]');
+    if (currentNav !== null && !(currentNav instanceof HTMLElement)) {
+      throw new Error("Expected HTML navigation");
+    }
+    const nav = currentNav?.dataset.nav ?? "none";
     const heading = document.querySelector(".content h1")?.textContent ?? "none";
     const selector = document.querySelector(".page-header #namespace-selector");
     const state = frames
@@ -126,23 +179,30 @@ function recordShown(kind) {
 
 // Records from before the console's module runs on the next full load, which takes over the
 // startup status.
-const recordShownOnLoad = (page, kind) =>
+const recordShownOnLoad = (page: Page, kind: ShownKind) =>
   page.addInitScript(
     `document.addEventListener("readystatechange", () => {
       if (document.readyState === "interactive") (${recordShown})(${JSON.stringify(kind)});
     });`,
   );
-const shown = (page, kind) => page.evaluate((name) => globalThis.__shown[name].splice(0), kind);
-const shownPages = (page) => shown(page, "pages");
-const shownFrames = (page) => shown(page, "frames");
+const shown = (page: Page, kind: ShownKind) =>
+  page.evaluate((name) => {
+    const entries = globalThis.__shown?.[name];
+    if (!entries) {
+      throw new Error("Expected recorded page states");
+    }
+    return entries.splice(0);
+  }, kind);
+const shownPages = (page: Page) => shown(page, "pages");
+const shownFrames = (page: Page) => shown(page, "frames");
 
 // Stops page timers, so the loading delay passes only when a test runs the clock.
-async function pauseClock(page) {
+async function pauseClock(page: Page) {
   const now = await page.evaluate(() => Date.now());
   await page.clock.pauseAt(new Date(now + 1000));
 }
 
-async function signedOutPage(t) {
+async function signedOutPage(t: TestContext) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture);
@@ -153,20 +213,36 @@ async function signedOutPage(t) {
 // page clock is installed and paused once the list loads, so timers run only when a test runs
 // it, and every page shown is recorded. `beforeLogin(page, namespace)` can route the page's reads.
 async function openList(
-  t,
-  name,
-  agentNames,
-  { deploy = false, running = false, beforeLogin = null } = {},
+  t: TestContext,
+  name: string,
+  agentNames: string | string[],
+  {
+    deploy = false,
+    running = false,
+    beforeLogin = null,
+  }: {
+    deploy?: boolean;
+    running?: boolean;
+    beforeLogin?: ((page: Page, namespace: Namespace) => Promise<unknown>) | null;
+  } = {},
 ) {
   const names = [agentNames].flat();
   const { fixture, page } = await signedOutPage(t);
-  const namespace = await fixture.createNamespace(name, { ready: true });
+  const namespace = namespaceResource(await fixture.createNamespace(name, { ready: true }));
   const agents = [];
   for (const agentName of names) {
-    const agent = await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
-    agents.push(
-      deploy ? (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).agent : agent,
+    const agent = agentResource(
+      await fixture.createAgent(namespace.id, agentName, nativeValues("v1")),
     );
+    if (deploy) {
+      const seeded: { agent: unknown } = await fixture.seedActiveAgentRevision(
+        namespace.id,
+        agent.id,
+      );
+      agents.push(agentResource(seeded.agent));
+    } else {
+      agents.push(agent);
+    }
   }
   if (!running) {
     await page.clock.install();
@@ -174,22 +250,26 @@ async function openList(
   const listUrl = `/console/agents?namespace=${namespace.id}`;
   await beforeLogin?.(page, namespace);
   await login(page, fixture, listUrl);
-  await listShown(page, names[0]);
+  const firstName = names[0];
+  assert.ok(firstName !== undefined);
+  await listShown(page, firstName);
   // The list reads each row's latest deployment after it settles; let those finish, so the
   // list is reusable and no test's held read catches one of them.
   await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
   if (!running) {
     await pauseClock(page);
-    await page.evaluate(recordShown, "pages");
+    await page.evaluate<void, ShownKind>(recordShown, "pages");
   }
-  return { fixture, namespace, agents, agent: agents[0], page, listUrl };
+  const agent = agents[0];
+  assert.ok(agent);
+  return { fixture, namespace, agents, agent, page, listUrl };
 }
 
 // A copied Agent chat link opened in this tab.
-const openChatLink = (page, key) => goTo(page, `/console#native-agent=${key}`);
+const openChatLink = (page: Page, key: string) => goTo(page, `/console#native-agent=${key}`);
 
 // Opens a console URL in this tab, as a link outside the console's navigation would.
-function goTo(page, url) {
+function goTo(page: Page, url: string) {
   return page.evaluate((value) => {
     globalThis.history.pushState(null, "", value);
     globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
@@ -202,7 +282,10 @@ test("Refocusing a loaded page keeps it steady while access is rechecked", async
   const selector = page.locator("#namespace-selector");
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   const create = page.getByRole("button", { name: "Create Agent" });
-  const lookOf = (node) => {
+  const lookOf = (node: Element) => {
+    if (!node.ownerDocument.defaultView) {
+      throw new Error("Expected a browser window");
+    }
     const style = node.ownerDocument.defaultView.getComputedStyle(node);
     return { opacity: style.opacity, color: style.color, background: style.backgroundColor };
   };
@@ -218,7 +301,12 @@ test("Refocusing a loaded page keeps it steady while access is rechecked", async
   assert.equal(await selector.isDisabled(), true);
   assert.equal(await selector.locator('option:not([value=""])').count(), 0);
   assert.equal(
-    await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
+    await selector.evaluate((node) => {
+      if (!(node instanceof HTMLSelectElement)) {
+        throw new Error("Expected a select element");
+      }
+      return node.selectedOptions[0]?.textContent;
+    }),
     "Steady return",
   );
   assert.deepEqual(await create.evaluate(lookOf), createLook);
@@ -255,8 +343,8 @@ for (const moveToSidebar of [false, true]) {
 
 test("Back after switching Namespace keeps the shown page until the return is admitted", async (t) => {
   const { fixture, page } = await signedOutPage(t);
-  const first = await fixture.createNamespace("First scope", { ready: true });
-  const second = await fixture.createNamespace("Second scope", { ready: true });
+  const first = namespaceResource(await fixture.createNamespace("First scope", { ready: true }));
+  const second = namespaceResource(await fixture.createNamespace("Second scope", { ready: true }));
   const firstRow = "First scope Agent";
   const secondRow = "Second scope Agent";
   await fixture.createAgent(first.id, firstRow, nativeValues("v1"));
@@ -281,7 +369,12 @@ test("Back after switching Namespace keeps the shown page until the return is ad
   // The shown page keeps its scope; the disabled selector already names the destination.
   assert.equal(await scope.textContent(), "Namespace · Second scope");
   assert.equal(
-    await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
+    await selector.evaluate((node) => {
+      if (!(node instanceof HTMLSelectElement)) {
+        throw new Error("Expected a select element");
+      }
+      return node.selectedOptions[0]?.textContent;
+    }),
     "First scope",
   );
   assert.equal(await selector.locator('option:not([value=""])').count(), 0);
@@ -305,8 +398,12 @@ test("Back after switching Namespace keeps the shown page until the return is ad
 
 test("Back to a retained Agent page after access was revoked never shows the cached page", async (t) => {
   const { fixture, page } = await signedOutPage(t);
-  const namespace = await fixture.createNamespace("Revoked scope", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Revoked Agent", nativeValues("v1"));
+  const namespace = namespaceResource(
+    await fixture.createNamespace("Revoked scope", { ready: true }),
+  );
+  const agent = agentResource(
+    await fixture.createAgent(namespace.id, "Revoked Agent", nativeValues("v1")),
+  );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByRole("region", SUMMARY).waitFor();
   await page.locator(activeView).waitFor();
@@ -317,9 +414,9 @@ test("Back to a retained Agent page after access was revoked never shows the cac
   restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
   // Record every DOM state and painted frame from Back until the refusal.
   await page.evaluate((configurationId) => {
-    const seen = [];
+    const seen: string[] = [];
     globalThis.__cachedAgentSeen = seen;
-    const check = (when) => {
+    const check = (when: string) => {
       const document = globalThis.document;
       if (
         document.querySelector(".agent-current-summary, .deployment-status, .agent-tabs") ||
@@ -388,7 +485,13 @@ test("Opening Agent details acknowledges navigation immediately; other first vis
   assert.deepEqual(await shownPages(page), ["Agents", "Opening Agent", "Agent"]);
 
   await page.locator(settledView).waitFor();
-  await page.evaluate(() => globalThis.__shown.pages.splice(0, Infinity, "Agent"));
+  await page.evaluate(() => {
+    const entries = globalThis.__shown?.pages;
+    if (!entries) {
+      throw new Error("Expected recorded page states");
+    }
+    return entries.splice(0, Infinity, "Agent");
+  });
   await page.getByRole("link", NAMESPACES).click();
   await page.locator(activeView).getByRole("list", NAMESPACES).waitFor();
   assert.deepEqual(await shownPages(page), ["Agent", "Agent (held)", "Namespaces"]);
@@ -403,7 +506,7 @@ test("A page held for Agents keeps its own navigation and header until Agents re
 
   // From Namespaces: the list read is held.
   await showNamespaces(page);
-  await page.evaluate(recordShown, "frames");
+  await page.evaluate<void, ShownKind>(recordShown, "frames");
   const firstRead = await holdOnce(t, page, list);
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await firstRead.requested;
@@ -473,7 +576,7 @@ test("A held Namespaces page shows no recovery for the next page's Namespace", a
 // An Agent page renders behind the page on screen, which stays until the overview reveals: the
 // next visible state is the usable overview, not its heading and toolbar alone (findings 1516,
 // 1526). Each row enters the Agent with its overview's reads held, and lists the frames shown.
-const openingFrames = (name) => [
+const openingFrames = (name: string) => [
   "agents | Agents | selector | Agents",
   "agents | Agent details | selector | Loading agent details…",
   `agents | ${name} | selector | Agent`,
@@ -485,9 +588,9 @@ for (const c of [
       "Opening an Agent shows the destination at once and reveals the heading with the overview",
     namespace: "Opening frames",
     agents: ["Fast Agent", "Slow Agent"],
-    async prepare(page) {
+    async prepare(page: Page) {
       // Time stays paused: neither the acknowledgment nor a fast result waits for a timer.
-      await page.evaluate(recordShown, "frames");
+      await page.evaluate<void, ShownKind>(recordShown, "frames");
       await page.getByRole("link", { name: "Fast Agent" }).click();
       await agentShown(page);
       assert.deepEqual(await shownFrames(page), openingFrames("Fast Agent"));
@@ -499,7 +602,7 @@ for (const c of [
       await listShown(page, "Slow Agent");
     },
     // The destination stays usable, including Back to Agents, for the whole wait.
-    enter: (page) => page.getByRole("link", { name: "Slow Agent" }).click(),
+    enter: (page: Page) => page.getByRole("link", { name: "Slow Agent" }).click(),
     opening: true,
     focus: true,
     frames: openingFrames("Slow Agent"),
@@ -509,13 +612,13 @@ for (const c of [
     title: "Reopening a changed Agent acknowledges the click before showing the new overview",
     namespace: "Reopen frames",
     agents: ["Reopened Agent"],
-    async prepare(page, namespace, agent) {
+    changeConfiguration: true,
+    async prepare(page: Page) {
       await openAgent(page, "Reopened Agent");
       await page.goBack();
       await listShown(page, "Reopened Agent");
-      await changeAgent(page, namespace, agent);
     },
-    enter: (page) => page.getByRole("link", { name: "Reopened Agent" }).click(),
+    enter: (page: Page) => page.getByRole("link", { name: "Reopened Agent" }).click(),
     opening: true,
     frames: openingFrames("Reopened Agent"),
   },
@@ -525,13 +628,13 @@ for (const c of [
     title: "Back to a changed Agent keeps the held page until the overview reveals",
     namespace: "Back reveal",
     agents: ["Back Agent"],
-    async prepare(page, namespace, agent) {
+    changeConfiguration: true,
+    async prepare(page: Page) {
       await openAgent(page, "Back Agent");
       await showNamespaces(page);
-      await changeAgent(page, namespace, agent);
     },
-    enter: (page) => page.goBack(),
-    async whileHeld(page) {
+    enter: (page: Page) => page.goBack(),
+    async whileHeld(page: Page) {
       // The held return still says it is checking (finding 1442).
       await page.clock.runFor(1000);
       await page.getByRole("status").filter({ hasText: "Still checking…" }).waitFor();
@@ -546,8 +649,8 @@ for (const c of [
     title: "Open draft keeps the Agent page until the draft's overview reveals",
     namespace: "Draft reveal",
     agents: ["Draft Agent"],
-    prepare: (page) => openAgent(page, "Draft Agent"),
-    enter: (page) =>
+    prepare: (page: Page) => openAgent(page, "Draft Agent"),
+    enter: (page: Page) =>
       page.locator(".content .page-header").getByRole("button", { name: "Open draft" }).click(),
     revision: /revision=draft/,
     frames: [
@@ -558,14 +661,50 @@ for (const c of [
   },
 ]) {
   test(c.title, async (t) => {
-    const { namespace, agents, page } = await openList(t, c.namespace, c.agents, {
+    const { fixture, namespace, agents, page } = await openList(t, c.namespace, c.agents, {
       deploy: true,
     });
     const agent = agents.at(-1);
-    await c.prepare(page, namespace, agent);
-    await page.evaluate(recordShown, "frames");
+    assert.ok(agent);
+    await c.prepare(page);
+    let changedConfigurationId: string | undefined;
+    if (c.changeConfiguration) {
+      // Another client saves a new draft Configuration while the old Agent page is retained.
+      const draft: unknown = await fixture.createConfiguration(namespace.id, nativeValues("v2"));
+      assert.ok(typeof draft === "object" && draft !== null && "id" in draft);
+      assert.ok(typeof draft.id === "string" && draft.id.length > 0);
+      assert.notEqual(draft.id, agent.configurationId);
+      const changed = agentResource(
+        await fixture.updateAgent(namespace.id, agent.id, { configurationId: draft.id }),
+      );
+      assert.equal(changed.id, agent.id);
+      assert.equal(changed.configurationId, draft.id);
+      changedConfigurationId = draft.id;
+    }
+    await page.evaluate<void, ShownKind>(recordShown, "frames");
     const record = await holdOverview(t, page, namespace, agent);
+    const changedRead =
+      changedConfigurationId === undefined
+        ? undefined
+        : responseTo(
+            page,
+            "GET",
+            `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+          );
     await c.enter(page);
+    if (changedRead) {
+      const reply = await changedRead;
+      assert.equal(reply.status(), 200);
+      const body: unknown = await reply.json();
+      assert.ok(typeof body === "object" && body !== null && "data" in body);
+      const observed = agentResource(body.data);
+      assert.equal(observed.id, agent.id);
+      assert.equal(
+        observed.configurationId,
+        changedConfigurationId,
+        "the retained visit must read the changed Agent Configuration",
+      );
+    }
     await record.requested;
     if (c.opening) {
       await page.locator(hiddenView).waitFor({ state: "attached" });
@@ -736,11 +875,14 @@ test("Back between an Agent's tabs before its overview reveals loads the tab in 
 // Records each focus move as `<tag>#<element number> <text>`, numbering elements in the order
 // they first take focus, so the same name focused on two elements, or twice, shows up.
 function recordFocus() {
-  const seen = [];
-  const ids = new WeakMap();
+  const seen: string[] = [];
+  const ids = new WeakMap<Element, number>();
   let count = 0;
   globalThis.__focusLog = seen;
   globalThis.document.addEventListener("focusin", (event) => {
+    if (!(event.target instanceof Element)) {
+      throw new Error("Expected a focused element");
+    }
     if (!ids.has(event.target)) {
       count += 1;
       ids.set(event.target, count);
@@ -772,7 +914,8 @@ test("Opening an Agent focuses each heading once", async (t) => {
     return log.map((entry) => entry.replace(/#\d+/, ""));
   };
   // Holds the Agent's read until `beforeRead` runs, then its overview's first read.
-  const opening = async (agent, beforeRead = async () => {}) => {
+  const opening = async (agent: Agent | undefined, beforeRead = async () => {}) => {
+    assert.ok(agent);
     const read = await holdAgent(t, page, namespace, agent);
     const overview = await holdOverview(t, page, namespace, agent);
     await page.getByRole("link", { name: agent.name }).click();
@@ -826,7 +969,13 @@ test("Opening an Agent focuses its heading before the tab's reads settle", async
 
 // Opens the Agent from the list by keyboard while its read is held (`once`, unless options say
 // otherwise), so the opening panel stays.
-async function openPendingAgent(t, page, namespace, agent, options) {
+async function openPendingAgent(
+  t: TestContext,
+  page: Page,
+  namespace: Namespace,
+  agent: Agent,
+  options?: HoldOptions,
+) {
   const read = await holdAgent(t, page, namespace, agent, options);
   const link = page.locator(settledView).getByRole("link", { name: agent.name });
   await link.focus();
@@ -926,8 +1075,12 @@ for (const focusTarget of [
 ]) {
   test(`Back to a rebuilt Agents list restores ${focusTarget}`, async (t) => {
     const { fixture, page } = await signedOutPage(t);
-    const namespace = await fixture.createNamespace("Rebuilt list", { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Opening Agent", nativeValues("v1"));
+    const namespace = namespaceResource(
+      await fixture.createNamespace("Rebuilt list", { ready: true }),
+    );
+    const agent = agentResource(
+      await fixture.createAgent(namespace.id, "Opening Agent", nativeValues("v1")),
+    );
     const list = agentsRead(namespace);
 
     // Leaving while a row is still loading no longer forces a rebuild (finding 1663); a changed
@@ -1056,11 +1209,16 @@ for (const target of [
     if (search) {
       await control.fill("Refocus");
       await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
-      await control.evaluate((input) => input.setSelectionRange(2, 4));
+      await control.evaluate((input) => {
+        if (!(input instanceof HTMLInputElement)) {
+          throw new Error("Expected a search input");
+        }
+        input.setSelectionRange(2, 4);
+      });
     } else {
       await control.focus();
     }
-    const focusedIn = (locator) =>
+    const focusedIn = (locator: Locator) =>
       locator.evaluate((node) => node.contains(globalThis.document.activeElement));
     const heading = page.getByRole("heading", { level: 1, name: "Agents" });
     await refocusHeld(t, page, async () => {
@@ -1082,7 +1240,12 @@ for (const target of [
     );
     if (search) {
       assert.deepEqual(
-        await control.evaluate((input) => [input.selectionStart, input.selectionEnd]),
+        await control.evaluate((input) => {
+          if (!(input instanceof HTMLInputElement)) {
+            throw new Error("Expected a search input");
+          }
+          return [input.selectionStart, input.selectionEnd];
+        }),
         [2, 4],
       );
     }
@@ -1182,7 +1345,15 @@ test("A full load replaces the startup status once when its reads settle in time
   await page.reload();
   await listShown(page, "Loaded Agent");
   // The shell's static status is there from the first parse (finding 1444).
-  assert.deepEqual(await page.evaluate(() => globalThis.__shown.pages), ["startup", "Agents"]);
+  assert.deepEqual(
+    await page.evaluate(() => {
+      if (!globalThis.__shown) {
+        throw new Error("Expected recorded page states");
+      }
+      return globalThis.__shown.pages;
+    }),
+    ["startup", "Agents"],
+  );
 });
 
 test("Forward during a return's recheck keeps the returning page for the next Back", async (t) => {
@@ -1191,6 +1362,7 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
     "Opened Agent",
   ]);
   const opened = agents[1];
+  assert.ok(opened);
   await tagView(page, "list");
   // The tag is on the shown list, so its absence below means the list is gone.
   assert.equal(await taggedView(page, "list").count(), 1);
@@ -1229,10 +1401,10 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
 
 // Held loads, each from a loaded Agents list: `prepare` runs first, then `hold` (the session
 // check unless named) is held once, then `act` starts the load.
-const heldReturn = { prepare: showNamespaces, act: (page) => page.goBack() };
+const heldReturn = { prepare: showNamespaces, act: (page: Page) => page.goBack() };
 const heldRefocus = { act: refocus };
 
-async function startHeldLoad(t, c, agentName) {
+async function startHeldLoad(t: TestContext, c: HeldLoad, agentName: string) {
   const { namespace, page } = await openList(t, c.name, agentName);
   await c.prepare?.(page);
   const read = await holdOnce(t, page, c.hold?.(namespace) ?? SESSION);
@@ -1249,7 +1421,7 @@ for (const c of [
   {
     name: "Refresh, then moving focus to navigation,",
     hold: agentsRead,
-    async act(page) {
+    async act(page: Page) {
       await clickRefresh(page);
       await page.getByRole("link", NAMESPACES).focus();
     },
@@ -1261,7 +1433,7 @@ for (const c of [
   { name: "Refocusing a loaded page", ...heldRefocus, shows: "checking" },
   {
     name: "Refocusing Agent detail",
-    prepare: (page) => openAgent(page, "Slow Agent"),
+    prepare: (page: Page) => openAgent(page, "Slow Agent"),
     act: refocus,
     shows: "checking",
   },
@@ -1312,7 +1484,7 @@ for (const c of [
     name: "A held first visit",
     cue: true,
     hold: () => "**/namespaces",
-    act: (page) => page.getByRole("link", NAMESPACES).click(),
+    act: (page: Page) => page.getByRole("link", NAMESPACES).click(),
   },
   { name: "A held refocus recheck", cue: false, ...heldRefocus },
 ]) {
@@ -1322,20 +1494,27 @@ for (const c of [
     await held.waitFor();
     // The CSS cue uses real time, not the paused page clock. Check that it plays on its own
     // before seeking to `at` ms to inspect the dimmed state without a real-time sleep.
-    const look = (at) =>
+    const look = (at: number | null) =>
       held.evaluate((view, time) => {
         const [animation] = view.getAnimations();
         if (time !== null && animation) {
           animation.pause();
           animation.currentTime = time;
         }
+        if (!view.ownerDocument.defaultView || !view.parentElement) {
+          throw new Error("Expected an attached view");
+        }
         const style = view.ownerDocument.defaultView.getComputedStyle(view);
         const main = view.ownerDocument.defaultView.getComputedStyle(view.parentElement);
         const box = view.getBoundingClientRect();
+        const effect = animation?.effect;
+        if (effect === null) {
+          throw new Error("Expected an animation effect");
+        }
         return {
           opacity: Number(style.opacity),
           cursor: main.cursor,
-          delay: animation?.effect.getTiming().delay ?? null,
+          delay: effect?.getTiming().delay ?? null,
           playState: animation?.playState ?? null,
           box: [box.x, box.y, box.width, box.height],
         };
@@ -1362,6 +1541,9 @@ for (const c of [
     assert.deepEqual(
       await page.locator(settledView).evaluate((view) => {
         const window = view.ownerDocument.defaultView;
+        if (!window || !view.parentElement) {
+          throw new Error("Expected an attached view");
+        }
         return [
           window.getComputedStyle(view).opacity,
           window.getComputedStyle(view.parentElement).cursor,
@@ -1393,7 +1575,7 @@ for (const c of [
   { name: "Refresh", act: clickRefresh },
   {
     name: "Following the Agents link from the Agents list",
-    act: (page) =>
+    act: (page: Page) =>
       page
         .getByRole("navigation", { name: "Main navigation" })
         .getByRole("link", { name: "Agents", exact: true })
@@ -1440,7 +1622,7 @@ test("A first visit's read that answers after a second navigation paints nothing
   );
 });
 
-const showedAgent = async (page) =>
+const showedAgent = async (page: Page) =>
   (await shownPages(page)).some((state) => state.startsWith("Agent ") || state === "Agent");
 
 test("Logout during a first visit's hold leaves nothing private, even after Back", async (t) => {
@@ -1477,7 +1659,13 @@ test("A Stop that lands after leaving the Agent closes its dialog, and Back rebu
   await confirmAgentAction(page, "Stop this Agent?", "Stop");
   await stop.requested;
   // The dialog is modal, so leave through the navigation link's own handler.
-  await page.evaluate(() => globalThis.document.querySelector('a[data-nav="agents"]').click());
+  await page.evaluate(() => {
+    const link = globalThis.document.querySelector('a[data-nav="agents"]');
+    if (!(link instanceof HTMLAnchorElement)) {
+      throw new Error("Expected the Agents link");
+    }
+    link.click();
+  });
   await page.waitForURL(`**/console/agents?namespace=${namespace.id}`);
   stop.release();
   await listShown(page, "Stopping Agent");
@@ -1504,11 +1692,13 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
       response.end("<!doctype html><title>holds</title>");
       return;
     }
-    if (!posts.has(request.url)) {
+    if (request.url === undefined || !posts.has(request.url)) {
       response.writeHead(404).end();
       return;
     }
-    posts.set(request.url, posts.get(request.url) + 1);
+    const count = posts.get(request.url);
+    assert.ok(count !== undefined, "Expected a POST counter");
+    posts.set(request.url, count + 1);
     if (request.url === "/lost" && posts.get("/lost") === 1) {
       request.socket.destroy();
       return;
@@ -1519,7 +1709,7 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
   const fixture = await createConsoleAppFixture(t);
   const { page } = await newPage(t, fixture);
   await page.goto(`${origin}/`);
-  const post = (path) =>
+  const post = (path: string) =>
     page.evaluate(
       (url) =>
         fetch(url, { method: "POST" }).then(
@@ -1532,14 +1722,17 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
   const lost = await holdRequests(t, page, `${origin}/lost`, { afterServer: true });
   const lostAnswer = post("/lost");
   // The hold caught the POST: the waiter gets the lost answer, not the no-request deadline.
-  await assert.rejects(lost.requested, (error) => !/was held/.test(error.message));
+  await assert.rejects(
+    lost.requested,
+    (error: unknown) => error instanceof Error && !/was held/.test(error.message),
+  );
   assert.equal(await lostAnswer, "failed");
   assert.equal(posts.get("/lost"), 1);
 
   for (const [path, options] of [
     ["/after", { afterServer: true }],
     ["/before", {}],
-  ]) {
+  ] satisfies [string, HoldOptions][]) {
     const hold = await holdRequests(t, page, `${origin}${path}`, { once: true, ...options });
     const answer = post(path);
     await hold.requested;
@@ -1682,9 +1875,9 @@ test("A double press on Back to Agents goes back once and stays in the console",
       ["back", () => -1],
       ["forward", () => 1],
       ["go", (delta) => delta ?? 0],
-    ]) {
+    ] satisfies ["back" | "forward" | "go", (delta?: number) => number][]) {
       const original = history[name].bind(history);
-      history[name] = (...args) => {
+      history[name] = (...args: [delta?: number]) => {
         globalThis.__steps.push(step(...args));
         original(...args);
       };
@@ -1692,6 +1885,9 @@ test("A double press on Back to Agents goes back once and stays in the console",
   });
   // Both presses land before the first traversal does, as a fast double click can.
   await back.evaluate((node) => {
+    if (!(node instanceof HTMLButtonElement)) {
+      throw new Error("Expected the Back button");
+    }
     node.click();
     node.click();
   });
@@ -1764,6 +1960,9 @@ test("the console shell paints a neutral status before any script runs and keeps
     assert.equal(await page.getByLabel("Email", { exact: true }).count(), 0, path);
     const box = await status.boundingBox();
     await status.evaluate((node) => {
+      if (!(node instanceof HTMLElement)) {
+        throw new Error("Expected an HTML status");
+      }
       node.dataset.staticShell = "kept";
     });
 
@@ -1801,6 +2000,9 @@ test("the boot status stays hidden through a fast load and the scrollbar keeps i
   // copy starts its own animation, which a loaded host may already have finished on the original.
   const shown = await status.evaluate((node) => {
     const copy = node.cloneNode(true);
+    if (!(copy instanceof HTMLElement)) {
+      throw new Error("Expected an HTML status clone");
+    }
     node.after(copy);
     const [animation] = copy.getAnimations();
     if (!animation) {
@@ -1830,7 +2032,7 @@ test("the boot status stays hidden through a fast load and the scrollbar keeps i
 // view renders instead of arriving 1.6-2 s after first paint and reflowing text (finding 1448).
 test("the console web font is ready before the entry script runs, fetched once", async (t) => {
   const { fixture, page } = await signedOutPage(t);
-  const fonts = [];
+  const fonts: string[] = [];
   page.on("request", (request) => {
     if (request.url().endsWith(".woff2")) {
       fonts.push(request.url());
