@@ -19,9 +19,11 @@ pnpm cli:build
 OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs
 ```
 
-The tests cover installation, cleanup, workspace boundaries, NetworkPolicy,
+Tests cover installation, cleanup, workspace boundaries, NetworkPolicy,
 sandboxing, and Keycloak. Model responses are fixtures. Failed cleanup retains
 state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-installation-lane).
+
+See [Podman verification](ci.md#native-podman-startup-proof).
 
 ## Kubernetes HTTP fixture
 

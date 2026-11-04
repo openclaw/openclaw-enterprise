@@ -53,8 +53,8 @@ func TestK3dStartupRejectsConflictingHostPortsBeforeSetup(t *testing.T) {
 
 func TestComposeKubernetesStartupRejectsRenderedAPIPortCollisionBeforeSetup(t *testing.T) {
 	for _, tc := range []struct{ name, shellAPI, rendered, kubernetes string }{
-		// A Compose file or --env-file published the API on a port the shell did not name.
-		{"env file moved the API port", "3000", "6443", "6443"},
+		// A Compose file publishes the API on a port the shell did not name.
+		{"Compose file moved the API port", "3000", "6443", "6443"},
 		// No shell value: .env may still move the port, so the rendered default decides.
 		{"default API port", "", "3000", "3000"},
 	} {
@@ -67,23 +67,13 @@ func TestComposeKubernetesStartupRejectsRenderedAPIPortCollisionBeforeSetup(t *t
 func TestComposeKubernetesStartupLetsAnEnvFileMoveTheDefaultAPIPort(t *testing.T) {
 	// .env.example sets OPENCLAW_DEV_PORT; a copied .env that moves it off the
 	// Kubernetes API port must not be refused from the shell default alone.
-	commands := composeAPIPortCollisionFixture(t, "", "4000", "3000")
+	composeAPIPortCollisionFixture(t, "", "4000", "3000")
 	err := Up(context.Background(), Options{Repository: os.Getenv("OCC_TEST_REPOSITORY")})
-	if err == nil || strings.Contains(err.Error(), "ports must differ") {
+	// The fixture engine refuses the saved configuration. Reaching that stage
+	// proves the real loader accepted the .env port before startup creates resources.
+	if err == nil || !strings.Contains(err.Error(), "container engine cannot consume the resolved Compose configuration") {
 		t.Fatalf("expected startup past the port checks, got %v", err)
 	}
-	if !composeConfigRan(commands()) {
-		t.Fatalf("startup stopped before rendering Compose: %v", err)
-	}
-}
-
-func composeConfigRan(commands []string) bool {
-	for _, command := range commands {
-		if strings.HasPrefix(command, "docker compose --project-name ") && strings.HasSuffix(command, " config") {
-			return true
-		}
-	}
-	return false
 }
 
 func composeAPIPortCollision(t *testing.T, shellAPI, renderedAPI, kubernetes string) {
@@ -97,9 +87,6 @@ func composeAPIPortCollision(t *testing.T, shellAPI, renderedAPI, kubernetes str
 		t.Fatalf("startup touched its state directory: %v", err)
 	}
 	log := commands()
-	if !composeConfigRan(log) {
-		t.Fatalf("rejection came before the rendered check: %v", log)
-	}
 	for _, command := range log {
 		if strings.Contains(command, " up ") || strings.HasPrefix(command, "k3d cluster create") || strings.Contains(command, " build") {
 			t.Fatalf("startup did work before the rejection: %s", command)
@@ -107,21 +94,16 @@ func composeAPIPortCollision(t *testing.T, shellAPI, renderedAPI, kubernetes str
 	}
 }
 
-// composeAPIPortCollisionFixture fakes the tools Compose-plane startup runs up
-// to its rendered configuration, which publishes the controller API on renderedAPI.
+// composeAPIPortCollisionFixture supplies real Compose inputs to the loader.
+// External tools answer only preflight calls; the engine refuses startup.
 func composeAPIPortCollisionFixture(t *testing.T, shellAPI, renderedAPI, kubernetes string) func() []string {
 	t.Helper()
-	rendered := `{"networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{` +
-		`"postgres":{"ports":["127.0.0.1:55432:5432"]},` +
-		`"controller":{"ports":["127.0.0.1:` + renderedAPI + `:3000"]},` +
-		`"worker-kubernetes":{}}}`
 	commands := fakeProfileCommands(t, map[string]string{
 		"docker": `
 "version --format {{json .Server}}") echo '{"Platform":{"Name":"Docker Engine - Community"}}' ;;
 "info"|"compose version"|"info --format "*) ;;
 "ps --all --quiet --filter "*|"volume ls --quiet --filter "*|"network ls --quiet --filter "*) ;;
 "volume inspect "*|"network inspect "*) exit 1 ;;
-"compose --project-name "*" config") echo '` + rendered + `' ;;
 `,
 		"k3d":     `"cluster list -o json") echo '[]' ;;`,
 		"kubectl": "",
@@ -135,10 +117,33 @@ func composeAPIPortCollisionFixture(t *testing.T, shellAPI, renderedAPI, kuberne
 	t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
 	t.Setenv("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
 	t.Setenv("OPENCLAW_DEV_PORT", shellAPI)
+	if shellAPI == "" {
+		// An absent shell value lets Compose read OPENCLAW_DEV_PORT from .env.
+		if err := os.Unsetenv("OPENCLAW_DEV_PORT"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Setenv("OCC_DEVELOPMENT_KUBERNETES_API_PORT", kubernetes)
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+	}
+	publication := renderedAPI
+	if shellAPI == "" {
+		publication = "${OPENCLAW_DEV_PORT:-3000}"
+	}
+	files := map[string]string{
+		"compose.yaml": `{"networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{` +
+			`"postgres":{"image":"example.invalid/postgres:fixture","ports":["127.0.0.1:55432:5432"]},` +
+			`"controller":{"image":"example.invalid/controller:fixture","ports":["127.0.0.1:` + publication + `:3000"]},` +
+			`"worker-kubernetes":{"image":"example.invalid/controller:fixture"}}}`,
+		"compose.kubernetes.yaml": "services: {}\n",
+		".env":                    "OPENCLAW_DEV_PORT=" + renderedAPI + "\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(parent, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("OCC_TEST_REPOSITORY", parent)
 	t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", filepath.Join(parent, "state"))

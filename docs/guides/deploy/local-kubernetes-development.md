@@ -9,10 +9,21 @@ Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and A
 kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
-K3s requires the `cpuset` cgroup controller, which systemd does not delegate to
-a rootless session. On Podman, run as root or use a rootful Podman machine;
-native rootless Podman cannot start this profile even with `cpuset` delegated.
-On macOS:
+On Linux, install Podman and `podman-compose`. No VM is required. Start the
+rootful API socket:
+
+```bash
+sudo systemctl enable --now podman.socket
+```
+
+Run the launcher through `sudo` with the profile below. Startup selects and
+checks the API socket and k3d mount; no Docker variables are required.
+Rootful and rootless Podman use separate container storage.
+
+On macOS, or Linux without host root access, use a rootful Podman machine
+sharing the checkout and state directory. VM creation needs an available
+virtualization provider.
+Run the launcher as your normal host user:
 
 ```bash
 podman machine stop
@@ -20,32 +31,11 @@ podman machine set --rootful
 podman machine start
 ```
 
-Rootful describes the virtual machine; run `podman` as your normal host user. Rootful and rootless keep separate container storage, so the first
-start after switching rebuilds the images.
-
-On Linux without root, use a rootful machine, which needs `/dev/kvm`,
-`gvproxy`, and `virtiofsd`. List a helper directory outside
-Podman's defaults, plus those defaults, in `[engine] helper_binaries_dir` of a
-`CONTAINERS_CONF_OVERRIDE` file exported for startup and cleanup:
-
-```bash
-podman machine init oce-dev --rootful --cpus 8 --memory 16384
-podman machine start oce-dev
-export CONTAINER_CONNECTION=oce-dev-root
-```
-
-The machine shares only `$HOME` by default, so set
-`OCC_DEVELOPMENT_STATE_DIRECTORY` beneath it.
-
-For `failed to find cpuset cgroup (v2)`, including Docker inside a
-containerized development host, follow
+Rootless Podman is not qualified for the complete OCE/OpenShell profile. K3s
+requires delegated cgroup controllers, including `cpuset`; see
 [local cgroup troubleshooting](../operate/troubleshooting.md#local-k3s-cannot-find-the-cpuset-controller).
 
-Startup resolves the engine's host API socket. Do not export
-`DOCKER_HOST` or `CONTAINER_HOST` from the path `podman info` reports: on a
-machine-backed installation that path exists only inside the virtual machine.
-
-Build the CLI and start the Kubernetes profile:
+Build and start the profile:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
@@ -54,6 +44,9 @@ export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```
+
+`scripts/dev-up` does not build or refresh `bin/occ`. Run `pnpm cli:build` after
+changing or pulling Go CLI source.
 
 The launcher installs PostgreSQL and OCE, without OpenShell, on pinned K3s in
 `oce-system` and writes the administrator password and service key to private state.
@@ -99,7 +92,7 @@ Helm, recovery, installation-only drift checks and certificate copying.
 
 ### Run OCC in Compose with Kubernetes compute
 
-To select the hybrid profile on a fresh state directory:
+For a fresh hybrid profile:
 
 ```bash
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
@@ -122,7 +115,7 @@ If the K3s channel lookup fails or times out, follow
 
 ### Start the OpenShell fail-closed profile
 
-For OpenShell, use the owned launcher:
+Start OpenShell:
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
@@ -144,6 +137,21 @@ If Agent Sandbox rollout fails, startup tries to report controller status, image
 IDs, and Warning reasons before rollback. It includes only these diagnostic
 fields; it omits messages, environment values, and logs.
 
+For native rootful Linux Podman with Compose:
+
+```bash
+pnpm cli:build
+sudo env PATH="$PATH" \
+  OCC_DEVELOPMENT_CONTAINER_ENGINE=podman \
+  OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes \
+  OCC_DEVELOPMENT_CONTROL_PLANE=compose \
+  OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell \
+  OCC_DEVELOPMENT_STATE_DIRECTORY=/var/lib/openclaw-development \
+  ./scripts/dev-up
+```
+
+Use the same environment with `dev-down` to remove the Installation and database.
+
 Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to run PostgreSQL, OCC, and its
 Kubernetes worker in Compose. Startup installs private Envoy routing in k3d,
 mounts its service key and public CA only into the controller and
@@ -151,7 +159,8 @@ mounts its service key and public CA only into the controller and
 Installation. It enables OCC native administration, publishes loopback HTTPS
 for console and Agent hosts, and prints the browser CA path.
 `OCC_DEVELOPMENT_BROWSER_PORT` must differ from Compose and k3d API ports.
-Skip manual hybrid routing.
+Skip manual hybrid routing. Trust the printed public CA and follow
+[Agent native administration](native-admin.md) to enable each Agent's exact browser origin. Profile startup alone does not enable every Agent's UI.
 
 First startup requires [node registry access](../operate/troubleshooting.md#local-agent-sandbox-controller-image-pull-fails).
 For reviewed local charts and manifests, set
@@ -167,11 +176,12 @@ engine. Kubernetes-only startup rejects Compose arguments. Keep profile exports
 for cleanup; otherwise startup defaults to Compose with Docker Compute.
 
 Startup prints the private [state directory](../../reference/settings/development.md#required-development-controller-environment)
-containing kubeconfig and credentials. Its default is `openclaw-development`
+with kubeconfig and credentials. It defaults to `openclaw-development`
 under the temporary directory (macOS: `/private/var/folders/<id>/T`). Set absolute
 `OCC_DEVELOPMENT_STATE_DIRECTORY` for startup and cleanup to override it; parent
 paths cannot contain symlinks (macOS: use `/private/tmp/...`, not `/tmp/...`).
-`OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds cluster readiness and later waits.
+`OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds Compose startup commands, cluster
+readiness, and later waits. Separate image builds run until completion or cancellation.
 Failures roll back owned resources; retained state includes cleanup instructions.
 Failed exclusive key writes remove partial outputs, never existing files, and
 report removal errors alongside write errors.
@@ -186,7 +196,7 @@ subnets and published ports. Compose also needs a distinct `OCC_POSTGRES_PORT`;
 changing the API port alone leaves PostgreSQL on port 55432. Each Agent Gateway
 requests 2560 MiB with a 4 GiB limit, and each dedicated Codex Harness requests
 768 MiB with a 6 GiB limit, so a dedicated Codex Agent reserves 3.25 GiB, or
-5 GiB with initial workspace files; size the local engine VM for OCC plus the Agents you run
+5 GiB with initial workspace files; size the host or engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
 ## Require both proxies before enabling Slack
@@ -363,17 +373,17 @@ a durable private state directory, not `/tmp`.
 
 ## Rebuild after a source edit
 
-The environment registers immutable image digests, so running containers do not
-pick up source edits. Recreate it after controller, runtime, migration, Helm, or
-OpenShell integration changes; startup rebuilds both images from the current
-checkout unless an existing controller or runtime image was selected explicitly:
+Source edits require recreation because the environment uses immutable images.
+Startup rebuilds images unless you select existing ones. Manual Compose recreation
+can change controller/worker IPs and break their exact `/32` gateway policy.
+Use the standard lifecycle:
 
 ```bash
 ./scripts/dev-down
 ./scripts/dev-up
 ```
 
-This discards the owned Installation; it is not an in-place upgrade. If
+This deletes the owned Installation and database; it is not an in-place upgrade. If
 repository access was enabled, check the
 [credential cleanup limitation](local-repository-credentials.md) before removing
 the cluster. For a persistent Helm-installed k3d environment, complete the

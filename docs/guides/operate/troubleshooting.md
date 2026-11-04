@@ -1,38 +1,48 @@
 # Troubleshoot the platform
 
-Use this page when local startup, the Kubernetes installation, the control plane,
-or several Agents are affected. For a problem with one Agent, start with
+Use this page for startup, Kubernetes, control-plane, or multi-Agent failures.
+For one Agent, use
 [Agent troubleshooting](../topics/agent-troubleshoot.md).
 
 ## Local K3s cannot find the cpuset controller
 
-If the k3d server logs report `failed to find cpuset cgroup (v2)`, inspect
-`/sys/fs/cgroup/cgroup.controllers` inside that server. Docker running inside a
-containerized development host needs the outer host to delegate `cpuset`;
-a running Docker daemon does not prove delegation. On native rootless Podman,
-delegating `cpuset` is not enough: k3d still fails with
-`mkdir /var/run/docker.sock: permission denied`. Use the
-[rootful setup requirements](../deploy/local-kubernetes-development.md#start-the-profile).
+For `failed to find cpuset cgroup (v2)`, inspect
+`/sys/fs/cgroup/cgroup.controllers` inside the k3d server. Containerized Docker needs
+outer-host `cpuset` delegation; daemon readiness does not prove delegation.
+OCE/OpenShell is tested with rootful Podman; see
+[native Linux setup](../deploy/local-kubernetes-development.md#start-the-profile).
 
-Use the host management service's documented delegation procedure. If delegation
-changes fail, check that service before concluding that an outer-host change is
-required. Restore any paused management service and verify its health before
-continuing; do not disable the K3s check. Confirm `cpuset` is available inside the
-k3d server and that K3s starts successfully.
+`mkdir /var/run/docker.sock: permission denied` indicates incorrect k3d socket
+mounting, not necessarily a rootless cgroup limitation. Rebuild with `pnpm cli:build`;
+startup derives the mount from Podman's selected API.
+
+Follow the host management service's delegation procedure. If it fails, check
+that service before changing the outer host. Restore paused services and verify
+their health before continuing. Keep the K3s check enabled.
+Confirm `cpuset` inside k3d and successful K3s startup.
 
 ## Local K3s image lookup fails
 
-The Compose control-plane profile without OpenShell resolves a K3s channel
-through `update.k3s.io` unless `OCC_DEVELOPMENT_K3S_IMAGE` selects an explicit
-image. If that lookup fails or times out, startup stops with `k3d failed` and
-k3d's `error getting K3s version for channel` line. Select an approved
-Kubernetes 1.35-or-newer image through the
+Without `OCC_DEVELOPMENT_K3S_IMAGE`, Compose without OpenShell resolves a K3s
+channel through `update.k3s.io`. Failed lookup stops startup
+with `k3d failed` and `error getting K3s version for channel`. Select an approved
+Kubernetes 1.35-or-newer image through
 [profile settings](../../reference/settings/development.md).
 
-After a failed creation, wait for startup to exit, then run `./scripts/dev-down`
-from the repository root with the same profile and state directory. Retry the
+After failure, wait for startup to exit. Run `./scripts/dev-down` from the
+repository root with the same profile and state directory. Retry
 [Compose profile startup](../deploy/local-kubernetes-development.md#run-occ-in-compose-with-kubernetes-compute)
-with the selected image and wait for the development stack to report ready.
+with the selected image; wait for stack readiness.
+
+## A local Agent image disappears
+
+For `ImagePullBackOff` on imported `localhost/...@sha256:...` images, check node
+events for `ImageGCFailed` or `FreeDiskSpaceFailed`: default 85% disk-usage cleanup
+can delete images.
+
+Rebuild the CLI for 100/99 GC thresholds; disk-pressure eviction remains enabled.
+Preserve existing Installations by correcting kubelet settings and reimporting
+exact images without deleting the database.
 
 ## Local K3s cannot load the legacy iptables nat table
 
