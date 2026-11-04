@@ -15,28 +15,40 @@ export const MODEL_EGRESS_EXCLUDED_IPV4_CIDRS: readonly string[] = Object.freeze
 
 export const MODEL_EGRESS_PORT = 443;
 
-const excluded = new BlockList();
-for (const cidr of MODEL_EGRESS_EXCLUDED_IPV4_CIDRS) {
+const excludedRanges = MODEL_EGRESS_EXCLUDED_IPV4_CIDRS.map((cidr) => {
   const [address, prefix] = cidr.split("/");
-  excluded.addSubnet(address!, Number(prefix), "ipv4");
-}
+  const range = new BlockList();
+  range.addSubnet(address!, Number(prefix), "ipv4");
+  return { cidr, range };
+});
 
 /**
- * Why the Harness model egress policy blocks a normalized HTTPS model endpoint, after `subject`
- * (such as "Codex model endpoint"), or `undefined` (finding 1740). Only a literal address is
- * checked: a host name may resolve anywhere, which admission cannot know. Like the policy, it
- * leaves other special-use IPv4 ranges (loopback, 198.18.0.0/15) alone.
+ * Why the generated Harness model egress policy does not admit a normalized HTTPS model endpoint,
+ * after `subject` (such as "Codex model endpoint"), or `undefined` (findings 1740, 2284). Callers
+ * warn rather than refuse: Kubernetes admits the union of every matching NetworkPolicy, so an
+ * operator's own policy can open the endpoint, and a CNI that does not enforce NetworkPolicy
+ * blocks nothing. Only a literal address is checked: a host name may resolve anywhere, which
+ * admission cannot know. Like the policy, it leaves other special-use IPv4 ranges (loopback,
+ * 198.18.0.0/15) alone. The text names every blocked property in plain words (no commas or
+ * quotes), so the worker log keeps it, and never repeats the URL.
  */
-export function modelEgressRefusal(subject: string, endpoint: string): string | undefined {
+export function modelEgressWarning(subject: string, endpoint: string): string | undefined {
   const url = new URL(endpoint);
+  const blocked: string[] = [];
   if (url.port !== "" && Number(url.port) !== MODEL_EGRESS_PORT) {
-    return `${subject} must use port ${MODEL_EGRESS_PORT}: Harness model egress allows only TCP/${MODEL_EGRESS_PORT}.`;
+    blocked.push(
+      `uses port ${url.port} but Harness model egress allows only TCP/${MODEL_EGRESS_PORT}`,
+    );
   }
   if (url.hostname.startsWith("[")) {
-    return `${subject} must not be an IPv6 address: Harness model egress allows only IPv4.`;
+    blocked.push("is an IPv6 address but Harness model egress allows only IPv4");
+  } else if (isIP(url.hostname) === 4) {
+    const excluded = excludedRanges.find(({ range }) => range.check(url.hostname, "ipv4"));
+    if (excluded !== undefined) {
+      blocked.push(`has an IPv4 host in ${excluded.cidr} which Harness model egress excludes`);
+    }
   }
-  if (isIP(url.hostname) === 4 && excluded.check(url.hostname, "ipv4")) {
-    return `${subject} IPv4 host must be outside ${MODEL_EGRESS_EXCLUDED_IPV4_CIDRS.join(", ")}: Harness model egress excludes them.`;
-  }
-  return undefined;
+  return blocked.length === 0
+    ? undefined
+    : `${subject} ${blocked.join(" and ")}: the generated policy will not admit it unless another NetworkPolicy does.`;
 }

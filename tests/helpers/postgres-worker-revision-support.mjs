@@ -33,15 +33,67 @@ export async function completedPasses(events, work, outcome = "success") {
   return passes;
 }
 
+// Work due-time and lease helpers. Tests move a Work item's due time or lease end instead of
+// waiting out a cadence, backoff or lease; the worker still claims and runs each pass. `match`
+// names the rows exactly as the caller would in SQL, and every filter must hold:
+//   "key"             idempotency_key = key
+//   ["key", ...]      idempotency_key = ANY(keys)
+//   { key, keys, keyLike, namespaceId, revisionId, agentTarget, state, claimToken }
+// An empty filter object, an unknown filter or an undefined value is refused, so a helper never
+// updates more rows than its caller names.
+const workColumns = {
+  key: (n) => `idempotency_key = $${n}`,
+  keys: (n) => `idempotency_key = ANY($${n}::text[])`,
+  keyLike: (n) => `idempotency_key LIKE $${n}`,
+  namespaceId: (n) => `namespace_id = $${n}`,
+  revisionId: (n) => `revision_id = $${n}`,
+  agentTarget: (n) => `agent_target = $${n}`,
+  state: (n) => `state = $${n}`,
+  claimToken: (n) => `claim_token = $${n}::uuid`,
+};
+
+function updateWork(pool, set, match, setParams = []) {
+  const filters =
+    typeof match === "string" ? { key: match } : Array.isArray(match) ? { keys: match } : match;
+  if (filters === null || typeof filters !== "object") {
+    throw new Error(`Unsupported Work match ${match}`);
+  }
+  const params = [...setParams];
+  const where = Object.entries(filters).map(([name, value]) => {
+    const column = workColumns[name];
+    if (column === undefined || value === undefined) {
+      throw new Error(`Unsupported Work match ${name}=${value}`);
+    }
+    params.push(value);
+    return column(params.length);
+  });
+  if (where.length === 0) {
+    throw new Error("A Work match needs at least one filter");
+  }
+  return pool.query(`UPDATE occ.controller_work SET ${set} WHERE ${where.join(" AND ")}`, params);
+}
+
+// Make the matched Work due now.
+export function makeWorkDue(pool, match) {
+  return updateWork(pool, "available_at = clock_timestamp()", match);
+}
+
+// Make the matched Work due `delay` (an interval such as "1 hour") from now.
+export function deferWork(pool, match, delay = "1 hour") {
+  return updateWork(pool, "available_at = clock_timestamp() + $1::interval", match, [delay]);
+}
+
+// End the matched Work's lease a second ago, as if its worker had died, so another worker can
+// reclaim it without waiting out the lease.
+export function expireWorkLease(pool, match) {
+  return updateWork(pool, "lease_expires_at = clock_timestamp() - interval '1 second'", match);
+}
+
 // Make the queued Work whose idempotency key matches `keys` (a LIKE pattern) due now, for
 // tests that wait on a pass but not on its cadence or backoff. Only due times change: claims
 // stay real, and the worker still claims and runs each pass.
 export async function makeQueuedWorkDue(fixture, keys) {
-  await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET available_at = clock_timestamp()
-     WHERE state = 'queued' AND idempotency_key LIKE $1`,
-    [keys],
-  );
+  await makeWorkDue(fixture.observerPool, { state: "queued", keyLike: keys });
 }
 
 // Model the next cleanup interval without waiting an hour for the boundary
@@ -118,11 +170,11 @@ export async function settleRevisionMaintenance(fixture, revision, options = 25_
   await waitFor(
     "no worker pass in flight for the Agent and its maintenance deferred",
     async () => {
-      await fixture.observerPool.query(
-        `UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour'
-         WHERE revision_id = $1 AND state = 'queued' AND idempotency_key LIKE $2`,
-        [revision.id, maintenance],
-      );
+      await deferWork(fixture.observerPool, {
+        revisionId: revision.id,
+        state: "queued",
+        keyLike: maintenance,
+      });
       // One snapshot: a pass that ended before it left only deferred maintenance behind.
       const {
         rows: [{ busy }],
@@ -195,11 +247,7 @@ export function withUnavailableIAM(unavailable) {
 // Only after every fixture worker has stopped: a pass that stop interrupted keeps its claim
 // until the lease ends. Expire this revision's claims instead of waiting out the lease.
 export async function expireStoppedClaims(fixture, revision) {
-  await fixture.observerPool.query(
-    `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
-     WHERE state = 'claimed' AND revision_id = $1`,
-    [revision.id],
-  );
+  await expireWorkLease(fixture.observerPool, { state: "claimed", revisionId: revision.id });
 }
 
 // This boundary Driver supplies synthetic sessions backed by the actual receipt

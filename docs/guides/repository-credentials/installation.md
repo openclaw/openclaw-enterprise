@@ -150,8 +150,8 @@ chart's tenant-worker RoleBinding in each tenant namespace as described in the
 With the feature enabled, that role includes the material Secret operations
 needed by Compute. The Agent never mounts the control socket or App key.
 
-Build the service with `pnpm credentials:build` and `pnpm credentials:image`,
-then publish and select its immutable image reference. Also build the full
+From the repository root, run `pnpm install --frozen-lockfile`. Then build the
+service with `pnpm credentials:build` and `pnpm credentials:image`, then publish and select its immutable image reference. Also build the full
 Agent runtime using the [repository-root Docker context](../repository-credentials.md#prepare-the-platform-installation).
 Add the following to your existing Helm values, replacing image and network
 placeholders before rendering:
@@ -247,10 +247,21 @@ name or the deliberate cutover name.
 
 ## Install and verify
 
-Update the operator-owned startup Secret from the edited Installation YAML. The
-command replaces only the Installation key, which keeps the Secret's
-`openclaw.dev/installation-id` annotation, and does not print the file. Render and review the
-complete chart, then apply the values through the existing release:
+Render the proposed upgrade before changing the startup Secret:
+
+```bash
+helm template oce deploy/helm/openclaw-enterprise --is-upgrade --namespace openclaw-system \
+  -f "$OCC_INPUT_DIRECTORY/values.yaml" > /tmp/oce-rendered.yaml
+```
+
+If rendering fails, stop and correct the values. Review the complete rendered
+manifests before continuing. Upgrade mode includes the installation check and
+requires an explicit repository credential Service name.
+
+After successful rendering and review, update the operator-owned startup Secret
+from the edited Installation YAML and upgrade the existing release. The patch
+replaces only the Installation key, preserves the Secret's
+`openclaw.dev/installation-id` annotation, and does not print the file:
 
 ```bash
 export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' "$OCC_INPUT_DIRECTORY/values.yaml")"
@@ -259,9 +270,7 @@ jq -n --arg key "$OCC_INSTALLATION_KEY" --rawfile document "$OCC_INPUT_DIRECTORY
   '{data: {($key): ($document | @base64)}}' |
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
     patch secret "$OCC_INSTALLATION_SECRET" --type merge --patch-file /dev/stdin
-helm template oce deploy/helm/openclaw-enterprise --namespace openclaw-system \
-  -f "$OCC_INPUT_DIRECTORY/values.yaml" > /tmp/oce-rendered.yaml
-helm upgrade --install oce deploy/helm/openclaw-enterprise \
+helm upgrade oce deploy/helm/openclaw-enterprise \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
   --wait --timeout 5m
@@ -280,9 +289,21 @@ those mounts from the rendered manifests before deploying an Agent.
 A ready sidecar confirms protected startup and the control listener. Continue
 with [Agent creation, deployment and a repository task](../repository-credentials.md#create-and-deploy-an-agent)
 to verify the actual consumer. Registry or certificate mismatch fails closed;
-check IDs, exact paths, DNS SAN and public trust first. A service restart loses
-in-memory sessions. A lost session already delivered to an Agent fails its
-version and queues runtime retirement; worker maintenance does not recreate it.
+check IDs, exact paths, DNS SAN and public trust first.
+
+A worker Pod restart, such as a rollout, upgrade or node drain, stops the
+credential service and its in-memory sessions. On a normal shutdown the service
+records that each session is disposed. At its next maintenance pass, within
+about 30 seconds, the worker opens a new session for each running version and
+delivers new session files. This recreates each dedicated Codex Pod; Git works
+again without a new deployment, and the deployment status does not change. The
+Agent's workspace volume keeps `/home/node/workspace`, generated images and
+Codex thread history. Other Pod-local state is lost: files elsewhere in the home
+directory or in `/tmp`, and running processes. Plan restarts for times when
+Agents are idle.
+
+If the service stops without recording disposal, for example when its container
+is killed, the worker cannot prove the old session ended and does not replace it.
 Inspect retained cleanup obligations before explicitly deploying a new authorized
 version. That deployment does not settle old cleanup or replay repository
 operations. See [restart and cleanup limits](../../reference/repository-credentials.md#repo-driver-contract).
