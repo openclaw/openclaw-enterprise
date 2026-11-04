@@ -59,6 +59,9 @@ function emitPeerDiagnostics(t, fixtureOutput, containerOutput) {
       continue;
     }
     const record = { phase: entry.phase };
+    if (Number.isFinite(entry.elapsedMs) && entry.elapsedMs >= 0) {
+      record.elapsedMs = entry.elapsedMs;
+    }
     if (Number.isSafeInteger(entry.ordinal) && entry.ordinal >= 0) {
       record.ordinal = entry.ordinal;
     }
@@ -328,11 +331,12 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
       failure = error;
     }
     assert.ok(failure, `the container should exit for ${scenario}`);
+    if (scenario === "stale-replacement") {
+      const logs = await runDocker(["logs", containerName]).catch((error) => error);
+      emitPeerDiagnostics(t, commandOutput(failure), commandOutput(logs));
+    }
     if (!(failure.stdout ?? "").includes(`"phase":"${expectedPhase}"`)) {
       const logs = await runDocker(["logs", containerName]).catch((error) => error);
-      if (scenario === "stale-replacement") {
-        emitPeerDiagnostics(t, commandOutput(failure), commandOutput(logs));
-      }
       assert.fail(
         scenario === "stale-replacement"
           ? `Expected ${expectedPhase} was not observed; see allowlisted diagnostics above.`

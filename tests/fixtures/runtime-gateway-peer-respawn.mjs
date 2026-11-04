@@ -25,6 +25,7 @@ const writableInitialConfig = process.env.OCC_TEST_WRITABLE_INITIAL_CONFIG === "
 let initialGateway;
 let replacementPeerReads = 0;
 let stalePhase = "initial";
+let peer2SwitchedAt;
 
 function breadcrumb(phase, value, extra) {
   if (
@@ -45,6 +46,12 @@ function breadcrumb(phase, value, extra) {
     return;
   }
   const record = { event: "stale-peer-diagnostic", phase };
+  if (phase === "peer2-switch") {
+    peer2SwitchedAt = performance.now();
+  }
+  if (peer2SwitchedAt !== undefined) {
+    record.elapsedMs = Math.max(0, performance.now() - peer2SwitchedAt);
+  }
   if (phase === "replacement-request" || phase === "deadline") {
     record.ordinal = value;
   }
