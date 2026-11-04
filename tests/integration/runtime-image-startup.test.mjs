@@ -1133,7 +1133,15 @@ const results = await Promise.all(JSON.parse(process.argv[1]).map(async ({ appSe
   assert.deepEqual(await permissionFields(local), [{ sandbox: "danger-full-access" }, "dangerFullAccess"]);
   const restricted = { ...runtime, sandbox: "workspace-write" };
   assert.deepEqual(await permissionFields(restricted), [{ sandbox: "workspace-write" }, "workspaceWrite"]);
-  assert.deepEqual(await permissionFields({ ...runtime, networkProxy: {} }), [{}, undefined]);
+  const proxied = resolveCodexAppServerRuntimeOptions({
+    pluginConfig: { appServer: { ...appServer, networkProxy: {
+      enabled: true, baseProfile: "workspace", mode: "limited", domains: {}, unixSockets: {},
+    } } }, modelProvider, model: "gpt-6-astra", config, env: providerEnv, requirementsToml: null,
+  });
+  assert.ok(proxied.networkProxy?.profileName);
+  assert.deepEqual(await permissionFields(proxied), ${historicalCodex}
+    ? [{}, undefined]
+    : [{ permissions: proxied.networkProxy.profileName }, proxied.networkProxy.profileName]);
   assert.equal((await permissionFields(runtime, { type: "readOnly" }))[1], "readOnly");
   return { sandbox: runtime.sandbox, approvalsReviewer: runtime.approvalsReviewer };
 }));
@@ -1149,6 +1157,12 @@ try {
   assert.equal(control.sandbox.type, "readOnly");
   await assert.rejects(client.request("thread/start", { ...request, permissions: profile }),
     /thread.start: Codex did not grant the requested :danger-full-access profile/);
+  if (!${historicalCodex}) {
+    // Managed read-only requirements also refuse a workspace profile. Check the native
+    // response before exposing that silently substituted thread to the Gateway caller.
+    await assert.rejects(client.request("thread/start", { ...request, permissions: ":workspace" }),
+      /thread.start: Codex did not grant the requested permission profile/);
+  }
 } finally {
   client.close();
 }
@@ -1821,7 +1835,7 @@ if (${historicalCodex}) {
 assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804");
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
-  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc",
+  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "45770871cbbbd38cac8eb04cbe273e5d0af4a2930fd883d44662aee7c5803637",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
   "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
   "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
@@ -2032,7 +2046,7 @@ test(
   imageTestOptions,
   async () => {
     // Unlike command/exec qualification, this starts with the actual OCE native
-    // config and supplies the broker profile only through thread/start.config.
+    // config and supplies the broker profile through the packaged thread/turn builders.
     // The provider chooses one command; the real Codex owns its execution and sandbox.
     // This does not start the complete Gateway or prove model behavior.
     const runtime = {
@@ -2143,7 +2157,6 @@ process.exit(Object.values(report).every(Boolean) ? 0 : 74);
       const threadConfig = await bundled("thread-requests", "buildCodexRuntimeThreadConfig");
       const buildTurnStartParams = await bundled("dynamic-tools", "buildTurnStartParams");
       assert.ok(options.networkProxy?.configPatch);
-      assert.deepEqual(threadPermissions(options), {});
       let shellCalls = 0;
       let providerFailure;
       const provider = createServer(async (request, response) => {

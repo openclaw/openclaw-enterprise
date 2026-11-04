@@ -250,7 +250,10 @@ App keys, JWTs, installation tokens and the control socket never enter consumer 
 The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines Codex plugin and repository-bound filesystem and proxy access, explicit denies,
 and dedicated/embedded eligibility. Unbound policy, broker authorization and TLS
-verification stay in force.
+verification stay in force. The OCE OpenClaw bridge selects the configured network
+profile explicitly for native thread and turn requests. Before returning a started,
+resumed, or forked thread, it checks that Codex reports the requested profile;
+a missing or different profile stops the request before a model turn.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
