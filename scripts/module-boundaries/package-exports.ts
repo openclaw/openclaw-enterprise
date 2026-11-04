@@ -2,11 +2,11 @@
 // parent argument still requires an experimental flag. This bounded compatibility
 // layer selects workspace ESM export URLs only; it does not resolve files.
 // https://nodejs.org/api/esm.html#resolution-algorithm-specification
-export function selectPackageExport(exports, subpath, conditions) {
-  function invalid() {
+export function selectPackageExport(exports: unknown, subpath: string, conditions: ReadonlySet<string>) {
+  function invalid(): never {
     throw new Error("Invalid or unsupported package export target.");
   }
-  function target(value, wildcard) {
+  function target(value: unknown, wildcard?: string): string | null | undefined {
     if (value === null) {
       return null;
     }
@@ -36,8 +36,9 @@ export function selectPackageExport(exports, subpath, conditions) {
       return selected;
     }
     if (Array.isArray(value)) {
-      let lastError;
-      for (const item of value) {
+      const items: unknown[] = value;
+      let lastError: unknown;
+      for (const item of items) {
         try {
           const result = target(item, wildcard);
           if (result !== undefined && result !== null) {
@@ -79,22 +80,23 @@ export function selectPackageExport(exports, subpath, conditions) {
     }
     if (paths.length) {
       if (Object.hasOwn(exports, subpath) && !subpath.includes("*") && !subpath.endsWith("/")) {
-        return target(exports[subpath]);
+        const value: unknown = Reflect.get(exports, subpath);
+        return target(value);
       }
       const patterns = paths
         .filter((key) => key.includes("*") && key.indexOf("*") === key.lastIndexOf("*"))
         .sort((a, b) => b.indexOf("*") - a.indexOf("*") || b.length - a.length);
       for (const pattern of patterns) {
-        const [prefix, suffix] = pattern.split("*");
+        const star = pattern.indexOf("*");
+        const prefix = pattern.slice(0, star);
+        const suffix = pattern.slice(star + 1);
         if (
           subpath.startsWith(prefix) &&
           subpath.endsWith(suffix) &&
           subpath.length >= pattern.length
         ) {
-          return target(
-            exports[pattern],
-            subpath.slice(prefix.length, subpath.length - suffix.length),
-          );
+          const value: unknown = Reflect.get(exports, pattern);
+          return target(value, subpath.slice(prefix.length, subpath.length - suffix.length));
         }
       }
       return undefined;

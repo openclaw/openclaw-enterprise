@@ -3,7 +3,7 @@ import { createRequire, isBuiltin } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript-compiler-api";
-import { selectPackageExport } from "./package-exports.mjs";
+import { selectPackageExport } from "./package-exports.ts";
 import { slash } from "./source-path.ts";
 import { sourceExtension } from "./workspace.mjs";
 
