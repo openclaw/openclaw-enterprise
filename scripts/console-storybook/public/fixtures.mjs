@@ -1,3 +1,5 @@
+import { createConfigurationStore } from "./configuration-store.mts";
+import { createAgentRoutes } from "./create-agent-routes.mts";
 import { installationDriverConfigurations, installationFixture } from "./installation-fixture.mts";
 import { configurationValues } from "./configuration-fixture.mts";
 import { serveChannelDirectory } from "./channel-directory-fixture.mts";
@@ -6,11 +8,7 @@ import { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
-import {
-  candidateDeploymentError,
-  deploymentFailureMessages,
-  initialDeploymentProgress,
-} from "./deployment-fixture.mts";
+import { candidateDeploymentError, initialDeploymentProgress } from "./deployment-fixture.mts";
 import {
   createFixtureFetch,
   fixtureError as error,
@@ -27,25 +25,6 @@ const hiddenRevisionId = "rev_00000000-0000-4000-8000-000000000008";
 const redeployRevisionId = "rev_00000000-0000-4000-8000-000000000018";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
-
-// Another browser's save in configurationChangedElsewhere: objects merge, other values replace.
-function mergeElsewhere(target, changes) {
-  for (const [key, value] of Object.entries(changes)) {
-    const current = target[key];
-    if (
-      value !== null &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      current !== null &&
-      typeof current === "object" &&
-      !Array.isArray(current)
-    ) {
-      mergeElsewhere(current, value);
-    } else {
-      target[key] = structuredClone(value);
-    }
-  }
-}
 
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
@@ -72,14 +51,11 @@ export function installFixture(scenario, evidence) {
   let serial = 100;
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
-  const configs = new Map();
-  // Reads of each Configuration before another browser's save (configurationChangedElsewhere).
-  const configurationReads = new Map();
-  let configurationChangedElsewhere = false;
+  const configurationStore = createConfigurationStore(scenario, namespaceId, createdAt, nextId);
+  const { configs } = configurationStore;
   const agents = new Map();
   const revisions = new Map();
   const deployments = new Map();
-  const provisioning = new Map();
   const credentials = new Map();
   const credentialSources = new Map();
   let credentialRegistrationFailed = false;
@@ -686,6 +662,19 @@ export function installFixture(scenario, evidence) {
           : "SANDBOX_POLICY_CEILING_CHANGED",
     };
   }
+  const serveCreate = createAgentRoutes(scenario, {
+    namespaceId,
+    createdAt,
+    nextId,
+    configs,
+    deployments,
+    credentials,
+    files,
+    stagedWorkspaceFiles,
+    saveAgent: (saved) => agents.set(saved.id, saved),
+    snapshot,
+    saveRevision: (revision) => revisions.set(revision.id, revision),
+  });
   const answer = async (url, method, body) => {
     const path = url.pathname;
     if (path === "/api/auth/providers" && method === "GET") {
@@ -1005,41 +994,9 @@ export function installFixture(scenario, evidence) {
           return new Response(null, { status: 204 });
         }
       }
-      if (resource === "configurations" && method === "POST") {
-        const saved = {
-          ...body,
-          id: nextId("cfg"),
-          namespaceId,
-          generation: 1,
-          createdAt,
-        };
-        configs.set(saved.id, saved);
-        return response(saved, 201);
-      }
-      if (resource.startsWith("configurations/")) {
-        const saved = configs.get(resource.split("/")[1]);
-        if (!saved) {
-          return error(404);
-        }
-        if (method === "GET") {
-          // Another browser saves this Configuration once the page has read it `afterReads` times
-          // (configurationChangedElsewhere; 1 by default), so the next save preflight finds a
-          // newer generation.
-          if (scenario.configurationChangedElsewhere && !configurationChangedElsewhere) {
-            const reads = configurationReads.get(saved.id) ?? 0;
-            if (reads >= (scenario.configurationChangedElsewhere.afterReads ?? 1)) {
-              configurationChangedElsewhere = true;
-              saved.generation += 1;
-              mergeElsewhere(saved.values, scenario.configurationChangedElsewhere.values ?? {});
-            }
-            configurationReads.set(saved.id, reads + 1);
-          }
-          return response(saved);
-        }
-        if (method === "PATCH") {
-          Object.assign(saved, body, { generation: saved.generation + 1 });
-          return response({ ...saved, id: scenario.configurationSaveResponseId ?? saved.id });
-        }
+      const configurationReply = configurationStore.serve(resource, method, body);
+      if (configurationReply !== undefined) {
+        return configurationReply;
       }
       if (resource === "permissions" && method === "GET") {
         return response({
@@ -1077,243 +1034,10 @@ export function installFixture(scenario, evidence) {
           }
           return response([...agents.values()]);
         }
-        if (method === "POST") {
-          const {
-            initialWorkspaceFiles = {},
-            workspaceDefaultsId: _workspaceDefaultsId,
-            ...agentBody
-          } = body;
-          const saved = {
-            ...agentBody,
-            id: nextId("agt"),
-            namespaceId,
-            status: "active",
-            desiredRuntimeState: "stopped",
-            createdAt,
-            activeRevisionId: null,
-            servicePrincipalId: "identity_demo_created",
-          };
-          agents.set(saved.id, saved);
-          stagedWorkspaceFiles.set(saved.id, initialWorkspaceFiles);
-          credentials.set(saved.id, { transportConfigured: false });
-          return response(saved, 201);
-        }
       }
-      // Create Agent's preflight accepts unless a scenario rule refuses it.
-      if (resource === "agents/validate" && method === "POST") {
-        return new Response(null, { status: 204 });
-      }
-      if (resource === "agents/provision" && method === "POST") {
-        const {
-          configuration,
-          initialWorkspaceFiles = {},
-          workspaceDefaultsId: _workspaceDefaultsId,
-          requestId,
-          ...agentBody
-        } = body;
-        const workId = nextId("work");
-        const savedConfig = {
-          ...configuration,
-          id: nextId("cfg"),
-          namespaceId,
-          generation: configuration?.secretBindings ? 2 : 1,
-          createdAt,
-        };
-        configs.set(savedConfig.id, savedConfig);
-        const saved = {
-          ...agentBody,
-          id: nextId("agt"),
-          namespaceId,
-          configurationId: savedConfig.id,
-          status: "active",
-          desiredRuntimeState: "running",
-          createdAt,
-          activeRevisionId: null,
-          servicePrincipalId: "identity_demo_provisioned",
-          ...(agentBody.harnessAuth?.method === "credential_source"
-            ? { credentialSources: [{ sourceId: agentBody.harnessAuth.sourceId }] }
-            : {}),
-        };
-        agents.set(saved.id, saved);
-        credentials.set(saved.id, { transportConfigured: true });
-        for (const [filename, content] of Object.entries(initialWorkspaceFiles)) {
-          files.set(`${saved.id}/${filename}`, content);
-        }
-        // A Stop before the first revision cancels provisioning; the stopped Agent keeps its name.
-        const revision = scenario.provisioningCancelledByStop
-          ? null
-          : snapshot(saved, nextId("rev"), 1);
-        if (scenario.provisionedDeploymentStopped || scenario.provisioningCancelledByStop) {
-          saved.desiredRuntimeState = "stopped";
-        }
-        if (revision) {
-          revisions.set(revision.id, revision);
-          deployments.set(revision.id, {
-            deploymentId: revision.id,
-            namespaceId,
-            agentId: saved.id,
-            status: scenario.provisionedDeploymentStatus ?? "queued",
-            cleanup: null,
-            progress:
-              scenario.provisionedDeploymentAttempt === undefined
-                ? initialDeploymentProgress(
-                    scenario.provisionedDeploymentStatus ?? "queued",
-                    createdAt,
-                  )
-                : {
-                    lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
-                    nextAttemptAt: createdAt,
-                  },
-            reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
-            error:
-              scenario.provisionedDeploymentStatus !== "failed"
-                ? null
-                : scenario.provisionedDeploymentStopped
-                  ? {
-                      code: "REVISION_STOPPED",
-                      message: deploymentFailureMessages.stopped,
-                    }
-                  : (scenario.provisionedDeploymentError ?? {
-                      code: "DEPENDENCY_UNAVAILABLE",
-                      message: deploymentFailureMessages.dependencyUnavailable,
-                    }),
-            warnings: [],
-          });
-        }
-        provisioning.set(saved.id, {
-          requestId,
-          workId,
-          reads: 0,
-          status: scenario.provisioningStatus ?? "queued",
-          agentId: saved.id,
-          configurationId: savedConfig.id,
-          revisionId: revision?.id,
-          url: `/namespaces/${namespaceId}/agents/provision/${workId}`,
-        });
-        provisioning.set(workId, provisioning.get(saved.id));
-        return response(
-          {
-            provisioning: {
-              requestId,
-              workId,
-              status: scenario.provisioningStatus ?? "queued",
-              phase: "admitted",
-              attemptCount: 1,
-              updatedAt: createdAt,
-              url: `/namespaces/${namespaceId}/agents/provision/${workId}`,
-            },
-          },
-          202,
-        );
-      }
-      const provisioningMatch = resource.match(/^agents\/provision\/([^/]+)(\/retry)?$/);
-      if (provisioningMatch) {
-        const [, workId, retrySuffix] = provisioningMatch;
-        const current = provisioning.get(workId);
-        if (!current) {
-          return error(404);
-        }
-        if (retrySuffix === "/retry" && method === "POST") {
-          current.status = "queued";
-          current.reads = 0;
-          return response(
-            {
-              provisioning: {
-                requestId: current.requestId,
-                workId: current.workId,
-                status: current.status,
-                phase: "admitted",
-                attemptCount: 2,
-                updatedAt: createdAt,
-                url: current.url,
-              },
-            },
-            202,
-          );
-        }
-        if (retrySuffix === undefined && method === "GET") {
-          current.reads += 1;
-          if (current.status !== "failed") {
-            current.status =
-              scenario.provisionedDeploymentStatus === "running"
-                ? "running"
-                : current.reads > 1
-                  ? scenario.provisionedDeploymentStatus === "failed" ||
-                    scenario.provisioningCancelledByStop
-                    ? "failed"
-                    : "succeeded"
-                  : "running";
-          }
-          return response({
-            provisioning: {
-              requestId: current.requestId,
-              workId: current.workId,
-              status: current.status,
-              phase: current.reads > 1 ? "handoff" : "configuration",
-              attemptCount: 1,
-              updatedAt: createdAt,
-              url: current.url,
-              ...(current.status === "failed"
-                ? {
-                    error: scenario.provisioningCancelledByStop
-                      ? {
-                          code: "PROVISIONING_CANCELLED",
-                          message: "Provisioning was cancelled because the Agent was stopped.",
-                        }
-                      : scenario.provisionedDeploymentStopped
-                        ? {
-                            code: "REVISION_STOPPED",
-                            message: "The Agent was stopped before its first deployment finished.",
-                          }
-                        : (scenario.provisionedDeploymentError ?? {
-                            code:
-                              scenario.provisionedDeploymentStatus === "failed"
-                                ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
-                                : "PROVISIONING_FAILED",
-                            message:
-                              scenario.provisionedDeploymentStatus === "failed"
-                                ? deploymentFailureMessages.bootstrap
-                                : "The worker could not finish provisioning.",
-                          }),
-                  }
-                : {}),
-              ...(current.status === "succeeded" || current.reads > 1
-                ? {
-                    configurationId: current.configurationId,
-                    agentId: current.agentId,
-                    revisionId: current.revisionId,
-                  }
-                : {}),
-              // Corrupt only the outgoing terminal reply; stored deployment details stay valid.
-              ...(current.status === "failed" &&
-              scenario.malformedProvisioningReply === "revision-id"
-                ? { revisionId: 17 }
-                : {}),
-              ...(current.status === "failed" &&
-              scenario.malformedProvisioningReply === "error-message"
-                ? {
-                    error: {
-                      code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
-                      message: { detail: "Unreadable provisioning message" },
-                    },
-                  }
-                : {}),
-              // After handoff the job names its first deployment's wait, as it does for a
-              // reader of that deployment (#2744).
-              ...(scenario.provisioningNamesDeploymentWait &&
-              current.reads > 1 &&
-              (current.status === "queued" || current.status === "running")
-                ? {
-                    progress: {
-                      phase: "deployment",
-                      lastAttempt:
-                        deployments.get(current.revisionId)?.progress?.lastAttempt ?? null,
-                    },
-                  }
-                : {}),
-            },
-          });
-        }
+      const createReply = serveCreate(resource, method, body);
+      if (createReply !== undefined) {
+        return createReply;
       }
       const agentMatch = resource.match(/^agents\/([^/]+)(.*)$/);
       if (agentMatch) {
