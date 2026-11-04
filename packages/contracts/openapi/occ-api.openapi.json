@@ -827,169 +827,151 @@
       "def-14": {
         "additionalProperties": false,
         "properties": {
+          "authorizationParameters": {
+            "additionalProperties": { "maxLength": 1024, "type": "string" },
+            "maxProperties": 32,
+            "type": "object"
+          },
+          "authorizationUrl": {
+            "maxLength": 2048,
+            "pattern": "^https://[^\\s/]",
+            "type": "string"
+          },
           "createdAt": { "type": "string" },
-          "current": {
+          "issuer": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
+          "mcp": {
             "additionalProperties": false,
             "properties": {
-              "authorizationParameters": {
-                "additionalProperties": { "maxLength": 1024, "type": "string" },
-                "maxProperties": 32,
-                "type": "object"
-              },
+              "resource": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
+              "serverUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" }
+            },
+            "required": ["serverUrl", "resource"],
+            "type": "object"
+          },
+          "mode": {
+            "anyOf": [
+              { "const": "manual", "type": "string" },
+              { "const": "mcp_discovery", "type": "string" }
+            ]
+          },
+          "oauthClientId": {
+            "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "observed": {
+            "additionalProperties": false,
+            "properties": {
               "authorizationUrl": {
                 "maxLength": 2048,
                 "pattern": "^https://[^\\s/]",
                 "type": "string"
               },
-              "createdAt": { "type": "string" },
               "issuer": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
-              "mcp": {
-                "additionalProperties": false,
-                "properties": {
-                  "resource": {
-                    "maxLength": 2048,
-                    "pattern": "^https://[^\\s/]",
-                    "type": "string"
-                  },
-                  "serverUrl": {
-                    "maxLength": 2048,
-                    "pattern": "^https://[^\\s/]",
-                    "type": "string"
-                  }
-                },
-                "required": ["serverUrl", "resource"],
-                "type": "object"
+              "issuers": {
+                "items": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
+                "type": "array"
               },
-              "mode": {
-                "anyOf": [
-                  { "const": "manual", "type": "string" },
-                  { "const": "mcp_discovery", "type": "string" }
-                ]
-              },
-              "oauthClientId": {
-                "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                "type": "string"
-              },
-              "observed": {
-                "additionalProperties": false,
-                "properties": {
-                  "authorizationUrl": {
-                    "maxLength": 2048,
-                    "pattern": "^https://[^\\s/]",
-                    "type": "string"
-                  },
-                  "issuer": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
-                  "issuers": {
-                    "items": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
-                    "type": "array"
-                  },
-                  "registrationUrl": {
-                    "maxLength": 2048,
-                    "pattern": "^https://[^\\s/]",
-                    "type": "string"
-                  },
-                  "requestedScopes": {
-                    "items": {
-                      "maxLength": 512,
-                      "minLength": 1,
-                      "pattern": "^[!#-\\[\\]-~]+$",
-                      "type": "string"
-                    },
-                    "type": "array"
-                  },
-                  "resource": {
-                    "maxLength": 2048,
-                    "pattern": "^https://[^\\s/]",
-                    "type": "string"
-                  },
-                  "resourceScopes": {
-                    "items": {
-                      "maxLength": 512,
-                      "minLength": 1,
-                      "pattern": "^[!#-\\[\\]-~]+$",
-                      "type": "string"
-                    },
-                    "type": "array"
-                  },
-                  "revocationUrl": {
-                    "maxLength": 2048,
-                    "pattern": "^https://[^\\s/]",
-                    "type": "string"
-                  },
-                  "serverUrl": {
-                    "maxLength": 2048,
-                    "pattern": "^https://[^\\s/]",
-                    "type": "string"
-                  },
-                  "supportedScopes": {
-                    "items": {
-                      "maxLength": 512,
-                      "minLength": 1,
-                      "pattern": "^[!#-\\[\\]-~]+$",
-                      "type": "string"
-                    },
-                    "type": "array"
-                  },
-                  "tokenEndpointAuthMethods": { "items": { "type": "string" }, "type": "array" },
-                  "tokenUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" }
-                },
-                "required": ["serverUrl", "resource", "issuers", "requestedScopes"],
-                "type": "object"
-              },
-              "recipient": {
-                "additionalProperties": false,
-                "properties": {
-                  "access": {
-                    "anyOf": [
-                      { "const": "read-only", "type": "string" },
-                      { "const": "full", "type": "string" }
-                    ]
-                  },
-                  "host": { "type": "string" },
-                  "path": { "type": "string" },
-                  "port": { "type": "integer" }
-                },
-                "required": ["host", "port", "path", "access"],
-                "type": "object"
-              },
-              "revocationUrl": {
+              "registrationUrl": {
                 "maxLength": 2048,
                 "pattern": "^https://[^\\s/]",
                 "type": "string"
               },
-              "scopes": {
+              "requestedScopes": {
                 "items": {
                   "maxLength": 512,
                   "minLength": 1,
                   "pattern": "^[!#-\\[\\]-~]+$",
                   "type": "string"
                 },
-                "maxItems": 32,
-                "minItems": 1,
-                "type": "array",
-                "uniqueItems": true
+                "type": "array"
               },
-              "templateId": {
-                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "resource": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
+              "resourceScopes": {
+                "items": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "pattern": "^[!#-\\[\\]-~]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "revocationUrl": {
+                "maxLength": 2048,
+                "pattern": "^https://[^\\s/]",
                 "type": "string"
               },
-              "tokenUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
-              "version": { "minimum": 1, "type": "integer" }
+              "serverUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
+              "supportedScopes": {
+                "items": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "pattern": "^[!#-\\[\\]-~]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tokenEndpointAuthMethods": { "items": { "type": "string" }, "type": "array" },
+              "tokenUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" }
             },
-            "required": [
-              "templateId",
-              "version",
-              "createdAt",
-              "mode",
-              "issuer",
-              "authorizationUrl",
-              "tokenUrl",
-              "recipient",
-              "scopes",
-              "authorizationParameters"
-            ],
+            "required": ["serverUrl", "resource", "issuers", "requestedScopes"],
             "type": "object"
           },
+          "recipient": {
+            "additionalProperties": false,
+            "properties": {
+              "access": {
+                "anyOf": [
+                  { "const": "read-only", "type": "string" },
+                  { "const": "full", "type": "string" }
+                ]
+              },
+              "host": { "type": "string" },
+              "path": { "type": "string" },
+              "port": { "type": "integer" }
+            },
+            "required": ["host", "port", "path", "access"],
+            "type": "object"
+          },
+          "revocationUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
+          "scopes": {
+            "items": {
+              "maxLength": 512,
+              "minLength": 1,
+              "pattern": "^[!#-\\[\\]-~]+$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "templateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "tokenUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
+          "version": { "minimum": 1, "type": "integer" }
+        },
+        "required": [
+          "templateId",
+          "version",
+          "createdAt",
+          "mode",
+          "issuer",
+          "authorizationUrl",
+          "tokenUrl",
+          "recipient",
+          "scopes",
+          "authorizationParameters"
+        ],
+        "title": "OAuth connection template version",
+        "type": "object"
+      },
+      "def-15": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": { "type": "string" },
+          "current": { "$ref": "#/components/schemas/def-14" },
           "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
           "id": {
             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -12410,7 +12392,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "items": { "$ref": "#/components/schemas/def-14" }, "type": "array" },
+                    "data": { "items": { "$ref": "#/components/schemas/def-15" }, "type": "array" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -12695,7 +12677,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "$ref": "#/components/schemas/def-14" },
+                    "data": { "$ref": "#/components/schemas/def-15" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -13213,7 +13195,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "$ref": "#/components/schemas/def-14" },
+                    "data": { "$ref": "#/components/schemas/def-15" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -13499,7 +13481,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "$ref": "#/components/schemas/def-14" },
+                    "data": { "$ref": "#/components/schemas/def-15" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -34980,7 +34962,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": { "items": { "$ref": "#/components/schemas/def-14" }, "type": "array" },
+                    "data": { "items": { "$ref": "#/components/schemas/def-15" }, "type": "array" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -43145,35 +43127,6 @@
             },
             "description": "The requested platform resource was not found."
           },
-          "409": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The requested operation conflicts with the current resource state."
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request body exceeds the permitted size."
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request content type is not supported."
-          },
           "500": {
             "content": {
               "application/json": {
@@ -43515,26 +43468,6 @@
               }
             },
             "description": "The requested operation conflicts with the current resource state."
-          },
-          "413": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request body exceeds the permitted size."
-          },
-          "415": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The request content type is not supported."
           },
           "500": {
             "content": {

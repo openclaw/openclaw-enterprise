@@ -149,14 +149,14 @@ Stores the scope and current version of each OAuth connection template.
 - `current_version`
 - `created_at`
 
-### `connection_template_versions`
+### `oauth_connection_template_versions`
 
 Pins the approved OAuth configuration and access to its API recipient. A discovered version also retains the MCP metadata observed when the administrator saved it.
 
 - `template_id`, `version`, `oauth_client_id`, `mode`
 - `issuer`, `authorization_url`, `token_url`, `revocation_url`
 - `scopes`, `authorization_parameters`, `observed_metadata`
-- `endpoint_host`, `endpoint_port`, `endpoint_path`, `endpoint_access`
+- `recipient_host`, `recipient_port`, `recipient_path`, `recipient_access`
 - `created_at`
 
 ### `oauth_clients`

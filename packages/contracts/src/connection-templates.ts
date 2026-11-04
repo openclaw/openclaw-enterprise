@@ -19,6 +19,7 @@ export interface OAuthClient {
   readonly clientId: string;
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
   readonly secretRegistrationId?: string;
+  /** Installation Driver that owns this client registration and its private material. */
   readonly credentialRefreshDriverId: string;
   readonly createdAt: string;
 }
@@ -53,7 +54,7 @@ export interface ConnectionTemplateValues {
   readonly observed?: McpAuthorizationMetadata;
 }
 
-export interface ConnectionTemplateVersion extends ConnectionTemplateValues {
+export interface OAuthConnectionTemplateVersion extends ConnectionTemplateValues {
   readonly templateId: string;
   readonly version: number;
   readonly createdAt: string;
@@ -63,7 +64,7 @@ export interface ConnectionTemplate {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
-  readonly current: Readonly<ConnectionTemplateVersion>;
+  readonly current: Readonly<OAuthConnectionTemplateVersion>;
   readonly createdAt: string;
 }
 
@@ -195,7 +196,7 @@ export interface ConnectionSession {
   readonly credentialSourceId: string;
   /** Server-private PKCE state, erased when the callback consumes the attempt. */
   readonly privateState: string;
-  readonly selectedScopes:readonly string[];
+  readonly selectedScopes: readonly string[];
   readonly issuerRequired: boolean;
   readonly sessionId: string;
   readonly redirectUri: string;

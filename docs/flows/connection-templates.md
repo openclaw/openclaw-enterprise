@@ -10,6 +10,8 @@ See [OAuth connection templates and clients](../reference/connection-templates.m
 
 ## Consent and token custody
 
+The callback consumes the attempt once. OCC verifies the signed-in account and session after any database wait and before code exchange. It checks the session again before storing the grant or granting its owner access.
+
 OCC checks the caller's right to create a credential in the destination
 Namespace and pins the selected template version. It creates a pending source
 and saves the PKCE verifier in a private database row bound to that browser

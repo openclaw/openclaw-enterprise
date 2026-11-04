@@ -55,7 +55,7 @@ function sessionFromRow(row: Row): Readonly<ConnectionSession> {
     namespaceId: text(row, "namespace_id"),
     credentialSourceId: text(row, "credential_source_id"),
     privateState: text(row, "private_state"),
-    selectedScopes:row.selected_scopes as string[],
+    selectedScopes: row.selected_scopes as string[],
     issuerRequired: row.issuer_required === true,
     sessionId: text(row, "session_id"),
     redirectUri: text(row, "redirect_uri"),

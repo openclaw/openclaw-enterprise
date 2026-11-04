@@ -158,7 +158,7 @@ import type {
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialProviderDefinition,
-  ConnectionTemplateVersion,
+  OAuthConnectionTemplateVersion,
   SavedConnection,
   OAuthConnectionGrant,
   OAuthClient,
@@ -1070,7 +1070,7 @@ export interface AgentCredentialSourceInput {
 }
 
 export interface StartNamespaceConnectionInput {
-  readonly selectedScopes?:readonly string[];
+  readonly selectedScopes?: readonly string[];
   readonly sessionId: string;
   readonly namespaceId: string;
   readonly connectionTemplateId: string;
@@ -1296,23 +1296,39 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   provisioning_request: "provisioningRequests",
 });
 
-function connectionConsentScopes(version:Readonly<ConnectionTemplateVersion>,selection?:readonly string[]):readonly string[]{
-  if(version.mode==="manual"){
-    if(selection!==undefined){throw new ConnectionTemplateValidationError("selectedScopes","This connection template uses fixed scopes.");}
+function connectionConsentScopes(
+  version: Readonly<OAuthConnectionTemplateVersion>,
+  selection?: readonly string[],
+): readonly string[] {
+  if (version.mode === "manual") {
+    if (selection !== undefined) {
+      throw new ConnectionTemplateValidationError(
+        "selectedScopes",
+        "This connection template uses fixed scopes.",
+      );
+    }
     return version.scopes;
   }
-  const required=version.observed?.requestedScopes ?? [];
-  if(!selection?.length || new Set(selection).size!==selection.length || selection.some(scope=>!version.scopes.includes(scope)) || required.some(scope=>!selection.includes(scope))){
-    throw new ConnectionTemplateValidationError("selectedScopes","Choose approved scopes for this MCP account and include the scopes required by the resource.");
+  const required = version.observed?.requestedScopes ?? [];
+  if (
+    !selection?.length ||
+    new Set(selection).size !== selection.length ||
+    selection.some((scope) => !version.scopes.includes(scope)) ||
+    required.some((scope) => !selection.includes(scope))
+  ) {
+    throw new ConnectionTemplateValidationError(
+      "selectedScopes",
+      "Choose approved scopes for this MCP account and include the scopes required by the resource.",
+    );
   }
   return selection;
 }
 
 function browserAuthorizationRequest(
-  version: Readonly<ConnectionTemplateVersion>,
+  version: Readonly<OAuthConnectionTemplateVersion>,
   client: Readonly<OAuthClient>,
   redirectUri: string,
-  selectedScopes:readonly string[],
+  selectedScopes: readonly string[],
 ) {
   return {
     oauthClientId: client.id,
@@ -1325,7 +1341,7 @@ function browserAuthorizationRequest(
     authorizationUrl: version.authorizationUrl,
     tokenUrl: version.tokenUrl,
     ...(version.mcp ? { resource: version.mcp.resource } : {}),
-    scopes:selectedScopes,
+    scopes: selectedScopes,
     authorizationParameters: version.authorizationParameters,
     redirectUri,
   };
@@ -4548,7 +4564,7 @@ export class OpenClawController {
   private async connectionClientForVersion(
     view: PlatformReadView,
     namespaceId: string,
-    version: ConnectionTemplateVersion,
+    version: OAuthConnectionTemplateVersion,
     refreshDriverId: string,
   ) {
     const client = version.oauthClientId
@@ -4559,7 +4575,7 @@ export class OpenClawController {
       (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
       client.issuer !== version.issuer ||
       client.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl!==undefined && client.revocationUrl!==version.revocationUrl) ||
+      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl) ||
       client.credentialRefreshDriverId !== refreshDriverId
     ) {
       throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
@@ -4595,7 +4611,7 @@ export class OpenClawController {
         throw new ScopeViolationError("The connection template does not exist.");
       }
       const version = template.current;
-      const selectedScopes=connectionConsentScopes(version,input.selectedScopes);
+      const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
       const client = await this.connectionClientForVersion(state, namespaceId, version, refresh.id);
       const createdAt = this.timestamp();
       const expiresAt = new Date(Date.parse(createdAt) + CONNECTION_SESSION_TTL_MS).toISOString();
@@ -4621,7 +4637,7 @@ export class OpenClawController {
       const started = await this.credentialGatewayOperation(() =>
         refresh.startBrowserAuthorization!(
           { namespace, source, signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) },
-          browserAuthorizationRequest(version,client,input.redirectUri,selectedScopes),
+          browserAuthorizationRequest(version, client, input.redirectUri, selectedScopes),
         ),
       );
       await state.savedConnections.createConnectionSession({
@@ -4668,6 +4684,7 @@ export class OpenClawController {
     principalId: string,
     input: CompleteNamespaceConnectionInput,
     audit?: (connection: Readonly<SavedConnection>) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ): Promise<Readonly<SavedConnection>> {
     if (!isNonEmptyString(input.state)) {
       throw new BrowserAuthorizationError("missing_state", "retry");
@@ -4705,7 +4722,7 @@ export class OpenClawController {
       await this.authorizeConnectionCreation(principalId, namespaceId);
       await this.assertConnectionTemplateScope(session.connectionTemplateId, namespaceId);
       const version = await this.read((state) =>
-        state.connectionTemplates.findConnectionTemplateVersion(
+        state.connectionTemplates.findOAuthConnectionTemplateVersion(
           session.connectionTemplateId,
           session.connectionTemplateVersion,
         ),
@@ -4731,7 +4748,7 @@ export class OpenClawController {
         throw new BrowserAuthorizationError("issuer_required", "fix_configuration");
       }
       const refresh = this.browserConnectionDriver();
-      const { namespace, source, client } = await this.read(async (view) => {
+      const { namespace, source, client } = await this.mutate(async (view) => {
         const namespace = await this.exactNamespace(view, namespaceId);
         const source = await view.credentialSources.findCredentialSource(
           namespaceId,
@@ -4750,6 +4767,7 @@ export class OpenClawController {
           version,
           refresh.id,
         );
+        await holdSession?.(view);
         return { namespace, source, client };
       });
       const context = {
@@ -4757,7 +4775,12 @@ export class OpenClawController {
         source,
         signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       };
-      const request = browserAuthorizationRequest(version,client,session.redirectUri,session.selectedScopes);
+      const request = browserAuthorizationRequest(
+        version,
+        client,
+        session.redirectUri,
+        session.selectedScopes,
+      );
       exchangeStarted = true;
       await this.credentialGatewayOperation(() =>
         refresh.completeBrowserAuthorization!(
@@ -4785,6 +4808,7 @@ export class OpenClawController {
               credentialSourceId,
               grant,
               context.signal,
+              holdSession,
             );
           },
         ),
@@ -4810,6 +4834,7 @@ export class OpenClawController {
         await this.lockNamespace(state, namespaceId);
         await this.authorizeConnectionCreation(principalId, namespaceId);
         await this.assertConnectionTemplateScope(session.connectionTemplateId, namespaceId);
+        await holdSession?.(state);
         await this.grantConnectionOwner(state, namespaceId, principalId, credentialSourceId);
         const ready = await state.credentialSources.markCredentialSourceReady(
           namespaceId,
@@ -5016,6 +5041,7 @@ export class OpenClawController {
     sourceId: string,
     grant: OAuthConnectionGrant,
     signal: AbortSignal,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ): Promise<void> {
     const service = this.connectionTokenService();
     const driver = this.secretDriver();
@@ -5030,6 +5056,7 @@ export class OpenClawController {
           "The pending connection cannot accept an OAuth grant.",
         );
       }
+      await holdSession?.(unit);
       const identity = {
         id: this.nextIdentifier("secret"),
         namespaceId,
@@ -5047,12 +5074,13 @@ export class OpenClawController {
       await unit.savedConnections.createTokenCustody(custody);
       return custody;
     });
-    await service.accept(custody, grant, signal);
     await this.mutate(async (unit) => {
       const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (source?.state !== "registering") {
         throw new ResourceStateConflictError("The connection was retired during consent.");
       }
+      await holdSession?.(unit);
+      await service.accept(custody, grant, signal);
       await this.recordConnectionTokenSchedule(unit, custody, signal);
     });
   }

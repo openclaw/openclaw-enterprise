@@ -45,7 +45,7 @@ CREATE TABLE occ.connection_templates (
   CONSTRAINT connection_templates_current_version_positive CHECK (current_version >= 1)
 );
 --> statement-breakpoint
-CREATE TABLE occ.connection_template_versions (
+CREATE TABLE occ.oauth_connection_template_versions (
   template_id text NOT NULL REFERENCES occ.connection_templates(id)
     ON UPDATE RESTRICT ON DELETE CASCADE,
   version integer NOT NULL,
@@ -59,37 +59,37 @@ CREATE TABLE occ.connection_template_versions (
   token_url text COLLATE "C" NOT NULL,
   scopes text[] NOT NULL,
   authorization_parameters jsonb NOT NULL,
-  endpoint_host text COLLATE "C" NOT NULL,
-  endpoint_port integer NOT NULL,
-  endpoint_path text COLLATE "C" NOT NULL,
-  endpoint_access text COLLATE "C" NOT NULL DEFAULT 'full',
+  recipient_host text COLLATE "C" NOT NULL,
+  recipient_port integer NOT NULL,
+  recipient_path text COLLATE "C" NOT NULL,
+  recipient_access text COLLATE "C" NOT NULL DEFAULT 'full',
 
   created_at timestamptz NOT NULL,
   PRIMARY KEY (template_id, version),
-  CONSTRAINT connection_template_versions_version_positive CHECK (version >= 1),
-  CONSTRAINT connection_template_versions_urls_https CHECK (
+  CONSTRAINT oauth_connection_template_versions_version_positive CHECK (version >= 1),
+  CONSTRAINT oauth_connection_template_versions_urls_https CHECK (
     authorization_url ~ '^https://[^/?#@[:space:]]+(/[^#[:space:]]*)?$'
     AND token_url ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'
     AND length(authorization_url) <= 2048 AND length(token_url) <= 2048
   ),
-  CONSTRAINT connection_template_versions_scopes_valid CHECK (
+  CONSTRAINT oauth_connection_template_versions_scopes_valid CHECK (
     cardinality(scopes) BETWEEN 1 AND 32
     AND array_position(scopes, NULL) IS NULL
     -- RFC 6749 scope tokens: printable ASCII except space, double quote, and backslash.
     AND array_to_string(scopes, ' ') ~ '^[!#-[\]-~]+( [!#-[\]-~]+)*$'
   ),
-  CONSTRAINT connection_template_versions_parameters_object CHECK (
+  CONSTRAINT oauth_connection_template_versions_parameters_object CHECK (
     jsonb_typeof(authorization_parameters) = 'object'
   ),
-  CONSTRAINT connection_template_versions_endpoint_valid CHECK (
+  CONSTRAINT oauth_connection_template_versions_recipient_valid CHECK (
     -- A DNS name whose last label starts with a letter, so an IPv4 address never matches.
-    endpoint_host ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
-    AND length(endpoint_host) <= 253
-    AND endpoint_port BETWEEN 1 AND 65535
-    AND endpoint_access IN ('read-only', 'full')
-    AND endpoint_path ~ '^/[!-~]*$' AND length(endpoint_path) <= 512
+    recipient_host ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+    AND length(recipient_host) <= 253
+    AND recipient_port BETWEEN 1 AND 65535
+    AND recipient_access IN ('read-only', 'full')
+    AND recipient_path ~ '^/[!-~]*$' AND length(recipient_path) <= 512
   ),
-  CONSTRAINT connection_template_versions_discovery CHECK (
+  CONSTRAINT oauth_connection_template_versions_discovery CHECK (
     (mode = 'manual' AND observed_metadata IS NULL) OR
     (mode = 'mcp_discovery' AND observed_metadata IS NOT NULL
       AND jsonb_typeof(observed_metadata) = 'object'
@@ -98,14 +98,14 @@ CREATE TABLE occ.connection_template_versions (
       AND observed_metadata->>'authorizationUrl' = authorization_url
       AND observed_metadata->>'tokenUrl' = token_url)
   ),
-  CONSTRAINT connection_template_versions_client_issuer FOREIGN KEY
+  CONSTRAINT oauth_connection_template_versions_client_issuer FOREIGN KEY
     (oauth_client_id, issuer, token_url)
     REFERENCES occ.oauth_clients(id, issuer, token_url)
 );
 --> statement-breakpoint
 ALTER TABLE occ.connection_templates
   ADD CONSTRAINT connection_templates_current_version_exists FOREIGN KEY (id, current_version)
-    REFERENCES occ.connection_template_versions(template_id, version)
+    REFERENCES occ.oauth_connection_template_versions(template_id, version)
     DEFERRABLE INITIALLY DEFERRED;
 --> statement-breakpoint
 CREATE FUNCTION occ.guard_connection_template_update() RETURNS trigger
@@ -125,7 +125,7 @@ BEFORE UPDATE ON occ.connection_templates
 FOR EACH ROW EXECUTE FUNCTION occ.guard_connection_template_update();
 --> statement-breakpoint
 CREATE TRIGGER connection_template_version_is_immutable
-BEFORE UPDATE ON occ.connection_template_versions
+BEFORE UPDATE ON occ.oauth_connection_template_versions
 FOR EACH ROW EXECUTE FUNCTION occ.reject_row_mutation();
 --> statement-breakpoint
 -- Existing account snapshots retain their own previously approved client material.
@@ -135,7 +135,7 @@ CREATE TABLE occ.retired_oauth_client_secrets (
 );
 --> statement-breakpoint
 REVOKE ALL ON occ.oauth_clients, occ.connection_templates,
-  occ.connection_template_versions FROM PUBLIC, occ_app;
+  occ.oauth_connection_template_versions FROM PUBLIC, occ_app;
 --> statement-breakpoint
 GRANT SELECT, INSERT, DELETE ON occ.oauth_clients TO occ_app;
 --> statement-breakpoint
@@ -143,7 +143,7 @@ GRANT SELECT, INSERT, DELETE ON occ.connection_templates TO occ_app;
 --> statement-breakpoint
 GRANT UPDATE (display_name, current_version) ON occ.connection_templates TO occ_app;
 --> statement-breakpoint
-GRANT SELECT, INSERT ON occ.connection_template_versions TO occ_app;
+GRANT SELECT, INSERT ON occ.oauth_connection_template_versions TO occ_app;
 --> statement-breakpoint
 -- Hold both scoped rows until foreign-key checks take over. The application role
 -- cannot lock registrations itself because they are immutable.
@@ -163,7 +163,7 @@ BEGIN
 END $$;
 --> statement-breakpoint
 CREATE TRIGGER connection_template_version_checks_registration_scope
-BEFORE INSERT ON occ.connection_template_versions
+BEFORE INSERT ON occ.oauth_connection_template_versions
 FOR EACH ROW EXECUTE FUNCTION occ.check_connection_registration_scope();
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION occ.guard_connection_template_update(), occ.check_connection_registration_scope() FROM PUBLIC;

@@ -8,6 +8,7 @@ import {
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
   ConnectionTemplateSchema,
+  OAuthConnectionTemplateVersionSchema,
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
@@ -4490,6 +4491,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.addSchema(OAuthConnectionTemplateVersionSchema);
     routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
@@ -4527,6 +4529,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         preHandler: async (request) => resolveIdentity(request, connectionCallbackOperation),
       },
       createConnectionCallback({
+        withCurrentSession: (request, work) => {
+          const admitted = admissions.get(request);
+          if (admitted?.method !== "session") {
+            throw failure(403, "FORBIDDEN", "A current browser session is required.");
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            work((unit) => options.auth.holdSession(unit, admitted.session, request)),
+          );
+        },
         getController: () => controller,
         getContext: (request) => contexts.get(request),
         auditEvent: (request, context, target) =>

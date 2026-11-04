@@ -1,5 +1,10 @@
 import type { AuditEvent, OccApiRoute, ResourceRef } from "@openclaw-enterprise/contracts";
-import { BrowserAuthorizationError, type OpenClawController } from "@openclaw-enterprise/occ";
+import {
+  BrowserAuthorizationError,
+  CallerStateDeniedError,
+  type OpenClawController,
+  type PlatformUnitOfWork,
+} from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { failure } from "./errors.ts";
 import type { RequestContext, ResourceHandlers } from "./types.ts";
@@ -40,7 +45,9 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
         {
           namespaceId,
           connectionTemplateId: body!.connectionTemplateId as string,
-          ...(body!.selectedScopes === undefined ? {} : {selectedScopes:body!.selectedScopes as string[]}),
+          ...(body!.selectedScopes === undefined
+            ? {}
+            : { selectedScopes: body!.selectedScopes as string[] }),
           redirectUri,
           sessionId: context.sessionId,
         },
@@ -121,6 +128,10 @@ export const connectionCallbackSchema = {
 } as const;
 
 export interface ConnectionCallbackDependencies {
+  readonly withCurrentSession: <T>(
+    request: FastifyRequest,
+    work: (holdSession: (unit: PlatformUnitOfWork) => Promise<void>) => Promise<T>,
+  ) => Promise<T>;
   readonly getController: () => OpenClawController | undefined;
   readonly getContext: (request: FastifyRequest) => RequestContext | undefined;
   readonly auditEvent: (
@@ -146,39 +157,48 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
     reply.header("cache-control", "no-store");
     const controller = dependencies.getController();
     const context = dependencies.getContext(request);
+    const sessionId = context?.sessionId;
     const query = request.query as Record<string, unknown>;
     const fail = (reason: string) =>
       reply.redirect(`/console/?connection=failed&reason=${encodeURIComponent(reason)}`, 303);
-    if (controller === undefined || context?.sessionId === undefined) {
+    if (controller === undefined || !context || sessionId === undefined) {
       fail("session_required");
       return;
     }
     try {
-      const connection = await controller.completeNamespaceConnection(
-        context.actorId,
-        {
-          state: typeof query.state === "string" ? query.state : "",
-          sessionId: context.sessionId,
-          ...(typeof query.iss === "string" ? { iss: query.iss } : {}),
-          ...(typeof query.code === "string" ? { code: query.code } : {}),
-          ...(typeof query.error === "string" ? { error: query.error } : {}),
-        },
-        (result) =>
-          dependencies.auditEvent(request, context, {
-            kind: "credential_source",
-            namespaceId: result.namespaceId,
-            id: result.credentialSourceId,
-          }),
+      const connection = await dependencies.withCurrentSession(request, (holdSession) =>
+        controller.completeNamespaceConnection(
+          context.actorId,
+          {
+            state: typeof query.state === "string" ? query.state : "",
+            sessionId,
+            ...(typeof query.iss === "string" ? { iss: query.iss } : {}),
+            ...(typeof query.code === "string" ? { code: query.code } : {}),
+            ...(typeof query.error === "string" ? { error: query.error } : {}),
+          },
+          (result) =>
+            dependencies.auditEvent(request, context, {
+              kind: "credential_source",
+              namespaceId: result.namespaceId,
+              id: result.credentialSourceId,
+            }),
+          holdSession,
+        ),
       );
       reply.redirect(
         `/console/?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected`,
         303,
       );
     } catch (error) {
-      const reason =
-        error instanceof BrowserAuthorizationError && /^[a-z][a-z0-9_]{0,63}$/.test(error.code)
-          ? error.code
-          : "unavailable";
+      let reason = "unavailable";
+      if (error instanceof CallerStateDeniedError) {
+        reason = "session_required";
+      } else if (
+        error instanceof BrowserAuthorizationError &&
+        /^[a-z][a-z0-9_]{0,63}$/.test(error.code)
+      ) {
+        reason = error.code;
+      }
       await dependencies.auditFailure(request, context, reason);
       fail(reason);
     }

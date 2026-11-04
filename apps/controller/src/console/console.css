@@ -3221,7 +3221,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border: 0;
 }
 .connection-template-fields legend {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   margin-block-start: var(--space-4);
 }
 .connection-template-row {

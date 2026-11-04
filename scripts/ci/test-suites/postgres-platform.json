@@ -137,8 +137,11 @@
     {
       "path": "tests/integration/postgres-connection-templates.test.ts",
       "expectedTests": [
-        "template versions and OAuth client rotation respect the template's scope",
-        "template registrations survive an unacknowledged commit"
+        "independent scoped OAuth clients can be attached to an immutable template version",
+        "OAuth client rotation commits the new secret handle with its audit",
+        "the worker recovers an abandoned secret staged before PostgreSQL receives COMMIT",
+        "MCP discovery selects one advertised issuer and saves only the administrator's approved scopes",
+        "revoking a browser session while rotation waits prevents the secret from reaching its Driver"
       ]
     },
     {

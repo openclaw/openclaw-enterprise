@@ -153,7 +153,7 @@ export type {
   ConnectionEndpoint,
   ConnectionTemplate,
   ConnectionTemplateValues,
-  ConnectionTemplateVersion,
+  OAuthConnectionTemplateVersion,
   ConnectionSession,
   SavedConnection,
 } from "./connection-templates.ts";
@@ -1499,7 +1499,10 @@ export type JSONSchema = Readonly<Record<string, unknown>>;
 export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
-export { ConnectionTemplateSchema } from "./api/connection-templates.ts";
+export {
+  ConnectionTemplateSchema,
+  OAuthConnectionTemplateVersionSchema,
+} from "./api/connection-templates.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 

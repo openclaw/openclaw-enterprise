@@ -2,7 +2,7 @@ import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
   OAuthClient,
   ConnectionTemplate,
-  ConnectionTemplateVersion,
+  OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "../errors.ts";
 import type { ConnectionTemplateRepository } from "./platform-state.ts";
@@ -11,8 +11,8 @@ import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 type Row = Record<string, unknown>;
 
 const versionColumns = `v.template_id, v.version, v.oauth_client_id, v.issuer, v.mode, v.observed_metadata, v.revocation_url,
-  v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.endpoint_host,
-  v.endpoint_port, v.endpoint_path, v.endpoint_access, v.created_at AS version_created_at`;
+  v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.recipient_host,
+  v.recipient_port, v.recipient_path, v.recipient_access, v.created_at AS version_created_at`;
 
 function invalid(): never {
   throw new DependencyUnavailableError("Persisted connection template state is invalid.");
@@ -33,9 +33,9 @@ function integer(row: Row, key: string): number {
   return Number.isSafeInteger(value) ? value : invalid();
 }
 
-function versionFromRow(row: Row): ConnectionTemplateVersion {
+function versionFromRow(row: Row): OAuthConnectionTemplateVersion {
   const scopes = row.scopes;
-  const access = row.endpoint_access;
+  const access = row.recipient_access;
   const parameters = row.authorization_parameters;
   if (
     (access !== "full" && access !== "read-only") ||
@@ -57,7 +57,9 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
     ...(row.observed_metadata === null
       ? {}
       : {
-          observed: row.observed_metadata as NonNullable<ConnectionTemplateVersion["observed"]>,
+          observed: row.observed_metadata as NonNullable<
+            OAuthConnectionTemplateVersion["observed"]
+          >,
           mcp: {
             serverUrl: text(row.observed_metadata as Row, "serverUrl"),
             resource: text(row.observed_metadata as Row, "resource"),
@@ -69,9 +71,9 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
     scopes,
     authorizationParameters: parameters as Record<string, string>,
     recipient: {
-      host: text(row, "endpoint_host"),
-      port: integer(row, "endpoint_port"),
-      path: text(row, "endpoint_path"),
+      host: text(row, "recipient_host"),
+      port: integer(row, "recipient_port"),
+      path: text(row, "recipient_path"),
       access,
     },
     createdAt: timestamp(row, "version_created_at"),
@@ -109,12 +111,12 @@ function registrationFromRow(row: Row): Readonly<OAuthClient> {
 
 async function insertVersion(
   client: PostgresQueryClient,
-  version: ConnectionTemplateVersion,
+  version: OAuthConnectionTemplateVersion,
 ): Promise<void> {
   await client.query(
-    `INSERT INTO occ.connection_template_versions
+    `INSERT INTO occ.oauth_connection_template_versions
      (template_id, version, oauth_client_id, issuer, mode, authorization_url, token_url, revocation_url, scopes,
-      authorization_parameters, endpoint_host, endpoint_port, endpoint_path, endpoint_access, observed_metadata, created_at)
+      authorization_parameters, recipient_host, recipient_port, recipient_path, recipient_access, observed_metadata, created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [
       version.templateId,
@@ -147,7 +149,7 @@ export function postgresConnectionTemplates(
       await client.query(
         `SELECT t.id, t.namespace_id, t.display_name, t.created_at, ${versionColumns}
          FROM occ.connection_templates t
-         JOIN occ.connection_template_versions v
+         JOIN occ.oauth_connection_template_versions v
            ON v.template_id = t.id AND v.version = t.current_version
          ${where} ORDER BY t.id`,
         values,
@@ -169,15 +171,15 @@ export function postgresConnectionTemplates(
     hasOtherConnectionIssuer: async (issuer) =>
       (
         await client.query(
-          "SELECT 1 FROM occ.connection_template_versions WHERE issuer <> $1 LIMIT 1",
+          "SELECT 1 FROM occ.oauth_connection_template_versions WHERE issuer <> $1 LIMIT 1",
           [issuer],
         )
       ).rows.length > 0,
     listConnectionTemplates: async () => Object.freeze(await selectTemplates("", [])),
-    findConnectionTemplateVersion: async (templateId, version) => {
+    findOAuthConnectionTemplateVersion: async (templateId, version) => {
       const [row] = (
         await client.query(
-          `SELECT ${versionColumns} FROM occ.connection_template_versions v
+          `SELECT ${versionColumns} FROM occ.oauth_connection_template_versions v
            WHERE v.template_id = $1 AND v.version = $2`,
           [templateId, version],
         )
@@ -291,7 +293,7 @@ export function postgresConnectionTemplates(
       const deleted = await client.query(
         `DELETE FROM occ.oauth_clients r WHERE r.id = $1
          AND NOT EXISTS (
-           SELECT 1 FROM occ.connection_template_versions v
+           SELECT 1 FROM occ.oauth_connection_template_versions v
            WHERE v.oauth_client_id = r.id
          )`,
         [registrationId],

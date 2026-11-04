@@ -33,7 +33,7 @@ CREATE TABLE occ.saved_connections (
     REFERENCES occ.credential_sources(namespace_id, id) ON DELETE CASCADE ON UPDATE RESTRICT,
   CONSTRAINT saved_connections_template_version FOREIGN KEY
     (connection_template_id, connection_template_version)
-    REFERENCES occ.connection_template_versions(template_id, version)
+    REFERENCES occ.oauth_connection_template_versions(template_id, version)
     ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 --> statement-breakpoint
@@ -66,7 +66,7 @@ CREATE TABLE occ.connection_sessions (
     REFERENCES occ.credential_sources(namespace_id, id) ON DELETE CASCADE ON UPDATE RESTRICT,
   CONSTRAINT connection_sessions_template_version FOREIGN KEY
     (connection_template_id, connection_template_version)
-    REFERENCES occ.connection_template_versions(template_id, version)
+    REFERENCES occ.oauth_connection_template_versions(template_id, version)
     ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 --> statement-breakpoint

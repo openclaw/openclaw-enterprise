@@ -2384,7 +2384,10 @@ export const connectionTemplates = occSchema.table(
     foreignKey({
       name: "connection_templates_current_version_exists",
       columns: [table.id, table.currentVersion],
-      foreignColumns: [connectionTemplateVersions.templateId, connectionTemplateVersions.version],
+      foreignColumns: [
+        oauthConnectionTemplateVersions.templateId,
+        oauthConnectionTemplateVersions.version,
+      ],
     }),
     check(
       "connection_templates_id_format",
@@ -2399,8 +2402,8 @@ export const connectionTemplates = occSchema.table(
   ],
 );
 
-export const connectionTemplateVersions = occSchema.table(
-  "connection_template_versions",
+export const oauthConnectionTemplateVersions = occSchema.table(
+  "oauth_connection_template_versions",
   {
     templateId: text("template_id")
       .notNull()
@@ -2423,51 +2426,51 @@ export const connectionTemplateVersions = occSchema.table(
     authorizationParameters: jsonb("authorization_parameters")
       .$type<Record<string, string>>()
       .notNull(),
-    endpointHost: collatedText("endpoint_host").notNull(),
-    endpointPort: integer("endpoint_port").notNull(),
-    endpointPath: collatedText("endpoint_path").notNull(),
-    endpointAccess: collatedText("endpoint_access").notNull().default("full"),
+    recipientHost: collatedText("recipient_host").notNull(),
+    recipientPort: integer("recipient_port").notNull(),
+    recipientPath: collatedText("recipient_path").notNull(),
+    recipientAccess: collatedText("recipient_access").notNull().default("full"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.templateId, table.version] }),
     foreignKey({
-      name: "connection_template_versions_client_issuer",
+      name: "oauth_connection_template_versions_client_issuer",
       columns: [table.oauthClientId, table.issuer, table.tokenUrl],
       foreignColumns: [oauthClients.id, oauthClients.issuer, oauthClients.tokenUrl],
     }),
     check(
-      "connection_template_versions_mode_check",
+      "oauth_connection_template_versions_mode_check",
       sql`${table.mode} IN ('manual','mcp_discovery')`,
     ),
-    check("connection_template_versions_version_positive", sql`${table.version} >= 1`),
+    check("oauth_connection_template_versions_version_positive", sql`${table.version} >= 1`),
     check(
-      "connection_template_versions_urls_https",
+      "oauth_connection_template_versions_urls_https",
       sql`${table.authorizationUrl} ~ '^https://[^/?#@[:space:]]+(/[^#[:space:]]*)?$'
     AND ${table.tokenUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'
     AND length(${table.authorizationUrl}) <= 2048 AND length(${table.tokenUrl}) <= 2048`,
     ),
     check(
-      "connection_template_versions_scopes_valid",
+      "oauth_connection_template_versions_scopes_valid",
       sql`cardinality(${table.scopes}) BETWEEN 1 AND 32
     AND array_position(${table.scopes}, NULL) IS NULL
 
     AND array_to_string(${table.scopes}, ' ') ~ '^[!#-[\\]-~]+( [!#-[\\]-~]+)*$'`,
     ),
     check(
-      "connection_template_versions_parameters_object",
+      "oauth_connection_template_versions_parameters_object",
       sql`jsonb_typeof(${table.authorizationParameters}) = 'object'`,
     ),
     check(
-      "connection_template_versions_endpoint_valid",
-      sql`${table.endpointHost} ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
-    AND length(${table.endpointHost}) <= 253
-    AND ${table.endpointPort} BETWEEN 1 AND 65535
-    AND ${table.endpointAccess} IN ('read-only', 'full')
-    AND ${table.endpointPath} ~ '^/[!-~]*$' AND length(${table.endpointPath}) <= 512`,
+      "oauth_connection_template_versions_recipient_valid",
+      sql`${table.recipientHost} ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+    AND length(${table.recipientHost}) <= 253
+    AND ${table.recipientPort} BETWEEN 1 AND 65535
+    AND ${table.recipientAccess} IN ('read-only', 'full')
+    AND ${table.recipientPath} ~ '^/[!-~]*$' AND length(${table.recipientPath}) <= 512`,
     ),
     check(
-      "connection_template_versions_discovery",
+      "oauth_connection_template_versions_discovery",
       sql`(${table.mode} = 'manual' AND ${table.observedMetadata} IS NULL) OR
     (${table.mode} = 'mcp_discovery' AND ${table.observedMetadata} IS NOT NULL
       AND jsonb_typeof(${table.observedMetadata}) = 'object'
@@ -2558,7 +2561,10 @@ export const savedConnections = occSchema.table(
     foreignKey({
       name: "saved_connections_template_version",
       columns: [table.connectionTemplateId, table.connectionTemplateVersion],
-      foreignColumns: [connectionTemplateVersions.templateId, connectionTemplateVersions.version],
+      foreignColumns: [
+        oauthConnectionTemplateVersions.templateId,
+        oauthConnectionTemplateVersions.version,
+      ],
     })
       .onDelete("restrict")
       .onUpdate("restrict"),
@@ -2584,7 +2590,7 @@ export const connectionSessions = occSchema.table(
     namespaceId: text("namespace_id").notNull(),
     credentialSourceId: text("credential_source_id").notNull(),
     privateState: text("private_state").notNull(),
-    selectedScopes:text("selected_scopes").array().notNull(),
+    selectedScopes: text("selected_scopes").array().notNull(),
     issuerRequired: boolean("issuer_required").notNull(),
     sessionId: text("session_id").notNull(),
     redirectUri: text("redirect_uri").notNull(),
@@ -2595,5 +2601,10 @@ export const connectionSessions = occSchema.table(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [
-    check("connection_sessions_selected_scopes_valid",sql`cardinality(${table.selectedScopes}) BETWEEN 1 AND 32 AND array_position(${table.selectedScopes},NULL) IS NULL`),index("connection_sessions_expiry_idx").on(table.expiresAt)],
+    check(
+      "connection_sessions_selected_scopes_valid",
+      sql`cardinality(${table.selectedScopes}) BETWEEN 1 AND 32 AND array_position(${table.selectedScopes},NULL) IS NULL`,
+    ),
+    index("connection_sessions_expiry_idx").on(table.expiresAt),
+  ],
 );

@@ -11,6 +11,7 @@ import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.t
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin } from "../helpers/ci-keycloak-realm.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -53,8 +54,13 @@ async function accountSession(
     { email, password },
     { origin: "http://127.0.0.1" },
   );
-  return (method: "GET" | "POST" | "DELETE", url: string, body?: Record<string, unknown>) =>
-    app.inject({
+  return (
+    method: "GET" | "POST" | "DELETE",
+    url: string,
+    body?: Record<string, unknown>,
+    target = app,
+  ) =>
+    target.inject({
       method,
       url,
       headers: { host: "127.0.0.1", ...authenticatedHeaders(session) },
@@ -103,8 +109,8 @@ test(
     const preparedTokens = new TokenService(
       new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
     );
-    const serverUrl="https://api.connections.test/mcp";
-    const tokenUrl=`${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
+    const serverUrl = "https://api.connections.test/mcp";
+    const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
     let skew = 0;
     const { app, controller, state, principal, computeDriver, inject, pool, adminAccount } =
       await createPostgresAgentApp(t, {
@@ -114,9 +120,18 @@ test(
         controllerOptions: { preparedTokens, now: () => new Date(Date.now() + skew) },
         appOptions: {
           // Discovery metadata is controlled; authorization, consent and token exchange reach Keycloak.
-          discoverMcpAuthorization:async()=>({serverUrl,resource:serverUrl,issuers:[issuer],issuer,
-            authorizationUrl:`${issuer}/protocol/openid-connect/auth`,tokenUrl,requestedScopes:["openid"],
-            resourceScopes:["openid","profile"],supportedScopes:["openid","profile"],tokenEndpointAuthMethods:["client_secret_basic","client_secret_post"]}),
+          discoverMcpAuthorization: async () => ({
+            serverUrl,
+            resource: serverUrl,
+            issuers: [issuer],
+            issuer,
+            authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
+            tokenUrl,
+            requestedScopes: ["openid"],
+            resourceScopes: ["openid", "profile"],
+            supportedScopes: ["openid", "profile"],
+            tokenEndpointAuthMethods: ["client_secret_basic", "client_secret_post"],
+          }),
           publicOrigin,
           provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
         },
@@ -145,7 +160,7 @@ test(
         name: `oce-${namespace.id.slice(3, 11)}`,
       }),
     });
-    const { providers } = selectTemplateDrivers(controller, { selectGateway: false });
+    const { providers, refresh } = selectTemplateDrivers(controller, { selectGateway: false });
     const makeNamespace = async () => {
       const result = await inject("POST", "/namespaces", { name: `Accounts ${randomUUID()}` });
       assert.equal(result.statusCode, 201, result.body);
@@ -165,7 +180,7 @@ test(
       tokenUrl,
       clientId,
       clientSecret,
-      revocationUrl:`${issuer}/protocol/openid-connect/revoke`,
+      revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
       tokenEndpointAuthMethod: "client_secret_basic",
     });
     assert.equal(registered.statusCode, 201, registered.body);
@@ -182,16 +197,27 @@ test(
       recipient,
     });
     assert.equal(template.statusCode, 201, template.body);
-    const manual={connectionTemplateId:template.json().data.id};
+    const manual = { connectionTemplateId: template.json().data.id };
     // The client also permits revocation, but this version uses only its token endpoint.
-    const manualStart=await inject("POST",connections,manual);
-    assert.equal(manualStart.statusCode,201,manualStart.body);
-    const mcp=await inject("POST","/connection-templates",{displayName:"Scope selection",namespaceId,mode:"mcp_discovery",issuer,serverUrl,scopes:["openid","profile"],oauthClientId});
-    assert.equal(mcp.statusCode,201,mcp.body);
-    const input={connectionTemplateId:mcp.json().data.id,selectedScopes:["openid"]};
-    for(const selectedScopes of [undefined,["profile"],["openid","other"]]){
-      const refused=await inject("POST",connections,{connectionTemplateId:input.connectionTemplateId,...(selectedScopes && {selectedScopes})});
-      assert.equal(refused.statusCode,400,refused.body);
+    const manualStart = await inject("POST", connections, manual);
+    assert.equal(manualStart.statusCode, 201, manualStart.body);
+    const mcp = await inject("POST", "/connection-templates", {
+      displayName: "Scope selection",
+      namespaceId,
+      mode: "mcp_discovery",
+      issuer,
+      serverUrl,
+      scopes: ["openid", "profile"],
+      oauthClientId,
+    });
+    assert.equal(mcp.statusCode, 201, mcp.body);
+    const input = { connectionTemplateId: mcp.json().data.id, selectedScopes: ["openid"] };
+    for (const selectedScopes of [undefined, ["profile"], ["openid", "other"]]) {
+      const refused = await inject("POST", connections, {
+        connectionTemplateId: input.connectionTemplateId,
+        ...(selectedScopes && { selectedScopes }),
+      });
+      assert.equal(refused.statusCode, 400, refused.body);
     }
     // Even an Installation administrator cannot use a Namespace-scoped template elsewhere.
     const wrongScope = await inject("POST", `/namespaces/${otherId}/connections`, input);
@@ -229,7 +255,10 @@ test(
     async function begin() {
       const response = await owner("POST", connections, input);
       assert.equal(response.statusCode, 201, response.body);
-      assert.equal(new URL(response.json().data.authorizationUrl).searchParams.get("scope"),"openid");
+      assert.equal(
+        new URL(response.json().data.authorizationUrl).searchParams.get("scope"),
+        "openid",
+      );
       return {
         id: response.json().data.credentialSourceId as string,
         callback: await consentRedirect(
@@ -349,5 +378,39 @@ test(
     );
     assert.equal(secretDriver.has(privateRef), false);
     assert.equal(hasSender(), false);
+    // A peer can revoke a browser session after its callback has already passed admission.
+    const peer = await createPostgresAgentApp(t, {
+      label: "saved-account",
+      authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
+    });
+    const waiting = await begin();
+    const exchange = t.mock.method(refresh, "completeBrowserAuthorization");
+    const lock = await pool.connect();
+    let blocked;
+    try {
+      await lock.query("BEGIN");
+      const held = await lock.query(
+        "DELETE FROM occ.connection_sessions WHERE credential_source_id=$1 RETURNING pg_backend_pid() AS pid",
+        [waiting.id],
+      );
+      blocked = owner("GET", waiting.callback);
+      await waitForLockWaiter(
+        pool,
+        held.rows[0].pid,
+        "OAuth callback waiting to consume its private attempt",
+      );
+      const signedOut = await owner("POST", "/api/auth/sign-out", {}, peer.app);
+      assert.equal(signedOut.statusCode, 200, signedOut.body);
+    } finally {
+      await lock.query("ROLLBACK");
+      lock.release();
+    }
+    const refused = await blocked;
+    assert.match(String(refused.headers.location), /reason=session_required/);
+    assert.equal(
+      exchange.mock.callCount(),
+      0,
+      "the code must not reach the Refresh Driver after logout",
+    );
   },
 );

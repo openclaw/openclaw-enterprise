@@ -3,7 +3,16 @@ import { CredentialSourceId, Meta, NamespaceId } from "./common.ts";
 import { ConnectionTemplateId } from "./connection-templates.ts";
 
 export const StartNamespaceConnectionBody = Type.Object(
-  { connectionTemplateId: ConnectionTemplateId, selectedScopes:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:256}),{minItems:1,maxItems:32,uniqueItems:true})) },
+  {
+    connectionTemplateId: ConnectionTemplateId,
+    selectedScopes: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 256 }), {
+        minItems: 1,
+        maxItems: 32,
+        uniqueItems: true,
+      }),
+    ),
+  },
   { additionalProperties: false },
 );
 
