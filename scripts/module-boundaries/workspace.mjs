@@ -1,5 +1,6 @@
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
+import { freezeRecord } from "./freeze-record.ts";
 
 export const sourceExtension = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 export const slash = (value) => value.replaceAll("\\", "/");
@@ -100,16 +101,4 @@ export async function readWorkspace(root, policy) {
     throw new Error("Workspace package names must be unique.");
   }
   return Object.freeze({ root, files: Object.freeze(files), packages: Object.freeze(packages) });
-}
-
-// Records cross stage boundaries as immutable values; ASTs stay in source analysis.
-/** @template T @param {T} value @returns {T} */
-export function freezeRecord(value) {
-  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  for (const child of Object.values(value)) {
-    freezeRecord(child);
-  }
-  return Object.freeze(value);
 }

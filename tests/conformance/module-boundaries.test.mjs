@@ -1947,6 +1947,47 @@ describe("module boundaries", { concurrency: true }, () => {
     }
   });
 
+  test("scripts configuration checks the enrolled generic freeze implementation", () => {
+    const configPath = join(repository, "scripts/tsconfig.json");
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    assert.equal(config.error, undefined);
+    const parsed = ts.parseJsonConfigFileContent(
+      config.config,
+      ts.sys,
+      dirname(configPath),
+      undefined,
+      configPath,
+    );
+    assert.deepEqual(parsed.errors, []);
+    const helper = join(repository, "scripts/module-boundaries/freeze-record.ts");
+    assert.ok(parsed.fileNames.includes(helper));
+    const options = { ...parsed.options, composite: false, incremental: false };
+    const host = ts.createCompilerHost(options);
+    const getSourceFile = host.getSourceFile.bind(host);
+    const original = ts.sys.readFile(helper);
+    assert.ok(original);
+    const invalid = original.replace(
+      "  return Object.freeze(value);",
+      "  return value.nonexistent();",
+    );
+    assert.notEqual(invalid, original);
+    host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) =>
+      fileName === helper
+        ? ts.createSourceFile(fileName, invalid, languageVersion, true)
+        : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
+    const program = ts.createProgram([helper], options, host);
+    const source = program.getSourceFile(helper);
+    assert.ok(source);
+    const errors = program.getSemanticDiagnostics(source);
+    assert.ok(
+      errors.some(
+        (diagnostic) =>
+          diagnostic.code === 2339 &&
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, " ").includes("nonexistent"),
+      ),
+    );
+  });
+
   test("reports parse errors without adding JavaScript grammar diagnostics or losing imports", async (t) => {
     const { write, check } = await workspace(t);
     const tsPath = "apps/app/src/parse-errors.ts";
