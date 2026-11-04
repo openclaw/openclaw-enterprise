@@ -5357,7 +5357,7 @@
      expect(plan.environment?.OPENCLAW_GATEWAY_TOKEN).toBe("node-token");
      expect(plan.environment?.OPENCLAW_GATEWAY_PASSWORD).toBe("node-password");
      expect(plan.environmentValueSources).toEqual({
-@@ -321,6 +322,65 @@
+@@ -321,6 +322,94 @@
        CF_ACCESS_CLIENT_ID: "file",
        CF_ACCESS_CLIENT_SECRET: "file", // pragma: allowlist secret
      });
@@ -5420,6 +5420,35 @@
 +    expect(mocks.runtime.error).toHaveBeenCalledWith(
 +      expect.stringContaining("ambiguous or unsupported"),
 +    );
++  });
++
++  it("rejects an installed plaintext command that also specifies a certificate pin", async () => {
++    // Match the unpinned saved endpoint so silently discarding the installed pin
++    // would otherwise pass the binding check and publish a plaintext service.
++    mocks.loadNodeHostConfig.mockResolvedValue({
++      gateway: { host: "saved-gateway.local", port: 18789, tls: false },
++    });
++    mocks.service.readCommand.mockResolvedValue({
++      programArguments: [
++        NODE_RUNTIME_PATH,
++        "/openclaw.mjs",
++        "node",
++        "run",
++        "--host",
++        "saved-gateway.local",
++        "--port",
++        "18789",
++        "--no-tls",
++        "--tls-fingerprint",
++        TLS_FINGERPRINT,
++        "--require-device-auth",
++      ],
++    });
++    await runNodeDaemonInstall({ force: true });
++    expect(mocks.service.install).not.toHaveBeenCalled();
++    expect(mocks.runtime.error).toHaveBeenCalledWith(
++      expect.stringContaining("--no-tls cannot be combined with --tls-fingerprint"),
++    );
    });
  
    it.each([
@@ -5455,7 +5484,7 @@
    nodeId?: string;
    displayName?: string;
    shareInstalledApps?: boolean;
-@@ -121,6 +131,86 @@
+@@ -121,6 +131,91 @@
    );
  }
  
@@ -5517,6 +5546,11 @@
 +      "Paired node service needs a complete endpoint; reconnect with connect --service.",
 +    );
 +  }
++  if (values.has("--no-tls") && values.has("--tls-fingerprint")) {
++    throw new Error(
++      "Paired node service: --no-tls cannot be combined with --tls-fingerprint; reconnect with connect --service.",
++    );
++  }
 +  const text = (flag: string) => {
 +    const value = values.get(flag);
 +    return typeof value === "string" ? value : undefined;
@@ -5542,7 +5576,7 @@
  export async function runNodeDaemonInstall(opts: NodeDaemonInstallOptions) {
    const { json, stdout, warnings, warn, emit, emitMessage, fail } =
      createDaemonInstallActionContext(opts.json);
-@@ -130,10 +220,112 @@
+@@ -130,10 +225,112 @@
      return;
    }
  
@@ -5657,7 +5691,7 @@
    } catch (error) {
      fail(error instanceof Error ? error.message : String(error));
      return;
-@@ -155,21 +347,6 @@
+@@ -155,21 +352,6 @@
      fail("Cloudflare Access credentials require --tls for the node Gateway connection");
      return;
    }
@@ -5679,7 +5713,7 @@
    let pinSnapshot;
    try {
      pinSnapshot = await withDaemonRuntimePinMigration(
-@@ -302,23 +479,10 @@
+@@ -302,23 +484,10 @@
      // runtime toolchain on PATH for sibling binaries when needed.
      extraPathDirs: resolveDaemonRuntimeBinDir(runtimePath),
    });
