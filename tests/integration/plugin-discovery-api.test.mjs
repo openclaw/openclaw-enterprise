@@ -1072,6 +1072,23 @@ test("Saved Agent uses a credential-free curated catalog for an API-key Codex Ag
   });
   assert.equal(details.status, 200, JSON.stringify(details.body));
   assert.deepEqual(details.data, linear);
+  // The id the list just returned names the same entry; it is not a plugin the Driver lacks.
+  const byListedId = await fixture.request("POST", `${path}/details`, {
+    session,
+    body: { pluginId: linear.id },
+  });
+  assert.equal(byListedId.status, 200, JSON.stringify(byListedId.body));
+  assert.deepEqual(byListedId.data, linear);
+  // An id without its marketplace stays unknown, and the refusal names the listed id.
+  const unversioned = await fixture.request("POST", `${path}/details`, {
+    session,
+    body: { pluginId: "codex-plugin:linear" },
+  });
+  assertApiError(unversioned, 400, "INVALID_REQUEST");
+  assert.match(
+    unversioned.body.error.message,
+    /does not offer: codex-plugin:linear\. Use codex-plugin:linear@openai-curated-remote\.$/,
+  );
   assert.equal(secretReads(), 0);
 
   const embedded = await fixture.createAgent(
