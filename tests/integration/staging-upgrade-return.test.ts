@@ -891,7 +891,7 @@ test(
 
 test(
   "interrupted rehearsal runners stop concurrent command groups before exiting",
-  { timeout: 30_000 },
+  { timeout: 45_000 },
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "oce-interruption-control-"));
     const runners: import("node:child_process").ChildProcess[] = [];
@@ -918,8 +918,9 @@ test(
       }
       await rm(directory, { recursive: true, force: true });
     });
-    for (const mode of ["test", "process", "once"] as const) {
-      for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    for (const mode of ["test", "process", "once", "mixed"] as const) {
+      const signals = mode === "mixed" ? (["SIGINT"] as const) : (["SIGINT", "SIGTERM"] as const);
+      for (const signal of signals) {
         const fixture = join(directory, `${mode}-${signal}.test.mjs`);
         const markers = [0, 1].map((index) => join(directory, `${mode}-${signal}-${index}-late`));
         const continued = [0, 1].map((index) =>
@@ -942,6 +943,7 @@ test(
           process: "await run();",
           once: `process.once(${JSON.stringify(signal)}, () => { process.exitCode = 23; });
             await run().catch(() => {});`,
+          mixed: 'process.on("SIGINT", () => {}); await run().catch(() => {});',
         }[mode];
         await writeFile(
           fixture,
@@ -990,11 +992,18 @@ test(
         // Deliver the same process-group signal as a terminal interrupt. One command
         // exits zero and the other ignores it; neither may advance the rehearsal.
         process.kill(-runner.pid!, signal);
+        if (mode === "mixed") {
+          // A second terminating signal must retain its default disposition even
+          // while the handled first signal's command cleanup is still running.
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          process.kill(-runner.pid!, "SIGTERM");
+        }
         const result = await closed;
         const expectedExit = {
           test: { code: 1, signal: null },
           process: { code: null, signal },
           once: { code: 23, signal: null },
+          mixed: { code: null, signal: "SIGTERM" },
         }[mode];
         assert.deepEqual(result, expectedExit);
         await new Promise((resolve) => setTimeout(resolve, 2200));
@@ -1003,5 +1012,112 @@ test(
         }
       }
     }
+  },
+);
+
+test(
+  "interrupted commands close local pipes without killing a separate-session holder",
+  { timeout: 15_000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-held-pipe-control-"));
+    const commandPID = join(directory, "command-pid");
+    const holderPID = join(directory, "holder-pid");
+    const heartbeat = join(directory, "heartbeat");
+    const receipt = join(directory, "receipt");
+    const fixture = join(directory, "runner.mjs");
+    const { spawn } = await import("node:child_process");
+    t.after(async () => {
+      try {
+        if (runner?.pid) {
+          try {
+            process.kill(-runner.pid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+              throw error;
+            }
+          }
+        }
+        for (const path of [commandPID, holderPID]) {
+          try {
+            process.kill(-Number(await readFile(path, "utf8")), "SIGKILL");
+          } catch (error) {
+            if (!["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+              throw error;
+            }
+          }
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+    const holder = `
+    const fs = require("node:fs");
+    let beats = 0;
+    fs.writeFileSync(${JSON.stringify(holderPID)}, String(process.pid));
+    fs.writeFileSync(${JSON.stringify(heartbeat)}, String(beats));
+    setInterval(() => fs.writeFileSync(${JSON.stringify(heartbeat)}, String(++beats)), 100);
+    setTimeout(() => process.exit(0), 6000);
+  `;
+    const command = `
+    require("node:fs").writeFileSync(${JSON.stringify(commandPID)}, String(process.pid));
+    const { spawn } = require("node:child_process");
+    spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], {
+      detached: true,
+      stdio: ["ignore", "inherit", "inherit"],
+    }).unref();
+    process.on("SIGTERM", () => process.exit(0));
+    setInterval(() => {}, 1000);
+  `;
+    await writeFile(
+      fixture,
+      `
+    import { writeFileSync } from "node:fs";
+    import { runFixtureCommand } from ${JSON.stringify(new URL("../helpers/production-rehearsal-custody.ts", import.meta.url).href)};
+    process.on("SIGTERM", () => {});
+    try {
+      await runFixtureCommand(process.execPath, ["-e", ${JSON.stringify(command)}], { timeout: 60000 });
+      writeFileSync(${JSON.stringify(receipt)}, "unexpected success");
+    } catch (error) {
+      writeFileSync(${JSON.stringify(receipt)}, error.message);
+    }
+  `,
+    );
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const runner = spawn(process.execPath, [fixture], {
+      detached: true,
+      stdio: "ignore",
+      env,
+    });
+    const closed = new Promise<{
+      code: number | null;
+      signal: NodeJS.Signals | null;
+    }>((resolve, reject) => {
+      runner!.once("error", reject);
+      runner!.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    const deadline = Date.now() + 5000;
+    while (
+      !(await stat(heartbeat).then(
+        () => true,
+        () => false,
+      ))
+    ) {
+      assert.ok(Date.now() < deadline, "the separate-session holder did not start");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const interruptedAt = Date.now();
+    process.kill(-runner.pid!, "SIGTERM");
+    assert.deepEqual(await closed, { code: 0, signal: null });
+    assert.ok(
+      Date.now() - interruptedAt < 4000,
+      "interruption waited for an unrelated session's output pipe",
+    );
+    assert.match(await readFile(receipt, "utf8"), /interrupted/u);
+    // The helper may close its own pipe ends, but only this test owns the detached
+    // holder. A continuing heartbeat proves it was not killed or merely left a zombie.
+    const before = Number(await readFile(heartbeat, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.ok(Number(await readFile(heartbeat, "utf8")) > before);
   },
 );

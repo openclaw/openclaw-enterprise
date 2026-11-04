@@ -20,6 +20,7 @@ export type FixtureRun = (
 
 const activeCommands = new Set<(signal: NodeJS.Signals) => void>();
 let interruptionTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingDefaultSignal: "SIGINT" | "SIGTERM" | undefined;
 
 function signalActiveCommands(signal: NodeJS.Signals) {
   for (const command of activeCommands) {
@@ -43,19 +44,23 @@ function removeCommandHandlers() {
 }
 
 function interruptCommands(signal: "SIGINT" | "SIGTERM") {
+  if (process.listenerCount(signal) === 1) {
+    pendingDefaultSignal = signal;
+  }
   signalActiveCommands(signal);
   if (interruptionTimer) {
     return;
   }
-  const defaultDisposition = process.listenerCount(signal) === 1;
   interruptionTimer = setTimeout(() => {
     terminateActiveCommands();
     interruptionTimer = undefined;
-    if (defaultDisposition) {
+    const defaultSignal = pendingDefaultSignal;
+    pendingDefaultSignal = undefined;
+    if (defaultSignal) {
       // Restore the signal's normal exit status after all concurrent commands
       // have been stopped. Existing runner handlers own their usual disposition.
       removeCommandHandlers();
-      process.kill(process.pid, signal);
+      process.kill(process.pid, defaultSignal);
     } else if (activeCommands.size === 0) {
       removeCommandHandlers();
     }
@@ -144,23 +149,41 @@ export function runFixtureCommand(
         }
       }
     };
+    const closePipes = () => {
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
     const interruptedError = () =>
       new Error(
         cleanupFailed
           ? `${command} could not terminate an interrupted fixture operation`
           : `${command} interrupted${protectedInput ? " during a protected fixture operation" : ""}`,
       );
+    const finishInterrupted = () => {
+      clearTimeout(cleanupTimer);
+      if (!cleanupFailed) {
+        releaseCommand(true);
+      }
+      reject(interruptedError());
+    };
     const releaseCommand = ownCommand((name) => {
       interrupted = true;
       clearTimeout(timer);
       clearTimeout(cleanupTimer);
       interruptionKilled ||= name === "SIGKILL";
       signal(name);
-      if (interruptionKilled && closed) {
-        if (!cleanupFailed) {
-          releaseCommand(true);
+      if (interruptionKilled) {
+        if (closed) {
+          finishInterrupted();
+        } else {
+          // Another session can retain inherited output descriptors. Close only
+          // our pipe ends after the owned group's bounded termination attempt.
+          cleanupTimer = setTimeout(() => {
+            closePipes();
+            finishInterrupted();
+          }, 1_000);
         }
-        reject(interruptedError());
       }
     });
     const timer = setTimeout(() => {
@@ -177,9 +200,7 @@ export function runFixtureCommand(
           return;
         }
         cleanupTimer = setTimeout(() => {
-          child.stdin.destroy();
-          child.stdout.destroy();
-          child.stderr.destroy();
+          closePipes();
           releaseCommand();
           reject(timeoutError());
         }, 1_000);
@@ -208,10 +229,7 @@ export function runFixtureCommand(
       clearTimeout(timer);
       if (interrupted) {
         if (interruptionKilled) {
-          if (!cleanupFailed) {
-            releaseCommand(true);
-          }
-          reject(interruptedError());
+          finishInterrupted();
         }
         return;
       }
