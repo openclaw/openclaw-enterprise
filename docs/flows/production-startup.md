@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-04"
-last_updated_session: "authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446"
+last_updated_session: "authoring-run/58196aeb-45b5-4ea5-850d-e368b48f15f9"
 ---
 
 # Production Startup Flow
@@ -178,15 +178,17 @@ not `.` or a `..` prefix.
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
 record the Job UID: Helm reuses names.
-`internal/occcli/installation_doctor.go:readInitialization` launches one bounded
-`kubectl` invocation with the selected kubeconfig/context to get that named Job.
-`initializationEvidence` compares the recorded UID before labels, recognizes only
-this release's chart steps, rejects sidecar initialization and foreign controllers,
-and interprets terminal status. `doctor` reports the checkpoint; `plan` orders
-remaining operator checks. Both are read-only. Missing, replaced, unreadable,
-or unsupported Jobs leave the original outcome unknown; no result authorizes
-retry. Completion does not attest execution, current database state, Helm rollout,
-or Agent readiness.
+`internal/occcli/installation_doctor.go:readInitialization` issues one bounded
+`kubectl` read with the selected kubeconfig/context.
+`initializationEvidence` checks recorded UID before labels, accepts only this
+release's chart steps, rejects sidecar initialization and foreign controllers,
+then interprets terminal status. The read-only `doctor` reports the checkpoint;
+`plan` orders checks. Missing, replaced, unreadable, or unsupported Jobs
+leave the original outcome unknown. No result authorizes retry or attests
+execution, current database state, Helm rollout, or Agent readiness.
+
+`installationHandoffCommand` checks the buffered `WriteTo` before returning Job
+status. On write errors, `cmd/occ/main.go:main` reports stderr diagnostics and exits `1`.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -396,6 +398,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 23:14: Document report write failures. (authoring-run/58196aeb-45b5-4ea5-850d-e368b48f15f9 - 582236adfbbb392c2247995dde054eef929ca6c1)
 
 - 2026-11-04 07:10: Trace read-only initialization handoff and exact current chart recognition. (authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446 - 0c39ae057d294e7c1a244666fb6b98a1200b7f52)
 

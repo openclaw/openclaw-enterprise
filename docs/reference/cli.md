@@ -144,8 +144,9 @@ claimed.
 `--expect-job-uid` binds the observation to the originally recorded Job.
 
 Use the CLI matching the chart's source revision. Output is text only. Exit `0`
-means the recognized Job reports consistent completion; other states exit `1`.
-Neither result proves current release or workload readiness.
+means the recognized Job reports consistent completion and the report was written
+successfully. Other states and output write failures exit `1`. Neither result
+proves current release or workload readiness.
 [Resume with the original Job UID](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
 
 ## Runtime status and logs
