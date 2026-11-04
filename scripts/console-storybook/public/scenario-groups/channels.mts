@@ -543,7 +543,11 @@ export function channelsScenarios({
           details: [{ path: "/expectedGeneration", code: "INVALID_VALUE" }],
         },
       ],
-      actions: [click("Edit Slack"), click("Save configuration")],
+      actions: [
+        click("Edit Slack"),
+        { selector: "#slack-dm-policy", value: "disabled" },
+        click("Save configuration"),
+      ],
       description:
         "The API refuses the Configuration write with 409: another save landed after the page's reread. The editor closes and the section offers Reload draft, with focus on it.",
     },
@@ -553,7 +557,11 @@ export function channelsScenarios({
       path: `${draft}&tab=channels`,
       slack: true,
       rules: [reservedConfigurationWrite],
-      actions: [click("Edit Slack"), click("Save configuration")],
+      actions: [
+        click("Edit Slack"),
+        { selector: "#slack-dm-policy", value: "disabled" },
+        click("Save configuration"),
+      ],
       description:
         "Save keeps the editor open and explains that this Configuration is reserved for provisioning. There is no Reload draft action: reloading would not release the reservation.",
     },
@@ -569,7 +577,11 @@ export function channelsScenarios({
           status: 400,
         },
       ],
-      actions: [click("Edit Slack"), click("Save configuration")],
+      actions: [
+        click("Edit Slack"),
+        { selector: "#slack-dm-policy", value: "disabled" },
+        click("Save configuration"),
+      ],
       description:
         "A rejected Configuration write keeps the drawer and feedback visible, with focus back on Save configuration.",
     },
@@ -586,7 +598,11 @@ export function channelsScenarios({
           code: "FORBIDDEN",
         },
       ],
-      actions: [click("Edit Slack"), click("Save configuration")],
+      actions: [
+        click("Edit Slack"),
+        { selector: "#slack-dm-policy", value: "disabled" },
+        click("Save configuration"),
+      ],
       description:
         "A caller without Configuration update is refused. The drawer stays open with the edits and names the grant to ask an administrator for; the text is the same for every refusal.",
     },
@@ -596,12 +612,12 @@ export function channelsScenarios({
       path: `${draft}&tab=channels`,
       slack: true,
       configurationChangedElsewhere: true,
-      actions: [click("Edit Slack"), click("Save configuration")],
+      actions: [click("Disable Slack")],
       description:
-        "Another browser saved this Configuration after the page read it. The editor closes and the section offers Reload draft; editing, deployment and tab changes wait for it.",
+        "Another browser saved this Configuration after the page read it. Disable Slack detects the change during its preflight read, without opening an editor or sending a Configuration PATCH. The section offers Reload draft; editing, deployment and tab changes wait for this deliberate reload.",
       steps: [
-        "Check that focus is on Reload draft and the alert says the saved Configuration changed while you were editing.",
-        "Select Reload draft: the tab rebuilds in place with Draft reloaded., and Edit Slack saves again.",
+        "Check that focus is on Reload draft, no editor is open, and the request log contains no Configuration PATCH.",
+        "Select Reload draft deliberately: the tab rebuilds in place with Draft reloaded. Slack remains enabled because Disable Slack sent no write; no unsaved editor changes are restored.",
       ],
     },
     channelChangedElsewhereWithEdits: {
