@@ -2063,7 +2063,7 @@ test(
       const { createConnection } = await import("node:net");
       const { syntheticResponsesEvents, encodeSyntheticEvents } =
         await import("/tmp/synthetic-egress-provider.mjs");
-      const payload = JSON.parse(process.argv[1]);
+      const payload = JSON.parse(fs.readFileSync(0, "utf8"));
       const workspace = "/home/node/workspace";
       const codexHome = "/home/node/.codex";
       fs.mkdirSync(workspace, { recursive: true });
@@ -2217,7 +2217,7 @@ process.exit(Object.values(report).every(Boolean) ? 0 : 74);
       let closing = false;
       // Run the complete OCE entrypoint, including synthetic API-key login and
       // readiness. Its real authenticated WebSocket is consumed by the packaged client.
-      const native = cp.spawn(process.execPath, ["-e", payload.entrypoint], {
+      const native = cp.spawn(process.execPath, ["-e", ...payload.entrypointArguments], {
         env: environment,
         stdio: ["ignore", "ignore", "pipe"],
       });
@@ -2356,6 +2356,7 @@ process.exit(Object.values(report).every(Boolean) ? 0 : 74);
       [
         "run",
         "--rm",
+        "--interactive",
         "--network",
         "none",
         "--read-only",
@@ -2380,14 +2381,14 @@ process.exit(Object.values(report).every(Boolean) ? 0 : 74);
         "--input-type=module",
         "-e",
         "(" + probeNativeThread.toString() + ")()",
-        JSON.stringify({
-          entrypoint: AGENT_RUNTIME_ENTRYPOINT,
-          environment: pluginRuntimeEnvironment(runtime),
-          brokerConfiguration,
-          syntheticApiKey: syntheticCodexApiKey,
-        }),
       ],
       { timeout: cpuScaledImageTimeoutMs(120_000) },
+      JSON.stringify({
+        entrypointArguments: nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT),
+        environment: pluginRuntimeEnvironment(runtime),
+        brokerConfiguration,
+        syntheticApiKey: syntheticCodexApiKey,
+      }),
     );
     assert.match(stdout, /native-thread-sandbox-confirmed/);
   },
