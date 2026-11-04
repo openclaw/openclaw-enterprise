@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -198,3 +198,176 @@ test(
     );
   },
 );
+
+test("first install retains exact attempt evidence after a lost client", { skip }, async (t) => {
+  await validateExplicitK3dLoopbackContext(selection);
+  const { kubectl, resource } = createKubernetesClient({ selection });
+  const dir = await mkdtemp(join(tmpdir(), "occ-install-receipt-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const occ = join(dir, "occ");
+  execFileSync("go", ["build", "-o", occ, "./cmd/occ"]);
+  const namespace = `receipt-${randomUUID()}`;
+  const release = "receipt";
+  const name = `${release}-initialization`;
+  await kubectl("create", "namespace", namespace);
+  t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
+  const values = join(dir, "values.json");
+  // Missing input Secrets/PVC keep the genuine chart Job pending. This proves
+  // Helm dispatch and handoff, without claiming database initialization ran.
+  await writeFile(
+    values,
+    JSON.stringify({
+      gatewayRouting: { enabled: false },
+      images: { controller: `registry.example.invalid/controller@sha256:${"a".repeat(64)}` },
+      auth: { baseUrl: "https://occ.example.invalid", secretName: "occ-auth", secretKey: "secret" },
+      bootstrap: {
+        adminEmail: "admin@example.invalid",
+        password: { claimName: "absent-bootstrap" },
+      },
+      api: { clients: [{ namespace: "operator-tools", podLabels: { app: "operator" } }] },
+      database: { cidrs: ["10.45.0.12/32"] },
+      cluster: { cidrs: ["10.43.0.1/32"] },
+    }),
+  );
+  const receipt = join(dir, "receipt");
+  const target = [
+    "--kubeconfig",
+    selection.kubeconfigPath!,
+    "--context",
+    selection.kubernetesContext!,
+    "--kube-namespace",
+    namespace,
+    "--release",
+    release,
+  ];
+  const args = [
+    "installation",
+    "install",
+    ...target,
+    "--chart",
+    "deploy/helm/openclaw-enterprise",
+    "--values",
+    values,
+    "--receipt",
+    receipt,
+    "--wait-timeout",
+    "2m",
+  ];
+  const child = spawn(occ, args, {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, TMPDIR: dir },
+  });
+  assert.ok(child.pid);
+  // Disarm cleanup after termination or exit: process group IDs can be reused.
+  let active = true;
+  const terminate = () => {
+    if (!active) {
+      return;
+    }
+    active = false;
+    try {
+      process.kill(-child.pid!, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+        throw error;
+      }
+    }
+  };
+  t.after(terminate);
+  const exited = new Promise((resolve) =>
+    child.once("exit", (code) => {
+      active = false;
+      resolve(code);
+    }),
+  );
+  let job: Awaited<ReturnType<typeof resource>> | undefined;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      job = await resource("job", name, namespace);
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  assert.ok(job, "real Helm install must create its initialization Job");
+  // Wait for the durable UID, then lose both the installer and Helm before
+  // release completion. Reconciliation must preserve that exact UID.
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      await readFile(join(receipt, "job.json"));
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  const captured = JSON.parse(await readFile(join(receipt, "job.json"), "utf8"));
+  assert.equal(captured.uid, job.metadata.uid);
+  terminate();
+  await exited;
+  const intent = JSON.parse(await readFile(join(receipt, "intent.json"), "utf8"));
+  assert.equal(job.metadata.annotations["openclaw.dev/installation-attempt"], intent.attempt);
+  assert.match(intent.attempt, /^[a-f0-9]{64}$/);
+  assert.equal((await stat(receipt)).mode & 0o777, 0o700);
+  assert.equal((await stat(join(receipt, "intent.json"))).mode & 0o777, 0o600);
+  await assert.rejects(readFile(join(receipt, "helm-result.json")), { code: "ENOENT" });
+  const before = await readdir(receipt);
+  const handoff = (action: string) =>
+    spawnSync(occ, ["installation", action, ...target, "--receipt", receipt], { encoding: "utf8" });
+  const observed = handoff("doctor");
+  assert.equal(observed.status, 1, observed.stderr + observed.stdout);
+  assert.match(observed.stdout, /completion not established/);
+  assert.match(observed.stdout, /matches the recorded UID/);
+  assert.deepEqual(
+    await readdir(receipt),
+    before,
+    "read-only handoff does not rewrite the receipt",
+  );
+  assert.equal((await resource("job", name, namespace)).metadata.uid, job.metadata.uid);
+  const retry = spawnSync(occ, args, { encoding: "utf8" });
+  assert.equal(retry.status, 1);
+  assert.match(retry.stderr, /not confirmed unused|never reuse/);
+  assert.equal((await resource("job", name, namespace)).metadata.uid, job.metadata.uid);
+
+  // A normally returned timeout persists both its separate Helm result and
+  // the actual Job UID. Failure still cannot authorize a second install.
+  const returnedReceipt = join(dir, "returned-receipt");
+  const returnedArgs = [...args];
+  returnedArgs[returnedArgs.indexOf("--release") + 1] = "returned";
+  returnedArgs[returnedArgs.indexOf("--receipt") + 1] = returnedReceipt;
+  returnedArgs[returnedArgs.indexOf("--wait-timeout") + 1] = "2s";
+  const returned = spawnSync(occ, returnedArgs, {
+    encoding: "utf8",
+    env: { ...process.env, TMPDIR: dir },
+  });
+  assert.equal(returned.status, 1, returned.stderr + returned.stdout);
+  assert.deepEqual(JSON.parse(await readFile(join(returnedReceipt, "helm-result.json"), "utf8")), {
+    outcome: "failed",
+  });
+  const returnedJob = JSON.parse(await readFile(join(returnedReceipt, "job.json"), "utf8"));
+  assert.equal(
+    returnedJob.uid,
+    (await resource("job", "returned-initialization", namespace)).metadata.uid,
+  );
+
+  // An upgrade must not inherit the first-install marker, even when Helm
+  // retains its values. A replacement cannot silently become the original.
+  const rendered = await renderProductionChart(
+    { "installation.attemptId": intent.attempt },
+    { namespace, release, isUpgrade: true },
+  );
+  const replacement = (await parseProductionChart(rendered.stdout)).find(
+    (item: ChartResource) => item.kind === "Job",
+  );
+  assert.ok(replacement);
+  assert.equal(replacement.metadata.annotations["openclaw.dev/installation-attempt"], undefined);
+  replacement.metadata.namespace = namespace;
+  replacement.spec.suspend = true;
+  await kubectl("-n", namespace, "delete", "job", name);
+  const file = join(dir, "replacement.json");
+  await writeFile(file, JSON.stringify(replacement));
+  await kubectl("apply", "-f", file);
+  const replaced = handoff("plan");
+  assert.equal(replaced.status, 1);
+  assert.match(replaced.stdout, /does not identify the recorded installation attempt/);
+});

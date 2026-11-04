@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-04"
-last_updated_session: "authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446"
+last_updated_session: "authoring-run/6c8eb7c1-4921-456d-bd96-cf1e8303b58b"
 ---
 
 # Production Startup Flow
@@ -18,7 +18,7 @@ with the service key.
 ## Entry Points
 
 - Trigger: Run `scripts/prepare-bootstrap-volume`, then
-  `helm install oce deploy/helm/openclaw-enterprise`.
+  `occ installation install` with explicit target, local chart, values and receipt.
 - Source: `scripts/prepare-bootstrap-volume:53`,
   `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`, and
   `apps/controller/src/composition/production.ts:28`.
@@ -38,9 +38,10 @@ graph TD
         B["Create system namespace and file-backed Secrets"]
         C["Create fresh bootstrap PVC"]
         D["prepare-bootstrap-volume verifies empty output and root permissions"]
+        D --> RC["CLI snapshots inputs and syncs intent"]
     end
     subgraph Helm["Helm-owned startup"]
-        D --> E["Render chart with native values"]
+        RC --> E["Run Helm install once with attempt marker"]
         E --> F["Run initialization Job with migrator and application roles"]
         F --> V{"PostgreSQL before 17?"}
         V -->|Yes| P["Refuse initialization before migration DDL"]
@@ -59,7 +60,7 @@ graph TD
     end
     subgraph Handoff["Read-only operator handoff"]
         F -->|Inspect retained Job| T["occ installation doctor or plan reads named Job"]
-        T --> U["Check recorded UID, chart steps, and terminal status"]
+        T --> U["Check target, Job identity and terminal status"]
         U --> W["Report checkpoint; operator reconciles remaining work"]
     end
     subgraph Proof["Operator-owned authenticated proof"]
@@ -111,45 +112,31 @@ repairs used claims, retrieves credentials, or changes controller configuration.
 
 ### 3. Run Helm initialization
 
-`deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`
+`internal/occcli/installation_receipt.go:installationInstallCommand` snapshots the
+kubeconfig, chart and values privately and checks all release states. It syncs
+the intent, receipt directory entry and unknown dispatch marker before starting
+Helm. While Helm waits, `observeInstallationJob` records the first recognized
+install Job UID whose annotation matches the attempt. Upgrades omit the marker.
+Helm's exit outcome has a separate record.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
 DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-Server-connected first installs check the named Job; if present or unreadable,
-stop; preserve it; reconcile. Offline `helm template` cannot check it.
-This is no lock or freshness proof for database, identity or storage; upgrades
-are unchanged.
+`deploy/helm/openclaw-enterprise/templates/jobs.yaml:8` stops a connected install
+if its named Job exists or cannot be read. Offline rendering cannot check this.
+The lookup neither locks the name nor verifies database or volume freshness.
 
-`deploy/helm/openclaw-enterprise/values.yaml:gatewayRouting` enables private
-routing by default. `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate`
-refuses missing GatewayClass or service-key Secret names before rendering. Operators
-install Envoy Gateway, its CRDs, Gateway API CRDs and cert-manager, create the
-GatewayClass and Secret, and configure matching Installation routing settings.
-Helm neither installs those prerequisites nor checks their readiness offline.
-Explicit `gatewayRouting.enabled: false` omits routing resources and key mounts;
-it requires native admin and sandbox routing to be disabled. See
-[opt-out limits](../guides/deploy/workspace-routing.md#explicit-opt-out).
-
-`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` matches Compute routing validation. `database.port`,
-`cluster.port`, and `executionCluster.apiPort` must be 1–65535 without leading zeros.
-Empty hosts retain Service DNS for listeners and Certificate SANs.
-
-`deploy/helm/openclaw-enterprise/templates/metrics.yaml` rejects `metrics.port=8443`
-when metrics and the repository service are enabled: both share the worker Pod.
-Use the default 9464.
-
-`apps/controller/src/drivers/compute/kubernetes/index.ts:validateDnsHostname`
-refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persistence.
-IPv4 admission does not establish TLS.
-`validateSandboxDomain` refuses numeric/hex suffixes, including canonical IPv4.
-Correct Helm values and Installation YAML before upgrade/restart; see
-[values the candidate refuses](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
-
-`deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
-rejects invalid Kubernetes peer maps, preserving null/empty semantics and accepted labels.
+`openclaw.validate` in `deploy/helm/openclaw-enterprise/templates/_helpers.tpl`
+checks private routing inputs, port syntax and peer labels. Operators supply the
+GatewayClass, CRDs, controllers and Secrets. Disabling routing omits its resources
+and mounts and requires disabling native admin and sandbox routing. Database and
+API ports accept 1–65535 without leading zeros. The Compute Driver rejects malformed
+IPv4 hostnames and numeric or hexadecimal sandbox domain suffixes.
+See [routing prerequisites and opt-out](../guides/deploy/workspace-routing.md#explicit-opt-out)
+and [values the candidate refuses](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
+The metrics and repository listeners share a worker Pod and need different ports.
 
 On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` validates
 Installation without database/Kubernetes access; refusal stops migration and API
@@ -160,15 +147,10 @@ diagnostics, without submitted values, except
 `CHART_LISTENER_MISMATCH` names ports, hosts or paths refused when
 `OCC_EGRESS_AUTHORITY_PORT`/`OCC_OPENSHELL_GIT_PORT` is set.
 
-With chart-managed routing, `openclaw.listenerEnv` also passes
-`OCC_CHART_GATEWAY_ROUTING` to the hook, API, and worker. After validating the
-bundled Kubernetes Compute configuration,
-`apps/controller/src/composition/installation-fields.ts:requireChartGatewayRouting`
-compares its selected Gateway name, Gateway namespace, Envoy namespace, and
-effective hostname with that chart-owned expectation. The chart reuses its
-hostname helper for the listener and the expectation. A mismatch raises
-`CHART_LISTENER_MISMATCH` naming the field without its submitted value.
-External Compute Drivers and routing not selected in Compute are unchanged.
+For chart-managed routing, `openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING`
+to the hook, API and worker. `requireChartGatewayRouting` compares the Kubernetes
+Compute Gateway name, Gateway and Envoy namespaces, and effective hostname.
+A mismatch reports the field without its value.
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and
@@ -177,16 +159,12 @@ and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
 not `.` or a `..` prefix.
 
 For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
-record the Job UID: Helm reuses names.
-`internal/occcli/installation_doctor.go:readInitialization` launches one bounded
-`kubectl` invocation with the selected kubeconfig/context to get that named Job.
-`initializationEvidence` compares the recorded UID before labels, recognizes only
-this release's chart steps, rejects sidecar initialization and foreign controllers,
-and interprets terminal status. `doctor` reports the checkpoint; `plan` orders
-remaining operator checks. Both are read-only. Missing, replaced, unreadable,
-or unsupported Jobs leave the original outcome unknown; no result authorizes
-retry. Completion does not attest execution, current database state, Helm rollout,
-or Agent readiness.
+`internal/occcli/installation_doctor.go:installationHandoffCommand` verifies the
+receipt namespace, release and reader's cluster connection before a named Job read.
+`initializationEvidence` checks the marker, captured UID, chart steps, controller
+and terminal status. Missing UID, replacement, refusal or inconclusive status
+leaves the original checkpoint unknown. Doctor reports Helm's recorded outcome
+separately. Plan adds read-only recovery steps.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -396,6 +374,10 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 23:07: Require the captured UID for original Job completion. (authoring-run/6c8eb7c1-4921-456d-bd96-cf1e8303b58b - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
+
+- 2026-11-04 23:05: Trace durable first-install receipts and read-only attempt reconciliation. (authoring-run/1b2cbf33-0aef-45e7-bac1-2b40f26eeb3e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-11-04 07:10: Trace read-only initialization handoff and exact current chart recognition. (authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446 - 0c39ae057d294e7c1a244666fb6b98a1200b7f52)
 
