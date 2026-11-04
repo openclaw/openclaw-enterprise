@@ -20,7 +20,7 @@ import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-sm
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { followContainer } from "./docker-follow.mjs";
 import { withTestOwnerLabel } from "./docker-test-owner.mjs";
-import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { runtimeImageEntrypoints } from "./runtime-image-entrypoints.mjs";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
@@ -703,7 +703,7 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
       enableSlack: harnessId === "openclaw",
     }),
     configurationPath,
-    entrypoint = DOCKER_GATEWAY_RUNTIME_ENTRYPOINT,
+    entrypoint = runtimeImageEntrypoints().dockerGateway,
     extraEnvironment = [],
     readinessAttempts,
     tmpfs = ["/home/node:size=1024m,uid=1000,gid=1000,mode=700"],

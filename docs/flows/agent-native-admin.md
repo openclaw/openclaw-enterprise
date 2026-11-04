@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-11-03
-last_updated_session: fix/native-admin-signed-out-html-fallback
+last_updated_session: authoring-run/c6942767-a93f-41d4-8d98-dff149547a0a
 ---
 
 # Agent Native Admin UI Flow
@@ -118,11 +118,11 @@ when a readable version exists. Other unavailable states keep Refresh access.
 The warning describes Gateway managed mode and OCE overwriting changes made while
 it is off; durable configuration belongs in OCE.
 
-Docker and Kubernetes also pass `OPENCLAW_CONFIG_READONLY_NOTICE` to the Gateway
-child when the deployed revision enables managed mode
+Docker and Kubernetes pass `OPENCLAW_CONFIG_READONLY_NOTICE` for managed revisions
 (`apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`).
-A supporting Gateway uses this text to direct administrators to the Console when
-configuration is read-only. A change to the draft's managed mode takes effect at deployment.
+The [upstream shell](https://github.com/openclaw/openclaw/blob/ae4828f528a4ccf574208ad2537c07a0114e743e/ui/src/app/app-shell-view.tsx)
+renders Console guidance and saves dismissal in Gateway-scoped browser preferences,
+preserving the Gateway's write policy.
 
 ### 2. OCC protects the availability route
 
@@ -272,6 +272,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 17:39: Trace browser-local dismissal of the managed Gateway notice. (authoring-run/c6942767-a93f-41d4-8d98-dff149547a0a - 40992b51ca2649177d6e60d23431868a57d5e068)
 
 - 2026-11-03 12:55: Sign-in link for unactivated page loads. (fix/native-admin-signed-out-html-fallback)
 

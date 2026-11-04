@@ -8,13 +8,7 @@ import {
   cpuScaledImageTimeoutMs,
   imageSmokeTimeoutMultiplier,
 } from "../helpers/image-smoke-timeout.mjs";
-import {
-  AGENT_RUNTIME_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-  GATEWAY_STOP_TIMEOUT_MS,
-  NATIVE_WORKER_ENTRYPOINT,
-  PLUGIN_RUNTIME_HELPERS,
-} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { runtimeImageEntrypoints } from "../helpers/runtime-image-entrypoints.mjs";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
@@ -55,6 +49,13 @@ const historicalCodex = stagingCodexVersion === "0.163.0-alpha.2";
 if (historicalCodex) {
   assert.equal(process.env.EXPECTED_OCC_REVISION, "54bfa7fc1b99e362450beb5f9211e164991fa7b4");
 }
+const {
+  AGENT_RUNTIME_ENTRYPOINT,
+  GATEWAY_RUNTIME_ENTRYPOINT: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+  GATEWAY_STOP_TIMEOUT_MS,
+  NATIVE_WORKER_ENTRYPOINT,
+  PLUGIN_RUNTIME_HELPERS,
+} = runtimeImageEntrypoints();
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
@@ -1786,6 +1787,15 @@ test(
       GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
       "expected a policy-qualified runtime",
     );
+    // Staging runs this trusted checkout against the reviewed October 30 image.
+    // Its source and bridge hashes stay fixed when the current runtime pin advances.
+    const expectedSource = historicalCodex
+      ? {
+          commit: "554f0b886bde6c089578c49967227f8b50d1cf16",
+          sourceArchiveSha256: "1532c8e1baf84ecae6080aee6d15003afd2458aeaaeaa30b0504818b000c82d9",
+          buildTimestamp: "2026-10-28T22:17:21Z",
+        }
+      : source;
     const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
     const codexExecutableSource = AGENT_RUNTIME_ENTRYPOINT.match(
       /^function codexExecutable\(\) \{\n[\s\S]*?\n\}\n/m,
@@ -1817,20 +1827,29 @@ if (${historicalCodex}) {
 } else {
   assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
 }
-assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804");
+assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${JSON.stringify(
+      historicalCodex
+        ? "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804"
+        : "6b8d49759513caf93231af7335e82025f56c778e92d79a2c5cbfce7f1fbb80b3",
+    )});
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
   "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-  "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
-  "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+  "openclaw-control-ui-browser-reconnect.patch": ${JSON.stringify(
+    historicalCodex
+      ? "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947"
+      : "7ada72afd102ab0776b4b31a783191d2453558b6e932f1660d6294cb51cfe669",
+  )},
+  "openclaw-terminated-gateway-namespace.patch": ${JSON.stringify(
+    historicalCodex
+      ? "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b"
+      : "7903bcd6b97c77ea340ea721737962afd4a6a3f68c905bec9f3ff3b04ccb0d97",
+  )},
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   ...(${historicalCodex} ? {
     "stock-codex-0.163.0-alpha.2-dependency-pin.patch": "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
-  } : {
-    "openclaw-linux-private-store-setgid.patch": "e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c",
-    "openclaw-plugin-config-startup-report.patch": "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
-  }),
+  } : {}),
 });
 assert.equal(provenance.codex.version, ${JSON.stringify(stagingCodexVersion)});
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
@@ -2020,7 +2039,7 @@ const deadline = setTimeout(() => {
       "-e",
       script,
       JSON.stringify(defaultPluginPolicy),
-      JSON.stringify(source),
+      JSON.stringify(expectedSource),
     ]);
     assert.match(stdout, /shared-reviewed-codex-ready/);
   },
