@@ -244,6 +244,49 @@ if any required record differs or an operation remains uncertain. Verify Gateway
 and workspace volumes and compatibility with any older image before switching
 writers.
 
+## Verify a restored saved Configuration
+
+With source writers paused, record the Namespace, Agent, and linked
+Configuration IDs, the Configuration `generation`, and one known nonsecret
+setting at the same recovery point. The check follows the Agent's
+`configurationId` to read the current draft. Agent revisions preserve settings
+from past deployments. Check the required revision separately using the
+[upgrade checklist](upgrade-checklist.md#record-the-starting-state).
+
+Use Bash, jq, and the release CLI (`OCC_BIN`). Point `RESTORED_OCC_URL` at the
+private restored application. Use a protected `SERVICE_KEY_FILE` with read
+access to the Agent and Configuration. Set the IDs and `EXPECTED_GENERATION`
+from the source record. This example uses the saved assistant name as
+`EXPECTED_NAME`. If it was unset, use another recorded nonsecret string and
+replace `.values.ui.assistant.name` in the check.
+
+```bash
+(
+  set +x
+  set -euo pipefail
+  restored_occ=("${OCC_BIN:?}" --url "${RESTORED_OCC_URL:?}" --service-key-file "${SERVICE_KEY_FILE:?}"
+    --namespace "${NAMESPACE_ID:?}" --output json)
+  configuration_id=$("${restored_occ[@]}" agent get "${AGENT_ID:?}" 2>/dev/null |
+    jq -ers --arg ns "$NAMESPACE_ID" --arg agent "$AGENT_ID" --arg config "${EXPECTED_CONFIGURATION_ID:?}" '
+      select(length == 1) | .[0] | select(.namespaceId == $ns and .id == $agent and
+        .configurationId == $config and .configurationReadError == null)
+      | .configurationId
+    ' 2>/dev/null) || exit 1
+  "${restored_occ[@]}" configuration get "$configuration_id" 2>/dev/null |
+    jq -es --arg ns "$NAMESPACE_ID" --arg config "$configuration_id" \
+      --arg generation "${EXPECTED_GENERATION:?}" --arg name "${EXPECTED_NAME:?}" '
+        select(length == 1) | .[0] | .namespaceId == $ns and .id == $config
+        and (.generation | type == "number" and . >= 1 and . == floor)
+        and (.generation | tostring) == $generation and .values.ui.assistant.name == $name
+      ' >/dev/null 2>&1
+)
+```
+
+The check prints no Configuration values. Require exit 0 to accept the
+rehearsal or return a restored copy to service. On failure, keep the restored
+copy isolated and verify that both stores came from the recorded recovery
+point. A matching Agent ID and migration history cannot verify the saved draft.
+
 ## Record Agent data
 
 For each Agent whose data you must keep, choose a trusted regular file that an
@@ -365,7 +408,6 @@ any other change, in particular a changed PVC UID, a missing or altered earlier
 receipt, any other NetworkPolicy, Service or RoleBinding change, a different
 workspace hash, or a workspace that is empty or nearly so.
 
-The checklist's Configuration, Preset, Backend, service account, audit,
-session and gateway state items, and its authentication, credential, repository
-and CredentialSource items, have no command here; record them as that page
-describes.
+Use the checklist to record the remaining Configuration inventory and the
+Preset, Backend, service account, audit, session, gateway, authentication,
+credential, repository and CredentialSource items.
