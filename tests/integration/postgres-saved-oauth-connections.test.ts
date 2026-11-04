@@ -332,8 +332,8 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
         tokenUrl,
       );
       // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
-      const refused = await owner("POST", source + "/rotate");
-      assert.equal(refused.statusCode, 503);
+      const clientRefused = await owner("POST", source + "/rotate");
+      assert.equal(clientRefused.statusCode, 503);
       const repair = await owner("GET", source);
       assert.equal(repair.statusCode, 200, repair.body);
       const clientFailure = repair.json().data.status.refresh;
@@ -1011,15 +1011,10 @@ test(
     await rotateClientSecret(base + "/credential-sources/" + shared.id);
     const rotated = await rotate();
     assert.equal(rotated.statusCode, 200, rotated.body);
-    const grants = await owner("GET", path(b) + "/connections");
-    assert.equal(grants.statusCode, 200, grants.body);
-    assert.ok(
-      grants
-        .json()
-        .data.some(
-          (account: { credentialSourceId: string }) => account.credentialSourceId === shared.id,
-        ),
+    const grants = await state.read((view) =>
+      view.savedConnections.listAgentConnections(namespaceId, b),
     );
+    assert.ok(grants.some((account) => account.credentialSourceId === shared.id));
     // Keep the secondary sender unavailable throughout both operations. The primary
     // sender receives the renewed token while the failed sender keeps the old receipt.
     const write = transport.updateProviderCredentialsConditionally.bind(transport);
