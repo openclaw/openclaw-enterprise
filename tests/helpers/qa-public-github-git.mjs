@@ -7,7 +7,6 @@ import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { assertGatewayModelTurn } from "./kubernetes-real.mjs";
 import { stopQaAgent } from "./qa-repository.mjs";
 import { loadYaml } from "./qa-utils.mjs";
-import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { protectedModelApiKey, redactQaError } from "./qa-secrets.mjs";
 
 const supervisor =
@@ -68,12 +67,12 @@ console.log(JSON.stringify({node:process.version,buildRevision:/name="occ-build-
 
 // Keep the app-server credential inside its existing Gateway. Commands enter
 // the stock Codex executor with the provider-selected contract used by Agent tools.
-const nativeCommandScript = String.raw`
-${PLUGIN_RUNTIME_HELPERS}
+export const publicGithubNativeCommandScript = String.raw`
 (async () => {
-const peer = await readPeerPluginRuntimeStatus();
-if (peer === undefined) throw new Error("Native peer status is required.");
-process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(peer.startupId);
+// This journey selects the provider-prepared OpenShell transport. The shipping
+// Gateway does not follow plugin status or derive a startup token in this branch.
+if (process.env.OPENCLAW_CODEX_PLUGINS_PREPARED !== "true") throw new Error("Provider-prepared OpenShell transport is required.");
+if (!process.env.APP_SERVER_TOKEN) throw new Error("Base app-server token is required.");
 const args = JSON.parse(process.argv[2]);
 const permissionProfile = process.env.OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE;
 const cwd = process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT;
@@ -92,7 +91,18 @@ socket.on("message", data => {
     socket.send(JSON.stringify({ id: 2, method: "command/exec", params: { command: args, cwd, timeoutMs: 45000, permissionProfile } }));
   } else if (message.id === 2) { finish(message.result); }
 });
-})().catch(() => { process.stderr.write("Native peer authentication failed.\n"); process.exitCode = 1; });
+})().catch(() => { process.stderr.write("Native OpenShell command setup failed.\n"); process.exitCode = 1; });
+`;
+
+export const publicGithubManagedSkillScript = String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const home = process.env.HOME;
+const state = process.env.OPENCLAW_STATE_DIR || (typeof home === "string" && path.isAbsolute(home) ? path.join(home, ".openclaw") : undefined);
+if (typeof state !== "string" || !path.isAbsolute(state)) throw new Error("Native HOME or absolute state directory is required.");
+const skillPath = path.join(state, "skills", "public-github-read", "SKILL.md");
+const text = fs.readFileSync(skillPath, "utf8");
+console.log(JSON.stringify({ node: fs.realpathSync(process.execPath), skillPath, managedSkill: text.includes("name: public-github-read") && text.includes("curl -q") }));
 `;
 
 // The stock supervisor loads native system roots. Add only this journey's
@@ -314,7 +324,7 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
           "-",
           JSON.stringify(args),
         ],
-        { input: nativeCommandScript, privateFailureOutput: true },
+        { input: publicGithubNativeCommandScript, privateFailureOutput: true },
       );
       const result = JSON.parse(observed);
       await f.write(`native-git-${randomUUID()}.json`, result);
@@ -373,11 +383,7 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
       );
     }
     await select(first, { mode: "all" });
-    const skill = await executeCommand(first, [
-      "node",
-      "-e",
-      "const fs=require('node:fs');const text=fs.readFileSync('/home/node/.openclaw/skills/public-github-read/SKILL.md','utf8');console.log(JSON.stringify({node:fs.realpathSync(process.execPath),managedSkill:text.includes('name: public-github-read')&&text.includes('curl -q')}));",
-    ]);
+    const skill = await executeCommand(first, ["node", "-e", publicGithubManagedSkillScript]);
     assert.equal(
       skill.exitCode,
       0,
@@ -405,6 +411,7 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
       node: nativePaths.node,
       curl: api.stderr.trim().split("\n")[0],
       managedSkill: true,
+      skillPath: nativePaths.skillPath,
       knownReadme: true,
     });
 
@@ -417,9 +424,34 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
     assert.ok(after > before, "fetch must deliver additional commit objects");
     assert.equal(await git(first, "-C", clone, "remote", "get-url", "origin"), url);
     await denied(first, "ls-remote", "https://github.com/github/gitignore.git");
+    // Require the reader's own upload-pack-only response, not GitHub's inevitable
+    // anonymous-write rejection. Native push failure alone does not identify it.
+    const receivePack = await executeCommand(first, [
+      "/bin/sh",
+      "-eu",
+      "-c",
+      'curl -q -sS --noproxy "" --cacert "$OCE_PUBLIC_GITHUB_READ_CA_FILE" -H "Authorization: Bearer $OCE_PUBLIC_GITHUB_READ_CAPABILITY" --write-out "\\n%{http_code}" "$1/git/octocat/hello-world.git/info/refs?service=git-receive-pack"',
+      "public-github-write-refusal",
+      `https://${reader.peer.address}:8080`,
+    ]);
+    assert.equal(receivePack.exitCode, 0, "the verified reader connection must complete");
+    const statusLine = receivePack.stdout.lastIndexOf("\n");
+    assert.equal(receivePack.stdout.slice(statusLine + 1).trim(), "400");
+    assert.deepEqual(JSON.parse(receivePack.stdout.slice(0, statusLine)), {
+      message: "Expected supported Git upload-pack discovery or read.",
+    });
     await denied(first, "-C", clone, "push", "origin", "HEAD:refs/heads/oce-qa-forbidden");
+
     await denied(first, "ls-remote", "https://github.com/unavailable-oce-qa/nonexistent.git");
-    await denied(first, "ls-remote", "https://github.com.evil.invalid/octocat/Hello-World.git");
+    // A noncanonical port reaches the owning transport guard before any DNS or
+    // upstream authentication decision. A lookalike .invalid host cannot prove this.
+    const noncanonical = await executeCommand(first, [
+      "git",
+      "ls-remote",
+      "https://github.com:444/octocat/Hello-World.git",
+    ]);
+    assert.notEqual(noncanonical.exitCode, 0);
+    assert.match(noncanonical.stderr, /The managed public Git transport refused this invocation\./);
     const gateway = await f.gatewayUrl(first);
     try {
       await assertGatewayModelTurn({
@@ -487,13 +519,16 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
       managedSkillApiRead: true,
       ceilingIntersection: true,
       separateAgentScopes: true,
-      writesDenied: true,
-      forgedOriginsDenied: true,
+      readerReceivePackRefusedWithUploadPackOnlyResponse: true,
+      nativePushUnsuccessful: true,
+      noncanonicalGithubOriginRefusedByManagedTransport: true,
       replacement: true,
       controllerRestart: true,
       readerColdRestart: true,
       withdrawalIsolation: true,
       gaps: [
+        "Native push upstream-no-contact proof is controlled-fixture coverage, separate from installed reader refusal",
+        "Installed lookalike-host OpenShell policy refusal (DNS failure is insufficient)",
         "Known private repository live-provider proof",
         "Protected repository read/write coexistence",
         "Ten-minute expiry isolation",

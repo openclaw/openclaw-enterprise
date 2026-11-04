@@ -115,6 +115,21 @@ test("managed Git transport clones and fetches ordinary URLs while the reader en
   });
   await assert.rejects(git(clone, "push", "origin", "HEAD:refs/heads/forbidden"), { code: 128 });
   assert.equal(provider.requests.length, before, "denials must not contact GitHub");
+  // The canonical-host guard rejects forged URL origins locally. DNS failure
+  // at a lookalike host would not prove this transport policy boundary.
+  for (const forged of [
+    "https://github.com:444/example/project.git",
+    "https://user@github.com/example/project.git",
+    "https://github.com/example/project.git?forged=1",
+  ]) {
+    await assert.rejects(
+      git(directory, "ls-remote", forged),
+      (error) =>
+        error.code === 128 &&
+        /The managed public Git transport refused this invocation\./.test(error.stderr),
+    );
+  }
+  assert.equal(provider.requests.length, before, "noncanonical origins must not contact GitHub");
   authorizations = {};
   await assert.rejects(git(clone, "fetch", "origin"), { code: 128 });
   assert.equal(provider.requests.length, before, "withdrawn access must not fall back to GitHub");

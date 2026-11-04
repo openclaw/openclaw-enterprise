@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import {
   protectedText,
@@ -3652,4 +3652,122 @@ test("QA model failure evidence preserves the failure and its admitted revision"
     }),
     (error) => error === failure,
   );
+});
+
+test("public Git QA uses the provider-prepared OpenShell base token and execution contract", async (t) => {
+  const { createRequire } = await import("node:module");
+  const controllerRequire = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  );
+  const gatewayRequire = createRequire(controllerRequire.resolve("@openclaw/gateway-client"));
+  const { WebSocketServer } = gatewayRequire("ws");
+  const { publicGithubNativeCommandScript } = await import("../helpers/qa-public-github-git.mjs");
+  const server = createServer();
+  const token = `qa-base-${randomUUID()}`;
+  let connections = 0;
+  const commands = [];
+  const sockets = new WebSocketServer({
+    server,
+    verifyClient: ({ req }) => req.headers.authorization === `Bearer ${token}`,
+  });
+  sockets.on("connection", (socket) => {
+    connections++;
+    socket.on("message", (data) => {
+      const request = JSON.parse(data.toString());
+      if (request.method === "initialize") {
+        socket.send(JSON.stringify({ id: request.id, result: {} }));
+      } else if (request.method === "command/exec") {
+        commands.push(request.params);
+        socket.send(
+          JSON.stringify({
+            id: request.id,
+            result: { exitCode: 0, stdout: "protocol receipt", stderr: "" },
+          }),
+        );
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    for (const socket of sockets.clients) {
+      socket.terminate();
+    }
+    await new Promise((resolve) => sockets.close(resolve));
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const env = {
+    ...process.env,
+    NODE_PATH: dirname(dirname(gatewayRequire.resolve("ws/package.json"))),
+    OPENCLAW_CODEX_PLUGINS_PREPARED: "true",
+    APP_SERVER_TOKEN: token,
+    APP_SERVER_URL: `ws://127.0.0.1:${server.address().port}`,
+    OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE: ":danger-full-access",
+    OPENCLAW_REMOTE_WORKSPACE_ROOT: "/sandbox/workspace",
+  };
+  // No plugin-status port is configured: prepared OpenShell must authenticate
+  // with its base token rather than attempting the other topology's derivation.
+  delete env.OPENCLAW_PLUGIN_STATUS_PORT;
+  delete env.OPENCLAW_PEER_PLUGIN_STATUS_URL;
+  async function client(environment) {
+    const child = spawn(process.execPath, ["-", JSON.stringify(["git", "--version"])], {
+      env: environment,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const output = [];
+    const error = [];
+    child.stdout.on("data", (data) => output.push(data));
+    child.stderr.on("data", (data) => error.push(data));
+    child.stdin.end(publicGithubNativeCommandScript);
+    const [code] = await once(child, "close");
+    return {
+      code,
+      stdout: Buffer.concat(output).toString(),
+      stderr: Buffer.concat(error).toString(),
+    };
+  }
+  const result = await client(env);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).exitCode, 0);
+  assert.deepEqual(commands, [
+    {
+      command: ["git", "--version"],
+      cwd: "/sandbox/workspace",
+      timeoutMs: 45000,
+      permissionProfile: ":danger-full-access",
+    },
+  ]);
+  assert.equal(connections, 1);
+  const unsupported = await client({ ...env, OPENCLAW_CODEX_PLUGINS_PREPARED: "false" });
+  assert.notEqual(unsupported.code, 0);
+  assert.equal(
+    connections,
+    1,
+    "unsupported topology must fail before trying another authentication contract",
+  );
+});
+
+test("public Git QA discovers its managed skill beneath native HOME or state directory", async (t) => {
+  const { mkdir } = await import("node:fs/promises");
+  const { publicGithubManagedSkillScript } = await import("../helpers/qa-public-github-git.mjs");
+  const directory = await temporaryDirectory(t, "qa-openshell-home-");
+  const home = join(directory, "sandbox", ".openclaw-runtime", "home");
+  for (const state of [join(home, ".openclaw"), join(directory, "configured-state")]) {
+    const skill = join(state, "skills", "public-github-read", "SKILL.md");
+    await mkdir(join(state, "skills", "public-github-read"), { recursive: true });
+    await writeFile(skill, "name: public-github-read\nUse curl -q for the managed reader.\n");
+    const env = { ...process.env, HOME: home };
+    delete env.OPENCLAW_STATE_DIR;
+    if (state !== join(home, ".openclaw")) {
+      env.OPENCLAW_STATE_DIR = state;
+      delete env.HOME;
+    }
+    const observed = JSON.parse(
+      execFileSync(process.execPath, ["-e", publicGithubManagedSkillScript], {
+        env,
+        encoding: "utf8",
+      }),
+    );
+    assert.equal(observed.skillPath, skill);
+    assert.equal(observed.managedSkill, true);
+  }
 });

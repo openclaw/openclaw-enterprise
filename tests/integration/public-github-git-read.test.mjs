@@ -119,7 +119,11 @@ test(
           "/info/refs",
           "/objects/aa",
         ]) {
-          assert.ok((await fetch(suffix)).status >= 400, suffix);
+          const response = await fetch(suffix);
+          assert.equal(response.status, 400, suffix);
+          assert.deepEqual(await response.json(), {
+            message: "Expected supported Git upload-pack discovery or read.",
+          });
         }
         for (const [suffix, options] of [
           [
