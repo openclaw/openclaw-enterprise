@@ -83,6 +83,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
+| [Connections](#connections) | 6 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 6 operations |
 | [Agents](#agents) | 50 operations |
@@ -1700,6 +1701,630 @@ Example response
 ```json
 {
   "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+<span id="connections"></span>
+
+### Connections
+
+| Operation | Summary |
+| --- | --- |
+| [`GET /connection-templates`](#get-connectiontemplates) | List all Installation-wide and Namespace-scoped connection templates |
+| [`POST /connection-templates`](#post-connectiontemplates) | Create an Installation-wide or Namespace-scoped connection template |
+| [`DELETE /connection-templates/{connectionTemplateId}`](#delete-connectiontemplatesconnectiontemplateid) | Delete a connection template |
+| [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
+| [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template, or create a version with new approved values |
+| [`POST /connection-templates/{connectionTemplateId}/rotate-client-secret`](#post-connectiontemplatesconnectiontemplateidrotateclientsecret) | Rotate the secret for the template’s OAuth client registration |
+
+#### `GET /connection-templates`
+
+<span id="get-connectiontemplates"></span>
+
+List all Installation-wide and Namespace-scoped connection templates
+
+**Operation ID:** `listConnectionTemplates`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<Connection template>` | Yes | — |
+| `data[].createdAt` | `string` | Yes | — |
+| `data[].current` | `object` | Yes | — |
+| `data[].current.authorizationParameters` | `object<string, string>` | Yes | — |
+| `data[].current.authorizationUrl` | `string` | Yes | — |
+| `data[].current.clientId` | `string` | Yes | — |
+| `data[].current.clientRegistrationId` | `string` | Yes | — |
+| `data[].current.createdAt` | `string` | Yes | — |
+| `data[].current.endpoint` | `object` | Yes | — |
+| `data[].current.endpoint.access` | `"read-only" or "full"` | Yes | — |
+| `data[].current.endpoint.host` | `string` | Yes | — |
+| `data[].current.endpoint.path` | `string` | Yes | — |
+| `data[].current.endpoint.port` | `integer` | Yes | — |
+| `data[].current.envVar` | `string` | Yes | — |
+| `data[].current.issuer` | `string` | Yes | — |
+| `data[].current.scopes` | `array<string>` | Yes | — |
+| `data[].current.tokenUrl` | `string` | Yes | — |
+| `data[].current.version` | `integer` | Yes | minimum: 1 |
+| `data[].displayName` | `string` | Yes | — |
+| `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "current": {
+        "authorizationParameters": {},
+        "authorizationUrl": "https://accounts.example.com/authorize",
+        "clientId": "example-client",
+        "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+        "createdAt": "2026-10-01T12:00:00.000Z",
+        "endpoint": {
+          "access": "full",
+          "host": "api.example.com",
+          "path": "/profile",
+          "port": 443
+        },
+        "envVar": "EXAMPLE_ACCESS_TOKEN",
+        "issuer": "https://accounts.example.com",
+        "scopes": [
+          "profile.read"
+        ],
+        "tokenUrl": "https://accounts.example.com/token",
+        "version": 1
+      },
+      "displayName": "Example account",
+      "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /connection-templates`
+
+<span id="post-connectiontemplates"></span>
+
+Create an Installation-wide or Namespace-scoped connection template
+
+**Operation ID:** `createConnectionTemplate`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `authorizationParameters` | `object<string, string>` | No | — |
+| `authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `clientId` | `string` | Yes | min length: 1; max length: 256 |
+| `clientSecret` | `string` | No | min length: 1; max length: 4096 |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `endpoint` | `object` | Yes | — |
+| `endpoint.access` | `"read-only" or "full"` | No | — |
+| `endpoint.host` | `string` | Yes | min length: 1; max length: 253 |
+| `endpoint.path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
+| `endpoint.port` | `integer` | No | minimum: 1; maximum: 65535 |
+| `envVar` | `string` | Yes | pattern: `^[A-Z_][A-Z0-9_]{0,63}$` |
+| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+
+Example request
+```json
+{
+  "authorizationUrl": "https://accounts.example.com/authorize",
+  "clientId": "example-client",
+  "clientSecret": "example-client-secret",
+  "displayName": "Example account",
+  "endpoint": {
+    "access": "full",
+    "host": "api.example.com",
+    "path": "/profile",
+    "port": 443
+  },
+  "envVar": "EXAMPLE_ACCESS_TOKEN",
+  "issuer": "https://accounts.example.com",
+  "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+  "scopes": [
+    "profile.read"
+  ],
+  "tokenUrl": "https://accounts.example.com/token"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `Connection template` | Yes | — |
+| `data.createdAt` | `string` | Yes | — |
+| `data.current` | `object` | Yes | — |
+| `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
+| `data.current.authorizationUrl` | `string` | Yes | — |
+| `data.current.clientId` | `string` | Yes | — |
+| `data.current.clientRegistrationId` | `string` | Yes | — |
+| `data.current.createdAt` | `string` | Yes | — |
+| `data.current.endpoint` | `object` | Yes | — |
+| `data.current.endpoint.access` | `"read-only" or "full"` | Yes | — |
+| `data.current.endpoint.host` | `string` | Yes | — |
+| `data.current.endpoint.path` | `string` | Yes | — |
+| `data.current.endpoint.port` | `integer` | Yes | — |
+| `data.current.envVar` | `string` | Yes | — |
+| `data.current.issuer` | `string` | Yes | — |
+| `data.current.scopes` | `array<string>` | Yes | — |
+| `data.current.tokenUrl` | `string` | Yes | — |
+| `data.current.version` | `integer` | Yes | minimum: 1 |
+| `data.displayName` | `string` | Yes | — |
+| `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "current": {
+      "authorizationParameters": {},
+      "authorizationUrl": "https://accounts.example.com/authorize",
+      "clientId": "example-client",
+      "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "endpoint": {
+        "access": "full",
+        "host": "api.example.com",
+        "path": "/profile",
+        "port": 443
+      },
+      "envVar": "EXAMPLE_ACCESS_TOKEN",
+      "issuer": "https://accounts.example.com",
+      "scopes": [
+        "profile.read"
+      ],
+      "tokenUrl": "https://accounts.example.com/token",
+      "version": 1
+    },
+    "displayName": "Example account",
+    "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /connection-templates/{connectionTemplateId}`
+
+<span id="delete-connectiontemplatesconnectiontemplateid"></span>
+
+Delete a connection template
+
+**Operation ID:** `deleteConnectionTemplate`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `connectionTemplateId` | path | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ctp_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `GET /connection-templates/{connectionTemplateId}`
+
+<span id="get-connectiontemplatesconnectiontemplateid"></span>
+
+Get one connection template
+
+**Operation ID:** `getConnectionTemplate`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `connectionTemplateId` | path | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ctp_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `Connection template` | Yes | — |
+| `data.createdAt` | `string` | Yes | — |
+| `data.current` | `object` | Yes | — |
+| `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
+| `data.current.authorizationUrl` | `string` | Yes | — |
+| `data.current.clientId` | `string` | Yes | — |
+| `data.current.clientRegistrationId` | `string` | Yes | — |
+| `data.current.createdAt` | `string` | Yes | — |
+| `data.current.endpoint` | `object` | Yes | — |
+| `data.current.endpoint.access` | `"read-only" or "full"` | Yes | — |
+| `data.current.endpoint.host` | `string` | Yes | — |
+| `data.current.endpoint.path` | `string` | Yes | — |
+| `data.current.endpoint.port` | `integer` | Yes | — |
+| `data.current.envVar` | `string` | Yes | — |
+| `data.current.issuer` | `string` | Yes | — |
+| `data.current.scopes` | `array<string>` | Yes | — |
+| `data.current.tokenUrl` | `string` | Yes | — |
+| `data.current.version` | `integer` | Yes | minimum: 1 |
+| `data.displayName` | `string` | Yes | — |
+| `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "current": {
+      "authorizationParameters": {},
+      "authorizationUrl": "https://accounts.example.com/authorize",
+      "clientId": "example-client",
+      "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "endpoint": {
+        "access": "full",
+        "host": "api.example.com",
+        "path": "/profile",
+        "port": 443
+      },
+      "envVar": "EXAMPLE_ACCESS_TOKEN",
+      "issuer": "https://accounts.example.com",
+      "scopes": [
+        "profile.read"
+      ],
+      "tokenUrl": "https://accounts.example.com/token",
+      "version": 1
+    },
+    "displayName": "Example account",
+    "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `PATCH /connection-templates/{connectionTemplateId}`
+
+<span id="patch-connectiontemplatesconnectiontemplateid"></span>
+
+Rename a connection template, or create a version with new approved values
+
+**Operation ID:** `updateConnectionTemplate`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `connectionTemplateId` | path | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ctp_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `authorizationParameters` | `object<string, string>` | No | — |
+| `authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `clientId` | `string` | No | min length: 1; max length: 256 |
+| `clientSecret` | `string` | No | min length: 1; max length: 4096 |
+| `displayName` | `string` | No | min length: 1; max length: 200 |
+| `endpoint` | `object` | No | — |
+| `endpoint.access` | `"read-only" or "full"` | No | — |
+| `endpoint.host` | `string` | Yes | min length: 1; max length: 253 |
+| `endpoint.path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
+| `endpoint.port` | `integer` | No | minimum: 1; maximum: 65535 |
+| `envVar` | `string` | No | pattern: `^[A-Z_][A-Z0-9_]{0,63}$` |
+| `issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `scopes` | `array<string>` | No | min items: 1; max items: 32 |
+| `tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+
+Example request
+```json
+{
+  "displayName": "Engineering account"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `Connection template` | Yes | — |
+| `data.createdAt` | `string` | Yes | — |
+| `data.current` | `object` | Yes | — |
+| `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
+| `data.current.authorizationUrl` | `string` | Yes | — |
+| `data.current.clientId` | `string` | Yes | — |
+| `data.current.clientRegistrationId` | `string` | Yes | — |
+| `data.current.createdAt` | `string` | Yes | — |
+| `data.current.endpoint` | `object` | Yes | — |
+| `data.current.endpoint.access` | `"read-only" or "full"` | Yes | — |
+| `data.current.endpoint.host` | `string` | Yes | — |
+| `data.current.endpoint.path` | `string` | Yes | — |
+| `data.current.endpoint.port` | `integer` | Yes | — |
+| `data.current.envVar` | `string` | Yes | — |
+| `data.current.issuer` | `string` | Yes | — |
+| `data.current.scopes` | `array<string>` | Yes | — |
+| `data.current.tokenUrl` | `string` | Yes | — |
+| `data.current.version` | `integer` | Yes | minimum: 1 |
+| `data.displayName` | `string` | Yes | — |
+| `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "current": {
+      "authorizationParameters": {},
+      "authorizationUrl": "https://accounts.example.com/authorize",
+      "clientId": "example-client",
+      "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "endpoint": {
+        "access": "full",
+        "host": "api.example.com",
+        "path": "/profile",
+        "port": 443
+      },
+      "envVar": "EXAMPLE_ACCESS_TOKEN",
+      "issuer": "https://accounts.example.com",
+      "scopes": [
+        "profile.read"
+      ],
+      "tokenUrl": "https://accounts.example.com/token",
+      "version": 1
+    },
+    "displayName": "Engineering account",
+    "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /connection-templates/{connectionTemplateId}/rotate-client-secret`
+
+<span id="post-connectiontemplatesconnectiontemplateidrotateclientsecret"></span>
+
+Rotate the secret for the template’s OAuth client registration
+
+**Operation ID:** `rotateConnectionClientSecret`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `connectionTemplateId` | path | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ctp_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `clientSecret` | `string` | Yes | min length: 1; max length: 4096 |
+
+Example request
+```json
+{
+  "clientSecret": "replacement-example-client-secret"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `Connection template` | Yes | — |
+| `data.createdAt` | `string` | Yes | — |
+| `data.current` | `object` | Yes | — |
+| `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
+| `data.current.authorizationUrl` | `string` | Yes | — |
+| `data.current.clientId` | `string` | Yes | — |
+| `data.current.clientRegistrationId` | `string` | Yes | — |
+| `data.current.createdAt` | `string` | Yes | — |
+| `data.current.endpoint` | `object` | Yes | — |
+| `data.current.endpoint.access` | `"read-only" or "full"` | Yes | — |
+| `data.current.endpoint.host` | `string` | Yes | — |
+| `data.current.endpoint.path` | `string` | Yes | — |
+| `data.current.endpoint.port` | `integer` | Yes | — |
+| `data.current.envVar` | `string` | Yes | — |
+| `data.current.issuer` | `string` | Yes | — |
+| `data.current.scopes` | `array<string>` | Yes | — |
+| `data.current.tokenUrl` | `string` | Yes | — |
+| `data.current.version` | `integer` | Yes | minimum: 1 |
+| `data.displayName` | `string` | Yes | — |
+| `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "current": {
+      "authorizationParameters": {},
+      "authorizationUrl": "https://accounts.example.com/authorize",
+      "clientId": "example-client",
+      "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "endpoint": {
+        "access": "full",
+        "host": "api.example.com",
+        "path": "/profile",
+        "port": 443
+      },
+      "envVar": "EXAMPLE_ACCESS_TOKEN",
+      "issuer": "https://accounts.example.com",
+      "scopes": [
+        "profile.read"
+      ],
+      "tokenUrl": "https://accounts.example.com/token",
+      "version": 1
+    },
+    "displayName": "Example account",
+    "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }
@@ -11354,6 +11979,7 @@ Reusable schema names are referenced by operation request and response tables.
 | `AgentRuntimeCredentialResponse` | `object` |
 | `SecretResponse` | `object` |
 | `CredentialSourceResponse` | `object` |
+| `Connection template` | `object` |
 | `PluginApprovers` | `array<object>` |
 | `PluginToolPolicy` | `object` |
 | `PluginToolDefaults` | `object` |

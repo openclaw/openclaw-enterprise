@@ -139,6 +139,47 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `connection_templates`
+
+Stores the scope and current version of each OAuth connection template.
+
+- `id`
+- `namespace_id`
+- `display_name`
+- `current_version`
+- `created_at`
+
+### `connection_template_versions`
+
+Pins the provider, approved access and client registration for each version.
+
+- `template_id`
+- `version`
+- `client_registration_id`
+- `issuer`
+- `client_id`
+- `authorization_url`
+- `token_url`
+- `scopes`
+- `authorization_parameters`
+- `endpoint_host`
+- `endpoint_port`
+- `endpoint_path`
+- `endpoint_access`
+- `env_var`
+- `created_at`
+
+### `connection_client_registrations`
+
+Identifies the Refresh Driver registration for a client in one scope.
+
+- `id`
+- `namespace_id`
+- `issuer`
+- `client_id`
+- `credential_refresh_driver_id`
+- `created_at`
+
 ### `credential_sources`
 
 Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.

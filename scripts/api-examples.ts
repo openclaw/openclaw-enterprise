@@ -178,7 +178,34 @@ const authAccount = {
 };
 const sessionKey = "example-session-binding-not-a-credential";
 
+const connectionTemplateId = id("ctp");
+const connectionTemplateInput = {
+  displayName: "Example account",
+  issuer: "https://accounts.example.com",
+  authorizationUrl: "https://accounts.example.com/authorize",
+  tokenUrl: "https://accounts.example.com/token",
+  clientId: "example-client",
+  scopes: ["profile.read"],
+  envVar: "EXAMPLE_ACCESS_TOKEN",
+  endpoint: { host: "api.example.com", port: 443, path: "/profile", access: "full" },
+};
+const { displayName, ...approvedValues } = connectionTemplateInput;
+const connectionTemplate = {
+  id: connectionTemplateId,
+  namespaceId,
+  displayName,
+  createdAt: time,
+  current: {
+    ...approvedValues,
+    authorizationParameters: {},
+    version: 1,
+    clientRegistrationId: id("cr"),
+    createdAt: time,
+  },
+};
+
 export const parameterExamples = {
+  connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
   expectedGeneration: "1",
@@ -220,6 +247,13 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  createConnectionTemplate: {
+    ...connectionTemplateInput,
+    namespaceId,
+    clientSecret: "example-client-secret",
+  },
+  updateConnectionTemplate: { displayName: "Engineering account" },
+  rotateConnectionClientSecret: { clientSecret: "replacement-example-client-secret" },
   deployAgentFirst: {
     key: "review-1",
     expectedConfigurationId: configurationId,
@@ -322,6 +356,11 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  listConnectionTemplates: [connectionTemplate],
+  getConnectionTemplate: connectionTemplate,
+  createConnectionTemplate: connectionTemplate,
+  updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
+  rotateConnectionClientSecret: connectionTemplate,
   getInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   bootstrapInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   getInstallationDeploymentInventory: {

@@ -1367,6 +1367,7 @@ async function assertCompletedHistory(db, previous = []) {
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
+      ["occ.check_connection_registration_scope()", false, "search_path=pg_catalog, pg_temp"],
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
@@ -1996,6 +1997,7 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
+      [66, "preConnectionTemplates"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2027,6 +2029,42 @@ test(
         assert.ok(existingBindings.rows.length > 0);
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
+        if (history === "preConnectionTemplates") {
+          // A Namespace's template cannot present another scope's client credentials,
+          // even when an application-role writer bypasses OCC.
+          const templateId = `ctp_${randomUUID()}`;
+          const registrationId = `ccr_${randomUUID()}`;
+          await db.app.query("BEGIN");
+          try {
+            await db.app.query(
+              `INSERT INTO occ.connection_client_registrations
+                 (id, issuer, client_id, credential_refresh_driver_id, created_at)
+               VALUES ($1, 'https://issuer.example.test', 'shared-client', 'refresh', now())`,
+              [registrationId],
+            );
+            await db.app.query(
+              `INSERT INTO occ.connection_templates
+                 (id, namespace_id, display_name, current_version, created_at)
+               VALUES ($1, $2, 'Namespace client', 1, now())`,
+              [templateId, namespaceId],
+            );
+            await assert.rejects(
+              db.app.query(
+                `INSERT INTO occ.connection_template_versions
+                   (template_id, version, client_registration_id, issuer, client_id, authorization_url,
+                    token_url, scopes, authorization_parameters, endpoint_host, endpoint_port,
+                    endpoint_path, endpoint_access, env_var, created_at)
+                 VALUES ($1, 1, $2, 'https://issuer.example.test', 'shared-client',
+                    'https://issuer.example.test/auth', 'https://issuer.example.test/token',
+                    ARRAY['read'], '{}', 'api.example.test', 443, '/', 'full', 'TOKEN', now())`,
+                [templateId, registrationId],
+              ),
+              { code: "23514", message: /registration must belong to the template scope/ },
+            );
+          } finally {
+            await db.app.query("ROLLBACK");
+          }
+        }
         if (history === "preGatewayManagedMode") {
           await db.app.query(
             `INSERT INTO occ.agent_revisions

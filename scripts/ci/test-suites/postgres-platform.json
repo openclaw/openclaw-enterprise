@@ -21,6 +21,7 @@
     "tests/integration/postgres-worker-stale-claim.test.mjs",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
     "tests/integration/postgres-agent-update-authority.test.ts",
+    "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.mjs",
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
@@ -132,6 +133,13 @@
     {
       "path": "tests/integration/postgres-controller-work-targets.test.mjs",
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
+    },
+    {
+      "path": "tests/integration/postgres-connection-templates.test.ts",
+      "expectedTests": [
+        "template versions and OAuth client rotation respect the template's scope",
+        "template registrations survive an unacknowledged commit"
+      ]
     },
     {
       "path": "tests/integration/postgres-agent-update-authority.test.ts",

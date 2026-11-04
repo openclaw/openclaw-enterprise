@@ -28,6 +28,9 @@ import {
   validRepositoryRevisionState,
 } from "./repository-credential-state.ts";
 import type {
+  ConnectionClientRegistration,
+  ConnectionTemplate,
+  ConnectionTemplateVersion,
   AccessBinding,
   Agent,
   AgentRead,
@@ -347,6 +350,41 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
     secretBindings?: SecretBindings,
   ): Promise<Readonly<ConfigurationOwnership> | undefined>;
   deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
+}
+
+export interface ConnectionTemplateReadRepository {
+  findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
+  countNamespaceConnectionTemplates(namespaceId: string): Promise<number>;
+  listConnectionTemplates(): Promise<readonly Readonly<ConnectionTemplate>[]>;
+  findConnectionTemplateVersion(
+    templateId: string,
+    version: number,
+  ): Promise<Readonly<ConnectionTemplateVersion> | undefined>;
+  findClientRegistration(
+    issuer: string,
+    clientId: string,
+    namespaceId?: string,
+  ): Promise<Readonly<ConnectionClientRegistration> | undefined>;
+  findClientRegistrationById(
+    registrationId: string,
+  ): Promise<Readonly<ConnectionClientRegistration> | undefined>;
+}
+
+export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepository {
+  lockConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
+  createClientRegistration(
+    registration: ConnectionClientRegistration,
+  ): Promise<Readonly<ConnectionClientRegistration>>;
+  /** False while a connection template version still names the registration. */
+  deleteClientRegistration(registrationId: string): Promise<boolean>;
+  /** Inserts the template and its first version together. */
+  createConnectionTemplate(template: ConnectionTemplate): Promise<Readonly<ConnectionTemplate>>;
+  /** Renames, or appends `version` as the next version and makes it current. */
+  updateConnectionTemplate(
+    templateId: string,
+    changes: { readonly displayName?: string; readonly version?: ConnectionTemplateVersion },
+  ): Promise<Readonly<ConnectionTemplate> | undefined>;
+  deleteConnectionTemplate(templateId: string): Promise<boolean>;
 }
 
 export interface PresetReadRepository {
@@ -1036,6 +1074,7 @@ export interface PlatformReadView {
   readonly installations: InstallationReadRepository;
   readonly namespaces: NamespaceReadRepository;
   readonly configurations: ConfigurationReadRepository;
+  readonly connectionTemplates: ConnectionTemplateReadRepository;
   readonly presets: PresetReadRepository;
   readonly secrets: SecretReadRepository;
   readonly credentialSources: CredentialSourceReadRepository;
@@ -1056,6 +1095,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly installations: InstallationRepository;
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
+  readonly connectionTemplates: ConnectionTemplateRepository;
   readonly presets: PresetRepository;
   readonly secrets: SecretRepository;
   readonly credentialSources: CredentialSourceRepository;
@@ -1110,6 +1150,9 @@ interface PlatformSnapshot {
   installation: Readonly<Installation> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
+  readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
+  readonly clientRegistrations: Map<string, Readonly<ConnectionClientRegistration>>;
+  readonly connectionTemplateVersions: Map<string, Readonly<ConnectionTemplateVersion>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
@@ -1231,6 +1274,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
         storedCopy(configuration),
       ]),
     ),
+    connectionTemplates: new Map(snapshot.connectionTemplates),
+    clientRegistrations: new Map(snapshot.clientRegistrations),
+    connectionTemplateVersions: new Map(snapshot.connectionTemplateVersions),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
     egressRejected: new Set(snapshot.egressRejected),
@@ -1827,6 +1873,148 @@ function repositories(
     const preset = snapshot.presets.get(agentKey(namespaceId, presetId));
     return preset === undefined ? undefined : immutableCopy(preset);
   };
+  const versionKey = (templateId: string, version: number) => `${templateId}\u0000${version}`;
+  const findConnectionTemplate: ConnectionTemplateReadRepository["findConnectionTemplate"] = async (
+    templateId,
+  ) => {
+    const template = snapshot.connectionTemplates.get(templateId);
+    return template === undefined ? undefined : immutableCopy(template);
+  };
+  const assertRegistrationScope = (
+    template: ConnectionTemplate,
+    version: ConnectionTemplateVersion,
+  ) => {
+    const registration = snapshot.clientRegistrations.get(version.clientRegistrationId);
+    if (
+      !registration ||
+      registration.namespaceId !== template.namespaceId ||
+      registration.issuer !== version.issuer ||
+      registration.clientId !== version.clientId ||
+      version.templateId !== template.id
+    ) {
+      throw new ResourceStateConflictError(
+        "The OAuth client registration must match the template scope and client.",
+      );
+    }
+  };
+  const connectionTemplates: ConnectionTemplateRepository = {
+    findConnectionTemplate,
+    countNamespaceConnectionTemplates: async (namespaceId) =>
+      Array.from(snapshot.connectionTemplates.values()).filter(
+        (template) => template.namespaceId === namespaceId,
+      ).length,
+    listConnectionTemplates: async () =>
+      Object.freeze(
+        Array.from(snapshot.connectionTemplates.values())
+          .sort((a, b) => a.id.localeCompare(b.id))
+          .map((template) => immutableCopy(template)),
+      ),
+    findConnectionTemplateVersion: async (templateId, version) => {
+      const found = snapshot.connectionTemplateVersions.get(versionKey(templateId, version));
+      return found === undefined ? undefined : immutableCopy(found);
+    },
+    findClientRegistration: async (issuer, clientId, namespaceId) => {
+      const found = Array.from(snapshot.clientRegistrations.values()).find(
+        (registration) =>
+          registration.namespaceId === namespaceId &&
+          registration.issuer === issuer &&
+          registration.clientId === clientId,
+      );
+      return found === undefined ? undefined : immutableCopy(found);
+    },
+    findClientRegistrationById: async (registrationId) => {
+      const found = snapshot.clientRegistrations.get(registrationId);
+      return found === undefined ? undefined : immutableCopy(found);
+    },
+    lockConnectionTemplate: findConnectionTemplate,
+    createClientRegistration: async (registration) => {
+      assertInitialized(snapshot);
+      if (
+        registration.namespaceId !== undefined &&
+        !snapshot.namespaces.has(registration.namespaceId)
+      ) {
+        throw new ResourceStateConflictError("The client registration Namespace does not exist.");
+      }
+      // The issuer and client ID identify a registration within the template's scope.
+      if (
+        snapshot.clientRegistrations.has(registration.id) ||
+        Array.from(snapshot.clientRegistrations.values()).some(
+          (existing) =>
+            existing.namespaceId === registration.namespaceId &&
+            existing.issuer === registration.issuer &&
+            existing.clientId === registration.clientId,
+        )
+      ) {
+        throw new ResourceConflictError("The OAuth client is already registered.");
+      }
+      const saved = immutableCopy(registration);
+      snapshot.clientRegistrations.set(saved.id, saved);
+      return immutableCopy(saved);
+    },
+    deleteClientRegistration: async (registrationId) => {
+      if (
+        Array.from(snapshot.connectionTemplateVersions.values()).some(
+          (version) => version.clientRegistrationId === registrationId,
+        )
+      ) {
+        return false;
+      }
+      return snapshot.clientRegistrations.delete(registrationId);
+    },
+    createConnectionTemplate: async (template) => {
+      assertInitialized(snapshot);
+      if (snapshot.connectionTemplates.has(template.id)) {
+        throw new ResourceConflictError(
+          "The server generated an existing connection template identity.",
+        );
+      }
+      assertRegistrationScope(template, template.current);
+      const saved = immutableCopy(template);
+      snapshot.connectionTemplates.set(saved.id, saved);
+      snapshot.connectionTemplateVersions.set(
+        versionKey(saved.id, saved.current.version),
+        saved.current,
+      );
+      return immutableCopy(saved);
+    },
+    updateConnectionTemplate: async (templateId, changes) => {
+      const current = snapshot.connectionTemplates.get(templateId);
+      if (current === undefined) {
+        return undefined;
+      }
+      if (changes.version !== undefined) {
+        assertRegistrationScope(current, changes.version);
+        // Mirrors the database: versions advance by one and never change.
+        if (changes.version.version !== current.current.version + 1) {
+          throw new ResourceStateConflictError("Connection template versions advance by one.");
+        }
+        snapshot.connectionTemplateVersions.set(
+          versionKey(templateId, changes.version.version),
+          immutableCopy(changes.version),
+        );
+      }
+      const saved = immutableCopy({
+        ...current,
+        ...(changes.displayName === undefined ? {} : { displayName: changes.displayName }),
+        ...(changes.version === undefined ? {} : { current: changes.version }),
+      });
+      snapshot.connectionTemplates.set(templateId, saved);
+      return immutableCopy(saved);
+    },
+    deleteConnectionTemplate: async (templateId) => {
+      if (!snapshot.connectionTemplates.has(templateId)) {
+        return false;
+      }
+      snapshot.connectionTemplates.delete(templateId);
+      for (const key of Array.from(snapshot.connectionTemplateVersions.keys())) {
+        if (key.startsWith(`${templateId}\u0000`)) {
+          snapshot.connectionTemplateVersions.delete(key);
+        }
+      }
+      return true;
+    },
+  };
+
   const presets: PresetRepository = {
     findPreset,
     listPresets: async (namespaceId) =>
@@ -3572,6 +3760,7 @@ function repositories(
     installations,
     namespaces,
     configurations,
+    connectionTemplates,
     presets,
     secrets,
     credentialSources,
@@ -3862,6 +4051,9 @@ export class InMemoryPlatformState implements PlatformStateStore {
     installation: undefined,
     namespaces: new Map(),
     configurations: new Map(),
+    connectionTemplates: new Map(),
+    clientRegistrations: new Map(),
+    connectionTemplateVersions: new Map(),
     presets: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),

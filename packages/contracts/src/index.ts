@@ -140,6 +140,14 @@ export {
   sandboxNetworkGrantsWithinCeiling,
 } from "./sandbox-policy.ts";
 
+export type {
+  ConnectionClientRegistration,
+  ConnectionEndpoint,
+  ConnectionTemplate,
+  ConnectionTemplateValues,
+  ConnectionTemplateVersion,
+} from "./connection-templates.ts";
+export { connectionValuesChanged } from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 
@@ -1393,6 +1401,7 @@ export type {
   CredentialSourceToken,
 } from "./drivers/credential-gateway/index.ts";
 export type {
+  CredentialClientRegistrationContext,
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,
@@ -1468,6 +1477,7 @@ export type JSONSchema = Readonly<Record<string, unknown>>;
 export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
+export { ConnectionTemplateSchema } from "./api/connection-templates.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 

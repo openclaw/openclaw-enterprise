@@ -262,6 +262,10 @@
                     "label": "Credential Proxy Threat Model"
                   },
                   {
+                    "page": "reference/connection-templates",
+                    "label": "Connection Templates"
+                  },
+                  {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
                   },
@@ -374,10 +378,10 @@
                             "page": "reference/drivers/kubernetes-compute/configuration",
                             "label": "Configuration"
                           },
-                        {
+                          {
                             "page": "reference/drivers/kubernetes-compute/model-provider",
                             "label": "Model Provider"
-                        },
+                          },
                           {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
@@ -1129,6 +1133,7 @@
               "flows/harness-execution-topology",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
+              "flows/connection-templates",
               "flows/credential-source-lifecycle",
               "flows/credential-source-refresh",
               "flows/driver-plugin-loading",

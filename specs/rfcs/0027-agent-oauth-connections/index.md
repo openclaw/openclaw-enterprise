@@ -32,8 +32,8 @@ OCE checks that Agent's grant and the actual request before adding a credential.
 A Gmail policy allowing only message headers applies to both `gog` and a script
 running in the same Agent execution.
 
-Installation administrators define connections as Installation-wide **connection
-templates**, which Presets can reference. OCE handles client setup, consent,
+Installation administrators define **connection templates** for the whole
+Installation or for a single Namespace. Presets can reference them. OCE handles client setup, consent,
 and the authorization-code exchange. For MCP it uses the official TypeScript
 MCP client. After exchange, the OCE Token Service keeps the grant and refreshes
 access tokens in the background. OpenShell presents the prepared token at the
@@ -79,23 +79,19 @@ It separates background refresh from the worker's outbound request.
 - Service-account or domain-wide delegation.
 - Per-message provider identity. A shared Agent uses the account attached to it
   for requests from its authorized users, subject to the deployed request policy.
-- Namespace-owned connection templates. Start with the Installation-wide catalog;
-  add Namespace templates later only if Namespaces need different providers or
-  OAuth clients.
+- Delegating template administration to Namespace administrators.
 
 ## Proposal
 
 ### Connection templates
 
-A connection template is an Installation-scoped resource with IAM kind
-`connection_template` and actions `create`, `read`, `update`, `delete`, and `use`.
-Installation administrators manage the catalog through the API, CLI, and console.
-They grant `use` on an exact connection template to a person, or to a Namespace so
-that people authorized to connect accounts in that Namespace may use it. IAM gains
-Installation-level access bindings for this ([IAM changes](contracts.md#iam-driver)).
-A user needs `use` to see a connection template under **Connect** and to start a
-connection from it. Each resulting credential source stays in the Namespace
-where that person connected it.
+Installation administrators manage the catalog. They set the scope at creation:
+the whole Installation or one Namespace. Client registrations in different
+scopes rotate independently. A person with `credential_source:create` in the
+destination Namespace can connect an account using a template available there.
+OCC checks scope and authority when listing usable templates, starting consent
+and handling the callback. The [per-template IAM proposal](contracts.md#iam-driver)
+can be reviewed independently.
 
 | Field                               | Why it is needed                                                                                                                                |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -254,7 +250,7 @@ selection before the redirect and uses the
 1. For MCP, the owner selects scopes in Console before starting OAuth.
    `POST /namespaces/:namespaceId/connections` takes the template
    ID and, for MCP, the displayed template version and `selectedScopes`. OCC
-   checks access to the Namespace and template `use`, and validates the
+   checks template availability and `credential_source:create` in the Namespace, and validates the
    selection. It then registers an empty source as `registering` and calls
    `startBrowserAuthorization`. It stores `privateState` in a Namespace Secret, as
    device login does, and returns the source ID and `authorizationUrl`.
@@ -266,9 +262,12 @@ selection before the redirect and uses the
    minutes, and calls `completeBrowserAuthorization` once. The response sets
    `Referrer-Policy: no-referrer` and redirects without the query string. OCC
    excludes the code from logs and audit.
-4. On `ready`, OCC saves the connection, its owner and the approved access in the
-   Namespace. A completed callback grants no Agent access by itself. At Agent
-   setup an authorized caller selects that saved source and explicitly attaches it.
+4. OCC saves the account for its owner in the destination Namespace. **Connect**
+   in account settings stops there. **Connect and attach to this Agent** in a
+   plugin records the target Agent and slot before redirect. After consent OCC
+   checks the caller's current rights and the slot and applies the same attachment
+   as the saved-account picker. If this fails the account stays saved and the
+   caller can retry attachment without repeating consent.
 5. **Detach** removes one Agent's binding. **Disconnect account** shows the
    affected Agents and withdraws the account from all of them. **Reconnect**
    creates a newly consented source; replacing a binding requires the same

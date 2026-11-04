@@ -23,6 +23,7 @@
 - [Service accounts](#service-accounts)
 - [Service account credentials](#service-account-credentials)
 - [Backends](#backends)
+- [Connections](#connections)
 - [Credential sources](#credential-sources)
 - [Presets](#presets)
 
@@ -205,6 +206,15 @@
 ### Backends
 
 - [`listBackends`](../api.md#get-backends): List configured Backends (experimental).
+
+### Connections
+
+- [`listConnectionTemplates`](../api.md#get-connectiontemplates): List all Installation-wide and Namespace-scoped connection templates.
+- [`getConnectionTemplate`](../api.md#get-connectiontemplatesconnectiontemplateid): Get one connection template.
+- [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation-wide or Namespace-scoped connection template.
+- [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
+- [`rotateConnectionClientSecret`](../api.md#post-connectiontemplatesconnectiontemplateidrotateclientsecret): Rotate the secret for the template’s OAuth client registration.
+- [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template.
 
 ### Credential sources
 

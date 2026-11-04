@@ -118,6 +118,10 @@ When either condition is unmet, the connection can complete without `accountEmai
 
 ## IAM Driver
 
+This extension describes optional grants on an individual template. The scoped
+catalog and account flow use the existing Installation `administer` and
+Namespace `credential_source:create` permissions.
+
 IAM matches a Namespace-scoped binding only to resources in that Namespace, and has
 no API for Installation-level bindings. Granting `use` on an Installation-wide
 connection template needs these additions:

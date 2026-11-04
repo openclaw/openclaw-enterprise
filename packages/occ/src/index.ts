@@ -28,6 +28,7 @@ export {
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
+  connectionValuesChanged,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
@@ -154,6 +155,11 @@ import type {
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialProviderDefinition,
+  ConnectionClientRegistration,
+  ConnectionTemplate,
+  ConnectionTemplateValues,
+  ConnectionTemplateVersion,
+  CredentialClientRegistrationContext,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -1007,6 +1013,33 @@ export interface CreateSecretInput {
   readonly value: string;
 }
 
+interface ConnectionTemplateInput {
+  readonly displayName: string;
+  readonly issuer: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly clientId: string;
+  readonly scopes: readonly string[];
+  readonly authorizationParameters?: Readonly<Record<string, string>>;
+  readonly endpoint: {
+    readonly host: string;
+    readonly port?: number;
+    readonly path?: string;
+    readonly access?: "read-only" | "full";
+  };
+  readonly envVar: string;
+}
+
+export interface CreateConnectionTemplateInput extends ConnectionTemplateInput {
+  readonly namespaceId?: string;
+  /** Required for a new issuer and client ID in this scope. */
+  readonly clientSecret?: string;
+}
+
+export type UpdateConnectionTemplateInput = Partial<ConnectionTemplateInput> & {
+  readonly clientSecret?: string;
+};
+
 export interface CreateCredentialSourceInput {
   readonly namespaceId: string;
   readonly name: string;
@@ -1225,6 +1258,26 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   credential_source: "credentialSources",
   provisioning_request: "provisioningRequests",
 });
+
+function connectionTemplateValues(
+  input: Omit<ConnectionTemplateInput, "displayName">,
+): ConnectionTemplateValues {
+  return {
+    issuer: input.issuer,
+    authorizationUrl: input.authorizationUrl,
+    tokenUrl: input.tokenUrl,
+    clientId: input.clientId,
+    scopes: input.scopes,
+    authorizationParameters: input.authorizationParameters ?? {},
+    endpoint: {
+      host: input.endpoint.host,
+      port: input.endpoint.port ?? 443,
+      path: input.endpoint.path ?? "/**",
+      access: input.endpoint.access ?? "full",
+    },
+    envVar: input.envVar,
+  };
+}
 
 /**
  * Revisions other than `active` that may still run with the sources they were admitted with,
@@ -4403,6 +4456,306 @@ export class OpenClawController {
     });
   }
 
+  private async authorizeTemplateAdministration(principalId: string): Promise<void> {
+    await this.authorize(principalId, "administer", {
+      kind: "installation",
+      id: this.installation.id,
+    });
+  }
+
+  async listConnectionTemplates(
+    principalId: string,
+  ): Promise<readonly Readonly<ConnectionTemplate>[]> {
+    await this.authorizeTemplateAdministration(principalId);
+    return this.read((state) => state.connectionTemplates.listConnectionTemplates());
+  }
+
+  async getConnectionTemplate(
+    principalId: string,
+    templateId: string,
+  ): Promise<Readonly<ConnectionTemplate>> {
+    await this.authorizeTemplateAdministration(principalId);
+    const template = await this.read((state) =>
+      state.connectionTemplates.findConnectionTemplate(templateId),
+    );
+    if (!template) {
+      throw new ScopeViolationError("The connection template does not exist.");
+    }
+    return template;
+  }
+
+  async createConnectionTemplate(
+    principalId: string,
+    input: CreateConnectionTemplateInput,
+    audit?: (templateId: string) => AuditEvent,
+  ): Promise<Readonly<ConnectionTemplate>> {
+    return this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      if (input.namespaceId !== undefined) {
+        const namespace = await this.lockNamespace(state, input.namespaceId);
+        if (namespace.status === "deleting") {
+          throw new ResourceStateConflictError("The Namespace is being deleted.");
+        }
+      }
+      const values = connectionTemplateValues(input);
+      await this.assertConnectionSourceConfig(values);
+      const client = await this.ensureConnectionClient(
+        state,
+        values,
+        input.namespaceId,
+        input.clientSecret,
+      );
+      const templateId = `ctp_${crypto.randomUUID()}`;
+      const createdAt = this.timestamp();
+      const template = await state.connectionTemplates.createConnectionTemplate({
+        id: templateId,
+        ...(input.namespaceId === undefined ? {} : { namespaceId: input.namespaceId }),
+        displayName: input.displayName,
+        createdAt,
+        current: { ...values, clientRegistrationId: client.id, templateId, version: 1, createdAt },
+      });
+      if (audit) {
+        await state.audit.append(audit(templateId));
+      }
+      return template;
+    });
+  }
+
+  async updateConnectionTemplate(
+    principalId: string,
+    templateId: string,
+    input: UpdateConnectionTemplateInput,
+    audit?: AuditEvent,
+  ): Promise<Readonly<ConnectionTemplate>> {
+    return this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      const current = await state.connectionTemplates.lockConnectionTemplate(templateId);
+      if (!current) {
+        throw new ScopeViolationError("The connection template does not exist.");
+      }
+      const values = connectionTemplateValues({
+        ...current.current,
+        ...input,
+        endpoint: { ...current.current.endpoint, ...input.endpoint },
+      });
+      let version: ConnectionTemplateVersion | undefined;
+      if (connectionValuesChanged(current.current, values)) {
+        await this.assertConnectionSourceConfig(values);
+        const client = await this.ensureConnectionClient(
+          state,
+          values,
+          current.namespaceId,
+          input.clientSecret,
+        );
+        version = {
+          ...values,
+          clientRegistrationId: client.id,
+          templateId,
+          version: current.current.version + 1,
+          createdAt: this.timestamp(),
+        };
+      } else if (input.clientSecret !== undefined) {
+        throw new ResourceStateConflictError(
+          "Use the rotate operation to change this OAuth client's secret.",
+        );
+      }
+      const template = await state.connectionTemplates.updateConnectionTemplate(templateId, {
+        ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+        ...(version === undefined ? {} : { version }),
+      });
+      if (!template) {
+        throw new ScopeViolationError("The connection template does not exist.");
+      }
+      if (audit) {
+        await state.audit.append(audit);
+      }
+      return template;
+    });
+  }
+
+  async rotateConnectionClientSecret(
+    principalId: string,
+    templateId: string,
+    clientSecret: string,
+    audit?: AuditEvent,
+  ): Promise<Readonly<ConnectionTemplate>> {
+    return this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      const template = await state.connectionTemplates.lockConnectionTemplate(templateId);
+      if (!template) {
+        throw new ScopeViolationError("The connection template does not exist.");
+      }
+      if (!isNonEmptyString(clientSecret)) {
+        throw new ScopeViolationError("A nonempty OAuth client secret is required.");
+      }
+      const client = await state.connectionTemplates.findClientRegistrationById(
+        template.current.clientRegistrationId,
+      );
+      if (!client) {
+        throw new DependencyUnavailableError(
+          "The connection template's client registration is missing.",
+        );
+      }
+      const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
+      await this.credentialGatewayOperation(() =>
+        driver.rotateClientSecret!(this.clientRegistrationContext(client), clientSecret),
+      );
+      if (audit) {
+        await state.audit.append(audit);
+      }
+      return template;
+    });
+  }
+
+  async deleteConnectionTemplate(
+    principalId: string,
+    templateId: string,
+    audit?: AuditEvent,
+  ): Promise<void> {
+    this.requireIndependentMutation("Connection template deletion");
+    const unused = await this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      const template = await state.connectionTemplates.lockConnectionTemplate(templateId);
+      if (!template) {
+        throw new ScopeViolationError("The connection template does not exist.");
+      }
+      const registrations = new Set<string>();
+      for (let n = 1; n <= template.current.version; n++) {
+        const version = await state.connectionTemplates.findConnectionTemplateVersion(
+          templateId,
+          n,
+        );
+        if (version) {
+          registrations.add(version.clientRegistrationId);
+        }
+      }
+      await state.connectionTemplates.deleteConnectionTemplate(templateId);
+      const unusedClients = [];
+      for (const id of [...registrations].sort()) {
+        const client = await state.connectionTemplates.findClientRegistrationById(id);
+        if (client && (await state.connectionTemplates.deleteClientRegistration(id))) {
+          const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
+          unusedClients.push({ driver, client });
+        }
+      }
+      if (audit) {
+        await state.audit.append(audit);
+      }
+      return unusedClients;
+    });
+    for (const { driver, client } of unused) {
+      // Metadata is committed. A cleanup failure can leave an unreferenced secret, but
+      // callers never reuse the unique registration ID for another client.
+      await driver.removeClient!(this.clientRegistrationContext(client)).catch(() => undefined);
+    }
+  }
+
+  private connectionRegistrationDriver(expectedId?: string): CredentialRefreshDriver {
+    const driver = this.credentialRefreshDriver();
+    if (expectedId !== undefined && driver.id !== expectedId) {
+      throw new DependencyUnavailableError(
+        "The selected Refresh Driver does not own this OAuth client.",
+      );
+    }
+    if (!driver.registerClient || !driver.removeClient || !driver.rotateClientSecret) {
+      throw new NotImplementedError(
+        "connection_templates",
+        "The selected Refresh Driver does not support OAuth client registrations.",
+      );
+    }
+    return driver;
+  }
+
+  private clientRegistrationContext(
+    client: Readonly<ConnectionClientRegistration>,
+  ): CredentialClientRegistrationContext {
+    return {
+      registrationId: client.id,
+      issuer: client.issuer,
+      clientId: client.clientId,
+      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+    };
+  }
+
+  private async ensureConnectionClient(
+    state: PlatformUnitOfWork,
+    values: Readonly<ConnectionTemplateValues>,
+    namespaceId: string | undefined,
+    clientSecret: string | undefined,
+  ): Promise<Readonly<ConnectionClientRegistration>> {
+    const existing = await state.connectionTemplates.findClientRegistration(
+      values.issuer,
+      values.clientId,
+      namespaceId,
+    );
+    if (existing) {
+      if (clientSecret !== undefined) {
+        throw new ResourceStateConflictError(
+          "This OAuth client is already registered in this scope. Rotate its secret instead.",
+        );
+      }
+      this.connectionRegistrationDriver(existing.credentialRefreshDriverId);
+      return existing;
+    }
+    if (!isNonEmptyString(clientSecret)) {
+      throw new ScopeViolationError("A new OAuth client requires its client secret.");
+    }
+    const driver = this.connectionRegistrationDriver();
+    const client = {
+      id: `ccr_${crypto.randomUUID()}`,
+      ...(namespaceId === undefined ? {} : { namespaceId }),
+      issuer: values.issuer,
+      clientId: values.clientId,
+      credentialRefreshDriverId: driver.id,
+      createdAt: this.timestamp(),
+    };
+    // Reserve the scoped issuer/client pair before registering its secret. A confirmed
+    // rollback cleans up this unique registration; an unknown commit outcome retains it.
+    await state.connectionTemplates.createClientRegistration(client);
+    this.registerRollback(() => driver.removeClient!(this.clientRegistrationContext(client)));
+    await this.credentialGatewayOperation(() =>
+      driver.registerClient!(this.clientRegistrationContext(client), clientSecret),
+    );
+    return client;
+  }
+
+  /**
+   * Refuses values the Credential Gateway would refuse at connect time, such as a token host
+   * its gateway cannot reach, so administrators see the error instead of the connecting person.
+   */
+  private async assertConnectionSourceConfig(
+    values: Readonly<ConnectionTemplateValues>,
+  ): Promise<void> {
+    this.assertCredentialGatewaySelected();
+    const gateway = this.credentialGatewayDriver();
+    const config = {
+      host: values.endpoint.host,
+      port: String(values.endpoint.port),
+      path: values.endpoint.path,
+      ...(values.endpoint.access === "read-only" ? { access: values.endpoint.access } : {}),
+      env_var: values.envVar,
+      token_url: values.tokenUrl,
+      client_id: values.clientId,
+      scope: values.scopes.join(" "),
+    };
+    if (values.endpoint.access === "read-only") {
+      const type = await this.credentialSourceType(gateway, "oauth2-refresh-token");
+      if (!type.config.some((field) => field.name === "access")) {
+        throw new CredentialSourceConfigError(
+          "access",
+          "The selected Credential Gateway does not support read-only OAuth connections.",
+        );
+      }
+    }
+    const normalized = gateway.validateSourceConfig({ type: "oauth2-refresh-token", config });
+    if (values.endpoint.access === "read-only" && normalized && normalized.access !== "read-only") {
+      throw new CredentialSourceConfigError(
+        "access",
+        "The selected Credential Gateway cannot enforce read-only access.",
+      );
+    }
+  }
+
   async listServiceAccounts(
     principalId: string,
     namespaceId: string,
@@ -6596,7 +6949,7 @@ export class OpenClawController {
     audit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
     registrationAudit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
-    this.assertCredentialSourceTransactionBoundary();
+    this.requireIndependentMutation("Credential source registration and deletion");
     if (!isName(input.name)) {
       throw new ScopeViolationError("The credential source name is invalid.");
     }
@@ -7260,7 +7613,7 @@ export class OpenClawController {
     credentialSourceId: string,
     audit?: (removedAccessBindings: readonly RemovedAccessBinding[]) => AuditEvent,
   ): Promise<void> {
-    this.assertCredentialSourceTransactionBoundary();
+    this.requireIndependentMutation("Credential source registration and deletion");
     this.namespaceIdentity(namespaceId);
     const { namespace, source, gateway } = await this.mutate(async (state) => {
       const locked = await this.lockNamespaceForPolicyDelete(state, principalId, {
@@ -11861,6 +12214,13 @@ export class OpenClawController {
           await state.serviceAccounts.listServiceAccounts(namespace.id),
         );
       }
+      const templates = await state.connectionTemplates.countNamespaceConnectionTemplates(
+        namespace.id,
+      );
+      if (templates > 0) {
+        contents.push("connection templates");
+        counts["connection templates"] = templates;
+      }
       if (await state.provisioning.hasPendingNamespaceProvisioning(namespace.id)) {
         contents.push("pending Agent provisioning");
       }
@@ -15945,12 +16305,10 @@ export class OpenClawController {
     return active ? work(active) : this.state.read(work);
   }
 
-  private assertCredentialSourceTransactionBoundary(): void {
+  private requireIndependentMutation(operation: string): void {
     // Async descendants can retain the borrowed unit after its transaction has ended.
     if (this.transactionContext.getStore() !== undefined) {
-      throw new ResourceConflictError(
-        "Credential source registration and deletion cannot run in a controller transaction.",
-      );
+      throw new ResourceConflictError(`${operation} cannot run in a controller transaction.`);
     }
   }
 

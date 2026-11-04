@@ -2303,3 +2303,78 @@ export const sandboxPolicies = occSchema.table(
     ),
   ],
 );
+
+export const connectionClientRegistrations = occSchema.table(
+  "connection_client_registrations",
+  {
+    id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").references(() => namespaces.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+    issuer: collatedText("issuer").notNull(),
+    clientId: collatedText("client_id").notNull(),
+    credentialRefreshDriverId: collatedText("credential_refresh_driver_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("connection_client_registrations_pair_unique")
+      .on(table.namespaceId, table.issuer, table.clientId)
+      .nullsNotDistinct(),
+    unique("connection_client_registrations_identity").on(table.id, table.issuer, table.clientId),
+  ],
+);
+
+export const connectionTemplates = occSchema.table(
+  "connection_templates",
+  {
+    id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").references(() => namespaces.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+    displayName: collatedText("display_name").notNull(),
+    currentVersion: integer("current_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check("connection_templates_current_version_positive", sql`${table.currentVersion} >= 1`),
+  ],
+);
+
+export const connectionTemplateVersions = occSchema.table(
+  "connection_template_versions",
+  {
+    templateId: text("template_id")
+      .notNull()
+      .references(() => connectionTemplates.id, { onDelete: "cascade", onUpdate: "restrict" }),
+    version: integer("version").notNull(),
+    clientRegistrationId: text("client_registration_id").notNull(),
+    issuer: collatedText("issuer").notNull(),
+    clientId: collatedText("client_id").notNull(),
+    authorizationUrl: collatedText("authorization_url").notNull(),
+    tokenUrl: collatedText("token_url").notNull(),
+    scopes: text("scopes").array().notNull(),
+    authorizationParameters: jsonb("authorization_parameters")
+      .$type<Record<string, string>>()
+      .notNull(),
+    endpointHost: collatedText("endpoint_host").notNull(),
+    endpointPort: integer("endpoint_port").notNull(),
+    endpointPath: collatedText("endpoint_path").notNull(),
+    endpointAccess: collatedText("endpoint_access").notNull().default("full"),
+    envVar: collatedText("env_var").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.templateId, table.version] }),
+    foreignKey({
+      name: "connection_template_versions_registration_pair",
+      columns: [table.clientRegistrationId, table.issuer, table.clientId],
+      foreignColumns: [
+        connectionClientRegistrations.id,
+        connectionClientRegistrations.issuer,
+        connectionClientRegistrations.clientId,
+      ],
+    }),
+  ],
+);

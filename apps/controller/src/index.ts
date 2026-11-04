@@ -7,6 +7,7 @@ import {
   AgentRuntimeCredentialResponse,
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
+  ConnectionTemplateSchema,
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
@@ -137,6 +138,7 @@ import {
   limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
+import { connectionTemplateHandlers } from "./http/connection-templates.ts";
 import {
   isRuntimeLogDownload,
   RUNTIME_LOG_DOWNLOAD_ACTION,
@@ -2233,6 +2235,30 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         scope: "installation",
       });
       reply.send({ data: { configurations }, meta: { requestId: request.id } });
+      return;
+    }
+
+    const templateHandler = connectionTemplateHandlers[operation.operationId];
+    if (templateHandler) {
+      await templateHandler({
+        controller,
+        actorId: context.actorId,
+        request,
+        reply,
+        mutationEvent: (connectionTemplateId) =>
+          event(
+            operation,
+            request,
+            { kind: "installation", id: installationId },
+            "mutation",
+            context,
+            undefined,
+            {
+              outcome: "success",
+              details: { connectionTemplateId },
+            },
+          ),
+      });
       return;
     }
 
@@ -4406,6 +4432,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {
