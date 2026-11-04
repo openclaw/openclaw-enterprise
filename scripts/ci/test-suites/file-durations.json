@@ -26,7 +26,7 @@
     "tests/browser/console-create-agent-provisioning-400.test.mjs": 55400,
     "tests/browser/console-deployment-activity.test.ts": 47800,
     "tests/browser/console-dialogs.test.ts": 11600,
-    "tests/browser/console-disabled-reasons.test.mjs": 12400,
+    "tests/browser/console-disabled-reasons.test.ts": 12400,
     "tests/browser/console-drafts-kept.test.mjs": 29800,
     "tests/browser/console-focus-ring.test.ts": 11600,
     "tests/browser/console-form-fields-2.test.ts": 12800,
