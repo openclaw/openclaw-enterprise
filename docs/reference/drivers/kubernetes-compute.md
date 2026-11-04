@@ -274,8 +274,7 @@ before replacing the controller images.
   label. Private HTTP readiness returns `503` until native, plugin,
   authentication, or identity gates pass. Dedicated Codex clears its plugin
   marker at process start to reject stale readiness. Its loopback readiness check
-  requires a successful app-server `initialize` response and clean connection
-  closure. It creates no thread or model turn. The program has a two-second
+  requires a successful app-server `initialize` response. It creates no thread or model turn. The program has a two-second
   internal deadline; Kubernetes retains its one-second default exec-probe
   timeout, including Node startup. This does not verify the Gateway's network
   path to the Harness. Access-token login retries timeouts,

@@ -5287,7 +5287,6 @@ function checkWebSocket(token) {
     perMessageDeflate: false,
     maxPayload: 65536,
   });
-  let initialized = false;
   let failed = false;
   function fail(reason) {
     if (failed) return;
@@ -5306,7 +5305,7 @@ function checkWebSocket(token) {
     }));
   });
   socket.on("message", (data) => {
-    if (initialized || failed) return;
+    if (failed) return;
     let response;
     try {
       response = JSON.parse(data.toString("utf8"));
@@ -5320,22 +5319,15 @@ function checkWebSocket(token) {
     } else if (typeof response.result?.userAgent !== "string" || !response.result.userAgent.trim()) {
       fail("Codex app-server initialize response is invalid");
     } else {
-      initialized = true;
-      readinessWaitingFor = "the Codex app-server connection to close";
-      // No subsequent RPC needs the initialized notification. Close without
-      // subscribing to events or producing a periodic initialized log entry.
+      // The matching result completes this probe. Codex may drop the transport
+      // without a close reply; cleanup is not another readiness condition.
+      // No later RPC needs an initialized notification (which Codex logs).
       socket.close(1000);
+      clearTimeout(timeout);
+      process.exit(0);
     }
   });
-  socket.on("close", (code) => {
-    if (failed) return;
-    if (!initialized || code !== 1000) {
-      fail("Codex app-server closed before initialization completed");
-      return;
-    }
-    clearTimeout(timeout);
-    process.exit(0);
-  });
+  socket.on("close", () => fail("Codex app-server closed before initialization completed"));
   socket.on("error", (error) =>
     fail("Codex app-server WebSocket unavailable: " + readinessErrorCode(error)),
   );

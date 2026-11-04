@@ -177,7 +177,7 @@ compatibility, not cluster behavior or a live Agent workflow.
 The Codex readiness case runs a real app-server with no model credentials or
 external network. It verifies repeated initialization preserves the ordinary
 client's identity, avoids per-poll initialized notifications at default logging,
-and rejects incomplete RPCs and abnormal connection closure. This proves local
+and rejects incomplete RPCs, including disconnects before the result. This proves local
 protocol readiness, not model execution or cluster routing.
 
 ## Runtime image startup test environment

@@ -142,8 +142,7 @@ errors identify the setting.
 `runtime.gatewayNodeSelector`
 independently places the Gateway Pod and private-state initializer on trusted nodes.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_READINESS_ENTRYPOINT`
-requires a successful authenticated loopback Codex `initialize` response and
-clean connection closure. It uses Codex's non-originating probe identity to
+requires a successful authenticated loopback Codex `initialize` response. It uses Codex's non-originating probe identity to
 preserve ordinary clients' process-wide identity. It creates no thread or model
 turn. The program retains its two-second internal deadline; the unchanged
 Kubernetes exec probe has kubelet's one-second default timeout, including Node

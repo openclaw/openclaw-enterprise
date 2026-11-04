@@ -10,7 +10,7 @@ const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 
 // Run the production probe against the image's real Codex server, then real
-// WebSocket peers that fail its RPC contract. No provider or model is involved.
+// WebSocket peers that exercise its RPC completion boundary. No provider or model is involved.
 const scenario = String.raw`
 (async () => {
 const assert = require("node:assert/strict");
@@ -53,9 +53,8 @@ async function identity(name) {
       socket.close(1000);
     }
   });
-  const [code] = await once(socket, "close");
+  await once(socket, "close");
   clearTimeout(deadline);
-  assert.equal(code, 1000);
   assert.equal(typeof userAgent, "string");
   return userAgent;
 }
@@ -117,16 +116,18 @@ for (const mode of cases) {
   });
   try {
     const result = await probe(peer.address().port);
-    assert.equal(result.code, 1, mode + " must remain unready after WebSocket upgrade");
+    // A complete result is authoritative even if the server drops the transport
+    // afterward, as the packaged Codex server does during normal client closure.
+    assert.equal(result.code, mode === "abrupt-after-result" ? 0 : 1, mode);
     assert.deepEqual(requests, ["initialize"], "readiness must make no thread or turn request");
-    assert.match(result.output, /Codex app-server/);
+    if (mode !== "abrupt-after-result") assert.match(result.output, /Codex app-server/);
     assert.ok(!result.output.includes("private-error-canary"), "probe output must omit peer content");
   } finally {
     for (const client of peer.clients) client.terminate();
     await new Promise(resolve => peer.close(resolve));
   }
 }
-console.log(JSON.stringify({ repeatedInitialization: true, rejectedPeers: cases.length }));
+console.log(JSON.stringify({ repeatedInitialization: true, peerCases: cases.length }));
 })().catch(error => { console.error(error); process.exitCode = 1; });
 `;
 
@@ -167,6 +168,6 @@ test(
       ],
       { timeout: 40000, maxBuffer: 65536 },
     );
-    assert.deepEqual(JSON.parse(result.stdout), { repeatedInitialization: true, rejectedPeers: 7 });
+    assert.deepEqual(JSON.parse(result.stdout), { repeatedInitialization: true, peerCases: 7 });
   },
 );
