@@ -62,6 +62,8 @@ test(
       description: "Created by the GitLab provider validation.",
     });
     assert.match(created.title, /^Draft: /);
+    // The provider's guarantee is the draft state GitLab accepted, not the title text alone.
+    assert.equal(created.draft, true);
     assert.equal(created.sourceBranch, writeBranch);
     assert.equal(created.targetBranch, "main");
     const listed = await api.mergeRequests("opened");

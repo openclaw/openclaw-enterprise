@@ -138,6 +138,34 @@ test("a write that fails in transport is possibly sent and is never retried by t
   assert.equal(calls, 1, "the client must not repeat a possibly-sent write");
 });
 
+test("a draft create reports GitLab's returned draft flag", async () => {
+  const response = (draft) =>
+    new Response(
+      JSON.stringify({
+        iid: 7,
+        title: "Draft: Add README",
+        state: "opened",
+        draft,
+        source_branch: "feature/readme",
+        target_branch: "main",
+      }),
+      { status: 201, headers: { "content-type": "application/json" } },
+    );
+  const created = await client("git-write", async () => response(true)).createDraftMergeRequest({
+    sourceBranch: "feature/readme",
+    targetBranch: "main",
+    title: "Add README",
+  });
+  assert.equal(created.draft, true);
+  // GitLab's flag wins; the client must not claim a draft the service did not accept.
+  const notDraft = await client("git-write", async () => response(false)).createDraftMergeRequest({
+    sourceBranch: "feature/readme",
+    targetBranch: "main",
+    title: "Add README",
+  });
+  assert.equal(notDraft.draft, false);
+});
+
 test("read profiles cannot reach write operations", async () => {
   const api = client("git-read", async () => {
     throw new Error("no request expected");

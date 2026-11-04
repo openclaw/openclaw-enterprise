@@ -135,6 +135,8 @@ export interface GitLabMergeRequest {
   readonly iid: number;
   readonly title: string;
   readonly state: string;
+  /** GitLab's own draft flag, not a second interpretation of the title. */
+  readonly draft: boolean;
   readonly sourceBranch: string;
   readonly targetBranch: string;
   readonly webUrl?: string;
@@ -377,6 +379,7 @@ export class GitLabRepositoryClient {
           iid: Number(mergeRequest.iid),
           title: String(mergeRequest.title),
           state: String(mergeRequest.state),
+          draft: mergeRequest.draft === true,
           sourceBranch: String(mergeRequest.source_branch),
           targetBranch: String(mergeRequest.target_branch),
           ...(typeof mergeRequest.web_url === "string" ? { webUrl: mergeRequest.web_url } : {}),
@@ -414,6 +417,8 @@ export class GitLabRepositoryClient {
       iid: Number(raw.iid),
       title: String(raw.title),
       state: String(raw.state),
+      // GitLab reports the draft state it accepted; callers must not infer it from the title.
+      draft: raw.draft === true,
       sourceBranch: String(raw.source_branch),
       targetBranch: String(raw.target_branch),
       ...(typeof raw.web_url === "string" ? { webUrl: raw.web_url } : {}),
