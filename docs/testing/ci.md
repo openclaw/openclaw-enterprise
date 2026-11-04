@@ -19,7 +19,7 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
 | QA Matrix Advisory                | [`main`; every 6 h; selected trusted PRs](#qa-matrix) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
 | Full Integration                  | Manual                                                | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
 | Observability Demo                | [Every PR](#special-cases)                            | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
-| Publish private documentation     | Manual                                                | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
+| Publish private documentation     | `main` pushes; manual                                 | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
 
 <a id="pr-exceptions"></a>
 
@@ -262,6 +262,44 @@ without test suites build, publish, scan, or dispatch; see the [workflow index](
 Files that share a runner start longest first, by [measured file times](../../scripts/ci/test-suites/file-durations.json).
 A file without a row starts first; refresh rows when a lane's longest files change.
 
+### Find test coverage
+
+Every `*.test.mjs` and `*.test.ts` file under `tests/integration/` must belong to
+exactly one lane. The same audit covers `tests/conformance/`, `tests/browser/`,
+and `tests/docs/`. Check registration without running tests or provisioning resources:
+
+```sh
+node scripts/ci/run-tests.mjs audit
+```
+
+The audit fails for unmapped files, duplicate ownership, missing files, or invalid
+lane/group definitions. Registration does not mean a test runs on every PR:
+the tables below distinguish ordinary CI, manual/advisory workflows, and lanes
+with no hosted entrypoint. Each manifest is the exact file and selector inventory.
+
+To find the owning lane for a file name or path fragment, run from the repository root:
+
+```sh
+node --input-type=module - local-first-agent <<'JS'
+import { loadTestSuites } from './scripts/ci/test-suites.mjs';
+
+const { lanes } = loadTestSuites('scripts/ci/test-suites.json');
+
+for (const [lane, { files }] of Object.entries(lanes)) {
+  for (const { path } of files) {
+    if (path.includes(process.argv[2])) {
+      console.log(`${lane}\t${path}`);
+    }
+  }
+}
+JS
+```
+
+Replace `local-first-agent` with the file name you need. When adding a test,
+register it in its owning manifest and check that the intended workflow selects
+that lane. A passing inventory audit does not prove that a credentialed or
+manually prepared lane has run.
+
 <a id="production-observability-lane"></a>
 
 ### CI
@@ -316,8 +354,8 @@ This stage runs wherever the OpenClaw `model-ui` cell is selected; the Codex-onl
 advisory selection does not cover it. Other scenarios do not require the theme or
 an extra API rollout.
 
-Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
-complete OpenShell lane. Each push has its own concurrency group so a later
+When `QA_ADVISORY_ON_PUSH=true`, each push to `main` runs the marked Codex scenarios
+on Compose and Kubernetes, and the complete OpenShell lane. Each push has its own concurrency group so a later
 merge cannot cancel the result. The author of the change that first breaks a lane owns triage;
 use the failed run's commit and retained results. These jobs do not block merge or publication.
 Push runs are paused until the `integration-qa-pr` credentials work again. To start them again,
@@ -325,8 +363,8 @@ set the repository variable `QA_ADVISORY_ON_PUSH` to `true`.
 
 For changes to OpenShell, image pins, Helm installation or another live integration, a maintainer
 can add the `full-qa` label to a reviewed, same-repository pull request. Create that repository
-label once before enabling this workflow. Adding it starts those three jobs on GitHub's PR merge
-commit, plus the hosted local installation rehearsal. A manual dispatch on `main` and the
+label once before enabling this workflow. Adding it starts the Compose and Kubernetes QA jobs, all OpenShell file jobs,
+and the hosted local installation rehearsal on GitHub's PR merge commit. A manual dispatch on `main` and the
 schedule (every 6 hours, at minute 17) also run the whole matrix with that rehearsal. Check
 the run's commit and results before merging; skipped jobs provide no live QA result.
 As long as the label remains, pushing a new commit replaces the previous run. Removing
@@ -342,6 +380,21 @@ still use Kubernetes Compute. `full-qa` takes precedence when both labels exist.
 The focused run skips the other advisory jobs, keeps manifest case requirements
 and cleanup, and records `scope: focused`. It cannot satisfy full-lane aggregation.
 Inspect `qa-advisory-local-first-agent-openshell-real-openshell` and its attempt-specific artifacts.
+
+#### OpenShell file coverage
+
+The advisory workflow and Full Integration select files from the same
+[OpenShell manifest](../../scripts/ci/test-suites/openshell.json). The Compose-only
+label selects the first row. The separately prepared OAuth and Linear lanes
+listed below are not included.
+
+| Integration test file                                                                                                  | Coverage                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [local-first-agent-openshell-real.test.mjs](../../tests/integration/local-first-agent-openshell-real.test.mjs)         | Compose control plane with Kubernetes workloads: Agent deployment and reuse, key replacement denial, native redeployment, retained session/files, and required-worker execution. |
+| [dev-up-openshell-k3d-real.test.mjs](../../tests/integration/dev-up-openshell-k3d-real.test.mjs)                       | Pinned OpenShell installation with Kubernetes-only and Compose control planes.                                                                                                   |
+| [sandbox-driver-openshell-k3d-real.test.mjs](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, and Gateway tool policy during normal Agent work.                                                                      |
+| [local-first-agent-openshell-k3d-real.test.mjs](../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
+| [openshell-plugin-install-real.test.ts](../../tests/integration/openshell-plugin-install-real.test.ts)                 | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
 
 Full advisory OpenShell runs use one Ubuntu 24.04 runner per file from the
 [OpenShell manifest](../../scripts/ci/test-suites/openshell.json). The files run in
@@ -378,20 +431,24 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Scenario                | In advisory | Presets         | Checks                                                                                                                                  |
-| ----------------------- | ----------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `model-ui`              | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                                            |
-| `console-secrets`       | Yes (Codex) | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation. |
-| `git-write`             | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                             |
-| `git-push-denied`       | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                                              |
-| `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
-| `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                    |
-| `openshell-linear-read` | No          | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                           |
-| `codex-search-config`   | No          | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.         |
+| Scenario                | In advisory             | Presets         | Checks                                                                                                                                  |
+| ----------------------- | ----------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-policy`        | Separate OpenShell lane | Codex           | Configuration discovery/preview and the OpenShell network-policy lifecycle; requires a prepared OpenShell environment.                  |
+| `plugin-install`        | Separate OpenShell lane | Codex           | Dedicated Codex plugin installation, discovery after native-process restart, and selection removal.                                     |
+| `model-ui`              | Yes (Codex)             | OpenClaw, Codex | Real model turn and native browser response.                                                                                            |
+| `console-secrets`       | Yes (Codex)             | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation. |
+| `git-write`             | No                      | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                             |
+| `git-push-denied`       | No                      | Codex           | Reject a push to any other branch and dispose credentials.                                                                              |
+| `calendar`              | Yes (Codex)             | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
+| `slack`                 | No                      | Codex           | Threaded reply and new root message.                                                                                                    |
+| `openshell-linear-read` | No                      | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                           |
+| `codex-search-config`   | No                      | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.         |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
+`all` excludes the explicit `sandbox-policy`, `plugin-install`,
+`openshell-linear-read`, and `codex-search-config` selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
 
@@ -453,7 +510,8 @@ lists overrides.
 
 `matrix.json` records completed stages as `passed`, `failed`, or `blocked`.
 Inspect selections, runner failures and cleanup: absent, filtered or interrupted
-stages are not passes. `scope: full` means all scenarios were selected. Hosted
+stages are not passes. `scope: full` means both installations and presets were selected
+with the default `all` scenario set; it does not include the four explicit selectors. Hosted
 outcomes expire after seven days.
 
 Cleanup stops run-owned Agents/installations. Uncertain credential disposal retains the installation and reports recovery.
@@ -508,16 +566,17 @@ selected results. QA waits for Slack to finish, including after Slack failure.
 The PR column identifies suites reused by other workflows; Full Integration
 itself remains manual.
 
-| Jobs                                    | What they test / suite guide                                                                                                                                           | Exact manifests                                                                                                       | Runs on PRs                                              |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| Docker Model Runtime; k3d Model Runtime | [Docker](docker.md) deploy refusal; [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)          | No                                                       |
-| Gateway Routing; Production TUI         | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI version cutover](kubernetes.md#production-tui-tests)                                             | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json) | No                                                       |
-| Slack Live; Provider Account            | [Live Slack isolation, issued credentials and model turns](slack.md)                                                                                                   | [Slack](../../scripts/ci/test-suites/slack.json), [Account](../../scripts/ci/test-suites/provider-account.json)       | No                                                       |
-| OpenShell                               | [Sandbox enforcement and first-Agent flows](openshell.md)                                                                                                              | [OpenShell](../../scripts/ci/test-suites/openshell.json)                                                              | With `full-qa`; Compose-only with `qa-openshell-compose` |
-| Local Kubernetes Installation           | [Installation/recovery, including Keycloak](kubernetes.md#local-kubernetes-installation)                                                                               | [Installation](../../scripts/ci/test-suites/dev-up-k3d.json)                                                          | With `full-qa`                                           |
-| Logging Collector                       | [Collector forwarding and recovery](local.md#metrics-and-observability-tests)                                                                                          | [Collector](../../scripts/ci/test-suites/logging-collector.json)                                                      | Yes: CI                                                  |
-| k3d OTEL; Helper Timeout                | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                                           | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)       | No                                                       |
-| Shipped Installation QA Matrix          | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                            | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                     | With `full-qa`; see QA scenarios                         |
+| Jobs                                              | What they test / suite guide                                                                                                                                                                          | Exact manifests                                                                                                       | Runs on PRs                                              |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Docker Model Runtime; k3d Model Runtime           | [Docker](docker.md) deploy refusal; [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse                                | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)          | No                                                       |
+| Gateway Routing; Production TUI                   | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI version cutover](kubernetes.md#production-tui-tests)                                                                            | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json) | No                                                       |
+| Slack Live; Provider Account                      | [Live Slack isolation, issued credentials and model turns](slack.md)                                                                                                                                  | [Slack](../../scripts/ci/test-suites/slack.json), [Account](../../scripts/ci/test-suites/provider-account.json)       | No                                                       |
+| OpenShell                                         | [Sandbox enforcement and first-Agent flows](openshell.md)                                                                                                                                             | [OpenShell](../../scripts/ci/test-suites/openshell.json)                                                              | With `full-qa`; Compose-only with `qa-openshell-compose` |
+| Local Kubernetes Installation                     | [Installation/recovery, including Keycloak](kubernetes.md#local-kubernetes-installation)                                                                                                              | [Installation](../../scripts/ci/test-suites/dev-up-k3d.json)                                                          | With `full-qa`                                           |
+| Installed Skipper private Git and live withdrawal | [Prepared native private Git, withdrawal during an authenticated fetch, and continued chat](repository-credentials.md#verify-prepared-native-git); uses synthetic job-local model and Git credentials | [Installed Skipper](../../scripts/ci/test-suites/skipper-prepared-git-installed.json)                                 | No; manual `skipper-prepared-git-installed` or `all`     |
+| Logging Collector                                 | [Collector forwarding and recovery](local.md#metrics-and-observability-tests)                                                                                                                         | [Collector](../../scripts/ci/test-suites/logging-collector.json)                                                      | Yes: CI                                                  |
+| k3d OTEL; Helper Timeout                          | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                                                                          | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)       | No                                                       |
+| Shipped Installation QA Matrix                    | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                                                           | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                     | With `full-qa`; see QA scenarios                         |
 
 ### Observability Demo
 
@@ -529,17 +588,17 @@ and [exact manifest](../../scripts/ci/test-suites/k3d-observability-demo.json).
 
 These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
 
-- [`egress-connected`](static-egress.md#select-the-prepared-connected-lane): select explicitly after preparing the protected controller, database, authenticated OpenShell stack, and synthetic HTTPS origin. CI runs the request preflight in `checks-baseline-2`; the generic `openshell` lane does not run this qualification.
-- [`egress-custody-installed`](protected-repository-custody.md): qualify repository dispatch and response custody on a separately prepared controller and OpenShell pair, with an independent dispatch observer.
-- `repository-credentials-live`: requires an authorized disposable repository and cleanup. See [repository credentials](repository-credentials.md).
-- `repository-credentials-installed`: temporarily refused pending safe remote cleanup. See [installed Agent qualification](repository-credentials.md#qualify-an-installed-agent-against-github).
-- `postgres-azure-workload-identity`: see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
-- `ssh-host`: requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
-- `plugin-model`: requires a disposable cluster with Envoy Gateway and cert-manager, its Gateway CA certificate and key, an authorized Codex account, an immutable Agent image and three distinct scenario databases. See [plugin tests](plugins.md#native-runtime-prerequisites).
-- `openshell-linear`: starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).
-- `k3d-two-cluster`: requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).
-- `openshell-oauth`: requires a prepared OpenShell OAuth gateway, trust files, tokens and a Kubernetes context. See [OpenShell OAuth tests](openshell-oauth.md).
-- `image-pair-qualification`: requires staged old and new controller and broker images. See [image-pair qualification](docker.md#repository-image-pair-qualification).
+- [`egress-connected`](../../scripts/ci/test-suites/egress-connected.json) ([setup](static-egress.md#select-the-prepared-connected-lane)): select explicitly after preparing the protected controller, database, authenticated OpenShell stack, and synthetic HTTPS origin. CI runs the request preflight in `checks-baseline-2`; the generic `openshell` lane does not run this qualification.
+- [`egress-custody-installed`](../../scripts/ci/test-suites/egress-custody-installed.json) ([setup](protected-repository-custody.md)): qualify repository dispatch and response custody on a separately prepared controller and OpenShell pair, with an independent dispatch observer.
+- [`repository-credentials-live`](../../scripts/ci/test-suites/repository-credentials-live.json): requires an authorized disposable repository and cleanup. See [repository credentials](repository-credentials.md).
+- [`repository-credentials-installed`](../../scripts/ci/test-suites/repository-credentials-installed.json): temporarily refused pending safe remote cleanup. See [installed Agent qualification](repository-credentials.md#qualify-an-installed-agent-against-github).
+- [`postgres-azure-workload-identity`](../../scripts/ci/test-suites/postgres-azure-workload-identity.json): see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
+- [`ssh-host`](../../scripts/ci/test-suites/ssh-host.json): requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
+- [`plugin-model`](../../scripts/ci/test-suites/plugin-model.json): requires a disposable cluster with Envoy Gateway and cert-manager, its Gateway CA certificate and key, an authorized Codex account, an immutable Agent image and three distinct scenario databases. See [plugin tests](plugins.md#native-runtime-prerequisites).
+- [`openshell-linear`](../../scripts/ci/test-suites/openshell-linear.json): starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).
+- [`k3d-two-cluster`](../../scripts/ci/test-suites/k3d-two-cluster.json): requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).
+- [`openshell-oauth`](../../scripts/ci/test-suites/openshell-oauth.json): requires a prepared OpenShell OAuth gateway, trust files, tokens and a Kubernetes context. See [OpenShell OAuth tests](openshell-oauth.md).
+- [`image-pair-qualification`](../../scripts/ci/test-suites/image-pair-qualification.json): requires staged old and new controller and broker images. See [image-pair qualification](docker.md#repository-image-pair-qualification).
 
 ### Results and cleanup
 
