@@ -5357,7 +5357,7 @@
      expect(plan.environment?.OPENCLAW_GATEWAY_TOKEN).toBe("node-token");
      expect(plan.environment?.OPENCLAW_GATEWAY_PASSWORD).toBe("node-password");
      expect(plan.environmentValueSources).toEqual({
-@@ -321,6 +322,129 @@
+@@ -321,6 +322,133 @@
        CF_ACCESS_CLIENT_ID: "file",
        CF_ACCESS_CLIENT_SECRET: "file", // pragma: allowlist secret
      });
@@ -5379,7 +5379,11 @@
 +      // The display value is not a request to switch this service's authentication.
 +      mocks.service.readCommand.mockResolvedValue({
 +        programArguments: initial.programArguments,
-+        environment: initial.environment,
++        environment: Object.fromEntries(
++          Object.entries(initial.environment ?? {}).filter(
++            (entry): entry is [string, string] => entry[1] !== undefined,
++          ),
++        ),
 +      });
 +      mocks.service.install.mockClear();
 +      await runNodeDaemonInstall({ force: true });

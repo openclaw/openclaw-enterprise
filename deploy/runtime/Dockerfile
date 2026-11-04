@@ -203,7 +203,7 @@ RUN echo '47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo '7925aec63b5f6fc2b9872e8c8e34ff453fe196181cea545ebbbccaa808ec1ac7  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo 'a1ace9dea3c1e848aa34a53d32e17826405dbbc0bdd6d8232e8eb97de772c640  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Run the bridge tests alongside the build using the same patched source.
