@@ -114,7 +114,7 @@ function frozenCopy(value: unknown): unknown {
   }
   return value;
 }
-type CopiedDiagnostic = Partial<Diagnostic> & Record<string, unknown>;
+type CopiedDiagnostic = Readonly<Record<string, unknown>>;
 function copyDiagnostic(value: Diagnostic): CopiedDiagnostic {
   return Object.freeze(
     Object.fromEntries<unknown>(

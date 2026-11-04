@@ -244,6 +244,18 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.deepEqual(applyExceptions([hidden], { version: 1, exceptions: [] }).violations, [
       { from: "src", bindings: [] },
     ]);
+    let reads = 0;
+    const getter = {
+      from: "src",
+      bindings: [],
+      get message() {
+        reads++;
+        return reads;
+      },
+    };
+    const copied = applyExceptions([getter], { version: 1, exceptions: [] });
+    assert.equal(reads, 1);
+    assert.equal(copied.violations[0].message, 1);
   });
   test("keeps native package error diagnostics independent of the workspace path", async (t) => {
     const { root, write, cli: verify, link } = await workspace(t);
