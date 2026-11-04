@@ -36,8 +36,51 @@ const caEnvironment = [
 ];
 const trustLimit = 4 * 1024 * 1024;
 let trustDirectory;
+let refusalPhase = "invocation";
+
+function refusalReceipt(error) {
+  // Never serialize the exception: filesystem/OpenSSL messages can contain paths,
+  // input bytes or secrets. Both fields have a closed output vocabulary.
+  const phase = [
+    "invocation",
+    "configuration",
+    "authorization",
+    "trust-input",
+    "trust-composition",
+    "trust-files",
+    "child-setup",
+    "child-dispatch",
+  ].includes(refusalPhase)
+    ? refusalPhase
+    : "unknown";
+  const codes = [
+    "ENOENT",
+    "EACCES",
+    "EPERM",
+    "EISDIR",
+    "ENOTDIR",
+    "ELOOP",
+    "ENOSPC",
+    "EROFS",
+    "EMFILE",
+    "ENFILE",
+    "ERR_INVALID_ARG_TYPE",
+    "ERR_INVALID_ARG_VALUE",
+    "ERR_OSSL_PEM_NO_START_LINE",
+  ];
+  let code = "unknown";
+  if (codes.includes(error?.code)) {
+    code = error.code;
+  } else if (error instanceof SyntaxError) {
+    code = "SYNTAX_ERROR";
+  } else if (error instanceof TypeError) {
+    code = "TYPE_ERROR";
+  }
+  process.stderr.write(`public-git-refusal:${phase}:${code}\n`);
+}
 
 function readTrust(path, limit) {
+  refusalPhase = "trust-input";
   if (!isAbsolute(path ?? "")) {
     throw new Error("TLS trust requires an absolute file path.");
   }
@@ -69,6 +112,7 @@ function composeTrust(readerTrust) {
   const certificates = new Map();
   let size = 0;
   function append(pem) {
+    refusalPhase = "trust-composition";
     size += Buffer.byteLength(pem);
     if (size > trustLimit) {
       throw new Error("TLS trust exceeds its aggregate bound.");
@@ -98,6 +142,7 @@ function composeTrust(readerTrust) {
   for (const file of new Set(caEnvironment.map((key) => process.env[key]).filter(Boolean))) {
     append(readTrust(file, 1024 * 1024));
   }
+  refusalPhase = "trust-composition";
   const bundle = [...certificates.values()].join("\n");
   if (Buffer.byteLength(bundle) > 1024 * 1024) {
     throw new Error("TLS trust exceeds its bundle bound.");
@@ -107,6 +152,7 @@ function composeTrust(readerTrust) {
 
 function operationTrust(config) {
   const bundle = composeTrust(readTrust(config.caPath, 1024 * 1024));
+  refusalPhase = "trust-files";
   trustDirectory = mkdtempSync(join(tmpdir(), "oce-public-trust-"));
   chmodSync(trustDirectory, 0o700);
   const file = join(trustDirectory, "ca.pem");
@@ -123,6 +169,7 @@ function cleanupTrust() {
 process.once("exit", cleanupTrust);
 
 function authorization(config) {
+  refusalPhase = "authorization";
   return capability(
     config.capabilityEnvironment
       ? process.env.OCE_PUBLIC_GITHUB_READ_CAPABILITY
@@ -183,10 +230,12 @@ function responseMetadata(bytes, route) {
 }
 
 function runChild(binary, args, env, input, metadataRoute) {
+  refusalPhase = "child-dispatch";
   const child = spawn(binary, args, {
     env,
     stdio: input === undefined ? "inherit" : ["pipe", "pipe", "inherit"],
   });
+  refusalPhase = "child-setup";
   const chunks = [];
   let responseSize = 0;
   let metadata;
@@ -265,6 +314,7 @@ function runChild(binary, args, env, input, metadataRoute) {
 }
 
 function validateApiRoute(route) {
+  refusalPhase = "invocation";
   // Origin-form only; the reader validates supported resources and query fields.
   // Reject dot/encoded path segments before URL normalization can change them.
   if (typeof route !== "string" || route.length > 2048 || /[^\x21-\x7e]|[\\#]/.test(route)) {
@@ -326,6 +376,7 @@ function apiGet(route, metadata = false) {
 }
 
 function configuration(path) {
+  refusalPhase = "configuration";
   if (!isAbsolute(path ?? "")) {
     throw new Error("A managed public Git configuration is required.");
   }
@@ -373,6 +424,7 @@ function configuration(path) {
 }
 
 function capability(value, allowPlaceholder = false) {
+  refusalPhase = "authorization";
   if (
     typeof value !== "string" ||
     (!/^[a-z\d_-]{1,128}\.[A-Za-z\d_-]{43}$/i.test(value) &&
@@ -449,6 +501,7 @@ function appendGitConfig(env, entries) {
 
 function remoteHelper(remote, originalUrl) {
   const config = configuration(process.env.OCE_PUBLIC_GITHUB_READ_CONFIG);
+  refusalPhase = "child-setup";
   const helper = process.env.OCE_PUBLIC_GITHUB_REAL_HTTP_HELPER;
   if (!isAbsolute(helper ?? "") || !remote || !originalUrl) {
     throw new Error("The managed Git transport is not installed.");
@@ -519,6 +572,7 @@ function remoteHelper(remote, originalUrl) {
       throw new Error("Inherited Git TLS client identities are unavailable for public reads.");
     }
     const ca = operationTrust(config);
+    refusalPhase = "child-setup";
     env.GIT_SSL_CAINFO = ca;
     // Keep the Sandbox's environment proxy route; inherited Git config cannot
     // replace it with a proxy that receives repository credentials.
@@ -631,8 +685,9 @@ try {
   } else {
     throw new Error("Unsupported managed Git invocation.");
   }
-} catch {
+} catch (error) {
   // Neither native arguments nor configuration contents belong in diagnostics.
   process.stderr.write("The managed public Git transport refused this invocation.\n");
+  refusalReceipt(error);
   process.exitCode = 1;
 }

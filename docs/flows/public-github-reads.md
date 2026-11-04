@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-04"
-last_updated_session: authoring-run/91dbe88d-f8ca-4112-959d-27f83555e7bb
+last_updated_session: authoring-run/77414b6b-7f99-44c9-a206-b3778ec3010f
 ---
 
 # Public GitHub read flow
@@ -153,6 +153,18 @@ cross-resource continuation fails without output. The Agent follows relative
 next links through the same helper and reports interrupted listings as incomplete.
 Body-only `--api-get` remains unchanged.
 
+`transport.mjs:refusalReceipt` appends only an allowlisted phase/code to the
+existing synchronous refusal. Configuration, authorization, trust input/composition,
+private trust-file creation and child setup/dispatch remain distinct. Unknown
+exceptions remain unknown; messages, stacks, paths and credentials are not emitted.
+The model fixture validates these fields before logging them, without retrying.
+
+An authored native limited-method proxy permits API GET but blocks Git's
+upload-pack POST. Full HTTP methods require the same restricted filesystem/exec
+profile, explicit reader-host allow and local-binding denial; the reader still
+rejects writes. Full-mode HTTPS tunnels do not exercise limited-mode interception.
+Protected OpenShell keeps its existing profile and exact service/port/L7 policy.
+
 `apps/controller/src/drivers/repo/github/public-read/server.ts:createPublicGithubReadServer`
 authenticates before quota admission, deduplication or provider requests. API and
 Git reads apply the current ceiling and revision scope. The reader checks current
@@ -206,6 +218,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 13:22: Retain fixed managed-refusal phases and distinguish native method-policy qualification (accompanying correction; authoring-run/77414b6b-7f99-44c9-a206-b3778ec3010f - e4e54f5b80e82c4258de30572e21cfe123e2444b)
 
 - 2026-11-04 10:45: Preserve bounded pagination metadata in managed API reads (review correction; authoring-run/91dbe88d-f8ca-4112-959d-27f83555e7bb - f1f0005b41eef72c206f96ea7ebff9a3aa763352)
 

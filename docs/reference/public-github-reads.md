@@ -203,6 +203,24 @@ links; each relative target retains the 2048-character route limit. Other header
 are discarded. Non-success, invalid JSON or invalid metadata emits no success
 envelope or body. Neither mode automatically paginates or follows redirects.
 
+Native Codex smart-HTTP Git needs POST for upload-pack. An authored
+`appServer.networkProxy.mode: limited` permits API GET but blocks this Git step;
+OCE does not silently relax that narrowing constraint. A native proxy configured
+for Git must permit full HTTP methods while retaining its explicit reader-host
+allow and filesystem/exec sandbox. Keep local binding and unused SOCKS disabled.
+Host domains do not constrain URL paths or ports: the selected service policy and
+reader enforce those boundaries, including receive-pack refusal. Full-mode HTTPS
+tunnels do not qualify the limited-mode interception TLS path. Protected OpenShell
+uses its existing profile and exact service/port/L7 rules instead of this nested
+native proxy.
+
+Synchronous managed-helper refusals include a fixed `public-git-refusal` phase
+and allowlisted error code (or `unknown`). These identify configuration,
+authorization, trust reading/composition, private trust-file creation or child
+setup/dispatch without exposing paths, values or exception text. They preserve
+the failed operation and exit status; they are not a retry or diagnosis of an
+unobserved cause.
+
 The helper fixes the reader origin, authorization and proxy route. It combines
 reader trust with the current tool CA files for every Git/API operation. Do not
 replace this with a static curl CA selection: it can omit Codex's later

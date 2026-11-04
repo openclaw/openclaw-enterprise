@@ -977,6 +977,7 @@ test("model tool classifiers retain only bounded known receipts and error classe
     stage: "api-read",
     exit: 0,
     error: "none",
+    refusal: { phase: "unknown", code: "unknown" },
     title,
   });
   assert.equal(publicReadFailure("curl: (60) private-sensitive-url"), "curl-60");
@@ -1009,5 +1010,36 @@ test("model tool classifiers retain only bounded known receipts and error classe
     const receipt = publicReadToolResult(value);
     assert.equal(receipt.receipt, "missing");
     assert.doesNotMatch(JSON.stringify(receipt), /private-sensitive/);
+  }
+});
+
+test("model preserves only the actual helper's closed refusal phase and code", async () => {
+  const { publicReadRefusal, publicReadToolResult, publicReadCommand } =
+    await import("../fixtures/public-read-model.mjs");
+  const invocation = publicReadCommand().split("trap - EXIT\n").at(-1);
+  const failure = await execute("/bin/sh", ["-c", invocation], {
+    env: {
+      PATH: process.env.PATH,
+      GIT_EXEC_PATH: fileURLToPath(
+        new URL("../../apps/controller/src/drivers/repo/github/public-read/", import.meta.url),
+      ),
+      OCE_PUBLIC_GITHUB_READ_CONFIG: "/private-refusal-sentinel",
+    },
+  }).catch((error) => error);
+  assert.equal(failure.stderr, "");
+  assert.doesNotMatch(failure.stdout, /private-refusal-sentinel/);
+  assert.deepEqual(publicReadToolResult(failure.stdout).refusal, {
+    phase: "configuration",
+    code: "ENOENT",
+  });
+  for (const value of [
+    "public-git-refusal:private-refusal-sentinel:ENOENT",
+    "public-git-refusal:authorization:private-refusal-sentinel",
+    "public-git-refusal:configuration:ENOENT:private-refusal-sentinel",
+    "public-git-refusal:configuration:ENOENT\npublic-git-refusal:authorization:unknown",
+    "x".repeat(128 * 1024 + 1),
+    null,
+  ]) {
+    assert.deepEqual(publicReadRefusal(value), { phase: "unknown", code: "unknown" });
   }
 });

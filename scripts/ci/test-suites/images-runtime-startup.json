@@ -79,7 +79,7 @@
       ]
     },
     {
-      "path": "tests/integration/qa-compose-reload-real.test.mjs",
+      "path": "tests/integration/qa-compose-reload-real.test.ts",
       "expectedTests": [
         "QA Compose recreation consumes mounted state and retains strict client peers"
       ]

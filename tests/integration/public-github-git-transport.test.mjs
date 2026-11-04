@@ -1060,3 +1060,54 @@ test("launcher accepts the supported CA bundle and routing-list sizes while boun
   await assert.rejects(fixture.install(), /refused/);
   assert.equal(fixture.requests.length, before);
 });
+
+test("managed refusals report only fixed operation phases and codes before contact", async (t) => {
+  const fixture = await materialFixture(t);
+  const env = await fixture.install();
+  const script = path.join(env.GIT_EXEC_PATH, "transport.mjs");
+  const args = [script, "--api-get", "/repos/example/project/pulls/27"];
+  const privatePath = path.join(fixture.directory, "private-diagnostic-sentinel");
+  await writeFile(privatePath, "private-diagnostic-sentinel");
+  const malformed = path.join(fixture.directory, "invalid-config.json");
+  await writeFile(malformed, '{"private-diagnostic-sentinel":');
+  const cases = [
+    [{ OCE_PUBLIC_GITHUB_READ_CONFIG: privatePath + "-absent" }, "configuration", "ENOENT"],
+    [{ OCE_PUBLIC_GITHUB_READ_CONFIG: malformed }, "configuration", "SYNTAX_ERROR"],
+    [
+      { OCE_PUBLIC_GITHUB_READ_CAPABILITY: "private-diagnostic-sentinel" },
+      "authorization",
+      "unknown",
+    ],
+    [{ CURL_CA_BUNDLE: privatePath + "-absent" }, "trust-input", "ENOENT"],
+    [{ CURL_CA_BUNDLE: privatePath }, "trust-composition", "unknown"],
+    [{ TMPDIR: privatePath + "-absent" }, "trust-files", "ENOENT"],
+  ];
+  for (const [overrides, phase, code] of cases) {
+    const failure = await execute(process.execPath, args, { env: { ...env, ...overrides } }).then(
+      () => assert.fail("invalid operation must refuse"),
+      (error) => error,
+    );
+    assert.equal(failure.code, 1);
+    assert.equal(failure.stdout, "");
+    assert.equal(
+      failure.stderr,
+      "The managed public Git transport refused this invocation.\n" +
+        `public-git-refusal:${phase}:${code}\n`,
+    );
+    assert.doesNotMatch(failure.stderr, /private-diagnostic-sentinel/);
+    assert.ok(!failure.stderr.includes(fixture.token));
+    assert.equal(
+      (await readdir(fixture.directory)).some((entry) => entry.startsWith("oce-public-trust-")),
+      false,
+    );
+  }
+  assert.equal(fixture.requests.length, 0);
+  // A legitimate API call still succeeds and cleans its operation bundle.
+  const success = await execute(process.execPath, args, { env });
+  assert.equal(JSON.parse(success.stdout).title, "provider-only-pull");
+  assert.equal(success.stderr, "");
+  assert.equal(
+    (await readdir(fixture.directory)).some((entry) => entry.startsWith("oce-public-trust-")),
+    false,
+  );
+});

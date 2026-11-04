@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import type { ExecFileOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -83,7 +84,16 @@ http.createServer((q,r)=>{const peer=q.socket.remoteAddress.replace(/^::ffff:/,'
         retries: 30,
       },
     };
-    const definition = {
+    type Service = typeof common & {
+      command: string[];
+      healthcheck?: typeof client.healthcheck;
+      networks?: Record<string, Record<string, never>>;
+      environment?: Record<string, string>;
+    };
+    const definition: {
+      services: Record<"controller" | "worker-kubernetes" | "frontdoor" | "denied", Service>;
+      networks?: Record<string, { ipam: { config: { subnet: string }[] } }>;
+    } = {
       services: {
         controller: client,
         "worker-kubernetes": client,
@@ -110,7 +120,7 @@ http.createServer((q,r)=>{const peer=q.socket.remoteAddress.replace(/^::ffff:/,'
         },
       },
     };
-    const occupied = JSON.parse(
+    const occupied: { IPAM?: { Config?: { Subnet?: string }[] } }[] = JSON.parse(
       await execute(
         "docker",
         [
@@ -131,8 +141,8 @@ http.createServer((q,r)=>{const peer=q.socket.remoteAddress.replace(/^::ffff:/,'
         if (!value?.includes(".")) {
           return true;
         }
-        const range = (cidr) => {
-          const [address, bits] = cidr.split("/");
+        const range = (cidr: string): [bigint, bigint] => {
+          const [address, bits] = cidr.split("/") as [string, string];
           const n = address.split(".").reduce((v, x) => (v << 8n) + BigInt(x), 0n);
           const size = 1n << (32n - BigInt(bits));
           return [(n / size) * size, (n / size) * size + size - 1n];
@@ -158,7 +168,11 @@ http.createServer((q,r)=>{const peer=q.socket.remoteAddress.replace(/^::ffff:/,'
       configuration: initial,
       composePeerNetwork: qaComposePeerNetwork(subnet),
       env: launcherEnvironment(),
-      async run(command, args, options = {}) {
+      async run(
+        command: string,
+        args: string[],
+        options: Omit<ExecFileOptions, "encoding"> = {},
+      ): Promise<string> {
         const result = await execute(command, args, {
           env: f.env,
           encoding: "utf8",
@@ -168,10 +182,10 @@ http.createServer((q,r)=>{const peer=q.socket.remoteAddress.replace(/^::ffff:/,'
         });
         return result.stdout;
       },
-      compose(...args) {
+      compose(...args: string[]): Promise<string> {
         return f.run("docker", ["compose", "-p", cluster, "-f", path, "-f", overridePath, ...args]);
       },
-      async write(name, value) {
+      async write(name: string, value: string) {
         await writeFile(join(directory, name), value, { mode: 0o600 });
       },
     };
@@ -199,14 +213,19 @@ http.createServer((q,r)=>{const peer=q.socket.remoteAddress.replace(/^::ffff:/,'
         await Promise.all(
           ["controller", "worker-kubernetes"].map(async (service) => {
             const id = (await f.compose("ps", "-q", service)).trim();
-            const [container] = JSON.parse(await f.run("docker", ["inspect", id]));
+            const [container] = JSON.parse(await f.run("docker", ["inspect", id])) as [
+              {
+                Id: string;
+                NetworkSettings: { Networks: Record<string, { IPAddress: string }> };
+              },
+            ];
             return [
               service,
               {
                 id: container.Id,
                 ips: Object.values(container.NetworkSettings.Networks).map((n) => n.IPAddress),
               },
-            ];
+            ] as const;
           }),
         ),
       );
@@ -215,15 +234,16 @@ http.createServer((q,r)=>{const peer=q.socket.remoteAddress.replace(/^::ffff:/,'
       join(directory, "peers.json"),
       JSON.stringify(Object.values(before).flatMap((x) => x.ips)),
     );
-    const from = (service, script) => f.compose("exec", "-T", service, "node", "-e", script);
-    const inspectClient = async (service) =>
+    const from = (service: string, script: string) =>
+      f.compose("exec", "-T", service, "node", "-e", script);
+    const inspectClient = async (service: string) =>
       JSON.parse(
         await from(
           service,
           "fetch('http://127.0.0.1:8090').then(r=>r.text()).then(t=>process.stdout.write(t))",
         ),
       );
-    const peerStatus = async (service) =>
+    const peerStatus = async (service: string) =>
       Number(
         (
           await from(service, "fetch('http://frontdoor:8080').then(r=>console.log(r.status))")
@@ -242,13 +262,13 @@ http.createServer((q,r)=>{const peer=q.socket.remoteAddress.replace(/^::ffff:/,'
     const recreated = await ids();
     for (const service of Object.keys(before)) {
       assert.notEqual(
-        recreated[service].id,
-        before[service].id,
+        recreated[service]!.id,
+        before[service]!.id,
         "regular save recreates the process container",
       );
       assert.deepEqual(
-        recreated[service].ips,
-        before[service].ips,
+        recreated[service]!.ips,
+        before[service]!.ips,
         "initial exact peer IPs survive recreation",
       );
     }
@@ -271,7 +291,7 @@ http.createServer((q,r)=>{const peer=q.socket.remoteAddress.replace(/^::ffff:/,'
     assert.equal((await inspectClient("controller")).mark, "recreated");
     assert.match((await inspectClient("controller")).state, /phase: three/);
     for (const service of Object.keys(before)) {
-      assert.deepEqual((await ids())[service].ips, before[service].ips);
+      assert.deepEqual((await ids())[service]!.ips, before[service]!.ips);
       assert.equal(await peerStatus(service), 200);
     }
     assert.equal(await peerStatus("denied"), 403);

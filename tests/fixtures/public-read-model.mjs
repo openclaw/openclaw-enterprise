@@ -6,6 +6,15 @@ export function publicReadFailure(stderr, code) {
   if (curl) {
     return "curl-" + Number(curl);
   }
+  for (const [message, value] of [
+    ["The managed public Git transport refused this invocation.", "managed-refusal"],
+    ["The managed public reader child could not start.", "child-start-failure"],
+    ["The managed public API read refused the response.", "api-response-refusal"],
+  ]) {
+    if (text.includes(message)) {
+      return value;
+    }
+  }
   for (const value of [
     "MODULE_NOT_FOUND",
     "ERR_MODULE_NOT_FOUND",
@@ -17,16 +26,51 @@ export function publicReadFailure(stderr, code) {
       return "node-" + value;
     }
   }
-  for (const [message, value] of [
-    ["The managed public Git transport refused this invocation.", "managed-refusal"],
-    ["The managed public reader child could not start.", "child-start-failure"],
-    ["The managed public API read refused the response.", "api-response-refusal"],
-  ]) {
-    if (text.includes(message)) {
-      return value;
-    }
-  }
   return "unknown";
+}
+
+export function publicReadRefusal(text) {
+  const unknown = { phase: "unknown", code: "unknown" };
+  if (typeof text !== "string" || text.length > 128 * 1024) {
+    return unknown;
+  }
+  const lines = text.split("\n").filter((line) => line.startsWith("public-git-refusal:"));
+  if (lines.length !== 1) {
+    return unknown;
+  }
+  const match = /^public-git-refusal:([a-z-]+):([A-Za-z_]+)$/.exec(lines[0]);
+  const phases = [
+    "invocation",
+    "configuration",
+    "authorization",
+    "trust-input",
+    "trust-composition",
+    "trust-files",
+    "child-setup",
+    "child-dispatch",
+    "unknown",
+  ];
+  const codes = [
+    "ENOENT",
+    "EACCES",
+    "EPERM",
+    "EISDIR",
+    "ENOTDIR",
+    "ELOOP",
+    "ENOSPC",
+    "EROFS",
+    "EMFILE",
+    "ENFILE",
+    "ERR_INVALID_ARG_TYPE",
+    "ERR_INVALID_ARG_VALUE",
+    "ERR_OSSL_PEM_NO_START_LINE",
+    "SYNTAX_ERROR",
+    "TYPE_ERROR",
+    "unknown",
+  ];
+  return match && phases.includes(match[1]) && codes.includes(match[2])
+    ? { phase: match[1], code: match[2] }
+    : unknown;
 }
 
 const stages = [
@@ -64,6 +108,7 @@ export function publicReadToolResult(output) {
     stage: "unknown",
     exit: null,
     error: "unknown",
+    refusal: publicReadRefusal(output),
   };
   if (typeof output !== "string" || output.length > 256 * 1024) {
     return result;
@@ -108,6 +153,7 @@ export function publicReadCommand() {
   const helper = `
 const { spawnSync } = require("node:child_process");
 const classify = ${publicReadFailure.toString()};
+const refusal = ${publicReadRefusal.toString()};
 const child = spawnSync(process.execPath, [process.env.GIT_EXEC_PATH + "/transport.mjs", "--api-get", "/repos/example/public-project/pulls/27"], { encoding: "utf8", timeout: 30000, maxBuffer: 128 * 1024 });
 const status = Number.isInteger(child.status) && child.status >= 0 && child.status <= 255 ? child.status : 1;
 let title;
@@ -116,6 +162,10 @@ if (status === 0) {
 }
 const error = status === 0 ? (title ? "none" : "no-title") : classify(child.stderr, child.error?.code);
 if (title) process.stdout.write(JSON.stringify({ title }) + "\\n");
+if (status !== 0) {
+  const receipt = refusal(child.stderr);
+  process.stdout.write("public-git-refusal:" + receipt.phase + ":" + receipt.code + "\\n");
+}
 process.stdout.write("public-read-exit:api-read:" + status + ":" + error + "\\n");
 process.exitCode = status;
 `;

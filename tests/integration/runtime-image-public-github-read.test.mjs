@@ -63,7 +63,17 @@ async function readerWithPrivateProvider() {
   const provider = https.createServer({ key, cert }, async (req, res) => {
     assert.equal(req.socket.servername, name);
     assert.equal(req.headers.authorization ?? req.headers.cookie, undefined);
-    assert.equal(req.url, "/repos/example/public-project/pulls/27");
+    assert.ok(
+      ["/repos/example/public-project/pulls/27", "/repos/example/public-project/pulls/28"].includes(
+        req.url,
+      ),
+    );
+    if (req.url.endsWith("/28")) {
+      // The limited-method control reads without advancing the later Git fixture.
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ title: process.argv[1] }));
+      return;
+    }
     // The API read occurs between native clone and fetch and advances the real
     // upstream repository, so fetch must transfer a new object.
     await writeFile(source + "/readme.txt", process.argv[1] + "-second\n");
@@ -125,7 +135,7 @@ async function readWithStockCodex() {
   const { accessSync, constants, mkdirSync, readdirSync } = await import("node:fs");
   const { spawnSync } = await import("node:child_process");
   const { createRequire } = await import("node:module");
-  const { pluginConfig, skillPath, materialSetup, manifest } = JSON.parse(process.argv[1]);
+  const { pluginConfig, skillPath, materialSetup, manifest, mode } = JSON.parse(process.argv[1]);
   new Function("require", "spawnSync", "pluginRuntime", materialSetup)(
     createRequire(import.meta.url),
     spawnSync,
@@ -194,7 +204,16 @@ async function readWithStockCodex() {
   ]) {
     assert.ok(publicEnvironment[key].startsWith("/home/node/.oce-public-git/"), key);
   }
-  assert.equal(network.mode, "limited");
+  assert.ok(["limited", "full"].includes(mode));
+  assert.equal(network.mode, mode);
+  assert.equal(network.enabled, true);
+  assert.deepEqual(network.domains, { [manifest.publicGithubRead.address]: "allow" });
+  assert.equal(network.enable_socks5, false);
+  assert.equal(network.enable_socks5_udp, false);
+  assert.equal(network.allow_upstream_proxy, false);
+  assert.equal(filesystem[":minimal"], "read");
+  assert.equal(filesystem[":project_roots"]["."], "write");
+  assert.notEqual(profileName, ":danger-full-access");
   assert.equal(network.allow_local_binding, false);
   function toml(value) {
     return value !== null && typeof value === "object"
@@ -226,7 +245,7 @@ async function readWithStockCodex() {
     // Fixed stage names locate silent test/set -u exits without logging values,
     // paths, headers or commands. Some shells report status 0 to EXIT on set -u;
     // keep that premature exit a failure and remove the trap only after success.
-    const shell = [
+    const guards = [
       "stage=proxy-active",
       `trap 'status=$?; printf "public-git-stage-failed:%s\\n" "$stage" >&2; if [ "$status" -eq 0 ]; then status=1; fi; exit "$status"' EXIT`,
       'test "$CODEX_NETWORK_PROXY_ACTIVE" = 1',
@@ -243,23 +262,48 @@ async function readWithStockCodex() {
       'test -x "$GIT_EXEC_PATH/git-remote-https"',
       "stage=helper-source-readable",
       'test -r "$GIT_EXEC_PATH/transport.mjs"',
-      "stage=clone",
-      "git clone --depth=1 https://github.com/Example/Public-Project.git clone",
       "stage=managed-skill",
       'grep -q -- "--api-get" "$1"',
-      "stage=api-read",
-      'node "$GIT_EXEC_PATH/transport.mjs" --api-get "/repos/example/public-project/pulls/27"',
-      "printf '\\n'",
-      "stage=fetch",
-      "git -C clone fetch origin",
-      "stage=clone-object",
-      "git -C clone show HEAD:readme.txt",
-      "stage=fetched-object",
-      "git -C clone show origin/main:readme.txt",
-      "stage=remote-url",
-      "git -C clone remote get-url origin",
-      "trap - EXIT",
-    ].join("\n");
+      "stage=proxy-domain-denied",
+      'proxy="${https_proxy:-${HTTPS_PROXY:-${all_proxy:-${ALL_PROXY:-}}}}"',
+      'test -n "$proxy"',
+      'denied=$(curl -q --silent --connect-timeout 3 --max-time 5 --noproxy "" --proxy "$proxy" --output /dev/null --write-out "%{http_connect}" https://unselected.invalid:8080/ 2>/dev/null || :)',
+      'test "$denied" = 403',
+    ];
+    const operation =
+      mode === "limited"
+        ? [
+            "stage=limited-api-read",
+            'node "$GIT_EXEC_PATH/transport.mjs" --api-get "/repos/example/public-project/pulls/28"',
+            "printf '\\n'",
+            // This deliberately attempted clone is a separate method-policy control.
+            // Keep the original status/body private; 403 alone is not a proxy reason.
+            "stage=limited-post-denied",
+            "if git clone --depth=1 https://github.com/Example/Public-Project.git limited-denied >limited-denied.log 2>&1; then exit 1; fi",
+            'grep -q "HTTP 403" limited-denied.log',
+          ]
+        : [
+            "stage=clone",
+            "git clone --depth=1 https://github.com/Example/Public-Project.git clone",
+            "stage=push-denied",
+            "if git -C clone push origin HEAD:refs/heads/forbidden >push-denied.log 2>&1; then exit 1; fi",
+            'grep -Eq "(HTTP |error: )400" push-denied.log',
+            "stage=repository-denied",
+            "if git ls-remote https://github.com/example/unselected.git >repository-denied.log 2>&1; then exit 1; fi",
+            'grep -Eq "(HTTP |error: )403" repository-denied.log',
+            "stage=api-read",
+            'node "$GIT_EXEC_PATH/transport.mjs" --api-get "/repos/example/public-project/pulls/27"',
+            "printf '\\n'",
+            "stage=fetch",
+            "git -C clone fetch origin",
+            "stage=clone-object",
+            "git -C clone show HEAD:readme.txt",
+            "stage=fetched-object",
+            "git -C clone show origin/main:readme.txt",
+            "stage=remote-url",
+            "git -C clone remote get-url origin",
+          ];
+    const shell = [...guards, ...operation, "trap - EXIT"].join("\n");
     const result = await client.request("command/exec", {
       permissionProfile: profileName,
       cwd: workspace,
@@ -357,83 +401,95 @@ test(
 
     // Use the revision's actual ConfigMap producer and Gateway startup translator.
     // No repository binding, broker policy, GitHub credential or model credential is supplied.
-    const proxy = {
-      enabled: true,
-      mode: "limited",
-      allowLocalBinding: false,
-      domains: { [address]: "allow" },
-    };
-    const caBundle = (await runDocker(["exec", reader, "cat", "/tmp/provider.pem"])).stdout;
-    const publicGithubRead = {
-      address,
-      endpoint: "https://" + address + ":8080",
-      caBundle,
-      skillPath: "/home/node/.openclaw/skills/public-github-read/SKILL.md",
-      authenticatedRepositories: [],
-    };
-    const projection = pluginRuntimeConfigMapData({
-      kind: "codex",
-      selections: {},
-      publicGithubRead,
-    });
-    const { files } = runOpenClawRuntimeHelper(
-      { manifest: JSON.parse(projection["runtime.json"]) },
-      [],
-      {
-        baseConfig: {
-          plugins: { entries: { codex: { config: { appServer: { networkProxy: proxy } } } } },
+    for (const mode of ["limited", "full"]) {
+      const proxy = {
+        enabled: true,
+        mode,
+        enableSocks5: false,
+        enableSocks5Udp: false,
+        allowUpstreamProxy: false,
+        allowLocalBinding: false,
+        domains: { [address]: "allow" },
+      };
+      const caBundle = (await runDocker(["exec", reader, "cat", "/tmp/provider.pem"])).stdout;
+      const publicGithubRead = {
+        address,
+        endpoint: "https://" + address + ":8080",
+        caBundle,
+        skillPath: "/home/node/.openclaw/skills/public-github-read/SKILL.md",
+        authenticatedRepositories: [],
+      };
+      const projection = pluginRuntimeConfigMapData({
+        kind: "codex",
+        selections: {},
+        publicGithubRead,
+      });
+      const { files } = runOpenClawRuntimeHelper(
+        { manifest: JSON.parse(projection["runtime.json"]) },
+        [],
+        {
+          baseConfig: {
+            plugins: { entries: { codex: { config: { appServer: { networkProxy: proxy } } } } },
+          },
         },
-      },
-    );
-    const { config: pluginConfig } = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"))
-      .plugins.entries.codex;
-    const skill = join(directory, "SKILL.md");
-    const { skillPath } = publicGithubRead;
-    await writeFile(skill, projection[PUBLIC_GITHUB_READ_SKILL]);
-    const material = join(directory, "public-material.json");
-    await writeFile(material, projection["public-github-read.json"]);
-    const proof = await runDocker([
-      "run",
-      "--rm",
-      ...isolated,
-      ...security,
-      "--tmpfs",
-      "/home/node:size=128m,uid=1000,gid=1000,mode=700",
-      // Compute's private-home initializer owns this parent before the skill is mounted.
-      "--tmpfs",
-      "/home/node/.openclaw:size=64m,uid=1000,gid=1000,mode=700",
-      // Product material lives on disk-backed runtime storage. Permit execution
-      // only in this private subtree; HOME and /tmp retain their noexec defaults.
-      "--tmpfs",
-      "/home/node/.oce-public-git:size=16m,uid=1000,gid=1000,mode=700,exec",
-      "--tmpfs",
-      "/tmp",
-      "-v",
-      skill + ":" + skillPath + ":ro",
-      "-v",
-      material + ":/tmp/public-material.json:ro",
-      "--env",
-      "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE=/tmp/public-material.json",
-      "--env",
-      "OCE_PUBLIC_GITHUB_READ_CAPABILITY=" + capability,
-      "--entrypoint",
-      "node",
-      image,
-      "--input-type=module",
-      "-e",
-      program(readWithStockCodex),
-      JSON.stringify({
-        pluginConfig,
-        skillPath,
-        materialSetup,
-        manifest: JSON.parse(projection["runtime.json"]),
-      }),
-    ]);
-    assert.deepEqual(JSON.parse(proof.stdout), {
-      title: pullTitle,
-      first: pullTitle + "-first",
-      second: pullTitle + "-second",
-      remote: "https://github.com/Example/Public-Project.git",
-    });
+      );
+      const { config: pluginConfig } = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"))
+        .plugins.entries.codex;
+      const skill = join(directory, "SKILL.md");
+      const { skillPath } = publicGithubRead;
+      await writeFile(skill, projection[PUBLIC_GITHUB_READ_SKILL]);
+      const material = join(directory, "public-material.json");
+      await writeFile(material, projection["public-github-read.json"]);
+      const proof = await runDocker([
+        "run",
+        "--rm",
+        ...isolated,
+        ...security,
+        "--tmpfs",
+        "/home/node:size=128m,uid=1000,gid=1000,mode=700",
+        // Compute's private-home initializer owns this parent before the skill is mounted.
+        "--tmpfs",
+        "/home/node/.openclaw:size=64m,uid=1000,gid=1000,mode=700",
+        // Product material lives on disk-backed runtime storage. Permit execution
+        // only in this private subtree; HOME and /tmp retain their noexec defaults.
+        "--tmpfs",
+        "/home/node/.oce-public-git:size=16m,uid=1000,gid=1000,mode=700,exec",
+        "--tmpfs",
+        "/tmp",
+        "-v",
+        skill + ":" + skillPath + ":ro",
+        "-v",
+        material + ":/tmp/public-material.json:ro",
+        "--env",
+        "OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE=/tmp/public-material.json",
+        "--env",
+        "OCE_PUBLIC_GITHUB_READ_CAPABILITY=" + capability,
+        "--entrypoint",
+        "node",
+        image,
+        "--input-type=module",
+        "-e",
+        program(readWithStockCodex),
+        JSON.stringify({
+          pluginConfig,
+          mode,
+          skillPath,
+          materialSetup,
+          manifest: JSON.parse(projection["runtime.json"]),
+        }),
+      ]);
+      assert.deepEqual(
+        JSON.parse(proof.stdout),
+        mode === "limited"
+          ? { title: pullTitle }
+          : {
+              title: pullTitle,
+              first: pullTitle + "-first",
+              second: pullTitle + "-second",
+              remote: "https://github.com/Example/Public-Project.git",
+            },
+      );
+      t.diagnostic("public-read-native-mode:" + mode);
+    }
   },
 );
