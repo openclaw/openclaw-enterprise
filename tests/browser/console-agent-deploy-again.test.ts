@@ -35,6 +35,7 @@ import {
   deploymentRecordUrl,
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
@@ -188,9 +189,7 @@ for (const tab of ["configuration", "logs", "channels"]) {
     const permissions = page.waitForResponse((response) =>
       response.url().endsWith(`/agents/${agent.id}/permissions`),
     );
-    const denied = page.waitForResponse(
-      (response) => response.url() === configurationUrl && response.status() === 403,
-    );
+    const configurationRead = responseTo(page, "GET", configurationUrl);
 
     await login(
       page,
@@ -198,6 +197,7 @@ for (const tab of ["configuration", "logs", "channels"]) {
       detailUrl(fixture, namespace.id, agent.id, active.revision.id, tab),
       deployer.credentials,
     );
+    assert.equal((await configurationRead).status(), 403, "Configuration GET status");
     // The API's own answer: this caller may deploy.
     const answer = permissionData(await (await permissions).json());
     assert.ok("deploy" in answer);
@@ -208,8 +208,6 @@ for (const tab of ["configuration", "logs", "channels"]) {
     await recovery.getByText(error.message, { exact: false }).waitFor();
     const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
     await logs.waitFor();
-    // Only a successful read shows the Configuration is readable, so the page asks.
-    await denied;
     await nextFrames(page);
     assert.equal(await logs.getAttribute("class"), "button button--primary");
     assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
@@ -235,19 +233,17 @@ test("A failed Configuration read leaves Deploy again hidden and is not repeated
   );
   await page.addInitScript(watchDeployAgain);
   const requests = apiRequests(page, fixture.origin);
-  const failed = page.waitForResponse(
-    (response) => response.url() === configurationUrl && response.status() === 503,
-  );
+  const configurationRead = responseTo(page, "GET", configurationUrl);
 
   await login(
     page,
     fixture,
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
   );
+  assert.equal((await configurationRead).status(), 503, "Configuration GET status");
   const recovery = recoveryOf(page);
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
-  await failed;
   await nextFrames(page);
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
 
@@ -276,15 +272,13 @@ test("The draft offers no Deploy again when its Configuration read fails", async
     route.request().method() === "GET" ? route.fulfill(unavailable) : route.fallback(),
   );
   await page.addInitScript(watchDeployAgain);
-  const failed = page.waitForResponse(
-    (response) => response.url() === configurationUrl && response.status() === 503,
-  );
+  const configurationRead = responseTo(page, "GET", configurationUrl);
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  assert.equal((await configurationRead).status(), 503, "Configuration GET status");
   const recovery = recoveryOf(page);
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
-  await failed;
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
   await nextFrames(page);
   assert.equal(await logs.getAttribute("class"), "button button--primary");
@@ -440,9 +434,7 @@ test("A deployer who cannot read the Configuration gets no Open draft", async (t
   const permissions = page.waitForResponse((response) =>
     response.url().endsWith(`/agents/${agent.id}/permissions`),
   );
-  const denied = page.waitForResponse(
-    (response) => response.url() === configurationUrl && response.status() === 403,
-  );
+  const configurationRead = responseTo(page, "GET", configurationUrl);
 
   await login(
     page,
@@ -450,6 +442,7 @@ test("A deployer who cannot read the Configuration gets no Open draft", async (t
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
     deployer.credentials,
   );
+  assert.equal((await configurationRead).status(), 403, "Configuration GET status");
   const answer = permissionData(await (await permissions).json());
   assert.ok("deploy" in answer && "update" in answer);
   assert.equal(answer.deploy, true);
@@ -462,7 +455,6 @@ test("A deployer who cannot read the Configuration gets no Open draft", async (t
   await logs.waitFor();
   // The link used to render with Logs, before any Configuration read.
   assert.equal(await page.evaluate((): unknown => Reflect.get(globalThis, "openDraftSeen")), false);
-  await denied;
   await nextFrames(page);
   assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Open draft" }).count(), 0);
