@@ -126,7 +126,6 @@ test(
       clock,
       tls,
       upstreamOrigins: [origin],
-      providerQueue: undefined,
       log: undefined,
     });
     resources.after(() => {

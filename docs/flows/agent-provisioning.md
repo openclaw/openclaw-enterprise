@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-03
-last_updated_session: authoring-run/e4018630-07e7-4296-a60f-d51180ca700d
+updated: 2026-11-04
+last_updated_session: authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028
 ---
 
 # Agent provisioning flow
@@ -37,7 +37,8 @@ graph TD
   Observe -->|Pending| Observe
   Observe -->|Activated| UI["<b>Agent deployment view</b><br/>Open existing version"]
   Observe -->|Superseded| Superseded["<b>Create stays open</b><br/>Newer deployment took over"]
-  Observe -->|Failed| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
+  Observe -->|Malformed present ID| Unknown["<b>Outcome unknown</b><br/>Keep job; offer Retry"]
+  Observe -->|Confirmed failure| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
   Claim -->|Failure| Failed["<b>Retain outputs</b><br/>Retry known failures"]
   Failed -->|Uncertain write| Recovery["<b>Recovery required</b><br/>Do not repeat blindly"]
 
@@ -46,7 +47,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI operation
-  class Failed,Recovery,Terminal,Superseded,RepoRefused condition
+  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown condition
 ```
 
 ## Execution Trace
@@ -154,6 +155,21 @@ the job identifies only the deployment that ended. For a failure, follow the lin
 recovery guidance. After a Stop, deploy when ready.
 Reconciliation owns startup and activation; later versions use Deploy.
 
+Console parses each reply in
+`apps/controller/src/console/agents/provisioning-job.mts:provisioningJob` before
+`apps/controller/src/console/agents/create.mts:submitProvisioningAttempt` selects
+recovery. A malformed present `agentId` or `revisionId` makes even a terminal
+`failed` reply unknown. The form keeps the accepted job URL and original request,
+disables Create, and offers Retry without a recovery link. Retry posts to the same
+job's `/retry`. `packages/occ/src/index.ts:retryAgentProvisioning` refuses a changed
+Agent lifecycle or an existing deployment handoff with `409`. After refusal during
+unknown-outcome recovery, the form enables a resend of the original request ID.
+
+With valid IDs, a failure whose message is absent or not a nonempty string stays
+confirmed. `ProvisioningFailure` uses “Provisioning did not complete.” while keeping
+the failure code and any applicable recovery link. For a confirmed failure with a linked
+version, follow its [recovery guidance](../reference/console/create-and-deploy.md).
+
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime declares native support;
 custom images still require an operator declaration in
@@ -205,6 +221,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
 
 - 2026-11-03 20:51: Document the selected repository policy during queued provisioning and the ordering of Configuration writes. (authoring-run/e4018630-07e7-4296-a60f-d51180ca700d - 43485a276ad6891f42ba7e0016ba8d0b3f574ae4)
 

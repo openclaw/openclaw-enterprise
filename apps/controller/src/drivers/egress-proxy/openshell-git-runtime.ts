@@ -106,7 +106,7 @@ type MaterialReader = {
   >;
 };
 type OnlineGitOwner = MaterialReader & {
-  authorizeOnlineRequest: NonNullable<OpenShellOnlineGitAuthorityOptions["authorizeOnlineRequest"]>;
+  authorizeOnlineRequest: OpenShellOnlineGitAuthorityOptions["authorizeOnlineRequest"];
 };
 
 /** The bundled sender cannot honor an exact-send permit. Both calls use only the online port. */

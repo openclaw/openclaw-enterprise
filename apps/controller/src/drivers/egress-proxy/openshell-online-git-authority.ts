@@ -89,25 +89,12 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
   /** Told once per request the authority itself refuses, with the reason class (finding 2133).
    * A request with no live binding is the lookup's to report. Never the request's content. */
   readonly onDeny?: (denial: OpenShellOnlineGitDenial) => void;
-} & (
-    | {
-        readonly approve?: never;
-        readonly authorizeOnlineRequest: (
-          request: Use,
-          installed: InstalledGitMaterial,
-          signal: AbortSignal,
-        ) => Promise<RepositoryGitOnlineDecision>;
-      }
-    | {
-        readonly authorizeOnlineRequest?: never;
-        /** Compatibility with the separately selected broker-backed trial and its refusal reasons. */
-        readonly approve: (
-          request: PreparedGitHubUseRequest,
-          installed: InstalledGitMaterial,
-          signal: AbortSignal,
-        ) => Promise<boolean | "draft_already_opened" | "access_withdrawn">;
-      }
-  );
+  readonly authorizeOnlineRequest: (
+    request: Use,
+    installed: InstalledGitMaterial,
+    signal: AbortSignal,
+  ) => Promise<RepositoryGitOnlineDecision>;
+};
 
 /**
  * The reason the Agent's tool is shown for a refusal (finding 2149): OpenShell returns it as
@@ -549,7 +536,7 @@ export function createOpenShellOnlineGitAuthority(
 ): Server {
   if (
     typeof options.lookupBinding !== "function" ||
-    typeof (options.authorizeOnlineRequest ?? options.approve) !== "function"
+    typeof options.authorizeOnlineRequest !== "function"
   ) {
     throw new Error("OpenShell Git requires live binding and durable approval owners.");
   }
@@ -638,7 +625,7 @@ export function createOpenShellOnlineGitAuthority(
       };
       let q: Use;
       if (binding.scope !== undefined) {
-        if (selected.operation === "create-draft-pull" || !options.authorizeOnlineRequest) {
+        if (selected.operation === "create-draft-pull") {
           return deny("binding_mismatch");
         }
         q = {
@@ -663,31 +650,27 @@ export function createOpenShellOnlineGitAuthority(
         };
       }
       const { installed } = binding;
-      let allowed: boolean | "draft_already_opened" | "access_withdrawn";
+      let allowed: false | "draft_already_opened" | "access_withdrawn";
       try {
-        if (options.authorizeOnlineRequest) {
-          const result = await options.authorizeOnlineRequest(q, installed, signal);
-          if (result.kind === "denied") {
-            const { reason } = result;
-            allowed =
-              reason === "draft_already_opened" || reason === "access_withdrawn" ? reason : false;
-          } else if (
-            result.kind === "allow" &&
-            !signal.aborted &&
-            result.exchangeId === q.exchangeId &&
-            result.requestDigestSha256 === requestDigestSha256 &&
-            result.materialVersion === installed.materialVersion &&
-            result.preparationAttemptId === installed.preparationAttemptId &&
-            Date.parse(result.replyBy) <= Date.parse(request.deadlineAt)
-          ) {
-            // The RPC owner checks this exact authority deadline at its final allow callback.
-            // A supervisor that has received the allow may finish the request after withdrawal.
-            return { kind: "allow", replyBy: result.replyBy };
-          } else {
-            allowed = false;
-          }
+        const result = await options.authorizeOnlineRequest(q, installed, signal);
+        if (result.kind === "denied") {
+          const { reason } = result;
+          allowed =
+            reason === "draft_already_opened" || reason === "access_withdrawn" ? reason : false;
+        } else if (
+          result.kind === "allow" &&
+          !signal.aborted &&
+          result.exchangeId === q.exchangeId &&
+          result.requestDigestSha256 === requestDigestSha256 &&
+          result.materialVersion === installed.materialVersion &&
+          result.preparationAttemptId === installed.preparationAttemptId &&
+          Date.parse(result.replyBy) <= Date.parse(request.deadlineAt)
+        ) {
+          // The RPC owner checks this exact authority deadline at its final allow callback.
+          // A supervisor that has received the allow may finish the request after withdrawal.
+          return { kind: "allow", replyBy: result.replyBy };
         } else {
-          allowed = !("scope" in q) && (await options.approve(q, installed, signal));
+          allowed = false;
         }
       } catch {
         // The owner did not answer. Possible use may have committed; deny without retry.
@@ -704,10 +687,7 @@ export function createOpenShellOnlineGitAuthority(
           selected.operation,
         );
       }
-      if (allowed !== true) {
-        return deny("approval_denied", selected.operation);
-      }
-      return signal.aborted ? deny("aborted", selected.operation) : "allow";
+      return deny("approval_denied", selected.operation);
     },
   });
 }

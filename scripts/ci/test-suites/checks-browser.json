@@ -4,16 +4,17 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
-    "tests/browser/console.test.mjs",
-    "tests/browser/console-retained-revalidation.test.mjs",
+    "tests/browser/console.test.ts",
+    "tests/browser/console-retained-revalidation.test.ts",
     "tests/browser/console-namespace-recheck.test.ts",
     "tests/browser/console-namespace-create.test.ts",
     "tests/browser/console-create-agent-member.test.ts",
     "tests/browser/console-shell.test.ts",
     "tests/browser/console-json-error-feedback.test.ts",
     "tests/browser/console-agent-detail-2.test.mjs",
-    "tests/browser/console-agent-detail.test.mjs",
-    "tests/browser/console-agent-deploy-again.test.mjs",
+    "tests/browser/console-workspace-editor.test.ts",
+    "tests/browser/console-agent-detail.test.ts",
+    "tests/browser/console-agent-deploy-again.test.ts",
     "tests/browser/console-agent-logs.test.ts",
     "tests/browser/console-agent-repositories.test.ts",
     "tests/integration/repository-credentials-github-prepared.test.mjs",
@@ -22,7 +23,7 @@
     "tests/integration/skipper-private-git-origin.test.mjs",
     "tests/integration/repository-credentials-github-token.test.mjs",
     "tests/integration/repository-credentials-client-config.test.mjs",
-    "tests/browser/console-agent-overview.test.mjs",
+    "tests/browser/console-agent-overview.test.ts",
     "tests/browser/console-deployment-activity.test.ts",
     "tests/browser/console-agent-plugin-approvers.test.ts",
     "tests/browser/console-agent-plugin-refusals.test.ts",
@@ -40,13 +41,16 @@
       ]
     },
     {
-      "path": "tests/browser/console-agent-detail.test.mjs"
+      "path": "tests/browser/console-agent-detail.test.ts"
     },
     {
-      "path": "tests/browser/console-agent-deploy-again.test.mjs"
+      "path": "tests/browser/console-agent-deploy-again.test.ts"
     },
     {
       "path": "tests/browser/console-agent-detail-2.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-workspace-editor.test.ts"
     },
     {
       "path": "tests/browser/console-agent-logs.test.ts"
@@ -61,10 +65,10 @@
       "path": "tests/browser/console-agent-plugin-refusals.test.ts"
     },
     {
-      "path": "tests/browser/console.test.mjs"
+      "path": "tests/browser/console.test.ts"
     },
     {
-      "path": "tests/browser/console-retained-revalidation.test.mjs"
+      "path": "tests/browser/console-retained-revalidation.test.ts"
     },
     {
       "path": "tests/browser/console-namespace-recheck.test.ts"
@@ -110,7 +114,7 @@
       "path": "tests/integration/repository-credentials-client-config.test.mjs"
     },
     {
-      "path": "tests/browser/console-agent-overview.test.mjs"
+      "path": "tests/browser/console-agent-overview.test.ts"
     },
     {
       "path": "tests/browser/console-deployment-activity.test.ts"

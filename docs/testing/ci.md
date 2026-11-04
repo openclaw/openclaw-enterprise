@@ -36,6 +36,11 @@ lanes, including Checks and Conformance 2 to type-check TypeScript tests.
 Other changes run all ordinary lanes. `CI Required` currently blocks
 merge on `main`. These workflows do not gate each Agent/platform deployment.
 
+Check the terminal `CI Required` job conclusion; successful recorded steps alone
+do not finish the check. Queued timestamps do not prove runner allocation.
+Separate queue time, execution, and final status publication. Find phase timings
+in the Actions job summary when the owning workflow emits them.
+
 ## Qualify a published release for staging
 
 Run [Staging Release Qualification](../../.github/workflows/staging-qualification.yml)
@@ -336,9 +341,29 @@ worker and redeployment cases. Its control plane runs in Compose; its workloads
 still use Kubernetes Compute. `full-qa` takes precedence when both labels exist.
 The focused run skips the other advisory jobs, keeps manifest case requirements
 and cleanup, and records `scope: focused`. It cannot satisfy full-lane aggregation.
-Inspect `qa-advisory-compose-openshell` and its attempt-specific artifacts.
+Inspect `qa-advisory-local-first-agent-openshell-real-openshell` and its attempt-specific artifacts.
 
-The three credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
+Full advisory OpenShell runs use one Ubuntu 24.04 runner per file from the
+[OpenShell manifest](../../scripts/ci/test-suites/openshell.json). The files run in
+parallel across separate VMs. The two first-Agent files provision and clean up
+through Local Setup. Their focused lane preparation records selection and state
+without building images or creating a second cluster, database, routing setup,
+OpenShell installation, or Keycloak instance. Other files retain their lane
+preparation. The runner enforces both lane-wide and per-file `requiredEnv`
+inputs, expected cases, and cleanup. A failed shard does not cancel the
+others. Each result has `scope: focused`; require every shard to pass before
+claiming full advisory OpenShell coverage. The manual Full Integration lane
+continues to run the full manifest serially and prepares the shared resources
+needed by its other files. First-Agent files do not request a separate CI database
+in either mode.
+
+First-Agent stage measurements appear in `files[].measurements`: Local Setup,
+initial deployment and model calls, nonce-only reuse, native deployment, native
+model execution, native redeployment, resumed model execution, and cleanup.
+Each record contains only a fixed stage, outcome, and elapsed milliseconds.
+The parent test duration includes its native subtest; do not add them together.
+
+The credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
 
 Codex timeout diagnostics from `tests/helpers/openshell-kubernetes-real.mjs` report the client phase, pending method names, message and command counts, and whether an action started. They exclude prompts, request identifiers, and payloads. A timeout does not authorize another turn; only the existing final capacity receipt before any action permits a retry.
 
@@ -567,4 +592,5 @@ gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3
 
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
 The 180-minute job budget includes setup/cleanup. Advisory results use
-`qa-advisory-local-installation-dev-up-k3d`; OpenShell uses `qa-advisory-openshell`.
+`qa-advisory-local-installation-dev-up-k3d`; each OpenShell shard uses
+`qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`).

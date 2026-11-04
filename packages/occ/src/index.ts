@@ -6707,7 +6707,9 @@ export class OpenClawController {
                 1,
               )
             : undefined);
-      if (selected !== undefined) {
+      // The proxy path already authorized and version-read the Secret for its exact provider
+      // destination; only a Gateway-registered source needs this comparison here.
+      if (selected !== undefined && egress === undefined) {
         await this.authorizeCredentialDestinations(
           state,
           principalId,

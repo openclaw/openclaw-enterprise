@@ -22,7 +22,7 @@ import {
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { responseTo } from "./console-action-helpers.ts";
-import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
+import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 
 test("refreshing a Secret picker keeps staged choices and finds a Secret created in another tab", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Picker refresh", {

@@ -188,21 +188,68 @@ stay intact and the open groups remain open. Scroll the long page to verify that
 the sidebar and account control reach the bottom. Repeat on a phone and open the
 navigation drawer; the page must not scroll horizontally.
 
+When changing the Settings Driver access stories, build and serve the preview
+and open each indexed story in a fresh browser context. Inspect the embedded
+frame's `story` query and the fixture requests from its first load:
+
+- `pages-settings--driver-configuration-denied` loads
+  `story=settingsDriverConfigurationsDenied`. Permissions say the account cannot
+  administer the Installation. Settings sends no Driver GET.
+- `pages-settings--driver-configuration-endpoint-refused` loads
+  `story=settingsDriverConfigurationsEndpointRefused`. Permissions allow
+  Installation administration. The first Driver GET returns 403, and the
+  permissions recheck still allows administration. The Driver section shows the
+  refusal without values.
+
+In both stories, the Account and Session cards stay usable. Check the empty
+and unavailable stories as controls: a 200 with no configurations shows the
+empty message, and a 503 shows the read failure.
+
 `scripts/console-storybook/` installs from its own manifest and lockfile under the
 seven-day release-age policy, independently of root dependencies.
 
 - `prepare-assets.ts` reads the public Console assets through the controller's
   asset reader, then versions the preview in `dist/assets/`. Rebuild after source
   edits so the development server serves the new assets.
-- `public/scenarios.mjs` assembles the story catalog. Edit sign-in scenarios in
+- `public/scenarios.mts` assembles the story catalog and emits as
+  `/storybook-fixtures/scenarios.mjs`; the asset builder keeps its versioned URL.
+  Check local entries with `satisfies LocalScenario`. Keep partial or invalid
+  response fixtures explicit in their owning scenario types. Theme source IDs
+  must name an authored entry; generated policy sources are checked before use.
+  Preserve insertion order and shared fixture values when adding variants.
+  Edit sign-in scenarios in
   `public/scenario-groups/sign-in.mts` and Secrets scenarios in
-  `public/scenario-groups/secrets.mts`. The asset builder publishes typed
+  `public/scenario-groups/secrets.mts`. Edit Settings scenarios in
+  `public/scenario-groups/settings.mts` and Create Agent scenarios in
+  `public/scenario-groups/create-agent.mts`. The asset builder publishes typed
   scenario groups as versioned `.mjs` modules for the preview frames.
-- `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured
+  Edit Credentials scenarios in `public/scenario-groups/credentials.mts`; the
+  catalog keeps their three runs in their original positions.
+  Edit Plugins component and Agent detail approver variant previews in
+  `public/scenario-groups/plugins.mts`; shared plugin data stays in
+  `public/plugin-scenario-data.mts`.
+- `public/fixtures.mts` intercepts API calls inside the preview. Unconfigured
   requests report an error and return 501, never reaching a server. Preview CSP
   also blocks network connections. Authentication and authorization
-  responses are examples, not a security implementation.
-- `public/frame.mjs` starts the production console and opens configured controls.
+  responses are examples, not a security implementation. Its typed
+  `public/configuration-store.mts` owns Configuration persistence;
+  `public/create-agent-routes.mts` owns Create and provisioning job routes.
+  `public/preset-fixture.mts` prepares Preset variants, and
+  `public/network-policy-fixture.mts` owns simulated policy saves and application polls.
+  The router emits as `/storybook-fixtures/fixtures.mjs`. It checks the names and
+  policy fields it consumes before changing fixture state and returns
+  `400 INVALID_REQUEST` for malformed writes or validation request envelopes.
+  Network validation returns HTTP 200 with `data.success: false` and field details
+  for malformed additions inside a valid envelope. Authored rules and scenario
+  refusals run first. IAM payloads and unused registration fields remain opaque.
+- `public/frame.mts` starts the production console and opens configured controls.
+  The asset builder emits it as `/storybook-fixtures/frame.mjs` with an asset
+  version in the URL.
+- Edit Namespace scenarios in `public/scenario-groups/namespaces.mts`. Imports
+  within Storybook's `public/` fixture source use the `.mts` path for a typed
+  fixture. Asset preparation rewrites those imports to versioned `.mjs` URLs.
+  When defining actions in a typed scenario group, import the `StoryAction`
+  type from `scripts/console-storybook/story-action.mts`.
 - `*.stories.ts` exports named stories by group. `story.ts` adds instructions,
   UI-gap notices, the preview, and Reset story. The repository's `pnpm typecheck`
   checks these files without installing the separate Storybook dependencies.
