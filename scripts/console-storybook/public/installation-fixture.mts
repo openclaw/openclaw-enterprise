@@ -1,4 +1,5 @@
 import type {
+  AgentPluginCredentialSlot,
   DriverConfigurationDescriptor,
   Installation,
   InstallationCapabilities,
@@ -19,7 +20,9 @@ type InstallationScenario = {
   openclawSettingRefusal?: string;
   sandboxDriverUnavailable?: boolean;
   credentialSourceTypes?: NonNullable<InstallationCapabilities["credentialSources"]>["types"];
-  pluginCapabilities?: InstallationCapabilities["pluginPolicies"];
+  pluginCapabilities?: InstallationCapabilities["pluginPolicies"] & {
+    credentialSlots?: readonly AgentPluginCredentialSlot[];
+  };
   pluginDiscoveryCredential?: NonNullable<
     InstallationCapabilities["pluginDiscovery"]
   >["credential"];
@@ -190,6 +193,13 @@ export function installationDriverConfigurations(scenario: DriverConfigurationsS
   };
 }
 
+function installationPluginPolicies({
+  credentialSlots,
+  ...policies
+}: NonNullable<InstallationScenario["pluginCapabilities"]>) {
+  return policies;
+}
+
 export function installationFixture(
   scenario: InstallationScenario,
   createdAt: Installation["createdAt"],
@@ -220,7 +230,9 @@ export function installationFixture(
       ...(scenario.credentialSourceTypes !== undefined
         ? { credentialSources: { types: scenario.credentialSourceTypes } }
         : {}),
-      ...(scenario.pluginCapabilities ? { pluginPolicies: scenario.pluginCapabilities } : {}),
+      ...(scenario.pluginCapabilities
+        ? { pluginPolicies: installationPluginPolicies(scenario.pluginCapabilities) }
+        : {}),
       ...(scenario.pluginDiscoveryCredential
         ? { pluginDiscovery: { credential: scenario.pluginDiscoveryCredential } }
         : {}),
