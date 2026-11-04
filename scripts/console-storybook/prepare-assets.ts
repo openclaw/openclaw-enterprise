@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, copyFile, rm, readFile, writeFile, readdir } from "node:fs/promises";
+import { cp, mkdir, copyFile, rm, readFile, writeFile, readdir, stat } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -54,7 +54,12 @@ const fixtureAssets = new URL("./dist/assets/storybook-fixtures/", import.meta.u
 await rm(fixtureAssets, { recursive: true, force: true });
 await cp(fixtureSource, fixtureAssets, {
   recursive: true,
-  filter: (path) => !path.endsWith(".mts"),
+  filter: async (path) => {
+    if (/\.(js|mjs|cjs)$/.test(path) && (await stat(path)).isFile()) {
+      throw new Error(`Authored Storybook JavaScript is not allowed: ${path}. Use .mts instead.`);
+    }
+    return !path.endsWith(".mts");
+  },
 });
 for (const path of await readdir(fixtureSource, { recursive: true })) {
   if (!path.endsWith(".mts")) {
