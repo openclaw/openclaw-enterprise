@@ -2881,7 +2881,9 @@ test("same-selection logs refresh retains output on malformed pages and recovers
   assert.equal(await pane.locator(".log-row").count(), 3);
   assert.equal(await row(beforeText).isVisible(), true);
   assert.equal(await error.textContent(), "");
-  await follow.click();
+  await page.getByRole("button", { name: "Following", exact: true }).click();
+  assert.equal(await follow.isVisible(), true);
+  assert.equal(await follow.getAttribute("aria-pressed"), "false");
 
   computeDriver.state.lines = [line(4, recoveryText)];
   const repaired = await refreshAndObserve(200);
