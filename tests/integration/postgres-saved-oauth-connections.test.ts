@@ -10,7 +10,7 @@ import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
-import { keycloakRealmAdmin } from "../helpers/ci-keycloak-realm.mjs";
+import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
@@ -359,11 +359,42 @@ test(
     const original = await prepared();
     const alice = await subject(original);
     assert.ok(alice);
+    // The original grant must refresh after the provider and the OCE administrator rotate the client.
+    const replacement = await rotateKeycloakClientSecret(
+      issuer,
+      secrets.admin,
+      clientId,
+      clientSecret,
+      tokenUrl,
+    );
+    // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
+    const refused = await owner("POST", source + "/rotate");
+    assert.equal(refused.statusCode, 503);
+    const repair = await owner("GET", source);
+    assert.equal(repair.statusCode, 200, repair.body);
+    const clientFailure = repair.json().data.status.refresh;
+    assert.deepEqual(
+      [clientFailure.state, clientFailure.failureCode, clientFailure.recoveryAction],
+      ["failed", "client_refused", "fix_configuration"],
+    );
+    const updatedClient = await inject("POST", `/oauth-clients/${oauthClientId}/rotate-secret`, {
+      clientSecret: replacement,
+    });
+    assert.equal(updatedClient.statusCode, 200);
+    assert.equal(updatedClient.json().data.id, oauthClientId);
     const rotated = await inject("POST", `${source}/rotate`, undefined);
     assert.equal(rotated.statusCode, 200, rotated.body);
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
+    const afterRotation = await owner("GET", connections);
+    assert.equal(afterRotation.statusCode, 200, afterRotation.body);
+    assert.deepEqual(
+      afterRotation
+        .json()
+        .data.map((saved: { credentialSourceId: string }) => saved.credentialSourceId),
+      [id],
+    );
     // Advancing OCC's clock clears the credential registration fence without delaying the test.
     skew = 120_000;
     assert.equal((await owner("DELETE", `${connections}/${id}`)).statusCode, 204);
