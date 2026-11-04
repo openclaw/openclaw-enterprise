@@ -8,7 +8,7 @@ author: mrunalp
 
 - **ID:** RFC-0026 (provisional; renumber before merge)
 - **Created:** 2026-10-29
-- **Last updated:** 2026-11-02
+- **Last updated:** 2026-11-04
 - **RFC PR:** [#4207](https://github.com/openclaw/openclaw-enterprise/pull/4207)
 - **Implementation plan:** [TASK-0050](../plans/0050-default-users.md)
 - **Related:** [Agent Author role (#4045)](https://github.com/openclaw/openclaw-enterprise/pull/4045),
@@ -20,13 +20,15 @@ author: mrunalp
 
 ## Summary
 
-An Installation administrator maps identity provider groups to OCC Groups. At
-each sign-in, OCC creates the person's account if a mapping matches and updates
-their mapped memberships. Members of the built-in **Default users** Group create
-Agents in the shared `default` Namespace. An Installation setting can also let
-them create their own Namespaces. Every creator owns the resource it creates.
-An AccessBinding without a resource applies to every resource in its Namespace,
-for any Role. Existing flows keep their behavior.
+The Installation configuration declares ordinary Roles, Groups, and Group
+bindings, and the default Groups that new accounts join. With the example
+configuration, members of the **Default users** Group create Agents in the
+shared `default` Namespace, and can also create their own Namespaces. Every
+creator owns the resource it creates, through a configured Owner Role. An
+Installation administrator maps identity provider groups to OCC Groups; at each
+sign-in, OCC creates the person's account if a mapping matches and updates their
+mapped memberships. An AccessBinding without a resource applies to every
+resource in its Namespace, for any Role. Existing flows keep their behavior.
 
 ## Motivation
 
@@ -88,42 +90,55 @@ Kubernetes namespace ([security](../../docs/reference/security.md)).
 
 | Concern                            | Owner                                                                                     |
 | ---------------------------------- | ----------------------------------------------------------------------------------------- |
-| Built-in Roles and Default users   | A migration, so existing and new Installations get the same rows                          |
-| Default users binding in `default` | OCC, when it creates the Namespace named `default`; a migration for an existing one       |
-| Namespace create for Default users | Installation configuration `defaultUser.namespaceCreate`, `false` when absent             |
-| Owner bindings                     | Each create operation, in its transaction                                                 |
+| Roles, Groups, and Group bindings  | Installation configuration `iam`; OCC writes them as ordinary rows at startup             |
+| Group bindings in a new Namespace  | OCC, when it creates a Namespace that a configured binding names                          |
+| Default Group membership           | `POST /api/auth/accounts`, for each Group in `iam.defaultUserGroups`                      |
+| Owner bindings                     | Each create operation, in its transaction, to `iam.ownerRole`                             |
 | Mapping rules                      | New Installation IAM API and console Settings card; Installation `administer`; PostgreSQL |
 | Account creation and membership    | Controller sign-in path, through the IAM Driver, in one transaction with its audit event  |
 | Agent credential grants            | `deployAgent`, through the existing Agent operate Roles                                   |
 
-### Built-in Roles
+### Configured Roles, Groups, and bindings
 
-Nobody can change or delete these Roles.
+There are no built-in Roles or Groups and no Default users API. The `iam` block
+of the Installation configuration declares ordinary ones:
 
-| Role              | Bound to                                                | Scope                   | Permissions                                                                                                 |
-| ----------------- | ------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Agent Creator     | Default users                                           | The `default` Namespace | `create` on `agent`, `configuration`, `secret`, and `credential_source`; `read` on `namespace` and `preset` |
-| Namespace Creator | Default users, when `defaultUser.namespaceCreate` is on | Installation            | `namespace:create`                                                                                          |
-| Owner             | The creator of a resource                               | The resource            | Every action on every Namespace resource kind, plus `namespace:read` and `namespace:delete`                 |
-| Namespace member  | A team Namespace's Group                                | Namespace-wide          | Owner without `namespace:delete`                                                                            |
+```yaml
+iam:
+  roles:
+    - id: agent_creator
+      permissions: [agent:create, configuration:create, secret:create,
+        credential_source:create, namespace:read, preset:read]
+    - id: namespace_creator
+      permissions: [namespace:create]
+    - id: owner
+      permissions: [...] # every action on every Namespace resource kind, plus namespace:delete
+  defaultUserGroups: [default-user]
+  ownerRole: owner
+  roleBindings:
+    - { group: default-user, role: agent_creator, scope: { namespace: default } }
+    - { group: default-user, role: namespace_creator, scope: installation }
+```
 
-The Owner Role's [resource kinds](../../docs/reference/cheatsheets/permissions.md#resources-and-scopes)
-are `agent`, `agent_revision`, `sandbox_policy`, `configuration`, `preset`,
-`secret`, `credential_source`, and `service_account`. A binding applies only the
-permissions whose kind matches its target, so one Role serves every kind.
-`agent:administer` opens the native admin UI for chat. No built-in Role changes
-IAM, and Secret values stay write-only.
+At startup OCC writes each Role, Group, and binding as an ordinary row in one
+audited transaction, updates changed Roles, and deletes unlisted ones. A new
+Namespace that a binding names gets it in its creating transaction. Configured
+Roles hold no `installation` permission. Leaving out the `namespace_creator`
+binding replaces a Namespace create switch.
 
-When `defaultUser.namespaceCreate` changes, OCC writes or deletes the Namespace
-Creator binding at startup, audited. Deleting it stops new Namespaces; owned
-Namespaces stay.
+Each account created through `POST /api/auth/accounts` joins every
+`defaultUserGroups` Group. Mapping rules and SCIM later map provider groups to
+these same Groups. A binding applies only the Role permissions whose kind
+matches its target, so one Owner Role serves every kind.
 
 ### Creators own what they create
 
 When a principal creates a Namespace, Agent, Configuration, Secret, credential
-source, Preset, or ServiceAccount, OCC binds that principal to the Owner Role in
-the same transaction and audits it with the reason `creator`. The rule applies
-to every creator, including administrators and ServiceAccounts:
+source, Preset, or ServiceAccount, OCC binds that principal to the configured
+Owner Role in the same transaction and audits it with the reason `creator`. The
+rule applies to every creator, including administrators and ServiceAccounts. No
+Group binding grants Owner, so members of `default` do not own each other's
+resources:
 
 - A new Namespace gets a Namespace-wide Owner binding. The creator's own grant
   then creates the default Presets; today that step fails for a caller without
@@ -161,9 +176,9 @@ Group:
 | OIDC     | A configured claim (for example `groups`) that contains a given value    |
 
 Google exposes groups only through its Admin API, so Google rules match a
-hosted domain. Rules match exact, case-normalized values. A rule targets Default
-users or a Group that belongs to a Namespace, never a Group with
-Installation-wide bindings.
+hosted domain. Rules match exact, case-normalized values. A rule targets a
+configured Group, such as `default-user`, or a Group that belongs to a
+Namespace.
 
 ### Existing flows keep working
 
@@ -171,14 +186,13 @@ Mapping rules add account creation at sign-in and change nothing else. Without
 rules and Default users members, an Installation behaves as today:
 
 - Accounts that administrators create sign in without a rule and keep their
-  bindings. They join Default users only when an administrator adds them.
+  bindings. Without an `iam` configuration they join no Group.
 - The GitHub and Google allowlists (`OCC_AUTH_GITHUB_ALLOWED_ORGS`,
   `OCC_AUTH_GITHUB_ALLOWED_TEAMS`, `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS`) stay and
   run first for every sign-in. Rules apply only to identities they admit.
 - Password sign-in, service keys, and sessions are unchanged.
-- Administrators also get Owner bindings on what they create. These grant
-  nothing that the administrator binding does not already grant, but they stay
-  if the administrator binding is removed.
+- Administrators also get Owner bindings on what they create; these stay if
+  the administrator binding is removed.
 
 ### Membership at each sign-in
 
@@ -203,17 +217,19 @@ audited.
 
 ### Revocation keeps what people created
 
-Removing a person from Default users, from a mapped Group, or from the provider
-group stops new creates. Everything they created stays: Owner bindings,
+Removing a binding from the configuration, removing a person from a mapped
+Group or the provider group, or disabling the account stops new creates. Everything they created stays: Owner bindings,
 Namespaces, Agents, and grants remain until an administrator deletes them or
-moves the Owner binding. A person removed from Default users loses `read` on
-`default` and cannot reach their Agents there, but those Agents keep running.
+moves the Owner binding. A person who loses the Agent creation binding loses
+`read` on `default` and cannot reach their Agents there, but those Agents keep
+running.
 
 OCC learns of a change as follows:
 
 | Change                                                       | Takes effect                                          |
 | ------------------------------------------------------------ | ----------------------------------------------------- |
-| An administrator removes a membership or disables an account | The next request; policy and session lookups are live |
+| An administrator disables an account                         | The next request; policy and session lookups are live |
+| An administrator changes the `iam` configuration             | The next API and worker startup                       |
 | The provider removes a group or disables the person          | The next sign-in; sessions last at most eight hours   |
 
 Session lifetime stays at eight hours. A person whom the provider disabled
@@ -239,10 +255,10 @@ sequenceDiagram
   User->>OCC: Create a Secret and an Agent in the default Namespace
   OCC->>IAM: Check create (Agent Creator), write each resource and its Owner binding
   User->>OCC: POST /namespaces/{namespaceId}/agents/{agentId}/deploy
-  OCC->>IAM: Check deploy and operate, and the Roles that allow them
-  alt Only a custom Role allows the caller
+  OCC->>IAM: Check deploy, and operate on each source the Agent uses
+  alt The caller cannot operate a source
     OCC-->>User: No grant written; refused as today
-  else The Owner Role allows the caller
+  else The caller can operate each source
     OCC->>IAM: Write the Agent's operate grants, audit
     OCC-->>User: 202, revision queued
   end
@@ -257,15 +273,13 @@ it uses. Today only an Installation administrator grants it, through the console
 or guided provisioning (`ensureAgentOperateGrants` in
 `packages/occ/src/index.ts`); this RFC adds no Agent Role.
 
-OCC also writes these exact grants in the deploy transaction when the built-in
-Owner or Namespace member Role is among the Roles that allow the caller
-`agent:deploy` and `operate` on the source (each decision's `roleIds` evidence).
-A deploy allowed only by other Roles writes no grant, so custom Roles gain
-nothing. In `default`, a member's grant reaches only Secrets they own. OCC
+OCC also writes these exact grants in the deploy transaction when the caller
+can deploy the Agent and `operate` the source, through any Role. In `default`, a
+member's grant reaches only Secrets they own. OCC
 audits each write and writes nothing when the deploy fails. OCC removes a grant
 it wrote when no Agent setting, Configuration, or live revision references the
 source, so a running Agent keeps its access. Guided provisioning accepts these
-Roles instead of Installation `administer`.
+grants instead of Installation `administer`.
 
 Slack needs no new contract: Slack tokens are Secrets referenced from the
 Agent's Configuration. The operator still provides the channel runtime and the
@@ -284,6 +298,9 @@ Guardrails work replaces them. An empty ceiling allows no additions.
 - **Provider unavailable.** Sign-in fails and memberships do not change. A
   failed group lookup never counts as "no groups".
 - **Deleted rule.** Its memberships are removed at each member's next sign-in.
+- **Invalid `iam` configuration.** Startup fails and names the field. A removed
+  Role that an Owner binding still uses also stops startup, so a configuration
+  change never deletes what people own.
 - **Deleted `default` Namespace.** Namespace names stay reserved after
   deletion, so Default users then create Agents only in Namespaces they own.
 - **Partial writes.** Each transaction writes all of its rows or none, so a
@@ -305,8 +322,9 @@ claim:
 - A Default users member creates a Secret and an Agent in `default` and deploys
   it with a Secret-based model credential and a Slack app, without administrator
   action. A second member is refused every read and write on those resources.
-- With `defaultUser.namespaceCreate` on, a member creates a Namespace and owns
-  it; with it off, the create is refused.
+- With the `namespace_creator` binding configured, a member creates a Namespace
+  and owns it; after a restart without it, the create is refused and the
+  Namespace stays.
 - A custom Role bound without a resource applies across its Namespace and not in
   another Namespace.
 - A matched identity gets one account and its mapped memberships; an unmatched
@@ -315,8 +333,9 @@ claim:
   refuses sign-in without a match; an administrator membership survives. The
   removed person's Agents keep running.
 - A failed group lookup refuses sign-in and changes no membership.
-- An owner's deploy writes the Agent's grants; a deploy allowed only by a custom
-  Role writes none and is refused as today.
+- A deploy by a caller who can operate the Agent's Secrets writes the Agent's
+  grants, through any Role; a caller who cannot operate one writes none and is
+  refused as today.
 - Replacing a Secret removes the old grant only after no live revision
   references it.
 - An owner adds a sandbox network rule inside the Installation ceiling and is
@@ -327,14 +346,18 @@ claim:
 ## Rationale and alternatives
 
 - **A Namespace for each person by default.** Strong isolation, but 100,000
-  people need 100,000 Kubernetes namespaces. It stays available through
-  `defaultUser.namespaceCreate`.
+  people need 100,000 Kubernetes namespaces. It stays available through a
+  `namespace_creator` binding.
 - **Owner bindings only for Namespaces.** A one-off rule; the general rule gives
   every creator the same result.
-- **Namespace-wide bindings only for built-in Roles.** Safe, but administrators
+- **Namespace-wide bindings only for configured Roles.** Safe, but administrators
   could not grant custom Roles across a Namespace.
-- **Grant at deploy to anyone with `deploy` and `operate`.** Simpler, but
-  existing custom Roles would silently gain the power to grant.
+- **Built-in immutable Roles and Group with a Default users API.** The first
+  draft. Review preferred ordinary Groups and Roles from the configuration:
+  fewer special cases, and the same Groups map to external groups for SCIM.
+- **Grant at deploy only when a built-in Role allows the caller.** Custom Roles
+  would gain nothing, but it needs built-in Roles, and a caller who can operate
+  a source can already bind it to an Agent.
 - **SCIM in the first release.** It covers only providers that push, needs its
   own tables and tokens, and still needs the same Group mapping. Sign-in sync
   comes first; SCIM follows.
