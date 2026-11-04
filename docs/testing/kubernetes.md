@@ -80,11 +80,9 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
   node --test tests/integration/production-network-access.test.mjs
 ```
 
-No database or model credential is required. The suite checks rendered chart and
-quickstart NetworkPolicies against live listeners. It checks that deleting one tenant’s supervisor
-grant preserves the others and that removing namespace ownership closes tenant management access. It does not prove
-controller startup, database authentication, provider behavior, or a production Helm
-installation. Other releases remain outside the selectors.
+Live listeners verify chart and quickstart NetworkPolicies, including supervisor grant
+withdrawal and loss of namespace ownership. Other releases fall outside the selectors.
+This networking fixture requires neither a database nor model credentials.
 
 ## Kubernetes model turns and Secrets
 
