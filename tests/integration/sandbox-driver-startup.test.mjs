@@ -1076,7 +1076,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     // A retry with already-correct attachments must still check current policy;
     // membership alone cannot authorize starting the desired workload.
     client.getPolicyStatus = async () => ({ policy: { network_policies: {} } });
-    await assert.rejects(provision(next, sourceB), /current Sandbox policy to remain unchanged/);
+    await assert.rejects(provision(next, sourceB), /static policy or middleware bindings/);
     assert.equal(phase, "SANDBOX_PHASE_STOPPED");
     client.getPolicyStatus = async () => ({ policy: request.spec.policy });
     await provision(next, sourceB);
@@ -1097,7 +1097,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     client.getPolicyStatus = async () => ({ policy: { network_policies: {} } });
     await assert.rejects(
       provision("rev_00000000-0000-4000-8000-000000000007", sourceA),
-      /current Sandbox policy to remain unchanged/,
+      /static policy or middleware bindings/,
     );
     assert.equal(mutations.length, 2);
     client.getPolicyStatus = async () => ({ policy: request.spec.policy });
@@ -1108,6 +1108,149 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     );
     assert.equal(phase, "SANDBOX_PHASE_STOPPED");
   });
+});
+
+test("managed network policy replacement survives lost responses and gates activation", async () => {
+  const client = workspaceGatewayClient();
+  const options = sandboxInstallation().drivers.sandbox.configuration;
+  options.gateway = { workspaceMode: "managed" };
+  options.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+  const makeDriver = (configuration) =>
+    new ManagedOpenShellSandbox(configuration, {
+      id: "openshell-sandbox",
+      backend: backendFor(client),
+      gatewayId: "test-gateway",
+    });
+  const original = makeDriver(options);
+  const { context, revision, requirements } = runtimeSandboxFixture(original);
+  requirements.workspaceMounts = [];
+  let stored;
+  let policy;
+  let version = 1;
+  let policyVersion = 1;
+  let activeVersion = 1;
+  let policyState = "POLICY_STATUS_LOADED";
+  let writes = 0;
+  let failure;
+  client.createSandbox = async (request) => {
+    stored = storedSandbox(structuredClone(request), {
+      id: "stable-policy-sandbox",
+      resourceVersion: String(version),
+      phase: "SANDBOX_PHASE_READY",
+    });
+    policy = structuredClone(request.spec.policy);
+    return stored;
+  };
+  client.getSandbox = async () => (stored === undefined ? undefined : structuredClone(stored));
+  client.getPolicyStatus = async () => ({
+    policy: structuredClone(policy),
+    version: policyVersion,
+    activeVersion,
+    state: policyState,
+  });
+  client.getService = async () =>
+    harnessService(stored.name, "", "http://codex.example.test:8080/");
+  client.updatePolicy = async (request) => {
+    assert.equal(stored.phase, "SANDBOX_PHASE_STOPPED");
+    assert.equal(request.expectedResourceVersion, String(version));
+    writes += 1;
+    if (failure === "ignored") {
+      return;
+    }
+    // OpenShell stores policy history independently of the creation specification.
+    policy = structuredClone(request.policy);
+    policyVersion += 1;
+    policyState = "POLICY_STATUS_PENDING";
+    stored.resourceVersion = String(++version);
+    if (failure === "lost") {
+      throw new Error("lost policy response");
+    }
+  };
+  client.updateSandbox = async (request) => {
+    assert.equal(request.expectedResourceVersion, String(version));
+    stored = storedSandbox(
+      { ...request, spec: { ...request.spec, policy: stored.spec.policy } },
+      {
+        id: stored.id,
+        resourceVersion: String(++version),
+        phase: "SANDBOX_PHASE_STOPPED",
+      },
+    );
+  };
+  client.startSandbox = async () => {
+    stored.phase = "SANDBOX_PHASE_READY";
+  };
+  const provision = (driver, id, overrides = {}) =>
+    driver.provisionHarness({
+      ...context,
+      revision: { ...revision, id },
+      requirements: { ...requirements, ...overrides },
+    });
+  await original.ensureNamespace(context);
+  await provision(original, revision.id);
+  const baseline = structuredClone(stored.spec.policy);
+  const changed = structuredClone(options);
+  changed.policy.networkPolicies.push({
+    name: "documentation",
+    endpoints: [{ host: "example.org", ports: [443] }],
+    binaries: [{ path: "/usr/bin/curl" }],
+  });
+  const replacement = makeDriver(changed);
+  const next = "rev_00000000-0000-4000-8000-000000000008";
+  await assert.rejects(provision(replacement, revision.id), /Stop the previous managed workload/);
+  stored.phase = "SANDBOX_PHASE_STOPPED";
+  // Neither static restrictions nor middleware changes belong to this increment.
+  for (const field of ["process", "network_middlewares"]) {
+    const saved = structuredClone(policy);
+    policy[field] = { changed: true };
+    await assert.rejects(provision(replacement, next), /static policy or middleware bindings/);
+    policy = saved;
+  }
+  await assert.rejects(
+    provision(replacement, next, {
+      credentialAttachments: [{ sourceId: "different", ref: openShellProviderName("different") }],
+    }),
+    /current Sandbox policy to remain unchanged/,
+  );
+  assert.equal(writes, 0);
+  failure = "ignored";
+  await assert.rejects(provision(replacement, next), /policy readback differs/);
+  assert.equal(stored.phase, "SANDBOX_PHASE_STOPPED");
+  failure = "lost";
+  await assert.rejects(provision(replacement, next), /lost policy response/);
+  assert.equal(stored.phase, "SANDBOX_PHASE_STOPPED");
+  assert.equal(writes, 2);
+  failure = undefined;
+  await provision(replacement, next);
+  assert.equal(writes, 2, "Retry adopts the stored policy without another write");
+  assert.deepEqual(stored.spec.policy, baseline, "Workload updates retain the creation policy");
+  assert.ok(policy.network_policies.documentation);
+  assert.equal(stored.id, "stable-policy-sandbox");
+  await provision(replacement, next);
+  assert.equal(writes, 2, "An unchanged retry must not restore the creation policy");
+  const observationContext = { ...context, revision: { ...revision, id: next } };
+  assert.deepEqual(await replacement.observeHarness(observationContext), { state: "starting" });
+  policyState = "POLICY_STATUS_LOADED";
+  assert.deepEqual(await replacement.observeHarness(observationContext), { state: "starting" });
+  activeVersion = policyVersion;
+  assert.deepEqual(await replacement.observeHarness(observationContext), { state: "running" });
+  // A subsequent live edit must use the new defaults, not the creation-time rules.
+  const snapshot = replacement.admitNetworkPolicy([], 1);
+  assert.equal(
+    (await replacement.observeNetworkPolicy(observationContext, snapshot)).matches,
+    true,
+  );
+  policyState = "POLICY_STATUS_FAILED";
+  await assert.rejects(replacement.observeHarness(observationContext), /did not activate/);
+  policyState = "POLICY_STATUS_LOADED";
+  stored.phase = "SANDBOX_PHASE_STOPPED";
+  await provision(original, "rev_00000000-0000-4000-8000-000000000009");
+  assert.equal(
+    policy.network_policies.documentation,
+    undefined,
+    "A later revision removes the rule",
+  );
+  assert.equal(writes, 3);
 });
 
 test("managed native replacement restores its startup exposure and withdraws it after enrollment", async (t) => {

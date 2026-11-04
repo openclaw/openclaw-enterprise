@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
 updated: "2026-11-04"
-last_updated_session: authoring-run/fd07e061-6581-4e80-9946-e13b37bfb63b
+last_updated_session: authoring-run/58e6dc9e-a980-4300-94d2-c14a0300073b
 ---
 
 # Managed OpenShell workload flow
@@ -115,11 +115,18 @@ The config write patches only changed fields. Unchanged empty values, including
 deletion and the Gateway client refuses it.
 
 `reconcileHarness` verifies Namespace and Agent ownership, then requires stopped
-state before changing the revision. It rejects unsupported policy, resource and
-runtime-class differences. `reconcileProviders` compares Provider membership,
-independent of list order. Before replacement, it also reads the current policy
-revision: a live policy edit absent from the creation specification must not be
-overlooked. Policy changes remain unsupported in this replacement path.
+state before changing the revision. It rejects resource and runtime-class changes.
+`reconcilePolicy` reads the latest stored policy separately from the creation
+specification. With unchanged Provider attachments, it can replace network rules.
+Static policy and middleware bindings must remain unchanged. A resource-version
+check protects the policy write; readback verifies the desired policy and the
+same stopped Sandbox, workload and ownership. A lost response leaves the Sandbox
+stopped; retry adopts an already-stored policy. OCE does not wait for activation
+while stopped.
+
+`reconcileProviders` compares Provider membership independently of list order.
+Provider changes require the current policy to match the desired policy.
+Coordinated policy and Provider changes remain unsupported.
 
 The Driver detaches obsolete Providers before attaching missing ones, because
 replacement sources can supply the same credential environment variable. Each
@@ -131,8 +138,16 @@ stored membership and performs the remaining changes. Git replacement still
 requires separate route and policy lifecycle work.
 
 The Driver then sends `SandboxUpdates.UpdateSandbox` with the latest observed
-resource version and reads back the complete specification. Only a matching result can start. The client
+resource version and verifies the workload and latest policy separately. OpenShell
+retains the creation-time policy in the Sandbox specification. Only matching
+readbacks can start. The client
 uses the separate service path in `openshell-gateway-client.ts:updateSandbox`.
+
+`ManagedOpenShellSandbox.observeHarness` reports running only when OpenShell reports
+the latest policy loaded and its active version matches. Kubernetes Compute's
+`SandboxHarnessRuntime.ready` uses this observation before activation. A failed
+policy load raises an error. The managed `networkPolicyBaseline` also reads the
+latest policy so later live edits preserve the current revision's rules.
 
 Before restarting a native OpenClaw Sandbox whose new revision has not enrolled,
 `reconcileHarness` restores a missing startup exposure through `ExposeService`.
@@ -221,6 +236,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-04 21:18: Reconcile network rules separately from workload updates and gate readiness on policy activation in the accompanying implementation. (authoring-run/58e6dc9e-a980-4300-94d2-c14a0300073b - 38fc75b4d6cba2096d6435c0294f213267362df1)
 
 - 2026-11-04 19:01: Reconcile Provider attachments while stopped and verify membership before restart in the accompanying implementation. (authoring-run/fd07e061-6581-4e80-9946-e13b37bfb63b - c1a56da513af5bbd098cb06499796f365f6b3d28)
 

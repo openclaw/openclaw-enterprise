@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { sandboxNetworkGrantsWithinCeiling } from "../../packages/contracts/src/index.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   openShellProviderName,
@@ -171,6 +172,18 @@ export async function verifyOpenShellProviderReplacement(context) {
       );
     }
   }
+  const policyPath = `${base}/agents/${agents[0].id}/sandbox-policy/networking`;
+  const networkGrant = {
+    id: "replacement-probe",
+    binary: "/usr/bin/curl",
+    host: "example.org",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const policySetup = await api("GET", policyPath);
+  assert.ok(
+    sandboxNetworkGrantsWithinCeiling([networkGrant], policySetup.ceiling),
+    "The Installation sandboxNetworkPolicyCeiling must delegate /usr/bin/curl to example.org:443",
+  );
   const first = await deploy(agents[0]);
   const peer = await deploy(agents[1]);
   const before = await sandbox(agents[0]);
@@ -198,8 +211,63 @@ export async function verifyOpenShellProviderReplacement(context) {
   const unchanged = await deploy(agents[0]);
   assert.equal((await sandbox(agents[0])).id, before.id);
   await turn(agents[0], unchanged);
+  // Save through the Agent policy API, then deploy. Do not use live apply:
+  // the worker must update the retained Sandbox's policy during replacement.
+  await api("PATCH", `${policyPath}/editing`, { enabled: true });
+  const probe = async (agent) => {
+    const current = await sandbox(agent);
+    return gateway.execSandbox(
+      {
+        workspace,
+        sandbox: current.name,
+        command: [
+          "/usr/bin/curl",
+          "--silent",
+          "--fail",
+          "--max-time",
+          "15",
+          "--output",
+          "/dev/null",
+          "https://example.org/",
+        ],
+        environment: {},
+        stdin: "",
+        timeoutSeconds: 20,
+      },
+      signal(),
+    );
+  };
+  const assertPolicy = async (present) => {
+    const current = await sandbox(agents[0]);
+    assert.equal(current.id, before.id);
+    assert.deepEqual([...current.spec.providers].sort(), [...after.spec.providers].sort());
+    const status = await gateway.getPolicyStatus({ workspace, sandbox: current.name }, signal());
+    assert.equal(status.state, "POLICY_STATUS_LOADED");
+    assert.equal(status.activeVersion, status.version);
+    assert.equal(
+      Object.hasOwn(status.policy.network_policies, "oce-agent-replacement-probe"),
+      present,
+    );
+  };
+  assert.notEqual(await probe(agents[0]), 0, "The probe route must initially be denied");
+  const policy = (await api("GET", policyPath)).policy;
+  assert.deepEqual(policy.additions, []);
+  const granted = await api("PUT", policyPath, {
+    expectedVersion: policy.version,
+    additions: [networkGrant],
+  });
+  const allowed = await deploy(agents[0]);
+  await assertPolicy(true);
+  assert.equal(await probe(agents[0]), 0, "The new revision must permit the granted route");
+  assert.notEqual(await probe(agents[1]), 0, "The peer must not inherit the grant");
+  await turn(agents[0], allowed);
+  await api("PUT", policyPath, { expectedVersion: granted.version, additions: [] });
+  const removed = await deploy(agents[0]);
+  await assertPolicy(false);
+  assert.notEqual(await probe(agents[0]), 0, "The later revision must deny the removed route");
+  await turn(agents[0], removed);
   return {
     outcome:
-      "model source replacement, stable Sandbox, unchanged redeploy and shared-source isolation",
+      "model source replacement, stable Sandbox, network grant addition/removal, unchanged redeploy and shared-source isolation",
   };
 }

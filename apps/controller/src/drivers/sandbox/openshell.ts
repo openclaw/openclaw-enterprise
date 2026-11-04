@@ -4622,10 +4622,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (client.getPolicyStatus === undefined) {
       throw new Error("Policy status is unavailable.");
     }
-    const baseline = asRecord(sandbox.spec?.policy);
-    if (baseline === undefined) {
-      throw new Error("Missing policy baseline.");
-    }
+    const baseline = await this.networkPolicyBaseline(client, request, sandbox, context.signal);
     const candidate = openShellPolicyCandidate(baseline, snapshot);
     const status = await client.getPolicyStatus(request, context.signal);
     const matches = sameOpenShellPolicy(status.policy, candidate);
@@ -4672,10 +4669,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (client.updatePolicy === undefined) {
       throw new Error("Live policy application is unsupported.");
     }
-    const baseline = asRecord(sandbox.spec?.policy);
-    if (baseline === undefined) {
-      throw new Error("Missing policy baseline.");
-    }
+    const baseline = await this.networkPolicyBaseline(client, request, sandbox, context.signal);
     const candidate = openShellPolicyCandidate(baseline, input.snapshot);
     const plugin = googleRequestPolicyFromSandbox(baseline);
     if (plugin) {
@@ -4720,6 +4714,19 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       },
       context.signal,
     );
+  }
+
+  protected async networkPolicyBaseline(
+    _client: OpenShellGatewayClient,
+    _request: { readonly workspace: string; readonly sandbox: string },
+    sandbox: OpenShellSandboxResponse,
+    _signal: AbortSignal,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    const baseline = asRecord(sandbox.spec?.policy);
+    if (baseline === undefined) {
+      throw new Error("Missing policy baseline.");
+    }
+    return baseline;
   }
 
   async readPolicyRecommendations(

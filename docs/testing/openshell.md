@@ -402,7 +402,26 @@ OpenShell 0.1.7, managed Workspaces, one worker and rebuilt Codex runtime images
 Select its kubeconfig and context explicitly. Prepare a ready OCE Namespace, a
 dedicated Codex Configuration and an authorized static model Credential Source.
 The test creates two Agents and two sources that reference the existing model
-Secret. Its service key needs permission to manage those resources and IAM grants.
+Secret. Its service key needs permission to manage those resources, IAM grants and Agent
+network policies. The runtime must include `/usr/bin/curl`. The network probe uses
+`https://example.org/`, which must be reachable when granted and absent from the
+Installation's default allowed routes for that binary.
+
+The API and worker startup configuration must delegate the probe grant:
+
+```yaml
+sandboxNetworkPolicyCeiling:
+  - id: managed-revision-probe
+    binary: /usr/bin/curl
+    host: example.org
+    ports:
+      - from: 443
+        to: 443
+```
+
+This ceiling permits Agent policy edits; it does not grant network access itself.
+An empty ceiling refuses the test grant. Reload both API and worker after changing
+startup configuration. See [delegation limits](../reference/sandbox-policies.md).
 
 Set `OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE` to a private JSON file:
 
@@ -440,7 +459,11 @@ node --test tests/integration/openshell-provider-replacement-real.test.ts
 
 The test switches one Agent's model source and confirms stable Sandbox identity,
 successful model turns, and continued access for the second Agent using the old
-source. It also redeploys without further changes. Cleanup deletes test-created
+source. It also redeploys without further changes, then saves a network grant
+through the Agent policy API and deploys again. A real request must succeed only
+for the granted Agent. A later revision removes the grant and must deny the same
+request. Both revisions retain Sandbox identity and Provider attachments, report
+the latest policy loaded, and serve model turns. Cleanup deletes test-created
 Agents, grants and sources; it retains the prepared Namespace, Configuration and
 source. Missing input skips the standalone test. A selected QA run requires it:
 use `OCC_TEST_QA_SCENARIOS=openshell-provider-replacement` with the Kubernetes Codex
