@@ -1,21 +1,21 @@
 import ts from "typescript-compiler-api";
-import { implicitWrapperSymbol, outerExpression, unwrap } from "./loader-provenance.mjs";
+import { implicitWrapperSymbol, outerExpression, unwrap } from "./loader-provenance.ts";
 
-export function assignedSymbols(source, checker) {
-  const symbols = new Set();
-  const unbound = new Set();
-  const writes = new Map();
-  const objectWrites = new Set();
-  const objectWriteNodes = new Set();
+export function assignedSymbols(source: ts.SourceFile, checker: ts.TypeChecker) {
+  const symbols = new Set<ts.Symbol | undefined>();
+  const unbound = new Set<string>();
+  const writes = new Map<ts.Symbol | string, ts.Node[]>();
+  const objectWrites = new Set<ts.Symbol | string>();
+  const objectWriteNodes = new Set<ts.Node>();
   let importMetaMutable = false;
   let globalURLMutable = false;
-  function containsImportMeta(node) {
+  function containsImportMeta(node: ts.Node): boolean {
     if (ts.isMetaProperty(node) && node.keywordToken === ts.SyntaxKind.ImportKeyword) {
       return true;
     }
     return ts.forEachChild(node, containsImportMeta) ?? false;
   }
-  function mark(node, symbol, write) {
+  function mark(node: ts.Identifier, symbol: ts.Symbol | undefined, write: ts.Node): void {
     symbols.add(symbol);
     const key = symbol ?? node.text;
     writes.set(key, [...(writes.get(key) ?? []), write]);
@@ -26,7 +26,7 @@ export function assignedSymbols(source, checker) {
       unbound.add(node.text);
     }
   }
-  function assign(node, write) {
+  function assign(node: ts.Node, write: ts.Node): void {
     node = unwrap(node);
     if (ts.isIdentifier(node)) {
       mark(node, checker.getSymbolAtLocation(node), write);
@@ -85,7 +85,7 @@ export function assignedSymbols(source, checker) {
       assign(node.expression, write);
     }
   }
-  function processObject(input) {
+  function processObject(input: ts.Node): boolean {
     let value = unwrap(input);
     let depth = 0;
     while (value && (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value))) {
@@ -105,7 +105,9 @@ export function assignedSymbols(source, checker) {
       )
     );
   }
-  function directProcessRead(node) {
+  function directProcessRead(
+    node: ts.Identifier | ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  ): boolean {
     const value = outerExpression(node);
     const parent = value.parent;
     if (
@@ -133,7 +135,7 @@ export function assignedSymbols(source, checker) {
         : null;
     return property === "env" && key !== null && !["__proto__", "constructor"].includes(key);
   }
-  function visit(node) {
+  function visit(node: ts.Node): void {
     const propertyName =
       node.parent &&
       ((ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
@@ -155,15 +157,13 @@ export function assignedSymbols(source, checker) {
       globalURLMutable = true;
       unbound.add("process");
     }
+    const outer = outerExpression(node);
     if (
       ts.isIdentifier(node) &&
       !propertyName &&
       node.text === "URL" &&
       implicitWrapperSymbol(valueSymbol()) &&
-      !(
-        ts.isNewExpression(outerExpression(node).parent) &&
-        outerExpression(node).parent.expression === outerExpression(node)
-      )
+      !(ts.isNewExpression(outer.parent) && outer.parent.expression === outer)
     ) {
       // Aliases and other uses can expose the mutable global constructor.
       globalURLMutable = true;
