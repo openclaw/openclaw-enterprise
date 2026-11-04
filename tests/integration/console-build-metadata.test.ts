@@ -87,6 +87,7 @@ async function serveRelease(t: TestContext, release: Release) {
       response?: ResponseOverride;
       source?: string;
       path?: string;
+      hostname?: string;
       trust?: boolean;
       env?: NodeJS.ProcessEnv;
     } = {},
@@ -108,7 +109,7 @@ async function serveRelease(t: TestContext, release: Release) {
         verifier,
         options.source ?? release.source,
         release.revision,
-        origin + (options.path ?? shellPath),
+        origin.replace("127.0.0.1", options.hostname ?? "127.0.0.1") + (options.path ?? shellPath),
       ],
       childOptions,
     );
@@ -265,6 +266,40 @@ test("console release verification checks served build artifacts", async (t) => 
       },
     });
   });
+  await t.test("duplicate headers beyond the default header-count limit are refused", async () => {
+    // All fields fit below the byte limit; a late duplicate must not disappear from validation.
+    for (const padding of ["", "x:\r\n".repeat(2010)]) {
+      await verify("unexpected-content", [shellPath], {
+        response: {
+          headers: `${contentHeaders("text/html", Buffer.byteLength(themed))}\r\n${padding}Content-Type: application/json`,
+        },
+      });
+    }
+  });
+  await t.test(
+    "noncanonical numeric authorities are refused before sending a request",
+    async () => {
+      for (const hostname of ["2130706433", "0x7f000001", "127.1", "127.000.000.001"]) {
+        await verify("invalid-input", [], { hostname });
+      }
+    },
+  );
+  await t.test("theme markup must be representable by production theme loading", async () => {
+    // These fields render as HTML but cannot come from a supported production theme bundle.
+    for (const changed of [
+      { logoUrl: "https://example.invalid/logo.png" },
+      { faviconUrl: "https://example.invalid/favicon.png" },
+      { appleTouchIconUrl: "//example.invalid/icon.png" },
+      { logoUrl: "/console/theme/../other.png" },
+      { logoUrl: "/console/theme/logo.svg" },
+      { displayName: " " },
+      { displayName: "hidden\u200bname" },
+    ]) {
+      await verify("wrong-shell", [shellPath], {
+        response: { body: renderConsoleThemeShell(stamped, { ...theme, ...changed }) },
+      });
+    }
+  });
   await t.test("a protocol upgrade returns a sanitized refusal", () =>
     verify("unavailable", [shellPath], {
       response: { status: 101, connection: "Upgrade", headers: "Upgrade: websocket", body: "" },
@@ -292,6 +327,19 @@ test("console release verification checks served build artifacts", async (t) => 
     await verify("unavailable", [], { trust: false });
     await verify("invalid-input", [], { path: "/?token=secret" });
   });
+  await t.test(
+    "inherited Git repository selection cannot replace the supplied source",
+    async () => {
+      const gitDirectory = (
+        await git(build.source, "rev-parse", "--absolute-git-dir")
+      ).stdout.trim();
+      await verify("invalid-source", [], { source: build.directory });
+      await verify("invalid-source", [], {
+        source: build.directory,
+        env: { GIT_DIR: gitDirectory, GIT_WORK_TREE: build.source },
+      });
+    },
+  );
   await t.test("missing promised blobs cannot trigger a fetch or an HTTP request", async () => {
     await git(build.source, "config", "uploadpack.allowFilter", "true");
     const partial = join(build.directory, "partial");

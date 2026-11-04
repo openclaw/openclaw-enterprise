@@ -65,8 +65,8 @@ node scripts/verify-console-release.ts /secure/src/openclaw-enterprise \
 
 | Input or limit | Requirement                                                                                                                                                                                                                                                                                                                                                    |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source         | The local repository must contain the commit and its Console source objects. Missing objects or a source template unsupported by this verifier return `invalid-source`; the command does not fetch objects or execute source from the selected commit.                                                                                                         |
-| URL            | Use the canonical HTTPS URL without credentials, query, fragment, dot segments, or a path beginning with `//`. TLS verification stays enabled. The command sends no cookies or tokens and follows no redirects or page links.                                                                                                                                  |
+| Source         | The local repository must contain the commit and its Console source objects. Missing objects or a source template unsupported by this verifier return `invalid-source`; the command does not fetch objects or execute source from the selected commit. Inherited Git repository and object-store selectors are ignored.                                        |
+| URL            | Use the canonical HTTPS URL without credentials, query, fragment, dot segments, or a path beginning with `//`. Numeric host aliases and other spellings changed by URL normalization are refused. TLS verification stays enabled. The command sends no cookies or tokens and follows no redirects or page links.                                               |
 | Responses      | Anonymous requests retrieve the HTML and then `/console/console.css` on the same origin. Each response needs exactly one `Content-Length` and one `Content-Type` (`text/html` or `text/css`, with only an optional `charset=utf-8`, quoted or unquoted). Compression, chunked or close-delimited bodies, ambiguous headers, and incomplete bodies are refused. |
 | Budgets        | HTML is limited to 256 KiB and CSS to 2 MiB. Git commands and idle HTTPS sockets time out after five seconds. A 20-second deadline covers the whole check.                                                                                                                                                                                                     |
 
@@ -82,7 +82,8 @@ command emits no response contents, URL, or exception details.
 | Other refusals                                               | Check the response framing, content types, size, markup, or timeout named by the result. Correct the cause before repeating the check. |
 
 The command exits 1 for refusals. It checks one delivered shell and base CSS,
-including the supported themed shell. Theme settings and assets are
+including the supported themed shell. Theme names and image paths must fit the
+[production theme format](../guides/deploy/console-theme.md). Theme settings and assets are
 installation-owned and their values are not authenticated by this check. Browser
 execution, other assets and replicas, image digest, Pod health, and backend
 migrations require separate evidence. Keep TLS verification enabled and do not

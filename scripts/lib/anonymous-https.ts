@@ -74,6 +74,8 @@ export async function readAnonymousHttps(
         },
         resolve,
       );
+      // Retain every field within maxHeaderSize so late duplicates cannot evade validation.
+      request.maxHeadersCount = 0;
       request.once("timeout", () => request.destroy());
       request.once("error", reject);
       request.once("upgrade", (upgradeResponse, socket) => {

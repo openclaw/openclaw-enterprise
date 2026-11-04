@@ -266,16 +266,16 @@ resume checks the replacement.
 
 `docs/guides/deploy/production-upgrade.md:Verify the release`
 
-Completion proves Helm rollout and OCC access; runtime upgrades also verify
+Completion proves Helm rollout and OCC access; runtime upgrades verify
 deployments, readiness and Doctor without errors.
 It writes a private `completed` marker. New upgrades require fresh
 evidence. Failed marker writes require reconciling evidence with live state;
 absence alone does not prove unfinished work.
 Operators verify models, providers, channels, credentials, workspace continuity,
 native access and restores.
-`scripts/verify-console-release.ts:verifyConsoleRelease` compares served Console
-HTML and CSS with local publication artifacts after traffic selection
-([verification](../release/container-promotion.md#verify-the-served-console)).
+`scripts/verify-console-release.ts:verifyConsoleRelease` isolates Git selection,
+compares HTML/CSS against publication artifacts and rejects invalid headers,
+URLs and themes ([verification](../release/container-promotion.md#verify-the-served-console)).
 
 ### Read-only export after a split-layout refusal
 
@@ -324,7 +324,7 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 
 ## Changelog
 
-- 2026-11-04 07:28: Document served Console verification. (authoring-run/78fd39fa-cf99-4b8c-b120-4e344700140d - 2f8d396865b850963bb928beb0399970de430761)
+- 2026-11-04 07:28: Validate Console inputs. (authoring-run/78fd39fa-cf99-4b8c-b120-4e344700140d - 2f8d396865b850963bb928beb0399970de430761)
 - 2026-11-04 07:14: Validate YAML comparisons. (authoring-run/47f197fd-9f98-4dfb-8162-36589ab6194e - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
 - 2026-11-04 06:40: Diagnose unusable YAML. (authoring-run/1320ca1e-663f-449a-aab9-29102e0c482f - f150505ae48988083ddeebdaffd45978be48d588)

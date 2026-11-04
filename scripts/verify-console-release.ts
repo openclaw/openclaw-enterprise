@@ -25,7 +25,7 @@ function consoleUrl(raw: string): URL | undefined {
   }
   const path = parts[2] ?? "/";
   const url = new URL(raw);
-  return path.startsWith("//") || url.pathname !== path ? undefined : url;
+  return path.startsWith("//") || url.pathname !== path || url.host !== parts[1] ? undefined : url;
 }
 
 export async function verifyConsoleRelease(

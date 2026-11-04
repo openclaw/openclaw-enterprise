@@ -25,6 +25,12 @@ async function git(
   limit: number,
   budget: ReadBudget,
 ): Promise<Buffer> {
+  // Hook-local repository and object-store settings must not redirect the explicit source.
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name]) => !name.startsWith("GIT_") || name.startsWith("GIT_TRACE"),
+    ),
+  );
   const { stdout } = await execute(
     "git",
     ["--no-lazy-fetch", "--no-replace-objects", "-C", source, ...args],
@@ -32,7 +38,7 @@ async function git(
       encoding: "buffer",
       maxBuffer: limit,
       ...budget,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      env: { ...env, GIT_OPTIONAL_LOCKS: "0" },
     },
   );
   return stdout;
@@ -126,6 +132,15 @@ function attribute(html: string, prefix: string): string | undefined {
         .replace(/&(?:amp|lt|gt|quot|#39);/g, (entity) => entities[entity]!);
 }
 
+function themeImage(url: string, favicon = false): boolean {
+  const image = /^\/console\/theme\/[a-z\d][a-z\d._-]*\.(png|webp|ico)$/i.exec(url);
+  return (
+    image !== null &&
+    !url.includes("..") &&
+    (favicon ? image[1]!.toLowerCase() !== "webp" : image[1]!.toLowerCase() !== "ico")
+  );
+}
+
 function presentedTheme(html: string): ConsoleTheme | undefined {
   const displayPrefix = '<meta name="occ-console-display-name" content="';
   const metadata = section(html, displayPrefix, "</head>");
@@ -134,11 +149,24 @@ function presentedTheme(html: string): ConsoleTheme | undefined {
   }
   const displayName = attribute(metadata, displayPrefix);
   const logoUrl = attribute(metadata, '<meta name="occ-console-logo" content="');
-  if (displayName === undefined || logoUrl === undefined || [...displayName].length > 80) {
+  if (
+    displayName === undefined ||
+    displayName.trim().length === 0 ||
+    [...displayName].length > 80 ||
+    /[\p{Cc}\p{Cf}]/u.test(displayName) ||
+    logoUrl === undefined ||
+    (logoUrl !== "/console/oce-mascot.png" && !themeImage(logoUrl))
+  ) {
     return undefined;
   }
   const faviconUrl = attribute(metadata, '<link rel="icon" href="');
   const appleTouchIconUrl = attribute(metadata, '<link rel="apple-touch-icon" href="');
+  if (
+    (faviconUrl !== undefined && !themeImage(faviconUrl, true)) ||
+    (appleTouchIconUrl !== undefined && !themeImage(appleTouchIconUrl))
+  ) {
+    return undefined;
+  }
   return {
     displayName,
     logoUrl,
