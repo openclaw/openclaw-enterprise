@@ -1694,198 +1694,213 @@ test("first-deployment CLI recovers a lost committed response with the original 
   const cli = join(directory, "occ");
   const execute = promisify(execFile);
   await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
-  const { controller, namespace, agent, path, intent, work, secretDriver, providerCalls } =
-    await firstDeploymentFixture();
-  const fixture = controller.fixture;
-  // Provision an automation identity in the actual native IAM fixture. The HTTP auth
-  // service issues its key; the CLI never impersonates the administrator's session.
-  const automation = {
-    kind: "service_principal",
-    id: `sp_${randomUUID()}`,
-    namespaceId: namespace.id,
-  };
-  fixture.state.identities.push(automation);
-  fixture.state.bindings.push({
-    id: "first-deployment-cli-automation",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: automation.id,
-    roleId: fixture.state.roles[0].id,
-  });
-  const app = fixture.createApp(undefined, createFastifyApp);
-  let relay;
-  try {
-    const origin = await app.listen({ host: "127.0.0.1", port: 0 });
-    const issued = await request(origin, "POST", "/api/auth/service-keys", {
-      session: app.defaultSession,
-      body: {
-        servicePrincipalId: automation.id,
+  for (const reply of ["dropped", "malformed"]) {
+    await t.test(`${reply} committed reply`, async (t) => {
+      const { controller, namespace, agent, path, intent, work, secretDriver, providerCalls } =
+        await firstDeploymentFixture();
+      const fixture = controller.fixture;
+      // Provision an automation identity in the actual native IAM fixture. The HTTP auth
+      // service issues its key; the CLI never impersonates the administrator's session.
+      const automation = {
+        kind: "service_principal",
+        id: `sp_${randomUUID()}`,
         namespaceId: namespace.id,
-        name: "first-deployment-cli",
-      },
-    });
-    assert.equal(issued.status, 201, JSON.stringify(issued.body));
-    const keyFile = join(directory, "caller service-key.json");
-    await writeFile(keyFile, JSON.stringify({ data: issued.data }), { mode: 0o600 });
-    const forwarded = [];
-    const relayErrors = [];
-    let committed;
-    let recovered;
-    relay = createServer(async (incoming, outgoing) => {
+      };
+      fixture.state.identities.push(automation);
+      fixture.state.bindings.push({
+        id: "first-deployment-cli-automation",
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: automation.id,
+        roleId: fixture.state.roles[0].id,
+      });
+      const app = fixture.createApp(undefined, createFastifyApp);
+      let relay;
       try {
-        const chunks = [];
-        for await (const chunk of incoming) {
-          chunks.push(chunk);
-        }
-        forwarded.push({ method: incoming.method, path: incoming.url });
-        const response = await fetch(`${origin}${incoming.url}`, {
-          method: incoming.method,
-          headers: {
-            "x-api-key": incoming.headers["x-api-key"],
-            ...(incoming.headers["content-type"] === undefined
-              ? {}
-              : { "content-type": incoming.headers["content-type"] }),
+        const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+        const issued = await request(origin, "POST", "/api/auth/service-keys", {
+          session: app.defaultSession,
+          body: {
+            servicePrincipalId: automation.id,
+            namespaceId: namespace.id,
+            name: "first-deployment-cli",
           },
-          ...(chunks.length === 0 ? {} : { body: Buffer.concat(chunks) }),
         });
-        const body = await response.text();
-        if (incoming.method === "POST" && response.status === 202) {
-          // OCC really committed. Lose only its response at the transport boundary.
-          committed = JSON.parse(body).data;
-          outgoing.destroy();
-          return;
+        assert.equal(issued.status, 201, JSON.stringify(issued.body));
+        const keyFile = join(directory, "caller service-key.json");
+        await writeFile(keyFile, JSON.stringify({ data: issued.data }), { mode: 0o600 });
+        const forwarded = [];
+        const relayErrors = [];
+        let committed;
+        let recovered;
+        relay = createServer(async (incoming, outgoing) => {
+          try {
+            const chunks = [];
+            for await (const chunk of incoming) {
+              chunks.push(chunk);
+            }
+            forwarded.push({ method: incoming.method, path: incoming.url });
+            const response = await fetch(`${origin}${incoming.url}`, {
+              method: incoming.method,
+              headers: {
+                "x-api-key": incoming.headers["x-api-key"],
+                ...(incoming.headers["content-type"] === undefined
+                  ? {}
+                  : { "content-type": incoming.headers["content-type"] }),
+              },
+              ...(chunks.length === 0 ? {} : { body: Buffer.concat(chunks) }),
+            });
+            const body = await response.text();
+            if (incoming.method === "POST" && response.status === 202) {
+              // OCC really committed. The relay loses or corrupts only its response; the
+              // next GET must recover the true receipt from the unchanged application.
+              const envelope = JSON.parse(body);
+              committed = envelope.data;
+              if (reply === "dropped") {
+                outgoing.destroy();
+              } else {
+                outgoing.writeHead(response.status, { "content-type": "application/json" });
+                outgoing.end(JSON.stringify({ ...envelope, data: {} }));
+              }
+              return;
+            }
+            if (incoming.method === "GET" && response.status === 200) {
+              recovered = JSON.parse(body).data;
+            }
+            outgoing.writeHead(response.status, { "content-type": "application/json" });
+            outgoing.end(body);
+          } catch (error) {
+            relayErrors.push(error);
+            outgoing.destroy();
+          }
+        });
+        relay.listen(0, "127.0.0.1");
+        await once(relay, "listening");
+        const relayOrigin = `http://127.0.0.1:${relay.address().port}`;
+        const args = [
+          "--url",
+          relayOrigin,
+          "--service-key-file",
+          keyFile,
+          "--ca-bundle",
+          "",
+          "--timeout-seconds",
+          "5",
+          "--namespace",
+          namespace.id,
+          "agent",
+          "deploy-first",
+          agent.id,
+          "--key",
+          intent.key,
+          "--configuration",
+          intent.expectedConfigurationId,
+          "--generation",
+          String(intent.expectedGeneration),
+        ];
+        let failure;
+        try {
+          failure = { code: 0, ...(await execute(cli, args)) };
+        } catch (error) {
+          failure = error;
         }
-        if (incoming.method === "GET" && response.status === 200) {
-          recovered = JSON.parse(body).data;
+        assert.deepEqual(relayErrors, []);
+        assert.ok(committed, "the uncertain response must follow a real committed admission");
+        assert.deepEqual(
+          forwarded,
+          [{ method: "POST", path: `${path}/deploy-first` }],
+          "the CLI must not automatically replay an uncertain mutation",
+        );
+        const revisions = await fixture.platformState.read((unit) =>
+          unit.revisions.listRevisionMetadata(namespace.id, agent.id),
+        );
+        assert.equal(revisions.length, 1);
+        assert.equal(revisions[0].id, committed.revisionId);
+        assert.equal(work().length, 1);
+        const calls = structuredClone(secretDriver.calls);
+        const audit = structuredClone(fixture.auditSink.events);
+        const deployments = audit.filter(
+          (event) => event.action === "openclaw.agents.deploy" && event.outcome === "success",
+        );
+        assert.equal(deployments.length, 1);
+        assert.equal(deployments[0].actor.principalId, automation.id);
+        t.diagnostic(
+          JSON.stringify({
+            reply,
+            cliExit: failure.code,
+            posts: forwarded.length,
+            revisions: revisions.length,
+            work: work().length,
+            sender: providerCalls(),
+          }),
+        );
+        assert.equal(failure.code, 1, "an unusable receipt must leave the CLI outcome uncertain");
+        assert.equal(failure.stdout, "");
+        assert.match(failure.stderr, reply === "dropped" ? /EOF/ : /invalid.*receipt/i);
+        assert.match(failure.stderr, /same caller/);
+        const recoveryCommand = failure.stderr
+          .split("\n")
+          .map((line) => line.trim())
+          .find((line) => line.startsWith("occ "));
+        assert.ok(
+          recoveryCommand,
+          "the uncertain result must print an executable recovery command",
+        );
+        for (const expected of [
+          relayOrigin,
+          keyFile,
+          `--namespace ${namespace.id}`,
+          `agent recover-first-deployment ${agent.id}`,
+          `--key ${intent.key}`,
+          `--configuration ${intent.expectedConfigurationId}`,
+          `--generation ${intent.expectedGeneration}`,
+        ]) {
+          assert.ok(recoveryCommand.includes(expected), `recovery command must retain ${expected}`);
         }
-        outgoing.writeHead(response.status, { "content-type": "application/json" });
-        outgoing.end(body);
-      } catch (error) {
-        relayErrors.push(error);
-        outgoing.destroy();
+        // Execute exactly the printed command, including its quoted path with spaces.
+        const recovery = await execute("/bin/sh", ["-c", recoveryCommand], {
+          env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+        });
+        assert.deepEqual(relayErrors, []);
+        assert.deepEqual(recovered, committed);
+        assert.ok(recovery.stdout.includes(committed.revisionId));
+        assert.deepEqual(forwarded, [
+          { method: "POST", path: `${path}/deploy-first` },
+          {
+            method: "GET",
+            path: `${path}/deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+          },
+        ]);
+        assert.equal(work().length, 1);
+        assert.deepEqual(
+          await fixture.platformState.read((unit) =>
+            unit.revisions.listRevisionMetadata(namespace.id, agent.id),
+          ),
+          revisions,
+        );
+        assert.deepEqual(secretDriver.calls, calls);
+        assert.equal(providerCalls(), 0);
+        assert.deepEqual(fixture.auditSink.events, audit);
+        t.diagnostic(
+          JSON.stringify({
+            reply,
+            recovered: true,
+            posts: 1,
+            gets: 1,
+            revisions: revisions.length,
+            work: work().length,
+            deploymentAudits: deployments.length,
+          }),
+        );
+      } finally {
+        if (relay?.listening) {
+          await new Promise((resolve, reject) =>
+            relay.close((error) => (error ? reject(error) : resolve())),
+          );
+        }
+        await app.close();
       }
     });
-    relay.listen(0, "127.0.0.1");
-    await once(relay, "listening");
-    const relayOrigin = `http://127.0.0.1:${relay.address().port}`;
-    const args = [
-      "--url",
-      relayOrigin,
-      "--service-key-file",
-      keyFile,
-      "--ca-bundle",
-      "",
-      "--timeout-seconds",
-      "5",
-      "--namespace",
-      namespace.id,
-      "agent",
-      "deploy-first",
-      agent.id,
-      "--key",
-      intent.key,
-      "--configuration",
-      intent.expectedConfigurationId,
-      "--generation",
-      String(intent.expectedGeneration),
-    ];
-    let failure;
-    try {
-      await execute(cli, args);
-      assert.fail("The deliberately lost response must leave the CLI outcome uncertain");
-    } catch (error) {
-      failure = error;
-    }
-    assert.deepEqual(relayErrors, []);
-    assert.ok(committed, "the lost response must follow a real committed admission");
-    assert.equal(failure.code, 1);
-    assert.equal(failure.stdout, "");
-    assert.match(failure.stderr, /EOF/);
-    assert.deepEqual(
-      forwarded,
-      [{ method: "POST", path: `${path}/deploy-first` }],
-      "the CLI must not automatically replay an uncertain mutation",
-    );
-    const revisions = await fixture.platformState.read((unit) =>
-      unit.revisions.listRevisionMetadata(namespace.id, agent.id),
-    );
-    assert.equal(revisions.length, 1);
-    assert.equal(revisions[0].id, committed.revisionId);
-    assert.equal(work().length, 1);
-    const calls = structuredClone(secretDriver.calls);
-    const audit = structuredClone(fixture.auditSink.events);
-    const deployments = audit.filter(
-      (event) => event.action === "openclaw.agents.deploy" && event.outcome === "success",
-    );
-    assert.equal(deployments.length, 1);
-    assert.equal(deployments[0].actor.principalId, automation.id);
-    t.diagnostic(
-      JSON.stringify({
-        lostResponse: true,
-        posts: forwarded.length,
-        revisions: revisions.length,
-        work: work().length,
-        sender: providerCalls(),
-      }),
-    );
-    assert.match(failure.stderr, /same caller/);
-    const recoveryCommand = failure.stderr
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) => line.startsWith("occ "));
-    assert.ok(recoveryCommand, "the uncertain result must print an executable recovery command");
-    for (const expected of [
-      relayOrigin,
-      keyFile,
-      `--namespace ${namespace.id}`,
-      `agent recover-first-deployment ${agent.id}`,
-      `--key ${intent.key}`,
-      `--configuration ${intent.expectedConfigurationId}`,
-      `--generation ${intent.expectedGeneration}`,
-    ]) {
-      assert.ok(recoveryCommand.includes(expected), `recovery command must retain ${expected}`);
-    }
-    // Execute exactly the printed command, including its quoted path with spaces.
-    const recovery = await execute("/bin/sh", ["-c", recoveryCommand], {
-      env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
-    });
-    assert.deepEqual(relayErrors, []);
-    assert.deepEqual(recovered, committed);
-    assert.ok(recovery.stdout.includes(committed.revisionId));
-    assert.deepEqual(forwarded, [
-      { method: "POST", path: `${path}/deploy-first` },
-      {
-        method: "GET",
-        path: `${path}/deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
-      },
-    ]);
-    assert.equal(work().length, 1);
-    assert.deepEqual(
-      await fixture.platformState.read((unit) =>
-        unit.revisions.listRevisionMetadata(namespace.id, agent.id),
-      ),
-      revisions,
-    );
-    assert.deepEqual(secretDriver.calls, calls);
-    assert.equal(providerCalls(), 0);
-    assert.deepEqual(fixture.auditSink.events, audit);
-    t.diagnostic(
-      JSON.stringify({
-        recovered: true,
-        posts: 1,
-        gets: 1,
-        revisions: revisions.length,
-        work: work().length,
-        deploymentAudits: deployments.length,
-      }),
-    );
-  } finally {
-    if (relay?.listening) {
-      await new Promise((resolve, reject) =>
-        relay.close((error) => (error ? reject(error) : resolve())),
-      );
-    }
-    await app.close();
   }
 });
 

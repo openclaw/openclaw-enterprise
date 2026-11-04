@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -1018,6 +1019,10 @@ func (app *application) agentCommand() *cobra.Command {
 }
 
 func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error) {
+	var dial *net.OpError
+	if errors.As(err, &dial) && dial.Op == "dial" {
+		return
+	}
 	var apiErr *occclient.APIError
 	if errors.As(err, &apiErr) && apiErr.Status < http.StatusInternalServerError && apiErr.Status != http.StatusRequestTimeout {
 		return

@@ -274,10 +274,15 @@ then inspect current binding, Configuration, or deployment state. Existing histo
 requires a deliberate later deployment through ordinary `deploy`, not a blind retry.
 
 `internal/occcli/cli.go:application.firstDeploymentRecoveryNotice` preserves the
-original POST error and prints a read-only recovery command for transport or
-response-decoding failure, HTTP `408`, or `5xx`. The command retains the original
-request and connection options; the service-key file must still identify the
-original caller. The helper sends no request.
+original POST error and prints a read-only recovery command for an uncertain
+transport result, invalid receipt, HTTP `408`, or `5xx`. A typed network dial
+failure omits this hint. `internal/occclient/client.go:validateFirstDeploymentReceipt`
+validates the receipt's
+six fields and matches its Namespace, Agent, Configuration, and generation to the
+request for POST and non-null recovery GET replies. A null GET remains a receipt
+miss. The command retains the original request and connection options; the
+service-key file must still identify the original caller. The helper sends no
+request.
 
 ## Related
 

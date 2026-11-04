@@ -339,6 +339,21 @@ func resourceURL(baseURL *url.URL, segments []string) (*url.URL, error) {
 	return resource, nil
 }
 
+// connectionError keeps a definite dial failure distinguishable from a lost
+// reply while preserving the concise endpoint remedy shown to operators.
+type connectionError struct {
+	endpoint string
+	cause    *net.OpError
+}
+
+func (err *connectionError) Error() string {
+	return fmt.Sprintf("cannot connect to OCC at %s (%s). Check OCC_URL (or --url).", err.endpoint, dialCause(err.cause))
+}
+
+func (err *connectionError) Unwrap() error {
+	return err.cause
+}
+
 // transportError explains a request that got no HTTP answer. TLS verification
 // failures are matched on their types and get a plain cause and next step
 // instead of the raw x509 text; everything else keeps the cause.
@@ -363,7 +378,7 @@ func (client *Client) transportError(err error) error {
 	// Go request and dial text (finding D765).
 	var dial *net.OpError
 	if errors.As(err, &dial) && dial.Op == "dial" {
-		return fmt.Errorf("cannot connect to OCC at %s (%s). Check OCC_URL (or --url).", client.baseURL, dialCause(dial))
+		return &connectionError{endpoint: client.baseURL.String(), cause: dial}
 	}
 	return fmt.Errorf("OCC operation failed: %w", err)
 }

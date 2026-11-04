@@ -234,6 +234,8 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-11-04 08:08: Distinguish network dial failures and invalid receipts in CLI recovery hints. (authoring-run/8886e590-0aa5-4c8a-8665-2e58d1c639cc - 8c2a1e4a)
+
 - 2026-11-04 08:00: Trace deployment grant rechecks at credential use and refuse deleting Agents before fresh preparation while preserving receipt recovery; document uncertain-response CLI hints. (authoring-run/8886e590-0aa5-4c8a-8665-2e58d1c639cc - e3fe8b8f)
 
 - 2026-11-04 07:41: Trace guarded first admission and receipt recovery in the persistence chapter, including locked rechecks and verification boundaries. (authoring-run/06bc63c9-f110-4607-a058-a816a61dd579 - 6371064e)

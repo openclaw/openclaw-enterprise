@@ -98,12 +98,14 @@ occ --namespace NAMESPACE_ID agent recover-first-deployment AGENT_ID \
   --configuration CONFIGURATION_ID --generation 1 --key review-1
 ```
 
-If `deploy-first` loses or cannot read its reply, or receives HTTP `408` or `5xx`,
-the CLI keeps the original error and prints a read-only recovery command to stderr.
+If `deploy-first` loses its reply, receives an invalid or mismatched receipt, or
+receives HTTP `408` or `5xx`, the CLI keeps the original error and prints a
+read-only recovery command to stderr.
 It preserves the connection options and original request values; it sends no
 automatic request. Use the same caller: the printed service-key file path must
 still identify that caller. Completed `3xx` and other `4xx` responses omit this
-uncertainty hint; follow the reported refusal or redirect guidance.
+uncertainty hint; follow the reported refusal or redirect guidance. A definite
+network dial failure also omits the hint because no request reached the server.
 
 A matching receipt identifies the original Agent revision. Check that revision's
 deployment status as described above; a receipt proves admission, not workload

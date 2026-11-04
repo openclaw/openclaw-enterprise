@@ -1489,6 +1489,54 @@ func TestFirstDeploymentDoesNotFallBackOnOlderServer(t *testing.T) {
 	}
 }
 
+func TestFirstDeploymentRejectsUnusableReceipts(t *testing.T) {
+	configurationID := "cfg_55555555-5555-4555-8555-555555555555"
+	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
+		for _, tc := range []struct {
+			name, field string
+			value       any
+		}{
+			{"empty", "", nil},
+			{"revision ID", "revisionId", "unusable-private-receipt"},
+			{"timestamp", "createdAt", "2026-10-30T00:00:00Z"},
+			{"Namespace", "namespaceId", "ns_66666666-6666-4666-8666-666666666666"},
+			{"Agent", "agentId", "agt_66666666-6666-4666-8666-666666666666"},
+			{"Configuration", "configurationId", "cfg_66666666-6666-4666-8666-666666666666"},
+			{"generation", "configurationGeneration", 4},
+			{"additional field", "unexpected", "unusable-private-receipt"},
+		} {
+			t.Run(command+"/"+tc.name, func(t *testing.T) {
+				receipt := map[string]any{"revisionId": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "configurationId": configurationID, "configurationGeneration": 3, "createdAt": "2026-10-30T00:00:00.000Z"}
+				if tc.field == "" {
+					clear(receipt)
+				} else {
+					receipt[tc.field] = tc.value
+				}
+				calls := 0
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if command == "deploy-first" {
+						w.WriteHeader(http.StatusAccepted)
+					}
+					_ = json.MarshalWrite(w, map[string]any{"data": receipt, "meta": map[string]string{"requestId": "test"}})
+				})
+				out, notices, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "--output", "json", "agent", command, testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3")
+				// A readable envelope is not a receipt for the requested admission.
+				// Reject it without echoing payload values or inventing another request.
+				if err == nil || !strings.Contains(err.Error(), "invalid first-deployment receipt") || out != "" || calls != 1 {
+					t.Fatalf("error = %v, stdout = %q, requests = %d", err, out, calls)
+				}
+				if strings.Contains(err.Error()+notices, "unusable-private-receipt") {
+					t.Fatal("invalid receipt payload leaked")
+				}
+				if strings.Contains(notices, "agent recover-first-deployment") != (command == "deploy-first") {
+					t.Fatalf("unexpected recovery guidance: %s", notices)
+				}
+			})
+		}
+	}
+}
+
 func TestFirstDeploymentClientRejectsDotSegmentsBeforeRequest(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(404) }))
@@ -1637,7 +1685,7 @@ func TestFirstDeploymentCLICanonicalDecimal(t *testing.T) {
 					if command == "deploy-first" {
 						w.WriteHeader(http.StatusAccepted)
 					}
-					_, _ = w.Write([]byte(`{"data":{"revisionId":"` + testRevision1ID + `"},"meta":{"requestId":"test"}}`))
+					_, _ = w.Write([]byte(`{"data":{"revisionId":"` + testRevision1ID + `","namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","configurationId":"cfg_55555555-5555-4555-8555-555555555555","configurationGeneration":10,"createdAt":"2026-10-30T00:00:00.000Z"},"meta":{"requestId":"test"}}`))
 				})
 				_, _, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", command, testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", generation)
 				if generation == "10" {
