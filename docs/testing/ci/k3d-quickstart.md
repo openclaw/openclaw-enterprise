@@ -1,3 +1,7 @@
+---
+kind: reference/ci
+---
+
 # Check the local k3d quickstart
 
 ## Overview
@@ -6,7 +10,9 @@ Exercise the quickstart through browser onboarding, Linear, and Git on one Agent
 in a fresh local installation. This workflow uses real model and integration
 credentials.
 
-## When it runs
+<a id="when-it-runs"></a>
+
+## Trigger
 
 Dispatch manually from protected `main`. The workflow also accepts pushes to its
 named development branch only by the configured author and when the commit
@@ -27,7 +33,9 @@ and redeployment. Setup executes the quickstart's published shell examples.
 | Reopen the original Control UI conversation after redeployment.                          | The same Agent and conversation recall the saved preference on the final read-only revision.                                                              | [Recall stage](../../../scripts/ci/k3d-quickstart/browser-recall.sh) and [browser checks](../../../scripts/ci/k3d-quickstart/browser.mjs). |
 | Retire Git credentials, remove the test branch, and delete the Agent and installation.   | Credential custody is retired, the verified run-owned branch is absent, the Agent returns 404, and its local cluster and state are removed.               | [Git cleanup](../../../scripts/ci/k3d-quickstart/git-cleanup.sh) and [teardown](../../../scripts/ci/k3d-quickstart/teardown.sh).           |
 
-## Run it
+<a id="run-it"></a>
+
+## Execution
 
 Configure these inputs at the **repository** level:
 

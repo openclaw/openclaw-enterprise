@@ -1,3 +1,7 @@
+---
+kind: reference/ci
+---
+
 # Full Integration
 
 ## Overview
@@ -6,7 +10,9 @@ Run selected integration lanes against their required databases, containers,
 clusters, and provider services. The workflow collects the selected results in
 `Full Integration Aggregate`; it is separate from the pull-request merge gate.
 
-## When it runs
+<a id="when-it-runs"></a>
+
+## Trigger
 
 Manual dispatch only. Select one supported `lane` or `all`.
 A scheduled advisory run does not run the Full Integration workflow.
@@ -40,7 +46,9 @@ repository. [Manually prepared lanes](run-lanes.md#manually-selected-lanes-witho
 remain excluded. QA's default `all` also excludes its four
 [explicit scenario selectors](qa-advisory.md#select-scenarios).
 
-## Run it
+<a id="run-it"></a>
+
+## Execution
 
 ### Run a protected integration lane
 

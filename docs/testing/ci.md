@@ -67,7 +67,7 @@ results. For triggers and failure consequences across workflows, use the
 <a id="run-a-protected-integration-lane"></a>
 <a id="run-the-hosted-local-installation-lane"></a>
 
-- [Dispatch Full Integration](ci/full-integration.md#run-it): select a hosted lane
+- [Dispatch Full Integration](ci/full-integration.md#execution): select a hosted lane
   or run the local installation rehearsal.
 - [Document a CI check](../contributing/ci-check-template.md): use the shared
   template when changing coverage documentation.

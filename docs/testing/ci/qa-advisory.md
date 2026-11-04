@@ -1,3 +1,7 @@
+---
+kind: reference/ci
+---
+
 # QA Matrix Advisory
 
 ## Overview
@@ -7,7 +11,9 @@ on disposable Compose and Kubernetes installations. It also runs the OpenShell
 lane and, for selected triggers, the hosted local installation tests. Its
 results are advisory; they do not block merge or publication.
 
-## When it runs
+<a id="when-it-runs"></a>
+
+## Trigger
 
 When `QA_ADVISORY_ON_PUSH=true`, each push to `main` runs the marked Codex scenarios
 on Compose and Kubernetes, and the complete OpenShell lane. Each push has its own concurrency group so a later
@@ -121,7 +127,9 @@ for the OpenShell browser setting and sandbox checks.
 
 Codex timeout diagnostics from `tests/helpers/openshell-kubernetes-real.mjs` report the client phase, pending method names, message and command counts, and whether an action started. They exclude prompts, request identifiers, and payloads. A timeout does not permit a retry. The client must first report that the model was at capacity and that the turn had not started any action.
 
-## Run it
+<a id="run-it"></a>
+
+## Execution
 
 ### Select scenarios
 
@@ -196,7 +204,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 ```
 
 `TEST_ENV_FILE` is the private environment file described above. For a hosted run,
-use the trusted-PR labels described under [When it runs](#when-it-runs), or dispatch
+use the trusted-PR labels described under [Trigger](#trigger), or dispatch
 `qa-advisory.yml` from `main` after configuring the required environment.
 
 ## Results and limits

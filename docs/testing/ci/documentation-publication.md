@@ -1,3 +1,7 @@
+---
+kind: reference/ci
+---
+
 # Publish private documentation
 
 ## Overview
@@ -6,7 +10,9 @@ This workflow validates published OpenAPI examples, builds documentation and its
 search index, and deploys `dist/docs/` to private GitHub Pages. It is a publication
 workflow, not a product test suite.
 
-## When it runs
+<a id="when-it-runs"></a>
+
+## Trigger
 
 Every push to `main` starts the workflow. Manual dispatch is also available, but
 the deployment job runs only on `refs/heads/main`. The `github-pages` environment
@@ -26,7 +32,9 @@ These are validation and publication stages rather than runtime test scenarios.
 | Build the Markdown site and Pagefind index.                              | Navigation and local links resolve; rendered pages and search assets are produced in `dist/docs/`. | [Site builder](../../../scripts/docs-site/build.mjs) and [`docs:build`](../../../package.json).               |
 | Upload the site artifact and deploy through the Pages action.            | The deployment step reports a site URL for the uploaded build.                                     | [Publication workflow](../../../.github/workflows/docs-pages.yml).                                            |
 
-## Run it
+<a id="run-it"></a>
+
+## Execution
 
 Before enabling publication, follow the
 [private Pages setup](../../local-preview.md#publish-privately-with-github-pages).

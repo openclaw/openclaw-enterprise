@@ -1,3 +1,7 @@
+---
+kind: reference/ci
+---
+
 # Observability Demo
 
 ## Overview
@@ -6,7 +10,9 @@ Use Demo Observability Smoke to check the disposable monitoring chart and the
 Grafana views backed by fixture metrics and OpenTelemetry Protocol (OTLP) logs.
 The lane installs a real Kubernetes monitoring stack; its telemetry is test data.
 
-## When it runs
+<a id="when-it-runs"></a>
+
+## Trigger
 
 The workflow runs on pull requests and `main` pushes that match its path filters,
 plus merge groups and manual dispatch. Filters cover the demo chart, its tests
@@ -23,7 +29,9 @@ Full Integration also selects this lane when `all` is requested.
 | Install the demo in k3d and send fixture telemetry.                                      | Grafana's Prometheus connection returns fixture metrics; dashboards exist and log queries return expected events. | [Kubernetes test](../../../tests/integration/observability-demo-k3d.test.mjs). |
 | Open the dashboard in Chromium, inspect log details, and apply a worker filter.          | Navigation and displayed log records match the expected queries; screenshots record the rendered views.           | [Kubernetes test](../../../tests/integration/observability-demo-k3d.test.mjs). |
 
-## Run it
+<a id="run-it"></a>
+
+## Execution
 
 For a hosted run, dispatch from the Actions page or the repository root:
 

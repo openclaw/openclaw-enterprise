@@ -120,8 +120,15 @@ page. When updating an existing page, preserve its links and heading anchors.
 
 | Kind                    | Use it for                                                                    | Template                                                            |
 | ----------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `reference/ci`          | One CI check's triggers, scenarios, execution, and result limits              | [CI check Markdown](./assets/reference-ci.md)                       |
 | `reference/driver`      | The shared contract for one Driver capability                                 | [Driver contract Markdown](./assets/reference-driver.md)            |
 | `reference/driver/impl` | One Driver implementation's provisioning, configuration, and operating limits | [Driver implementation Markdown](./assets/reference-driver-impl.md) |
+
+For a CI check detail page, use `kind: reference/ci` and keep the template's six
+sections in order: Overview, Trigger, Scenarios, Execution, Results and limits,
+and Files. Follow the [CI authoring guidance](../../../docs/contributing/ci-check-template.md)
+for scenario descriptions, descriptive names, and exact GitHub job mappings.
+Keep shared setup in its owning guide and preserve existing heading anchors.
 
 For a Driver contract, keep the template's sections in order and use the
 [Driver authoring guidance](./references/driver-contracts.md) to check coverage.

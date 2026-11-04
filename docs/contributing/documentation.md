@@ -48,7 +48,8 @@ one owner for a contract or procedure and link to it instead of copying it. The
 [technical-writing skill](../../.agents/skills/technical-writing/SKILL.md) has
 page patterns and a required plain-language pass. Use the [base Driver template](../base-driver-docs-template.md)
 for a Driver contract; implementation-specific setup belongs in Integrations.
-Use the [CI check template](ci-check-template.md) for workflow coverage pages.
+Use the [CI check template](ci-check-template.md) with `kind: reference/ci` for
+workflow coverage pages.
 
 The published site omits document `Changelog` sections and empty `Manual Notes`.
 Keep those records in the Markdown source; real notes still appear on the site.

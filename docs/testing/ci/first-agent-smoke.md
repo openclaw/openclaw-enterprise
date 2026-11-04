@@ -1,3 +1,7 @@
+---
+kind: reference/ci
+---
+
 # First Agent Smoke
 
 ## Overview
@@ -7,7 +11,9 @@ and exercises embedded OpenClaw and dedicated Codex Agents. It uses a simulated
 model provider, so it tests deployment, chat, logs, and stop/start without proving access to a
 real model service.
 
-## When it runs
+<a id="when-it-runs"></a>
+
+## Trigger
 
 This is a job in the CI workflow, selected when CI Impact chooses `full` mode.
 Documentation-only and recognized test-only changes skip it. CI also runs on
@@ -30,7 +36,9 @@ it does not use a suite manifest.
 | Withdraw public Git reader access and deploy a revision without that access.       | The old workload and policy are removed and open connections close. The retired revision and the successor without reader access make no further reads; the control Agent retains access. | Smoke script: `proveRetirement`.                                                     |
 | Stop and start both Agents, then chat again.                                       | Stopped Pods terminate, starting the Agents creates new revisions, and both chat turns succeed.                                                                                           | Smoke script: `stopAgent`, `deployAgent`, and `chatTurn`.                            |
 
-## Run it
+<a id="run-it"></a>
+
+## Execution
 
 Use the CI job on a code/configuration change for a hosted run. For local
 reproduction, use a disposable host with the workflow's Docker, Kubernetes,

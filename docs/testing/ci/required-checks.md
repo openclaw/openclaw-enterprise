@@ -1,3 +1,7 @@
+---
+kind: reference/ci
+---
+
 # CI required checks
 
 ## Overview
@@ -6,7 +10,9 @@ Use CI to check a pull request's source, packaging, persistence, and supported
 component workflows. `CI Required` is the merge gate. Its successful conclusion
 covers the lanes selected for that change, not every registered integration.
 
-## When it runs
+<a id="when-it-runs"></a>
+
+## Trigger
 
 The workflow runs on pull requests, pushes to `main`, merge groups, and manual
 dispatch. Documentation-only changes run static checks. Recognized test-only
@@ -42,7 +48,9 @@ workspace, lint, format, OpenAPI and docs checks. Affected Packages reports impa
 [native image workflow](../../../.github/workflows/container-check.yml). The [CI flow](../../flows/github-actions-testing.md)
 explains these jobs; the PR-controlled workflow is not independent trusted enforcement.
 
-## Run it
+<a id="run-it"></a>
+
+## Execution
 
 Open or update a pull request for automatic selection. For local reproduction,
 use the linked suite guide and exact manifest in the table; prerequisites differ

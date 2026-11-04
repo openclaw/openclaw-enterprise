@@ -1,6 +1,6 @@
 # Document a CI check
 
-Use this template for pages under `docs/testing/ci/`. Each page explains one
+Use the `reference/ci` template for CI check detail pages under `docs/testing/ci/`. Each page explains one
 check from the [CI overview](../testing/ci.md#checks-and-gates): what it verifies,
 when its result applies, how to run it, and how to interpret the evidence.
 
@@ -9,55 +9,21 @@ when its result applies, how to run it, and how to interpret the evidence.
 | Section            | Reader's question                                       | Include                                                                                                                                |
 | ------------------ | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | Overview           | What does this check prove?                             | Purpose, system under test, and whether dependencies are real, simulated, or mixed.                                                    |
-| When it runs       | Will my change run it, and does failure block anything? | Events, path filters, labels, skip conditions, and merge/publication consequences. Link exact workflow policy.                         |
+| Trigger            | Will my change run it, and does failure block anything? | Events, path filters, labels, skip conditions, and merge/publication consequences. Link exact workflow policy.                         |
 | Scenarios          | What action produces which observable result?           | Setup/action, expected outcome, and source link. Include meaningful failure and authorization cases; group similar cases.              |
-| Run it             | How do I reproduce this coverage?                       | One recommended command, prerequisites, credentials/environment links, selection rules, and required isolation.                        |
+| Execution          | How do I reproduce this coverage?                       | One recommended command, prerequisites, credentials/environment links, selection rules, and required isolation.                        |
 | Results and limits | What counts as a pass, and what remains unproved?       | Job/artifact names, skip semantics, scope, cleanup/recovery, and limits such as simulated model responses.                             |
 | Files              | Where is the source of truth?                           | Workflow, exact manifest, test files, important helpers, and implementation entry points. State when no manifest or test suite exists. |
 
 ## Copy the template
 
-Replace each instruction with source-backed content. The fenced example is an
+Replace each instruction with source-backed content. The template is an
 authoring outline, not a runnable command or a page to publish unchanged.
 
-```markdown
-# Check name
-
-## Overview
-
-Describe the reader's reason to use the check and the boundary it verifies.
-Identify real and simulated dependencies.
-
-## When it runs
-
-State the workflow events and selection/skip rules. Explain what a failure
-blocks. Link the workflow for the exact policy.
-
-## Scenarios
-
-| Setup and action                       | Expected outcome              | Test source                       |
-| -------------------------------------- | ----------------------------- | --------------------------------- |
-| Describe the initial state and action. | Name an observable assertion. | Link the owning test or manifest. |
-
-## Run it
-
-Link prerequisites, permissions, credentials, and disposable-resource setup.
-Show the recommended command and how to select this coverage. Keep required
-cleanup beside the command or link directly to its owning procedure.
-
-## Results and limits
-
-Name the job and artifacts to inspect. Explain missing/skipped/partial results,
-what success does not prove, and where to recover from failure. Do not report
-an unexecuted scenario as passed.
-
-## Files
-
-- Workflow: link to the Actions YAML and describe its role.
-- Manifest: link exact selection, inputs, and expected-case inventory.
-- Tests: link scenario assertions.
-- Helpers/implementation: link only files needed to trace the behavior.
-```
+Copy the [reference/ci template](../../.agents/skills/technical-writing/assets/reference-ci.md),
+including `kind: reference/ci` in YAML frontmatter. Keep its six sections in
+order. Shared configuration and lane-execution guides do not describe individual
+checks and do not use this template.
 
 ## Name the behavior being tested
 

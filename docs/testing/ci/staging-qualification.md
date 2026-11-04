@@ -1,3 +1,7 @@
+---
+kind: reference/ci
+---
+
 # Qualify a published release for staging
 
 ## Overview
@@ -6,7 +10,9 @@ Check published controller and runtime images with trusted startup tests before
 considering a staging installation. This workflow qualifies container startup on
 amd64; it does not install or promote a release.
 
-## When it runs
+<a id="when-it-runs"></a>
+
+## Trigger
 
 Manual dispatch from protected `main` in `openclaw/openclaw-enterprise`. Runs for
 the same configured installation share a concurrency group. The workflow is not
@@ -63,7 +69,9 @@ pull receipt records the historical image source separately. No historical host
 code is built or executed. Historical images receive only the existing isolated
 fixture mounts, not the runner workspace, Docker socket, or Actions credentials.
 
-## Run it
+<a id="run-it"></a>
+
+## Execution
 
 Run [Staging Release Qualification](../../../.github/workflows/staging-qualification.yml)
 with the trusted `main` workflow. Supply `installation`, the full `source_sha`,
