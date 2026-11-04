@@ -24,7 +24,6 @@ export async function retirePreparedGitHubToken(
     const response = await createProviderTransport(apiOrigin, ca, clock, a.grant).revoke(
       Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),
       attempt,
-      () => {},
     );
     response.body.fill(0);
     return response.status === 204;

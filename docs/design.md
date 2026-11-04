@@ -4,7 +4,7 @@ authors:
   - Kevin Lin
 created: 2026-07-08
 last_updated: 2026-10-26
-human_verified: true
+tags: [human_verified]
 ---
 
 # OpenClaw Enterprise architecture

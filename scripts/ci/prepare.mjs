@@ -22,7 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
-import { withStateLock } from "./state-lock.mjs";
+import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
 import {
   ANSI_COLOR,
@@ -32,10 +32,11 @@ import {
 } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
-import { ownedName, randomSuffix, slug } from "./resource-names.mjs";
-import { pullImage } from "./image-pull.mjs";
+import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
+import { ownedName, randomSuffix, slug } from "./resource-names.ts";
+import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
-import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
+import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -153,12 +154,18 @@ function progress(lane, message) {
 
 async function timedPreparation(lane, phase, operation) {
   const started = performance.now();
+  let succeeded = false;
   try {
-    return await operation();
+    const result = await operation();
+    succeeded = true;
+    return result;
   } finally {
     const elapsedMs = Math.round(performance.now() - started);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
+    if (lane === "logging-collector" && phase === "image-pulls") {
+      await recordLoggingSetupTiming("image-pulls", succeeded ? "success" : "failure", elapsedMs);
+    }
     if (
       process.env.OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY === "1" &&
       process.env.GITHUB_STEP_SUMMARY &&
@@ -835,6 +842,18 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   }
   assertImmutableEnvImages(prepare.immutableEnvImages ?? [], effectiveEnv);
   assertImmutableOptionalEnvImages(prepare.immutableOptionalEnvImages ?? [], effectiveEnv);
+  const runtimeImageInputs = [
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+  ];
+  if (
+    runtimeImageInputs.every((input) => prepare.immutableOptionalEnvImages?.includes(input)) &&
+    runtimeImageInputs.filter((input) => effectiveEnv[input]).length === 1
+  ) {
+    throw new Error(
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together; omit both to build the runtime images.",
+    );
+  }
   if (prepare.mode0600Env) {
     await requirePathMode0600(
       effectiveEnv[prepare.mode0600Env],
@@ -2538,7 +2557,8 @@ async function prepareNativeWorkspaceEnvoyImage(state, env) {
   env.OCC_TEST_WORKSPACE_ENVOY_IMAGE = image;
 }
 
-export async function prepareRuntimeImageSmoke({ image, statePath }) {
+/** @param {{ image: string, statePath: string, codexVersion?: string }} options */
+export async function prepareRuntimeImageSmoke({ image, statePath, codexVersion }) {
   assertDockerImageId(image, "Runtime smoke image");
   const path = normalizeStatePath(statePath);
   if (await readState(path)) {
@@ -2547,6 +2567,9 @@ export async function prepareRuntimeImageSmoke({ image, statePath }) {
   const state = baseState("images-packaging", path);
   const tag = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/runtime-smoke:local`;
   const env = { ...baseEnv(path, state), OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag };
+  if (codexVersion !== undefined) {
+    env.OCC_TEST_KUBERNETES_CODEX_VERSION = codexVersion;
+  }
   const resource = addResource(state, "image-tag", { name: tag });
   await writeState(path, state);
   try {
@@ -2659,6 +2682,12 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
 async function prepareLane({ lane, statePath, file }) {
   const name = assertLane(lane);
   const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
+  if (
+    relativeFile !== undefined &&
+    !laneDefinition(name).files.some((entry) => entry.path === relativeFile)
+  ) {
+    throw new Error("Selected file must belong to the lane manifest.");
+  }
   await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
@@ -2668,6 +2697,7 @@ async function prepareLane({ lane, statePath, file }) {
     );
   }
   const state = baseState(name, resolvedStatePath);
+  state.selectedFile = relativeFile;
   const env = baseEnv(resolvedStatePath, state);
   await writeState(resolvedStatePath, state);
 
@@ -3059,6 +3089,11 @@ async function prepareLane({ lane, statePath, file }) {
       await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: true });
       break;
     case "openshell": {
+      // These files exercise the installer in their own Local Setup. Preparing a
+      // second stack here builds the same images and installs unused services.
+      if (lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
+        break;
+      }
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
@@ -3098,8 +3133,16 @@ async function prepareLane({ lane, statePath, file }) {
       // The tests start these containers themselves under 60–120 s command
       // timeout, so pull the pinned images here, where a slow or failed pull
       // is retried. An unpinned local override is still pulled by the test.
+      let collectorImage;
+      try {
+        collectorImage = await readDefaultCollectorImage();
+      } catch (error) {
+        // The prepare step fails before the image pulls start.
+        await recordLoggingSetupTiming("image-pulls", "skipped");
+        throw error;
+      }
       const images = {
-        OCC_TEST_LOGGING_COLLECTOR_IMAGE: await readDefaultCollectorImage(),
+        OCC_TEST_LOGGING_COLLECTOR_IMAGE: collectorImage,
         OCC_TEST_LOGGING_NODE_IMAGE: effectiveLaneEnv(name, env).OCC_TEST_LOGGING_NODE_IMAGE,
         ...metricsMonitoringImages,
       };
@@ -3119,7 +3162,7 @@ async function prepareLane({ lane, statePath, file }) {
     }
     case "qa-matrix":
       // On a hosted runner, record the starting images so cleanup can return the
-      // shared image store to them (lane-images.mjs, finding 1345). A workstation's
+      // shared image store to them (lane-images.ts, finding 1345). A workstation's
       // launcher tags are the developer's own and stay as the run leaves them. A
       // failed inventory only skips that: the QA run itself does not need it.
       if (process.env.GITHUB_ACTIONS === "true") {
@@ -3213,6 +3256,9 @@ async function prepareFile({ lane, file, statePath, template }) {
 async function prepareFileWithState({ name, relativeFile, resolvedStatePath, template }) {
   const state = await readState(resolvedStatePath);
   const prepare = lanePrepare(name);
+  if (state?.selectedFile !== undefined && state.selectedFile !== relativeFile) {
+    throw new Error("Selected file must match the prepared lane state.");
+  }
   if (!state && prepare.requiresPreparedStateForFile) {
     throw new Error(
       `prepareFile for ${name} requires a prior prepareLane call using the same state path.`,
@@ -3262,7 +3308,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     return { env: { ...env, ...prepared.env }, cleanup: prepared.cleanup };
   }
 
-  if (prepare.postgres) {
+  if (prepare.postgres && !prepare.selfProvisionedFiles?.includes(relativeFile)) {
     const dbKind = prepare.k3d ? "k8s" : "ci";
     const database = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
       kind: dbKind,
@@ -3433,7 +3479,7 @@ async function main() {
   }
   const result = args.file
     ? await prepareFile({ lane: args.lane, file: args.file, statePath: args.state })
-    : await prepareLane({ lane: args.lane, statePath: args.state });
+    : await prepareLane({ lane: args.lane, statePath: args.state, file: args["selected-file"] });
   await appendGithubEnv(args["github-env"] ?? process.env.GITHUB_ENV, result.env);
   process.stdout.write(
     `${JSON.stringify({ envNames: Object.keys(result.env).sort() }, null, 2)}\n`,

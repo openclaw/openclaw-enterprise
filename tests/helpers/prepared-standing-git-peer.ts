@@ -1,5 +1,5 @@
+import { selectBundledRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -216,8 +216,7 @@ export async function preparedStandingGitPeer(
       ca: tls.ca,
       startWorker: false,
       ...(options.driver && {
-        protectedGitDriver: options.driver,
-        protectedGitEvidence: openShellGitRecipientEvidence,
+        repositoryGitCustody: selectBundledRepositoryGitCustody(options.driver),
       }),
     },
     options.ownerClock,

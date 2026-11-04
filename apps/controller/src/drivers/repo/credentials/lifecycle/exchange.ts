@@ -14,7 +14,6 @@ export interface ExecutingExchange {
     owned?: Readonly<{
       lifecycle: LifecycleOwner;
       driver: RepositoryBackend;
-      authorizeStanding?: () => Promise<void>;
     }>;
     prepared?: PreparedRepositoryBackend;
   }>;
@@ -52,7 +51,6 @@ export async function executeExchange(
   let senderFinished = false;
   let dispatchAttempted = false;
   let dispatchClosed = false;
-  let dispatchWork: Promise<unknown> | undefined;
   const failure = (): ExchangeOutcome =>
     Object.freeze({
       kind: exchange.dispatched ? "possibly-dispatched" : "not-dispatched",
@@ -70,34 +68,23 @@ export async function executeExchange(
             throw new Error("DISPATCH_CLOSED");
           }
           dispatchAttempted = true;
-          const commit = () => {
-            if (
-              dispatchClosed ||
-              exchange.dispatched ||
-              exchange.finished ||
-              signal.aborted ||
-              senderFinished
-            ) {
-              throw new Error("DISPATCH_CLOSED");
-            }
-            if (owner.clock.monotonicNow() >= exchange.deadline) {
-              throw new Error("DISPATCH_EXPIRED");
-            }
-            assertReady?.();
-            assertSendStart();
-            exchange.cancellations.add(stop);
-            exchange.dispatched = true;
-            return open();
-          };
-          if (!owned?.authorizeStanding) {
-            return commit();
+          if (
+            dispatchClosed ||
+            exchange.dispatched ||
+            exchange.finished ||
+            signal.aborted ||
+            senderFinished
+          ) {
+            throw new Error("DISPATCH_CLOSED");
           }
-          const decision = Promise.resolve()
-            .then(() => owned.authorizeStanding!())
-            .then(commit);
-          dispatchWork = decision;
-          void decision.catch(() => {});
-          return decision;
+          if (owner.clock.monotonicNow() >= exchange.deadline) {
+            throw new Error("DISPATCH_EXPIRED");
+          }
+          assertReady?.();
+          assertSendStart();
+          exchange.cancellations.add(stop);
+          exchange.dispatched = true;
+          return open();
         },
         track(io: Promise<void>) {
           if (!acceptingIO || exchange.finished || exchange.io.size >= 16) {
@@ -149,9 +136,6 @@ export async function executeExchange(
       } else {
         record = await owned!.lifecycle.acquire(exchange.deadline, signal);
         const lease = record;
-        // A token may still be valid at the provider after approval was removed or the
-        // execution stopped. Recheck here even when acquisition used a cached token.
-        await owned!.authorizeStanding?.();
         assertSendStart = () => owned!.lifecycle.assertUse(lease, exchange.deadline);
         assertSendStart();
         const authenticate = owned!.driver.prepareAuthentication(lease.ref, plan);
@@ -175,7 +159,6 @@ export async function executeExchange(
         );
       }
       const sent = await senderWork;
-      await dispatchWork;
       if (!senderEntered || outcome !== sent) {
         return failure();
       }

@@ -14,26 +14,20 @@ const k3dDirectImportAttempts = 3
 
 const k3dImportOutputLimit = 64 << 10
 
-// resolveDevelopmentImageSource returns a reference that names one complete
-// image. Docker's containerd image store (Docker 29) cannot usefully save a
-// manifest-list reference: `image save --platform` refuses it whenever the
-// platform child's blobs are not fully local, and a plain save writes an
-// archive whose index names child manifests the archive does not carry, which
-// the node's ctr import then rejects. When the registry's manifest list names
-// a child for the inspected platform, return that child's digest reference;
-// its content is already in the local store once the list was pulled, and is
-// pulled when it is not. Images without a digest, listings without a matching
-// child, and a child pull that fails keep the original reference, so an
-// export that worked before keeps working.
-func (r *runner) resolveDevelopmentImageSource(ctx context.Context, source, platform string) (string, error) {
+// stageDevelopmentPlatformChild reports whether it retagged the image for export.
+// Docker's containerd store can save an incomplete archive for a manifest list,
+// or refuse a platform-filtered save when the child blobs are missing. Tagging
+// the platform child directly lets the importer save one complete image.
+// If the child is unavailable, the caller can still export the original source.
+func (r *runner) stageDevelopmentPlatformChild(ctx context.Context, source, platform, stagingTag string) (bool, error) {
 	if !strings.Contains(source, "@") {
-		return source, nil
+		return false, nil
 	}
 	child, err := r.developmentPlatformChild(ctx, source, platform)
 	if err != nil || child == "" {
 		// A locally selected candidate image has no registry listing, and its
 		// reference already names one image.
-		return source, nil
+		return false, nil
 	}
 	name, _, _ := strings.Cut(source, "@")
 	resolved := name + "@" + child
@@ -42,10 +36,16 @@ func (r *runner) resolveDevelopmentImageSource(ctx context.Context, source, plat
 			// The cached source can still export on stores that keep it
 			// complete, so a failed child pull must not abort the import.
 			fmt.Fprintf(r.opts.Out, "Could not pull the platform child of %s; saving the pinned reference instead.\n", name)
-			return source, nil
+			return false, nil
 		}
 	}
-	return resolved, nil
+	if resolved == source {
+		return false, nil
+	}
+	if err := r.run(ctx, r.engine, "tag", resolved, stagingTag); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // developmentPlatformChild names the manifest-list child the registry serves

@@ -43,7 +43,9 @@ an optional array of nonblank scope strings `scopes` (`400 INVALID_REQUEST`, set
 deployment refuses a stored one with the same text before it stops a running revision,
 and the Console Agent page holds **Deploy** with that text.
 `trustedProxy.allowLoopback` must be omitted or false; local verification uses the
-separate password.
+separate password. A Dedicated Codex Gateway that applies its workspace node at
+runtime signs in with that password, so save and deployment refuse such an Agent's
+Configuration without it ([Compute admission](../compute-admission.md#kubernetes-compute)).
 
 ```json
 {

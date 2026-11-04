@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
+import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.ts";
 
 export const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 

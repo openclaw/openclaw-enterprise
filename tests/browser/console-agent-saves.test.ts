@@ -806,7 +806,7 @@ test("the Credentials and Repositories tabs are one card each with a heading gap
     await card.evaluate((node) => {
       const picker = node.querySelector<HTMLElement>(":scope > .repository-selection")!;
       const style = getComputedStyle(picker);
-      const last = picker.querySelector(".repository-access-details")!.getBoundingClientRect();
+      const last = picker.querySelector('[role="status"]')!.getBoundingClientRect();
       const box = node.getBoundingClientRect();
       return {
         border: style.borderTopWidth,
@@ -1002,6 +1002,7 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
   );
   const page = await openTab(t, fixture, namespace, agent, "repositories");
   await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
+  assert.equal(await page.locator(".repository-access-details").count(), 0);
   const save = page.getByRole("button", { name: "Save repository access" });
   const cancel = page.getByRole("button", { name: "Cancel", exact: true });
   const place = await watchPlace(page, fixture, save);
