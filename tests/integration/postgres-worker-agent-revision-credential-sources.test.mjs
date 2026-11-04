@@ -49,7 +49,7 @@ after(cleanup);
 
 // Selects a paired Sandbox and Credential Gateway so the worker admits credential-source
 // revisions. Compute stands in for the gateway calls; these doubles only identify the pair.
-function withCredentialGateway(drivers) {
+function withCredentialGateway(drivers, { attachForRevision } = {}) {
   const sandboxDriver = {
     id: "sandbox-worker-fixture",
     capability: "sandbox",
@@ -83,8 +83,8 @@ function withCredentialGateway(drivers) {
       return { state: "ready" };
     },
     async removeSource() {},
-    async attachForRevision() {
-      return [];
+    async attachForRevision(context) {
+      return attachForRevision === undefined ? [] : attachForRevision(context);
     },
     async attachmentStatus() {
       return [];
@@ -2023,6 +2023,95 @@ revisionTest(
     const read = await withdrawal.read(fixture.actor.id);
     assert.equal(read.revisionId, first.id);
     assert.equal(read.state, "revoked");
+  },
+);
+
+revisionTest(
+  "a recovered worker reattaches an authorized model source and refuses it after withdrawal",
+  async (fixture) => {
+    const { owner, candidate: first } = await admitInitialRevisionWithHarnessSource(
+      fixture,
+      "recovered-model-attach",
+    );
+    const sourceId = owner.harnessAuth.sourceId;
+    const attached = [];
+    const prepared = [];
+    let gateway;
+    const compute = {
+      ...fixture.compute,
+      async prepareRevision(revision, revisionContext) {
+        if (revision.namespaceId === fixture.namespace.id) {
+          prepared.push(revision.id);
+          const auth = revisionContext.harnessAuth;
+          if (auth?.method === "credential_source") {
+            await gateway.attachForRevision({
+              revision,
+              namespace: fixture.namespace,
+              sources: [auth.source],
+              signal: undefined,
+            });
+          }
+        }
+        return fixture.compute.prepareRevision(revision, revisionContext);
+      },
+      async withdrawCredentialSource(_revision, source) {
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const transformDrivers = (drivers) => {
+      const transformed = withCredentialGateway(drivers, {
+        attachForRevision: async (context) => {
+          attached.push([context.revision.id, ...context.sources.map(({ id }) => id)]);
+          return context.sources.map(({ id }) => ({ sourceId: id, state: "ready" }));
+        },
+      });
+      gateway = transformed.credentialGatewayDriver;
+      return transformed;
+    };
+
+    await fixture.start(compute, { transformDrivers });
+    await fixture.work(first, "succeeded");
+    assert.deepEqual(attached, [[first.id, sourceId]]);
+    assert.deepEqual(prepared, [first.id]);
+
+    // Recovery: the stored Harness source is resolved again by the replacement worker and
+    // attached for the next deployment, which cannot prepare without it.
+    await fixture.stop();
+    const second = await fixture.revision(owner, 2);
+    await fixture.start(compute, { transformDrivers });
+    await fixture.work(second, "succeeded");
+    assert.deepEqual(attached, [
+      [first.id, sourceId],
+      [second.id, sourceId],
+    ]);
+    assert.deepEqual(prepared, [first.id, second.id]);
+
+    // After withdrawal, the same recovery path must refuse before preparation and attachment.
+    await fixture.stop();
+    const withdrawal = await requestWithdrawal(fixture, owner, sourceId, fixture.actor.id);
+    const third = await fixture.revision(owner, 3);
+    await fixture.start(compute, { transformDrivers });
+    await fixture.work(third, "failed_permanent", 30_000);
+    await fixture.stop();
+
+    assert.equal((await fixture.workResult(third)).rows[0].reason_code, "CREDENTIAL_WITHDRAWN");
+    assert.deepEqual(prepared, [first.id, second.id]);
+    assert.deepEqual(attached, [
+      [first.id, sourceId],
+      [second.id, sourceId],
+    ]);
+    assert.deepEqual(
+      (await fixture.deploymentStatus(owner, third)).error.code,
+      "CREDENTIAL_WITHDRAWN",
+    );
+    await waitFor(
+      "the withdrawn model source to be revoked",
+      async () => {
+        const read = await withdrawal.read(fixture.actor.id);
+        return read.state === "revoked" ? read : undefined;
+      },
+      30_000,
+    );
   },
 );
 
