@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { describe, it as test } from "node:test";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
@@ -467,9 +467,10 @@ describe("repository credential router", { concurrency: true }, () => {
     const material = await nativeMaterial(t, ["project", selected]);
     const work = await temporaryDirectory(t);
     await git(["init", work]);
-    // A repository may install a symlink to the managed wrapper as its own hook.
-    // Delegation must fail promptly, preserving the caller's refs and process lifetime.
-    await symlink(join(material.hooks, "pre-push"), join(work, ".git/hooks/pre-push"));
+    // A repository may chain relative symlinks back to the managed wrapper.
+    // The wrapper must reach the recursion guard, not resolve imports from .git.
+    await symlink(relative(work, join(material.hooks, "pre-push")), join(work, "managed-hook"));
+    await symlink("../../managed-hook", join(work, ".git/hooks/pre-push"));
     const inputFile = join(work, "push-input");
     await writeFile(inputFile, pushLine("refs/heads/agent/topic"));
     const result = await git(

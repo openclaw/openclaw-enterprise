@@ -449,7 +449,7 @@ function installationRepositoryConfiguration(input: unknown, mode: "development"
     "repository",
   );
   const { openShell, ...portableSelection } = selection;
-  const portable = githubRepositoryConfiguration(portableSelection)!;
+  const portable = githubRepositoryConfiguration(portableSelection);
   // Preserve native/prepared validation before transport validation, and all raw selection
   // fields for the legacy digest. Proxy preview augmentation must not enter this projection.
   return {
