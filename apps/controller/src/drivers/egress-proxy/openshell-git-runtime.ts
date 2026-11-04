@@ -344,7 +344,7 @@ function generationOf(binding: OpenShellPreparedGitBinding): OpenShellPreparedGi
 }
 
 /** Construct the same stock provider scope on initial preparation, observation and adoption. */
-function gitProvider(
+export function createOpenShellGitProvider(
   client: OpenShellGatewayClient,
   workspace: string,
   workspaceId: string,
@@ -531,7 +531,7 @@ export class OpenShellGitRuntime {
         return;
       }
       const { client, workspace, sandbox, continuity } = context;
-      const provider = gitProvider(
+      const provider = createOpenShellGitProvider(
         client,
         workspace,
         await this.gateway(client, workspace, signal),
@@ -737,7 +737,7 @@ export class OpenShellGitRuntime {
           });
           throw new Error("OpenShell Git requires a new revision after worker restart.");
         }
-        const provider = gitProvider(
+        const provider = createOpenShellGitProvider(
           client,
           workspace,
           await verified(() => this.gateway(client, workspace, signal)),
@@ -1010,7 +1010,7 @@ export class OpenShellGitRuntime {
       }
       throw error;
     }
-    const provider = gitProvider(
+    const provider = createOpenShellGitProvider(
       client,
       workspace,
       workspaceId,
@@ -1472,9 +1472,14 @@ export class OpenShellGitRuntime {
     if (delivery !== undefined) {
       const current = await client.getWorkspace(workspace, signal);
       if (current?.id) {
-        await gitProvider(client, workspace, current.id, sandbox, revision.id, delivery).remove(
-          signal,
-        );
+        await createOpenShellGitProvider(
+          client,
+          workspace,
+          current.id,
+          sandbox,
+          revision.id,
+          delivery,
+        ).remove(signal);
       }
     }
     // The derived provider is gone by now, so this finds only another prepared Git provider the
