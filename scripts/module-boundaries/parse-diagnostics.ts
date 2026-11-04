@@ -2,7 +2,9 @@ import ts from "typescript-compiler-api";
 
 // This runtime field is absent from the public compiler API declarations. Validate
 // its complete shape rather than treating arbitrary compiler internals as diagnostics.
-export function parseDiagnostics(source: ts.SourceFile): Pick<ts.Diagnostic, "start" | "messageText">[] {
+export function parseDiagnostics(
+  source: ts.SourceFile,
+): Pick<ts.Diagnostic, "start" | "messageText">[] {
   function invalid(): never {
     throw new Error("TypeScript compiler contract error: malformed parse diagnostics.");
   }
@@ -10,13 +12,18 @@ export function parseDiagnostics(source: ts.SourceFile): Pick<ts.Diagnostic, "st
     if (typeof value !== "object" || value === null || ancestors.has(value)) {
       return invalid();
     }
-    if (!("messageText" in value) || typeof value.messageText !== "string" ||
-        !("category" in value) ||
-        (value.category !== ts.DiagnosticCategory.Warning &&
-          value.category !== ts.DiagnosticCategory.Error &&
-          value.category !== ts.DiagnosticCategory.Suggestion &&
-          value.category !== ts.DiagnosticCategory.Message) ||
-        !("code" in value) || typeof value.code !== "number" || !Number.isInteger(value.code)) {
+    if (
+      !("messageText" in value) ||
+      typeof value.messageText !== "string" ||
+      !("category" in value) ||
+      (value.category !== ts.DiagnosticCategory.Warning &&
+        value.category !== ts.DiagnosticCategory.Error &&
+        value.category !== ts.DiagnosticCategory.Suggestion &&
+        value.category !== ts.DiagnosticCategory.Message) ||
+      !("code" in value) ||
+      typeof value.code !== "number" ||
+      !Number.isInteger(value.code)
+    ) {
       return invalid();
     }
     const nextAncestors = new Set(ancestors).add(value);
@@ -48,13 +55,17 @@ export function parseDiagnostics(source: ts.SourceFile): Pick<ts.Diagnostic, "st
       return invalid();
     }
     const start = "start" in item ? item.start : undefined;
-    if (start !== undefined &&
-        (typeof start !== "number" || !Number.isInteger(start) || start < 0 || start > source.text.length)) {
+    if (
+      start !== undefined &&
+      (typeof start !== "number" ||
+        !Number.isInteger(start) ||
+        start < 0 ||
+        start > source.text.length)
+    ) {
       return invalid();
     }
-    const messageText = typeof item.messageText === "string"
-      ? item.messageText
-      : chain(item.messageText, new Set());
+    const messageText =
+      typeof item.messageText === "string" ? item.messageText : chain(item.messageText, new Set());
     return { start, messageText };
   });
 }

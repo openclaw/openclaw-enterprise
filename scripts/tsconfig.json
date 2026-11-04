@@ -15,7 +15,13 @@
       "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"]
     }
   },
-  "include": ["*.ts", "ci/**/*.ts", "lib/**/*.ts", "docs-site/compute-matrix.ts", "module-boundaries/parse-diagnostics.ts"],
+  "include": [
+    "*.ts",
+    "ci/**/*.ts",
+    "lib/**/*.ts",
+    "docs-site/compute-matrix.ts",
+    "module-boundaries/*.ts"
+  ],
   "references": [
     {
       "path": "../packages/utils"

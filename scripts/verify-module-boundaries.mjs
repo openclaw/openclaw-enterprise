@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { readWorkspace, freezeRecord, parseJSON } from "./module-boundaries/workspace.mjs";
-import { collectSourceImports } from "./module-boundaries/source-imports.mjs";
+import { collectSourceImports } from "./module-boundaries/source-imports.ts";
 import { resolveImports } from "./module-boundaries/resolve-import.mjs";
 import { evaluatePolicy, validatePolicy } from "./module-boundaries/evaluate-policy.mjs";
 import { applyExceptions, validateExceptions } from "./module-boundaries/exceptions.mjs";

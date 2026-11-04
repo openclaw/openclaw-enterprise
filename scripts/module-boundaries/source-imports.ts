@@ -7,12 +7,44 @@ import {
   implicitWrapperSymbol,
   outerExpression,
   unwrap,
-} from "./loader-provenance.mjs";
-import { assignedSymbols } from "./source-mutations.mjs";
+} from "./loader-provenance.ts";
+import type { Value } from "./loader-provenance.ts";
+import { assignedSymbols } from "./source-mutations.ts";
 import { parseDiagnostics } from "./parse-diagnostics.ts";
 import { freezeRecord, slash, sourceExtension } from "./workspace.mjs";
 
-function normalizedSpecifier(root, value) {
+type Snapshot = {
+  root: string;
+  files: readonly { absolutePath: string; path: string; text: string; packageType: string }[];
+};
+type Kind =
+  "import" | "export" | "import-type" | "require" | "dynamic-import" | "dependency-anchor" | "path";
+type Reference = {
+  from: string;
+  specifier: string;
+  kind: Kind;
+  typeOnly: boolean;
+  bindings: string[];
+  line: number;
+  mode: "require" | "import";
+  anchor: string | null;
+  value: Value;
+  loaderIdentity?: string;
+};
+type Diagnostic = {
+  category: "syntax";
+  rule: "source-syntax";
+  from: string;
+  to: string;
+  specifier: string;
+  kind: "syntax";
+  typeOnly: false;
+  bindings: string[];
+  line: number;
+  message: string;
+};
+
+function normalizedSpecifier(root: string, value: string): string {
   try {
     if (/^file:/i.test(value)) {
       return `file:${slash(relative(root, fileURLToPath(value)))}`;
@@ -27,7 +59,7 @@ function normalizedSpecifier(root, value) {
 }
 
 /** Parse/bind the snapshot only. Emit import references; make no resolution or policy decisions. */
-export function collectSourceImports(snapshot) {
+export function collectSourceImports(snapshot: Snapshot) {
   const texts = new Map(snapshot.files.map((file) => [file.absolutePath, file.text]));
   const options = {
     allowJs: true,
@@ -39,16 +71,22 @@ export function collectSourceImports(snapshot) {
     moduleDetection: ts.ModuleDetectionKind.Force,
   };
   const host = ts.createCompilerHost(options);
-  host.getSourceFile = (path, languageVersionOrOptions) =>
-    texts.has(path)
-      ? ts.createSourceFile(path, texts.get(path), languageVersionOrOptions, true)
-      : undefined;
+  host.getSourceFile = (path, languageVersionOrOptions) => {
+    const text = texts.get(path);
+    return text === undefined
+      ? undefined
+      : ts.createSourceFile(path, text, languageVersionOrOptions, true);
+  };
   const program = ts.createProgram([...texts.keys()], options, host);
   const checker = program.getTypeChecker();
-  const references = [];
-  const diagnostics = [];
+  const references: Reference[] = [];
+  const diagnostics: Diagnostic[] = [];
   for (const file of snapshot.files) {
-    const source = program.getSourceFile(file.absolutePath);
+    const loadedSource = program.getSourceFile(file.absolutePath);
+    if (!loadedSource) {
+      throw new Error(`TypeScript compiler did not load source file: ${file.path}`);
+    }
+    const source: ts.SourceFile = loadedSource;
     const commonjs = /\.[cm][jt]s$/.test(file.path)
       ? /\.[c][jt]s$/.test(file.path)
       : file.packageType !== "module";
@@ -61,12 +99,12 @@ export function collectSourceImports(snapshot) {
       source,
     });
     const printer = ts.createPrinter({ removeComments: true });
-    const print = (node) => printer.printNode(ts.EmitHint.Unspecified, node, source);
-    const loaderOccurrences = new Map();
+    const print = (node: ts.Node) => printer.printNode(ts.EmitHint.Unspecified, node, source);
+    const loaderOccurrences = new Map<string, number>();
     // Include lexical declarations and writes, without exposing source text.
     // Changed loader or path provenance invalidates an old exception. Formatting and
     // line shifts do not. Distinct scopes are included for shadowed bindings.
-    function loaderIdentity(call) {
+    function loaderIdentity(call: ts.CallExpression) {
       const pieces = [print(call.expression)];
       for (let parent = call.parent; parent && !ts.isSourceFile(parent); parent = parent.parent) {
         if (ts.isFunctionLike(parent)) {
@@ -76,11 +114,11 @@ export function collectSourceImports(snapshot) {
           );
         }
       }
-      const seen = new Set();
+      const seen = new Set<ts.Symbol | string>();
       let visited = 0;
       let wholeSource = false;
       let includeSource = false;
-      function trace(node) {
+      function trace(node: ts.Node): void {
         // Limit transitive traversal. If the limit is reached, bind the exception
         // to the entire normalized source rather than to incomplete provenance.
         if (wholeSource || ++visited > 4096 || seen.size >= 64) {
@@ -114,6 +152,7 @@ export function collectSourceImports(snapshot) {
           const symbol = ts.isShorthandPropertyAssignment(node.parent)
             ? checker.getShorthandAssignmentValueSymbol(node.parent)
             : checker.getSymbolAtLocation(node);
+          const outer = outerExpression(node);
           if (
             implicitWrapperSymbol(symbol) &&
             !(
@@ -129,8 +168,8 @@ export function collectSourceImports(snapshot) {
             ) &&
             !(
               node.text === "URL" &&
-              ts.isNewExpression(outerExpression(node).parent) &&
-              outerExpression(node).parent.expression === outerExpression(node) &&
+              ts.isNewExpression(outer.parent) &&
+              outer.parent.expression === outer &&
               !assigned.globalURLMutable &&
               !assigned.unbound.has("URL")
             )
@@ -143,14 +182,14 @@ export function collectSourceImports(snapshot) {
             seen.add(key);
             for (const declaration of symbol?.declarations ?? []) {
               if (declaration.getSourceFile() === source) {
-                let importDeclaration = declaration;
+                let importDeclaration: ts.Node = declaration;
                 while (importDeclaration && !ts.isSourceFile(importDeclaration)) {
                   if (ts.isImportDeclaration(importDeclaration)) {
                     break;
                   }
                   importDeclaration = importDeclaration.parent;
                 }
-                let origin =
+                let origin: ts.Node =
                   importDeclaration && ts.isImportDeclaration(importDeclaration)
                     ? importDeclaration
                     : declaration;
@@ -213,7 +252,8 @@ export function collectSourceImports(snapshot) {
         .update(JSON.stringify([basis, occurrence]))
         .digest("hex")}`;
     }
-    const line = (node) => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+    const line = (node: ts.Node) =>
+      source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
     for (const error of parseDiagnostics(source)) {
       diagnostics.push(
         freezeRecord({
@@ -231,13 +271,13 @@ export function collectSourceImports(snapshot) {
       );
     }
     function record(
-      node,
-      kind,
+      node: ts.Node,
+      kind: Kind,
       typeOnly = false,
       bindings = ["*"],
-      anchor = file.absolutePath,
-      override,
-      loaderId,
+      anchor: string | null = file.absolutePath,
+      override?: Value,
+      loaderId?: string,
     ) {
       const argument = analysis.value(node);
       const value = override ?? argument;
@@ -259,7 +299,7 @@ export function collectSourceImports(snapshot) {
         }),
       );
     }
-    function visit(node) {
+    function visit(node: ts.Node): void {
       if (ts.isImportDeclaration(node)) {
         const clause = node.importClause;
         const named = clause?.namedBindings;
@@ -298,6 +338,11 @@ export function collectSourceImports(snapshot) {
         ts.isImportEqualsDeclaration(node) &&
         ts.isExternalModuleReference(node.moduleReference)
       ) {
+        if (!node.moduleReference.expression) {
+          throw new Error(
+            "TypeScript compiler contract error: import-equals expression is absent.",
+          );
+        }
         record(node.moduleReference.expression, "require", node.isTypeOnly);
       } else if (ts.isCallExpression(node)) {
         const loader = analysis.reference(node.expression);
@@ -348,13 +393,17 @@ export function collectSourceImports(snapshot) {
             target.value !== file.absolutePath &&
             target.value !== pathToFileURL(file.absolutePath).href
           ) {
-            record(node.arguments[0], "dependency-anchor");
+            const argument = node.arguments[0];
+            if (argument) {
+              record(argument, "dependency-anchor");
+            }
           }
         }
       } else if (ts.isNewExpression(node) && analysis.isURL(node.expression)) {
         const target = analysis.value(node);
         try {
           if (
+            target.value !== undefined &&
             /^file:/i.test(target.value) &&
             sourceExtension.test(new URL(target.value).pathname)
           ) {
