@@ -222,12 +222,20 @@ export function postgresConnectionTemplates(
         clientId: text(row as Row, "client_id"),
         credentialRefreshDriverId: text(row as Row, "credential_refresh_driver_id"),
       })),
-    retireOAuthClientSecret: async (ref) => {
+    queueOAuthClientSecretCleanup: async (ref, phase) => {
       await client.query(
-        "INSERT INTO occ.retired_oauth_client_secrets(id,issuer,client_id,credential_refresh_driver_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-        [ref.id, ref.issuer, ref.clientId, ref.credentialRefreshDriverId],
+        `INSERT INTO occ.retired_oauth_client_secrets(id,issuer,client_id,credential_refresh_driver_id,retry_at)
+         VALUES ($1,$2,$3,$4,CASE WHEN $5='staging' THEN now()+interval '5 minutes' ELSE now() END)`,
+        [ref.id, ref.issuer, ref.clientId, ref.credentialRefreshDriverId, phase],
       );
     },
+    lockOAuthClientSecretCleanup: async (id, dueOnly) =>
+      (
+        await client.query(
+          `SELECT id FROM occ.retired_oauth_client_secrets WHERE id=$1 AND (NOT $2::boolean OR retry_at <= now()) FOR UPDATE SKIP LOCKED`,
+          [id, dueOnly],
+        )
+      ).rowCount === 1,
     deferRetiredOAuthClientSecret: async (id) => {
       await client.query(
         "UPDATE occ.retired_oauth_client_secrets SET retry_at=now()+INTERVAL '1 minute' WHERE id=$1",

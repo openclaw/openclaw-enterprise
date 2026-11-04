@@ -169,7 +169,7 @@ Identifies an independently managed OAuth client and its approved credential des
 
 ### `retired_oauth_client_secrets`
 
-Queues removal of private handles superseded by an OAuth client rotation or deletion.
+Queues removal of abandoned secret generations and private handles superseded by rotation or deletion.
 
 - `id`, `issuer`, `client_id`, `credential_refresh_driver_id`, `retry_at`
 

@@ -2304,8 +2304,8 @@ export const sandboxPolicies = occSchema.table(
   ],
 );
 
-export const connectionClientRegistrations = occSchema.table(
-  "connection_client_registrations",
+export const oauthClients = occSchema.table(
+  "oauth_clients",
   {
     id: text("id").primaryKey(),
     namespaceId: text("namespace_id").references(() => namespaces.id, {
@@ -2313,15 +2313,57 @@ export const connectionClientRegistrations = occSchema.table(
       onUpdate: "restrict",
     }),
     issuer: collatedText("issuer").notNull(),
+    displayName: text("display_name").notNull(),
     clientId: collatedText("client_id").notNull(),
+    secretRegistrationId: text("secret_registration_id").unique(
+      "oauth_clients_secret_registration_id_key",
+    ),
+    tokenEndpointAuthMethod: text("token_endpoint_auth_method")
+      .$type<import("@openclaw-enterprise/contracts").OAuthClientAuthMethod>()
+      .notNull(),
+    tokenUrl: text("token_url").notNull(),
+    revocationUrl: text("revocation_url"),
     credentialRefreshDriverId: collatedText("credential_refresh_driver_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
-    unique("connection_client_registrations_pair_unique")
+    unique("oauth_clients_pair_unique")
       .on(table.namespaceId, table.issuer, table.clientId)
       .nullsNotDistinct(),
-    unique("connection_client_registrations_identity").on(table.id, table.issuer, table.clientId),
+    unique("oauth_clients_identity").on(table.id, table.issuer, table.tokenUrl),
+    check(
+      "oauth_clients_display_name_check",
+      sql`length(${table.displayName}) BETWEEN 1 AND 200 AND ${table.displayName} = btrim(${table.displayName})`,
+    ),
+    check(
+      "oauth_clients_token_endpoint_auth_method_check",
+      sql`${table.tokenEndpointAuthMethod} IN ('none','client_secret_basic','client_secret_post')`,
+    ),
+    check(
+      "oauth_clients_token_url_check",
+      sql`${table.tokenUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'`,
+    ),
+    check(
+      "oauth_clients_revocation_url_check",
+      sql`${table.revocationUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'`,
+    ),
+    check(
+      "oauth_clients_id_format",
+      sql`${table.id} ~ '^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
+    ),
+    check(
+      "oauth_clients_issuer_https",
+      sql`${table.issuer} ~ '^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$' AND length(${table.issuer}) <= 2048`,
+    ),
+    check(
+      "oauth_clients_private_material",
+      sql`(${table.tokenEndpointAuthMethod}='none' AND ${table.secretRegistrationId} IS NULL) OR
+    (${table.tokenEndpointAuthMethod}<>'none' AND ${table.secretRegistrationId} IS NOT NULL)`,
+    ),
+    check(
+      "oauth_clients_client_id_valid",
+      sql`${table.clientId} ~ '^[!-~]+$' AND length(${table.clientId}) <= 256`,
+    ),
   ],
 );
 
@@ -2337,7 +2379,22 @@ export const connectionTemplates = occSchema.table(
     currentVersion: integer("current_version").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
-  (table) => [
+  (table): PgTableExtraConfigValue[] => [
+    // Migration 0067 defers this ownership cycle until commit.
+    foreignKey({
+      name: "connection_templates_current_version_exists",
+      columns: [table.id, table.currentVersion],
+      foreignColumns: [connectionTemplateVersions.templateId, connectionTemplateVersions.version],
+    }),
+    check(
+      "connection_templates_id_format",
+      sql`${table.id} ~ '^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
+    ),
+    check(
+      "connection_templates_display_name_valid",
+      sql`length(${table.displayName}) BETWEEN 1 AND 200 AND ${table.displayName} = btrim(${table.displayName})
+    AND ${table.displayName} !~ '[[:cntrl:]]'`,
+    ),
     check("connection_templates_current_version_positive", sql`${table.currentVersion} >= 1`),
   ],
 );
@@ -2349,9 +2406,17 @@ export const connectionTemplateVersions = occSchema.table(
       .notNull()
       .references(() => connectionTemplates.id, { onDelete: "cascade", onUpdate: "restrict" }),
     version: integer("version").notNull(),
-    clientRegistrationId: text("client_registration_id").notNull(),
+    oauthClientId: text("oauth_client_id").references(() => oauthClients.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
     issuer: collatedText("issuer").notNull(),
-    clientId: collatedText("client_id").notNull(),
+    mode: text("mode").$type<"manual" | "mcp_discovery">().notNull(),
+    revocationUrl: text("revocation_url"),
+    observedMetadata:
+      jsonb("observed_metadata").$type<
+        import("@openclaw-enterprise/contracts").McpAuthorizationMetadata
+      >(),
     authorizationUrl: collatedText("authorization_url").notNull(),
     tokenUrl: collatedText("token_url").notNull(),
     scopes: text("scopes").array().notNull(),
@@ -2362,19 +2427,62 @@ export const connectionTemplateVersions = occSchema.table(
     endpointPort: integer("endpoint_port").notNull(),
     endpointPath: collatedText("endpoint_path").notNull(),
     endpointAccess: collatedText("endpoint_access").notNull().default("full"),
-    envVar: collatedText("env_var").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.templateId, table.version] }),
     foreignKey({
-      name: "connection_template_versions_registration_pair",
-      columns: [table.clientRegistrationId, table.issuer, table.clientId],
-      foreignColumns: [
-        connectionClientRegistrations.id,
-        connectionClientRegistrations.issuer,
-        connectionClientRegistrations.clientId,
-      ],
+      name: "connection_template_versions_client_issuer",
+      columns: [table.oauthClientId, table.issuer, table.tokenUrl],
+      foreignColumns: [oauthClients.id, oauthClients.issuer, oauthClients.tokenUrl],
     }),
+    check(
+      "connection_template_versions_mode_check",
+      sql`${table.mode} IN ('manual','mcp_discovery')`,
+    ),
+    check("connection_template_versions_version_positive", sql`${table.version} >= 1`),
+    check(
+      "connection_template_versions_urls_https",
+      sql`${table.authorizationUrl} ~ '^https://[^/?#@[:space:]]+(/[^#[:space:]]*)?$'
+    AND ${table.tokenUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'
+    AND length(${table.authorizationUrl}) <= 2048 AND length(${table.tokenUrl}) <= 2048`,
+    ),
+    check(
+      "connection_template_versions_scopes_valid",
+      sql`cardinality(${table.scopes}) BETWEEN 1 AND 32
+    AND array_position(${table.scopes}, NULL) IS NULL
+
+    AND array_to_string(${table.scopes}, ' ') ~ '^[!#-[\\]-~]+( [!#-[\\]-~]+)*$'`,
+    ),
+    check(
+      "connection_template_versions_parameters_object",
+      sql`jsonb_typeof(${table.authorizationParameters}) = 'object'`,
+    ),
+    check(
+      "connection_template_versions_endpoint_valid",
+      sql`${table.endpointHost} ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+    AND length(${table.endpointHost}) <= 253
+    AND ${table.endpointPort} BETWEEN 1 AND 65535
+    AND ${table.endpointAccess} IN ('read-only', 'full')
+    AND ${table.endpointPath} ~ '^/[!-~]*$' AND length(${table.endpointPath}) <= 512`,
+    ),
+    check(
+      "connection_template_versions_discovery",
+      sql`(${table.mode} = 'manual' AND ${table.observedMetadata} IS NULL) OR
+    (${table.mode} = 'mcp_discovery' AND ${table.observedMetadata} IS NOT NULL
+      AND jsonb_typeof(${table.observedMetadata}) = 'object'
+      AND ${table.observedMetadata} ?& ARRAY['resource','serverUrl','issuer','authorizationUrl','tokenUrl']
+      AND ${table.observedMetadata}->>'issuer' = ${table.issuer}
+      AND ${table.observedMetadata}->>'authorizationUrl' = ${table.authorizationUrl}
+      AND ${table.observedMetadata}->>'tokenUrl' = ${table.tokenUrl})`,
+    ),
   ],
 );
+
+export const retiredOAuthClientSecrets = occSchema.table("retired_oauth_client_secrets", {
+  id: text("id").primaryKey(),
+  issuer: text("issuer").notNull(),
+  clientId: text("client_id").notNull(),
+  credentialRefreshDriverId: text("credential_refresh_driver_id").notNull(),
+  retryAt: timestamp("retry_at", { withTimezone: true }).notNull().defaultNow(),
+});

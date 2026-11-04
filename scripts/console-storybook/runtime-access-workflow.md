@@ -19,3 +19,10 @@ or go Back inside the preview instead, so the Console keeps the state you are ch
 5. **Selected Pod disappears from runtime status.** Select **gateway-retiring** in the Pod
    picker before the next status poll. When that Pod disappears, the picker, caption and
    log lines switch together. Output from the retired Pod is no longer shown.
+
+6. **Runtime status and logs for v7.** Leave Follow off. In the local preview browser
+   check, let the first log page load, then replace only its next response's `records`
+   with `null`. Select **Refresh logs**: the read error appears and the loaded lines and
+   their caption stay. Select **Refresh logs** again with a valid response: the error
+   clears and the new lines replace the old ones. The malformed reply is injected for
+   this check; the ordinary story returns valid pages.

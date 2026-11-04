@@ -4,6 +4,7 @@ import test from "node:test";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -178,6 +179,65 @@ test(
     );
     await controller.cleanupRetiredOAuthClientSecrets();
     assert.equal(providers.size, 0);
+  },
+);
+
+test(
+  "the worker recovers an abandoned secret staged before PostgreSQL receives COMMIT",
+  requiresPostgres,
+  async (t) => {
+    assert.ok(databaseUrl);
+    const proxy = await commitAckProxy(databaseUrl);
+    let closed = false;
+    t.after(async () => {
+      if (!closed) {
+        await proxy.close();
+      }
+    });
+    const { controller, inject } = await createPostgresAgentApp(t, {
+      ...options,
+      transportDatabaseUrl: proxy.url,
+    });
+    const { pool, controller: recovered } = await createPostgresAgentApp(t, options);
+    const { refresh, providers } = selectTemplateDrivers(controller);
+    recovered.registerDriver(refresh);
+    recovered.selectDriver("credential_refresh", refresh.id);
+    const input = clientInput();
+    const original = await inject("POST", "/oauth-clients", input);
+    assert.equal(original.statusCode, 201, original.body);
+    const stage = refresh.registerClient.bind(refresh);
+    let stagedId = "";
+    t.mock.method(
+      refresh,
+      "registerClient",
+      async (...args: Parameters<typeof stage>) => {
+        await stage(...args);
+        stagedId = args[0].registrationId;
+        proxy.arm({ pauseCommit: true });
+      },
+      { times: 1 },
+    );
+    const response = inject("POST", `/oauth-clients/${original.json().data.id}/rotate-secret`, {
+      clientSecret: randomUUID(),
+    });
+    await waitFor(
+      "the Driver staged the secret and PostgreSQL has not received COMMIT",
+      async () => proxy.commitPaused || undefined,
+    );
+    // Dropping this socket rolls the transaction back on the server. OCC cannot know its outcome.
+    await proxy.close();
+    closed = true;
+    assert.equal((await response).statusCode, 503);
+    assert.equal(providers.size, 2);
+    // Advance just this reservation to its due time, then run maintenance under a new controller.
+    const expired = await pool.query(
+      "UPDATE occ.retired_oauth_client_secrets SET retry_at=now() WHERE id=$1 RETURNING id",
+      [stagedId],
+    );
+    assert.equal(expired.rowCount, 1);
+    await recovered.cleanupRetiredOAuthClientSecrets();
+    assert.equal(providers.size, 1);
+    assert.ok(JSON.stringify([...providers.values()]).includes(input.clientSecret));
   },
 );
 

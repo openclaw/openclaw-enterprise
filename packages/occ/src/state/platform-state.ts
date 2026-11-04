@@ -374,7 +374,11 @@ export interface ConnectionTemplateReadRepository {
 export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepository {
   lockOAuthClient(id: string): Promise<Readonly<OAuthClient> | undefined>;
   setOAuthClientSecret(id: string, handle: string): Promise<void>;
-  retireOAuthClientSecret(ref: OAuthClientSecretRef): Promise<void>;
+  queueOAuthClientSecretCleanup(
+    ref: OAuthClientSecretRef,
+    phase: "staging" | "retired",
+  ): Promise<void>;
+  lockOAuthClientSecretCleanup(id: string, dueOnly: boolean): Promise<boolean>;
   deferRetiredOAuthClientSecret(id: string): Promise<void>;
   forgetRetiredOAuthClientSecret(id: string): Promise<void>;
   lockConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
@@ -1953,8 +1957,15 @@ function repositories(
       Array.from(snapshot.retiredOAuthClientSecrets.values())
         .filter((ref) => !ref.retryAt || ref.retryAt <= Date.now())
         .slice(0, limit),
-    retireOAuthClientSecret: async (ref) => {
-      snapshot.retiredOAuthClientSecrets.set(ref.id, immutableCopy(ref));
+    queueOAuthClientSecretCleanup: async (ref, phase) => {
+      snapshot.retiredOAuthClientSecrets.set(
+        ref.id,
+        immutableCopy({ ...ref, ...(phase === "staging" && { retryAt: Date.now() + 300_000 }) }),
+      );
+    },
+    lockOAuthClientSecretCleanup: async (id, dueOnly) => {
+      const ref = snapshot.retiredOAuthClientSecrets.get(id);
+      return !!ref && (!dueOnly || !ref.retryAt || ref.retryAt <= Date.now());
     },
     deferRetiredOAuthClientSecret: async (id) => {
       const ref = snapshot.retiredOAuthClientSecrets.get(id);
