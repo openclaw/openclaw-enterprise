@@ -73,10 +73,10 @@ export function buildDocs(directory, ...args) {
 }
 
 /** Starts the docs preview on a free loopback port in `directory`. */
-export function spawnDocsPreview(directory) {
+export function spawnDocsPreview(directory, ...args) {
   return spawn(
     process.execPath,
-    [join(repositoryRoot, "scripts/docs-site/serve.ts"), "--port", "0"],
+    [join(repositoryRoot, "scripts/docs-site/serve.ts"), "--port", "0", ...args],
     {
       cwd: directory,
       stdio: ["ignore", "pipe", "pipe"],
