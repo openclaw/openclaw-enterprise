@@ -104,19 +104,9 @@ pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
 within the 24 series. Older explicit overrides fail. Both bases apply available
 Debian updates; image digests do not freeze Debian repositories.
 
-In both image recipes, a separate pnpm bootstrap step mounts the optional
-`corepack-env`, `npmrc` and `build-ca` secrets. The process-scoped
-`COREPACK_ENV_FILE` points Corepack at its registry settings. Both OpenClaw
-dependency stages inherit this bootstrap from `openclaw-dependency-inputs`.
-The shared bootstrap and both OpenClaw installs use `install-attempts.sh`:
-its first two attempts restart after 300 seconds; its final attempt has no deadline.
-Dependency installation then uses the populated package-manager cache with
-Corepack downloads disabled, without the Corepack secret or its process
-environment. pnpm reads npmrc for dependency installation; Node uses the
-optional CA bundle for package downloads. No secret file is copied into an image layer.
-The [operator build procedure](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
-owns their configuration. The publication workflow does not supply these
-optional operator secrets.
+Publication builds use the default package registries. Operators building from
+source can [configure a package registry mirror](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
+for both the pinned pnpm download and dependency installation.
 
 The build runs the caller-authority, Gateway recovery and Linux private-store
 tests offline. The private-store bridge normalizes inherited setgid only for a

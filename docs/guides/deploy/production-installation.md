@@ -107,11 +107,10 @@ credentials only when the selected registry requires them.
 
 ### Build through a package registry mirror
 
-Corepack bootstraps the pinned pnpm version in a separate build step before
-pnpm installs dependencies. Dependency lifecycle scripts cannot access the
-Corepack secret mounted in that earlier step.
-Corepack does not read npmrc. If the build must use a registry mirror for both
-downloads, supply both secrets to each `docker buildx build` command:
+When building either image from source, Corepack downloads the pinned pnpm
+version, then pnpm installs dependencies. Corepack does not read npmrc. To
+route both downloads through a mirror, supply the secrets for their respective
+steps to each `docker buildx build` command:
 
 ```bash
 --secret "id=corepack-env,src=$COREPACK_ENV_FILE" \
@@ -124,12 +123,14 @@ credential-free HTTPS base URL **without a trailing slash**. When authentication
 is required, use `COREPACK_NPM_TOKEN`; Corepack sends this bearer token only to
 the configured registry origin. Do not use `COREPACK_NPM_USERNAME` and
 `COREPACK_NPM_PASSWORD`: Corepack can send those Basic credentials to a different
-archive host named by registry metadata. Configure pnpm's registry and
-authentication separately in npmrc. Do not pass credentials as build arguments
-or disable Corepack's integrity checks. The Corepack secret is mounted only
-during pnpm bootstrap; npmrc is also available during dependency installation.
-Omitting the Corepack secret keeps its default registry selection. See
-[private package credentials](../../reference/drivers/selection.md#private-package-credentials).
+archive host named by registry metadata. If the mirror uses a private CA,
+supply the `build-ca` bundle described above. Keep Corepack integrity checks enabled.
+
+Configure pnpm's registry and a separate read-only dependency credential in
+npmrc. The runtime's permitted dependency lifecycle scripts can read this file.
+The build mounts it only during dependency installation and mounts
+`corepack-env` only during bootstrap. Omitting `corepack-env` keeps Corepack's
+default registry selection.
 
 ## Configure the Installation
 

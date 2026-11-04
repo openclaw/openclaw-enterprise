@@ -350,15 +350,12 @@ checkout, readable only by its owner. Local dependency installation can select
 it through `NPM_CONFIG_USERCONFIG`; image builds accept it as the ephemeral
 BuildKit secret `id=npmrc`, not as a build argument or copied source file.
 
-The Dockerfile runs `pnpm install --frozen-lockfile --prod --ignore-scripts` and
-mounts npmrc during package-manager bootstrap and dependency installation. `.dockerignore` excludes npmrc
-files. Registry tokens must not enter source, image layers, lockfiles, Helm
-values, startup YAML, logs, or runtime Pods.
+The controller image mounts npmrc only for `pnpm install --frozen-lockfile --prod --ignore-scripts`.
+`.dockerignore` excludes npmrc files. Keep registry tokens out of source, image
+layers, lockfiles, Helm values, startup YAML, logs, and runtime Pods.
 
-Corepack does not read npmrc. Both recipes accept optional `corepack-env` for
-registry and bearer authentication, mounted only during pnpm bootstrap, outside
-dependency lifecycle execution. See the [registry mirror procedure](../../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
-for configuration.
+For image builds that also need to download pnpm from a mirror, follow the
+[registry mirror procedure](../../guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 
 ## Loading, updates, and startup failures
 
