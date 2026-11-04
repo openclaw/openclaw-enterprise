@@ -1346,7 +1346,6 @@ function renderAgentForm(
   if (harness.value === "codex") {
     mode.value = "dedicated";
   }
-  let appliedProvider = nativeProvider.value;
   const currentTemplate = () =>
     JSON.stringify(
       configurationTemplate(harness.value, nativeProvider.value, model.value.trim()),
@@ -2348,6 +2347,7 @@ function renderAgentForm(
       input.value = value;
     }
   }
+  let appliedProvider = nativeProvider.value;
   manualModel = draft.manualModel ?? manualModel;
   // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
   // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.

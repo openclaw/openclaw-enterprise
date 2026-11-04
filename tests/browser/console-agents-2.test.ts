@@ -2180,6 +2180,26 @@ for (const width of [1440, 390]) {
     assert.equal(await choice.inputValue(), "claude-opus-5-5");
     assert.deepEqual(await optionValues(choice), anthropicOptions);
 
+    // Refresh rebuilds the form from its kept draft; rollback must use the restored provider.
+    const originalProvider = await provider.elementHandle();
+    assert.ok(originalProvider);
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.waitForFunction((element) => !element.isConnected, originalProvider);
+    await provider.waitFor({ state: "visible" });
+    assert.equal(await configuration.inputValue(), anthropicDraft);
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await choice.inputValue(), "claude-opus-5-5");
+    assert.deepEqual(await optionValues(choice), anthropicOptions);
+    await provider.selectOption("openai");
+    await assertBlocked(anthropicDraft);
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await mode.inputValue(), previousMode);
+    assert.equal(await authMethod.inputValue(), previousAuth);
+    assert.equal(await choice.inputValue(), "claude-opus-5-5");
+    assert.deepEqual(await optionValues(choice), anthropicOptions);
+
     await editAllow([]);
     await provider.selectOption("openai");
     assert.equal(await provider.inputValue(), "openai");
