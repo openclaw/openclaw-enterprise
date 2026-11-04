@@ -275,6 +275,10 @@ const capabilityConsumers = {
     "composition/repository-credentials/config.ts": ["loadPublicCa"],
     "composition/repository-credentials/platform.ts": ["loadPublicCa"],
   },
+  "composition/repository-credentials/public-file.ts": {
+    "composition/repository-credentials/public-ca.ts": ["readPublicFile"],
+    "composition/repository-credentials/registry.ts": ["readPublicFile"],
+  },
   "backends/repository-credentials/private-request-server.ts": {
     "backends/repository-credentials/receipt-server.ts": ["servePrivateRepositoryRequest"],
     "backends/repository-credentials/prepared-git-owner.ts": ["servePrivateRepositoryRequest"],

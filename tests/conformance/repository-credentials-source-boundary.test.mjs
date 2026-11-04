@@ -914,6 +914,11 @@ test("credential source boundary rejects new raw capabilities in the real source
       /public-ca.ts is not reviewed for/,
     ],
     [
+      "an unreviewed caller cannot acquire the public file snapshot reader",
+      'import { readPublicFile } from "../../../composition/repository-credentials/public-file.js";',
+      /public-file.ts is not reviewed for/,
+    ],
+    [
       "registry loading cannot write files",
       'import { writeFile } from "node:fs/promises";',
       /unreviewed runtime import from node:fs\/promises/,
