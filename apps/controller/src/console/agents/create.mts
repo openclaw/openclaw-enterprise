@@ -92,7 +92,10 @@ type CreateRequest = (
 ) => Promise<unknown>;
 type CredentialReference = SecretReference | CredentialSourceReference;
 type Repositories = ReturnType<typeof createRepositoryFields>;
-type CredentialRegistration = Pick<CredentialSourceMetadata, "name" | "secrets" | "type">;
+type CredentialRegistration = Pick<
+  CredentialSourceMetadata,
+  "name" | "secrets" | "type" | "config"
+>;
 type RegisteredCredential = Pick<CredentialSourceMetadata, "id" | "state">;
 type SavedAgent = Pick<Agent, "id" | "name" | "configurationId">;
 type SavedConfiguration = Pick<Configuration, "id" | "secretBindings">;
@@ -342,12 +345,31 @@ function credentialRegistrationResult(
     return null;
   }
   const { id, state } = source;
+  const config = responseFields(source.config);
+  const configMatches =
+    source.config !== null &&
+    typeof source.config === "object" &&
+    !Array.isArray(source.config) &&
+    Object.keys(config).length === Object.keys(expected.config).length &&
+    Object.entries(expected.config).every(([name, value]) => {
+      const actual = config[name];
+      if (actual === value) {
+        return true;
+      }
+      // Drivers can canonicalize URLs during registration; compare their parsed destination.
+      return (
+        typeof actual === "string" &&
+        URL.canParse(value) &&
+        URL.canParse(actual) &&
+        new URL(value).href.replace(/\/$/, "") === new URL(actual).href.replace(/\/$/, "")
+      );
+    });
   if (
     typeof id !== "string" ||
     !id.trim() ||
     source.namespaceId !== namespaceId ||
     source.type !== expected.type ||
-    !sameValue(source.config, {}) ||
+    !configMatches ||
     !sameValue(source.secrets, expected.secrets) ||
     !sameValue(source.ref, { kind: "credential_source", namespaceId, id }) ||
     (state !== "ready" && state !== "registering" && state !== "deleting")
@@ -1054,6 +1076,10 @@ function renderAgentForm(
   const authMethodField = field("Authentication method", authMethod);
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
   const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
+  const sourceConfigurationFields = element("div", { className: "form-fields" });
+  const sourceConfigurationInputs = new Map<string, HTMLInputElement>();
+  let renderedSourceType: CredentialSourceType | null | undefined;
+
   apiKey.setAttribute("aria-describedby", credentialHelp.id);
   let manualModel = !useModelChoices;
   let pendingModelSettings = draft.pendingModelSettings;
@@ -1829,6 +1855,7 @@ function renderAgentForm(
   // A draft kept after a refused Create resumes the resources that attempt saved (finding 1934).
   let savedCredentialSource = draft.savedCredentialSource;
   let credentialRegistration: CredentialRegistration | null = null;
+  let credentialRegistrationRejected = false;
   let failedCredentialSource: RegisteredCredential | null = null;
   let provisioningRequestId = createClientRequestId();
   // The API admitted (or may have admitted) a job under provisioningRequestId. Create Agent
@@ -1982,8 +2009,15 @@ function renderAgentForm(
         // Reuse the frozen, unique Source name: an earlier request that commits
         // later conflicts before gateway effects, rather than registering a copy.
         outcomeUnknown = false;
-        feedback.textContent =
-          "No credential registration is visible. Select Create Agent to retry the same registration.";
+        if (credentialRegistrationRejected) {
+          credentialRegistration = null;
+          credentialRegistrationRejected = false;
+          feedback.textContent =
+            "No credential registration exists. Correct the source configuration and try again.";
+        } else {
+          feedback.textContent =
+            "No credential registration is visible. Select Create Agent to retry the same registration.";
+        }
       } else if (source.state === "ready") {
         failedCredentialSource = null;
         savedCredentialSource = source;
@@ -3004,6 +3038,37 @@ function renderAgentForm(
         authSection.append(credentialHelp);
       }
     }
+    const sourceType = credentialSourceTypes !== undefined && !usesOAuth ? modelSourceType() : null;
+    if (sourceType !== renderedSourceType) {
+      renderedSourceType = sourceType;
+      sourceConfigurationFields.replaceChildren();
+      sourceConfigurationInputs.clear();
+      for (const setting of sourceType?.config ?? []) {
+        const input = element("input", { id: `model-source-${setting.name}`, type: "text" });
+        input.required = setting.required;
+        sourceConfigurationInputs.set(setting.name, input);
+        const label = setting.name.replaceAll("_", " ").replace(/\burl\b/gi, "URL");
+        const wrapper = field(label.charAt(0).toUpperCase() + label.slice(1), input);
+        if (setting.description) {
+          const help = element(
+            "p",
+            { className: "hint", id: `${input.id}-help` },
+            setting.description,
+          );
+          input.setAttribute("aria-describedby", help.id);
+          wrapper.append(help);
+        }
+        sourceConfigurationFields.append(wrapper);
+      }
+    }
+    sourceConfigurationFields.hidden = sourceConfigurationInputs.size === 0;
+    for (const input of sourceConfigurationInputs.values()) {
+      input.disabled =
+        pending || outcomeUnknown || Boolean(savedCredentialSource || credentialRegistration);
+    }
+    if (sourceConfigurationFields.parentElement !== authSection) {
+      authSection.append(sourceConfigurationFields);
+    }
     apiKey.required = Boolean(passwordAuth && !usesOAuth);
     apiKey.disabled ||= Boolean(savedSecret || binding || usesOAuth || (!passwordAuth && !usesPat));
     startOver.disabled =
@@ -3763,9 +3828,15 @@ function renderAgentForm(
           credentialRegistration ??= {
             name: `${body.name.slice(0, 150)} model ${provisioningRequestId}`,
             type: type.type,
+            config: Object.fromEntries(
+              [...sourceConfigurationInputs]
+                .filter(([, input]) => input.value.trim() !== "")
+                .map(([name, input]) => [name, input.value]),
+            ),
             secrets: { [field]: secret },
           };
           mutationStarted = true;
+          credentialRegistrationRejected = false;
           const result = await request(`${namespacePath(namespaceId)}/credential-sources`, {
             method: "POST",
             expectedStatus: 201,
@@ -3964,6 +4035,11 @@ function renderAgentForm(
         // A refused create may follow a revoked grant: the Secret fields read the answer again
         // when they next open (finding 2469), as the Agent page does after a refused save.
         operateAnswer.reset();
+      }
+      if (credentialRegistration && error.status === 400) {
+        // Keep uncertain writes frozen. A definitive validation refusal can be edited only
+        // after the source list confirms that no registration survived cleanup.
+        credentialRegistrationRejected = true;
       }
       const knownRejection = [400, 403, 404, 409, 429].includes(error.status ?? 0);
       outcomeUnknown = mutationStarted && !knownRejection && error.status !== 401;

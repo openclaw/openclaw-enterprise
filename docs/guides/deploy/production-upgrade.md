@@ -9,8 +9,8 @@ Plan any traffic handoff separately from this in-place upgrade.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline and take the backups required by the [upgrade checklist](upgrade-checklist.md).
-2. [Preflight the target](#rehearse-before-the-maintenance-window). Rehearse to
-   measure interruption.
+2. [Preflight the target](#rehearse-before-the-maintenance-window).
+   [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
 3. Freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
    [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
 4. [Verify the release](#verify-the-release) with a real workload.

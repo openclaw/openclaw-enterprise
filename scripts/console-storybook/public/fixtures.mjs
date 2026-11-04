@@ -1080,6 +1080,46 @@ export function installFixture(scenario, evidence) {
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response({
         configurations: [
+          ...(scenario.installationModelProvider
+            ? [
+                {
+                  capability: "compute",
+                  driverId: "kubernetes-compute",
+                  implementation: "kubernetes",
+                  scope: "installation",
+                  key: "startup",
+                  binding: "installation-startup",
+                  configurationSchema: {
+                    type: "object",
+                    properties: {
+                      runtime: {
+                        type: "object",
+                        properties: {
+                          modelProvider: {
+                            type: "object",
+                            properties: {
+                              protocol: { type: "string" },
+                              baseUrl: { type: "string" },
+                              supportsStandaloneWebSearch: { type: "boolean" },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                  startupConfiguration: {
+                    runtime: {
+                      modelProvider: {
+                        protocol: "openai-responses",
+                        baseUrl: "https://models.example.com/v1",
+                        supportsStandaloneWebSearch: false,
+                      },
+                    },
+                  },
+                  actions: {},
+                },
+              ]
+            : []),
           ...(scenario.installationNestedValues
             ? [
                 {
@@ -1521,6 +1561,17 @@ export function installFixture(scenario, evidence) {
           return response([...credentialSources.values()]);
         }
         if (method === "POST") {
+          if (
+            scenario.credentialRegistrationOutcome === "invalid-config" &&
+            !credentialRegistrationFailed
+          ) {
+            credentialRegistrationFailed = true;
+            return error(
+              400,
+              "INVALID_REQUEST",
+              "Credential destination authorization must match the Installation model provider.",
+            );
+          }
           const uncertain = scenario.credentialRegistrationOutcome && !credentialRegistrationFailed;
           const id = nextId("csr");
           const saved = {

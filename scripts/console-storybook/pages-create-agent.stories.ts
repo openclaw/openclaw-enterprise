@@ -380,3 +380,13 @@ export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat"
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
+
+export const SharedModelDestination = {
+  ...story("createSharedModelProviderSource"),
+  name: "Authorize shared model destination",
+};
+
+export const SharedModelDestinationRefusal = {
+  ...story("createSharedModelProviderRefusal"),
+  name: "Destination authorization refusal",
+};
