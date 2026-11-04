@@ -360,6 +360,15 @@ p {
      400 ms (finding 1519). Visibility, not opacity: it appears whole, never half-faded. */
   animation: loading-delay 400ms;
 }
+#app > .startup-recovery {
+  padding: 0 var(--space-8) var(--space-8);
+  color: var(--muted);
+  text-align: center;
+  animation: loading-delay 400ms;
+}
+#app > .startup-recovery > button {
+  margin-bottom: var(--space-4);
+}
 /* A page held on screen, inert, while a navigation's reads run. Past 300 ms it dims and shows
    a progress cursor, so a slow return does not look stuck; opacity and cursor only, so nothing
    moves (finding 1447). A refocus recheck does not set .holding and keeps its look. */
