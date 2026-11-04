@@ -294,6 +294,11 @@ function suiteSource(root, data) {
     return undefined;
   }
   try {
+    // Normalizing '..' before resolving a symlink can identify a different file.
+    const rawPath = data.file.startsWith("file://") ? decodeURIComponent(data.file) : data.file;
+    if (rawPath.split(/[/\\]/).includes("..")) {
+      return undefined;
+    }
     const path = absoluteInputPath(root, data.file);
     const file = repoRelativePath(root, path);
     const actual = relative(realpathSync(root), realpathSync(path));
