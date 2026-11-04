@@ -14,6 +14,8 @@ COPY packages/iam/package.json packages/iam/package.json
 COPY packages/occ/package.json packages/occ/package.json
 COPY packages/utils/package.json packages/utils/package.json
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    --mount=type=secret,id=corepack-env,required=false \
+    COREPACK_ENV_FILE=/run/secrets/corepack-env \
     corepack pnpm install --frozen-lockfile --prod --ignore-scripts
 
 # The stamp needs only Node, so it starts from the runtime base image the runtime stage already

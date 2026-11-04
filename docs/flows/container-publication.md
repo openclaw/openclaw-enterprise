@@ -104,6 +104,14 @@ pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
 within the 24 series. Older explicit overrides fail. Both bases apply available
 Debian updates; image digests do not freeze Debian repositories.
 
+In both image recipes, dependency-installation steps mount the optional
+`corepack-env` and `npmrc` secrets. The process-scoped `COREPACK_ENV_FILE` points
+Corepack at its registry settings before it downloads pnpm; pnpm then reads
+npmrc for dependency installation. Neither file is copied into an image layer.
+The [operator build procedure](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
+owns their configuration. The publication workflow does not supply these
+optional operator secrets.
+
 The build runs the caller-authority, Gateway recovery and Linux private-store
 tests offline. The private-store bridge normalizes inherited setgid only for a
 new owner-only directory, so native first use can create private SQLite stores

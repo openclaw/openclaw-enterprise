@@ -105,6 +105,26 @@ Before installation, [check each digest](../../testing/docker.md#check-published
 on native hosts for every target architecture, without skips. Configure pull
 credentials only when the selected registry requires them.
 
+### Build through a package registry mirror
+
+Corepack downloads the pinned pnpm version before pnpm installs dependencies.
+Corepack does not read npmrc. If the build must use a registry mirror for both
+downloads, supply both secrets to each `docker buildx build` command:
+
+```bash
+--secret "id=corepack-env,src=$COREPACK_ENV_FILE" \
+--secret "id=npmrc,src=$NPMRC_FILE"
+```
+
+Keep both files outside the checkout and readable only by their owner. The
+Corepack file uses dotenv syntax: set `COREPACK_NPM_REGISTRY` to the mirror's
+credential-free HTTPS URL and, when required, set `COREPACK_NPM_TOKEN` or the
+pair `COREPACK_NPM_USERNAME` and `COREPACK_NPM_PASSWORD`. Configure pnpm's registry
+and authentication separately in npmrc. Do not pass credentials as build
+arguments or disable Corepack's integrity checks. The optional secrets are
+mounted only during dependency installation; omitting the Corepack secret keeps
+its default registry selection. See [private package credentials](../../reference/drivers/selection.md#private-package-credentials).
+
 ## Configure the Installation
 
 This runbook uses Helm

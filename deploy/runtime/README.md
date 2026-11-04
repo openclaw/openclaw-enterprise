@@ -14,6 +14,8 @@ network requests still use the configured network policy.
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
+For a package registry mirror, supply the separate Corepack and pnpm build
+secrets described in [the image build guide](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 The selected upstream source pins stock Codex `0.164.0`. Both Codex entrypoints
 use that same installation and frozen upstream lockfile; no dependency downgrade
 or Codex binary patch is applied. The seccomp profile retains its existing syscall

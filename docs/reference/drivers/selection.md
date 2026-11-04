@@ -355,6 +355,12 @@ mounts the npmrc only for that installation. `.dockerignore` excludes npmrc
 files. Registry tokens must not enter source, image layers, lockfiles, Helm
 values, startup YAML, logs, or runtime Pods.
 
+Corepack's initial download of pnpm uses separate registry settings and does not
+read npmrc. Both image recipes accept an optional `corepack-env` build secret
+for Corepack's registry and authentication. See [building through a package
+registry mirror](../../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
+for the file format and build options.
+
 ## Loading, updates, and startup failures
 
 Publish the reviewed immutable controller image and configure the same digest
