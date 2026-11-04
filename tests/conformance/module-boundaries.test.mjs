@@ -11,14 +11,14 @@ import ts from "typescript-compiler-api";
 import {
   runModuleBoundaryCli,
   verifyModuleBoundaries,
-} from "../../scripts/verify-module-boundaries.mjs";
+} from "../../scripts/verify-module-boundaries.ts";
 import { settled as settle } from "../helpers/child-processes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = new URL("../fixtures/module-boundaries/", import.meta.url);
 const execute = promisify(execFile);
-const cli = join(repository, "scripts/verify-module-boundaries.mjs");
+const cli = join(repository, "scripts/verify-module-boundaries.ts");
 const policy = JSON.parse(await readFile(new URL("policy.json", fixture), "utf8"));
 
 // Child processes (CLI runs and native Node oracles) are most of this file's

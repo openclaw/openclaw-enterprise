@@ -11,7 +11,7 @@ import type { SourceReference } from "./source-imports.ts";
 type Snapshot = Awaited<ReturnType<typeof import("./workspace.ts").readWorkspace>>;
 type Mode = "import" | "require";
 type Targets = { to?: string; runtimeTarget?: string | null; typeTarget?: string | null };
-type Resolution = Readonly<
+export type Resolution = Readonly<
   { reference: SourceReference; to: string; named: boolean } & (
     | { status: "local"; runtimeTarget: string | null; typeTarget: string | null }
     | { status: "external"; reason?: string }
