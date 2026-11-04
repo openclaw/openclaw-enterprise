@@ -4059,7 +4059,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     const iamPolicy: IAMPolicyRepository = {
       getAgentOperatorProfile: async (namespaceId) => {
         const result = await client.query(
-          `SELECT generation, status, provider_id, organization_id, team_id
+          `SELECT generation, status, group_id
            FROM occ.namespace_agent_operator_profiles WHERE namespace_id = $1`,
           [namespaceId],
         );
@@ -4074,40 +4074,33 @@ export class PostgresPlatformState implements PlatformStateStore {
         return immutableCopy({
           namespaceId,
           generation: text(row, "generation"),
-          status,
-          team: {
-            providerId: text(row, "provider_id"),
-            organizationId: text(row, "organization_id"),
-            teamId: text(row, "team_id"),
-          },
+          ...(status === "staged"
+            ? { status, groupId: text(row, "group_id") }
+            : { status, groupId: null }),
         });
       },
       saveAgentOperatorProfile: async (profile, expectedGeneration) => {
-        const values = [
-          profile.namespaceId,
-          profile.generation,
-          profile.status,
-          profile.team.providerId,
-          profile.team.organizationId,
-          profile.team.teamId,
-        ];
-        const result =
-          expectedGeneration === null
-            ? await client.query(
-                `INSERT INTO occ.namespace_agent_operator_profiles
-                   (namespace_id, generation, status, provider_id, organization_id, team_id)
-                 VALUES ($1, $2, $3, $4, $5, $6)
+        const values = [profile.namespaceId, profile.generation, profile.status, profile.groupId];
+        try {
+          const result =
+            expectedGeneration === null
+              ? await client.query(
+                  `INSERT INTO occ.namespace_agent_operator_profiles
+                   (namespace_id, generation, status, group_id)
+                 VALUES ($1, $2, $3, $4)
                  ON CONFLICT (namespace_id) DO NOTHING`,
-                values,
-              )
-            : await client.query(
-                `UPDATE occ.namespace_agent_operator_profiles
-                 SET generation = $2, status = $3, provider_id = $4,
-                     organization_id = $5, team_id = $6
-                 WHERE namespace_id = $1 AND generation = $7`,
-                [...values, expectedGeneration],
-              );
-        return result.rowCount === 1;
+                  values,
+                )
+              : await client.query(
+                  `UPDATE occ.namespace_agent_operator_profiles
+                 SET generation = $2, status = $3, group_id = $4
+                 WHERE namespace_id = $1 AND generation = $5`,
+                  [...values, expectedGeneration],
+                );
+          return result.rowCount === 1;
+        } catch (error) {
+          throw databaseError(error);
+        }
       },
       listRoles: async (namespaceId) =>
         Object.freeze(

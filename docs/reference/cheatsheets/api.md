@@ -184,7 +184,7 @@
 ### IAM
 
 - [`getNamespaceAgentOperatorProfile`](../api.md#get-namespacesnamespaceidiamagentoperator): Inspect the Namespace's Agent Operator profile status.
-- [`stageNamespaceAgentOperatorProfile`](../api.md#put-namespacesnamespaceidiamagentoperator): Stage an exact GitHub team for Agent Operator without granting access.
+- [`stageNamespaceAgentOperatorProfile`](../api.md#put-namespacesnamespaceidiamagentoperator): Stage a Namespace Group for Agent Operator without granting access.
 - [`withdrawNamespaceAgentOperatorProfile`](../api.md#post-namespacesnamespaceidiamagentoperatorwithdraw): Withdraw the staged Agent Operator profile at its current generation.
 
 ### Secrets

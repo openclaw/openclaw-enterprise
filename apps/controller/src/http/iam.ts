@@ -14,7 +14,7 @@ function policyActor(context: RequestContext) {
 }
 
 function profileAuditDetails(profile: Readonly<NamespaceAgentOperatorProfile>) {
-  return { generation: profile.generation, status: profile.status, team: profile.team };
+  return { generation: profile.generation, status: profile.status, groupId: profile.groupId };
 }
 
 // Audit details name what a policy mutation granted or removed, by identifier.
@@ -84,7 +84,6 @@ export const iamHandlers = {
     reply,
     body,
     namespaceId,
-    configuredGithubProviderId,
     mutationEvent,
     transactIAM,
   }) {
@@ -93,7 +92,6 @@ export const iamHandlers = {
         policyActor(context),
         namespaceId,
         body as StageNamespaceAgentOperatorProfileBody,
-        configuredGithubProviderId,
       );
       await unit.audit.append(
         mutationEvent(
@@ -116,16 +114,17 @@ export const iamHandlers = {
     mutationEvent,
     transactIAM,
   }) {
+    const previousGeneration = body?.expectedGeneration as string;
     const profile = await transactIAM(async (unit) => {
       const withdrawn = await controller.withdrawNamespaceAgentOperatorProfile(
         policyActor(context),
         namespaceId,
-        body?.expectedGeneration as string,
+        previousGeneration,
       );
       await unit.audit.append(
         mutationEvent(
           { kind: "namespace", id: namespaceId, namespaceId },
-          profileAuditDetails(withdrawn),
+          { ...profileAuditDetails(withdrawn), previousGeneration },
         ),
       );
       return withdrawn;

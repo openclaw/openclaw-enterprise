@@ -8787,7 +8787,7 @@ Example response
 | [`DELETE /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#delete-namespacesnamespaceidiamaccessbindingsbindingid) | Delete one exact Namespace IAM AccessBinding |
 | [`GET /namespaces/{namespaceId}/iam/access-bindings/{bindingId}`](#get-namespacesnamespaceidiamaccessbindingsbindingid) | Get an exact Namespace IAM AccessBinding |
 | [`GET /namespaces/{namespaceId}/iam/agent-operator`](#get-namespacesnamespaceidiamagentoperator) | Inspect the Namespace's Agent Operator profile status |
-| [`PUT /namespaces/{namespaceId}/iam/agent-operator`](#put-namespacesnamespaceidiamagentoperator) | Stage an exact GitHub team for Agent Operator without granting access |
+| [`PUT /namespaces/{namespaceId}/iam/agent-operator`](#put-namespacesnamespaceidiamagentoperator) | Stage a Namespace Group for Agent Operator without granting access |
 | [`POST /namespaces/{namespaceId}/iam/agent-operator/withdraw`](#post-namespacesnamespaceidiamagentoperatorwithdraw) | Withdraw the staged Agent Operator profile at its current generation |
 | [`GET /namespaces/{namespaceId}/iam/roles`](#get-namespacesnamespaceidiamroles) | List exact Namespace IAM Roles |
 | [`POST /namespaces/{namespaceId}/iam/roles`](#post-namespacesnamespaceidiamroles) | Create an immutable Namespace IAM Role |
@@ -9095,7 +9095,7 @@ Inspect the Namespace's Agent Operator profile status
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object` | Yes | — |
+| `data` | `object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -9117,7 +9117,7 @@ Example response
 
 <span id="put-namespacesnamespaceidiamagentoperator"></span>
 
-Stage an exact GitHub team for Agent Operator without granting access
+Stage a Namespace Group for Agent Operator without granting access
 
 **Operation ID:** `stageNamespaceAgentOperatorProfile`
 
@@ -9144,16 +9144,14 @@ Stage an exact GitHub team for Agent Operator without granting access
 | --- | --- | --- | --- |
 | `acknowledgeAllAgents` | `true` | Yes | — |
 | `expectedGeneration` | `string or null` | Yes | — |
-| `organizationId` | `string` | Yes | pattern: `^[1-9][0-9]{0,19}$` |
-| `teamId` | `string` | Yes | pattern: `^[1-9][0-9]{0,19}$` |
+| `groupId` | `string` | Yes | min length: 1; max length: 200 |
 
 Example request
 ```json
 {
   "acknowledgeAllAgents": true,
   "expectedGeneration": null,
-  "organizationId": "1001",
-  "teamId": "2002"
+  "groupId": "group-engineering"
 }
 ```
 
@@ -9176,7 +9174,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object` | Yes | — |
+| `data` | `object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -9185,13 +9183,9 @@ Example response
 {
   "data": {
     "generation": "123e4567-e89b-42d3-a456-426614174000",
+    "groupId": "group-engineering",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "status": "staged",
-    "team": {
-      "organizationId": "1001",
-      "providerId": "github:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "teamId": "2002"
-    }
+    "status": "staged"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -9256,7 +9250,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object` | Yes | — |
+| `data` | `object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -9265,13 +9259,9 @@ Example response
 {
   "data": {
     "generation": "123e4567-e89b-42d3-a456-426614174001",
+    "groupId": null,
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "status": "withdrawn",
-    "team": {
-      "organizationId": "1001",
-      "providerId": "github:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "teamId": "2002"
-    }
+    "status": "withdrawn"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

@@ -18,7 +18,7 @@ import {
   CredentialSourceSecrets,
   CredentialSourceType,
   GatewayManagedModeSchema,
-  GitHubTeamIdentityId,
+  IAMGroupId,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
@@ -985,16 +985,18 @@ const NamespaceAgentOperatorProfileSchema = Type.Union([
   Type.Object(
     {
       namespaceId: NamespaceId,
-      status: Type.Union([Type.Literal("staged"), Type.Literal("withdrawn")]),
+      status: Type.Literal("staged"),
       generation: AgentOperatorProfileGeneration,
-      team: Type.Object(
-        {
-          providerId: Type.String({ pattern: "^github:[0-9a-f]{64}$" }),
-          organizationId: GitHubTeamIdentityId,
-          teamId: GitHubTeamIdentityId,
-        },
-        { additionalProperties: false },
-      ),
+      groupId: IAMGroupId,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      namespaceId: NamespaceId,
+      status: Type.Literal("withdrawn"),
+      generation: AgentOperatorProfileGeneration,
+      groupId: Type.Null(),
     },
     { additionalProperties: false },
   ),

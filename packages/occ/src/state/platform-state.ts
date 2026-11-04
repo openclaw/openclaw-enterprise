@@ -47,6 +47,7 @@ import type {
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
   HarnessAuthSnapshot,
+  Group,
   Identity,
   Installation,
   Namespace,
@@ -1085,6 +1086,7 @@ export interface InMemoryPlatformStateOptions {
   readonly auditSink?: PlatformAuditSink;
   /** Preprovisioned identities copied at construction; later input changes are not observed. */
   readonly iamIdentities?: readonly Identity[];
+  readonly iamGroups?: readonly Group[];
   /**
    * Live identity lookup, consulted on every AccessBinding write so identities enrolled after
    * construction can be bound. State still applies the exact subject rule to the result.
@@ -1093,6 +1095,7 @@ export interface InMemoryPlatformStateOptions {
 }
 
 interface IAMSubjectSource {
+  readonly groups: readonly Group[];
   readonly identities: readonly Identity[];
   readonly resolve: ((identityId: string) => Identity | undefined) | undefined;
 }
@@ -3336,6 +3339,14 @@ function repositories(
       if ((current?.generation ?? null) !== expectedGeneration) {
         return false;
       }
+      if (
+        profile.status === "staged" &&
+        !iamSubjects.groups.some(
+          (group) => group.id === profile.groupId && group.namespaceId === profile.namespaceId,
+        )
+      ) {
+        throw new ScopeViolationError("The Group does not belong to this Namespace.");
+      }
       snapshot.agentOperatorProfiles.set(profile.namespaceId, immutableCopy(profile));
       return true;
     },
@@ -3866,6 +3877,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     this.preparedTokenProof = options.preparedTokenProof ?? { current: async () => false };
     this.iamSubjects = {
       identities: immutableCopy(options.iamIdentities ?? []),
+      groups: immutableCopy(options.iamGroups ?? []),
       resolve: options.resolveIAMIdentity,
     };
   }

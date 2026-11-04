@@ -54,12 +54,12 @@ export const configuration = {
 };
 
 const namespace = { id: namespaceId, name: "engineering", status: "ready", createdAt: time };
-const agentOperatorTeam = { organizationId: "1001", teamId: "2002" };
+const agentOperatorGroupId = "group-engineering";
 const stagedAgentOperator = {
   namespaceId,
   status: "staged",
   generation: uuid,
-  team: { providerId: `github:${"a".repeat(64)}`, ...agentOperatorTeam },
+  groupId: agentOperatorGroupId,
 };
 const agent = {
   id: agentId,
@@ -260,7 +260,7 @@ export const requestExamples = {
   },
   createIAMRole: { name: role.name, permissions: role.permissions },
   stageNamespaceAgentOperatorProfile: {
-    ...agentOperatorTeam,
+    groupId: agentOperatorGroupId,
     expectedGeneration: null,
     acknowledgeAllAgents: true,
   },
@@ -537,6 +537,7 @@ export const responseExamples = {
   withdrawNamespaceAgentOperatorProfile: {
     ...stagedAgentOperator,
     status: "withdrawn",
+    groupId: null,
     generation: "123e4567-e89b-42d3-a456-426614174001",
   },
   getIAMRole: role,

@@ -1,13 +1,16 @@
 CREATE TABLE occ.namespace_agent_operator_profiles (
   namespace_id text PRIMARY KEY REFERENCES occ.namespaces (id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   generation uuid NOT NULL,
-  status text NOT NULL CHECK (status IN ('staged', 'withdrawn')),
-  provider_id text NOT NULL CHECK (provider_id ~ '^github:[0-9a-f]{64}$'),
-  organization_id text NOT NULL CHECK (organization_id ~ '^[1-9][0-9]{0,19}$'),
-  team_id text NOT NULL CHECK (team_id ~ '^[1-9][0-9]{0,19}$')
+  status text NOT NULL,
+  group_id text,
+  CONSTRAINT namespace_agent_operator_profiles_status_check CHECK (
+    (status = 'staged' AND group_id IS NOT NULL) OR (status = 'withdrawn' AND group_id IS NULL)
+  ),
+  CONSTRAINT namespace_agent_operator_profiles_group_fk FOREIGN KEY (namespace_id, group_id)
+    REFERENCES occ.iam_groups (namespace_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 --> statement-breakpoint
 GRANT SELECT, INSERT ON TABLE occ.namespace_agent_operator_profiles TO occ_app;
 --> statement-breakpoint
-GRANT UPDATE (generation, status, provider_id, organization_id, team_id)
+GRANT UPDATE (generation, status, group_id)
 ON TABLE occ.namespace_agent_operator_profiles TO occ_app;

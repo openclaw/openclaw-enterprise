@@ -34989,34 +34989,31 @@
                               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "groupId": { "maxLength": 200, "minLength": 1, "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "status": {
-                              "anyOf": [
-                                { "const": "staged", "type": "string" },
-                                { "const": "withdrawn", "type": "string" }
-                              ]
-                            },
-                            "team": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "organizationId": {
-                                  "pattern": "^[1-9][0-9]{0,19}$",
-                                  "type": "string"
-                                },
-                                "providerId": {
-                                  "pattern": "^github:[0-9a-f]{64}$",
-                                  "type": "string"
-                                },
-                                "teamId": { "pattern": "^[1-9][0-9]{0,19}$", "type": "string" }
-                              },
-                              "required": ["providerId", "organizationId", "teamId"],
-                              "type": "object"
-                            }
+                            "status": { "const": "staged", "type": "string" }
                           },
-                          "required": ["namespaceId", "status", "generation", "team"],
+                          "required": ["namespaceId", "status", "generation", "groupId"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "generation": {
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "groupId": { "type": "null" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "status": { "const": "withdrawn", "type": "string" }
+                          },
+                          "required": ["namespaceId", "status", "generation", "groupId"],
                           "type": "object"
                         }
                       ]
@@ -35134,8 +35131,7 @@
                   "value": {
                     "acknowledgeAllAgents": true,
                     "expectedGeneration": null,
-                    "organizationId": "1001",
-                    "teamId": "2002"
+                    "groupId": "group-engineering"
                   }
                 }
               },
@@ -35152,15 +35148,9 @@
                       { "type": "null" }
                     ]
                   },
-                  "organizationId": { "pattern": "^[1-9][0-9]{0,19}$", "type": "string" },
-                  "teamId": { "pattern": "^[1-9][0-9]{0,19}$", "type": "string" }
+                  "groupId": { "maxLength": 200, "minLength": 1, "type": "string" }
                 },
-                "required": [
-                  "expectedGeneration",
-                  "organizationId",
-                  "teamId",
-                  "acknowledgeAllAgents"
-                ],
+                "required": ["expectedGeneration", "groupId", "acknowledgeAllAgents"],
                 "type": "object"
               }
             }
@@ -35177,13 +35167,9 @@
                     "value": {
                       "data": {
                         "generation": "123e4567-e89b-42d3-a456-426614174000",
+                        "groupId": "group-engineering",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "status": "staged",
-                        "team": {
-                          "organizationId": "1001",
-                          "providerId": "github:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                          "teamId": "2002"
-                        }
+                        "status": "staged"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -35214,34 +35200,31 @@
                               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "groupId": { "maxLength": 200, "minLength": 1, "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "status": {
-                              "anyOf": [
-                                { "const": "staged", "type": "string" },
-                                { "const": "withdrawn", "type": "string" }
-                              ]
-                            },
-                            "team": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "organizationId": {
-                                  "pattern": "^[1-9][0-9]{0,19}$",
-                                  "type": "string"
-                                },
-                                "providerId": {
-                                  "pattern": "^github:[0-9a-f]{64}$",
-                                  "type": "string"
-                                },
-                                "teamId": { "pattern": "^[1-9][0-9]{0,19}$", "type": "string" }
-                              },
-                              "required": ["providerId", "organizationId", "teamId"],
-                              "type": "object"
-                            }
+                            "status": { "const": "staged", "type": "string" }
                           },
-                          "required": ["namespaceId", "status", "generation", "team"],
+                          "required": ["namespaceId", "status", "generation", "groupId"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "generation": {
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "groupId": { "type": "null" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "status": { "const": "withdrawn", "type": "string" }
+                          },
+                          "required": ["namespaceId", "status", "generation", "groupId"],
                           "type": "object"
                         }
                       ]
@@ -35352,7 +35335,7 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Stage an exact GitHub team for Agent Operator without granting access",
+        "summary": "Stage a Namespace Group for Agent Operator without granting access",
         "tags": ["IAM"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" },
@@ -35415,13 +35398,9 @@
                     "value": {
                       "data": {
                         "generation": "123e4567-e89b-42d3-a456-426614174001",
+                        "groupId": null,
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "status": "withdrawn",
-                        "team": {
-                          "organizationId": "1001",
-                          "providerId": "github:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                          "teamId": "2002"
-                        }
+                        "status": "withdrawn"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -35452,34 +35431,31 @@
                               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "groupId": { "maxLength": 200, "minLength": 1, "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "status": {
-                              "anyOf": [
-                                { "const": "staged", "type": "string" },
-                                { "const": "withdrawn", "type": "string" }
-                              ]
-                            },
-                            "team": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "organizationId": {
-                                  "pattern": "^[1-9][0-9]{0,19}$",
-                                  "type": "string"
-                                },
-                                "providerId": {
-                                  "pattern": "^github:[0-9a-f]{64}$",
-                                  "type": "string"
-                                },
-                                "teamId": { "pattern": "^[1-9][0-9]{0,19}$", "type": "string" }
-                              },
-                              "required": ["providerId", "organizationId", "teamId"],
-                              "type": "object"
-                            }
+                            "status": { "const": "staged", "type": "string" }
                           },
-                          "required": ["namespaceId", "status", "generation", "team"],
+                          "required": ["namespaceId", "status", "generation", "groupId"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "generation": {
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "groupId": { "type": "null" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "status": { "const": "withdrawn", "type": "string" }
+                          },
+                          "required": ["namespaceId", "status", "generation", "groupId"],
                           "type": "object"
                         }
                       ]

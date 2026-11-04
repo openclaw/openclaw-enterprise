@@ -2280,27 +2280,20 @@ export const namespaceAgentOperatorProfiles = occSchema.table(
       .references(() => namespaces.id, { onUpdate: "restrict", onDelete: "restrict" }),
     generation: uuid("generation").notNull(),
     status: text("status").notNull(),
-    providerId: text("provider_id").notNull(),
-    organizationId: text("organization_id").notNull(),
-    teamId: text("team_id").notNull(),
+    groupId: text("group_id"),
   },
   (table) => [
     check(
       "namespace_agent_operator_profiles_status_check",
-      sql`${table.status} IN ('staged', 'withdrawn')`,
+      sql`(${table.status} = 'staged' AND ${table.groupId} IS NOT NULL) OR (${table.status} = 'withdrawn' AND ${table.groupId} IS NULL)`,
     ),
-    check(
-      "namespace_agent_operator_profiles_provider_id_check",
-      sql`${table.providerId} ~ '^github:[0-9a-f]{64}$'`,
-    ),
-    check(
-      "namespace_agent_operator_profiles_organization_id_check",
-      sql`${table.organizationId} ~ '^[1-9][0-9]{0,19}$'`,
-    ),
-    check(
-      "namespace_agent_operator_profiles_team_id_check",
-      sql`${table.teamId} ~ '^[1-9][0-9]{0,19}$'`,
-    ),
+    foreignKey({
+      name: "namespace_agent_operator_profiles_group_fk",
+      columns: [table.namespaceId, table.groupId],
+      foreignColumns: [iamGroups.namespaceId, iamGroups.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
   ],
 );
 

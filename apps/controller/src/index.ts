@@ -2542,7 +2542,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
-        configuredGithubProviderId: options.auth.githubProviderId,
         callerMay: (action, resource) => callerMay(context.actorId, action, resource),
         transactIAM: async (work) => {
           const admitted = admissions.get(request);

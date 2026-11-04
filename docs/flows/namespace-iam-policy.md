@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: "2026-11-03"
-last_updated_session: "authoring-run/246c37a9-436f-40a8-9dec-11037acf0603"
+updated: "2026-11-04"
+last_updated_session: "authoring-run/0f738eec-a726-4083-a153-6356bb27c215"
 ---
 
 # Namespace IAM Policy Flow
@@ -11,7 +11,7 @@ last_updated_session: "authoring-run/246c37a9-436f-40a8-9dec-11037acf0603"
 Namespace IAM policy management begins when an authenticated caller uses the OCC
 API or CLI to list, create, read, or delete a Namespace Role or exact
 AccessBinding, or to list, create, or read a Namespace ServicePrincipal. A human
-administrator can also inspect, stage, or withdraw the Agent Operator team
+administrator can also inspect, stage, or withdraw the Agent Operator Group
 assignment for one Namespace. OCC authorizes the administrator, validates that the policy entry
 belongs to the requested Namespace, and delegates the policy mutation to the
 selected IAM Driver. The flow stops after the policy and audit event commit
@@ -98,11 +98,12 @@ issues and revokes its keys.
 
 The Agent Operator routes accept only a current human session.
 `packages/occ/src/index.ts:stageNamespaceAgentOperatorProfile` holds the exact
-Namespace and checks that it is ready. The HTTP handler supplies the configured
-GitHub sign-in provider instance. The caller supplies the organization and team
-IDs, confirms that the scope includes all Agents, and sends the generation from
-the profile read. Inspect and withdraw work independently of GitHub provider
-availability. Writes audit the Namespace, team, resulting status, and generation.
+Namespace and checks that it is ready. The caller supplies the immutable ID of
+an existing Group in that Namespace and acknowledges the scope of all Agents.
+A composite foreign key enforces the Group's Namespace. Staging and withdrawal
+compare the expected generation and audit the change in the same transaction.
+Withdrawal clears the Group reference. Its audit event names the previous
+generation, so an administrator can trace the selection to the staging event.
 
 ### 3. OCC validates policy ownership
 
@@ -253,6 +254,7 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
+- 2026-11-04 03:40: Select an existing Namespace Group and release its reference on withdrawal. (authoring-run/0f738eec-a726-4083-a153-6356bb27c215 - 21756d4c146c4411737913b80f56d70d1e4dbffb)
 - 2026-11-03 22:39: Document the human administrator's conditional Agent Operator profile staging and withdrawal. (authoring-run/246c37a9-436f-40a8-9dec-11037acf0603 - 5dd837eb2b4452f69230e3f80e637592459e362f)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)

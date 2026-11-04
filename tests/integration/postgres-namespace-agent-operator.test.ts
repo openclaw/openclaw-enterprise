@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { setTimeout } from "node:timers/promises";
 
@@ -8,20 +8,11 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 import {
   accountPrincipalId,
-  assertConsoleSignIn,
-  assertProviderAttached,
   consoleOrigin as origin,
-  githubSignIn,
-  githubUpgradeSettings,
-  googleUpgradeSettings,
+  defaultInstallSettings,
   productionSignInConfiguration,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
-
-const clientId = "agent-operator-fixture";
-const providerId = `github:${createHash("sha256").update(clientId).digest("hex")}`;
-const team = { organizationId: "81011", teamId: "81012" };
-const newStage = { ...team, expectedGeneration: null, acknowledgeAllAgents: true };
 
 interface FixtureAccount {
   readonly id: string;
@@ -37,17 +28,14 @@ test(
     let app: Awaited<ReturnType<typeof fixture.composeApp>>;
     const secrets = {
       "occ-auth/secret": "agent-operator-fixture-cookie-secret",
-      "occ-github-login/client-id": clientId,
-      "occ-github-login/client-secret": "agent-operator-fixture-client-secret",
-      "occ-google-login/client-id": "agent-operator-fixture-google-client-id",
-      "occ-google-login/client-secret": "agent-operator-fixture-google-client-secret",
     };
     const fixture = await preparePostgresSignInInstallation(t, () => [app], {
       email: "agent-operator-admin@example.test",
       password: "agent-operator-fixture-password",
       secrets,
+      github: false,
     });
-    const { pool, state, github } = fixture;
+    const { pool, state } = fixture;
     const onboarded = await fixture.onboard({
       accounts: {
         first: { email: "agent-operator-first@example.test" },
@@ -56,7 +44,6 @@ test(
     });
     const admin = onboarded.admin as FixtureAccount;
     const accounts = onboarded.accounts as Record<"first" | "second", FixtureAccount>;
-    assert.ok(github);
     const {
       rows: [databaseRole],
     } = await pool.query(
@@ -104,34 +91,43 @@ test(
       [`restriction-${randomUUID()}`, unreadable],
     );
 
-    app = await fixture.composeApp(githubUpgradeSettings(admin.id));
+    const groupId = `group-${randomUUID()}`;
+    const alternate = `group-${randomUUID()}`;
+    const otherGroup = `group-${randomUUID()}`;
+    const expiringGroup = `group-${randomUUID()}`;
+    const installationGroup = `group-${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO occ.iam_groups (id, namespace_id, name)
+       VALUES ($1, $5, 'Operators'), ($2, $5, 'Alternate'), ($3, $6, 'Operators'), ($4, NULL, 'Operators'), ($7, $8, 'Operators')`,
+      [
+        groupId,
+        alternate,
+        otherGroup,
+        installationGroup,
+        namespace,
+        unrelated,
+        expiringGroup,
+        expiring,
+      ],
+    );
+    // Whichever contender wins, the first account is a member and the second is not.
+    const member = await accountPrincipalId(pool, accounts.first.id);
+    await pool.query(
+      `INSERT INTO occ.iam_group_memberships (namespace_id, group_id, principal_id)
+       VALUES ($1, $2, $4), ($1, $3, $4)`,
+      [namespace, groupId, alternate, member],
+    );
+    const newStage = { groupId, expectedGeneration: null, acknowledgeAllAgents: true };
+    app = await fixture.composeApp(defaultInstallSettings);
     const adminHeaders = await signedInHeaders(app, origin, admin);
-    const adminPrincipalId = await accountPrincipalId(pool, admin.id);
-    const firstSubject = 8_101_001;
-    const secondSubject = 8_101_002;
-    await assertProviderAttached(
-      app,
-      adminHeaders,
-      accounts.first.id,
-      "github",
-      String(firstSubject),
+    const {
+      rows: [adminPrincipal],
+    } = await pool.query(
+      "SELECT id FROM occ.iam_identities WHERE kind = 'principal' AND subject = $1",
+      [admin.id],
     );
-    await assertProviderAttached(
-      app,
-      adminHeaders,
-      accounts.second.id,
-      "github",
-      String(secondSubject),
-    );
-    const first = await githubSignIn(app, origin, firstSubject);
-    const second = await githubSignIn(app, origin, secondSubject);
-    const firstCookie = await assertConsoleSignIn(app, first.callback, accounts.first.id);
-    const secondCookie = await assertConsoleSignIn(app, second.callback, accounts.second.id);
-    assert.deepEqual(
-      github.paths,
-      ["/login/oauth/access_token", "/user", "/login/oauth/access_token", "/user"],
-      "attached sign-in produced no team membership evidence",
-    );
+    const firstHeaders = await signedInHeaders(app, origin, accounts.first, "192.0.2.21");
+    const secondHeaders = await signedInHeaders(app, origin, accounts.second, "192.0.2.22");
     let endpoint = await app.listen({ host: "127.0.0.1", port: 0 });
     const profile = (id: string) => `/namespaces/${id}/iam/agent-operator`;
     async function request(
@@ -168,9 +164,10 @@ test(
     await expectOff(namespace);
     const badBodies = [
       { ...newStage, acknowledgeAllAgents: false },
-      { ...newStage, teamId: "team-slug" },
-      { ...newStage, providerId },
-      { ...newStage, membership: { state: "active", subject: String(firstSubject) } },
+      { ...newStage, groupId: "" },
+      { ...newStage, organizationId: "81011", teamId: "81012" },
+      { ...newStage, providerId: "github" },
+      { ...newStage, membership: { state: "active" } },
     ];
     for (const body of badBodies) {
       assert.equal((await request("PUT", profile(namespace), body)).status, 400);
@@ -178,8 +175,11 @@ test(
     await expectOff(namespace);
     assert.equal((await request("GET", profile(unreadable))).status, 403);
     assert.equal((await request("PUT", profile(unreadable), newStage)).status, 403);
-    const firstHeaders = { cookie: firstCookie, origin };
-    const secondHeaders = { cookie: secondCookie, origin };
+    for (const invalid of [`group-${randomUUID()}`, otherGroup, installationGroup]) {
+      const result = await request("PUT", profile(namespace), { ...newStage, groupId: invalid });
+      assert.equal(result.status, 404, JSON.stringify(result.body));
+    }
+    await expectOff(namespace);
     assert.equal((await request("GET", profile(namespace), undefined, firstHeaders)).status, 403);
     assert.equal((await request("PUT", profile(namespace), newStage, firstHeaders)).status, 403);
 
@@ -204,18 +204,19 @@ test(
     const concurrentAdminHeaders = await signedInHeaders(app, origin, admin, "192.0.2.11");
     const concurrent = await Promise.all([
       request("PUT", profile(namespace), newStage),
-      request("PUT", profile(namespace), { ...newStage, teamId: "81013" }, concurrentAdminHeaders),
+      request(
+        "PUT",
+        profile(namespace),
+        { ...newStage, groupId: alternate },
+        concurrentAdminHeaders,
+      ),
     ]);
     assert.deepEqual(concurrent.map(({ status }) => status).sort(), [200, 409]);
     const winningIndex = concurrent.findIndex(({ status }) => status === 200);
     const staged = concurrent[winningIndex]!.body.data;
     assert.equal(staged.status, "staged");
     assert.equal(staged.namespaceId, namespace);
-    assert.deepEqual(staged.team, {
-      ...team,
-      teamId: winningIndex === 0 ? team.teamId : "81013",
-      providerId,
-    });
+    assert.equal(staged.groupId, winningIndex === 0 ? groupId : alternate);
     assert.equal(typeof staged.generation, "string");
     assert.deepEqual((await request("GET", profile(namespace))).body.data, staged);
     assert.equal(
@@ -270,7 +271,12 @@ test(
       );
       await blocker.query("BEGIN");
       await blocker.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [expiring]);
-      blockedWrite = request("PUT", profile(expiring), newStage, expiredHeaders);
+      blockedWrite = request(
+        "PUT",
+        profile(expiring),
+        { ...newStage, groupId: expiringGroup },
+        expiredHeaders,
+      );
       // Observe the write waiting on its Namespace lock after the initial session hold.
       let waiting = false;
       const until = Date.now() + 3_000;
@@ -304,19 +310,18 @@ test(
       "the expired write did not commit success audit",
     );
 
-    // Keep the guarded Auth profile active with Google, then inspect and withdraw the
-    // assignment without configuring the GitHub provider or contacting either provider.
+    // Reopen with one pool connection to exercise the exact Namespace read.
     await app.close();
-    const googleConfig = await productionSignInConfiguration(t, {
+    const config = await productionSignInConfiguration(t, {
       databaseUrl,
-      settings: googleUpgradeSettings(admin.id),
+      settings: defaultInstallSettings,
       secrets,
       logger: undefined,
       metrics: undefined,
       passwordSlowLaneFloors: undefined,
     });
     // Use the same sign-in fixture Drivers, with the production pool limited to one client.
-    app = await composeProduction({ ...googleConfig, poolMax: 1 });
+    app = await composeProduction({ ...config, poolMax: 1 });
     endpoint = await app.listen({ host: "127.0.0.1", port: 0 });
     Object.assign(adminHeaders, await signedInHeaders(app, origin, admin));
     // The read must complete with one pool connection and still enforce exact Namespace read.
@@ -324,7 +329,7 @@ test(
     assert.equal(inspected.status, 200, JSON.stringify(inspected.body));
     assert.deepEqual(inspected.body.data, staged);
     assert.equal((await request("GET", profile(unreadable))).status, 403);
-    assert.equal((await request("PUT", profile(unrelated), newStage)).status, 503);
+    assert.equal((await request("PUT", profile(unrelated), newStage)).status, 404);
     const withdraw = await request("POST", `${profile(namespace)}/withdraw`, {
       expectedGeneration: staged.generation,
     });
@@ -332,7 +337,7 @@ test(
     const withdrawn = withdraw.body.data;
     assert.equal(withdrawn.status, "withdrawn");
     assert.notEqual(withdrawn.generation, staged.generation);
-    assert.deepEqual(withdrawn.team, staged.team);
+    assert.equal(withdrawn.groupId, null);
     assert.deepEqual((await request("GET", profile(namespace))).body.data, withdrawn);
     assert.equal(
       (
@@ -350,23 +355,21 @@ test(
         resource,
         generation: details?.generation,
         status: details?.status,
-        team: details?.team,
+        groupId: details?.groupId,
+        previousGeneration: details?.previousGeneration,
       })),
       [staged, withdrawn].map((change) => ({
         action: `openclaw.iam.agent_operator.${change.status === "staged" ? "stage" : "withdraw"}`,
-        actorId: adminPrincipalId,
+        actorId: adminPrincipal.id,
         resource: { kind: "namespace", id: namespace, namespaceId: namespace },
         generation: change.generation,
         status: change.status,
-        team: change.team,
+        groupId: change.groupId,
+        previousGeneration: change.status === "withdrawn" ? staged.generation : undefined,
       })),
     );
 
-    // Returning to the configured provider cannot replay a request from before withdrawal.
-    await app.close();
-    app = await fixture.composeApp(githubUpgradeSettings(admin.id));
-    endpoint = await app.listen({ host: "127.0.0.1", port: 0 });
-    Object.assign(adminHeaders, await signedInHeaders(app, origin, admin));
+    // A stale request cannot reinstate a withdrawn selection.
     assert.equal((await request("PUT", profile(namespace), newStage)).status, 409);
     assert.equal(
       (
@@ -385,5 +388,23 @@ test(
     assert.equal(restaged.status, 200, JSON.stringify(restaged.body));
     assert.equal(restaged.body.data.status, "staged");
     assert.notEqual(restaged.body.data.generation, withdrawn.generation);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT group_id, principal_id FROM occ.iam_group_memberships WHERE namespace_id = $1 ORDER BY group_id",
+          [namespace],
+        )
+      ).rows,
+      [groupId, alternate].sort().map((id) => ({ group_id: id, principal_id: member })),
+    );
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT id FROM occ.iam_access_bindings WHERE namespace_id = $1 AND group_subject_id IS NOT NULL",
+          [namespace],
+        )
+      ).rows,
+      [],
+    );
   },
 );

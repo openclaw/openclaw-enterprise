@@ -1365,7 +1365,6 @@ export type {
   IAMManagedRoleInput,
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
-  NamespaceAgentOperatorTeam,
   NamespaceAgentOperatorProfile,
   NamespaceAgentOperatorProfileChange,
 } from "./drivers/iam/index.ts";

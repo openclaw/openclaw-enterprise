@@ -2500,11 +2500,9 @@ export class OpenClawController {
     namespaceId: string,
     input: {
       readonly expectedGeneration: string | null;
-      readonly organizationId: string;
-      readonly teamId: string;
+      readonly groupId: string;
       readonly acknowledgeAllAgents: true;
     },
-    providerId: string | undefined,
   ): Promise<Readonly<NamespaceAgentOperatorProfile>> {
     return this.changeNamespaceAgentOperatorProfile(actor, namespaceId, (namespace) => {
       if (namespace.status !== "ready") {
@@ -2512,14 +2510,11 @@ export class OpenClawController {
           "The Namespace must be ready to stage Agent Operator.",
         );
       }
-      if (providerId === undefined) {
-        throw new DependencyUnavailableError("The GitHub sign-in provider is unavailable.");
-      }
       return {
         action: "stage",
         expectedGeneration: input.expectedGeneration,
         acknowledgeAllAgents: input.acknowledgeAllAgents,
-        team: { providerId, organizationId: input.organizationId, teamId: input.teamId },
+        groupId: input.groupId,
       };
     });
   }

@@ -49,7 +49,7 @@ remain available when their methods are implemented.
 
 Drivers can also implement `getNamespaceAgentOperatorProfile` and
 `changeNamespaceAgentOperatorProfile` to inspect, stage, and withdraw the
-[Agent Operator assignment](../../guides/topics/iam.md#stage-an-agent-operator-team).
+[Agent Operator assignment](../../guides/topics/iam.md#stage-an-agent-operator-group).
 The change method returns no profile if the generation is stale or the current
 state refuses the transition. Staging records intent. The native IAM evaluator
 does not use this assignment for authorization.

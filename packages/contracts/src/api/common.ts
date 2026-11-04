@@ -601,13 +601,12 @@ export const CreateIAMRoleBody = Type.Object(
 export const CreateIAMServicePrincipalBody = Type.Object({}, { additionalProperties: false });
 
 export const AgentOperatorProfileGeneration = Type.String({ pattern: `^${UUID_V4}$` });
-export const GitHubTeamIdentityId = Type.String({ pattern: "^[1-9][0-9]{0,19}$" });
+export const IAMGroupId = Type.String({ minLength: 1, maxLength: 200 });
 
 export const StageNamespaceAgentOperatorProfileBody = Type.Object(
   {
     expectedGeneration: Type.Union([AgentOperatorProfileGeneration, Type.Null()]),
-    organizationId: GitHubTeamIdentityId,
-    teamId: GitHubTeamIdentityId,
+    groupId: IAMGroupId,
     acknowledgeAllAgents: Type.Literal(true),
   },
   { additionalProperties: false },

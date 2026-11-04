@@ -30,7 +30,7 @@ export interface IAMDriver extends Driver {
     namespaceId: string,
   ): Promise<Readonly<NamespaceAgentOperatorProfile> | undefined>;
   /**
-   * Staging records administrative intent only. It never supplies team membership or grants.
+   * Staging records administrative intent only. It never supplies Group membership or grants.
    * Returns undefined when the generation or the requested transition no longer applies.
    */
   changeNamespaceAgentOperatorProfile?(
@@ -138,25 +138,20 @@ export interface IAMPolicyManagementContext {
   readonly policy: IAMPolicyRepository;
 }
 
-export interface NamespaceAgentOperatorTeam {
-  readonly providerId: string;
-  readonly organizationId: string;
-  readonly teamId: string;
-}
-
-/** One assignment per Namespace lifetime, retained after withdrawal. */
-export interface NamespaceAgentOperatorProfile {
+/** The Namespace retains its profile generation after withdrawal and releases the Group. */
+export type NamespaceAgentOperatorProfile = {
   readonly namespaceId: string;
   readonly generation: string;
-  readonly status: "staged" | "withdrawn";
-  readonly team: NamespaceAgentOperatorTeam;
-}
+} & (
+  | { readonly status: "staged"; readonly groupId: string }
+  | { readonly status: "withdrawn"; readonly groupId: null }
+);
 
 export type NamespaceAgentOperatorProfileChange =
   | {
       readonly action: "stage";
       readonly expectedGeneration: string | null;
-      readonly team: NamespaceAgentOperatorTeam;
+      readonly groupId: string;
       readonly acknowledgeAllAgents: true;
     }
   | { readonly action: "withdraw"; readonly expectedGeneration: string };

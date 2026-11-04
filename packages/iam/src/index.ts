@@ -1218,16 +1218,9 @@ export class NativeIAMDriver implements IAMDriver {
 
     let profile: Readonly<NamespaceAgentOperatorProfile>;
     if (change.action === "stage") {
-      const { providerId, organizationId, teamId } = change.team;
       assertCondition(
-        change.acknowledgeAllAgents === true &&
-          typeof providerId === "string" &&
-          /^github:[0-9a-f]{64}$/.test(providerId) &&
-          typeof organizationId === "string" &&
-          /^[1-9][0-9]{0,19}$/.test(organizationId) &&
-          typeof teamId === "string" &&
-          /^[1-9][0-9]{0,19}$/.test(teamId),
-        "Staging Agent Operator requires an exact GitHub team and acknowledgement of all Agents.",
+        change.acknowledgeAllAgents === true && isNonEmptyString(change.groupId),
+        "Staging Agent Operator requires a Group ID and acknowledgement of all Agents.",
       );
       if (current?.status === "staged") {
         return undefined;
@@ -1236,10 +1229,15 @@ export class NativeIAMDriver implements IAMDriver {
         namespaceId,
         generation: randomUUID(),
         status: "staged",
-        team: Object.freeze({ providerId, organizationId, teamId }),
+        groupId: change.groupId,
       });
     } else if (change.action === "withdraw" && current?.status === "staged") {
-      profile = Object.freeze({ ...current, generation: randomUUID(), status: "withdrawn" });
+      profile = Object.freeze({
+        namespaceId,
+        generation: randomUUID(),
+        status: "withdrawn",
+        groupId: null,
+      });
     } else {
       return undefined;
     }

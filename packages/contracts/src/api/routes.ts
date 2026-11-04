@@ -570,7 +570,7 @@ export const occApiRoutes = [
     resourceKind: "installation",
     authorizationTarget: "namespace_iam",
     humanSessionOnly: true,
-    summary: "Stage an exact GitHub team for Agent Operator without granting access",
+    summary: "Stage a Namespace Group for Agent Operator without granting access",
     tags: ["IAM"],
     schema: {
       querystring: EmptyQuery,
