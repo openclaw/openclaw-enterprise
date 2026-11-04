@@ -100,6 +100,125 @@ export function applyQaRepositoryInstallation(configuration, registry, podLabels
   return configuration;
 }
 
+// Run where prepared GitHub issuance runs, before any QA Agent binds this repository.
+// Node HTTPS keeps production's DNS selection, agent:false and verified TLS. This
+// public request proves transport only: even a 403 does not prove App credentials.
+async function probeQaRepositoryWorker(f, input) {
+  const script = String.raw`
+    const { lookup } = await import("node:dns/promises");
+    const { request } = await import("node:https");
+    const evidence = { hostname: "api.github.com", addresses: [] };
+    const codes = ["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH", "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "ERR_TLS_CERT_ALTNAME_INVALID"];
+    const finish = (error) => {
+      if (error) {
+        evidence.error = error.code === "ABORT_ERR" ? "ETIMEDOUT"
+          : codes.includes(error.code) ? error.code : "unavailable";
+      }
+      process.stdout.write(JSON.stringify(evidence), () => process.exit(error ? 1 : 0));
+    };
+    const deadline = setTimeout(() => finish({ code: "ETIMEDOUT" }), 8000);
+    try {
+      let dnsDeadline;
+      try {
+        evidence.addresses = (await Promise.race([
+          lookup(evidence.hostname, { all: true }),
+          new Promise((_, reject) => { dnsDeadline = setTimeout(() => reject({ code: "ETIMEDOUT" }), 3000); }),
+        ])).map(({ address }) => address);
+      } finally { clearTimeout(dnsDeadline); }
+      await new Promise((resolve, reject) => {
+        const req = request({
+          protocol: "https:", hostname: evidence.hostname, port: 443,
+          method: "GET", path: "/", agent: false, rejectUnauthorized: true,
+          maxHeaderSize: 32768, signal: AbortSignal.timeout(5000),
+          headers: { accept: "application/vnd.github+json", "user-agent": "openclaw-enterprise-repository-credentials", "x-github-api-version": "2026-03-10", "accept-encoding": "identity", connection: "close" },
+        });
+        req.once("error", reject);
+        req.once("socket", (socket) => socket.once("secureConnect", () => {
+          evidence.address = socket.remoteAddress;
+          evidence.tlsVerified = socket.authorized === true;
+          req.end();
+        }));
+        req.once("response", (response) => {
+          evidence.httpStatus = response.statusCode;
+          // Never consume or record provider headers or response contents.
+          response.destroy();
+          resolve();
+        });
+      });
+      clearTimeout(deadline);
+      finish();
+    } catch (error) { clearTimeout(deadline); finish(error); }
+  `;
+  const kubernetes = f.controlPlane === "kubernetes";
+  const args = kubernetes
+    ? [
+        "--kubeconfig",
+        join(f.stateDirectory, "kubeconfig"),
+        "--context",
+        `k3d-${f.cluster}`,
+        "--namespace",
+        f.state.platformNamespace,
+        "--request-timeout=10s",
+        "exec",
+        "deployment/openclaw-enterprise-worker",
+        "--container",
+        "worker",
+        "--",
+        "node",
+        "--input-type=module",
+        "-e",
+        script,
+      ]
+    : [
+        "compose",
+        "-p",
+        f.cluster,
+        "-f",
+        join(f.stateDirectory, "compose.yaml"),
+        "exec",
+        "-T",
+        "worker-kubernetes",
+        "node",
+        "--input-type=module",
+        "-e",
+        script,
+      ];
+  let evidence;
+  let status;
+  try {
+    const output = await captureChild(kubernetes ? "kubectl" : "docker", args, {
+      env: f.env,
+      timeout: 15_000,
+    });
+    status = output.status;
+    evidence = JSON.parse(output.stdout);
+    assert.equal(evidence.hostname, "api.github.com");
+    assert.ok(Array.isArray(evidence.addresses));
+  } catch {
+    // Never copy exec stderr or an unstructured process failure into the artifact.
+    evidence = { hostname: "api.github.com", addresses: [], error: "worker-probe-unavailable" };
+  }
+  const cidrs = JSON.parse(await readFile(join(input, "upstream-cidrs.json"), "utf8"));
+  const approved = (address) => cidrs.includes(`${address}/32`);
+  await f.record("repository-provider-worker-preflight", {
+    scope: "worker",
+    controlPlane: f.controlPlane,
+    approvedEndpoints: cidrs.length,
+    ...evidence,
+    addresses: evidence.addresses.map((address) => ({ address, approved: approved(address) })),
+    connectedAddressApproved: approved(evidence.address),
+  });
+  assert.ok(
+    status === 0 &&
+      evidence.tlsVerified === true &&
+      approved(evidence.address) &&
+      Number.isInteger(evidence.httpStatus) &&
+      evidence.httpStatus >= 100 &&
+      evidence.httpStatus <= 599,
+    "repository worker GitHub API transport preflight failed; see repository-provider-worker-preflight (not a credential check)",
+  );
+}
+
 export async function prepareQaRepository(f) {
   const input = f.repositoryInput;
   assert.ok(input, "OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY is required");
@@ -170,6 +289,7 @@ export async function prepareQaRepository(f) {
     // Optional diagnostics cannot prevent repository setup or replace its failure.
   }
   if (f.controlPlane === "kubernetes") {
+    await probeQaRepositoryWorker(f, input);
     return;
   }
   entry.namespaces = [{ ...entry.namespaces[0], namespaceId: f.namespace.id }];
@@ -515,7 +635,11 @@ export async function prepareQaRepository(f) {
   const ip = JSON.parse(await f.run("docker", ["inspect", broker]))[0].NetworkSettings.Networks[
     `${f.cluster}_development`
   ].IPAddress;
-  const labels = { "app.kubernetes.io/name": "qa-repository-relay" };
+  const labels = {
+    "app.kubernetes.io/name": "qa-repository-relay",
+    "app.kubernetes.io/component": "worker",
+    "openclaw.dev/qa-repository": f.suffix,
+  };
   const compute = f.configuration.drivers.compute.configuration;
   // A TCP relay preserves broker TLS and authentication. It does not implement
   // credentials, Git, or authorization; the shipped broker handles every call.
@@ -562,35 +686,36 @@ export async function prepareQaRepository(f) {
   await f.apply({
     apiVersion: "v1",
     kind: "Service",
-    metadata: { name: "git", namespace: "oce-system" },
-    spec: { selector: labels, ports: [{ name: "https", port: 443, targetPort: 8443 }] },
+    metadata: {
+      name: "git",
+      namespace: "oce-system",
+      annotations: { "openclaw.dev/repository-credentials-hostname": host },
+    },
+    spec: {
+      type: "ClusterIP",
+      selector: labels,
+      ports: [{ name: "https", port: 443, targetPort: 8443, protocol: "TCP" }],
+    },
   });
   await f.apply({
     apiVersion: "networking.k8s.io/v1",
     kind: "NetworkPolicy",
-    metadata: { name: "qa-repository-relay", namespace: "oce-system" },
+    metadata: { name: "openclaw-enterprise-prepared-repository-ingress", namespace: "oce-system" },
     spec: {
       podSelector: { matchLabels: labels },
-      policyTypes: ["Ingress", "Egress"],
-      ingress: [
-        {
-          from: [
-            {
-              namespaceSelector: { matchLabels: { "openclaw.dev/namespace": f.namespace.id } },
-              podSelector: {
-                matchExpressions: [
-                  {
-                    key: "openclaw.dev/workload-role",
-                    operator: "In",
-                    values: ["agent", "gateway"],
-                  },
-                ],
-              },
-            },
-          ],
-          ports: [{ protocol: "TCP", port: 8443 }],
-        },
-      ],
+      policyTypes: ["Ingress"],
+      // Match the shipped prepared-repository-ingress manifest: only Compute
+      // admits and later removes the exact dedicated Harness peers.
+      ingress: [],
+    },
+  });
+  await f.apply({
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name: "qa-repository-relay-egress", namespace: "oce-system" },
+    spec: {
+      podSelector: { matchLabels: labels },
+      policyTypes: ["Egress"],
       egress: [
         { to: [{ ipBlock: { cidr: `${ip}/32` } }], ports: [{ protocol: "TCP", port: 8443 }] },
       ],
@@ -606,6 +731,7 @@ export async function prepareQaRepository(f) {
   );
   applyQaRepositoryInstallation(f.configuration, registry, labels);
   await f.saveInstallation(f.configuration);
+  await probeQaRepositoryWorker(f, input);
 }
 
 // The serial worker waits for the Gateway's whole active-work drain, bounded by

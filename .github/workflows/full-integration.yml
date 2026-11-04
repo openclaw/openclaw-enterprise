@@ -357,6 +357,8 @@ jobs:
     timeout-minutes: 120
     environment: integration-main
     env:
+      # The packaged browser has Ubuntu's AppArmor user-namespace permission.
+      OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

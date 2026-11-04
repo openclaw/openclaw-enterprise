@@ -826,8 +826,24 @@ async function startInClusterControllers(
           "--namespace",
           platformNamespace,
           "--ignore-not-found=true",
+          // Background deletion returns while the worker can still reconcile.
+          // Wait for its owned Pods before deleting the Agent namespaces.
+          "--cascade=foreground",
           "--wait=true",
           "--timeout=120s",
+        );
+        const remainingWorkers = await resources(
+          "pods",
+          platformNamespace,
+          "-l",
+          Object.entries(workerLabels)
+            .map(([key, value]) => `${key}=${value}`)
+            .join(","),
+        );
+        assert.deepEqual(
+          remainingWorkers.map(({ metadata }) => metadata.name),
+          [],
+          "the in-cluster worker Pods must stop before Agent namespace cleanup",
         );
       } finally {
         logs.kill("SIGTERM");
@@ -4221,6 +4237,7 @@ async function assertDedicatedNativeChildRelay(topology) {
       });
       const pending = new Map();
       let nextId = 0;
+      const observation = { stage: "connect", polls: 0, childCount: 0 };
       const fail = () => {
         for (const request of pending.values()) request.reject(new Error("Native child evidence connection closed"));
         pending.clear();
@@ -4243,6 +4260,7 @@ async function assertDedicatedNativeChildRelay(topology) {
         pending.set(id, { resolve, reject });
         socket.send(JSON.stringify({ id, method, params }));
       });
+      const expiresAt = Date.now() + 20_000;
       const deadline = setTimeout(() => socket.terminate(), 20_000);
       (async () => {
         try {
@@ -4250,38 +4268,77 @@ async function assertDedicatedNativeChildRelay(topology) {
             socket.once("open", resolve);
             socket.once("error", () => reject(new Error("Native child evidence connection failed")));
           });
+          observation.stage = "initialize";
           await request("initialize", {
             clientInfo: { name: "oce-native-child-proof", version: "1.0.0" },
             capabilities: { experimentalApi: true },
           });
           socket.send(JSON.stringify({ method: "initialized", params: {} }));
-          const parent = (await request("thread/read", {
-            threadId: ${JSON.stringify(parentThreadId)}, includeTurns: true,
-          })).thread;
-          const children = new Set(parent.turns.flatMap((turn) => turn.items.flatMap((item) => {
-            if (item.type === "subAgentActivity" && item.kind === "started") return [item.agentThreadId];
-            if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && item.status === "completed") return item.receiverThreadIds;
-            return [];
-          })));
-          assert.equal(children.size, 1, "expected one actual native child");
-          const childId = [...children][0];
-          const child = (await request("thread/read", { threadId: childId, includeTurns: true })).thread;
-          assert.equal(child.parentThreadId, parent.id, "child must belong to this Gateway turn");
-          const completed = child.turns.find((turn) => turn.status === "completed" && turn.items.some(
-            (item) => item.type === "agentMessage" && item.text.trim() === ${JSON.stringify(marker)},
-          ));
-          assert.ok(completed, "the child itself must complete with the expected answer");
-          process.stdout.write(JSON.stringify({ parentThreadId: parent.id, childThreadId: child.id }));
+          let childId;
+          let evidence;
+          // A spawn record can be visible before the child's turn is terminal.
+          // Observe that same child; never submit another turn or supply its answer.
+          while (Date.now() < expiresAt) {
+            observation.polls += 1;
+            observation.stage = "parent-read";
+            const parent = (await request("thread/read", {
+              threadId: ${JSON.stringify(parentThreadId)}, includeTurns: true,
+            })).thread;
+            const children = new Set(parent.turns.flatMap((turn) => turn.items.flatMap((item) => {
+              if (item.type === "subAgentActivity" && item.kind === "started") return [item.agentThreadId];
+              if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && item.status === "completed") return item.receiverThreadIds;
+              return [];
+            })));
+            observation.parentTurnCount = parent.turns.length;
+            observation.childCount = children.size;
+            assert.ok(children.size <= 1, "expected one actual native child");
+            if (children.size === 1) {
+              const candidate = [...children][0];
+              if (childId !== undefined) assert.equal(candidate, childId, "native child identity must stay fixed");
+              childId = candidate;
+              observation.stage = "child-read";
+              const child = (await request("thread/read", { threadId: childId, includeTurns: true })).thread;
+              assert.equal(child.id, childId, "read must return the selected native child");
+              observation.parentMatches = child.parentThreadId === parent.id;
+              assert.equal(child.parentThreadId, parent.id, "child must belong to this Gateway turn");
+              observation.turnCount = child.turns.length;
+              observation.errorTurnCount = child.turns.filter((turn) => turn.error !== undefined && turn.error !== null).length;
+              observation.turnStatuses = child.turns.slice(-10).map((turn) =>
+                ["completed", "inProgress", "failed", "interrupted"].includes(turn.status) ? turn.status : "unknown");
+              const messages = child.turns.flatMap((turn) => turn.items).filter((item) => item.type === "agentMessage");
+              observation.agentMessageCount = messages.length;
+              observation.exactNonceMessages = messages.filter((item) => item.text.trim() === ${JSON.stringify(marker)}).length;
+              const completed = child.turns.find((turn) => turn.status === "completed" && turn.items.some(
+                (item) => item.type === "agentMessage" && item.text.trim() === ${JSON.stringify(marker)},
+              ));
+              observation.completedNonceTurn = Boolean(completed);
+              if (completed) {
+                observation.stage = "complete";
+                evidence = { parentThreadId: parent.id, childThreadId: child.id, observation };
+                break;
+              }
+            }
+            observation.stage = "child-completion";
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+          assert.equal(observation.childCount, 1, "expected one actual native child");
+          assert.ok(evidence, "the child itself must complete with the expected answer within the evidence deadline");
+          process.stdout.write(JSON.stringify(evidence));
         } finally {
           clearTimeout(deadline);
           socket.terminate();
         }
-      })().catch((error) => { console.error(error.message); process.exitCode = 1; });
+      })().catch((error) => {
+        const failure = error.code === "ERR_ASSERTION" ? "assertion" : "transport-or-protocol";
+        console.error("Native child evidence " + failure + "; observation: " + JSON.stringify(observation));
+        process.exitCode = 1;
+      });
     `,
     ),
   );
   assert.equal(evidence.parentThreadId, parentThreadId);
   assert.notEqual(evidence.childThreadId, parentThreadId);
+  process.stderr.write(`k3d native child observation: ${JSON.stringify(evidence.observation)}\n`);
 }
 
 async function requestFreshDedicatedHarnessTurn(topology) {
