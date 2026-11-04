@@ -133,6 +133,9 @@ async function waitForNode(expectedId) {
       (item) => item.connected && item.displayName === "runtime-workspace-proof",
     );
     if (node) {
+      // This fresh Gateway belongs only to this fixture. Renewal and reconnect
+      // must not leave another identity, even as a disconnected node record.
+      assert.equal(result.nodes.length, 1, "Expected exactly one workspace node identity.");
       assert.deepEqual(node.commands.toSorted(), commands);
       if (expectedId) {
         assert.equal(node.nodeId, expectedId);
@@ -200,6 +203,7 @@ try {
   await publishSetup();
   const replacementCompletion = await waitForConfirmedSetup(nodeId);
   assert.equal(replacementCompletion.access, "node");
+  await waitForNode(nodeId);
   await stop();
   await waitForDisconnect(nodeId);
   // A provider envelope uses the same retained identity after process replacement.
