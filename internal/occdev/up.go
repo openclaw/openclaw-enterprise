@@ -36,11 +36,29 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if controlPlane != "compose" && controlPlane != "kubernetes" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
 	}
+	if err := r.protectedEgressSelection(); err != nil {
+		return err
+	}
+	if _, err := r.selectedDevelopmentDatabase(controlPlane); err != nil {
+		return err
+	}
+	networkPolicies, err := r.loadSandboxNetworkPolicies(ctx, sandboxDriver)
+	if err != nil {
+		return err
+	}
+	ceiling, err := r.loadSandboxNetworkPolicyCeiling(ctx, sandboxDriver)
+	if err != nil {
+		return err
+	}
 	if _, err := developmentSignIn(r.env); err != nil {
 		return err
 	}
 	if controlPlane == "kubernetes" {
-		return upK3d(ctx, opts, sandboxDriver)
+		return upK3d(ctx, opts, sandboxDriver, networkPolicies, ceiling)
+	}
+	openShellImages, err := r.selectOpenShellImages(sandboxDriver)
+	if err != nil {
+		return err
 	}
 	timeout, err := positiveSetting(r, "OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS", 300, 86400)
 	if err != nil {
@@ -49,6 +67,17 @@ func Up(ctx context.Context, opts Options) (result error) {
 	port, err := positiveSetting(r, "OCC_DEVELOPMENT_KUBERNETES_API_PORT", 6443, 65535)
 	if err != nil {
 		return err
+	}
+	// A shell value wins over env files, so refuse its collision before any tool runs. Without
+	// one, .env or --env-file can still move the port: the rendered check below decides.
+	if r.env["OPENCLAW_DEV_PORT"] != "" {
+		apiPort, err := positiveSetting(r, "OPENCLAW_DEV_PORT", 3000, 65535)
+		if err != nil {
+			return err
+		}
+		if err := checkAPIKubernetesPorts(apiPort, port); err != nil {
+			return err
+		}
 	}
 	threshold, err := positiveSetting(r, "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT", 5, 20)
 	if err != nil {
@@ -59,6 +88,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	state := &developmentState{Repository: opts.Repository, Version: 3, ComputeDriver: "kubernetes", SandboxDriver: sandboxDriver, ComposeProject: r.setting("OCC_DEVELOPMENT_COMPOSE_PROJECT", "openclaw-enterprise-development-kubernetes"), Cluster: r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])), directory: directory, KeyPath: opts.KeyOutput, KeyOwned: opts.KeyOutput == ""}
+	state.SandboxNetworkPolicies = networkPolicies
+	state.SandboxNetworkPolicyCeiling = ceiling
 	if sandboxDriver == "openshell" {
 		browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
 		if err != nil {
@@ -69,7 +100,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
 		state.BrowserPort = browserPort
-		state.BrowserOrigin = fmt.Sprintf("https://%s:%d", consoleHost, browserPort)
+		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
 		state.NativeAdminDomain = agentDomain
 		r.env["OCC_DEVELOPMENT_BROWSER_PORT"] = strconv.Itoa(browserPort)
 		r.env["OCC_DEVELOPMENT_BROWSER_ORIGIN"] = state.BrowserOrigin
@@ -108,6 +139,12 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	if err := r.pinEndpoint(ctx); err != nil {
+		return err
+	}
+	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
+		return err
+	}
+	if err := r.selectComposeDevelopmentImageRegistry(ctx); err != nil {
 		return err
 	}
 	if err := r.checkLegacyNATTable(ctx); err != nil {
@@ -162,14 +199,20 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return fmt.Errorf("Compose analysis returned no API URL")
 	}
 	apiURL := analysis[0]
-	if state.BrowserPort != 0 {
-		parsedAPI, err := url.Parse(apiURL)
-		if err != nil {
-			return fmt.Errorf("invalid analyzed API URL: %w", err)
-		}
-		if parsedAPI.Port() == strconv.Itoa(state.BrowserPort) {
-			return fmt.Errorf("browser and controller API ports must differ")
-		}
+	parsedAPI, err := url.Parse(apiURL)
+	if err != nil {
+		return fmt.Errorf("invalid analyzed API URL: %w", err)
+	}
+	// Compose files, .env and --env-file can move the published API port; this one binds.
+	renderedAPIPort, err := strconv.Atoi(parsedAPI.Port())
+	if err != nil {
+		return fmt.Errorf("invalid analyzed API URL port: %q", parsedAPI.Port())
+	}
+	if err := checkAPIKubernetesPorts(renderedAPIPort, port); err != nil {
+		return err
+	}
+	if state.BrowserPort != 0 && parsedAPI.Port() == strconv.Itoa(state.BrowserPort) {
+		return fmt.Errorf("browser and controller API ports must differ")
 	}
 	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))
 	if err != nil {
@@ -187,6 +230,13 @@ func Up(ctx context.Context, opts Options) (result error) {
 	defer func() {
 		defer lock.Close()
 		if result == nil {
+			return
+		}
+		if os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
+			// Inspection override: keep the failed stack, the state directory, and
+			// any copied service key for diagnosis; occ dev down with the same
+			// state directory performs the cleanup.
+			fmt.Fprintf(r.opts.Out, "OCC_DEVELOPMENT_KEEP_ON_FAILURE is set; kept the failed stack and %s for inspection. Run occ dev down with the same state directory to clean up.\n", directory)
 			return
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -223,75 +273,115 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := exclusiveWrite(filepath.Join(directory, "compose.yaml"), snapshot, 0600); err != nil {
 		return err
 	}
-	fmt.Fprintln(r.opts.Out, "Starting the Compose database, migration, and bootstrap services...")
-	started = true
-	if err := r.compose(ctx, state, "up", "--build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
-		return err
-	}
-	for _, service := range []string{"migrate", "bootstrap"} {
-		if err := r.waitCompleted(ctx, state, service, time.Duration(timeout)*time.Second); err != nil {
-			return err
-		}
-	}
-	fmt.Fprintf(r.opts.Out, "Creating k3d cluster %s...\n", state.Cluster)
-	clusterAttempted = true
-	clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", defaultK3sChannel)
-	clusterArgs := []string{"cluster", "create", state.Cluster, "--timeout", (time.Duration(timeout) * time.Second).String(), "--env", "IPTABLES_MODE=legacy@server:0"}
-	resolverArgs, err := r.prepareDevelopmentResolver(state)
-	if err != nil {
-		return err
-	}
-	clusterArgs = append(clusterArgs, resolverArgs...)
-	if sandboxDriver == "openshell" {
-		clusterImage = openShellK3sImage
-		admissionPath, err := prepareOpenShellAdmission(directory)
-		if err != nil {
-			return err
-		}
-		clusterArgs = append(clusterArgs, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
-	}
-	clusterArgs = append(clusterArgs, "--image", clusterImage, "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
-	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
-		clusterCreationFailed = true
-		return err
-	}
-	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
-		return err
-	}
-	if err := r.writeKubeconfigs(ctx, state); err != nil {
-		return err
-	}
-	reference, err := r.importRuntime(ctx, state)
-	if err != nil {
-		return err
-	}
+	var reference, codexSeccompProfile string
 	var openShellAssets *openShellDevelopmentAssets
-	if sandboxDriver == "openshell" {
-		// Import the large runtime first so image garbage collection cannot evict
-		// idle OpenShell images before their workloads are installed.
-		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-		openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
+	var routing *composeDevelopmentRouting
+	defer func() {
+		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+			result = errors.Join(result, err)
+		}
+	}()
+	startDatabase := func(ctx context.Context, r *runner) error {
+		fmt.Fprintln(r.opts.Out, "Starting the Compose database, migration, and bootstrap services...")
+		if err := r.compose(ctx, state, "up", "--build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
+			return err
+		}
+		for _, service := range []string{"migrate", "bootstrap"} {
+			if err := r.waitCompleted(ctx, state, service, time.Duration(timeout)*time.Second); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	prepareCluster := func(ctx context.Context, r *runner) error {
+		var err error
+		fmt.Fprintf(r.opts.Out, "Creating k3d cluster %s...\n", state.Cluster)
+		clusterAttempted = true
+		clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", defaultK3sChannel)
+		clusterArgs := []string{"cluster", "create", state.Cluster, "--timeout", (time.Duration(timeout) * time.Second).String(), "--env", "IPTABLES_MODE=legacy@server:0"}
+		resolverArgs, err := r.prepareDevelopmentResolver(state)
 		if err != nil {
 			return err
 		}
+		clusterArgs = append(clusterArgs, resolverArgs...)
+		if sandboxDriver == "openshell" {
+			clusterImage = openShellK3sImage
+			admissionPath, err := prepareOpenShellAdmission(directory)
+			if err != nil {
+				return err
+			}
+			clusterArgs = append(clusterArgs, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
+		}
+		clusterArgs = append(clusterArgs, "--image", clusterImage, "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
+		if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
+			clusterCreationFailed = true
+			return err
+		}
+		if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
+			return err
+		}
+		if err := r.writeKubeconfigs(ctx, state); err != nil {
+			return err
+		}
+		if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
+			return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+		}
+		reference, err = r.importRuntime(ctx, state)
+		if err != nil {
+			return err
+		}
+		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+			return err
+		}
+		if sandboxDriver == "openshell" {
+			// Import the large runtime first so image garbage collection cannot evict
+			// idle OpenShell images before their workloads are installed.
+			fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+			openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
+			if err != nil {
+				return err
+			}
+		}
+		if sandboxDriver == "openshell" {
+			fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
+			if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
+				return err
+			}
+		}
+		if sandboxDriver == "none" {
+			codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, reference, timeout)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	if sandboxDriver == "openshell" {
-		fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
-		if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
+	started = true
+	if r.engine == "docker" && r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
+		// Compose creates its owned network before k3d joins it. A selected runtime
+		// is validated/imported, never built, so it can overlap the controller build
+		// and database bootstrap. Join both branches before starting the controller;
+		// concurrently drains canceled commands before rollback touches resources.
+		if err := r.compose(ctx, state, "up", "--no-start", "postgres"); err != nil {
+			return err
+		}
+		if err := r.concurrently(ctx, startDatabase, prepareCluster); err != nil {
+			return err
+		}
+	} else {
+		// Keep cold controller/runtime builds serial and retain Podman's provider path.
+		if err := startDatabase(ctx, r); err != nil {
+			return err
+		}
+		if err := prepareCluster(ctx, r); err != nil {
 			return err
 		}
 	}
-	var routing *composeDevelopmentRouting
+	// Routing resolves the running PostgreSQL container's address, so wait for
+	// database/bootstrap as well as the cluster before configuring its allowlist.
 	if sandboxDriver == "openshell" {
 		fmt.Fprintln(r.opts.Out, "Installing pinned private routing for the Compose control plane...")
 		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, time.Duration(timeout)*time.Second)
-		if err != nil {
-			return err
-		}
-	}
-	var codexSeccompProfile string
-	if sandboxDriver == "none" {
-		codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, reference, timeout)
 		if err != nil {
 			return err
 		}
@@ -372,6 +462,16 @@ func Up(ctx context.Context, opts Options) (result error) {
 	return nil
 }
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+
+// checkAPIKubernetesPorts refuses a controller API port equal to the host port
+// k3d publishes for the Kubernetes API; the second publish would fail late.
+func checkAPIKubernetesPorts(apiPort, kubernetesPort int) error {
+	if apiPort == kubernetesPort {
+		return fmt.Errorf("development API and Kubernetes API ports must differ")
+	}
+	return nil
+}
+
 func positiveSetting(r *runner, key string, fallback, max int) (int, error) {
 	n, err := strconv.Atoi(r.setting(key, strconv.Itoa(fallback)))
 	if err != nil || n < 1 || n > max {

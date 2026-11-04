@@ -13,7 +13,7 @@ Advance the SemVer version in root `package.json` and set both `version` and
 `appVersion` in `deploy/helm/openclaw-enterprise/Chart.yaml` to the same value.
 Do this for each chart release, including releases with image changes.
 Image-only publication does not require a new chart version. OCE is evolving quickly;
-one version gives operators a chart and image pair tested from one source revision
+one version gives operators a chart and image pair tested from one source commit
 without an independent chart compatibility matrix. The shared tag identifies the
 release, while the recorded digests identify the exact bytes.
 
@@ -36,7 +36,7 @@ records the chart manifest digest, source SHA, and both image digests. The older
 inspect registry digests before starting a new full dispatch for the same source;
 existing tags with different bytes are never replaced. Rerunning only a failed
 chart job is unsupported: its new attempt has no matching image receipt. There
-is no dedicated chart recovery workflow. A later source revision requires a new
+is no dedicated chart recovery workflow. A later source commit requires a new
 OCE version for chart publication.
 
 A chart failure fails the combined run, while the image job and its verified
@@ -76,15 +76,19 @@ placeholder image, so replace it before installation.
 Prepare the other operator-owned values, database, Secrets, routing, and
 bootstrap volume as described in the [production installation guide](../guides/deploy/production-installation.md).
 Public GHCR image pulls need no node pull Secret. Private mirrors still need node
-pull credentials configured by the operator. Install the selected chart version
-after the prerequisites are ready:
+pull credentials configured by the operator. Before installing, [prepare to record
+the initialization Job UID for handoff](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
+Then install the selected chart version after the prerequisites are ready:
 
 ```bash
-helm upgrade --install oce oci://ghcr.io/openclaw/charts/openclaw-enterprise \
+helm install oce oci://ghcr.io/openclaw/charts/openclaw-enterprise \
   --version "$OCE_VERSION" --namespace openclaw-system \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   -f "$OCC_INPUT_DIRECTORY/values.yaml" --wait --timeout 5m
 ```
+
+If the response is lost or Helm refuses the release name, stop; do not rerun or
+switch to an upgrade. [Resume the original installation](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
 
 This release packages the chart and images. It does not distribute the
 repository's bootstrap helper or Installation examples, and does not complete a

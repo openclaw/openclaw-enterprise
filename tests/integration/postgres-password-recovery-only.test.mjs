@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertConsoleSignIn,
   assertProviderAttached,
   assertSessionUser,
+  changeAccount,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
+  createAccount,
   fakeGoogle,
   githubSignIn,
   githubUpgradeSettings,
@@ -14,28 +16,18 @@ import {
   googleUpgradeSettings,
   loginDenialCount,
   memoryLogger,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { injectLocalhost } from "../helpers/inject-json.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "recovery-only-admin@example.test";
 const password = "recovery-only-member-password";
-const authSecret = "recovery-only-auth-test-secret-at-least-32-bytes";
 const googleClientId = "recovery-only.apps.googleusercontent.com";
 const googleClientSecret = "recovery-only-google-client-secret";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "recovery-only-github-client-id",
-  "occ-github-login/client-secret": "recovery-only-github-client-secret",
-  "occ-google-login/client-id": googleClientId,
-  "occ-google-login/client-secret": googleClientSecret,
-};
 const memberSubject = 8_100_001;
 const strandedSubject = 8_100_002;
 const operatorSubject = 8_100_003;
@@ -55,19 +47,25 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    await startFakeGitHub(t);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "recovery-only-admin@example.test",
+        password,
+        secrets: {
+          "occ-auth/secret": "recovery-only-auth-test-secret-at-least-32-bytes",
+          "occ-github-login/client-id": "recovery-only-github-client-id",
+          "occ-github-login/client-secret": "recovery-only-github-client-secret",
+          "occ-google-login/client-id": googleClientId,
+          "occ-google-login/client-secret": googleClientSecret,
+        },
+      },
+    );
     const google = fakeGoogle(t, { clientId: googleClientId, clientSecret: googleClientSecret });
     const address = clientAddresses("198.20");
     // Password onboarding on the default install.
-    const { admin, roles, accounts } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    const { admin, roles, accounts } = await onboard({
       remoteAddress: address(),
       accounts: Object.fromEntries(
         ["member", "stranded", "disabled", "operator"].map((name) => [
@@ -89,10 +87,7 @@ test(
 
     await t.test("the default setting keeps every enrolled account's password", async () => {
       const log = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: githubUpgradeSettings(admin.id),
-        secrets,
+      app = await composeApp(githubUpgradeSettings(admin.id), {
         logger: log.logger,
       });
       assert.deepEqual(await providers(app), {
@@ -109,13 +104,7 @@ test(
       // The member and the operator get GitHub identities; the disabled account is switched off.
       await attach("github", member, memberSubject);
       await attach("github", operator, operatorSubject);
-      const current = await readAccount(app, adminHeaders, disabled.id);
-      const changed = await app.inject({
-        method: "POST",
-        url: `/api/auth/accounts/${disabled.id}/disable`,
-        headers: adminHeaders,
-        payload: { expectedVersion: current.version },
-      });
+      const changed = await changeAccount(app, adminHeaders, disabled.id, "disable");
       assert.equal(changed.statusCode, 200, changed.body);
       await app.close();
       app = undefined;
@@ -124,10 +113,7 @@ test(
     let log;
     await t.test("startup warns about enabled accounts without an external identity", async () => {
       log = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: recoveryOnly(githubUpgradeSettings(admin.id)),
-        secrets,
+      app = await composeApp(recoveryOnly(githubUpgradeSettings(admin.id)), {
         logger: log.logger,
       });
       // The recovery account, the member and operator with GitHub and the disabled account
@@ -213,10 +199,7 @@ test(
       await app.close();
       app = undefined;
       const restarted = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: recoveryOnly(githubUpgradeSettings(admin.id)),
-        secrets,
+      app = await composeApp(recoveryOnly(githubUpgradeSettings(admin.id)), {
         logger: restarted.logger,
       });
       assert.deepEqual(warnings(restarted), [], "every enabled account has an identity");
@@ -227,10 +210,7 @@ test(
     await t.test("only identities of the configured providers count", async () => {
       // Google alone: GitHub identities cannot sign in, so every ordinary account is stranded.
       const googleLog = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: recoveryOnly(googleUpgradeSettings(admin.id)),
-        secrets,
+      app = await composeApp(recoveryOnly(googleUpgradeSettings(admin.id)), {
         logger: googleLog.logger,
       });
       const [warning] = warnings(googleLog);
@@ -266,22 +246,17 @@ test(
         const supportedEmail = "supported-legacy-recovery@example.test";
         const legacyPassword = "legacy-password-\u0000-\ud800-\ufffd";
         const headers = await signedInHeaders(app, origin, admin, address());
-        const created = await app.inject({
-          method: "POST",
-          url: "/api/auth/accounts",
-          headers,
-          payload: { email: supportedEmail, password: legacyPassword, roleId: roles.admin.id },
+        const { id: userId } = await createAccount(app, headers, {
+          email: supportedEmail,
+          password: legacyPassword,
+          roleId: roles.admin.id,
         });
-        assert.equal(created.statusCode, 201, created.body);
-        const userId = created.json().data.id;
         const target = await readAccount(app, headers, userId);
         const recovery = await app.inject({ url: "/api/auth/recovery", headers });
         assert.equal(recovery.statusCode, 200, recovery.body);
-        const replaced = await app.inject({
-          method: "POST",
-          url: "/api/auth/recovery",
-          headers,
-          payload: {
+        const replaced = await injectLocalhost(app, "POST", "/api/auth/recovery", {
+          session: headers,
+          body: {
             userId,
             expectedCurrentUserId: recovery.json().data.userId,
             expectedVersion: target.version,
@@ -300,7 +275,7 @@ test(
           githubUpgradeSettings(userId),
           recoveryOnly(githubUpgradeSettings(userId)),
         ]) {
-          app = await composeProductionSignIn(t, { databaseUrl, settings, secrets });
+          app = await composeApp(settings);
           const sessionsBefore = await pool.query(
             "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
             [userId],
@@ -321,24 +296,19 @@ test(
           assert.equal(sessionsAfter.rows[0].count, sessionsBefore.rows[0].count + 1);
           // Credential admission is not usable Console access: the existing session
           // response contract rejects this unsupported stored email spelling.
-          const unsupportedSession = await app.inject({
-            url: "/api/auth/session",
+          const unsupportedSession = await injectLocalhost(app, "GET", "/api/auth/session", {
             headers: { cookie },
           });
-          assert.equal(unsupportedSession.statusCode, 500, unsupportedSession.body);
-          assert.equal(unsupportedSession.json().error.code, "INTERNAL_ERROR");
+          assertApiError(unsupportedSession, 500, "INTERNAL_ERROR");
           assert.equal(unsupportedSession.json().data, undefined);
           const before = await denials();
           for (const email of [legacyEmail, "recovery-nul\u0000@example.test"]) {
-            const refused = await app.inject({
-              method: "POST",
-              url: "/api/auth/sign-in/email",
+            const refused = await injectLocalhost(app, "POST", "/api/auth/sign-in/email", {
               remoteAddress: address(),
-              headers: { origin, cookie },
-              payload: { email, password: legacyPassword },
+              session: { cookie, origin },
+              body: { email, password: legacyPassword },
             });
-            assert.equal(refused.statusCode, 400, refused.body);
-            assert.equal(refused.json().error.code, "INVALID_REQUEST");
+            assertApiError(refused, 400, "INVALID_REQUEST");
             assert.equal(refused.headers["set-cookie"], undefined);
           }
           assert.equal(await denials(), before + 2);
@@ -350,7 +320,7 @@ test(
             supportedEmail,
             userId,
           ]);
-          app = await composeProductionSignIn(t, { databaseUrl, settings, secrets });
+          app = await composeApp(settings);
           const ordinary = await passwordSignIn(
             app,
             origin,

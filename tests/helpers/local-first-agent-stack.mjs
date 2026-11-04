@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,74 @@ const phases = [
   ["Installing OCE in Namespace", "database and control plane"],
   ["OpenClaw Enterprise development stack is ready.", "ready"],
 ];
+
+const setupPoints = [
+  ["Starting the Compose database, migration, and bootstrap services", "database-start"],
+  ["Creating k3d cluster", "cluster-start"],
+  ["Creating Kubernetes-only k3d cluster", "cluster-start"],
+  ["Importing the controller and PostgreSQL images", "controller-images-start"],
+  ["Installing pinned private routing", "routing-start"],
+  ["Verifying Kubernetes network isolation", "network-check-start"],
+  ["Preparing pinned OpenShell development assets", "openshell-assets-start"],
+  ["Installing the deployment OpenShell gateway", "openshell-gateway-start"],
+  ["Installing OpenShell Gateway and OCE in Namespace", "platform-start"],
+  ["Starting the Compose controller and Kubernetes worker", "controller-start"],
+  ["Verifying the initial gateway Namespace network isolation", "namespace-check-start"],
+  ["OpenClaw Enterprise development stack is ready.", "ready"],
+];
+
+// CI verifies the manifest/config digest and current checkout label before this
+// selection. Compose must remove inherited builds, not merely add an image name.
+export function firstAgentComposeImages(image) {
+  if (
+    !/^127\.0\.0\.1:[1-9][0-9]{0,4}\/openclaw-ci-first-images-[a-z0-9-]+\/controller@sha256:[a-f0-9]{64}$/.test(
+      image,
+    )
+  ) {
+    throw new Error("Prepared Compose controller requires an owned immutable image.");
+  }
+  return (
+    "services:\n" +
+    ["migrate", "bootstrap", "controller", "worker-kubernetes", "browser-proxy"]
+      .map(
+        (service) => `  ${service}:\n    build: !reset null\n    image: ${JSON.stringify(image)}\n`,
+      )
+      .join("")
+  );
+}
+
+// Register before Local Setup's teardown. A cancelled Node subtest can settle
+// before its async body, so retain the actual operations until their work stops.
+export function ownFirstAgentWork(context) {
+  const operations = [];
+  context.after(async () => {
+    await Promise.allSettled(operations);
+  });
+  return (operation) => {
+    operations.push(operation);
+    return operation;
+  };
+}
+
+// The reporter retains only fixed stage names, outcome and elapsed time.
+export async function measureFirstAgentStage(context, stage, operation) {
+  const started = performance.now();
+  let outcome = "failed";
+  try {
+    const result = await operation();
+    outcome = "passed";
+    return result;
+  } finally {
+    context.diagnostic(
+      `openclaw-ci-measurement ${JSON.stringify({
+        kind: "local-first-agent",
+        stage,
+        outcome,
+        elapsedMs: Math.round(performance.now() - started),
+      })}`,
+    );
+  }
+}
 
 function withoutModelCredentials(environment) {
   const result = { ...environment };
@@ -36,7 +104,19 @@ function killGroup(child, signal) {
   child.kill(signal);
 }
 
-function run(command, args, environment, label, timeout, collect = false) {
+function run(
+  command,
+  args,
+  environment,
+  label,
+  timeout,
+  collect = false,
+  context,
+  timingPhase = "setup",
+) {
+  const started = performance.now();
+  const observed = new Set();
+  const commands = new Map();
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: root,
@@ -70,9 +150,33 @@ function run(command, args, environment, label, timeout, collect = false) {
         const lines = partial.split("\n");
         partial = lines.pop().slice(-4_096);
         for (const line of lines) {
+          const timing =
+            context &&
+            /^\[occ-dev-timing\] stage=([a-z0-9-]+) elapsed_ms=([0-9]+) failed=(true|false)$/.exec(
+              line,
+            );
+          if (timing) {
+            const total = commands.get(timing[1]) ?? { count: 0, elapsedMs: 0, failed: 0 };
+            total.count++;
+            total.elapsedMs += Number(timing[2]);
+            total.failed += Number(timing[3] === "true");
+            commands.set(timing[1], total);
+          }
           const known = phases.find(([prefix]) => line.startsWith(prefix));
           if (known) {
             phase = known[1];
+          }
+          const point = context && setupPoints.find(([prefix]) => line.startsWith(prefix));
+          if (point && !observed.has(point[1])) {
+            observed.add(point[1]);
+            context.diagnostic(
+              "openclaw-ci-measurement " +
+                JSON.stringify({
+                  kind: "local-first-agent-setup-point",
+                  stage: point[1],
+                  elapsedMs: Math.round(performance.now() - started),
+                }),
+            );
           }
         }
       });
@@ -85,6 +189,17 @@ function run(command, args, environment, label, timeout, collect = false) {
       }
     });
     child.once("close", (code, signal) => {
+      for (const [stage, total] of commands) {
+        context.diagnostic(
+          "openclaw-ci-measurement " +
+            JSON.stringify({
+              kind: "local-first-agent-command",
+              phase: timingPhase,
+              stage,
+              ...total,
+            }),
+        );
+      }
       clearTimeout(timer);
       if (!timedOut && killTimer) {
         clearTimeout(killTimer);
@@ -331,13 +446,50 @@ export async function localFirstAgentStack(context) {
     OCC_URL: "http://127.0.0.1:" + controller,
   };
   const subprocessEnvironment = withoutModelCredentials(environment);
+  const startupArguments = ["dev", "up"];
+  if (sandboxDriver === "openshell") {
+    // Exercise the public startup input before the regular Agent workflow.
+    // The policy file is separate from dev-owned state and stays keyless.
+    const policyFile = `${directory}-network-policy.yaml`;
+    await writeFile(
+      policyFile,
+      "networkPolicies:\n  - name: python-web\n    binaries:\n      - path: /usr/bin/python3.11\n    endpoints:\n      - host: example.com\n        ports: [443]\n        tls: skip\n",
+      { mode: 0o600, flag: "wx" },
+    );
+    context.after(() => rm(policyFile, { force: true }));
+    startupArguments.push("--sandbox-network-policy-file", policyFile);
+  }
+  const controllerImage = environment.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
+  if (controllerImage !== undefined) {
+    if (controlPlane !== "compose") {
+      throw new Error("Prepared controller images require the Compose control plane.");
+    }
+    const imageFile = `${directory}-images.yaml`;
+    await writeFile(imageFile, firstAgentComposeImages(controllerImage), {
+      mode: 0o600,
+      flag: "wx",
+    });
+    context.after(() => rm(imageFile, { force: true }));
+    startupArguments.push("--", "-f", imageFile);
+  }
   let initializationAttempted = false;
   context.after(async () => {
     if (!initializationAttempted) {
       return;
     }
     try {
-      await run(cli, ["dev", "down"], subprocessEnvironment, "Stop Local Setup", 4 * minute);
+      await measureFirstAgentStage(context, "cleanup", () =>
+        run(
+          cli,
+          ["dev", "down"],
+          subprocessEnvironment,
+          "Stop Local Setup",
+          4 * minute,
+          false,
+          context,
+          "cleanup",
+        ),
+      );
     } catch (error) {
       try {
         await lstat(directory);
@@ -350,6 +502,16 @@ export async function localFirstAgentStack(context) {
     }
   });
   initializationAttempted = true;
-  await run(cli, ["dev", "up"], subprocessEnvironment, "Start Local Setup", 18 * minute);
+  await measureFirstAgentStage(context, "setup", () =>
+    run(
+      cli,
+      startupArguments,
+      subprocessEnvironment,
+      "Start Local Setup",
+      18 * minute,
+      false,
+      context,
+    ),
+  );
   return { directory, environment };
 }

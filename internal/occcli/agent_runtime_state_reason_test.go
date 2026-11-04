@@ -2,6 +2,8 @@ package occcli
 
 import (
 	"bytes"
+	"encoding/json/v2"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -28,7 +30,7 @@ func TestAgentRuntimeTableShowsCurrentContainerReason(t *testing.T) {
 			}}
 			var out bytes.Buffer
 			app := &application{out: &out}
-			if err := app.printRuntime(map[string]any{"pods": []any{pod}}); err != nil {
+			if err := app.printRuntime(map[string]any{"pods": []any{pod}}, "ns_00000000-0000-4000-8000-000000000001", "agt_00000000-0000-4000-8000-000000000001", "rev_00000000-0000-4000-8000-000000000001"); err != nil {
 				t.Fatal(err)
 			}
 			_, row, _ := strings.Cut(out.String(), "\n")
@@ -36,5 +38,63 @@ func TestAgentRuntimeTableShowsCurrentContainerReason(t *testing.T) {
 				t.Errorf("pod row = %q, want suffix %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAgentRuntimeTableRejectsNonStringContainerIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, role, containerName string
+	}{
+		{"objects", `{}`, `{}`},
+		{"arrays", `[]`, `[]`},
+		{"numbers", `1`, `1`},
+		{"booleans", `true`, `true`},
+		{"nulls", `null`, `null`},
+		{"invalid container name", `"gateway"`, `{}`},
+		{"invalid pod role", `[]`, `"gateway"`},
+	} {
+		for _, count := range []string{"multiple", "sole"} {
+			t.Run(tc.name+"/"+count, func(t *testing.T) {
+				sidecar := ""
+				if count == "multiple" {
+					sidecar = `,{"name":"sidecar","state":"running","restartCount":0}`
+				}
+				// Decode actual JSON types: object and array identities used to panic
+				// during selection, even before the sole-container fallback.
+				fixture := fmt.Sprintf(`{"pods":[{"name":"gw-0","role":%s,"containers":[{"name":%s,"state":"waiting","restartCount":0}%s]}]}`, tc.role, tc.containerName, sidecar)
+				var description any
+				if err := json.Unmarshal([]byte(fixture), &description); err != nil {
+					t.Fatal(err)
+				}
+				var out bytes.Buffer
+				app := &application{out: &out}
+				err := app.printRuntime(description, "ns_00000000-0000-4000-8000-000000000001", "agt_00000000-0000-4000-8000-000000000001", "rev_00000000-0000-4000-8000-000000000001")
+				if err == nil || err.Error() != "OCC returned an invalid runtime description" || out.Len() != 0 {
+					t.Errorf("malformed identity: error = %v, output = %q", err, out.String())
+				}
+			})
+		}
+	}
+}
+
+// A Pod with one container reports it whatever its name; one container per role is read only
+// when the Pod has several. A Pod entry that is not an object is refused, not skipped.
+func TestAgentRuntimeTableReadsASoleContainerAndRefusesMalformedPods(t *testing.T) {
+	pod := map[string]any{"name": "sbx-0", "role": "sandbox", "containers": []any{
+		map[string]any{"name": "agent", "state": "running", "restartCount": float64(4)},
+	}}
+	var out bytes.Buffer
+	app := &application{out: &out}
+	if err := app.printRuntime(map[string]any{"pods": []any{pod}}, "ns_00000000-0000-4000-8000-000000000001", "agt_00000000-0000-4000-8000-000000000001", "rev_00000000-0000-4000-8000-000000000001"); err != nil {
+		t.Fatal(err)
+	}
+	_, row, _ := strings.Cut(out.String(), "\n")
+	if got := strings.Join(strings.Fields(row), " "); !strings.HasSuffix(got, " running 4 -") {
+		t.Errorf("pod row = %q, want the sole container's state and restarts", got)
+	}
+	out.Reset()
+	err := app.printRuntime(map[string]any{"pods": []any{pod, "sbx-1"}}, "ns_00000000-0000-4000-8000-000000000001", "agt_00000000-0000-4000-8000-000000000001", "rev_00000000-0000-4000-8000-000000000001")
+	if err == nil || err.Error() != "OCC returned an invalid runtime description" || out.Len() != 0 {
+		t.Errorf("malformed Pod: error = %v, output = %q", err, out.String())
 	}
 }

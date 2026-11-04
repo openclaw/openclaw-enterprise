@@ -5,8 +5,12 @@ import { fixtureAppId, fixtureRepositoryId } from "./metadata.mjs";
 export function createTokenAuthority({
   clock,
   publicKey,
+  /** Milliseconds, or a function of the 1-based token index. */
   lifetimeMs,
   repositoryId = fixtureRepositoryId,
+  expectedRepositoryIds = [repositoryId],
+  additionalPermissions = [],
+  installationAccess = false,
 }) {
   const tokens = new Map();
   const issuesOfTokens = [];
@@ -47,10 +51,15 @@ export function createTokenAuthority({
     assert.ok(claims.iat <= clock.wallNow() / 1000);
     assert.ok(claims.exp > clock.wallNow() / 1000);
     assert.ok(claims.exp - claims.iat <= 600);
-    assert.deepEqual(body.repository_ids.map(String), [String(repositoryId)]);
-    const permissions = body.permissions;
+    const installation = installationAccess && Object.keys(body).length === 0;
+    if (!installation) {
+      assert.deepEqual(body.repository_ids.map(String), expectedRepositoryIds.map(String));
+    }
+    const permissions = installation ? { metadata: "read", contents: "write" } : body.permissions;
     const acceptedPermissions = [
+      ...additionalPermissions,
       { metadata: "read" },
+      { metadata: "read", contents: "write" },
       {
         metadata: "read",
         contents: "read",
@@ -85,8 +94,9 @@ export function createTokenAuthority({
       "issuance requires an exact supported permission map",
     );
     const token = `fixture_access_${randomBytes(24).toString("hex")}`;
-    const expires = clock.wallNow() + lifetimeMs;
     const index = tokens.size + 1;
+    const expires =
+      clock.wallNow() + (typeof lifetimeMs === "function" ? lifetimeMs(index) : lifetimeMs);
     tokens.set(token, {
       index,
       expires,
@@ -94,13 +104,14 @@ export function createTokenAuthority({
       uses: 0,
       attempts: 0,
       permissions: { ...permissions },
+      repositoryIds: installation ? "installation" : body.repository_ids.map(String),
     });
     issuesOfTokens.push({
       index,
       jwtDigest: createHash("sha256").update(jwt).digest("hex"),
       claims,
       permissions: { ...permissions },
-      repositoryIds: [...body.repository_ids],
+      repositoryIds: installation ? "installation" : [...body.repository_ids],
       expires,
     });
     return { token, expires, permissions };
@@ -132,9 +143,24 @@ export function createTokenAuthority({
     assert.ok(token, "retirement uses an owned provider token");
     token.revoked = true;
   }
+  function permitsRepository(authorization, repositoryId) {
+    const token = tokens.get(tokenFrom(authorization));
+    return (
+      token?.static === true ||
+      token?.repositoryIds === "installation" ||
+      token?.repositoryIds?.includes(String(repositoryId)) === true
+    );
+  }
   return {
+    permitsRepository,
     issue,
     authorize,
+    authorizeRepository(authorization, repositoryId) {
+      if (!authorize(authorization, `repository:${repositoryId}`)) {
+        return false;
+      }
+      return permitsRepository(authorization, repositoryId);
+    },
     acceptStatic,
     revoke,
     issuesOfTokens,

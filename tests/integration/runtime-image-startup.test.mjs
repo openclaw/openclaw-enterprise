@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
+import {
+  cpuScaledImageTimeoutMs,
+  imageSmokeTimeoutMultiplier,
+} from "../helpers/image-smoke-timeout.mjs";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
@@ -18,12 +21,9 @@ import {
   REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
   REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
-import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
-import { codexGatewayModelConfiguration } from "../../apps/controller/src/drivers/compute/codex-model-configuration.ts";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
 import {
   run as runFixtureCommand,
   temporaryDirectory,
@@ -39,23 +39,59 @@ import {
   imageTestOptions,
   runDocker,
   waitForDockerLog,
-  commandOutput,
   temporaryGatewayConfiguration,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
-  failureTail,
   runGatewaySmoke,
   reviewedCodexSeccompSecurityOptions,
+  assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
+
+// Only the trusted staging verifier selects the reviewed historical expectations.
+const stagingCodexVersion = process.env.OCC_TEST_STAGING_CODEX_VERSION ?? "0.164.0";
+assert.ok(["0.164.0", "0.163.0-alpha.2"].includes(stagingCodexVersion));
+const historicalCodex = stagingCodexVersion === "0.163.0-alpha.2";
+const historicalRelease = "54bfa7fc1b99e362450beb5f9211e164991fa7b4";
+let historicalController;
+if (historicalCodex) {
+  assert.equal(process.env.EXPECTED_OCC_REVISION, historicalRelease);
+  const imageId = process.env.OCC_TEST_PRODUCTION_IMAGE;
+  assert.match(imageId ?? "", /^sha256:[a-f0-9]{64}$/);
+  // Staging verified this controller and runtime as a pair. Its launchers check its own
+  // OpenClaw pin. Read them inside the controller and execute them only in the runtime.
+  const { stdout } = await runDocker([
+    "run",
+    "--rm",
+    "--pull=never",
+    "--network=none",
+    "--read-only",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "--user=1000:1000",
+    "--entrypoint=node",
+    imageId,
+    "--input-type=module",
+    "-e",
+    `
+      import { GATEWAY_RUNTIME_ENTRYPOINT as docker } from "./apps/controller/src/drivers/compute/docker/index.ts";
+      import { GATEWAY_RUNTIME_ENTRYPOINT as kubernetes } from "./apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+      import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT as commit } from "./apps/controller/src/drivers/compute/gateway-tool-policy.ts";
+      console.log(JSON.stringify({ docker, kubernetes, commit }));
+    `,
+  ]);
+  historicalController = JSON.parse(stdout);
+}
+const kubernetesGatewayEntrypoint =
+  historicalController?.kubernetes ?? KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT;
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
 test("runtime image seccomp option requires the CI-prepared profile record", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-seccomp-profile-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-seccomp-profile-");
   const contents = Buffer.from(`${JSON.stringify({ defaultAction: "SCMP_ACT_ERRNO" })}\n`);
   const digest = createHash("sha256").update(contents).digest("hex");
-  const profile = join(directory, `codex-0.163.0-alpha.2-${digest}.json`);
+  const profile = join(directory, `codex-${stagingCodexVersion}-${digest}.json`);
   const statePath = join(directory, "state.json");
   await writeFile(profile, contents);
   await writeFile(
@@ -70,15 +106,23 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
     }),
   );
 
-  assert.deepEqual(await reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }), [
+  const options = { profile, ciStatePath: statePath, codexVersion: stagingCodexVersion };
+  assert.deepEqual(await reviewedCodexSeccompSecurityOptions(options), [
     "--security-opt",
     "no-new-privileges",
     "--security-opt",
     `seccomp=${profile}`,
   ]);
+  await assert.rejects(
+    reviewedCodexSeccompSecurityOptions({
+      ...options,
+      codexVersion: historicalCodex ? "0.164.0" : "0.163.0-alpha.2",
+    }),
+    /must point to codex-/,
+  );
 
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: "" }),
+    reviewedCodexSeccompSecurityOptions({ ...options, ciStatePath: "" }),
     /must be prepared by image CI state/,
   );
 
@@ -111,7 +155,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
     }),
   );
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }),
+    reviewedCodexSeccompSecurityOptions(options),
     /must match the CI-prepared Codex seccomp profile path/,
   );
 
@@ -127,7 +171,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
     }),
   );
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }),
+    reviewedCodexSeccompSecurityOptions(options),
     /must match the CI-prepared Codex seccomp profile digest/,
   );
 });
@@ -269,8 +313,7 @@ process.exit(material.status ?? 1);
 }
 
 async function createRuntimeBrokerTlsMaterial(t) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-broker-tls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-broker-tls-");
   await execute("openssl", [
     "req",
     "-x509",
@@ -308,16 +351,9 @@ function runtimeRepositorySessionDirectory(repositoryRef, sessionId) {
 }
 
 async function createRuntimeRepositoryMaterial(t, fixture) {
-  const material = await createNativeClientMaterial(
-    t,
-    fixture.repositories
-      .filter((entry) => entry.opened)
-      .map((entry) => ({
-        opened: entry.opened,
-        repositoryRef: entry.repositoryRef,
-        publicCa: fixture.tls.ca,
-      })),
-  );
+  const material = await createNativeClientMaterial(t, [
+    { opened: fixture.opened, repositoryRef: "guarded", publicCa: fixture.tls.ca },
+  ]);
   const manifestPath = join(material.root, "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   manifest.bindings = manifest.bindings.map((binding) => ({
@@ -328,29 +364,10 @@ async function createRuntimeRepositoryMaterial(t, fixture) {
   return material.root;
 }
 
-function sanitizeSyntheticCredential(output) {
-  return output.replaceAll(syntheticCodexApiKey, "[REDACTED_SYNTHETIC_KEY]");
-}
-
 function assertNoPackagingFailure(output) {
   assert.doesNotMatch(output, /ERR_MODULE_NOT_FOUND|Cannot find module|Cannot find package/);
   assert.doesNotMatch(output, /ENOENT: no such file or directory/);
   assert.doesNotMatch(output, /TypeScript .* is not supported in strip-only mode/);
-}
-
-function gatewayLogDiagnostic(entries) {
-  return entries
-    .filter((entry) => entry.subsystem === "gateway")
-    .map(({ level, message }) => `${level}: ${message}`)
-    .slice(-8)
-    .join("\n");
-}
-
-function assertGatewayLogEntry(entries, predicate, description) {
-  assert.ok(
-    entries.some(predicate),
-    `${description}\nRecent gateway logs:\n${gatewayLogDiagnostic(entries)}`,
-  );
 }
 
 function assertGatewayReadyLog(entries) {
@@ -551,6 +568,9 @@ const environment = {
   CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "synthetic-offline-key",
   OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
   APP_TOKEN_SHA: ${JSON.stringify(createHash("sha256").update("synthetic-transport-token").digest("hex"))}, APP_SERVER_PORT: "4500",
+  // The workspace node supervisor points hooks at a CA copy the sandbox cannot read.
+  NODE_EXTRA_CA_CERTS: "/home/node/.oce-native-hooks/gateway-ca.pem",
+  OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS: "/run/oce/repository-credentials/ca-bundle.pem",
 };
 let native;
 // The entrypoint arrives on stdin: inlined, it can exceed the per-argument limit.
@@ -577,6 +597,8 @@ vm.runInNewContext(fs.readFileSync(0, "utf8"), {
         const appServerEnvironment = options.env ?? environment;
         assert.equal(Object.hasOwn(appServerEnvironment, "APP_SERVER_TOKEN"), false);
         assert.equal(Object.hasOwn(appServerEnvironment, "APP_TOKEN_SHA"), false);
+        assert.equal(Object.hasOwn(appServerEnvironment, "OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS"), false);
+        assert.equal(appServerEnvironment.NODE_EXTRA_CA_CERTS, environment.NODE_EXTRA_CA_CERTS);
         native = cp.spawn(command, [...args.slice(0, appServer + 1), "--listen", "stdio://"], {
           ...options, env: appServerEnvironment, stdio: ["pipe", "pipe", "pipe"],
         });
@@ -609,16 +631,22 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
     await rpc("initialize", { clientInfo: { name: "repository-runtime-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
     const { config } = await rpc("config/read", {});
+    // Native metrics have a separate upstream exporter default from logs.
+    if (!${historicalCodex}) {
+      assert.equal(config.otel.metrics_exporter, "none");
+    }
     assert.equal(config.allow_login_shell, false);
     assert.equal(config.shell_environment_policy.set.PATH, environment.PATH);
+    assert.equal(config.shell_environment_policy.set.NODE_EXTRA_CA_CERTS, environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS);
     const result = await rpc("command/exec", {
-      command: ["/bin/bash", "-c", 'test -z "$APP_SERVER_TOKEN" || exit 1; test -z "$APP_TOKEN_SHA" || exit 1; command -v gh; command -v git; git config --system --get-all include.path'],
+      command: ["/bin/bash", "-c", 'test -z "$APP_SERVER_TOKEN" || exit 1; test -z "$APP_TOKEN_SHA" || exit 1; command -v gh; command -v git; git config --system --get-all include.path; echo "$NODE_EXTRA_CA_CERTS"'],
       sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
       timeoutMs: 5000,
     });
     assert.equal(result.exitCode, 0);
     assert.deepEqual(result.stdout.trim().split("\\n"), [
       "/opt/oce/repository-credentials/bin/gh", "/usr/bin/git", "/run/oce/repository-credentials/gitconfig",
+      environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS,
     ]);
     fs.accessSync("/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/router.js");
     process.stdout.write("native-repository-shell-ready\\n");
@@ -673,7 +701,7 @@ test(
     });
 
     const { logs } = await runGatewaySmoke(t, "openclaw", {
-      collectPlugins: false,
+      entrypoint: historicalController?.docker,
       configuration,
       extraEnvironment: ["OPENCLAW_LOG_LEVEL=error"],
     });
@@ -690,6 +718,7 @@ test(
   imageTestOptions,
   async (t) => {
     const { logs, pluginList } = await runGatewaySmoke(t, "openclaw", {
+      entrypoint: historicalController?.docker,
       collectPlugins: true,
       configuration: createAdmittedRuntimeImageConfiguration("openclaw", {
         enableSlack: true,
@@ -708,7 +737,10 @@ test(
   "runtime image discovers the bundled Codex plugin from a fresh gateway home",
   imageTestOptions,
   async (t) => {
-    const { logs, containerName, pluginList } = await runGatewaySmoke(t, "codex");
+    const { logs, containerName, pluginList } = await runGatewaySmoke(t, "codex", {
+      entrypoint: historicalController?.docker,
+      collectPlugins: true,
+    });
 
     const entries = jsonLogEntries(logs);
     assertGatewayReadyLog(entries);
@@ -729,7 +761,10 @@ test(
     const probe = String.raw`
 set -eu
 printf "%s\n" "$SYNTHETIC_CODEX_API_KEY" | timeout ${20 * imageSmokeTimeoutMultiplier}s codex login --with-api-key >/tmp/codex-login.stdout 2>/tmp/codex-login.stderr || {
-  sed -E "s/sk-[A-Za-z0-9_-]+/[REDACTED_SYNTHETIC_KEY]/g" /tmp/codex-login.stderr >&2
+  status=$?
+  # 124: timeout stopped codex login. Its output may be empty, so name the status.
+  echo "codex login exited $status" >&2
+  sed -E "s/sk-[A-Za-z0-9_-]+/[REDACTED_SYNTHETIC_KEY]/g" /tmp/codex-login.stdout /tmp/codex-login.stderr >&2
   exit 1
 }
 node - <<'NODE'
@@ -786,10 +821,8 @@ NODE
         "-c",
         probe,
       ],
-      { timeout: 30_000 * imageSmokeTimeoutMultiplier },
-    ).catch((error) => {
-      throw new Error(failureTail(sanitizeSyntheticCredential(commandOutput(error))));
-    });
+      { timeout: 30_000 * imageSmokeTimeoutMultiplier, redact: [syntheticCodexApiKey] },
+    );
 
     const result = JSON.parse(stdout);
     assert.equal(result.uid, 1000);
@@ -825,7 +858,7 @@ test(
     const configurationPath = await temporaryGatewayConfiguration(t, "codex");
     const { logs, containerName } = await runGatewaySmoke(t, "codex", {
       configurationPath: "/etc/openclaw/openclaw.json",
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      entrypoint: kubernetesGatewayEntrypoint,
       extraEnvironment: ["OPENCLAW_WORKSPACE_DIR=/home/node/workspace", "OPENCLAW_LOG_LEVEL=error"],
       tmpfs: [
         "/home/node:size=1024m,uid=1000,gid=1000,mode=700",
@@ -865,18 +898,18 @@ test(
     const launch = String.raw`
 const fs = require("node:fs");
 const cp = require("node:child_process");
-const { gatewayArgs, harness, workspaceNodeId } = JSON.parse(fs.readFileSync(0, "utf8"));
+const { gatewayArgs, harness, workspaceNodeId, startupMs, harnessRunMs, validateMs } = JSON.parse(fs.readFileSync(0, "utf8"));
 const model = "openai/runtime-image-schema";
 function validate(path) {
   const home = fs.mkdtempSync("/tmp/oce-config-validate-");
   const result = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
     env: { PATH: process.env.PATH, HOME: home, OPENCLAW_CONFIG_PATH: path },
-    encoding: "utf8", timeout: 60000, maxBuffer: 1024 * 1024,
+    encoding: "utf8", timeout: validateMs, maxBuffer: 1024 * 1024,
   });
   const report = JSON.parse(result.stdout);
   return { status: result.status, valid: report.valid, issues: report.issues ?? [] };
 }
-function run(args, env, readinessUrl) {
+function run(args, env, readinessUrl, limitMs = startupMs) {
   const child = cp.spawn("node", args, { env: { PATH: process.env.PATH, HOME: "/home/node", ...env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (value) => { output += value; });
@@ -889,7 +922,7 @@ function run(args, env, readinessUrl) {
   return new Promise((resolve, reject) => {
     // Kill the owned process group: a launcher can leave native children holding
     // stdout open even after it exits. Container removal is the outer safeguard.
-    const deadline = setTimeout(() => killGroup("SIGKILL"), 90000);
+    const deadline = setTimeout(() => killGroup("SIGKILL"), limitMs);
     child.once("error", reject);
     child.once("exit", () => {
       stopped = true;
@@ -917,15 +950,31 @@ function run(args, env, readinessUrl) {
   (gatewayBase.agents ??= {}).defaults ??= {};
   gatewayBase.agents.defaults.workspace = "/tmp/runtime-image-provider-workspace";
   fs.writeFileSync("/tmp/gateway/base.json", JSON.stringify(gatewayBase));
-  const gatewayRun = await run(["-e", ...gatewayArgs], {
+  const gatewayEnvironment = {
     OPENCLAW_CONFIG_PATH: "/tmp/gateway/base.json",
     OPENCLAW_STATE_DIR: "/home/node/.openclaw",
     OPENCLAW_GATEWAY_PORT: "18789",
     OPENCLAW_GATEWAY_PASSWORD: "openclaw-runtime-image-schema-password",
     OPENCLAW_WORKSPACE_NODE_ID: workspaceNodeId,
     OPENCLAW_NATIVE_WORKER_PROFILE: "dedicated-native",
-  }, "http://127.0.0.1:18789/readyz");
+  };
+  const gatewayRun = await run(["-e", ...gatewayArgs], gatewayEnvironment, "http://127.0.0.1:18789/readyz");
   const gatewayConfig = "/home/node/.openclaw/openclaw.json";
+  // A container restart reuses the writable admin Configuration, including the
+  // profile generated by the first wrapper. It must still start the native Gateway.
+  const gatewayRestart = await run(["-e", ...gatewayArgs], {
+    ...gatewayEnvironment, OPENCLAW_CONFIG_PATH: gatewayConfig,
+  }, "http://127.0.0.1:18789/readyz");
+  const generatedConfiguration = fs.readFileSync(gatewayConfig, "utf8");
+  const conflictingConfig = JSON.parse(generatedConfiguration);
+  conflictingConfig.cloudWorkers.profiles["dedicated-native"].settings.device =
+    (workspaceNodeId[0] === "a" ? "b" : "a") + workspaceNodeId.slice(1);
+  fs.writeFileSync(gatewayConfig, JSON.stringify(conflictingConfig));
+  // Restart tolerance must not admit a profile bound to a different worker.
+  const conflictingRestart = await run(["-e", ...gatewayArgs], {
+    ...gatewayEnvironment, OPENCLAW_CONFIG_PATH: gatewayConfig,
+  });
+  fs.writeFileSync(gatewayConfig, generatedConfiguration);
   const probe = JSON.stringify({ auth: { probes: { results: [{ provider: "openai", model, source: "env", status: "ok" }] } } });
   fs.writeFileSync("/tmp/probe.cjs", [
     'const cp = require("node:child_process");',
@@ -953,14 +1002,24 @@ function run(args, env, readinessUrl) {
     OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
     OPENAI_API_KEY: "sk-openclaw-runtime-image-schema-synthetic",
     OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({ agents: { defaults: { model } } }),
-  });
+  }, undefined, harnessRunMs);
   const harnessConfig = "/home/node/.openclaw-node/openclaw.json";
   process.stdout.write(JSON.stringify({
-    gateway: { ...gatewayRun, config: JSON.parse(fs.readFileSync(gatewayConfig, "utf8")), validation: validate(gatewayConfig) },
+    gateway: { ...gatewayRun, restart: gatewayRestart, conflictingRestart, config: JSON.parse(fs.readFileSync(gatewayConfig, "utf8")), validation: validate(gatewayConfig) },
     harness: { ...harnessRun, config: JSON.parse(fs.readFileSync(harnessConfig, "utf8")), validation: validate(harnessConfig) },
   }));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 `;
+    // The Gateway start and validation waits scale with the runner's CPUs: the
+    // lane's other files start runtimes at the same time, so a slow start under that
+    // load is not a failure (finding 2460). The worker never connects without a
+    // network, so its run always ends at harnessRunMs after writing its
+    // configuration; that window stays fixed, or each run would take longer on
+    // fewer CPUs. The container runs these one after another: its limit is their
+    // sum plus a minute to create and remove it.
+    const startupMs = cpuScaledImageTimeoutMs(90_000);
+    const harnessRunMs = 90_000 * imageSmokeTimeoutMultiplier;
+    const validateMs = cpuScaledImageTimeoutMs(60_000);
     const { stdout } = await runDocker(
       [
         "run",
@@ -983,17 +1042,25 @@ function run(args, env, readinessUrl) {
         "none",
         "--volume",
         `${configurationPath}:/etc/openclaw/openclaw.json:ro`,
+        "--volume",
+        `${configurationPath}:/etc/openclaw-managed/openclaw.json:ro`,
         "--entrypoint",
         "node",
         image,
         "-e",
         launch,
       ],
-      { timeout: 300_000 * imageSmokeTimeoutMultiplier },
+      {
+        timeout:
+          3 * startupMs + harnessRunMs + 2 * validateMs + 60_000 * imageSmokeTimeoutMultiplier,
+      },
       JSON.stringify({
-        gatewayArgs: nodeProgramArguments(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT),
+        gatewayArgs: nodeProgramArguments(kubernetesGatewayEntrypoint),
         harness: NATIVE_WORKER_ENTRYPOINT,
         workspaceNodeId: randomBytes(32).toString("hex"),
+        startupMs,
+        harnessRunMs,
+        validateMs,
       }),
     );
     const { gateway, harness } = JSON.parse(stdout);
@@ -1016,6 +1083,12 @@ function run(args, env, readinessUrl) {
     assert.deepEqual(harness.validation.issues, []);
     assert.equal(gateway.validation.valid, true);
     assert.equal(gateway.ready, true, gateway.output);
+    assert.equal(gateway.restart.ready, true, gateway.restart.output);
+    assert.equal(gateway.conflictingRestart.code, 1);
+    assert.match(
+      gateway.conflictingRestart.output,
+      /worker profile conflicts with admitted configuration/u,
+    );
     assert.equal(harness.validation.valid, true);
     // Schema acceptance alone does not qualify the default image's complete native flow.
     // Runtime admission retains its separate native-worker support gate.
@@ -1074,27 +1147,27 @@ const config = {
 };
 const profile = ":danger-full-access";
 const providerEnv = { OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE: profile };
-function permissionFields(appServer, sandboxPolicy) {
+async function permissionFields(appServer, sandboxPolicy) {
   const thread = threadPermissions(appServer);
-  const turn = buildTurnStartParams({ prompt: "policy check", hostCapabilities: {}, config }, {
+  const turn = await buildTurnStartParams({ prompt: "policy check", hostCapabilities: {}, config }, {
     appServer, sandboxPolicy, cwd: "/tmp", preserveNativeTurnSettings: true,
   });
   return [thread, turn.permissions ?? turn.sandboxPolicy?.type];
 }
-const results = JSON.parse(process.argv[1]).map(({ appServer, modelProvider }) => {
+const results = await Promise.all(JSON.parse(process.argv[1]).map(async ({ appServer, modelProvider }) => {
   const resolve = (env) => resolveCodexAppServerRuntimeOptions({
     pluginConfig: { appServer }, modelProvider, model: "gpt-6-astra", config, env, requirementsToml: null,
   });
   const runtime = resolve(providerEnv);
-  assert.deepEqual(permissionFields(runtime), [{ permissions: profile }, profile]);
+  assert.deepEqual(await permissionFields(runtime), [{ permissions: profile }, profile]);
   const local = resolve({});
-  assert.deepEqual(permissionFields(local), [{ sandbox: "danger-full-access" }, "dangerFullAccess"]);
+  assert.deepEqual(await permissionFields(local), [{ sandbox: "danger-full-access" }, "dangerFullAccess"]);
   const restricted = { ...runtime, sandbox: "workspace-write" };
-  assert.deepEqual(permissionFields(restricted), [{ sandbox: "workspace-write" }, "workspaceWrite"]);
-  assert.deepEqual(permissionFields({ ...runtime, networkProxy: {} }), [{}, undefined]);
-  assert.equal(permissionFields(runtime, { type: "readOnly" })[1], "readOnly");
+  assert.deepEqual(await permissionFields(restricted), [{ sandbox: "workspace-write" }, "workspaceWrite"]);
+  assert.deepEqual(await permissionFields({ ...runtime, networkProxy: {} }), [{}, undefined]);
+  assert.equal((await permissionFields(runtime, { type: "readOnly" }))[1], "readOnly");
   return { sandbox: runtime.sandbox, approvalsReviewer: runtime.approvalsReviewer };
-});
+}));
 
 // A real Codex can accept thread/start yet constrain its effective sandbox. The bundled
 // Gateway client must surface that refusal before the caller can use the thread for a turn.
@@ -1176,170 +1249,7 @@ test(
 );
 
 test(
-  "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
-  imageTestOptions,
-  async (t) => {
-    // The Gateway starts before its node pairs, as on a first dedicated deploy:
-    // the binding volume is empty and file-transfer is not allowed yet.
-    const gatewayWorkspace = "/home/node/gateway-workspace";
-    const admitted = createAdmittedRuntimeImageConfiguration("codex");
-    const configuration = {
-      ...admitted,
-      agents: {
-        ...admitted.agents,
-        defaults: { ...admitted.agents?.defaults, workspace: gatewayWorkspace },
-      },
-    };
-    // An owner's codex row with a reachable transport and request overrides, which
-    // would let OpenClaw's built-in runtime reach a model from the Gateway.
-    const codexProvider = configuration.models.providers.codex;
-    configuration.models = {
-      ...configuration.models,
-      providers: {
-        ...configuration.models.providers,
-        codex: {
-          ...codexProvider,
-          baseUrl: "https://model.example.test/v1",
-          headers: { "x-route": "owner" },
-          request: { allowPrivateNetwork: true },
-        },
-        // Codex's other provider, with an owner transport of its own.
-        openai: {
-          baseUrl: "https://model.example.test/v1",
-          headers: { "x-route": "owner" },
-          models: codexProvider.models,
-        },
-      },
-    };
-    const directory = await mkdtemp(join(tmpdir(), "oce-runtime-image-config-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    const configurationPath = join(directory, "openclaw.json");
-    await writeFile(configurationPath, JSON.stringify(configuration));
-    const { containerName } = await runGatewaySmoke(t, "codex", {
-      configurationPath: "/etc/openclaw/openclaw.json",
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-      volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
-      extraEnvironment: [
-        "OPENCLAW_WORKSPACE_NODE_PATH=/home/node/workspace-node-binding/workspace-node.json",
-        "OPENCLAW_AGENT_REVISION_ID=revision-workspace-node",
-        "OPENCLAW_RUNTIME_STATUS_PORT=18791",
-        "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
-        "OPENCLAW_POD_UID=pod-workspace-node",
-      ],
-    });
-    const source = await readFile(
-      new URL("../fixtures/runtime-workspace-node-hot-apply.mjs", import.meta.url),
-      "utf8",
-    );
-    const { stdout } = await runDocker(
-      [
-        "exec",
-        "-e",
-        `OCC_TEST_GATEWAY_WORKSPACE=${gatewayWorkspace}`,
-        containerName,
-        "node",
-        "--input-type=module",
-        "-e",
-        source,
-      ],
-      { timeout: 300_000 * imageSmokeTimeoutMultiplier },
-    );
-    const result = JSON.parse(stdout.trim().split("\n").at(-1));
-    assert.equal(result.sameProcesses, true);
-    assert.equal(result.fileTransferAfter.state, "active");
-    assert.equal(result.readBefore, "served by the Gateway host");
-    assert.equal(result.readAfter, "served by the workspace node");
-    const inspect = await runDocker([
-      "inspect",
-      containerName,
-      "--format",
-      "{{.State.Running}} {{.RestartCount}}",
-    ]);
-    assert.equal(inspect.stdout.trim(), "true 0");
-    const logs = await runDocker(["logs", containerName]);
-    const entries = jsonLogEntries(`${logs.stdout}\n${logs.stderr}`);
-    assertGatewayLogEntry(
-      entries,
-      (entry) =>
-        entry.event === "runtime.startup_phase" &&
-        entry.phase === "workspace-node" &&
-        entry.outcome === "ok",
-      "the wrapper's workspace-node ack",
-    );
-    // OpenClaw applied the plugins.* change in place (and replaced the Codex
-    // plugin runtime with it); nothing restarted the Gateway.
-    assertGatewayLogEntry(
-      entries,
-      (entry) =>
-        entry.subsystem === "gateway/reload" &&
-        /^config hot reload applied \(.*plugins\.entries\.file-transfer/.test(entry.message),
-      "OpenClaw's hot reload of file-transfer",
-    );
-    const output = `${logs.stdout}\n${logs.stderr}`;
-    assert.doesNotMatch(output, /config reload failed|config restart|workspace-node-changed/);
-    // The Gateway's own workspace is empty, so Codex gets no OpenClaw tool that would
-    // act on it, run commands or terminals in the Gateway, or change its configuration,
-    // automation triggers cannot run commands there, and a built-in runtime run has no
-    // reachable model; the pinned OpenClaw accepts it.
-    const effective = await runDocker([
-      "exec",
-      containerName,
-      "node",
-      "-e",
-      `const fs = require("node:fs");
-const cp = require("node:child_process");
-// The wrapper writes the effective configuration it starts OpenClaw with here.
-const path = "/home/node/.openclaw/openclaw.json";
-const config = JSON.parse(fs.readFileSync(path, "utf8"));
-const validation = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
-  env: { ...process.env, OPENCLAW_CONFIG_PATH: path }, encoding: "utf8", timeout: 60000,
-});
-process.stdout.write(JSON.stringify({
-  excluded: config.plugins.entries.codex.config.codexDynamicToolsExclude,
-  triggers: config.cron.triggers,
-  memoryFlush: config.agents.defaults.compaction.memoryFlush,
-  codexProvider: config.models.providers.codex,
-  openaiProvider: config.models.providers.openai,
-  valid: JSON.parse(validation.stdout).valid,
-}));`,
-    ]);
-    assert.deepEqual(JSON.parse(effective.stdout), {
-      excluded: [
-        "ls",
-        "read",
-        "write",
-        "edit",
-        "apply_patch",
-        "exec",
-        "process",
-        "gateway_exec",
-        "gateway_process",
-        "terminal",
-        "portal",
-        "openclaw",
-        "plugins",
-        "gateway",
-      ],
-      triggers: { enabled: false },
-      memoryFlush: { enabled: false },
-      codexProvider: {
-        models: codexProvider.models,
-        baseUrl: "http://127.0.0.1:9",
-        api: "openai-responses",
-      },
-      openaiProvider: {
-        models: codexProvider.models,
-        baseUrl: "http://127.0.0.1:9",
-        api: "openai-responses",
-      },
-      valid: true,
-    });
-    t.diagnostic(`workspace node ack after ${result.ackMs} ms: ${JSON.stringify(result)}`);
-  },
-);
-
-test(
-  "runtime image routes sandboxed Git through stock Codex and the repository broker",
+  "runtime image routes sandboxed Git through stock Codex and a development token sender",
   imageTestOptions,
   async (t) => {
     const suffix = randomBytes(6).toString("hex");
@@ -1349,62 +1259,20 @@ test(
     const deniedMaterialVolumeName = `oce-runtime-broker-material-denied-${suffix}`;
     const workspaceBranch = "native-feature";
     const tls = await createRuntimeBrokerTlsMaterial(t);
-    const fixture = await startRegistryCredentialServiceFixture(t, {
+    const fixture = await startCredentialServiceFixture(t, {
       tls,
-      autoOpen: false,
       gateway: { publicOrigin: "https://git.oce.svc", listen: "0.0.0.0:0" },
       limits: { gitResponseBytes: 4096, gitFetchResponseBytes: 200000 },
-      repositories: [
-        {
-          repositoryRef: "guarded",
-          repositoryId: "73",
-          repository: "fixture/repository",
-          pushRefAllowlist: [`refs/heads/${workspaceBranch}`],
-        },
-        {
-          repositoryRef: "read-only",
-          repositoryId: "74",
-          repository: "fixture/read-only",
-          profile: "git-read",
-        },
-        {
-          repositoryRef: "unadmitted",
-          repositoryId: "75",
-          repository: "fixture/unadmitted",
-        },
-      ],
+      configuration: { allowGraphql: false, pushRefAllowlist: [`refs/heads/${workspaceBranch}`] },
     });
     const seed = join(await temporaryDirectory(t, "runtime-git-seed-"), "seed");
-    await runFixtureCommand("git", ["clone", fixture.byRef.get("guarded").git.bare, seed]);
+    await runFixtureCommand("git", ["clone", fixture.git.bare, seed]);
     await runFixtureCommand("git", ["config", "user.name", "Fixture"], { cwd: seed });
     await runFixtureCommand("git", ["config", "user.email", "fixture@example.test"], { cwd: seed });
     await writeFile(join(seed, "data.bin"), randomBytes(128 * 1024));
     await runFixtureCommand("git", ["add", "data.bin"], { cwd: seed });
     await runFixtureCommand("git", ["commit", "-m", "Add fixture data"], { cwd: seed });
     await runFixtureCommand("git", ["push", "origin", "HEAD:main"], { cwd: seed });
-    await fixture.open("guarded");
-    await fixture.open("read-only");
-    const unadmitted = fixture.byRef.get("unadmitted");
-    // The fixture counts attempts before authorization, including rejected
-    // provider tokens; confirm the target is reachable before asserting none.
-    const reachability = await execute("curl", [
-      "--silent",
-      "--show-error",
-      "--noproxy",
-      "*",
-      "--cacert",
-      tls.certFile,
-      "--output",
-      "/dev/null",
-      "--write-out",
-      "%{http_code}",
-      `${unadmitted.git.origin}/fixture/unadmitted.git/info/refs?service=git-upload-pack`,
-    ]);
-    assert.equal(reachability.stdout, "401");
-    const unadmittedAttempts = unadmitted.github.authenticationAttempts.filter(
-      ({ boundary }) => boundary === "git",
-    ).length;
-    assert.equal(unadmittedAttempts, 1);
     const materialRoot = await createRuntimeRepositoryMaterial(t, fixture);
     t.after(async () => {
       await runDocker(["rm", "-f", proxyName]).catch(() => {});
@@ -1472,17 +1340,15 @@ try {
     await runRepositoryMaterialInitProbe(materialVolumeName, descriptor);
 
     await runDocker(["network", "create", "--driver", "bridge", networkName]);
+    // The container runs the shared relay's own source, so a clean single-use upstream close
+    // still delivers bytes queued for the slower sandbox proxy (finding 2186).
     const forwarder = String.raw`
 const net = require("node:net");
 const targetHost = process.argv[1];
 const targetPort = Number(process.argv[2]);
+${relaySockets}
 const server = net.createServer((client) => {
-  const upstream = net.connect(targetPort, targetHost);
-  client.on("error", () => upstream.destroy());
-  client.on("close", () => upstream.destroy());
-  upstream.on("error", () => client.destroy());
-  upstream.on("close", () => client.destroy());
-  client.pipe(upstream).pipe(client);
+  relaySockets(client, net.connect(targetPort, targetHost));
 });
 server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
 `;
@@ -1563,18 +1429,6 @@ server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
       // Match in the shell, not with `printf | grep -q`: under pipefail, grep -q
       // exits at the first match and printf's next line write can fail with EPIPE.
       "[[ $disallowed_output == *'repository-push-ref-not-allowed'* ]]",
-      "git clone https://github.com/fixture/read-only.git read-only",
-      "git -C read-only switch -c denied",
-      "printf 'denied proof\n' > read-only/denied-proof.txt",
-      "git -C read-only add denied-proof.txt",
-      "git -C read-only -c user.name='Runtime Fixture' -c user.email='fixture@example.test' commit -m 'Denied runtime broker proof'",
-      "set +e",
-      "readonly_output=$(git -C read-only push origin HEAD:refs/heads/denied 2>&1)",
-      "readonly_status=$?",
-      "set -e",
-      "printf '%s\\n' \"$readonly_output\"",
-      'test "$readonly_status" -ne 0',
-      "[[ $readonly_output == *'requested URL returned error: 400'* ]]",
       "set +e",
       "unadmitted_output=$(git ls-remote https://github.com/fixture/unadmitted.git HEAD 2>&1)",
       "unadmitted_status=$?",
@@ -1590,7 +1444,7 @@ server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
 const credentials = cp.spawnSync("git", ["credential", "fill"], {
-  input: "protocol=https\nhost=git.oce.svc\npath=fixture/read-only.git\n\n",
+  input: "protocol=https\nhost=git.oce.svc\npath=fixture/repository.git\n\n",
   encoding: "utf8",
 });
 assert.equal(credentials.status, 0, "native credential helper failed");
@@ -1604,13 +1458,16 @@ function request(path, auth) {
   assert.equal(result.status, 0, "broker request failed");
   return result.stdout;
 }
-const allowed = request("fixture/read-only.git/info/refs?service=git-upload-pack", true);
+const allowed = request("fixture/repository.git/info/refs?service=git-upload-pack", true);
 assert.equal(allowed.endsWith("\n200") && allowed.includes("# service=git-upload-pack"), true, "admitted discovery did not succeed");
-assert.equal(request("fixture/read-only.git/info/refs?service=git-receive-pack", true) === '{"error":{"code":"unsupported-request"}}\n400', true, "read-only broker denial did not match");
-assert.equal(request("fixture/unadmitted.git/info/refs?service=git-upload-pack", true) === '{"error":{"code":"unsupported-request"}}\n400', true, "unadmitted broker denial did not match");
+// This single-repository sender rejects Git Basic authentication for an unconfigured
+// repository before route planning. Compare as a boolean to keep the response out of failures.
+assert.equal(request("fixture/unadmitted.git/info/refs?service=git-upload-pack", true) === '{"error":{"code":"invalid-credential"}}\n401', true, "unadmitted repository must return 401 invalid-credential");
 console.log("broker-denial-codes-confirmed");
 NODE`;
-    const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions();
+    const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions({
+      codexVersion: stagingCodexVersion,
+    });
     const probe = `
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
@@ -1722,6 +1579,13 @@ const homeControlSentinelPath = "/home/node/openclaw-stock-codex-control-sentine
 const homeControlSentinel = "synthetic-openclaw-control-sentinel\\n";
 fs.writeFileSync(homeControlSentinelPath, homeControlSentinel, { mode: 0o600 });
 assert.equal(fs.readFileSync(homeControlSentinelPath, "utf8"), homeControlSentinel);
+// As the workspace node supervisor does: hooks trust a private CA copy the sandbox cannot
+// read, and sandboxed commands keep the Pod's broker CA bundle (finding 2412).
+const hookCaPath = "/home/node/.oce-native-hooks/gateway-ca.pem";
+fs.mkdirSync("/home/node/.oce-native-hooks", { mode: 0o700 });
+fs.writeFileSync(hookCaPath, fs.readFileSync(brokerCaBundle, "utf8"), { mode: 0o600 });
+environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS = brokerCaBundle;
+environment.NODE_EXTRA_CA_CERTS = hookCaPath;
 let native;
 vm.runInNewContext(${JSON.stringify(AGENT_RUNTIME_ENTRYPOINT)}, {
   URL, console, setTimeout, setInterval,
@@ -1851,6 +1715,14 @@ const timeout = setTimeout(() => {
 
     markStockBrokerStage("outside-home-read");
     await expectFailure("outside-workspace-home-read-denied", "cat " + homeControlSentinelPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
+    await expectFailure("hook-ca-read-denied", "cat " + hookCaPath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
+    // Node loads extra CAs lazily; reading them proves the sandboxed command can.
+    const shellNodeCa = await execShell("node -e " + JSON.stringify('process.stdout.write(process.env.NODE_EXTRA_CA_CERTS + "|" + require("node:tls").getCACertificates("extra").length);'));
+    assert.equal(shellNodeCa.exitCode, 0, shellNodeCa.stderr);
+    assert.doesNotMatch(shellNodeCa.stderr, /Ignoring extra certs/);
+    const [shellCaPath, shellCaCount] = shellNodeCa.stdout.split("|");
+    assert.equal(shellCaPath, brokerCaBundle);
+    assert.ok(Number(shellCaCount) > 0, "sandboxed node must trust the broker CA bundle");
     const sentinelBeforeSandboxWrite = fs.readFileSync(homeControlSentinelPath, "utf8");
     markStockBrokerStage("outside-home-shadow-write");
     const shadowWrite = await execShell("printf shadowed > " + homeControlSentinelPath + " && printf sandbox-write-exit0", brokerPermissionProfile);
@@ -1921,24 +1793,10 @@ const timeout = setTimeout(() => {
     assert.ok(match, stdout);
     const proof = JSON.parse(match[1]);
 
-    const guarded = fixture.byRef.get("guarded");
-    const readOnly = fixture.byRef.get("read-only");
-    assert.equal(
-      unadmitted.github.authenticationAttempts.filter(({ boundary }) => boundary === "git").length,
-      unadmittedAttempts,
-      "unadmitted requests must not reach the upstream even with a rejected provider token",
-    );
-    assert.equal(unadmitted.git.trace.length, 0, "unadmitted requests must not reach the upstream");
+    const guarded = fixture;
     assert.equal(await guarded.git.ref(`refs/heads/${workspaceBranch}`), proof.commit);
-    // `git rev-parse` exits 128 in the upstream bare repository: the refused pushes created no ref.
-    assert.match(await readOnly.git.ref("refs/heads/main"), /^[0-9a-f]{40,64}$/);
     await assert.rejects(guarded.git.ref("refs/heads/disallowed"), /command failed \(exit 128\)/);
-    await assert.rejects(readOnly.git.ref("refs/heads/denied"), /command failed \(exit 128\)/);
-    assert.equal(
-      readOnly.git.trace.some(({ path }) => path.endsWith("/git-receive-pack")),
-      false,
-      "read-only broker denial must happen before the upstream receive-pack route",
-    );
+    assert.equal(guarded.github.issuesOfTokens.length, 0);
     assert.ok(
       guarded.git.trace.some(({ path }) => path.endsWith("/git-upload-pack")),
       "authorized Git fetch must reach the real upstream through the broker",
@@ -1951,10 +1809,25 @@ const timeout = setTimeout(() => {
 );
 
 test(
-  "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
+  "runtime image shares the reviewed Codex version between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
+    const source = historicalCodex
+      ? {
+          commit: "554f0b886bde6c089578c49967227f8b50d1cf16",
+          sourceArchiveSha256: "1532c8e1baf84ecae6080aee6d15003afd2458aeaaeaa30b0504818b000c82d9",
+        }
+      : await readOpenclawSource();
+    assert.equal(
+      source.commit,
+      historicalController?.commit ?? GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+      "expected a policy-qualified runtime",
+    );
     const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
+    const codexExecutableSource = AGENT_RUNTIME_ENTRYPOINT.match(
+      /^function codexExecutable\(\) \{\n[\s\S]*?\n\}\n/m,
+    )?.[0];
+    assert.ok(codexExecutableSource, "the Harness entrypoint must define codexExecutable()");
     const script = String.raw`
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
@@ -1964,20 +1837,43 @@ const { realpathSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const plugin = createRequire("/app/dist/extensions/codex/package.json");
 const installed = plugin.resolve("@openai/codex/package.json");
-assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, "0.163.0-alpha.2");
+assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, ${JSON.stringify(stagingCodexVersion)});
 const bundledCommand = plugin.resolve("@openai/codex/bin/codex.js");
 assert.equal(realpathSync("/app/node_modules/.bin/codex"), realpathSync(bundledCommand));
-assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
-assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
+assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), ${JSON.stringify(`codex-cli ${stagingCodexVersion}`)});
+assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), ${JSON.stringify(`codex-cli ${stagingCodexVersion}`)});
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
-assert.equal(provenance.commit, "f8386bc7df0a6c9eda7a28ae81943c5c06a414ff");
-assert.equal(provenance.sourceArchiveSha256, "ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d");
-assert.equal(provenance.openclawBridgePatchSha256, "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca");
-assert.equal(provenance.openclawConnectPatchSha256, "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2");
-assert.equal(provenance.codexDependencyPinPatchSha256, "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9");
-assert.equal(provenance.openclawRequiredWorkerAuthorityPatchSha256, "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8");
-assert.equal(provenance.codex.version, "0.163.0-alpha.2");
+const expectedSource = JSON.parse(process.argv[2]);
+assert.equal(provenance.commit, expectedSource.commit);
+assert.equal(provenance.sourceArchiveSha256, expectedSource.sourceArchiveSha256);
+assert.equal(provenance.openclawBridgePatchSha256, "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc");
+assert.equal(Object.hasOwn(provenance, "openclawConnectPatchSha256"), false);
+if (${historicalCodex}) {
+  assert.equal(provenance.codexDependencyPinPatchSha256, "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119");
+} else {
+  assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
+}
+assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${JSON.stringify(
+      historicalCodex
+        ? "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804"
+        : "fe61a9c3bd9d2c777db5ce7b6272c0db8b12da4a97a07fb7a42cc879a10dbf0e",
+    )});
+assert.deepEqual(provenance.patches, {
+  "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
+  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc",
+  "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
+  "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+  ...(${historicalCodex} ? {
+    "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
+    "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+    "stock-codex-0.163.0-alpha.2-dependency-pin.patch": "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
+  } : {
+    "openclaw-control-ui-browser-reconnect.patch": "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
+    "openclaw-terminated-gateway-namespace.patch": "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
+  }),
+});
+assert.equal(provenance.codex.version, ${JSON.stringify(stagingCodexVersion)});
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
 const contents = readFileSync("/opt/oce/runtime/contents.json");
@@ -2016,6 +1912,13 @@ const codexPackage = JSON.parse(readFileSync(resolve(codexPackageRoot, "package.
 const platformPackageRoot = resolve(codexPackageRoot, "..", platform.packageDirectory);
 const platformPackage = JSON.parse(readFileSync(resolve(platformPackageRoot, "package.json"), "utf8"));
 const platformBinary = resolve(platformPackageRoot, platform.binaryPath);
+// Login and the model check spawn codexExecutable() so a timeout's SIGKILL ends native
+// Codex, not just the npm launcher (finding 2274). Run the generated helper on this
+// image's PATH: a shim in place of the launcher symlink would make it fall back.
+${codexExecutableSource}
+const harnessCodex = codexExecutable();
+assert.ok(harnessCodex.startsWith("/"), "codexExecutable() fell back to " + harnessCodex + " on PATH " + process.env.PATH);
+assert.equal(realpathSync(harnessCodex), realpathSync(platformBinary));
 const platformBinarySha256 = createHash("sha256").update(readFileSync(platformBinary)).digest("hex");
 const platformInventoryPath = relative("/app/node_modules/openclaw", realpathSync(platformBinary));
 assert.ok(!platformInventoryPath.startsWith(".."), "Codex platform binary must live under the inventoried OpenClaw package root.");
@@ -2106,6 +2009,13 @@ const deadline = setTimeout(() => {
   try {
     await rpc("initialize", { clientInfo: { name: "oce-plugin-defaults-proof", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
+    // Production startup uses this experimental API. An empty query proves protocol
+    // support without authentication, remote catalog access, or a model request.
+    if (!${historicalCodex}) {
+      const emptySearch = await rpc("plugin/search", { searchTerm: "" });
+      assert.deepEqual(emptySearch.data, []);
+      assert.equal(emptySearch.nextCursor ?? null, null);
+    }
     for (const pluginName of names) await rpc("plugin/install", { marketplacePath, pluginName });
     const defaultPolicy = JSON.parse(process.argv[1]);
     for (const stage of ["installed", "default-off", "selected"]) {
@@ -2131,7 +2041,7 @@ const deadline = setTimeout(() => {
       assert.deepEqual(fixtureSkills.sort((a, b) => a.name.localeCompare(b.name)),
         enabledNames.map((name) => ({ name: name + ":inspect", pluginId: name + "@marketplace" })));
     }
-    process.stdout.write("shared-codex-0.163.0-alpha.2-ready\n");
+    process.stdout.write("shared-reviewed-codex-ready\n");
   } finally {
     clearTimeout(deadline);
     lines.close();
@@ -2151,126 +2061,8 @@ const deadline = setTimeout(() => {
       "-e",
       script,
       JSON.stringify(defaultPluginPolicy),
+      JSON.stringify(source),
     ]);
-    assert.match(stdout, /shared-codex-0.163.0-alpha.2-ready/);
-  },
-);
-
-test(
-  "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace",
-  imageTestOptions,
-  async (t) => {
-    const nativeIds = {
-      parent: "vendor/organization/parent",
-      main: "vendor/organization/default-child",
-      string: "vendor/organization/string-child",
-      object: "vendor/organization/object-child",
-      fallback: "codex/child-fallback",
-    };
-    const ref = (name) => `codex/${nativeIds[name]}`;
-    const source = createHarnessConfiguration("codex", nativeIds.parent);
-    source.agents.ownership = "explicit";
-    source.agents.defaults.systemAgent = { agentId: "main" };
-    source.agents.defaults.models = Object.fromEntries(
-      Object.keys(nativeIds).map((name) => [
-        ref(name),
-        {
-          agentRuntime: { id: "codex" },
-          ...(name === "parent" ? { alias: "codex" } : {}),
-        },
-      ]),
-    );
-    source.agents.defaults.subagents = { model: ref("main") };
-    source.agents.entries = {
-      main: {},
-      string: { subagents: { model: ref("string") } },
-      object: { subagents: { model: { primary: ref("object"), fallbacks: [ref("fallback")] } } },
-      alias: { subagents: { model: "codex" } },
-    };
-    for (const [id, entry] of Object.entries(source.agents.entries)) {
-      entry.workspace = `/home/node/workspace/${id}`;
-    }
-    source.gateway.tools = { allow: ["sessions_spawn"] };
-    source.tools = {
-      codeMode: false,
-      toolSearch: false,
-      allow: ["sessions_spawn"],
-    };
-    const admitted = admitLoggingConfiguration(source, "info");
-    assert.equal(resolveConfiguredHarnessId(admitted), "codex");
-    const before = structuredClone(admitted);
-    const configuration = codexGatewayModelConfiguration(admitted, {
-      baseUrl: "https://models.example.test/v1",
-      modelProvider: "openai-compatible",
-    });
-    assert.deepEqual(admitted, before);
-    // The Gateway prepares each Agent's writable local workspace, then the
-    // plugin maps its native cwd to the provider-owned Harness filesystem.
-    const remoteWorkspaceRoot = "/sandbox/enterprise";
-    configuration.plugins.entries.codex.config.appServer.remoteWorkspaceRoot = remoteWorkspaceRoot;
-
-    // Keep the real packaged Gateway and Codex plugin; replace only the native peer
-    // at its authenticated WebSocket boundary. The network-none container cannot
-    // call a provider, and the peer deliberately refuses before any model turn.
-    const { containerName } = await runGatewaySmoke(t, "codex", {
-      configuration,
-      collectPlugins: false,
-      waitUntilReady: false,
-      extraEnvironment: ["APP_SERVER_URL=ws://127.0.0.1:4500", "OPENCLAW_DEBUG=1"],
-    });
-    const fixture = await readFile(
-      new URL("../fixtures/runtime-codex-subagent-model.mjs", import.meta.url),
-      "utf8",
-    );
-    const dockerfile = await readFile(
-      new URL("../../deploy/runtime/Dockerfile", import.meta.url),
-      "utf8",
-    );
-    const commit = dockerfile.match(/^ARG OPENCLAW_COMMIT=([0-9a-f]{40})$/m)?.[1];
-    assert.ok(commit, "The image source pin must be explicit.");
-    const cases = ["main", "string", "object", "alias"].map((agentId) => ({
-      agentId,
-      model: nativeIds[agentId === "alias" ? "parent" : agentId],
-      cwd: remoteWorkspaceRoot,
-    }));
-    let stdout;
-    try {
-      ({ stdout } = await runDocker(
-        [
-          "exec",
-          "-e",
-          `OCC_TEST_SUBAGENT_CASES=${JSON.stringify(cases)}`,
-          "-e",
-          `OCC_TEST_SUBAGENT_MODELS=${JSON.stringify(Object.values(nativeIds))}`,
-          "-e",
-          `OCC_TEST_OPENCLAW_COMMIT=${commit}`,
-          containerName,
-          "node",
-          "--input-type=module",
-          "-e",
-          fixture,
-        ],
-        { timeout: 480_000 * imageSmokeTimeoutMultiplier },
-      ));
-    } catch (error) {
-      const logs = await runDocker(["logs", containerName]).catch((cause) => cause);
-      t.diagnostic(commandOutput(logs));
-      throw error;
-    }
-    const result = JSON.parse(stdout.trim().split("\n").at(-1));
-    t.diagnostic(JSON.stringify(result));
-    assert.equal(result.commit, commit);
-    assert.deepEqual(
-      result.observed.map(({ agentId, modelProvider, model, cwd }) => ({
-        agentId,
-        modelProvider,
-        model,
-        cwd,
-      })),
-      cases.map((scenario) => ({ ...scenario, modelProvider: "openai-compatible" })),
-    );
-    assert.ok(
-      result.observed.every(({ childSessionKey }) => childSessionKey.includes(":subagent:")),
-    );
+    assert.match(stdout, /shared-reviewed-codex-ready/);
   },
 );

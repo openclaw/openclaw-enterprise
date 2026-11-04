@@ -83,7 +83,7 @@ rotation service, or credential issuer.
 The optional `drivers.sandbox` selection currently supports the bundled
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) with the bundled Kubernetes
 Compute Driver. It is loaded from the same startup YAML, injected into the
-Kubernetes Compute Driver before workers reconcile revisions, and fails startup
+Kubernetes Compute Driver before workers reconcile versions, and fails startup
 when paired with SSH or an installed Compute Driver. OpenShell-selected Agents must use
 dedicated Codex execution; embedded OpenClaw remains unsupported for this
 SandboxDriver. The bundled OpenShell Sandbox also requires an `openshell`

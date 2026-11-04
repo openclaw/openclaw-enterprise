@@ -181,6 +181,15 @@ file to obtain the ID.
 
 ## Recover an incomplete bootstrap
 
+Fresh bootstrap checks both configured password and service-key output paths
+before creating credentials. `BOOTSTRAP_OUTPUT_EXISTS` means preserve the output
+and reconcile the original attempt; it does not establish who owns the file.
+`BOOTSTRAP_OUTPUT_UNVERIFIED` means absence could not be established. Neither
+result authorizes a retry. Exclusive, no-follow creation still refuses a later collision,
+which can leave partial effects. Migration may already have run; the check does
+not establish an empty database. Existing-Installation verification and upgrades
+are unchanged.
+
 Bootstrap makes one attempt. On failure, preserve logs, non-secret IDs, and
 protected output. Confirm database commit state before deleting anything. If the
 attempt did not commit, remove only proven orphan accounts or keys and

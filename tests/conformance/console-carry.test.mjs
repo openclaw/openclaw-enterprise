@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { carryDocument } from "../../apps/controller/src/console/carry.mjs";
+import { carryDocument } from "../../apps/controller/src/console/carry.mts";
 
 const ref = (id) => ({ source: "env", provider: "default", id });
 

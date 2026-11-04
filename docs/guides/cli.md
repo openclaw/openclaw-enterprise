@@ -2,8 +2,10 @@
 
 <a id="occ-cli"></a>
 
-Use `occ` to manage OpenClaw Control Plane (OCC) resources from a terminal. You
-need your Installation's OCC endpoint and a protected service-key response file.
+Use `occ` to manage OpenClaw Control Plane (OCC) resources from a terminal. Commands
+that access the OCC API need your Installation's endpoint and a protected
+service-key response file. To inspect an initialization Job without the OCC API,
+see [Resume an installation in progress](deploy/production-handoff.md#resume-an-installation-in-progress).
 For all commands and flags, see the [CLI command reference](../reference/cli.md).
 To deploy through the browser, see [Create and deploy Agents in the console](../reference/console/create-and-deploy.md).
 
@@ -17,27 +19,41 @@ the selected binary's SHA-256 before making it executable. For example, with
 the GitHub CLI:
 
 ```bash
-export OCE_VERSION='v<release-version>'
-export OCC_ASSET="occ-${OCE_VERSION}-darwin-arm64" # Choose your OS and CPU.
-gh release download "$OCE_VERSION" \
-  --repo openclaw/openclaw-enterprise \
-  --pattern "$OCC_ASSET" --pattern SHA256SUMS
-expected="$(awk -v name="$OCC_ASSET" '$2 == name { print $1 }' SHA256SUMS)"
-actual="$(shasum -a 256 "$OCC_ASSET" | awk '{ print $1 }')"
-if [ -n "$expected" ] && [ "$actual" = "$expected" ]; then
+(
+  set -eu
+  OCE_VERSION='v<release-version>'
+  OCC_ASSET="occ-${OCE_VERSION}-darwin-arm64" # Choose your OS and CPU.
+  umask 077
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/occ-install.XXXXXXXX")"
+  trap 'rm -rf "$tmp_dir"' EXIT
+
+  gh release download "$OCE_VERSION" \
+    --repo openclaw/openclaw-enterprise --dir "$tmp_dir" \
+    --pattern "$OCC_ASSET" --pattern SHA256SUMS
+  cd "$tmp_dir"
+
+  # Compare the full checksum line (digest and filename) for this asset.
+  expected="$(awk -v name="$OCC_ASSET" '$2 == name' SHA256SUMS)"
+  if command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$OCC_ASSET")"
+  else
+    actual="$(sha256sum "$OCC_ASSET")"
+  fi
+  if [ "$actual" != "$expected" ]; then
+    printf 'OCC CLI checksum verification failed; binary not installed.\n' >&2
+    exit 1
+  fi
   mkdir -p "$HOME/.local/bin"
   install -m 755 "$OCC_ASSET" "$HOME/.local/bin/occ"
   "$HOME/.local/bin/occ" --version
-else
-  printf 'OCC CLI checksum verification failed; binary not installed.\n' >&2
-fi
+)
 ```
 
-Ensure `$HOME/.local/bin` is on `PATH`. On Linux, use
-`sha256sum "$OCC_ASSET"` in place of `shasum -a 256` if `shasum` is not
-installed. The printed CLI version should match the selected release. Use
-the release your controller runs, and upgrade `occ` with it: an older `occ` can
-misread newer API responses, such as paged revision lists.
+Ensure `$HOME/.local/bin` is on `PATH`. The example uses `shasum` if available
+and otherwise uses `sha256sum`. The printed CLI version should match the
+selected release. Use the release your controller runs, and upgrade `occ`
+with it: an older `occ` can misread newer API responses, such as paged Agent
+revision lists.
 
 To build from a trusted source checkout instead, run this from its root to
 install `occ` on your Go binary path:
@@ -47,7 +63,10 @@ go install ./cmd/occ
 ```
 
 Ensure that directory is on `PATH`. To use the binary inside the checkout
-instead, run `pnpm cli:build` and substitute `./bin/occ` for `occ` below.
+instead, use the Go version in `go.mod`, run
+`go build -trimpath -o bin/occ ./cmd/occ` from the repository root, and substitute
+`./bin/occ` for `occ` below. Building the CLI does not require Node.js, pnpm, or
+installed JavaScript dependencies.
 `occ dev up` and `occ dev down` still require a source checkout even when the
 binary came from a GitHub Release.
 
@@ -62,7 +81,7 @@ occ namespace list
 ```
 
 `occ` has no human sign-in: a service key authenticates a non-Agent
-ServicePrincipal, not a person. Without a key, use the
+ServicePrincipal, not a person. For OCC API access without a key, use the
 [console](../reference/console.md).
 
 Replace both example values with your own. These commands require an
@@ -83,7 +102,7 @@ export OCC_NAMESPACE='<namespace-id>'
 
 ## Give a member or automation CLI access
 
-People sign in to the console; the CLI authenticates only with a service key.
+People sign in to the console; the CLI authenticates to the OCC API with a service key.
 An Installation administrator gives someone CLI access to one Namespace by
 issuing a key for a Namespace service principal that holds only the grants
 you bind. With an administrator key file and `OCC_NAMESPACE` set:
@@ -124,6 +143,7 @@ whom a key was issued for, so start each key's `--name` with the person's name, 
 | Create or replace integration Secrets   | [Namespace Secrets](../reference/drivers/kubernetes-secret.md#create-a-namespace-owned-secret) and [Configuration bindings](../reference/configuration/secrets.md) |
 | Use a Credential Gateway                | [Credential sources](../reference/credential-sources.md), including the current OpenShell limits                                                                   |
 | Grant access to a Namespace resource    | [Namespace IAM](../reference/authorization.md#manage-namespace-policy)                                                                                             |
+| Let an Agent use a Secret               | [Grant the Agent's own identity Secret `operate`](topics/iam.md#let-an-agent-use-a-secret)                                                                         |
 | Inspect or upgrade the running fleet    | [Production image upgrades](deploy/production-upgrade.md) and the [CLI reference](../reference/cli.md)                                                             |
 | Run a local development installation    | [Local Setup](quickstart.md)                                                                                                                                       |
 
@@ -138,10 +158,11 @@ TLS behavior.
 
 ## Troubleshoot
 
-- `invalid service-key file`: Check that the JSON contains a nonempty
-  `data.key` with no line break.
-- HTTP `401`: OCC rejected the credential; retrieve or issue the intended key.
-- HTTP `403`: Ask your administrator to check the service principal's permission
-  for the exact operation and Namespace.
-- Certificate error: Set `OCC_CA_BUNDLE` to the correct PEM bundle. The CLI has
-  no insecure TLS mode.
+- `service-key file … has no data.key` (or `is not JSON`): use the complete JSON
+  file from `occ service-key create`, with a nonempty `data.key` on one line.
+- `OCC rejected the service key`: the key is invalid, expired or revoked. Ask an
+  Installation administrator for a new key.
+- HTTP `403`: the message names the missing grant. Ask an Installation
+  administrator to grant it.
+- `certificate is not trusted`: set `OCC_CA_BUNDLE` to your Installation's PEM
+  bundle. The CLI has no insecure TLS mode.

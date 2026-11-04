@@ -150,15 +150,22 @@ test("provider projection rejects unexpected node and persistent authentication 
   const mounts = pod.containers[0].volumeMounts;
   const node = mounts.find(({ mountPath }) => mountPath === nodePath);
   const project = (candidate) => driver.sandboxWorkspaceMounts(pod.volumes, candidate, true);
-  for (const bad of [
-    [...mounts, { name: claimVolume, mountPath: homePath, subPath: "codex-home" }],
-    [...mounts, node],
-    mounts.map((mount) => (mount === node ? { ...mount, name: "other" } : mount)),
-    mounts.map((mount) => (mount === node ? { ...mount, subPath: "other" } : mount)),
-    mounts.map((mount) => (mount === node ? { ...mount, readOnly: true } : mount)),
-    [...mounts, { name: claimVolume, mountPath: "/unapproved", subPath: "codex-home" }],
+  const unapproved = { message: "Dedicated Harness must mount every approved workspace path." };
+  const nodeState = {
+    message: "Harness node state must preserve its Agent node directory on the Harness claim.",
+  };
+  for (const [bad, refusal] of [
+    [[...mounts, { name: claimVolume, mountPath: homePath, subPath: "codex-home" }], unapproved],
+    [[...mounts, node], nodeState],
+    [mounts.map((mount) => (mount === node ? { ...mount, name: "other" } : mount)), nodeState],
+    [mounts.map((mount) => (mount === node ? { ...mount, subPath: "other" } : mount)), nodeState],
+    [mounts.map((mount) => (mount === node ? { ...mount, readOnly: true } : mount)), nodeState],
+    [
+      [...mounts, { name: claimVolume, mountPath: "/unapproved", subPath: "codex-home" }],
+      unapproved,
+    ],
   ]) {
-    assert.throws(() => project(bad));
+    assert.throws(() => project(bad), refusal);
   }
   // The node subPath names exactly one Agent node directory.
   assert.throws(

@@ -12,6 +12,22 @@ export function betterAuthIssuer(installationId: string): string {
   return `${OCC_BETTER_AUTH_ISSUER_PREFIX}${installationId}:better-auth`;
 }
 
+/** A bare hostname Node would dial as a different IPv4 address (`198.51.100` becomes `198.51.0.100`).
+ * A hostname the URL parser rejects, such as `1.2.3.4.5` or `example.0x10`, cannot be dialled either.
+ * isIP accepts only four decimal octets from 0 to 255 with no leading zeros, so a parsed host equal
+ * to the written one is already in that form. */
+export function rewrittenIpv4Hostname(hostname: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(`http://${hostname}`);
+  } catch {
+    return true;
+  }
+  if (isIP(parsed.hostname) !== 4) {
+    return false;
+  }
+  return parsed.hostname !== hostname;
+}
 // URL parsing strips only C0 controls and spaces from the ends. A character
 // class cannot spell that range: the linter rejects a null in a regex.
 function stripUrlEdges(value: string): string {
@@ -79,7 +95,7 @@ export function validHttpBaseURL(value: string): boolean {
 
 const DEVELOPMENT_LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-// The development browser origin rule in docs/reference/settings/development.md. server.mjs
+// The development browser origin rule in docs/reference/settings/development.md. startApi
 // refuses a development OCC_AUTH_BASE_URL that breaks it before startup does any other work, and
 // createFastifyApp applies it again to the development browser origin it admits.
 export const DEVELOPMENT_BROWSER_ORIGIN_RULE =

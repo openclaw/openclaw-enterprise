@@ -6,7 +6,10 @@ import { resolveApprovedHarness } from "../../apps/controller/src/composition/pr
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   authorizedPrincipal,
@@ -51,15 +54,12 @@ async function setup(t) {
   const compute = createDevelopmentComputeDriver();
   const drivers = createBackendWorkerDrivers(compute, []);
   const controller = new OpenClawController(installation, { state });
-  for (const driver of [
+  registerAndSelectDrivers(controller, [
     compute,
     drivers.configurationDriver,
     drivers.secretDriver,
     drivers.createIAMDriver(state),
-  ]) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
-  }
+  ]);
   const configuration = await controller.createConfiguration(actor.id, {
     namespaceId: namespace.id,
     kind: "agent",

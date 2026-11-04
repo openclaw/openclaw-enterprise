@@ -21,8 +21,8 @@ enable Google alone or together with GitHub.
   requires: one serving controller, PostgreSQL State, native IAM, one canonical HTTPS
   Console origin, and `agentNativeAdmin.enabled: false`.
 - A controller image that includes Google sign-in: a
-  [published image](production-installation.md#use-published-images) from a revision that
-  has it, or [your own build](production-installation.md#build-and-publish-production-images).
+  [published image](production-installation.md#use-published-images) from a commit that
+  includes it, or [your own build](production-installation.md#build-and-publish-production-images).
 - A Google Cloud project where you can create an OAuth client.
 - API Pod HTTPS egress to `oauth2.googleapis.com` (code exchange) and
   `www.googleapis.com` (signing keys). Browsers, not the API, reach

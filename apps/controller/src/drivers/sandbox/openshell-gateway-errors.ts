@@ -1,6 +1,7 @@
 import {
   SANDBOX_DELETION_UNCONFIRMED,
   SandboxGatewayUnauthorizedError,
+  SandboxGatewayUnavailableError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
@@ -115,6 +116,12 @@ export class OpenShellRequestReplayRefusedError extends Error {
 // refusals, such as the rate limit or busy admission workers, stay the raw gRPC error.
 export const ADMISSION_LIMIT_DETAILS = "caller has reached the durable mutation admission limit";
 
+// OpenShell's exact CreateSandbox refusal when the gateway's Kubernetes driver does not list
+// a template label key in allowed_pod_labels (crates/openshell-driver-kubernetes/src/driver.rs,
+// reject_disallowed_pod_metadata_keys). The rejected keys follow the colon.
+export const POD_LABELS_NOT_PERMITTED_DETAILS =
+  "pod labels not permitted by the gateway's allowed_pod_labels: ";
+
 /**
  * OpenShell refused a mutation because OCC's gateway identity holds its maximum of 1000
  * durable request admissions. Completed admissions free up 24 h after completion, so the
@@ -132,6 +139,31 @@ export class OpenShellAdmissionLimitError extends TransientDependencyError {
       { cause },
     );
     this.name = "OpenShellAdmissionLimitError";
+  }
+}
+
+/**
+ * gRPC UNAVAILABLE: grpc-js's status when it cannot reach the gateway or loses its connection,
+ * and also one the gateway itself answers with for some failures (finding 2042).
+ */
+export const GRPC_UNAVAILABLE = 14;
+/** gRPC DEADLINE_EXCEEDED: also grpc-js's status for a call that never got a connection. */
+export const GRPC_DEADLINE_EXCEEDED = 4;
+
+/**
+ * The gateway did not answer a request: grpc-js reached no gateway, lost the connection under
+ * the call, or still had no connection at the request deadline (a status grpc-js made up
+ * itself), so it is down or restarting. A status the gateway sent itself is not this error
+ * (findings 2042, 2048). A revision pass waits for it within the deployment deadline instead of
+ * spending attempts (finding 2040); every other caller sees a DependencyUnavailableError, as for
+ * any other failed request.
+ */
+export class OpenShellGatewayUnavailableError extends SandboxGatewayUnavailableError {
+  readonly grpcStatus: number;
+
+  constructor(message: string, grpcStatus: number) {
+    super(message);
+    this.grpcStatus = grpcStatus;
   }
 }
 

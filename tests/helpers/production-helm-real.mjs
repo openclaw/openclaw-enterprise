@@ -164,7 +164,9 @@ export async function installProductionHelmControlPlane({
             { name: "init", mountPath: "/docker-entrypoint-initdb.d", readOnly: true },
           ],
           readinessProbe: {
-            exec: { command: ["pg_isready", "-U", "postgres", "-d", databaseName] },
+            exec: {
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", databaseName],
+            },
             initialDelaySeconds: 2,
             periodSeconds: 2,
           },
@@ -209,6 +211,8 @@ export async function installProductionHelmControlPlane({
     cluster: { cidrs: [`${endpoint.addresses[0].ip}/32`], port: endpoint.ports[0].port },
     api: { clients: apiClients },
     resources,
+    // Callers without prepared routing exercise the supported direct-access installation.
+    gatewayRouting: { enabled: false },
   };
   if (repositoryCredentials !== undefined) {
     values.repositoryCredentials = repositoryCredentials;

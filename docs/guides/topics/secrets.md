@@ -14,6 +14,9 @@ environment variable. Use the path that matches the consumer:
 
 ## Create and bind a Secret
 
+For browser management, follow [Manage Secrets in the console](../console/secrets.md).
+The API procedure below supports protected-file input.
+
 1. Wait for the Namespace to become `ready`. Use the [Kubernetes Secret Driver
    procedure](../../reference/drivers/kubernetes-secret.md#create-a-namespace-owned-secret)
    to send a value from a protected file. Retain the `sec_…` ID returned in the
@@ -31,18 +34,17 @@ environment variable. Use the path that matches the consumer:
    explains who can grant it. Namespace access or possession of the Secret ID
    does not grant permission to consume the value.
 
-For an Installation created by the local Quickstart, [Deploy your first Agent](../first-agent.md)
-grants that exact permission to the Agent it creates. Shared Installations still
-require an administrator with access to the configured IAM authority.
+Follow [Grant the Agent access to its model Secret](../deploy/production-agents.md#grant-the-agent-access-to-its-model-secret).
+This requires an administrator with access to the configured IAM authority.
 
 ## Rotate or remove a Secret
 
 Updating a Secret changes the stored value. It does not restart a workload or
 change a running process's environment. Redeploy each consumer through OCE and
-verify the new revision. `occ secret get` lists the consumers you may read and
+verify the new version. `occ secret get` lists the consumers you may read and
 counts the others; see [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers). There is no value history or automatic rotation. If a
 credential is exposed, stop the affected workloads, revoke it at the upstream
 provider, store a replacement, and redeploy. OCC rejects deletion while a
-current Configuration, credential source, Agent draft, active revision,
+current Configuration, credential source, Agent draft, selected version,
 pending deployment, or pending Agent provisioning request still references the
 Secret; the `409` names the references you may read. See [Update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).

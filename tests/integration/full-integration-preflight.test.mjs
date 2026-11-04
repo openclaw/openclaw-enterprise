@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -15,17 +14,17 @@ import {
   validateFullIntegrationPreflight,
 } from "../../scripts/ci/full-integration-preflight.mjs";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("full integration workflow carries QA and installation outcomes into selected aggregation", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "qa-aggregate-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-aggregate-");
   const workflow = await readFile(
     new URL("../../.github/workflows/full-integration.yml", import.meta.url),
     "utf8",
   );
   const step = workflow.split("- name: Write selected job state")[1];
   const source = step.match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
-  for (const target of ["qa-matrix", "dev-up-k3d"]) {
+  for (const target of ["qa-matrix", "dev-up-k3d", "skipper-prepared-git-installed"]) {
     for (const lane of [target, "all"]) {
       for (const result of ["success", "failure", "cancelled", "skipped", "missing"]) {
         const needs = { preflight: { result: "success" } };
@@ -123,8 +122,7 @@ function qaRegistry(repositories) {
 }
 
 async function runQaCredentialMaterializer(t, overrides = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "qa-credentials-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-credentials-");
   const githubEnv = join(directory, "github-env");
   const env = {
     RUNNER_TEMP: directory,
@@ -181,7 +179,7 @@ test("QA credential materializer validates isolated repository fixture target", 
   );
   const runnerSelection = selectQaMatrix({
     ...runnerEnv,
-    OCC_TEST_QA_SCENARIOS: "git-full",
+    OCC_TEST_QA_SCENARIOS: "git-write",
     OCC_TEST_QA_GITHUB_OBSERVER_BINARY: "gh",
     OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: "/private/static-token",
   });
@@ -526,38 +524,40 @@ test("manual protected branch runs require an exact environment grant without pe
   );
 });
 
-test("manual dev-up lane accepts a reviewed branch without protected credentials", async () => {
-  const env = {
-    GITHUB_REF: "refs/heads/reviewed-keycloak",
-    GITHUB_EVENT_NAME: "workflow_dispatch",
-    INPUT_LANE: "dev-up-k3d",
-  };
-  const github = async () => {
-    throw new Error("credential-free lane requested a protected environment");
-  };
-  assert.deepEqual(await validateFullIntegrationPreflight({ env, github }), {
-    selectedLane: "dev-up-k3d",
-    runAll: false,
+for (const lane of ["dev-up-k3d", "skipper-prepared-git-installed"]) {
+  test(`manual ${lane} lane accepts a reviewed branch without protected credentials`, async () => {
+    const env = {
+      GITHUB_REF: "refs/heads/reviewed-keycloak",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      INPUT_LANE: lane,
+    };
+    const github = async () => {
+      throw new Error("credential-free lane requested a protected environment");
+    };
+    assert.deepEqual(await validateFullIntegrationPreflight({ env, github }), {
+      selectedLane: lane,
+      runAll: false,
+    });
+    assert.deepEqual(requiredEnvironmentsForLane(lane), []);
+    for (const ref of ["refs/tags/reviewed-keycloak", "refs/pull/1138/merge"]) {
+      await assert.rejects(
+        validateFullIntegrationPreflight({ env: { ...env, GITHUB_REF: ref }, github }),
+        /must run from main/,
+      );
+    }
+    for (const event of ["push", "pull_request"]) {
+      await assert.rejects(
+        validateFullIntegrationPreflight({ env: { ...env, GITHUB_EVENT_NAME: event }, github }),
+        /Unsupported full integration event/,
+      );
+    }
+    for (const lane of ["all", "docker-model", "provider-account", "qa-matrix"]) {
+      assert.throws(() => assertSourceRef(env.GITHUB_REF, lane), /must run from main/);
+    }
   });
-  assert.deepEqual(requiredEnvironmentsForLane("dev-up-k3d"), []);
-  for (const ref of ["refs/tags/reviewed-keycloak", "refs/pull/1138/merge"]) {
-    await assert.rejects(
-      validateFullIntegrationPreflight({ env: { ...env, GITHUB_REF: ref }, github }),
-      /must run from main/,
-    );
-  }
-  for (const event of ["push", "pull_request"]) {
-    await assert.rejects(
-      validateFullIntegrationPreflight({ env: { ...env, GITHUB_EVENT_NAME: event }, github }),
-      /Unsupported full integration event/,
-    );
-  }
-  for (const lane of ["all", "docker-model", "provider-account", "qa-matrix"]) {
-    assert.throws(() => assertSourceRef(env.GITHUB_REF, lane), /must run from main/);
-  }
-});
+}
 
-test("manual dev-up workflow prepares the complete lane and aggregates its exact source", async () => {
+test("manual dev-up workflow prepares the complete lane and aggregates its exact source", async (t) => {
   const { loadYaml } = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   )("@kubernetes/client-node");
@@ -581,7 +581,9 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
             github: { ref, sha },
             format: (template, value) => template.replace("{0}", value),
           }),
-          lane === "dev-up-k3d" ? `full-integration-dev-up-k3d-${ref}` : "full-integration",
+          ["dev-up-k3d", "skipper-prepared-git-installed"].includes(lane)
+            ? `full-integration-${lane}-${ref}`
+            : "full-integration",
           `${lane}: ${ref} at ${sha}`,
         );
       }
@@ -611,6 +613,25 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
       assert.ok(suites.groups.full.includes(lane), `all must require ${lane} results`);
     }
   }
+  const privateGit = "skipper-prepared-git-installed";
+  const gitJob = workflow.jobs[privateGit];
+  assert.equal(gitJob.environment, undefined);
+  assert.deepEqual(gitJob.permissions, { contents: "read" });
+  assert.equal(gitJob.needs, "preflight");
+  assert.equal(gitJob["runs-on"], "ubuntu-22.04");
+  for (const lane of [privateGit, "all", "dev-up-k3d"]) {
+    assert.equal(
+      runInNewContext(gitJob.if, { inputs: { lane } }),
+      [privateGit, "all"].includes(lane),
+    );
+  }
+  assert.equal(gitJob.steps[0].with.ref, "${{ github.sha }}");
+  assert.equal(gitJob.steps[0].with["persist-credentials"], false);
+  assert.doesNotMatch(JSON.stringify(gitJob), /secrets\.|diagnostics\//);
+  const [receipt] = gitJob.steps.filter(({ uses }) => uses?.startsWith("actions/upload-artifact@"));
+  assert.equal(receipt.with.path, "${{ runner.temp }}/results/" + privateGit + ".json");
+  assert.equal(receipt.if, undefined, "publish the receipt only after successful fixture cleanup");
+  assert.ok(workflow.jobs["full-aggregate"].needs.includes(privateGit));
   const qa = workflow.jobs["qa-matrix"];
   assert.ok(qa.needs.includes("slack"), "shared Slack consumers must run sequentially");
   // A failed focused Slack proof must not suppress the broader QA proof. Only
@@ -635,11 +656,37 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     }
   }
   const inputs = { lane: "dev-up-k3d", profile: run.with.profile };
+  const directory = await temporaryDirectory(t, "manual-dev-up-image-mode-");
+  const output = join(directory, "outputs");
+  const mode = action.runs.steps.find(({ id }) => id === "image-mode");
+  const selection = spawnSync("bash", ["-c", mode.run], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CI_SELECTED_LANE: inputs.lane,
+      CI_SELECTED_TEST_FILE: "",
+      GITHUB_OUTPUT: output,
+    },
+  });
+  assert.equal(selection.status, 0, selection.stderr);
+  const firstAgent = /^first-agent=(true|false)$/m.exec(await readFile(output, "utf8"))?.[1];
+  assert.ok(firstAgent, "the shipped image selection must publish its mode");
   const evaluate = (expression) =>
-    runInNewContext(expression.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
-      inputs,
-      startsWith: (value, prefix) => value.startsWith(prefix),
-    });
+    runInNewContext(
+      expression
+        .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+        // GitHub property names may contain hyphens; JavaScript needs brackets.
+        .replaceAll(
+          "steps.image-mode.outputs.first-agent",
+          'steps["image-mode"].outputs["first-agent"]',
+        ),
+      {
+        inputs,
+        steps: { "image-mode": { outputs: { "first-agent": firstAgent } } },
+        startsWith: (value, prefix) => value.startsWith(prefix),
+      },
+    );
   for (const name of [
     "Set up Go toolchain",
     "Build Go CLI for development installation proof",

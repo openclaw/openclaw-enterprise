@@ -63,7 +63,7 @@ fail the job before that step.
 `.github/workflows/clawsweeper-dispatch.yml:202`, `.github/workflows/clawsweeper-dispatch.yml:339`
 
 For issues and pull requests, the workflow builds a request with the item identity
-and available source revision information. For command comments it sends the
+and available source commit information. For command comments it sends the
 repository, item, comment, and event identity; it includes a status comment ID
 only if one was created. Proof-nudge comments are ignored. ClawSweeper owns
 subsequent command interpretation and review; the dispatch response is not proof

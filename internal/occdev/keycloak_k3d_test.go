@@ -768,12 +768,15 @@ func TestDevelopmentConsoleTrustsOnlyTheBrowserCA(t *testing.T) {
 	}
 	address := server.Listener.Addr().String()
 	_, port, _ := net.SplitHostPort(address)
-	console, err := newDevelopmentConsole("https://example.com:"+port, address, ca)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := console.call(context.Background(), http.MethodGet, "/api/auth/providers", nil, nil); err == nil || !strings.Contains(err.Error(), "certificate") {
-		t.Fatalf("a certificate from another CA was trusted: %v", err)
+	// A canonical origin on the default port dials host:443 through the same address.
+	for _, origin := range []string{"https://example.com:" + port, "https://example.com"} {
+		console, err := newDevelopmentConsole(origin, address, ca)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := console.call(context.Background(), http.MethodGet, "/api/auth/providers", nil, nil); err == nil || !strings.Contains(err.Error(), "certificate") {
+			t.Fatalf("%s: a certificate from another CA was trusted: %v", origin, err)
+		}
 	}
 }
 

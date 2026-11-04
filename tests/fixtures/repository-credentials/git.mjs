@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { cpSync, rmSync } from "node:fs";
 import { createServer } from "node:https";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   cleanEnvironment,
@@ -10,14 +12,31 @@ import {
   temporaryDirectory,
 } from "./process.mjs";
 
-// git-http-backend owns the protocol and repository mutation; the fixture only
-// supplies CGI framing and a controlled provider authentication check.
-export async function startGitSmartHttpFixture(
-  t,
-  { authorize = () => true, repository = "fixture/repository", tls } = {},
-) {
-  tls ??= await createTlsMaterial(t);
-  const directory = await temporaryDirectory(t, "repository-credentials-git-");
+// Seeding a repository takes nine Git processes. The first fixture for a repository name in a
+// process seeds a template; every fixture copies it into its own directory without Git, so a
+// fixture that receives pushes or adds commits changes only its copy. Templates are removed when
+// the process exits; like any temporary directory, a process killed by a signal leaves them.
+const repositoryTemplates = new Map();
+const templateDirectories = new Set();
+process.once("exit", () => {
+  for (const directory of templateDirectories) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function repositoryTemplate(repository) {
+  let template = repositoryTemplates.get(repository);
+  if (template === undefined) {
+    template = seedRepositoryTemplate(repository);
+    repositoryTemplates.set(repository, template);
+    template.catch(() => repositoryTemplates.delete(repository));
+  }
+  return template;
+}
+
+async function seedRepositoryTemplate(repository) {
+  const directory = await mkdtemp(join(tmpdir(), "repository-credentials-git-template-"));
+  templateDirectories.add(directory);
   const bare = join(directory, `${repository}.git`);
   const seed = join(directory, "seed");
   await mkdir(join(bare, ".."), { recursive: true });
@@ -36,11 +55,65 @@ export async function startGitSmartHttpFixture(
     cwd: seed,
   });
   await run("git", ["config", "http.receivepack", "true"], { cwd: bare });
+  return { bare, seed };
+}
+
+async function copyRepositoryTemplate(repository, bare, seed) {
+  const pending = repositoryTemplate(repository);
+  const template = await pending;
+  try {
+    // About a millisecond each; fs.promises.cp takes several times as long for the same copy.
+    cpSync(template.bare, bare, { recursive: true });
+    cpSync(template.seed, seed, { recursive: true });
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+    // The template lives as long as the process; if something swept it from the temporary
+    // directory, seed it again once rather than failing every later fixture.
+    if (repositoryTemplates.get(repository) === pending) {
+      repositoryTemplates.delete(repository);
+    }
+    rmSync(bare, { recursive: true, force: true });
+    rmSync(seed, { recursive: true, force: true });
+    const reseeded = await repositoryTemplate(repository);
+    cpSync(reseeded.bare, bare, { recursive: true });
+    cpSync(reseeded.seed, seed, { recursive: true });
+  }
+}
+
+// git-http-backend owns the protocol and repository mutation; the fixture only
+// supplies CGI framing and a controlled provider authentication check.
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {{authorize?: (authorization: string | undefined, boundary: "git") => boolean,
+ *   repository?: string, tls?: Awaited<ReturnType<typeof createTlsMaterial>>,
+ *   observeRequest?: (method: string, url: string) => void}} options
+ */
+export async function startGitSmartHttpFixture(
+  t,
+  {
+    authorize = /** @type {(authorization: string | undefined, boundary: "git") => boolean} */ (
+      () => true
+    ),
+    repository = "fixture/repository",
+    tls,
+    observeRequest,
+  } = {},
+) {
+  tls ??= await createTlsMaterial(t);
+  const directory = await temporaryDirectory(t, "repository-credentials-git-");
+  const bare = join(directory, `${repository}.git`);
+  const seed = join(directory, "seed");
+  await copyRepositoryTemplate(repository, bare, seed);
   const trace = [];
   const children = new Set();
   let disconnectPush = false;
   let heldFetch;
+  let requests = 0;
   const server = createServer(tls, (request, response) => {
+    requests++;
+    observeRequest?.(request.method, request.url);
     if (!authorize(request.headers.authorization, "git")) {
       response.writeHead(401).end();
       return;
@@ -153,6 +226,11 @@ export async function startGitSmartHttpFixture(
       }
     });
   });
+  // Count new transport attempts as well as complete HTTP requests, including rejected ones.
+  let connections = 0;
+  server.on("connection", () => {
+    connections++;
+  });
   const origin = await listen(t, server);
   t.after(() => {
     for (const child of children) {
@@ -165,6 +243,7 @@ export async function startGitSmartHttpFixture(
     repository,
     bare,
     trace,
+    traffic: () => ({ connections, requests }),
     holdNextFetch({ beforeHeaders = false } = {}) {
       let started;
       let release;
@@ -179,6 +258,13 @@ export async function startGitSmartHttpFixture(
     },
     disconnectAfterNextAcceptedPush() {
       disconnectPush = true;
+    },
+    async addCommit() {
+      await run("git", ["commit", "--allow-empty", "-m", "New object for successor fetch"], {
+        cwd: seed,
+      });
+      await run("git", ["push", bare, "HEAD:refs/heads/main"], { cwd: seed });
+      return (await run("git", ["rev-parse", "HEAD"], { cwd: seed })).stdout.trim();
     },
     async ref(name) {
       return (await run("git", ["rev-parse", name], { cwd: bare })).stdout.trim();

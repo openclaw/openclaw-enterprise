@@ -87,11 +87,11 @@ Register new integration scenarios in the QA matrix:
    `tests/helpers/qa-selection.mjs`. Update
    [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json) for new inputs, files, or preparation;
    update [hosted credential setup](../../../scripts/ci/qa-matrix-credentials.mjs) when credentials change.
-3. For scenarios that must run automatically on PRs, update
+3. For scenarios in the advisory matrix on `main` and trusted PRs labeled `full-qa`, update
    `.github/workflows/qa-advisory.yml`. Add the selector to `OCC_TEST_QA_SCENARIOS`
    with applicable presets/installations, or add a job for a separate lane.
    Preserve trusted-PR eligibility and scope credentials to the job's environment.
-4. Update the [QA scenarios and PR coverage](../../../docs/testing/ci.md#qa-matrix).
+4. Update the [QA scenarios and advisory coverage](../../../docs/testing/ci.md#qa-matrix).
    Follow the [fixture conventions](../../../docs/testing/fixtures-and-scenarios.md)
    and run the selected scenario with its required prerequisites. Verify passing
    cases without skips and complete run-owned cleanup; report any missing proof.
