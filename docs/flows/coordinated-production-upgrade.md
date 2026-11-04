@@ -15,7 +15,7 @@ read-only Doctor lint.
 
 ## Entry Points
 
-- Trigger: run `scripts/upgrade-production-images` with the selected images, target,
+- Trigger: run `scripts/upgrade-production-images` with selected images, target,
   release, source revision and protected files.
 - Required: a healthy production Helm release and matching OCC and Kubernetes
   Installation IDs. Runtime upgrades require complete authorized inventory and no deployment in progress.
@@ -72,13 +72,13 @@ share its lock. Any `completed` entry refuses resume before Kubernetes/OCC calls
 or evidence changes. Runtime upgrades also lock the private sibling dispatch
 journal for the frozen fleet. Restoring evidence leaves that journal intact.
 
-It checks protected inputs, cluster, deployed release and matching OCC/Secret Installation IDs.
 Candidates match the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-as ordered YAML mappings, including images. `scripts/upgrade-production-images:matches_yaml`
-exits on unusable inputs or comparison-write failures with `Cannot compare upgrade YAML`,
-never drift. Only the Slack directory proxy and curated Codex PluginDriver selection
-may change before image selection. Broker checks compare references, not
-ConfigMap or Secret contents.
+as ordered YAML mappings, including images. Validate both candidates before
+protected-setting projections. `scripts/upgrade-production-images:matches_yaml`
+compares checked conversions and exits on unusable inputs or unwritable
+evidence with `Cannot compare upgrade YAML`. Only the Slack directory proxy and
+curated Codex PluginDriver selection may change before image selection. Broker
+checks compare references, not ConfigMap or Secret contents.
 
 Runtime upgrades require a complete authorized inventory and baseline versions.
 Nonterminal deployments, missing versions or unready Namespaces stop preparation.
@@ -268,14 +268,14 @@ resume checks the replacement.
 
 Completion proves Helm rollout and OCC access; runtime upgrades also verify
 deployments, readiness and Doctor without errors.
-The helper then writes a private `completed` marker. New upgrades require fresh
+It writes a private `completed` marker. New upgrades require fresh
 evidence. Failed marker writes require reconciling evidence with live state;
 absence alone does not prove unfinished work.
 Operators verify models, providers, channels, credentials, workspace continuity,
 native access and restores.
-`scripts/verify-console-release.ts:verifyConsoleRelease` compares anonymously served
-Console HTML and CSS with local publication artifacts after traffic selection;
-see [Console verification](../release/container-promotion.md#verify-the-served-console).
+`scripts/verify-console-release.ts:verifyConsoleRelease` compares served Console
+HTML and CSS with local publication artifacts after traffic selection
+([verification](../release/container-promotion.md#verify-the-served-console)).
 
 ### Read-only export after a split-layout refusal
 
@@ -325,6 +325,7 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 ## Changelog
 
 - 2026-11-04 07:28: Document served Console verification. (authoring-run/78fd39fa-cf99-4b8c-b120-4e344700140d - 2f8d396865b850963bb928beb0399970de430761)
+- 2026-11-04 07:14: Validate YAML comparisons. (authoring-run/47f197fd-9f98-4dfb-8162-36589ab6194e - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
 - 2026-11-04 06:40: Diagnose unusable YAML. (authoring-run/1320ca1e-663f-449a-aab9-29102e0c482f - f150505ae48988083ddeebdaffd45978be48d588)
 
