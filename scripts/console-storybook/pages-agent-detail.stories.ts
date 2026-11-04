@@ -82,6 +82,10 @@ export const DeploymentDeferred = story("deploymentDeferred");
 export const DeploymentRetrying = story("deploymentRetrying");
 export const DeploymentRunning = story("deploymentRunning");
 export const DeploymentRunningActivates = story("deploymentRunningActivates");
+export const DeploymentCompletionFocus = {
+  ...story("deploymentCompletionFocus", { openInNewTab: true }),
+  name: "Diagnostics focus when deployment completes",
+};
 export const DeploymentCompletesRereadFails = story("deploymentCompletesRereadFails");
 export const DeploymentStatusReadRecovers = {
   ...story("deploymentStatusReadRecovers"),
