@@ -127,8 +127,11 @@ const reviewedImports = {
   // Bounded, descriptor-checked PEM from the Installation's read-only public CA projection.
   "composition/repository-credentials/public-ca.ts": {
     "node:fs": ["constants"],
-    "node:fs/promises": ["open", "stat"],
+    "node:fs/promises": ["open"],
     "node:tls": ["createSecureContext"],
+  },
+  "composition/repository-credentials/public-file.ts": {
+    "node:fs/promises": ["stat"],
   },
   "composition/repository-credentials/projected-inputs.ts": {
     "node:crypto": ["X509Certificate"],
@@ -139,7 +142,7 @@ const reviewedImports = {
   "backends/repository-credentials/control-client.ts": { "node:http": ["request"] },
   "composition/repository-credentials/registry.ts": {
     "node:fs": ["constants"],
-    "node:fs/promises": ["open", "stat"],
+    "node:fs/promises": ["open"],
   },
   "drivers/repo/github/credentials/registry.ts": {
     "node:crypto": ["createHash"],
