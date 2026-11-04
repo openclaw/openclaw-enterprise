@@ -51,14 +51,22 @@ disable creation and show the Configuration ID. Expiry returns to sign-in.
 
 ## Recover from a refused deployment
 
-For a `409 RESOURCE_CONFLICT` that asks for a repository, open **Repositories**,
-select an approved repository, save, and deploy again. A source refusal needs
-its own fix: ask an administrator to configure support for the source type,
-or replace an unsupported binding before deployment.
+For a `409 RESOURCE_CONFLICT` that requires a repository, first ask an
+Installation administrator to confirm that protected Git access is ready for an
+approved repository. The administrator checks the
+[protected sender selection](../drivers/selection.md#select-a-protected-sender)
+and, for OpenShell, the [qualified release configuration](../repository-credentials/protected-openshell-git.md#configuration-for-a-qualified-release).
+A registered Git service alone does not establish sender qualification.
+After confirmation, open **Repositories**, select the approved repository, save,
+and deploy again.
 
 `REPOSITORY_GIT_SENDER_UNQUALIFIED` means this installation cannot enforce the
-selected Git permissions. Ask an administrator to enable protected Git access.
+selected Git permissions. Selecting a repository does not repair that condition:
+an administrator must configure a qualified sender before another deployment.
 Do not broaden repository permissions or disable the Sandbox to bypass it.
+
+A source refusal needs its own fix: ask an administrator to configure support for
+the source type, or replace an unsupported binding before deployment.
 
 ## Use repositories and Slack on the same Agent
 

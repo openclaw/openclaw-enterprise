@@ -2086,13 +2086,13 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
   }
 });
 
-test("Git-only deployment without a repository asks the operator to select and save one", async (t) => {
+test("Git-only deployment asks for protected Git readiness before selecting a repository", async (t) => {
   // An Agent with no credential source reached the same 503 through the counterpart check.
   const { response, revisions } = await protectedOpenShellDeploy(t, []);
   assert.equal(response.status, 409, JSON.stringify(response));
   assert.equal(
     response.error.message,
-    "Select a repository for this Agent, save your changes, and deploy again. This installation requires every Agent to have a repository.",
+    "This installation requires a repository. Ask an administrator to confirm protected Git access is ready. Then select an approved repository, save this Agent, and deploy again.",
   );
   assert.deepEqual(revisions, []);
 });
@@ -2178,17 +2178,12 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
     const path = `${f.collection}/${agent.id}`;
     const deployed = await f.request("POST", `${path}/deploy`);
     assert.equal(deployed.status, 409, `${label}: ${JSON.stringify(deployed)}`);
-    assert.equal(
-      deployed.error.message,
-      refusal === CredentialProxyRepositoryOnlyError
-        ? "Select a repository for this Agent, save your changes, and deploy again. This installation requires every Agent to have a repository."
-        : refusal.description,
-      label,
-    );
     assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, [], label);
     if (label === "stock 0.1.5" || !soleHarnessSource) {
-      // Adding a repository admits the ready Harness source, but cannot make an
-      // unrelated Gateway source usable by the Proxy. It must keep its source diagnosis.
+      // Reproduce the recovery loop before checking the first refusal: adding a
+      // repository alone still fails on the unqualified sender. The initial advice
+      // must put administrator readiness confirmation before that retry. An unrelated
+      // Gateway source keeps its separate source diagnosis.
       const updated = await f.request("PATCH", path, {
         configurationId: f.configuration.id,
         repositoryBindings: selection,
@@ -2205,6 +2200,13 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
       }
       assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
     }
+    assert.equal(
+      deployed.error.message,
+      refusal === CredentialProxyRepositoryOnlyError
+        ? "This installation requires a repository. Ask an administrator to confirm protected Git access is ready. Then select an approved repository, save this Agent, and deploy again."
+        : refusal.description,
+      label,
+    );
   }
   // Only the repository registration, of either kind encoding, at protocol 1 and advertising no
   // execution capability, is Git-only. A registration missing from gateway info, a partial
@@ -2234,7 +2236,7 @@ test("A Git-only Credential Proxy names repository.openShell instead of a 503 or
     if (status === 409) {
       assert.equal(
         response.error.message,
-        "Select a repository for this Agent, save your changes, and deploy again. This installation requires every Agent to have a repository.",
+        "This installation requires a repository. Ask an administrator to confirm protected Git access is ready. Then select an approved repository, save this Agent, and deploy again.",
         label,
       );
     } else {

@@ -7870,13 +7870,13 @@ export const scenarios = {
         status: 409,
         code: "RESOURCE_CONFLICT",
         message:
-          "Select a repository for this Agent, save your changes, and deploy again. This installation requires every Agent to have a repository.",
+          "This installation requires a repository. Ask an administrator to confirm protected Git access is ready. Then select an approved repository, save this Agent, and deploy again.",
       },
     ],
     description:
       "Deploy refuses an Agent without a repository on an installation that requires one.",
     steps: [
-      "Select Deploy new version. Read the refusal, open Repositories, select an approved repository and save before deploying again.",
+      "Select Deploy new version. Read the refusal and ask an administrator to confirm protected Git readiness. After confirmation, open Repositories, select an approved repository and save before deploying again.",
     ],
   },
   deployRefusedSetting: {

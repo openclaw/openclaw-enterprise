@@ -660,7 +660,7 @@ export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictErr
   static readonly description =
     "This installation's Credential Proxy is configured for repository Git, not this credential source type. Ask an administrator to configure support for this source type.";
   static readonly repositoryRequired =
-    "Select a repository for this Agent, save your changes, and deploy again. This installation requires every Agent to have a repository.";
+    "This installation requires a repository. Ask an administrator to confirm protected Git access is ready. Then select an approved repository, save this Agent, and deploy again.";
 
   constructor(operation: "source" | "deploy" = "source") {
     super(

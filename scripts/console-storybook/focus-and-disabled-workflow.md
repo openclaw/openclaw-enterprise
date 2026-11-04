@@ -163,8 +163,8 @@ expiry. Use the late Stop response story to inspect its generic result.
   and check saved state before submitting again. Scroll to the message below
   Channels, then open Agents to inspect the result.
 - **Pages / Agent detail / Deployment requires a repository** starts on the
-  draft. Select **Deploy new version**, read the refusal, then open
-  **Repositories**. The next action is to select and save an approved repository.
+  draft. Select **Deploy new version** and read the refusal. Ask an administrator
+  to confirm protected Git readiness before selecting and saving an approved repository.
 
 These previews use simulated API responses. The browser regressions verify
 wrong-origin refusal and an accepted Agent save whose response is lost through

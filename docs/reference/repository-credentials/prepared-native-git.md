@@ -40,7 +40,7 @@ also answers 503, so a session can get it with fewer requests. Run parallel clon
 fetches in groups no larger than the configured
 [service limits](../repository-credentials.md#client-routing-and-limits).
 
-A separately selected protected Credential Proxy can authorize a bounded
+A separately selected protected Credential Proxy can authorize a
 `metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
 requires HTTP 200 and the exact repository ID and full name. After stream end, the
 [transport](../../../apps/controller/src/drivers/repo/credentials/transport/upstream.ts)
@@ -88,9 +88,10 @@ Select `repositoryCredentials.authority: prepared-git` in the chart and
 under `repository.id` and `repository.configuration.sessionDurationSeconds`. Select
 `repository.nativeSender.controlSocket` and `repository.nativeSender.publicCaPath`
 explicitly. Keep the Backend’s `drivers.repo` policy ID equal to `repository.id`.
-Omit the Installation’s `drivers.repo`, Sandbox and Credential Proxy selections. Mount the signing and custody
-keys in the worker; do not copy them to the Agent or broker. OCE must be able to
-bind this repository session to the admitted revision and restrict broker ingress.
+Omit the Installation’s `drivers.repo`, `drivers.sandbox`, `drivers.credential_proxy`
+and `repository.openShell` settings. Mount the signing and custody keys in the worker;
+do not copy them to the Agent or broker. OCE must be able to bind this repository
+session to its Agent revision and restrict broker ingress.
 Every fresh native OPEN carries `preparedOnly: true`. The receiver requires a
 prepared backend, and the durable attempt records protocol 3. Readiness alone
 cannot authorize OPEN; an older receiver rejects the new request field. Existing
