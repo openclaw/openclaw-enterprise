@@ -2,11 +2,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  createDocsMarkdown,
-  parseDocsDocument,
-  parseFrontmatter,
-} from "./vendor/docs-markdown.mjs";
+import { createDocsMarkdown, parseDocsDocument } from "./vendor/docs-markdown.mjs";
+import { array, frontmatter, record, string } from "./parser-boundary.ts";
 
 export const DEFAULT_REVIEW_WORDS = 1500;
 export const DEFAULT_MAX_WORDS = 2500;
@@ -39,7 +36,13 @@ function gitMarkdownFiles(root: string) {
 
 type FileOptions = { root?: string | undefined; files?: string[] | undefined };
 type MarkdownFile = { path: string; absolutePath: string; realPath: string; aliases: string[] };
-type Section = { heading: string; level?: string; line: number; proseWords: number; codeWords: number };
+type Section = {
+  heading: string;
+  level?: string;
+  line: number;
+  proseWords: number;
+  codeWords: number;
+};
 
 export function collectMarkdownFiles({ root = process.cwd(), files }: FileOptions = {}) {
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
@@ -75,10 +78,14 @@ export function collectMarkdownFiles({ root = process.cwd(), files }: FileOption
   return [...byRealPath.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-export function countMarkdownWords(markdown: string, options: { markdown?: ReturnType<typeof createDocsMarkdown>; sourceFile?: string; root?: string } = {}) {
-  const md = options.markdown ?? createDocsMarkdown();
-  const content = parseFrontmatter(markdown).content.replace(/<!--[\s\S]*?-->/g, "");
-  const parsed = parseDocsDocument(content, md, options);
+export function countMarkdownWords(
+  markdown: string,
+  options: { markdown?: unknown; sourceFile?: string; root?: string } = {},
+) {
+  const md: unknown = options.markdown ?? createDocsMarkdown();
+  const content = frontmatter(markdown).content.replace(/<!--[\s\S]*?-->/g, "");
+  const parsed: unknown = parseDocsDocument(content, md, options);
+  const tokens = array(record(parsed).tokens);
   const sections = [];
   let proseWords = 0;
   let codeWords = 0;
@@ -95,30 +102,51 @@ export function countMarkdownWords(markdown: string, options: { markdown?: Retur
     current.codeWords += words;
   };
 
-  for (let index = 0; index < parsed.tokens.length; index++) {
-    const token = parsed.tokens[index];
-    if (token.type === "heading_open" && ["h1", "h2", "h3"].includes(token.tag)) {
-      sections.push(current);
-      current = {
-        heading: parsed.tokens[index + 1]?.content ?? token.tag,
-        level: token.tag,
-        line: (token.map?.[0] ?? 0) + 1,
-        proseWords: 0,
-        codeWords: 0,
-      };
-      continue;
+  for (let index = 0; index < tokens.length; index++) {
+    const token = record(tokens[index]);
+    const type = token.type;
+    if (type === "heading_open") {
+      const tag = string(token.tag);
+      if (["h1", "h2", "h3"].includes(tag)) {
+        const next = tokens[index + 1];
+        const heading = next == null ? tag : (record(next).content ?? tag);
+        const map = token.map == null ? undefined : array(token.map);
+        const line = map?.[0] ?? 0;
+        if (typeof line !== "number") {
+          throw new TypeError("Unsupported docs parser contract: expected line number");
+        }
+        sections.push(current);
+        current = {
+          heading: string(heading),
+          level: tag,
+          line: line + 1,
+          proseWords: 0,
+          codeWords: 0,
+        };
+        continue;
+      }
     }
-    if (token.type === "inline") {
-      addProse(
-        (token.children ?? [])
-          .filter((child) => ["text", "code_inline", "html_inline", "image"].includes(child.type))
-          .map((child) => (child.type === "html_inline" ? stripHtml(child.content) : child.content))
-          .join(" "),
-      );
-    } else if (token.type === "fence" || token.type === "code_block") {
-      addCode(token.content);
-    } else if (token.type === "html_block") {
-      addProse(stripHtml(token.content));
+    if (type === "inline") {
+      const children = token.children == null ? [] : array(token.children);
+      const parts: string[] = [];
+      for (const childValue of children) {
+        const child = record(childValue);
+        const childType = child.type;
+        if (
+          childType === "text" ||
+          childType === "code_inline" ||
+          childType === "html_inline" ||
+          childType === "image"
+        ) {
+          const content = string(child.content);
+          parts.push(childType === "html_inline" ? stripHtml(content) : content);
+        }
+      }
+      addProse(parts.join(" "));
+    } else if (type === "fence" || type === "code_block") {
+      addCode(string(token.content));
+    } else if (type === "html_block") {
+      addProse(stripHtml(string(token.content)));
     }
   }
   sections.push(current);
@@ -136,15 +164,19 @@ export function checkMarkdownWordCounts({
   reviewWords = DEFAULT_REVIEW_WORDS,
   files,
 }: FileOptions & { maxWords?: number; reviewWords?: number } = {}) {
-  const md = createDocsMarkdown();
+  const md: unknown = createDocsMarkdown();
   const markdownFiles = collectMarkdownFiles({ root, files });
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
   const rows = markdownFiles.map((file) => {
     const markdown = fs.readFileSync(file.absolutePath, "utf8");
-    const { tags } = parseFrontmatter(markdown).data;
+    const boxed: unknown = Object(frontmatter(markdown).data);
+    if (boxed === null || typeof boxed !== "object") {
+      throw new TypeError("Unsupported docs parser contract: expected boxed frontmatter");
+    }
+    const tags: unknown = Reflect.get(boxed, "tags");
     if (
       tags !== undefined &&
-      (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string" || !tag.trim()))
+      (!Array.isArray(tags) || array(tags).some((tag) => typeof tag !== "string" || !tag.trim()))
     ) {
       throw new Error(`${file.path}: tags frontmatter must be a list of nonempty strings`);
     }
@@ -157,7 +189,7 @@ export function checkMarkdownWordCounts({
     });
     // Exceptions belong to the resolved file, not aliases pointing elsewhere.
     let lengthException;
-    if (tags?.includes("nolimit")) {
+    if (tags !== undefined && array(tags).includes("nolimit")) {
       lengthException = "nolimit tag";
     } else if (path.basename(file.realPath) === "AGENTS.md") {
       lengthException = "Agent instruction document";
@@ -254,7 +286,12 @@ export function formatWordCountReport(result: ReturnType<typeof checkMarkdownWor
 }
 
 function parseCliArgs(argv: string[]) {
-  const options: { root: string | undefined; maxWords: number; reviewWords: number; json: boolean } = {
+  const options: {
+    root: string | undefined;
+    maxWords: number;
+    reviewWords: number;
+    json: boolean;
+  } = {
     root: process.cwd(),
     maxWords: DEFAULT_MAX_WORDS,
     reviewWords: DEFAULT_REVIEW_WORDS,
