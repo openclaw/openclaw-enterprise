@@ -10832,10 +10832,12 @@ export class OpenClawController {
           binding.repositoryRef,
         );
         if (approval) {
+          const admission = this.installationRepositoryAdmission;
           const resolved = this.resolveRepositoryBindings(
             namespace.id,
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
+            admission?.policy === this.selections.get("repo")?.driver ? admission : undefined,
           )!;
           const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,
