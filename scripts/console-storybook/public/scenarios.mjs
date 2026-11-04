@@ -9841,7 +9841,8 @@ export const scenarios = {
       { suffix: "/runtime", status: 403 },
       {
         suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
-        skip: 1,
+        // Keep the initial read and first Logs recheck denied.
+        skip: 2,
         once: true,
         data: { update: true, deploy: true, operate: true, delete: true },
       },
