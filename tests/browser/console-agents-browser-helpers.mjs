@@ -491,6 +491,12 @@ export async function operateDeniedSecretOption(scope, label, secret) {
 
 // Lists the Secret field `label`'s inline Create new Secret action and returns it, checking that
 // it is disabled with `reason` in its accessible name.
+/**
+ * @param {import("playwright").Page | import("playwright").Locator} scope
+ * @param {string} label
+ * @param {string} reason
+ * @returns {Promise<import("playwright").Locator>}
+ */
 export async function deniedCreateSecretOption(scope, label, reason) {
   await scope.getByLabel(label, { exact: true }).fill("no matching Secret");
   const option = scope.getByRole("option", {
@@ -679,8 +685,15 @@ export async function trackSettledFetches(page) {
   });
 }
 
+/**
+ * @param {import("playwright").Page} page
+ * @param {string} path
+ */
 export async function settledFetches(page, path) {
-  return page.evaluate((target) => globalThis.settledFetchCount(target), path);
+  /** @type {unknown} */
+  const count = await page.evaluate((target) => globalThis.settledFetchCount(target), path);
+  assert.ok(typeof count === "number", "Settled fetch instrumentation returns a numeric count");
+  return count;
 }
 
 export async function waitForSettledFetches(page, path, count) {
@@ -1143,6 +1156,7 @@ export function denyRevisionRead(fixture, namespace, revision) {
 }
 
 // The Stop Agent button in its row on the Agent page.
+/** @param {import("playwright").Page} page */
 export const stopAgentButton = (page) =>
   page
     .getByRole("region", { name: "Stop Agent", exact: true })
@@ -1232,6 +1246,7 @@ export const shortId = (id) => `${id.slice(0, 12)}…${id.slice(-6)}`;
 
 // A control's accessible description from aria-describedby: the text of each element it names,
 // in order (finding D749). A referenced ID that renders nothing adds nothing.
+/** @param {import("playwright").Locator} locator */
 export function accessibleDescription(locator) {
   return locator.evaluate((node) =>
     (node.getAttribute("aria-describedby") ?? "")

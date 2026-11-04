@@ -272,6 +272,11 @@ export function fileConsoleApp(options = {}) {
   };
 }
 
+/**
+ * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
+ * @template {object | Record<string, unknown>} [Options=object]
+ * @param {Options & {auditSink?: InMemoryAuditSink}} [options]
+ */
 export async function createConsoleAppFixture(t, options = {}) {
   const defaultAgentGatewayManagedMode = options.agentGatewayManagedMode;
   const installationId = `ins_${randomUUID()}`;
@@ -961,6 +966,10 @@ export async function createConsoleAppFixture(t, options = {}) {
 
 // The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
 // grant or revoke after sign-in: State reads the policy on each request.
+/**
+ * @param {{policy: Pick<Awaited<ReturnType<typeof createConsoleAppFixture>>["policy"], "roles">}} fixture
+ * @param {string} label
+ */
 export function memberRole(fixture, label) {
   const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
   assert.ok(role, `member ${label} has a Role`);
@@ -976,6 +985,10 @@ export function grantMember(fixture, label, grants) {
 
 // The authorization denials an InMemoryAuditSink recorded: all of them, or those for `action`,
 // an exact action name or a RegExp for a family of actions.
+/**
+ * @param {Pick<InMemoryAuditSink, "list">} auditSink
+ * @param {string | RegExp} [action]
+ */
 export function authorizationDenials(auditSink, action) {
   const matches =
     action === undefined
