@@ -1813,14 +1813,10 @@ test(
   imageTestOptions,
   async () => {
     const source = historicalCodex
-      ? JSON.parse(
-          (
-            await execute("git", [
-              "show",
-              `${historicalRelease}:deploy/runtime/openclaw-source.json`,
-            ])
-          ).stdout,
-        )
+      ? {
+          commit: "554f0b886bde6c089578c49967227f8b50d1cf16",
+          sourceArchiveSha256: "1532c8e1baf84ecae6080aee6d15003afd2458aeaaeaa30b0504818b000c82d9",
+        }
       : await readOpenclawSource();
     assert.equal(
       source.commit,
