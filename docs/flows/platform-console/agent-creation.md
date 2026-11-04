@@ -72,10 +72,20 @@ none before any answer.
 `updateControls`. Manual mode preserves `model.value` and clears the dropdown.
 `resetModelChoices` restores the current provider's list, including Configuration
 JSON changes, retaining only listed models; otherwise both inputs clear.
-Provider/authentication changes retain no model. Submission matches the primary
-Configuration model to `model.value`. `updateControls` sets the button label,
-visibility, and required input; the toggle moves focus. Returning preserves credentials and unrelated
-Configuration; saved-Configuration and pending-request locks govern both directions.
+Provider and authentication changes normally reset the model. `updateControls`
+sets the button label, visibility, and required input; the toggle moves focus.
+Returning preserves credentials and unrelated Configuration. Saved Configuration
+and pending requests lock the toggle.
+
+If a change needs to update `plugins.allow` for Codex and the field is malformed,
+the form keeps the JSON as typed and focuses **Configuration JSON**. It asks you
+to use an array of strings or remove the field. A refused model selection, provider change, or Harness change
+keeps the previous model, provider, Harness, and execution mode. The authentication
+method can still change: the form clears the prior credential and shows the new
+method's fields without changing the model or JSON.
+
+Submission still matches the primary Configuration model to `model.value` and
+uses the normal server validation.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
 Compute supplies gateway authentication; Presets replace the starter unchanged.
