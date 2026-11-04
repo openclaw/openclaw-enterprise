@@ -28,7 +28,11 @@ import {
   credentialsRecoveryScenarios,
   credentialsThemeScenario,
 } from "./scenario-groups/credentials.mts";
-import { pluginsScenarios, pluginApproverScenarios } from "./scenario-groups/plugins.mts";
+import {
+  pluginsScenarios,
+  pluginApproverScenarios,
+  pluginConnectionReturn,
+} from "./scenario-groups/plugins.mts";
 import { channelsScenarios } from "./scenario-groups/channels.mts";
 import {
   createAgentFormScenarios,
@@ -922,6 +926,9 @@ const authoredScenarios = {
   ...createAgentFormScenarios,
   ...pluginsScenarios,
   ...createAgentProvisioningScenarios,
+  pluginConsentAttached: pluginConnectionReturn(draft, "attached"),
+  pluginConsentSaved: pluginConnectionReturn(draft, "saved"),
+  pluginConsentUnconfirmed: pluginConnectionReturn(draft, "unconfirmed"),
   ...agentDetailScenarios.savedLogin,
   ...credentialsOAuthScenarios({ draft }),
   ...createAgentOutcomeScenarios,

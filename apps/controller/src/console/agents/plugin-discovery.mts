@@ -25,7 +25,7 @@ type CatalogRequest = { cursor?: string; q?: string } | { pluginId: string };
 
 interface PluginDiscoveryOptions extends Pick<
   PluginFieldsOptions,
-  "input" | "saveHint" | "createApproverField"
+  "input" | "saveHint" | "createApproverField" | "slotConnection"
 > {
   context: PluginDiscoveryContext;
   canDiscover(): boolean;
@@ -83,6 +83,7 @@ export function createPluginDiscovery({
   unsupportedMessage = "This Installation's Plugin Driver does not offer catalog browsing. You can edit configured selections or JSON, or ask an operator to select a catalog-capable Driver.",
   availableMessage = "Load plugins available to this credential. Your plugin selections stay unchanged.",
   createApproverField,
+  slotConnection,
 }: PluginDiscoveryOptions) {
   let generation = 0;
   let prefetched = false;
@@ -101,6 +102,7 @@ export function createPluginDiscovery({
     input,
     ...(saveHint !== undefined ? { saveHint } : {}),
     ...(createApproverField ? { createApproverField } : {}),
+    ...(slotConnection ? { slotConnection } : {}),
     onLoadPlugins: (direction, q) => {
       if (direction === "search") {
         scheduleSearch(q);

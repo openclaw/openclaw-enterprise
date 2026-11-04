@@ -20,3 +20,9 @@ export const Unavailable = story("pluginsUnavailable");
 export const CapabilitiesUnavailable = story("pluginsCapabilitiesUnavailable");
 export const NativeLimited = story("pluginsNativeLimited");
 export const ManagedGoogleInstall = story("managedGoogleInstall");
+
+export const ChooseConnectionTemplate = story("pluginConnectChoose");
+export const ExistingPluginAccount = story("pluginConnectBound");
+export const NoCompatibleTemplate = story("pluginConnectEmpty");
+export const ConnectionPermissionDenied = story("pluginConnectDenied");
+export const ConnectionTemplatesLoading = story("pluginConnectLoading");

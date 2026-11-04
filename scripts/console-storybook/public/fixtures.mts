@@ -215,6 +215,21 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const { configs } = configurationStore;
   const credentials: Parameters<typeof createAgentLifecycle>[1]["credentials"] = new Map();
   const credentialSources = new Map<string, StoredCredentialSource>();
+  const savedAccount = scenario.savedPluginAccount;
+  if (savedAccount) {
+    const source = {
+      ...savedAccount,
+      namespaceId,
+      ref: { kind: "credential_source" as const, namespaceId, id: savedAccount.id },
+      type: "oauth2-refresh-token",
+      ownerCapability: "credential_refresh",
+      driverId: "openshell-refresh",
+      state: "ready" as const,
+      config: {},
+      createdAt,
+    };
+    credentialSources.set(source.id, source);
+  }
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map<string, DeviceLogin>();
   const secrets = new Map<string, ReturnType<typeof secretMetadata>>();

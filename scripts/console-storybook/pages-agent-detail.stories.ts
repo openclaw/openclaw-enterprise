@@ -308,3 +308,7 @@ export const ConfigurationSaveReadDenied = {
   ...story("configurationSaveReadDenied"),
   name: "Configuration Save read denied",
 };
+
+export const PluginConsentAttached = story("pluginConsentAttached");
+export const PluginConsentSaved = story("pluginConsentSaved");
+export const PluginConsentUnconfirmed = story("pluginConsentUnconfirmed");
