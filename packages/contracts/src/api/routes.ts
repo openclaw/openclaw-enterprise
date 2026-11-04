@@ -1344,13 +1344,19 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
     summary:
-      "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything",
+      "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication against the Configuration and Agent create rules that need nothing saved, without saving anything",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ValidateAgentCreateBody,
-      response: { 204: Type.Null(), ...createErrors },
+      response: {
+        204: Type.Null({
+          description:
+            "The request passed every check this call runs: the Namespace's state, Configuration create's size and content rules (with Secret bindings in the request, a channel credential reference that has none is refused) and its Configuration Driver's check (such as credential references), then Agent create's plugin, execution-mode, initial-workspace-files and Harness authentication rules, and, with a name, that no other Agent in the Namespace has it. A refusal carries the message those creates would send. Not checked here: the bound Secrets, the Harness authentication source, credential sources, live repository policy and an adopted Namespace's readiness; Configuration and Agent create check those when they save.",
+        }),
+        ...createErrors,
+      },
     },
   },
   {

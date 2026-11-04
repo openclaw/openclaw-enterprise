@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-10-25
-last_updated_session: fix-2469
+updated: 2026-11-03
+last_updated_session: authoring-run/43478404-b575-4618-9024-eaf043615907
 ---
 
 # Console Agent creation
@@ -115,7 +115,8 @@ is refused before any write. It then checks the Agent name, draft values with th
 `secretBindings`, plugins and the planned `harnessAuth`
 (only the method for a Secret it saves next or registers with a Credential Gateway; none for
 ChatGPT sign-in) with
-`POST /namespaces/:namespaceId/agents/validate`, which refuses a name another Agent has with
+[`POST /namespaces/:namespaceId/agents/validate`](../../reference/agents.md#checking-a-create-before-saving),
+which refuses a name another Agent has with
 Agent create's `409` and a channel token reference without a binding with Configuration
 create's `400`. `list.mts:channelBindingRefusal` shows that refusal, and the same one from
 provisioning, only under the Configuration JSON;
@@ -174,6 +175,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-03 20:47: Link the Create Agent preflight to its Agents reference section, which lists its body limit and check order (findings 1869, 1870). (authoring-run/43478404-b575-4618-9024-eaf043615907 - d82295a762c6dd981aa6771de3d21b2325299ae4)
 - 2026-10-25: The per-Secret `operate` remedy names an exact-Secret grant; the Agents list gives Create Agent's next step when Agent create is denied. (findings 2507, 2508)
 - 2026-10-25: Refuse a typed model key, and disable the Preset's **Create new Secret**, where `operate` is denied on a readable Secret. (fix-2492, finding 2492)
 - 2026-10-25: An inline Secret create rereads the `operate` answer before staging. (finding 2486)

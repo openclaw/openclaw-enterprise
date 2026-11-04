@@ -111,10 +111,9 @@ import { createAgentHandlers } from "./http/agents.ts";
 import { callerDenialMessage, GENERIC_DENIAL, requestedValues } from "./http/caller-denial.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
-import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
+import { type ErrorDetail } from "./http/error-details.ts";
 import {
   canonicalFailure,
-  cappedPath,
   dependencyUnavailable,
   dependencyUnavailableLogFields,
   failure,
@@ -127,7 +126,12 @@ import {
   workspaceWithoutRunningVersion,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
-import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
+import {
+  MAX_JSON_BODY_DEPTH,
+  checkJsonValue,
+  tooDeepFailure,
+  tooDeepJsonPath,
+} from "./http/json-depth.ts";
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
@@ -261,6 +265,9 @@ const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
 // bindings, each a 253-character name and a reference: under 32 KiB), all written with
 // six-byte JSON escapes. Like Preset writes, these routes check the grant before the body.
 const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
+// Create Agent's preflight carries both bodies it checks: the unsaved Configuration and Agent
+// create's fields (finding 1869). Like Configuration writes, it checks the grant before the body.
+const AGENT_CREATE_VALIDATE_BODY_LIMIT = CONFIGURATION_BODY_LIMIT + AGENT_CREATE_BODY_LIMIT;
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
 // 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
 const WORKSPACE_FILE_BODY_LIMIT = 6 * WORKSPACE_FILE_CONTENT_LIMIT + 1024;
@@ -419,28 +426,11 @@ function agentBoundSourceGrants(
   return grants;
 }
 
-function validateConfiguration(value: unknown, depth = 0, path = ""): void {
-  // The JSON body parser already refuses deeper bodies; this keeps the rule for any other input.
-  if (depth > MAX_JSON_BODY_DEPTH) {
-    throw tooDeepFailure(path);
-  }
-  if (value === null || typeof value !== "object") {
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const [index, entry] of value.entries()) {
-      validateConfiguration(entry, depth + 1, `${path}/${index}`);
-    }
-    return;
-  }
-  for (const [key, entry] of Object.entries(value)) {
-    if (key === "__proto__" || key === "constructor" || key === "prototype") {
-      throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-        { path: cappedPath(`${path}/${jsonPointer(key)}`), code: "INVALID_VALUE" },
-      ]);
-    }
-    validateConfiguration(entry, depth + 1, `${path}/${jsonPointer(key)}`);
-  }
+// Create Agent's preflight carries Configuration values at /configuration/values, one level below
+// Configuration create's /values, so a value there may sit one level deeper (issue #2831). Both
+// depth checks, the raw-body scan and the parsed-body walk, take it from here.
+function deeperJsonValue(operationId: string | undefined): readonly [string, string] | undefined {
+  return operationId === "validateAgentCreate" ? ["configuration", "values"] : undefined;
 }
 
 /** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
@@ -449,7 +439,8 @@ function authorizesBeforeBody(operation: OccApiRoute): boolean {
     operation.operationId === "createPreset" ||
     operation.operationId === "updatePreset" ||
     operation.operationId === "createConfiguration" ||
-    operation.operationId === "updateConfiguration"
+    operation.operationId === "updateConfiguration" ||
+    operation.operationId === "validateAgentCreate"
   );
 }
 
@@ -1305,7 +1296,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     app.initialConfig.onConstructorPoisoning ?? "error",
   );
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
-    const tooDeep = tooDeepJsonPath(body as string);
+    const operationId = (request.routeOptions.schema as { operationId?: string } | undefined)
+      ?.operationId;
+    const tooDeep = tooDeepJsonPath(
+      body as string,
+      MAX_JSON_BODY_DEPTH,
+      deeperJsonValue(operationId),
+    );
     if (tooDeep !== undefined) {
       done(tooDeepFailure(tooDeep), undefined);
       return;
@@ -2102,12 +2099,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /**
-   * Preset and Configuration writes accept bodies of about 6 MiB (PRESET_BODY_LIMIT,
-   * CONFIGURATION_BODY_LIMIT), far above the general limit. Their grant check needs only the
+   * Preset and Configuration writes, and Create Agent's preflight, accept bodies of about 6 MiB
+   * (PRESET_BODY_LIMIT, CONFIGURATION_BODY_LIMIT, AGENT_CREATE_VALIDATE_BODY_LIMIT), far above
+   * the general limit. Their grant check needs only the
    * path and the caller, so it runs here, in onRequest, before the body is read: a caller
    * without the grant gets the same 403 or 404 and audit row as when the check ran in the
    * handler, and the controller never buffers the body. The handler repeats the check in its
-   * transaction, with the Secret binding checks that need the body.
+   * transaction; Configuration writes then run the Secret binding checks that need the body.
    */
   async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
     const context = contexts.get(request);
@@ -2118,6 +2116,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
+    if (operation.operationId === "validateAgentCreate") {
+      await controller.authorizeAgentCreate(context.actorId, params.namespaceId as string);
+      return;
+    }
     if (
       operation.operationId === "createConfiguration" ||
       operation.operationId === "updateConfiguration"
@@ -2152,7 +2154,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
     if (body !== undefined) {
-      validateConfiguration(body);
+      checkJsonValue(body, MAX_JSON_BODY_DEPTH, deeperJsonValue(operation.operationId));
     }
 
     if (operation.operationId === "bootstrapInstallation") {
@@ -4447,16 +4449,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         url: operation.path,
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent" ||
-              operation.operationId === "validateAgentCreate" ||
-              operation.operationId === "provisionAgent"
+          : operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
-              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
-              : operation.operationId === "createConfiguration" ||
-                  operation.operationId === "updateConfiguration"
-                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
-                : {}),
+            : operation.operationId === "validateAgentCreate"
+              ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_VALIDATE_BODY_LIMIT }
+              : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
+                ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
+                : operation.operationId === "createConfiguration" ||
+                    operation.operationId === "updateConfiguration"
+                  ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                  : {}),
         schema,
         onRequest: async (request) => {
           await admit(request, operation);

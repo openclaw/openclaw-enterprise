@@ -32,16 +32,46 @@ const LINE_FEED = 0x0a;
 const CARRIAGE_RETURN = 0x0d;
 
 /**
+ * Whether the raw object key from `start` to `end` (quotes included) is `name`. Only short keys
+ * are decoded: an escaped `name` is at most six characters per character, plus its quotes.
+ */
+function keyIs(text: string, start: number | undefined, end: number | undefined, name: string) {
+  if (start === undefined || end === undefined || end - start > 6 * name.length + 2) {
+    return false;
+  }
+  const raw = text.slice(start, end);
+  if (raw === `"${name}"`) {
+    return true;
+  }
+  // Only an escape can make other text decode to the name.
+  if (!raw.includes("\\")) {
+    return false;
+  }
+  try {
+    return JSON.parse(raw) === name;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Finds the first value in raw JSON `text` that sits more than `maxDepth` levels below the
  * root, in document order, before anything parses the text: building the objects of a deeply
  * nested body costs memory in proportion to its depth, and recursive checks of them overflow
  * the stack. One pass, with state bounded by `maxDepth`. Returns that value's JSON Pointer
  * (keys cut to MAX_KEY_LENGTH characters), or undefined. It does not check syntax; invalid
  * text that it passes still fails to parse.
+ *
+ * `extraLevelBelow` names a value two object keys below the root whose own contents may sit
+ * one level deeper: a body that wraps another body's document one level further down (Create
+ * Agent's preflight carries Configuration values at `/configuration/values`, one level below
+ * Configuration create's `/values`). The allowance holds only inside that value and ends when
+ * it closes, so its siblings keep `maxDepth`.
  */
 export function tooDeepJsonPath(
   text: string,
   maxDepth: number = MAX_JSON_BODY_DEPTH,
+  extraLevelBelow?: readonly [string, string],
 ): string | undefined {
   // For each open container, outermost first: whether it is an array, and the position of the
   // entry being read (an array index, or where an object's current key starts and ends).
@@ -52,6 +82,11 @@ export function tooDeepJsonPath(
   let depth = 0;
   // Whether a string here would be an object key (after "{" or "," in an object).
   let expectKey = false;
+  // Whether the container most recently opened one level below the root is the value of
+  // extraLevelBelow's first key (a container two levels down always opens inside it), and the
+  // depth that extraLevelBelow's value opened at while it is open (or -1).
+  let firstKeyOpen = false;
+  let extendedAt = -1;
   for (let at = 0; at < text.length; at += 1) {
     const code = text.charCodeAt(at);
     switch (code) {
@@ -74,11 +109,14 @@ export function tooDeepJsonPath(
       case CLOSE_ARRAY:
         depth = Math.max(depth - 1, 0);
         expectKey = false;
+        if (depth <= extendedAt) {
+          extendedAt = -1;
+        }
         continue;
     }
     // A key is not a value: the value after its colon is checked.
     const key = code === QUOTE && expectKey && depth > 0;
-    if (!key && depth > maxDepth) {
+    if (!key && depth > (extendedAt < 0 ? maxDepth : maxDepth + 1)) {
       return pathAt(text, depth, isArray, index, keyStart, keyEnd);
     }
     if (code === QUOTE) {
@@ -96,6 +134,16 @@ export function tooDeepJsonPath(
         keyEnd[depth - 1] = at + 1;
       }
     } else if (code === OPEN_OBJECT || code === OPEN_ARRAY) {
+      if (extraLevelBelow !== undefined && !expectKey) {
+        if (depth === 1) {
+          firstKeyOpen =
+            isArray[0] === false && keyIs(text, keyStart[0], keyEnd[0], extraLevelBelow[0]);
+        } else if (depth === 2 && firstKeyOpen && isArray[1] === false) {
+          if (keyIs(text, keyStart[1], keyEnd[1], extraLevelBelow[1])) {
+            extendedAt = depth;
+          }
+        }
+      }
       isArray[depth] = code === OPEN_ARRAY;
       index[depth] = 0;
       depth += 1;
@@ -140,4 +188,56 @@ function pathAt(
     path += `/${jsonPointer(segment)}`;
   }
   return path;
+}
+
+/**
+ * The parsed-body counterpart of tooDeepJsonPath, with the same `maxDepth` and
+ * `extraLevelBelow`, for a body the JSON parser already read (it keeps the rule for any other
+ * input). It also refuses an object key that names a prototype. Throws the request failure.
+ */
+export function checkJsonValue(
+  value: unknown,
+  maxDepth: number = MAX_JSON_BODY_DEPTH,
+  extraLevelBelow?: readonly [string, string],
+): void {
+  checkValue(value, 0, "", maxDepth, extraLevelBelow, extraLevelBelow === undefined ? 0 : 1);
+}
+
+// `stage` is 1 at the root and 2 in the value of extraLevelBelow's first key, where the step into
+// its second key is not counted; 0 everywhere else.
+function checkValue(
+  value: unknown,
+  depth: number,
+  path: string,
+  maxDepth: number,
+  extraLevelBelow: readonly [string, string] | undefined,
+  stage: 0 | 1 | 2,
+): void {
+  if (depth > maxDepth) {
+    throw tooDeepFailure(path);
+  }
+  if (value === null || typeof value !== "object") {
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      checkValue(entry, depth + 1, `${path}/${index}`, maxDepth, undefined, 0);
+    }
+    return;
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    const entryPath = `${path}/${jsonPointer(key)}`;
+    if (key === "__proto__" || key === "constructor" || key === "prototype") {
+      throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
+        { path: cappedPath(entryPath), code: "INVALID_VALUE" },
+      ]);
+    }
+    if (stage === 1 && key === extraLevelBelow![0]) {
+      checkValue(entry, depth + 1, entryPath, maxDepth, extraLevelBelow, 2);
+    } else if (stage === 2 && key === extraLevelBelow![1]) {
+      checkValue(entry, depth, entryPath, maxDepth, undefined, 0);
+    } else {
+      checkValue(entry, depth + 1, entryPath, maxDepth, undefined, 0);
+    }
+  }
 }

@@ -76,7 +76,6 @@ import {
   POD_QUOTA_FULL,
   PROVISIONING_NOT_COMPLETED,
   IMAGE_PULL_FAILING,
-  codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
@@ -2124,8 +2123,10 @@ test("Agent creation names the Configuration field that holds an inline model cr
     providers: { ...edited.models?.providers, openai: { apiKey: sentinel } },
   };
   await configuration.fill(JSON.stringify(edited, null, 2));
-  // The preflight checks the selected model credential Secret against the Configuration as Agent
-  // save would (finding 2391), so it refuses the inline key before the Configuration is saved.
+  // The preflight runs the Configuration Driver's check (finding 1870) before Agent save's Harness
+  // authentication check (finding 2391), in the order the form saves them, so the Driver refuses
+  // the inline key before the Secret or Configuration is saved.
+  const secretsBefore = secretPostRequests(requests, namespace.id).length;
   const rejected = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate` &&
@@ -2134,13 +2135,15 @@ test("Agent creation names the Configuration field that holds an inline model cr
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal((await rejected).status(), 400);
   const feedback = page.getByRole("alert").filter({
-    hasText: codexApiKeyRefusal("models.providers.openai.apiKey"),
+    hasText:
+      "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
   });
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.
   const explanation = await feedback.textContent();
   assert.ok(explanation, "expected the explanation of the credential field");
   assert.equal(explanation.includes(sentinel), false);
+  assert.equal(secretPostRequests(requests, namespace.id).length, secretsBefore);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   await waitForEnabled(configuration);

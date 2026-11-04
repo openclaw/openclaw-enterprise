@@ -5208,6 +5208,20 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * The grant check that opens validateAgentCreate, alone: Agent create's `agent:create` on the
+   * Namespace. The HTTP layer runs it before it reads the preflight's body (an unsaved
+   * Configuration, up to about 6 MiB), as for Configuration writes. The preflight repeats it.
+   */
+  async authorizeAgentCreate(principalId: string, namespaceId: string): Promise<void> {
+    this.namespaceIdentity(namespaceId);
+    await this.authorize(principalId, "create", {
+      kind: "agent",
+      id: namespaceId,
+      namespaceId,
+    });
+  }
+
   async updatePreset(principalId: string, input: UpdatePresetInput): Promise<Readonly<Preset>> {
     if (input.name !== undefined && !isName(input.name)) {
       throw new PresetValidationError("The Preset name is invalid.");
@@ -9990,15 +10004,17 @@ export class OpenClawController {
 
   /**
    * Create Agent's preflight, for a Configuration the caller has not saved yet: createConfiguration's
-   * content rules, then createAgent's checks of plugin selections and initial workspace files
-   * against those values, with their messages, under createAgent's `agent:create` check. A
-   * refusal is reported before the caller saves its Secret or Configuration. It writes nothing.
+   * size and content rules and its Configuration Driver's `validate`, then createAgent's checks of
+   * plugin selections and initial workspace files against those values, with their messages,
+   * under createAgent's `agent:create` check. A refusal is reported before the caller saves its
+   * Secret or Configuration. It writes nothing.
    * With `harnessAuth`, Agent save's Harness authentication check against the Compute Driver runs
    * too, so a refusal that depends only on the Agent's topology (finding 2391) is reported here.
    * With `configuration.secretBindings`, a channel credential reference without a binding is
    * refused as Configuration create would (finding 2319); the bound Secrets are not read.
    * Checks that need saved resources (the bound Secrets, the Harness authentication source and
-   * credential sources) or live repository policy stay with those writes.
+   * credential sources), live repository policy and the readiness of an adopted Namespace stay
+   * with those writes.
    * With `name`, a name another Agent in the Namespace has is refused last, with create's 409
    * (finding 2420), so the form saves no Secret or Configuration for it. The check is advisory:
    * the store's unique name still refuses a create that races it.
@@ -10054,21 +10070,26 @@ export class OpenClawController {
               input.configuration.secretBindings,
               "/configuration/secretBindings",
             );
-      // The form saves the Configuration first, so its content rules answer first, in
-      // createConfiguration's order.
-      await this.configurationDriver().validateSize?.(values);
+      // Shaped like the Configuration createConfiguration would store and createAgent reads;
+      // only its values are checked.
+      const unsaved: Readonly<Configuration> = Object.freeze({
+        id: "cfg_00000000-0000-4000-8000-000000000000",
+        namespaceId: namespace.id,
+        kind: "agent" as const,
+        generation: 1,
+        values,
+        createdAt: this.timestamp(),
+      });
+      // The form saves the Configuration first, so its rules answer first, in
+      // createConfiguration's order: size, content, then the Configuration Driver's own check
+      // (credential references, finding 1870). This relies on `validate` only checking, as both
+      // bundled Drivers' do; the Configuration passed is never stored.
+      const driver = this.configurationDriver();
+      await driver.validateSize?.(values);
       this.validateConfigurationContent(values, undefined, secretBindings);
+      await driver.validate(unsaved);
       this.validatePluginPolicies(plugins, pluginApprovers);
-      // Shaped like the saved Configuration createAgent reads; only its values are checked.
-      const configuration: () => Promise<Readonly<Configuration>> = async () =>
-        Object.freeze({
-          id: "cfg_00000000-0000-4000-8000-000000000000",
-          namespaceId: namespace.id,
-          kind: "agent" as const,
-          generation: 1,
-          values,
-          createdAt: this.timestamp(),
-        });
+      const configuration = async () => unsaved;
       await this.validateSavedPluginConfiguration(plugins, configuration);
       rejectCrossNamespaceSecretSources(
         namespace.id,

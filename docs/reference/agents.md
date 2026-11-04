@@ -44,6 +44,21 @@ Configuration with `kind: "agent"`, Namespace Agent `create`, and exact
 Configuration `read`. See [Harness authentication](#harness-authentication)
 for credential permissions and [authorization](authorization.md) for grants.
 
+### Checking a create before saving
+
+`POST /namespaces/:namespaceId/agents/validate` takes the Agent create fields
+with an unsaved `configuration: {kind, values, secretBindings}` and saves
+nothing. Create Agent calls it before it saves a Secret or Configuration. Its
+body may be as large as a Configuration write plus Agent create's 448 KiB, and
+its values may nest as deep as Configuration create's. The Namespace Agent
+`create` grant is checked before the body is read, then again with the checks,
+in this order: Namespace state, Configuration create's size and content rules
+(with the bindings sent), the Configuration Driver's `validate` (credential
+references), then Agent create's plugin, execution-mode,
+initial-workspace-files and Harness authentication rules, and last the Agent
+name. The bound Secrets, the Harness authentication source, credential sources
+and repository policy are checked only when Create Agent saves.
+
 ### Unreadable saved settings
 
 For unreadable saved settings, Agent and Agent revision list/detail GETs omit them
@@ -381,6 +396,8 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03: Added [Checking a create before saving](#checking-a-create-before-saving): the Create Agent preflight's body limit and check order.
 
 - 2026-10-25: Moved workspace file request details to [Agent workspace files](agents/workspace-files.md).
 
