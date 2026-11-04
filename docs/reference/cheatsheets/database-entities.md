@@ -84,6 +84,10 @@ Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 - `revision_number`
 - `backend_id`
 - `gateway_managed_mode`
+- `first_deployment_digest`: nullable SHA-256 intent digest, permitted only on revision 1;
+  binds the Installation, actor, Namespace, Agent, key, and reviewed Configuration tuple.
+  Private [receipt recovery](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
+  metadata, separate from `admitted_spec` and public revision responses.
 - `admitted_spec`
 - `admitted_at`
 

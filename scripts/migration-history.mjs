@@ -148,6 +148,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 25) {
     return "main";
   }
+  if (count === 65 && completedCount > 65) {
+    return "preAgentDeployIntent";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -256,7 +259,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 64) {
     return "preSelectedRepositorySet";
   }
-  if (count === 65) {
+  if (count === 66 && completedCount > 66) {
     return "preNamespaceAgentOperatorProfiles";
   }
   if (count === 63) {

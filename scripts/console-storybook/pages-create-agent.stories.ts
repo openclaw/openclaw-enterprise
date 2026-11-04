@@ -41,6 +41,16 @@ export const PluginsConfigured = {
 };
 export const PluginsCurated = story("createPluginsCurated");
 export const PluginsDiscovered = story("createPluginsDiscovered");
+export const PluginsShortWindow = {
+  ...story("createPluginsDiscovered", {
+    name: "Short window plugin picker",
+    frameWidth: "1440px",
+    frameHeight: "480px",
+    instructions:
+      "Scroll the catalog browser with setup collapsed and expanded, choose Calendar, and reach pagination.",
+  }),
+  name: "Short window plugin picker",
+};
 export const PluginsPrefetch = story("createPluginsPrefetch");
 export const PluginsSearchLoading = story("createPluginsSearchLoading");
 export const PluginsToolsLoading = story("createPluginsToolsLoading");
@@ -370,3 +380,13 @@ export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat"
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
+
+export const SharedModelDestination = {
+  ...story("createSharedModelProviderSource"),
+  name: "Authorize shared model destination",
+};
+
+export const SharedModelDestinationRefusal = {
+  ...story("createSharedModelProviderRefusal"),
+  name: "Destination authorization refusal",
+};

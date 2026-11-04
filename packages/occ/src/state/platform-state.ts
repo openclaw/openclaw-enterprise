@@ -38,6 +38,7 @@ import type {
   AgentDesiredRuntimeState,
   AgentStatus,
   AgentRevision,
+  FirstDeploymentReceipt,
   AuditEvent,
   CredentialSource,
   CredentialSourceSnapshot,
@@ -265,6 +266,11 @@ export interface AgentRepository extends AgentReadRepository {
 }
 
 export interface AgentRevisionReadRepository {
+  findFirstDeploymentReceipt(
+    namespaceId: string,
+    agentId: string,
+    digest: string,
+  ): Promise<Readonly<FirstDeploymentReceipt> | undefined>;
   findRevisionForBrowsing(
     namespaceId: string,
     agentId: string,
@@ -306,7 +312,10 @@ export interface AgentRevisionRepository extends AgentRevisionReadRepository {
    * clock, the one that stamps controller work, so the worker can order a revision against a
    * stop or deletion without controller clock skew (finding 1195); use the returned value.
    */
-  createRevision(revision: AgentRevision): Promise<Readonly<AgentRevision>>;
+  createRevision(
+    revision: AgentRevision,
+    firstDeploymentDigest?: string,
+  ): Promise<Readonly<AgentRevision>>;
 }
 
 export interface ConfigurationOwnership {
@@ -1117,6 +1126,7 @@ interface PlatformSnapshot {
   readonly sandboxPolicies: Map<string, Readonly<SandboxPolicy>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
   readonly revisions: Map<string, readonly Readonly<AgentRevision>[]>;
+  readonly firstDeploymentDigests: Map<string, string>;
   readonly roles: Map<string, Readonly<Role>>;
   readonly agentOperatorProfiles: Map<string, Readonly<NamespaceAgentOperatorProfile>>;
   readonly bindings: Map<string, Readonly<AccessBinding>>;
@@ -1256,6 +1266,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     // Revisions are copied on ingress/egress; appends replace frozen history arrays.
     // A separate Map isolates this snapshot's future appends without copying history.
     revisions: new Map(snapshot.revisions),
+    firstDeploymentDigests: new Map(snapshot.firstDeploymentDigests),
     roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, storedCopy(role)])),
     agentOperatorProfiles: new Map(snapshot.agentOperatorProfiles),
     bindings: new Map(
@@ -3118,6 +3129,24 @@ function repositories(
   };
 
   const revisions: AgentRevisionRepository = {
+    findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
+      if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+        return undefined;
+      }
+      const first = snapshot.revisions
+        .get(agentKey(namespaceId, agentId))
+        ?.find((revision) => revision.revision === 1);
+      return first !== undefined && snapshot.firstDeploymentDigests.get(first.id) === digest
+        ? immutableCopy({
+            revisionId: first.id,
+            namespaceId,
+            agentId,
+            configurationId: first.configurationId,
+            configurationGeneration: first.configurationGeneration,
+            createdAt: first.createdAt,
+          })
+        : undefined;
+    },
     findRevisionForBrowsing: async (namespaceId, agentId, revisionId) =>
       revisions.findRevision(namespaceId, agentId, revisionId),
     listRevisionsForBrowsing: async (namespaceId, agentId) =>
@@ -3198,7 +3227,7 @@ function repositories(
         ...(older.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
       });
     },
-    createRevision: async (input) => {
+    createRevision: async (input, firstDeploymentDigest) => {
       const revision = immutableCopy(input);
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
@@ -3241,6 +3270,16 @@ function repositories(
         ...(secretBindings === undefined ? {} : { secretBindings }),
         ...(plugins === undefined ? {} : { plugins }),
       });
+      if (firstDeploymentDigest !== undefined) {
+        if (
+          previous.length !== 0 ||
+          revision.revision !== 1 ||
+          !/^[a-f0-9]{64}$/.test(firstDeploymentDigest)
+        ) {
+          throw new ResourceConflictError("Invalid first-deployment admission.");
+        }
+        snapshot.firstDeploymentDigests.set(saved.id, firstDeploymentDigest);
+      }
       snapshot.revisions.set(key, Object.freeze([...previous, saved]));
       return saved;
     },
@@ -3803,6 +3842,9 @@ function finalizeAgentDeletion(
   // The setup cascades with its Agent. Credential withdrawals already end with their revision
   // here (liveWithdrawal), as the database cascade does.
   snapshot.workspaceSetups.delete(key);
+  for (const id of revisionIds) {
+    snapshot.firstDeploymentDigests.delete(id);
+  }
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
   snapshot.agents.delete(key);
@@ -3856,6 +3898,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     sandboxPolicies: new Map(),
     workspaceSetups: new Map(),
     revisions: new Map(),
+    firstDeploymentDigests: new Map(),
     roles: new Map(),
     agentOperatorProfiles: new Map(),
     bindings: new Map(),

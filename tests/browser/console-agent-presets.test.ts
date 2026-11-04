@@ -141,6 +141,7 @@ const createConsoleAppFixture = (
   options: {
     defaultPresets?: (typeof defaultCodexPreset)[];
     filesystemConfiguration?: boolean;
+    modelProvider?: import("../../apps/controller/src/drivers/compute/model-provider.ts").ModelProviderConfiguration;
   } = {},
 ) => createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 
@@ -1221,10 +1222,51 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     [{ accessToken: "at-browser-plugin-one" }],
   );
   const setup = dialog.locator(".plugin-access-help");
-  // Mobile browsing keeps pagination reachable while full setup guidance remains available by keyboard.
+  const setupDisclosure = setup.locator("summary");
   const nextPage = dialog.getByRole("button", { name: "Next page", exact: true });
-  for (const height of [844, 640]) {
-    await page.setViewportSize({ width: 390, height });
+  // Short windows must leave an entire catalog choice readable, not a thin strip of its border.
+  // The browser region can scroll, with setup guidance either collapsed or expanded.
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 1440, height: 480 },
+    { width: 390, height: 844 },
+    { width: 390, height: 640 },
+  ]) {
+    await page.setViewportSize(viewport);
+    for (const expanded of [false, true]) {
+      if (expanded) {
+        await setupDisclosure.press("Enter");
+      }
+      await calendar.scrollIntoViewIfNeeded();
+      assert.equal(
+        await calendar.evaluate((node) => {
+          const list = node.closest(".plugin-list");
+          const browser = node.closest(".plugin-browser");
+          if (!list || !browser) {
+            return false;
+          }
+          const bounds = node.getBoundingClientRect();
+          const listBounds = list.getBoundingClientRect();
+          const browserBounds = browser.getBoundingClientRect();
+          const target = node.ownerDocument.elementFromPoint(
+            bounds.x + bounds.width / 2,
+            bounds.y + bounds.height / 2,
+          );
+          // Native scrolling rounds its offsets to CSS pixels.
+          return (
+            bounds.top >= Math.max(listBounds.top, browserBounds.top) - 1 &&
+            bounds.bottom <= Math.min(listBounds.bottom, browserBounds.bottom) + 1 &&
+            node.contains(target)
+          );
+        }),
+        true,
+        `A complete catalog choice must remain readable at ${viewport.width}x${viewport.height} with setup ${expanded ? "expanded" : "collapsed"}`,
+      );
+      if (expanded) {
+        await setupDisclosure.press("Enter");
+      }
+    }
+    await nextPage.scrollIntoViewIfNeeded();
     assert.equal(
       await nextPage.evaluate((node) => {
         const bounds = node.getBoundingClientRect();
@@ -1244,7 +1286,6 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   );
   await boundary.waitFor();
   assert.equal(await setup.getByText(/Service accounts/).isVisible(), false);
-  const setupDisclosure = setup.locator("summary");
   await setupDisclosure.focus();
   await setupDisclosure.press("Enter");
   await setup.getByText(/Service accounts/).waitFor();
@@ -1264,9 +1305,14 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   }
   // Expanded instructions leave a short browser region; wheel scrolling still reaches its actions.
   const pluginBrowser = dialog.locator(".plugin-browser");
-  await pluginBrowser.hover();
+  // Wheel over the browser's tabs so the catalog's own scroller does not consume the gesture.
+  await pluginBrowser.locator(".plugin-tabs").hover();
+  const beforeScroll = await pluginBrowser.evaluate((node) => node.scrollTop);
   await page.mouse.wheel(0, 320);
-  await page.waitForFunction((node) => node.scrollTop > 0, await pluginBrowser.elementHandle());
+  await page.waitForFunction(({ node, before }) => node !== null && node.scrollTop > before, {
+    node: await pluginBrowser.elementHandle(),
+    before: beforeScroll,
+  });
   assert.equal(
     await nextPage.evaluate((node) => {
       const bounds = node.getBoundingClientRect();
@@ -1956,7 +2002,9 @@ test("API-key Presets keep their credential provider fixed while allowing model 
 });
 
 test("Dedicated OpenClaw Presets preserve custom provider transport across execution mode changes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const fixture = await createConsoleAppFixture(t, {
+    modelProvider: { protocol: "openai-completions", baseUrl: "https://models.example.test/v1" },
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Dedicated OpenClaw Preset", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "dedicated-key");

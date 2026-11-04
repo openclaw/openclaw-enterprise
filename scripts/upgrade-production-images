@@ -20,6 +20,7 @@ image fields are selected only by the image flags. A controller-only upgrade
 does not deploy Agent revisions. A runtime upgrade restarts OCC on its current image,
 then redeploys every Agent that was running when the command began. Resume with
 the same arguments and evidence directory after inspecting any unknown outcomes.
+Completed upgrades cannot be resumed; retain their completed evidence marker.
 Keep the runtime upgrade's sibling <evidence-directory>.dispatch-state journal
 with the operator. Preserve it separately from backups of the evidence directory.
 Use --preflight-only to check the candidate before the maintenance window. It
@@ -236,20 +237,19 @@ project_yaml() {
 }
 
 # yaml_object FILE OUTPUT writes FILE's YAML object documents to OUTPUT as sorted
-# JSON and sets yaml_object_text to the same bytes; it fails without one or if
+# JSON and sets yaml_object_text to that JSON; it fails without one or if
 # any document is not an object.
 yaml_object() {
   local file=$1 output=$2 status=0
   yaml_json "$file" || status=$?
   if ((status == 0 && yaml_index >= 0)) && [[ -n "${yaml_objects[yaml_index]}" ]]; then
     yaml_object_text=${yaml_objects[yaml_index]}
-    printf '%s' "$yaml_object_text" >"$output" || return 1
-    return 0
+  else
+    yaml_object_text=$(jq -eS -n 'inputs | if type == "object" then . else error("expected a YAML object") end' <<<"$yaml_text") || return 1
+    ((status == 0)) || return 1
   fi
-  jq -eS -n 'inputs | if type == "object" then . else error("expected a YAML object") end' <<<"$yaml_text" >"$output" || return 1
-  ((status == 0)) || return 1
-  yaml_object_text=
-  IFS= read -r -d '' yaml_object_text <"$output" || true
+  # Compare the checked conversion, not a best-effort read of its evidence copy.
+  printf '%s\n' "$yaml_object_text" >"$output" || return 1
   if ((yaml_index >= 0)) && [[ -n "$yaml_object_text" ]]; then
     yaml_objects[yaml_index]=$yaml_object_text
   fi
@@ -259,10 +259,13 @@ matches_yaml() {
   local actual=$1
   local expected=$2
   local actual_text
-  yaml_object "$actual" "$evidence_dir/compare-actual.json" || return 1
+  # Callers include negated conditions and recovery alternatives: unusable input
+  # must terminate here, never enter a branch reserved for valid inequality.
+  local unusable='Cannot compare upgrade YAML: both inputs must be readable and contain only YAML mappings (no empty documents). Check that the evidence directory is writable.'
+  yaml_object "$actual" "$evidence_dir/compare-actual.json" 2>/dev/null || die "$unusable"
   actual_text=$yaml_object_text
-  yaml_object "$expected" "$evidence_dir/compare-expected.json" || return 1
-  [[ -s "$evidence_dir/compare-actual.json" && -s "$evidence_dir/compare-expected.json" ]] || return 1
+  yaml_object "$expected" "$evidence_dir/compare-expected.json" 2>/dev/null || die "$unusable"
+  [[ -s "$evidence_dir/compare-actual.json" && -s "$evidence_dir/compare-expected.json" ]] || die "$unusable"
   [[ "$actual_text" == "$yaml_object_text" ]]
 }
 
@@ -603,6 +606,8 @@ print(json.dumps(values, sort_keys=True))
 PYTHON
   )
   [[ "$parameters" == "$original_parameters" ]] || die "resume evidence directory, inputs, kubeconfig, CA, scripts, image rule, chart, or flow changed; use the original evidence directory and investigate before continuing."
+  [[ ! -e "$evidence_dir/completed" && ! -L "$evidence_dir/completed" ]] ||
+    die "a completion marker exists; this upgrade cannot be resumed. Preserve its evidence and investigate if completion was unexpected."
   [[ -f "$evidence_dir/prepared" ]] || die "evidence is not a prepared deployment. Inspect it and any remaining temporary preflight resources, then start with a new evidence directory."
 fi
 
@@ -1085,6 +1090,8 @@ if [[ -n "$requested_installation" ]]; then
 else
   cp "$evidence_dir/before-installation.yaml" "${candidate_installation}.requested"
 fi
+matches_yaml "${candidate_values}.requested" "${candidate_values}.requested" || die "candidate values must be a YAML object."
+matches_yaml "${candidate_installation}.requested" "${candidate_installation}.requested" || die "candidate Installation must be a YAML object."
 # Keep all settings protected except the supported proxy and curated catalog
 # selections. New configuration fields remain protected until explicitly reviewed.
 values_guard='del(.api.channelDirectoryProxyUrl) | if .api == {} then del(.api) else . end'
@@ -1108,8 +1115,6 @@ if ! cmp -s "$evidence_dir/plugin-guard.json" "$evidence_dir/candidate-plugin-gu
     "$evidence_dir/candidate-plugin-guard.json" >/dev/null ||
     die "candidate Installation changes the Plugin Driver to an unsupported selection; select codex-plugin with openai-curated."
 fi
-matches_yaml "${candidate_values}.requested" "${candidate_values}.requested" || die "candidate values must be a YAML object."
-matches_yaml "${candidate_installation}.requested" "${candidate_installation}.requested" || die "candidate Installation must be a YAML object."
 mv "${candidate_values}.requested" "$candidate_values"
 mv "${candidate_installation}.requested" "$candidate_installation"
 
@@ -1206,7 +1211,7 @@ if ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installat
 fi
 
 rendered="$evidence_dir/rendered.yaml"
-helm template "$release" "$chart" "${helm_args[@]}" \
+helm template "$release" "$chart" "${helm_args[@]}" --is-upgrade \
   --values "$candidate_values" >"$rendered"
 helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
   --values "$candidate_values" --dry-run=server --hide-secret \
@@ -2080,6 +2085,13 @@ fi
 helm status "$release" "${helm_args[@]}" >"$evidence_dir/after-helm-status.txt"
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
   --output json >"$evidence_dir/after-workloads.json"
+# Record the terminal state only after every required check and evidence read.
+# A lost final console message must not permit another run after the window closes.
+(
+  set -o noclobber
+  : >"$evidence_dir/completed"
+) ||
+  die "could not record upgrade completion; preserve the evidence and investigate before recovery."
 if [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
   printf 'Upgraded controller and runtime images; %s running Agents selected new revisions.\n' "$target_count"
 elif [[ -n "$runtime_image" ]]; then

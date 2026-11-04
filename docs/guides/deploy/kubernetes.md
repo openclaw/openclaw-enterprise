@@ -1,8 +1,9 @@
 # Deploy on standard Kubernetes
 
 Prepare an existing Kubernetes cluster for OpenClaw Enterprise (OCE), then run
-[the shared Helm installation](production-installation.md). For AWS managed
-Kubernetes, use the [Amazon EKS guide](eks-openshell-setup.md).
+[the custom Helm installation](production-installation.md). To install with
+OpenShell and use the shared first-Agent session, follow
+[Kubernetes setup](kubernetes-setup.md) or the [Amazon EKS guide](eks-openshell-setup.md).
 
 ## Prepare the cluster
 
@@ -102,11 +103,18 @@ label. Verify UDP and TCP DNS resolution from
 the initialization, API, worker, and enabled supporting workloads, plus denied
 traffic to a Pod outside the configured DNS selectors.
 
+On OpenShift with OVN-Kubernetes, the CNI applies egress policy after the
+`kubernetes` Service translates port 443 to the API server port, usually 6443.
+Set Helm `cluster.cidrs` to the API server endpoint IPs and `cluster.port` to
+that port. With the default 443, the API and worker fail with
+`KUBERNETES_API_UNAVAILABLE`. List the endpoints with
+`oc get endpoints kubernetes -n default`.
+
 ## Configure the protected copies and install
 
 Continue with [production installation](production-installation.md), retaining
-this shell's context. At its **Configure the Installation** step, edit the copied
-examples for your cluster:
+this shell's context. At its **Configure the Installation** step, set these values
+in the profile input and rerender, or edit the copied manual examples:
 
 - Set `controlPlane.nodeSelector` and
   `drivers.compute.configuration.runtime.gatewayNodeSelector` to the trusted

@@ -1,41 +1,62 @@
+type Edge = {
+  from: string;
+  to: string;
+  kind: string;
+  specifier: string;
+  bindings: readonly string[];
+  typeOnly: boolean;
+};
+
+function required<K, V>(map: ReadonlyMap<K, V>, key: K): V {
+  const value = map.get(key);
+  if (value === undefined) {
+    throw new Error("Missing cycle graph entry.");
+  }
+  return value;
+}
+
 /** Strongly connected import groups, independent of source ordering or line numbers. */
-export function findCycles(files, edges) {
-  const adjacent = new Map([...files].sort().map((file) => [file, new Set()]));
+export function findCycles(files: readonly string[], edges: readonly Edge[]) {
+  const adjacent = new Map([...files].sort().map((file) => [file, new Set<string>()]));
   for (const edge of edges) {
     if (adjacent.has(edge.from) && adjacent.has(edge.to)) {
-      adjacent.get(edge.from).add(edge.to);
+      required(adjacent, edge.from).add(edge.to);
     }
   }
-  const indices = new Map();
-  const low = new Map();
-  const stack = [];
-  const active = new Set();
-  const groups = [];
+  const indices = new Map<string, number>();
+  const low = new Map<string, number>();
+  const stack: string[] = [];
+  const active = new Set<string>();
+  const groups: string[][] = [];
   let next = 0;
-  function visit(file) {
+  function visit(file: string) {
     indices.set(file, next);
     low.set(file, next++);
     stack.push(file);
     active.add(file);
-    for (const target of adjacent.get(file)) {
+    for (const target of required(adjacent, file)) {
       if (!indices.has(target)) {
         visit(target);
-        low.set(file, Math.min(low.get(file), low.get(target)));
+        low.set(file, Math.min(required(low, file), required(low, target)));
       } else if (active.has(target)) {
-        low.set(file, Math.min(low.get(file), indices.get(target)));
+        low.set(file, Math.min(required(low, file), required(indices, target)));
       }
     }
     if (low.get(file) !== indices.get(file)) {
       return;
     }
-    const members = [];
-    let member;
+    const members: string[] = [];
+    let member: string;
     do {
-      member = stack.pop();
+      const popped = stack.pop();
+      if (popped === undefined) {
+        throw new Error("Missing cycle stack entry.");
+      }
+      member = popped;
       active.delete(member);
       members.push(member);
     } while (member !== file);
-    if (members.length > 1 || adjacent.get(file).has(file)) {
+    if (members.length > 1 || required(adjacent, file).has(file)) {
       groups.push(members.sort());
     }
   }
@@ -44,10 +65,12 @@ export function findCycles(files, edges) {
       visit(file);
     }
   }
-  return Object.freeze(groups.sort((a, b) => a.join().localeCompare(b.join())).map(Object.freeze));
+  return Object.freeze(
+    groups.sort((a, b) => a.join().localeCompare(b.join())).map((group) => Object.freeze(group)),
+  );
 }
 
-export function classifyCycles(files, edges) {
+export function classifyCycles(files: readonly string[], edges: readonly Edge[]) {
   // Anchors and path expressions locate dependencies without importing them.
   const imports = edges.filter((edge) => !["path", "dependency-anchor"].includes(edge.kind));
   const runtimeCycles = findCycles(
@@ -70,7 +93,11 @@ export function classifyCycles(files, edges) {
   return Object.freeze({ runtimeCycles, typeOnlyCycles, typeInvolvingCycles });
 }
 
-export function cycleDiagnostic(members, edges, typeOnly) {
+export function cycleDiagnostic(
+  members: readonly string[],
+  edges: readonly Edge[],
+  typeOnly: boolean,
+) {
   // Cycle exceptions use these exact JSON bytes. Reuse each serialized edge for
   // locale-aware sorting and the final array instead of serializing per comparison.
   const cycleEdges = edges

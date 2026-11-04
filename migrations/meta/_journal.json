@@ -461,7 +461,14 @@
       "idx": 66,
       "version": "7",
       "when": 1787000000066,
-      "tag": "0066_namespace_agent_operator_profiles",
+      "tag": "0066_agent_deploy_intent",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1787000000067,
+      "tag": "0067_namespace_agent_operator_profiles",
       "breakpoints": true
     }
   ]

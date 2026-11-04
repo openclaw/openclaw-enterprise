@@ -91,7 +91,7 @@
     "tests/conformance/pr-status.test.mjs",
     "tests/conformance/codex-stderr-filter.test.mjs",
     "tests/docs/docs-server.test.mjs",
-    "tests/integration/console-build-metadata.test.mjs",
+    "tests/integration/console-build-metadata.test.ts",
     "tests/conformance/console-design-tokens.test.mjs",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
@@ -362,7 +362,7 @@
       "path": "tests/integration/caller-denial-api.test.ts"
     },
     {
-      "path": "tests/integration/console-build-metadata.test.mjs"
+      "path": "tests/integration/console-build-metadata.test.ts"
     },
     {
       "path": "tests/integration/controller-lifecycle.test.mjs"
@@ -564,6 +564,7 @@
       "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
       "expectedTests": [
         "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
+        "held Git startup observes a denial inside its provider endpoint without credential access",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
         "protected Git replies to this online decision before its authority deadline",
         "shipped gh metadata stays within selected-repository authority",

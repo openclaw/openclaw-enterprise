@@ -34,3 +34,8 @@ export const NestedDriverValues = {
   ...story("settingsDriverNestedValues"),
   name: "Nested Driver values",
 };
+
+export const SharedModelProvider = {
+  ...story("settingsModelProvider"),
+  name: "Shared model provider",
+};

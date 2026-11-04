@@ -15,7 +15,7 @@ Command-line flags override these variables. See the [CLI reference](../cli.md).
 - `OCC_SERVICE_KEY_FILE` — Path to a service-key JSON response; required for resource commands.
 - `OCC_NAMESPACE` — Namespace ID for scoped resource commands.
 - `OCC_CA_BUNDLE` — Additional PEM certificate-authority bundle for HTTPS.
-- `OCC_TIMEOUT_SECONDS` — Request timeout in whole seconds; default: `30`.
+- `OCC_TIMEOUT_SECONDS` — OCC request or installation handoff timeout in whole seconds; default: `30`.
 
 ## Controller and authentication
 
@@ -60,6 +60,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_GATEWAY_CA_PATH` — API-only path to the Gateway-only CA bundle that dedicated Harness nodes trust; empty means none. Unset, node enrollment uses `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.
 - `OCC_EGRESS_AUTHORITY_PORT`, `OCC_OPENSHELL_GIT_PORT` — Chart-set port of its `egressAuthority` and `openshellGit` listeners, or `disabled`. API and worker startup and the upgrade check refuse `CHART_LISTENER_MISMATCH` when the Installation authority uses another port, a host other than `0.0.0.0` or `::`, a disabled listener, or TLS or issuer file paths other than the chart's mounts. Not operator inputs.
 - `OCC_CA_SOURCES`, `OCC_DATABASE_CA_SOURCE` — Chart-set labels (value, Secret and key) that the OIDC CA startup checks print in their errors instead of mount paths. Helm sets them with OIDC CA values; not operator inputs.
+- `OCC_CHART_GATEWAY_ROUTING` — Chart-set private Gateway identity and hostnames. Startup refuses conflicting bundled Kubernetes Compute routing; not an operator input. See [production settings](../settings/production.md).
 
 ## PostgreSQL and migrations
 
@@ -98,7 +99,7 @@ the API. It does not use API listener or session-authentication settings. See
 - `OCC_WORKER_POLL_INTERVAL_MS` — Idle polling delay; default: `250` ms; at most `2147483647`.
 - `OCC_WORKER_LEASE_DURATION_MS` — Claim lease; default: `5000` ms; at most `2147483647`.
 - `OCC_WORKER_MAX_ATTEMPTS` — Maximum work attempts; default: `5`.
-- `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` — Namespace convergence timeout; default: `900000` ms.
+- `OCC_WORKER_CONVERGENCE_TIMEOUT_MS` — Pending Namespace convergence, Agent deployment and live SandboxPolicy application timeout, including queue time; default: `900000` ms.
 - `OCC_WORKER_DATABASE_TIMEOUT_MS` — Client-side bound on each worker database query; default: `60000` ms; at most `2147483647`.
 - `OCC_WORKER_READINESS_PATH` — Optional absolute path for the readiness marker; packaged probes require it.
 - `OCC_WORKER_LIVENESS_PATH` — Optional absolute path for the run-loop progress marker; the packaged liveness probe checks its age.

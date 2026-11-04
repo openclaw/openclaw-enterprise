@@ -3773,6 +3773,32 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
 
     const revisions: AgentRevisionRepository = {
+      findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
+        const row = rows(
+          (
+            await client.query(
+              `SELECT r.id, r.namespace_id, r.agent_id, r.admitted_at,
+                  r.admitted_spec->>'configuration_id' AS configuration_id,
+                  r.admitted_spec->>'configuration_generation' AS configuration_generation
+           FROM occ.agent_revisions r
+           JOIN occ.namespaces n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+           WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.revision_number = 1
+             AND r.first_deployment_digest = $3`,
+              [namespaceId, agentId, digest],
+            )
+          ).rows,
+        )[0];
+        return row === undefined
+          ? undefined
+          : Object.freeze({
+              revisionId: text(row, "id"),
+              namespaceId,
+              agentId,
+              configurationId: text(row, "configuration_id"),
+              configurationGeneration: Number(row.configuration_generation),
+              createdAt: timestamp(row, "admitted_at"),
+            });
+      },
       findRevision: async (namespaceId, agentId, revisionId) => {
         const row = await findRevisionRow(namespaceId, agentId, revisionId);
         return row === undefined ? undefined : revisionFromRow(row);
@@ -3838,7 +3864,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           ...(found.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
         });
       },
-      createRevision: async (input) => {
+      createRevision: async (input, firstDeploymentDigest) => {
         const revision = immutableCopy(input);
         await this.requireInitialized(context);
         try {
@@ -3923,8 +3949,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         // skew (finding 1195). The caller's createdAt is replaced, not stored.
         const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, clock_timestamp())
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at, first_deployment_digest)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, clock_timestamp(), $8)
            RETURNING admitted_at`,
           [
             revision.id,
@@ -3970,6 +3996,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                 : { credential_sources: revision.credentialSources }),
             }),
             revision.gatewayManagedMode,
+            firstDeploymentDigest ?? null,
           ],
         );
         const [stamped] = rows(admitted.rows);
