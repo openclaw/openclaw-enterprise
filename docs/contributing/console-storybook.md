@@ -194,8 +194,10 @@ seven-day release-age policy, independently of root dependencies.
 - `prepare-assets.ts` reads the public Console assets through the controller's
   asset reader, then versions the preview in `dist/assets/`. Rebuild after source
   edits so the development server serves the new assets.
-- `public/scenarios.mjs` owns story descriptions, initial data options, failure
-  responses, automatic setup actions, and workflow instructions.
+- `public/scenarios.mjs` assembles the story catalog. Edit sign-in scenarios in
+  `public/scenario-groups/sign-in.mts` and Secrets scenarios in
+  `public/scenario-groups/secrets.mts`. The asset builder publishes typed
+  scenario groups as versioned `.mjs` modules for the preview frames.
 - `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured
   requests report an error and return 501, never reaching a server. Preview CSP
   also blocks network connections. Authentication and authorization
