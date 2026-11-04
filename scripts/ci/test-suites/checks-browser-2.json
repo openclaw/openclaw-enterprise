@@ -30,7 +30,7 @@
     "tests/browser/console-button-hierarchy.test.ts",
     "tests/browser/console-status-block.test.ts",
     "tests/browser/console-next-steps.test.mjs",
-    "tests/browser/console-disabled-reasons.test.mjs",
+    "tests/browser/console-disabled-reasons.test.ts",
     "tests/browser/console-page-header.test.ts",
     "tests/browser/console-secret-picker-refresh.test.ts"
   ],
@@ -117,7 +117,7 @@
       "path": "tests/browser/console-next-steps.test.mjs"
     },
     {
-      "path": "tests/browser/console-disabled-reasons.test.mjs"
+      "path": "tests/browser/console-disabled-reasons.test.ts"
     },
     {
       "path": "tests/browser/console-secret-picker-refresh.test.ts"
