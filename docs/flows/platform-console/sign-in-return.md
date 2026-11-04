@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: 2026-11-04
-last_updated_session: authoring-run/1ca69282-ea7b-4b53-8db4-3fdb81fc30e1
+last_updated_session: authoring-run/b22db461-d5cf-40f5-b1c1-43443569364c
 ---
 
 # Console sign-in and destination recovery
@@ -164,6 +164,8 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 22:07: Document Console startup failure and reload recovery. (authoring-run/b22db461-d5cf-40f5-b1c1-43443569364c - f18e8948b89cdeaabec5ae0f5824b23b7c82b906)
 
 - 2026-11-04 12:53: Explain keyboard focus while sign-in is pending. (authoring-run/1ca69282-ea7b-4b53-8db4-3fdb81fc30e1 - 15f0c1d443090f1346dc3d94444dad2397cb4fdc)
 
