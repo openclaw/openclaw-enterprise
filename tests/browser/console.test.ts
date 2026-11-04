@@ -2876,7 +2876,7 @@ test("compact navigation preserves the page position while its drawer can still 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await toggle.click();
-  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
   await page.locator(settledView).waitFor();
   const returned = await page.evaluate(() => {
     const heading = globalThis.document.querySelector("h1");

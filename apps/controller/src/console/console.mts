@@ -41,7 +41,7 @@ import {
   type RequestOptions,
 } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
-import { createNavigation, pages } from "./navigation.mjs";
+import { connectionTemplatesPage, createNavigation, pages } from "./navigation.mjs";
 import {
   brandContents,
   createShell,
@@ -452,7 +452,7 @@ function settleNotAdministrator() {
   observabilityUrl = null;
   installationAdmin = false;
   observabilityOwner = sessionOwnerKey(session);
-  shellUI.dropObservabilityLink();
+  shellUI.dropAdministrationLinks();
   if (ended) {
     for (const handler of mountedViewState?.administrationEnded ?? []) {
       handler();
@@ -1278,7 +1278,9 @@ function collectionPath(feature: string, namespacePath: string | null) {
   if (feature === "backends") {
     return "/backends";
   }
-  return namespacePath === null ? null : `${namespacePath}/${feature}`;
+  return namespacePath !== null && ["secrets", "agents"].includes(feature)
+    ? `${namespacePath}/${feature}`
+    : null;
 }
 
 function renderShell(
@@ -1294,6 +1296,7 @@ function renderShell(
     namespaceId,
     observabilityUrl,
     namespaceAdmissionPending,
+    installationAdmin: installationAdmin === true,
     recovery,
     page,
   });
@@ -2337,13 +2340,36 @@ async function loadPage({
     if (shell.diagnostics) {
       attachDiagnostics(shell.diagnostics);
     }
-    if (current.feature === "settings") {
-      const settings = settingsView(session.user);
-      shell.view.append(settings);
+    if (current.feature === connectionTemplatesPage) {
+      // Re-enter with current administrator access and a fresh editor on history navigation.
+      viewState.reusable = false;
+      const view = shell.view;
+      const showRequiredAccess = () =>
+        panel(
+          view,
+          "Installation administrator access required",
+          "Installation administrators manage connection templates.",
+        );
       if (installationAdmin) {
-        settings.append(
+        viewState.administrationEnded.add(showRequiredAccess);
+        view.append(
           renderConnectionTemplates({ request: viewRequest, isCurrent: viewIsCurrent }, namespaces),
         );
+      } else if (installationAdmin === false) {
+        showRequiredAccess();
+      } else {
+        panel(
+          view,
+          "Could not confirm administrator access",
+          "Refresh to check your Installation permissions.",
+        );
+      }
+      markMountedRoute(current);
+      return;
+    }
+    if (current.feature === "settings") {
+      shell.view.append(settingsView(session.user));
+      if (installationAdmin) {
         shell.view.append(
           renderInstallationConfigurations({
             request,

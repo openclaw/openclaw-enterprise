@@ -1,6 +1,9 @@
+export const connectionTemplatesPage = "credentials/connection-templates";
+
 export const pages = Object.freeze({
   agents: "Agents",
-  secrets: "Secrets",
+  secrets: "Credentials",
+  [connectionTemplatesPage]: "Credentials",
   backends: "Backends",
   namespaces: "Namespaces",
   settings: "Settings",

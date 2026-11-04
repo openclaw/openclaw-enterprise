@@ -1476,8 +1476,16 @@ test("Installation-administration reads after a revoke are refused and audited o
       await page.getByRole("heading", { name: "Signed-in account" }).waitFor();
       await waitForIdleFetches(page);
       assert.equal(await driverSchemas.count(), 0);
-      assert.equal(await page.getByRole("heading", { name: "Connection templates" }).count(), 0);
       assert.equal(await page.getByRole("alert").count(), 0);
+    },
+    templates: async () => {
+      const before = reads("/connection-templates") + reads("/oauth-clients");
+      await page.goto(`${fixture.origin}/console/credentials/connection-templates`);
+      await page
+        .getByRole("heading", { name: "Installation administrator access required" })
+        .waitFor();
+      assert.equal(await page.getByRole("link", { name: "Connection templates" }).count(), 0);
+      assert.equal(reads("/connection-templates") + reads("/oauth-clients"), before);
     },
     backends: async () => {
       const refused = reads("/backends");
@@ -1502,7 +1510,7 @@ test("Installation-administration reads after a revoke are refused and audited o
     await pages[first]();
     assert.equal(await observability.count(), 0, first);
     assert.equal(adminDenials().length, round + 1, first);
-    for (const other of ["access", "agent", "settings", "backends"] as const) {
+    for (const other of ["access", "agent", "settings", "backends", "templates"] as const) {
       await pages[other]();
     }
     assert.equal(adminDenials().length, round + 1, first);
