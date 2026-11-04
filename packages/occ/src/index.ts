@@ -157,7 +157,6 @@ import type {
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
-  CredentialSourceDestination,
   CredentialSourceReference,
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
@@ -6392,7 +6391,7 @@ export class OpenClawController {
     const { provider, ref, inject, normalizeConfig, assertCurrent } = selection;
     const reference = references[provider.sourceType.secrets[0]!.name];
     assertCurrent();
-    Reflect.apply(normalizeConfig, provider, [config]);
+    const normalized = Reflect.apply(normalizeConfig, provider, [config]);
     // An Installation property: a Proxy that cannot serve the source refuses it before any
     // Secret is read (finding 2360).
     await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
@@ -6414,6 +6413,17 @@ export class OpenClawController {
     if (!secretDriver.readCredentialInput) {
       throw new DependencyUnavailableError(
         "Protected egress requires authoritative versioned Secret reads.",
+      );
+    }
+    // A Secret's immutable authorization binds the value to one destination. The Proxy source
+    // declares its destination through the normalized configuration, so compare before reading
+    // the value; operate permission alone must not redirect an authorized key.
+    if (
+      secret.authorizedEndpoint !== undefined &&
+      normalized.authorized_base_url !== secret.authorizedEndpoint
+    ) {
+      throw new SecretBindingValidationError(
+        "The credential source Secret does not authorize its destination. Supply an endpoint-specific key.",
       );
     }
     const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
@@ -6708,7 +6718,9 @@ export class OpenClawController {
                 1,
               )
             : undefined);
-      if (selected !== undefined) {
+      // The proxy path already authorized and version-read the Secret for its exact provider
+      // destination; only a Gateway-registered source needs this comparison here.
+      if (selected !== undefined && egress === undefined) {
         await this.authorizeCredentialDestinations(
           state,
           principalId,
@@ -6885,19 +6897,7 @@ export class OpenClawController {
         await this.authorize(principalId, "operate", reference);
       }
     }
-    let destinations: Readonly<Record<string, CredentialSourceDestination>>;
-    try {
-      destinations = gateway.describeSourceDestinations({ type, config });
-    } catch (error) {
-      if (error instanceof CredentialSourceConfigError) {
-        throw error;
-      }
-      // The catalog offered this type moments earlier, so a Driver that cannot describe its
-      // destination is an Installation inconsistency rather than a caller scope error.
-      throw new DependencyUnavailableError(
-        "The Credential Gateway did not describe a credential destination.",
-      );
-    }
+    const destinations = gateway.describeSourceDestinations({ type, config });
     for (const [field, reference] of Object.entries(references)) {
       const secret = await state.secrets.findSecret(namespaceId, reference.id);
       const destination = destinations[field];

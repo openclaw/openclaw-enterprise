@@ -11340,6 +11340,10 @@ test("deploying Slack freezes the Agent's discovered tool selection and keeps it
     capability: "credential_gateway",
     implementation: "openshell",
     validateSourceConfig() {},
+    // The credential gateway reports each field's destination before OCC reads a value.
+    describeSourceDestinations({ type }) {
+      return type === "bearer-token" ? { token: { endpoint: "https://mcp.slack.com" } } : {};
+    },
     async listSourceTypes() {
       return [
         {
