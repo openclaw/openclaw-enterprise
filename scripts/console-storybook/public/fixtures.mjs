@@ -3,6 +3,16 @@ import { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
+import {
+  candidateDeploymentError,
+  deploymentFailureMessages,
+  initialDeploymentProgress,
+} from "./deployment-fixture.mts";
+import {
+  createFixtureFetch,
+  fixtureError as error,
+  fixtureResponse as response,
+} from "./preview-rules.mts";
 import swePreset from "/console/swe-preset.mjs";
 
 const createdAt = "2026-09-01T12:00:00.000Z";
@@ -14,13 +24,6 @@ const hiddenRevisionId = "rev_00000000-0000-4000-8000-000000000008";
 const redeployRevisionId = "rev_00000000-0000-4000-8000-000000000018";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
-
-function initialDeploymentProgress(status) {
-  if (status !== "queued" && status !== "running") {
-    return null;
-  }
-  return { lastAttempt: null, nextAttemptAt: status === "queued" ? createdAt : null };
-}
 
 // Another browser's save in configurationChangedElsewhere: objects merge, other values replace.
 function mergeElsewhere(target, changes) {
@@ -181,123 +184,7 @@ function configurationValues(scenario) {
 
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
-function candidateDeploymentError(scenario, checkedAt) {
-  if (scenario.bootstrapFailure) {
-    return {
-      code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
-      message: "Harness credential initialization failed. Correct the cause and deploy again.",
-      data: {
-        preparation: {
-          workload: {
-            kind: "Job",
-            name: "oauth-bootstrap-demo",
-            uid: "job-demo-uid",
-            namespace: "oce-tenant-demo",
-          },
-          reason: "retry_limit",
-          observedAt: checkedAt,
-          startedAt: checkedAt,
-          finishedAt: checkedAt,
-          pods: [
-            {
-              name: "oauth-bootstrap-demo-pod",
-              uid: "bootstrap-demo-uid",
-              phase: "Failed",
-              scheduling: "scheduled",
-              containers: [
-                {
-                  name: "prepare-oauth-home",
-                  kind: "init",
-                  state: "terminated",
-                  reason: "Completed",
-                  exitCode: 0,
-                  startedAt: checkedAt,
-                  finishedAt: checkedAt,
-                },
-                {
-                  name: "oauth-bootstrap",
-                  kind: "main",
-                  state: "terminated",
-                  reason: "Error",
-                  exitCode: 1,
-                  startedAt: checkedAt,
-                  finishedAt: checkedAt,
-                },
-              ],
-            },
-          ],
-        },
-      },
-    };
-  }
-  if (scenario.candidateSuperseded) {
-    return {
-      code: "REVISION_SUPERSEDED",
-      message: "Deployment was superseded by a newer revision.",
-    };
-  }
-  if (scenario.candidateStopped) {
-    return {
-      code: "REVISION_STOPPED",
-      message: "Deployment ended because the Agent was stopped.",
-    };
-  }
-  // Deployment error messages copy deploymentErrorMessage in
-  // packages/occ/src/state/controller-work.ts; keep them in step.
-  if (scenario.candidateCredentialRejected) {
-    return {
-      code: "RUNTIME_AUTHENTICATION_FAILED",
-      message:
-        "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
-    };
-  }
-  if (scenario.candidateModelProbeCause) {
-    return {
-      code: "RUNTIME_MODEL_PROBE_FAILED",
-      message:
-        "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.",
-      data: {
-        runtimeFailure: {
-          component: "gateway",
-          check: "model-probe",
-          code: "MODEL_PROBE_FAILED",
-          checkedAt,
-          cause: scenario.candidateModelProbeCause,
-        },
-      },
-    };
-  }
-  // A scenario can name any failure code with the message OCC returns for it.
-  if (scenario.candidateFailure) {
-    return scenario.candidateFailure;
-  }
-  if (scenario.candidateDependencyUnavailable) {
-    return {
-      code: "DEPENDENCY_UNAVAILABLE",
-      message:
-        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
-    };
-  }
-  if (scenario.candidateSelected) {
-    return {
-      code: "REVISION_FINALIZATION_INCOMPLETE",
-      message:
-        "Deployment failed. Check this version's logs; if they show nothing, ask an Installation administrator to check the controller worker log for this code.",
-    };
-  }
-  return {
-    code: "CONVERGENCE_DEADLINE_EXCEEDED",
-    message:
-      "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
-    data: {
-      timeoutMs: 60000,
-      runtimeFailure: { component: "harness", check: "readiness", code: "TIMEOUT", checkedAt },
-    },
-  };
-}
-
 export function installFixture(scenario, evidence) {
-  const rules = structuredClone(scenario.rules ?? []);
   const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
@@ -638,6 +525,7 @@ export function installFixture(scenario, evidence) {
         : scenario.firstDeploymentQueued
           ? "queued"
           : "succeeded",
+      cleanup: null,
       progress: null,
       error: scenario.firstDeploymentFailed
         ? candidateDeploymentError(scenario, currentRevision.createdAt)
@@ -933,117 +821,8 @@ export function installFixture(scenario, evidence) {
           : "SANDBOX_POLICY_CEILING_CHANGED",
     };
   }
-  const response = (
-    data,
-    status = 200,
-    errorCode,
-    meta = {},
-    errorMessage,
-    details,
-    remainingResources,
-  ) =>
-    new Response(
-      JSON.stringify({
-        ...(errorCode
-          ? {
-              error: {
-                code: errorCode,
-                message: errorMessage ?? "The selected preview simulates this failure.",
-                ...(details ? { details } : {}),
-                ...(remainingResources ? { remainingResources } : {}),
-              },
-            }
-          : { data }),
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000001", ...meta },
-      }),
-      { status, headers: { "content-type": "application/json" } },
-    );
-  const error = (status, code, message) => response(null, status, code, {}, message);
-  const answer = async (input, options = {}, call = {}) => {
-    const url = new URL(typeof input === "string" ? input : input.url, location.origin);
+  const answer = async (url, method, body) => {
     const path = url.pathname;
-    const method = options.method ?? "GET";
-    const body = options.body ? JSON.parse(options.body) : {};
-    evidence.requests.push({ method, path });
-    for (const rule of rules) {
-      if (
-        rule.used ||
-        (rule.method ?? "GET") !== method ||
-        (rule.path && rule.path !== path) ||
-        (rule.prefix && !path.startsWith(rule.prefix)) ||
-        (rule.pathIncludes && !path.includes(rule.pathIncludes)) ||
-        (rule.suffix && !path.endsWith(rule.suffix)) ||
-        (rule.queryParam && !url.searchParams.has(rule.queryParam)) ||
-        (rule.bodyHasIds !== undefined && rule.bodyHasIds !== Array.isArray(body.ids))
-      ) {
-        continue;
-      }
-      if (rule.skip > 0) {
-        rule.skip -= 1;
-        continue;
-      }
-      rule.used = rule.once === true;
-      if (rule.lostAnswer) {
-        call.lost = true;
-        break;
-      }
-      if (rule.delayMs) {
-        await new Promise((resolve, reject) => {
-          const finish = () => {
-            options.signal?.removeEventListener("abort", abort);
-            resolve();
-          };
-          const timer = setTimeout(finish, rule.delayMs);
-          const abort = () => {
-            clearTimeout(timer);
-            reject(options.signal?.reason ?? new DOMException("Aborted", "AbortError"));
-          };
-          if (options.signal?.aborted) {
-            abort();
-          } else {
-            options.signal?.addEventListener("abort", abort, { once: true });
-          }
-        });
-      }
-      if (rule.hold) {
-        return new Promise((_resolve, reject) => {
-          const abort = () =>
-            reject(options.signal?.reason ?? new DOMException("Aborted", "AbortError"));
-          if (options.signal?.aborted) {
-            abort();
-          } else {
-            options.signal?.addEventListener("abort", abort, { once: true });
-          }
-        });
-      }
-      if (rule.networkError) {
-        // The browser's own failure for a request that never reaches the API (offline).
-        throw new TypeError("Failed to fetch");
-      }
-      if (rule.bodyError) {
-        // A simulated after-headers failure exercises the production body reader.
-        // Real socket interruption is proved separately by the transport tests.
-        return new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(new TextEncoder().encode('{"data":'));
-              queueMicrotask(() => controller.error(new TypeError("Response body interrupted")));
-            },
-          }),
-          { headers: { "content-type": "application/json" } },
-        );
-      }
-      if (rule.status) {
-        const failure = response(null, rule.status, rule.code, {}, rule.message, rule.details);
-        if (rule.retryAfter !== undefined) {
-          failure.headers.set("retry-after", String(rule.retryAfter));
-        }
-        return failure;
-      }
-      if (rule.data !== undefined) {
-        return response(rule.data);
-      }
-    }
     if (path === "/api/auth/providers" && method === "GET") {
       return response({
         github: scenario.githubEnabled === true,
@@ -1753,9 +1532,13 @@ export function installFixture(scenario, evidence) {
             namespaceId,
             agentId: saved.id,
             status: scenario.provisionedDeploymentStatus ?? "queued",
+            cleanup: null,
             progress:
               scenario.provisionedDeploymentAttempt === undefined
-                ? initialDeploymentProgress(scenario.provisionedDeploymentStatus ?? "queued")
+                ? initialDeploymentProgress(
+                    scenario.provisionedDeploymentStatus ?? "queued",
+                    createdAt,
+                  )
                 : {
                     lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
                     nextAttemptAt: createdAt,
@@ -1767,12 +1550,11 @@ export function installFixture(scenario, evidence) {
                 : scenario.provisionedDeploymentStopped
                   ? {
                       code: "REVISION_STOPPED",
-                      message: "Deployment ended because the Agent was stopped.",
+                      message: deploymentFailureMessages.stopped,
                     }
                   : (scenario.provisionedDeploymentError ?? {
                       code: "DEPENDENCY_UNAVAILABLE",
-                      message:
-                        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an Installation administrator to check the controller worker log.",
+                      message: deploymentFailureMessages.dependencyUnavailable,
                     }),
             warnings: [],
           });
@@ -1869,7 +1651,7 @@ export function installFixture(scenario, evidence) {
                                 : "PROVISIONING_FAILED",
                             message:
                               scenario.provisionedDeploymentStatus === "failed"
-                                ? "Harness credential initialization failed. Correct the cause and deploy again."
+                                ? deploymentFailureMessages.bootstrap
                                 : "The worker could not finish provisioning.",
                           }),
                   }
@@ -2360,7 +2142,8 @@ export function installFixture(scenario, evidence) {
             namespaceId,
             agentId: id,
             status: "queued",
-            progress: initialDeploymentProgress("queued"),
+            cleanup: null,
+            progress: initialDeploymentProgress("queued", createdAt),
             reads: 0,
             error: null,
             warnings: [],
@@ -2959,14 +2742,5 @@ export function installFixture(scenario, evidence) {
     console.error(`Unconfigured story request: ${method} ${path}`);
     return error(501);
   };
-  // A rule with `lostAnswer` lets the simulated API apply the request, then loses its answer, as
-  // when the connection drops after a write lands.
-  window.fetch = async (input, options = {}) => {
-    const call = {};
-    const reply = await answer(input, options, call);
-    if (call.lost) {
-      throw new TypeError("Failed to fetch");
-    }
-    return reply;
-  };
+  window.fetch = createFixtureFetch(scenario.rules ?? [], evidence.requests, answer);
 }
