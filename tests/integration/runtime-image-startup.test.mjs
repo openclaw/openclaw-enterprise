@@ -1830,6 +1830,7 @@ assert.deepEqual(provenance.patches, {
   } : {
     "openclaw-linux-private-store-setgid.patch": "e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c",
     "openclaw-plugin-config-startup-report.patch": "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
+    "openclaw-node-setup-renewal.patch": "dd693193b901a569fa7a3bd4d964dcfeba0948054f438bdf074f320b654fd785",
   }),
 });
 assert.equal(provenance.codex.version, ${JSON.stringify(stagingCodexVersion)});

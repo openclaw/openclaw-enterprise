@@ -597,7 +597,9 @@ process.exit(child.status ?? 1);
           "-e",
           launch,
         ],
-        {},
+        // The sequential suite's per-case deadlines total 313 seconds. Keep them
+        // intact and allow container startup/reporting beyond that combined budget.
+        { timeout: 360_000 * imageSmokeTimeoutMultiplier },
         JSON.stringify(files),
       ).catch((error) => {
         // CI truncates the error message and drops the command output, so name the
