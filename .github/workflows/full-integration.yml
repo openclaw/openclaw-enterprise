@@ -40,7 +40,8 @@ permissions:
   deployments: read
 
 concurrency:
-  group: ${{ inputs.lane == 'dev-up-k3d' && format('full-integration-dev-up-k3d-{0}', github.ref) || inputs.lane == 'skipper-prepared-git-installed' && format('full-integration-skipper-prepared-git-installed-{0}', github.ref) || 'full-integration' }}
+  # Repository-only proof has no Slack consumer and owns a distinct remote repository.
+  group: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev/kevinlin/integration-main-cutover' && github.repository == 'openclaw/openclaw-enterprise' && github.actor == 'kevinlin-openai' && github.triggering_actor == 'kevinlin-openai' && inputs.lane == 'qa-matrix' && inputs.qa_repository_fixture == 'isolated' && 'full-integration-isolated-repository-proof' || inputs.lane == 'dev-up-k3d' && format('full-integration-dev-up-k3d-{0}', github.ref) || inputs.lane == 'skipper-prepared-git-installed' && format('full-integration-skipper-prepared-git-installed-{0}', github.ref) || 'full-integration' }}
   cancel-in-progress: false
 
 env:
@@ -639,8 +640,9 @@ jobs:
       # in checks-baseline-1 asserts the +v1.35 default.
       OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
       OCC_TEST_QA_INSTALLATION: all
-      OCC_TEST_QA_PRESET: all
-      OCC_TEST_QA_SCENARIOS: all
+      # TODO: Remove this focused selection with the temporary proof route.
+      OCC_TEST_QA_PRESET: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev/kevinlin/integration-main-cutover' && github.repository == 'openclaw/openclaw-enterprise' && github.actor == 'kevinlin-openai' && github.triggering_actor == 'kevinlin-openai' && inputs.lane == 'qa-matrix' && inputs.qa_repository_fixture == 'isolated' && 'Codex' || 'all' }}
+      OCC_TEST_QA_SCENARIOS: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev/kevinlin/integration-main-cutover' && github.repository == 'openclaw/openclaw-enterprise' && github.actor == 'kevinlin-openai' && github.triggering_actor == 'kevinlin-openai' && inputs.lane == 'qa-matrix' && inputs.qa_repository_fixture == 'isolated' && 'git-write,git-push-denied' || 'all' }}
       OCC_TEST_QA_OPENAI_MODEL: ${{ vars.OCC_TEST_QA_OPENAI_MODEL }}
       OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
       OCC_TEST_QA_SLACK_CHANNEL_ID: ${{ vars.OCC_TEST_QA_SLACK_CHANNEL_ID }}
@@ -671,11 +673,11 @@ jobs:
       - name: Materialize isolated QA repository credentials
         if: inputs.qa_repository_fixture == 'isolated'
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ env.OCC_TEST_QA_SCENARIOS == 'all' && secrets.OPENAI_API_KEY || '' }}
           CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
-          SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_SENDER_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
+          SLACK_APP_TOKEN: ${{ env.OCC_TEST_QA_SCENARIOS == 'all' && secrets.SLACK_APP_TOKEN || '' }}
+          SLACK_BOT_TOKEN: ${{ env.OCC_TEST_QA_SCENARIOS == 'all' && secrets.SLACK_BOT_TOKEN || '' }}
+          SLACK_SENDER_TOKEN: ${{ env.OCC_TEST_QA_SCENARIOS == 'all' && secrets.SLACK_SENDER_TOKEN || '' }}
           QA_REPOSITORY_FIXTURE: isolated
           QA_ISOLATED_REPOSITORY_FULL_NAME: ${{ vars.QA_ISOLATED_REPOSITORY_FULL_NAME }}
           REPOSITORY_REGISTRY_FILE: scripts/ci/qa-repositories/isolated.json

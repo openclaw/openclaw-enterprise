@@ -22,10 +22,12 @@ import {
   assertGatewayModelTurn,
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
+  deleteNamespaceExplained,
   kubernetesHash as hash,
   productionGatewayMemoryLimit,
   productionGatewayMemoryLimitGi,
   withBoundedTeardown,
+  withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import {
   ensureEnvoyGatewayControllers,
@@ -1664,14 +1666,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     },
     placementNamespace: async () => {
       if (placement !== undefined) {
-        await kubectl(
-          "delete",
-          "namespace",
-          placement,
-          "--ignore-not-found=true",
-          "--wait=true",
-          "--timeout=120s",
-        );
+        await deleteNamespaceExplained(kubectl, placement);
       }
     },
     temporaryDirectory: () => rm(directory, { recursive: true, force: true }),
@@ -3382,7 +3377,7 @@ async function assertGatewayPrivateResources(topology) {
   return claim;
 }
 
-async function gatewayCall(topology, method, params) {
+async function gatewayCall(topology, method, params, timeoutMs = 180_000) {
   // The real CLI authenticates from the Pod's env/config; credentials never enter kubectl args.
   const result = JSON.parse(
     await execNode(
@@ -3393,7 +3388,7 @@ async function gatewayCall(topology, method, params) {
     try {
       process.stdout.write(execFileSync(process.execPath, ["/app/openclaw.mjs", "gateway", "call",
       ${JSON.stringify(method)}, "--params", ${JSON.stringify(JSON.stringify(params))},
-      "--json", "--timeout", "180000"], { encoding: "utf8", timeout: 210000 }));
+      "--json", "--timeout", ${JSON.stringify(String(timeoutMs))}], { encoding: "utf8", timeout: ${timeoutMs + 30_000} }));
     } catch (error) {
       if (error.status !== 1 || error.signal !== null) throw error;
       let failure;
@@ -3655,10 +3650,6 @@ async function inspectGatewayPersistence(topology, imageDigest, sessionKey, sess
     }); }
 
     (async () => {
-      const {
-        readVisibleSessionTranscriptMessageEntries,
-        resolveSessionTranscriptTarget,
-      } = await import("openclaw/plugin-sdk/session-transcript-runtime");
       const canonicalSessionKey = ${JSON.stringify(sessionKey)}.trim().toLowerCase();
       if (${JSON.stringify(sessionKey)} !== canonicalSessionKey) {
         throw new Error("Test generated a noncanonical session key");
@@ -3678,6 +3669,13 @@ async function inspectGatewayPersistence(topology, imageDigest, sessionKey, sess
         } finally { db.close(); }
       });
 
+      // Each exec is a fresh runtime. Prepare its config only after checking the existing stores.
+      const { captureRuntimeConfigAsyncReader } = await import("openclaw/plugin-sdk/runtime-config-snapshot");
+      await captureRuntimeConfigAsyncReader()();
+      const {
+        readVisibleSessionTranscriptMessageEntries,
+        resolveSessionTranscriptTarget,
+      } = await import("openclaw/plugin-sdk/session-transcript-runtime");
       const target = await resolveSessionTranscriptTarget({
         sessionId: expectedSessionId,
         sessionKey: canonicalSessionKey,
@@ -5347,28 +5345,41 @@ async function assertSecretApiRotationAndRedeploy(context, topology) {
 
 async function assertNativeReferenceNegativeControl(context, topology) {
   const revisionsPath = `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/revisions`;
+  const configurationPath = `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`;
   const before = await topology.request("GET", revisionsPath);
   assert.equal(before.status, 200);
-  const invalid = await topology.request(
+  const configurationBefore = await topology.request("GET", configurationPath);
+  assert.equal(configurationBefore.status, 200);
+  const runtimeBefore = await gatewayCall(topology, "config.get", {});
+  assert.ok(runtimeBefore.config?.models?.providers?.openai);
+  assertNoSecretMaterial(runtimeBefore, secretApiProtectedValues(topology), "runtime config read");
+  // Configuration admission rejects a competing model selector before it can become a draft.
+  const denied = await expectApiFailureWithoutSecret(
+    topology.request,
     "PATCH",
-    `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
+    configurationPath,
     {
       values: nativeConfiguration("openclaw", undefined, {
         modelEnvName: "SECRET_API_DISABLED_OPENAI_KEY",
       }),
       secretBindings: topology.secretApi.configuration.secretBindings,
     },
-  );
-  assert.equal(invalid.status, 200, JSON.stringify(invalid.error));
-  const denied = await expectApiFailureWithoutSecret(
-    topology.request,
-    "POST",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/deploy`,
-    undefined,
     secretApiProtectedValues(topology),
     "competing native model credential selector",
   );
-  assert.equal(denied.status, 409, "harnessAuth must remain the sole model-auth selector");
+  assert.equal(denied.status, 400, "harnessAuth must remain the sole model-auth selector");
+  assert.equal(denied.error?.code, "INVALID_REQUEST");
+  assert.match(
+    denied.error?.message ?? "",
+    /models\.providers\.openai\.apiKey must be.*OPENAI_API_KEY.*Harness authentication binding supplies/,
+  );
+  const configurationAfter = await topology.request("GET", configurationPath);
+  assert.equal(configurationAfter.status, 200);
+  assert.deepEqual(
+    configurationAfter.data,
+    configurationBefore.data,
+    "a competing selector must not change the saved Configuration",
+  );
   const after = await topology.request("GET", revisionsPath);
   assert.equal(after.status, 200);
   assert.deepEqual(
@@ -5389,26 +5400,16 @@ async function assertNativeReferenceNegativeControl(context, topology) {
   );
   assert.equal(gateway.metadata.uid, topology.gatewayPod.metadata.uid);
   await assertOpenAiKeyProjectedFromSecret(topology, gateway);
-  const restored = await topology.request(
-    "PATCH",
-    `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
-    {
-      values: nativeConfiguration("openclaw"),
-      secretBindings: topology.secretApi.configuration.secretBindings,
-    },
+  const runtimeAfter = await gatewayCall(topology, "config.get", {});
+  assertNoSecretMaterial(runtimeAfter, secretApiProtectedValues(topology), "runtime config read");
+  assert.deepEqual(
+    runtimeAfter.config,
+    runtimeBefore.config,
+    "a rejected selector must not change the active Gateway configuration",
   );
-  assert.equal(restored.status, 200, JSON.stringify(restored.error));
-  const recovered = await deployEmbeddedAgentAndWait(
-    topology,
-    topology.agent.id,
-    "canonical native model credential reference",
-    { previousUid: topology.gatewayPod.metadata.uid },
-  );
-  topology.gatewayPod = recovered.gatewayPod;
-  topology.revision = recovered.revision;
   await assertActualModelTurn(topology);
   context.diagnostic(
-    "competing native credential selector denied before revision admission; canonical reference served a real model turn",
+    "competing native credential selector rejected at Configuration admission; unchanged workload and canonical Secret served a real model turn",
   );
 }
 
@@ -5766,14 +5767,127 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
       false,
     );
     const memorySession = `agent:main:memory-${randomUUID()}`;
-    await waitFor("native Memory retrieval from the Harness workspace", async () => {
-      const answer = await requestDedicatedAgentTurn(
-        topology,
-        memorySession,
-        `Use memory_search to find the confirmation for ${memoryKey}. Return its source path and snippet. Do not use shell or file tools, edit files, or rebuild the index.`,
+    const evidence = {
+      modelRequests: 0,
+      completedModelRequests: 0,
+      sourceContainsMarker: null,
+      historyAvailable: false,
+      memoryToolDisabled: false,
+      memoryStatusAvailable: false,
+      operatorSearchAvailable: false,
+    };
+    try {
+      await waitFor("native Memory retrieval from the Harness workspace", async () => {
+        evidence.modelRequests += 1;
+        let answer;
+        try {
+          answer = await requestDedicatedAgentTurn(
+            topology,
+            memorySession,
+            `Use memory_search to find the confirmation for ${memoryKey}. Return its source path and snippet. Do not use shell or file tools, edit files, or rebuild the index.`,
+          );
+        } catch (error) {
+          if (error?.expected === 200 && Number.isInteger(error.actual)) {
+            evidence.rejectedModelHttpStatus = error.actual;
+          }
+          evidence.modelRequestAborted = ["TimeoutError", "AbortError"].includes(error?.name);
+          // A rejected response can contain model text. Keep only the failure phase.
+          // eslint-disable-next-line preserve-caught-error -- Raw provider responses must not enter artifacts.
+          throw new Error("Memory model request failed before a retrieval result was available.");
+        }
+        evidence.completedModelRequests += 1;
+        return answer.includes(memoryValue) ? answer : undefined;
+      });
+    } catch (error) {
+      // Observe the failed run before an operator read can trigger normal index catch-up.
+      // Never retain prompts, answers, tool output, file contents, or provider error text.
+      const observe = async (name, read) => {
+        try {
+          await read();
+        } catch (failure) {
+          const code = failure?.cause?.code;
+          const knownCodes = [
+            "INVALID_REQUEST",
+            "UNAVAILABLE",
+            "NOT_LINKED",
+            "NOT_PAIRED",
+            "TIMEOUT",
+            "FORBIDDEN",
+            "UNAUTHORIZED",
+          ];
+          evidence[`${name}Failure`] = knownCodes.includes(code) ? code : "unclassified";
+          // Diagnostic failure must not replace the original model or retrieval failure.
+        }
+      };
+      const diagnosticTimedOut = await withinDiagnosticDeadline(
+        async () => {
+          await Promise.all([
+            observe("source", async () => {
+              const source = await inspectFileInPod(topology.placement, harnessPod, memoryFile);
+              evidence.sourceContainsMarker = source.exists && source.tail.includes(memoryValue);
+            }),
+            observe("history", async () => {
+              const history = await gatewayCall(
+                topology,
+                "chat.history",
+                { sessionKey: memorySession, limit: 100 },
+                10_000,
+              );
+              const messages = history.messages ?? [];
+              const results = messages.filter(
+                (message) => message.role === "toolResult" && message.toolName === "memory_search",
+              );
+              evidence.historyAvailable = true;
+              evidence.assistantMessages = messages.filter(
+                ({ role }) => role === "assistant",
+              ).length;
+              evidence.memoryToolCalls = messages
+                .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+                .filter((part) => part.type === "toolCall" && part.name === "memory_search").length;
+              evidence.memoryToolResults = results.length;
+              evidence.memoryToolResultContainsMarker = results.some((message) =>
+                messageText(message).includes(memoryValue),
+              );
+              evidence.memoryToolReportedError = results.some(
+                (message) => message.isError === true,
+              );
+              for (const message of results) {
+                try {
+                  const result = JSON.parse(messageText(message));
+                  evidence.memoryToolDisabled ||= result.disabled === true;
+                  evidence.memoryToolReportedError ||= Boolean(result.error);
+                } catch {
+                  // Non-JSON results remain counted without copying their text to evidence.
+                }
+              }
+            }),
+          ]);
+          await Promise.all([
+            observe("memoryStatus", async () => {
+              await gatewayCall(topology, "memory.status", { agentId: "main" }, 10_000);
+              evidence.memoryStatusAvailable = true;
+            }),
+            observe("operatorSearch", async () => {
+              // This is a diagnostic operator read after failure, never model-search proof.
+              const search = await gatewayCall(
+                topology,
+                "memory.search",
+                { agentId: "main", query: memoryKey, maxResults: 5 },
+                10_000,
+              );
+              evidence.operatorSearchAvailable = true;
+              evidence.operatorSearchContainsMarker = JSON.stringify(search).includes(memoryValue);
+            }),
+          ]);
+        },
+        { timeoutMs: 30_000, timedOut: true },
       );
-      return answer.includes(memoryValue) ? answer : undefined;
-    });
+      evidence.diagnosticTimedOut = diagnosticTimedOut === true;
+      process.stderr.write(
+        `k3d dedicated: Memory retrieval evidence ${JSON.stringify(evidence)}\n`,
+      );
+      throw error;
+    }
     const memoryHistory = await gatewayCall(topology, "chat.history", {
       sessionKey: memorySession,
       limit: 100,

@@ -219,6 +219,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.deepEqual(selected.cells[0].notApplicable, [
     "codex-search-config",
     "calendar",
+    "git-write",
     "git-push-denied",
     "slack",
   ]);
@@ -239,7 +240,25 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.deepEqual(calendar.cells[0].scenarios, []);
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-write"]);
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets"]);
+  assert.equal(openclaw.repository, false);
+  assert.ok(!openclaw.requiredEnv.some((name) => /REPOSITORY|GITHUB_OBSERVER/.test(name)));
+  assert.throws(
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "git-write", OCC_TEST_QA_PRESET: "OpenClaw" }),
+    /not applicable/,
+  );
+  const git = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "git-write,git-push-denied" });
+  assert.deepEqual(
+    git.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
+    [
+      { cell: "compose/OpenClaw", scenarios: [] },
+      { cell: "compose/Codex", scenarios: ["git-write", "git-push-denied"] },
+      { cell: "kubernetes/OpenClaw", scenarios: [] },
+      { cell: "kubernetes/Codex", scenarios: ["git-write", "git-push-denied"] },
+    ],
+  );
+  assert.ok(git.repository);
+  assert.ok(!git.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
   const secrets = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "console-secrets",

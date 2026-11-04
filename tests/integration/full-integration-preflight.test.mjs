@@ -669,6 +669,71 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
       }
     }
   }
+  // Only the guarded isolated route can leave the shared Slack queue. Evaluate
+  // the shipped expressions and real selector together to protect that boundary.
+  const isolatedProof = {
+    github: { ...approvedProof, event_name: "workflow_dispatch" },
+    inputs: { lane: "qa-matrix", qa_repository_fixture: "isolated" },
+  };
+  const expression = (value, context) =>
+    runInNewContext(value.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), context);
+  const qaEnvironment = workflow.jobs["qa-matrix"].env;
+  for (const [github, inputs, focused] of [
+    [isolatedProof.github, isolatedProof.inputs, true],
+    [{ ...isolatedProof.github, event_name: "push" }, {}, false],
+    [{ ...isolatedProof.github, ref: "refs/heads/main" }, isolatedProof.inputs, false],
+    [{ ...isolatedProof.github, ref: "refs/heads/other" }, isolatedProof.inputs, false],
+    [{ ...isolatedProof.github, repository: "other/repository" }, isolatedProof.inputs, false],
+    [{ ...isolatedProof.github, actor: "other-writer" }, isolatedProof.inputs, false],
+    [{ ...isolatedProof.github, triggering_actor: "other-writer" }, isolatedProof.inputs, false],
+    [isolatedProof.github, { ...isolatedProof.inputs, lane: "all" }, false],
+    [isolatedProof.github, { ...isolatedProof.inputs, qa_repository_fixture: "default" }, false],
+  ]) {
+    const context = { github, inputs };
+    const env = {
+      OCC_TEST_QA_INSTALLATION: qaEnvironment.OCC_TEST_QA_INSTALLATION,
+      OCC_TEST_QA_PRESET: expression(qaEnvironment.OCC_TEST_QA_PRESET, context),
+      OCC_TEST_QA_SCENARIOS: expression(qaEnvironment.OCC_TEST_QA_SCENARIOS, context),
+    };
+    assert.equal(
+      runInNewContext(group, context),
+      focused ? "full-integration-isolated-repository-proof" : "full-integration",
+    );
+    const selection = selectQaMatrix(env);
+    assert.deepEqual(selection.installations, ["compose", "kubernetes"]);
+    assert.equal(selection.scope, focused ? "partial:selected" : "full");
+    if (focused) {
+      assert.deepEqual(
+        selection.cells.map(({ preset }) => preset),
+        ["Codex", "Codex"],
+      );
+      for (const cell of selection.cells) {
+        assert.deepEqual(cell.scenarios, ["git-write", "git-push-denied"]);
+      }
+      assert.equal(
+        selection.requiredEnv.some((name) => name.includes("SLACK")),
+        false,
+      );
+    } else {
+      assert.equal(env.OCC_TEST_QA_PRESET, "all");
+      assert.equal(env.OCC_TEST_QA_SCENARIOS, "all");
+      assert.ok(selection.requiredEnv.some((name) => name.includes("SLACK")));
+    }
+    const isolatedCredentials = workflow.jobs["qa-matrix"].steps.find(
+      ({ name }) => name === "Materialize isolated QA repository credentials",
+    ).env;
+    for (const name of [
+      "OPENAI_API_KEY",
+      "SLACK_APP_TOKEN",
+      "SLACK_BOT_TOKEN",
+      "SLACK_SENDER_TOKEN",
+    ]) {
+      assert.equal(
+        expression(isolatedCredentials[name], { env, secrets: { [name]: "synthetic-value" } }),
+        focused ? "" : "synthetic-value",
+      );
+    }
+  }
   const job = workflow.jobs["dev-up-k3d"];
   assert.equal(job.environment, undefined);
   assert.equal(job.env, undefined);

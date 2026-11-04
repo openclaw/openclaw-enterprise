@@ -164,7 +164,13 @@ the bypass flag, verify it separately in the environment settings.
 
 The temporary proof route runs `all` after a push to exactly
 `dev/kevinlin/integration-main-cutover`. On that same branch, a manual dispatch
-can select only `qa-matrix` with the `isolated` fixture. Both routes require
+can select only `qa-matrix` with the `isolated` fixture. This dispatch runs
+`git-write` and `git-push-denied` on dedicated Codex across Compose and k3d,
+including remote cleanup. It selects no Slack scenario and receives no Slack
+credentials. Its separate `full-integration-isolated-repository-proof` queue
+serializes runs against that distinct repository. The default push proof keeps
+all supported scenarios and both presets; the focused proof does not replace it.
+Both routes require
 `kevinlin-openai` as the actor and rerun actor in this repository, and exactly two
 environment branch rules: `main` and the named cutover branch. Remove the proof
 routes and temporary branch rule after verification.
@@ -388,7 +394,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 | ----------------------- | ----------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `model-ui`              | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                                            |
 | `console-secrets`       | Yes (Codex) | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation. |
-| `git-write`             | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                             |
+| `git-write`             | No          | Codex           | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                             |
 | `git-push-denied`       | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                                              |
 | `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
 | `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                    |
@@ -400,6 +406,11 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+
+Git scenarios use dedicated Codex on both Compose and Kubernetes. Embedded
+OpenClaw Git writes are not supported or selected; these cells are not skipped
+Git checks. Both default and isolated repository fixtures keep the dedicated
+write, denied-push, and credential and branch cleanup checks.
 
 `codex-search-config` requires an exclusive explicit scenario selection. It changes
 only its disposable Installation, uses dedicated Codex API-key authentication,

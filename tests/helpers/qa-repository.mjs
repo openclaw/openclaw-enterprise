@@ -4,7 +4,7 @@ import { captureChild } from "./child-processes.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { chmod, mkdir, readFile, writeFile, stat } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import {
@@ -208,10 +208,11 @@ export async function prepareQaRepository(f) {
   const path = join(f.stateDirectory, "compose.yaml");
   const compose = loadYaml(await readFile(path, "utf8"));
   const mount = (source, target, readOnly = true) => ({
-    type: "bind",
-    source: join(directory, source),
+    type: "volume",
+    source: `qa-repository-${source}`,
     target,
     read_only: readOnly,
+    volume: { nocopy: true },
   });
   const image = process.env.OCC_TEST_QA_REPOSITORY_IMAGE ?? `oce-qa-repository:${f.suffix}`;
   if (!process.env.OCC_TEST_QA_REPOSITORY_IMAGE) {
@@ -230,6 +231,203 @@ export async function prepareQaRepository(f) {
       { timeout: 1_200_000 },
     );
   }
+  // New named volumes keep private inputs owned by the actual non-root readers.
+  // The trusted control-plane image initializes them without host bind mounts.
+  let reader;
+  for (const readerImage of new Set([image, f.controllerDockerImage])) {
+    const identity = JSON.parse(
+      await f.run("docker", [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--entrypoint",
+        "node",
+        readerImage,
+        "-p",
+        "JSON.stringify([process.getuid(),process.getgid()])",
+      ]),
+    );
+    assert.ok(Array.isArray(identity) && identity.length === 2);
+    assert.ok(identity.every((id) => Number.isInteger(id) && id > 0));
+    if (reader) {
+      assert.deepEqual(
+        identity,
+        reader,
+        "repository broker and control-plane readers must share an owner",
+      );
+    }
+    reader = identity;
+  }
+  const volumeFiles = {
+    registry: ["registry.json"],
+    inputs: ["config.json", "tls.key"],
+    ca: ["ca.crt"],
+    control: [],
+    prepared: ["private-key.pem", "custody.key"],
+  };
+  const volumes = Object.fromEntries(
+    Object.keys(volumeFiles).map((name) => [name, `${f.cluster}-repository-${name}`]),
+  );
+  const created = [];
+  // Called only after a confirmed successful dev-down. A retained Installation
+  // keeps its private volumes for the existing credential recovery obligations.
+  f.cleanupRepositoryInputs = async () => {
+    for (const name of created) {
+      const [volume] = JSON.parse(await f.run("docker", ["volume", "inspect", name]));
+      assert.equal(volume.Labels?.["openclaw.dev/qa-repository"], f.suffix);
+      await f.run("docker", ["volume", "rm", name]);
+    }
+  };
+  compose.volumes ??= {};
+  for (const [name, volume] of Object.entries(volumes)) {
+    assert.equal(
+      (
+        await f.run("docker", [
+          "volume",
+          "ls",
+          "--filter",
+          `name=^${volume}$`,
+          "--format",
+          "{{.Name}}",
+        ])
+      ).trim(),
+      "",
+      "repository input volume must be new",
+    );
+    await f.run("docker", [
+      "volume",
+      "create",
+      "--label",
+      `openclaw.dev/qa-repository=${f.suffix}`,
+      volume,
+    ]);
+    const [result] = JSON.parse(await f.run("docker", ["volume", "inspect", volume]));
+    assert.equal(result.Labels?.["openclaw.dev/qa-repository"], f.suffix);
+    created.push(volume);
+    compose.volumes[`qa-repository-${name}`] = { external: true, name: volume };
+  }
+  const files = {};
+  for (const [name, names] of Object.entries(volumeFiles)) {
+    files[name] = Object.fromEntries(
+      await Promise.all(
+        names.map(async (file) => [
+          file,
+          (await readFile(join(directory, name, file))).toString("base64"),
+        ]),
+      ),
+    );
+  }
+  await f.run(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--interactive",
+      "--network",
+      "none",
+      "--read-only",
+      "--user",
+      "0:0",
+      "--cap-drop",
+      "ALL",
+      "--cap-add",
+      "CHOWN",
+      "--security-opt",
+      "no-new-privileges:true",
+      ...Object.entries(volumes).flatMap(([name, volume]) => [
+        "--mount",
+        `type=volume,source=${volume},target=/owned/${name},volume-nocopy`,
+      ]),
+      "--entrypoint",
+      "node",
+      f.controllerDockerImage,
+      "-e",
+      `const fs = require("node:fs");
+       const [uid, gid] = process.argv.slice(1).map(Number);
+       const inputs = JSON.parse(fs.readFileSync(0, "utf8"));
+       for (const [kind, files] of Object.entries(inputs)) {
+         const root = "/owned/" + kind;
+         fs.chmodSync(root, 0o700);
+         for (const [name, body] of Object.entries(files)) {
+           const path = root + "/" + name;
+           fs.writeFileSync(path, Buffer.from(body, "base64"), { mode: 0o600, flag: "wx" });
+           fs.chownSync(path, uid, gid);
+         }
+         if (kind === "control") {
+           fs.mkdirSync(root + "/private", { mode: 0o700 });
+           fs.chownSync(root + "/private", uid, gid);
+         }
+         fs.chownSync(root, uid, gid);
+       }`,
+      ...reader.map(String),
+    ],
+    { input: JSON.stringify(files), privateFailureOutput: true, timeout: 30_000 },
+  );
+  const inputOwnership = JSON.parse(
+    await f.run(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        reader.join(":"),
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        ...Object.entries(volumes).flatMap(([name, volume]) => [
+          "--mount",
+          `type=volume,source=${volume},target=/owned/${name},readonly,volume-nocopy`,
+        ]),
+        "--entrypoint",
+        "node",
+        f.controllerDockerImage,
+        "-e",
+        `const fs = require("node:fs");
+         const assert = require("node:assert/strict");
+         const inputs = JSON.parse(process.argv[1]);
+         const modes = {};
+         for (const [kind, files] of Object.entries(inputs)) {
+           const root = "/owned/" + kind;
+           const entries = [["", 0o700], ...files.map(name => [name, 0o600])];
+           if (kind === "control") {
+             entries.push(["private", 0o700]);
+           }
+           for (const [name, mode] of entries) {
+             const relative = name ? "/" + name : "";
+             const path = root + relative;
+             const stat = fs.lstatSync(path);
+             assert.equal(stat.uid, process.getuid());
+             assert.equal(stat.gid, process.getgid());
+             assert.equal(stat.mode & 0o777, mode);
+             if (mode === 0o600) {
+               assert.ok(stat.isFile());
+               assert.ok(fs.readFileSync(path).length > 0);
+             } else {
+               assert.ok(stat.isDirectory());
+             }
+             modes[kind + relative] = { uid: stat.uid, gid: stat.gid, mode };
+           }
+         }
+         process.stdout.write(JSON.stringify(modes));`,
+        JSON.stringify(volumeFiles),
+      ],
+      { timeout: 30_000, privateFailureOutput: true },
+    ),
+  );
+  await f.record("repository-file-ownership", {
+    storage: "run-owned Docker volumes",
+    paths: inputOwnership,
+  });
   compose.services["repository-credentials"] = {
     image,
     entrypoint: ["node", "/app/dist/repository-credentials.js"],
@@ -279,20 +477,12 @@ export async function prepareQaRepository(f) {
         } catch {
           // Preserve the startup failure when Docker cannot return its logs.
         }
-        const ownership = {};
-        for (const name of ["control/private", "inputs/config.json", "registry/registry.json"]) {
-          try {
-            const info = await stat(join(directory, name));
-            ownership[name] = { uid: info.uid, gid: info.gid, mode: info.mode & 0o777 };
-          } catch {
-            ownership[name] = { unavailable: true };
-          }
-        }
         await f.record("repository-broker-startup-failure", {
           imageUser: container.Config.User,
           runnerUid: process.getuid?.(),
           exitCode: state.ExitCode,
-          ownership,
+          storage: "run-owned Docker volumes",
+          initialOwnership: inputOwnership,
           logs,
         });
       } catch {
@@ -300,14 +490,20 @@ export async function prepareQaRepository(f) {
       }
     }
     assert.ok(state.Running, "the real repository broker exited during startup");
-    try {
-      return (await stat(join(directory, "control/private/control.sock"))).isSocket();
-    } catch (error) {
-      if (error.code !== "ENOENT") {
-        throw error;
-      }
-      return false;
-    }
+    // The broker owns this private directory; check readiness as that reader,
+    // rather than granting the host access through its 0700 parent.
+    return (
+      (
+        await f.run("docker", [
+          "exec",
+          broker,
+          "node",
+          "-e",
+          "const fs=require('fs');try{console.log(fs.statSync(process.argv[1]).isSocket())}catch(error){if(error.code!=='ENOENT')throw error;console.log(false)}",
+          REPOSITORY_CONTROL_SOCKET,
+        ])
+      ).trim() === "true"
+    );
   });
   const ip = JSON.parse(await f.run("docker", ["inspect", broker]))[0].NetworkSettings.Networks[
     `${f.cluster}_development`

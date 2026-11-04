@@ -721,6 +721,7 @@ export async function createQaInstallation(
       throw error;
     }
     await f.run(join(repository, "scripts/dev-down"), [], { timeout: 300_000 });
+    await f.cleanupRepositoryInputs?.();
   });
   await f.record("ownership", {
     cluster,

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-11-04
-last_updated_session: authoring-run/79147f32-199a-48ad-9b7e-fbdf94bf9d60
+last_updated_session: authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632
 ---
 
 # GitHub Actions testing flow
@@ -91,20 +91,19 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration checks out `github.sha`. Preflight selects the dispatch lane
-or `all` for the exact cutover push. Credentialed jobs use `integration-main`;
-main dispatch requires the exact main-only policy.
-The temporary cutover push and isolated QA dispatch also verify the repository,
-actor and rerun actor before fetching environment policy. Only proof routes admit the additional branch rule. Invalid policy, required
-reviewers or an exposed enabled bypass flag fail preflight.
+Full Integration checks out `github.sha`; preflight selects the lane. Credentialed
+jobs use `integration-main`. Main dispatch requires main-only policy. Proof
+routes verify repository, actor and rerun actor before fetching policy; only
+they admit the cutover branch. Invalid policy, required reviewers or an enabled
+bypass flag fail preflight.
 
-`all` selects every dispatch lane and CI suite. QA waits for Slack to finish,
-regardless of success; cancellation stops QA. Aggregation requires the selected
-QA and installation results. Credential-free `dev-up-k3d` and
-`skipper-prepared-git-installed` retain reviewed-branch dispatch. The workflow serializes these installation runs per branch and other runs in
-`full-integration`, without cancellation. The
-[environment guide](../testing/ci.md#environments) owns the temporary proof route
-and its removal condition.
+The cutover push selects `all`: every dispatch lane and CI suite. QA follows
+Slack even after failure; cancellation stops QA. Aggregation requires selected
+QA and installation results. Isolated dispatch selects Codex Git write/denial on both installations,
+without Slack credentials, in a separate serialized repository queue. Credential-free `dev-up-k3d` and
+`skipper-prepared-git-installed` serialize reviewed-branch dispatch per branch.
+Other runs serialize in `full-integration`; none cancel an earlier run. The
+[environment guide](../testing/ci.md#environments) owns proof removal.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
@@ -263,6 +262,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
 
 - 2026-11-04 10:07: Consolidate Full Integration policy and bound the cutover proof routes. (authoring-run/79147f32-199a-48ad-9b7e-fbdf94bf9d60 - 2628dba73edd44e4980711129e48fb7842828019)
 

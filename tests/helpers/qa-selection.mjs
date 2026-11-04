@@ -8,7 +8,7 @@ const scenarioPresets = {
   "codex-search-config": ["Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
-  "git-write": ["OpenClaw", "Codex"],
+  "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
   slack: ["Codex"],
 };

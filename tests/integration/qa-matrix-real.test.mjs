@@ -328,21 +328,21 @@ test(
                       );
                     },
                   ],
-                  [
-                    "git-write",
-                    async (agent, step) => {
-                      await step(
-                        "native repository clone/edit/commit/push to the granted branch and disposal",
-                        async () => {
-                          assert.ok(repositoryReady, "blocked by repository setup failure");
-                          await verifyQaRepository(f, agent);
-                        },
-                      );
-                    },
-                  ],
                 ];
                 if (preset === "Codex") {
                   scenarios.push(
+                    [
+                      "git-write",
+                      async (agent, step) => {
+                        await step(
+                          "native repository clone/edit/commit/push to the granted branch and disposal",
+                          async () => {
+                            assert.ok(repositoryReady, "blocked by repository setup failure");
+                            await verifyQaRepository(f, agent);
+                          },
+                        );
+                      },
+                    ],
                     [
                       "codex-search-config",
                       async (agent, step) => {
