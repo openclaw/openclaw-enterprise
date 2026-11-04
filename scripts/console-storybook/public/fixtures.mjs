@@ -1612,6 +1612,20 @@ export function installFixture(scenario, evidence) {
                     revisionId: current.revisionId,
                   }
                 : {}),
+              // Corrupt only the outgoing terminal reply; stored deployment details stay valid.
+              ...(current.status === "failed" &&
+              scenario.malformedProvisioningReply === "revision-id"
+                ? { revisionId: 17 }
+                : {}),
+              ...(current.status === "failed" &&
+              scenario.malformedProvisioningReply === "error-message"
+                ? {
+                    error: {
+                      code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+                      message: { detail: "Unreadable provisioning message" },
+                    },
+                  }
+                : {}),
               // After handoff the job names its first deployment's wait, as it does for a
               // reader of that deployment (#2744).
               ...(scenario.provisioningNamesDeploymentWait &&

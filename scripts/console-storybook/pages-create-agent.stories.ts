@@ -110,6 +110,8 @@ export const CreateDeploymentSuperseded = {
   name: "A newer deployment took over",
 };
 export const CreateDeploymentFailed = story("createDeploymentFailed");
+export const CreateMalformedProvisioningRevision = story("createMalformedProvisioningRevision");
+export const CreateMalformedProvisioningMessage = story("createMalformedProvisioningMessage");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
 export const CreateUnsupportedProvisioning = {

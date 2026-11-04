@@ -59,8 +59,6 @@ test("the Console projects only safe consumed provisioning fields", () => {
     }),
     { url, status: "failed", agentId, revisionId },
   );
-  assert.equal(encodeURIComponent(agentId), agentId);
-  assert.equal(encodeURIComponent(revisionId), revisionId);
   for (const [key, valid] of [
     ["agentId", agentId],
     ["revisionId", revisionId],

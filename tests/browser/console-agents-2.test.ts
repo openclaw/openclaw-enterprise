@@ -221,6 +221,165 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
   assert.equal(pathRequests(requests, "POST", `${other}/retry`).length, 0);
 });
 
+for (const malformed of ["revision ID", "error message"] as const) {
+  test(`Create handles a terminal provisioning reply with malformed ${malformed}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Malformed ${malformed}`, { ready: true });
+    // The job has already handed off a real saved Agent/version. Corrupt only its HTTP reply.
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Malformed reply Agent",
+      nativeValues("reply"),
+    );
+    const revision = await fixture.deployAgent(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+    const root = `/namespaces/${namespace.id}/agents/provision`;
+    const work = provisioningJob(namespace.id, `work_${randomUUID()}`);
+    const served = await routeProvisioningJob(page, work, null);
+    const meta = { requestId: `req_${randomUUID()}` };
+    const malformedMessage = { detail: "Unreadable provisioning message" };
+    await page.route(`${fixture.origin}${work.url}`, (route) => {
+      if (
+        route.request().method() !== "GET" ||
+        new URL(route.request().url()).pathname !== work.url
+      ) {
+        return route.continue();
+      }
+      return route.fulfill({
+        status: 200,
+        json: {
+          data: work.job("failed", {
+            requestId: served.requestId,
+            phase: "handoff",
+            agentId: agent.id,
+            revisionId: malformed === "revision ID" ? 17 : revision.id,
+            error: {
+              code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+              message:
+                malformed === "error message"
+                  ? malformedMessage
+                  : "Credential initialization failed.",
+            },
+          }),
+          meta,
+        },
+      });
+    });
+    const retryPath = `${work.url}/retry`;
+    await page.route(`${fixture.origin}${retryPath}`, (route) => {
+      if (
+        route.request().method() !== "POST" ||
+        new URL(route.request().url()).pathname !== retryPath
+      ) {
+        return route.continue();
+      }
+      return route.fulfill(
+        apiErrorResponse(
+          409,
+          "RESOURCE_CONFLICT",
+          "The Agent lifecycle does not allow provisioning retry.",
+        ),
+      );
+    });
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill(agent.name);
+    await enterManualModel(page, "test-malformed-reply-key");
+    // Start the write trace after credential setup: submission must only admit this one job.
+    const requests = apiRequests(page, fixture.origin);
+    const responseAt = (method: string, path: string) =>
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === method && response.url() === `${fixture.origin}${path}`,
+      );
+    const admittedResponse = responseAt("POST", root);
+    const terminalResponse = responseAt("GET", work.url);
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    await runProvisioningPolls(page, () => create.click(), work.url, 1);
+    const admitted = await admittedResponse;
+    assert.equal(admitted.status(), 202);
+    const accepted = await admitted.json();
+    const submitted = pathRequests(requests, "POST", root)[0];
+    const body = submitted?.body;
+    assert.ok(body && typeof body === "object" && "requestId" in body);
+    assert.equal(typeof body.requestId, "string");
+    assert.equal(accepted.data.provisioning.requestId, body.requestId);
+    assert.equal(accepted.data.provisioning.url, work.url);
+    assert.notEqual(
+      accepted.meta.requestId,
+      body.requestId,
+      "HTTP request metadata is not the original provisioning request identity",
+    );
+    const terminal = await terminalResponse;
+    assert.equal(terminal.status(), 200);
+    const reply = await terminal.json();
+    assert.equal(reply.data.status, "failed");
+    assert.equal(reply.data.requestId, body.requestId);
+    assert.equal(reply.data.workId, work.workId);
+    assert.equal(reply.data.url, work.url);
+    assert.equal(reply.data.agentId, agent.id);
+    assert.equal(reply.meta.requestId, meta.requestId);
+    assert.notEqual(reply.meta.requestId, body.requestId);
+    assert.equal(reply.data.error.code, "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED");
+    assert.deepEqual(reply.data.revisionId, malformed === "revision ID" ? 17 : revision.id);
+    assert.deepEqual(
+      reply.data.error.message,
+      malformed === "error message" ? malformedMessage : "Credential initialization failed.",
+    );
+    const writePaths = () =>
+      nonAuthWriteRequests(requests).map(({ method, path }) => [method, path]);
+    assert.deepEqual(writePaths(), [["POST", root]]);
+    assert.equal(served.submitted, 1);
+    const alert = page.locator("#create-agent-form ~ p[role=alert]");
+    const retry = page.getByRole("button", { name: "Retry provisioning request", exact: true });
+    const link = page.getByRole("link", { name: "Open Agent and deployment details", exact: true });
+    await alert.filter({ hasText: /\S/ }).waitFor();
+    const feedback = await alert.innerText();
+    if (malformed === "revision ID") {
+      assert.match(feedback, /^Outcome unknown after provisioning admission/);
+      assert.equal(await create.isDisabled(), true);
+      assert.equal(
+        await alert.getByRole("link").count(),
+        0,
+        "an invalid version must not offer recovery for a different or absent version",
+      );
+      assert.equal(await retry.isVisible(), true);
+      const refusedResponse = responseAt("POST", retryPath);
+      await retry.click();
+      const refused = await refusedResponse;
+      assert.equal(refused.status(), 409);
+      assert.equal(
+        (await refused.json()).error.message,
+        "The Agent lifecycle does not allow provisioning retry.",
+      );
+      await alert.filter({ hasText: "resend the same request ID" }).waitFor();
+      await waitForEnabled(create);
+      assert.deepEqual(writePaths(), [
+        ["POST", root],
+        ["POST", retryPath],
+      ]);
+      assert.equal(served.submitted, 1, "retry refusal must not admit another job");
+    } else {
+      assert.match(feedback, /^Provisioning did not complete\./);
+      assert.doesNotMatch(
+        feedback,
+        /\[object Object\]|Unreadable provisioning message|Outcome unknown|submit a new request/,
+      );
+      const href = await link.getAttribute("href");
+      assert.ok(href);
+      const target = new URL(href, fixture.origin);
+      assert.equal(target.pathname, `/console/agents/${agent.id}`);
+      assert.equal(target.searchParams.get("namespace"), namespace.id);
+      assert.equal(target.searchParams.get("revision"), revision.id);
+      assert.equal(await retry.isVisible(), false);
+      assert.deepEqual(writePaths(), [["POST", root]]);
+    }
+  });
+}
+
 test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
