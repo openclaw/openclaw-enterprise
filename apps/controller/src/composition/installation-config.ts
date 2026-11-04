@@ -485,6 +485,7 @@ function selectGitHubRepositoryDelivery(
     bundledSandbox: boolean;
     openShellBackend: boolean;
     kubernetes: boolean;
+    backendType: "github" | "gitlab";
   },
 ): "native" | "protected" | undefined {
   if (!repository) {
@@ -494,10 +495,14 @@ function selectGitHubRepositoryDelivery(
   const external = input.externalProxy && !!prepared && !transport;
   if (
     nativeSender &&
-    (!prepared || input.sandbox || input.bundledProxy || input.externalProxy || transport)
+    ((input.backendType === "github" && !prepared) ||
+      input.sandbox ||
+      input.bundledProxy ||
+      input.externalProxy ||
+      transport)
   ) {
     throw new Error(
-      "repository.nativeSender requires prepared GitHub custody without a Sandbox or Credential Proxy; protected Git cannot fall back to native delivery.",
+      "repository.nativeSender requires prepared GitHub custody for a GitHub Backend, and no Sandbox or Credential Proxy; protected Git cannot fall back to native delivery.",
     );
   }
   if (!nativeSender && !external && !(transport && input.bundledProxy)) {
@@ -1008,6 +1013,7 @@ export async function loadInstallationConfiguration(options: {
     bundledSandbox: sandboxSelection !== undefined && sandboxSelection.package === undefined,
     openShellBackend: openShellBackend !== undefined,
     kubernetes: kubernetesCompute,
+    backendType: repositoryBackendType,
   });
   if (sshCompute && sandboxSelection !== undefined) {
     throw new Error(

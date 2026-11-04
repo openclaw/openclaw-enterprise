@@ -541,6 +541,74 @@ test("complete native configuration requires explicit selection and custody with
   await assert.rejects(load(), /Drain accepted work ON THE ORIGINAL owner/);
 });
 
+test("a GitLab backend selects native delivery without GitHub custody", async (t) => {
+  const f = await fixture(t);
+  const registryPath = join(f.directory, "gitlab-registry.json");
+  const publicCaPath = join(f.directory, "ca.pem");
+  await writeFile(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      backendId: f.sender.id,
+      providerInstanceId: "gitlab-live",
+      configVersion: "1",
+      maximumDurationSeconds: 600,
+      projects: [
+        {
+          projectId: "88516404",
+          path: "rmcook84/test",
+          namespaces: [{ namespaceId: "rmcook84", profiles: ["git-read"], pushRefAllowlist: [] }],
+        },
+      ],
+    }),
+    { mode: 0o600 },
+  );
+  await writeFile(publicCaPath, rootCertificates[0]!, { mode: 0o600 });
+  const snapshot = await loadStartupConfigurationSnapshot({
+    mode: "production",
+    environment: {
+      OCC_CONFIG_PATH: join(process.cwd(), "deploy/examples/production/installation.yaml"),
+    },
+  });
+  const configuration = structuredClone(snapshot.configuration)! as Record<string, unknown>;
+  const drivers = configuration.drivers as Record<string, unknown>;
+  delete drivers.plugin;
+  const compute = drivers.compute as { configuration: { network: Record<string, unknown> } };
+  compute.configuration.network.gatewayTrustedProxyCidrs = ["127.0.0.1/32"];
+  compute.configuration.network.repositoryCredentials = {
+    namespace: "controller",
+    podLabels: { app: "worker" },
+    port: 8443,
+  };
+  configuration.backend = [
+    {
+      id: f.sender.id,
+      type: "gitlab",
+      configuration: { registryPath },
+      drivers: { repo: f.sender.id },
+    },
+  ];
+  configuration.repository = {
+    id: f.sender.id,
+    configuration: { sessionDurationSeconds: 600 },
+    nativeSender: { controlSocket: f.config.gateway.controlSocket, publicCaPath },
+  };
+  const load = () =>
+    loadInstallationConfiguration({
+      mode: "production",
+      environment: {},
+      startupConfiguration: { ...snapshot, configuration },
+    });
+  // Native GitLab delivery needs the broker, not GitHub App custody. The worker selects the
+  // prepared GitHub owner only when preparedRepositoryGit is present.
+  const native = await load();
+  assert.ok(native?.nativeRepositorySender);
+  assert.equal(native?.preparedRepositoryGit, undefined);
+  // A Sandbox still cannot turn protected delivery into native delivery.
+  drivers.sandbox = { id: "sandbox", configuration: {} };
+  await assert.rejects(load(), /protected Git cannot fall back/);
+});
+
 test("v1 unknown reserved result remains unresolved without a second acquisition", async (t) => {
   const f = await fixture(t);
   const { input } = await f.attempt(1);
