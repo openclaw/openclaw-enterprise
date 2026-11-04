@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { classifyCycles, cycleDiagnostic } from "./cycles.mjs";
+import { classifyCycles, cycleDiagnostic } from "./cycles.ts";
 import { diagnosticIdentity } from "./exceptions.mjs";
 
 const inside = (path, root) => path === root || path.startsWith(`${root}/`);
