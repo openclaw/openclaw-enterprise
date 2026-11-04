@@ -137,6 +137,8 @@ test(
           controlSource: "management",
         });
 
+        await access.confirmManagementPortControls();
+
         // Withdrawing one supervisor policy must preserve both the other tenant and
         // the independent per-Agent gateway grant.
         await access.withdrawSupervisorGrant(1);

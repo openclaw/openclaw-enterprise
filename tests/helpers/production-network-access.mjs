@@ -288,6 +288,12 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
         timeout: 30_000,
       },
     );
+  const policy = (name, space, spec) => ({
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name, namespace: space },
+    spec,
+  });
   let managementTenants;
   return {
     async installOpenShellManagement(tenantIndex) {
@@ -310,12 +316,6 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
           kind: "Service",
           metadata: { name, namespace: space },
           spec: { selector: labels, ports: [{ port, targetPort, protocol: "TCP" }] },
-        });
-        const policy = (name, space, spec) => ({
-          apiVersion: "networking.k8s.io/v1",
-          kind: "NetworkPolicy",
-          metadata: { name, namespace: space },
-          spec,
         });
         const resources = [
           service("openshell-gateway", system, management, 8080),
@@ -347,20 +347,6 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
             }),
           );
         }
-        // An additive source grant must not bypass the destination's port restriction.
-        // This probe-only grant makes the worker's 8081 denial test ingress itself.
-        resources.push(
-          policy("verify-management-ingress-port", system, {
-            podSelector: { matchLabels: managementSources.managementworker.labels },
-            policyTypes: ["Egress"],
-            egress: [
-              {
-                to: [{ podSelector: { matchLabels: management } }],
-                ports: [{ protocol: "TCP", port: 8081 }],
-              },
-            ],
-          }),
-        );
         managementTenants = [];
         for (const [index, space] of [namespace, destinations].entries()) {
           const id = `ns_${randomUUID()}`;
@@ -419,6 +405,58 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
         await apply(resources);
       }
       await runNetworkHelper("deployment_network", managementTenants[tenantIndex]);
+      // Let each selected caller send to the second listener. Leave the unconfigured
+      // tenant unrestricted until its production policies have been applied.
+      await apply(
+        [
+          "managementapi",
+          "managementworker",
+          `supervisor${tenantIndex}`,
+          `gateway${tenantIndex}`,
+        ].map((name) =>
+          policy("verify-management-port-" + name, sources[name].namespace, {
+            podSelector: { matchLabels: sources[name].labels },
+            policyTypes: ["Egress"],
+            egress: [
+              {
+                to: [
+                  {
+                    namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": system } },
+                    podSelector: { matchLabels: sources.management.labels },
+                  },
+                ],
+                ports: [{ protocol: "TCP", port: 8081 }],
+              },
+            ],
+          }),
+        ),
+      );
+    },
+    async confirmManagementPortControls() {
+      // Change only destination ingress. A successful connection from each caller
+      // proves that its preceding 8081 denial was not caused by source egress.
+      const name = "verify-management-listener";
+      await apply([
+        policy(name, system, {
+          podSelector: { matchLabels: sources.management.labels },
+          policyTypes: ["Ingress"],
+          ingress: [{ ports: [{ protocol: "TCP", port: 8081 }] }],
+        }),
+      ]);
+      try {
+        await Promise.all(
+          [
+            "managementapi",
+            "managementworker",
+            "supervisor0",
+            "gateway0",
+            "supervisor1",
+            "gateway1",
+          ].map((source) => controls(["managementWrongPort"], source)),
+        );
+      } finally {
+        await kubectl("delete", "networkpolicy", "-n", system, name);
+      }
     },
     async removeRecordedServicePolicies() {
       await runNetworkHelper("delete_service_peers");
