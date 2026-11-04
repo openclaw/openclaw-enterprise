@@ -36,6 +36,11 @@ lanes, including Checks and Conformance 2 to type-check TypeScript tests.
 Other changes run all ordinary lanes. `CI Required` currently blocks
 merge on `main`. These workflows do not gate each Agent/platform deployment.
 
+Check the terminal `CI Required` job conclusion; successful recorded steps alone
+do not finish the check. Queued timestamps do not prove runner allocation.
+Separate queue time, execution, and final status publication. Find phase timings
+in the Actions job summary when the owning workflow emits them.
+
 ## Qualify a published release for staging
 
 Run [Staging Release Qualification](../../.github/workflows/staging-qualification.yml)
