@@ -40,7 +40,9 @@ The current `SecretBackendRef` contains `namespaceName`, `name`, `key`, and
 optional `authorizedEndpoint`. The creator can set this endpoint when supplying
 a key through Secret creation. It is immutable, including when the value is
 replaced. Custom model bindings must match it; Secret operate permission does
-not authorize another destination. Store the normalized endpoint reported by the
+not authorize another destination. A Secret without endpoint metadata remains
+valid for a credential source whose immutable destination authorizes it;
+metadata, when present, must cover every enabled destination. Store the normalized endpoint reported by the
 owning Compute or Credential Gateway Driver. OCC checks the binding again before
 workload delivery. Secret values remain outside OCC state.
 OCC rejects empty values, NUL, invalid text, and values above 65,536 UTF-8 bytes.

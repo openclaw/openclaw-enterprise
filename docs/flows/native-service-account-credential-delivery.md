@@ -21,8 +21,9 @@ For a custom Responses API key, OCC saves the endpoint with the Secret reference
 destination. `apps/controller/src/worker.ts:resolveRevisionSecretContext` repeats
 that check before returning the backend reference. Kubernetes Compute checks the
 custom provider endpoint against the snapshot during admission and preparation;
-Dedicated Codex routes through the Installation model provider; the Agent's endpoint
-authorization must match that effective destination and does not redirect the request.
+Dedicated Codex routes through the Installation model provider, or the default OpenAI
+endpoint when the Installation configures none; the Agent's endpoint authorization must
+match that effective destination and does not redirect the request.
 Credential Source endpoint parsing remains in the Gateway Driver; OCC and the
 worker compare its destination description with the Secret metadata.
 
