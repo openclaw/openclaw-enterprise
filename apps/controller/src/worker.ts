@@ -5569,7 +5569,10 @@ export class ControllerWorker {
       ) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
       }
-      if (auth.method === "api_key" && auth.authorizedEndpoint !== secret.authorizedEndpoint) {
+      // A codex_pat direct binding carries no endpoint authorization, so a Secret with
+      // metadata cannot satisfy it: the metadata must match the binding exactly.
+      const authorizedEndpoint = auth.method === "api_key" ? auth.authorizedEndpoint : undefined;
+      if (authorizedEndpoint !== secret.authorizedEndpoint) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_ENDPOINT_MISMATCH" } };
       }
       // Admission verifies the physical source. Workers project authoritative

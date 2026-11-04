@@ -12739,10 +12739,11 @@ export class OpenClawController {
       if (source === undefined) {
         throw new ScopeViolationError("The Harness Secret does not belong to the exact Namespace.");
       }
-      if (
-        binding.method === "api_key" &&
-        binding.authorizedEndpoint !== source.authorizedEndpoint
-      ) {
+      // A codex_pat direct binding carries no endpoint authorization, so a Secret with
+      // metadata cannot satisfy it: the metadata must match the binding exactly.
+      const authorizedEndpoint =
+        binding.method === "api_key" ? binding.authorizedEndpoint : undefined;
+      if (authorizedEndpoint !== source.authorizedEndpoint) {
         throw new SecretBindingValidationError(
           "The Harness Secret does not authorize this endpoint. Supply a separate endpoint-specific key.",
         );
