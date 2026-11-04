@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
-import type { Page, Route } from "playwright";
+import type { Locator, Page, Route } from "playwright";
 import type { SandboxPolicyViewWire } from "../../packages/contracts/src/api/sandbox-policy.ts";
 import type {
   Agent,
@@ -173,6 +173,109 @@ function secretFields(value: unknown): SecretMetadata {
     namespaceId: text(data.namespaceId),
     ref: { kind: "secret", id: text(ref.id), namespaceId: text(ref.namespaceId) },
   };
+}
+
+for (const width of [1440, 390]) {
+  test(`Agent policy keyboard focus follows added and removed port ranges at ${width}px`, async (t) => {
+    const {
+      fixture,
+      namespace: rawNamespace,
+      agent: rawAgent,
+      base,
+    }: PolicyConsoleFixture = await createPolicyConsole(t, [
+      {
+        id: "policy-focus-control",
+        binary: "/usr/bin/python3.11",
+        host: "example.org",
+        ports: [{ from: 443, to: 443 }],
+      },
+    ]);
+    const namespace = resource(rawNamespace);
+    const agent = agentFields(rawAgent);
+    const original = await fixture.request("GET", base);
+    assert.equal(original.status, 200);
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 } },
+    });
+    await loginThroughForm(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "policy").href,
+    );
+    const requests = apiRequests(page, fixture.origin);
+    // Reach controls through native Tab navigation; a missing focus repair must fail
+    // immediately after activation, before navigation can conceal the lost focus.
+    async function tabTo(control: Locator) {
+      await control.waitFor();
+      for (let step = 0; step < 64; step += 1) {
+        if (await hasFocus(control)) {
+          return;
+        }
+        await page.keyboard.press("Tab");
+      }
+      assert.fail("The policy control was not reachable with Tab");
+    }
+    await tabTo(page.getByRole("button", { name: "Manage rules", exact: true }));
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog");
+    await tabTo(dialog.getByRole("button", { name: "Add rule", exact: true }));
+    await page.keyboard.press("Enter");
+    const executable = dialog.getByRole("textbox", { name: "Executable path", exact: true });
+    assert.equal(await hasFocus(executable), true, "Add rule focuses Executable path");
+    const add = dialog.getByRole("button", { name: "Add Port ranges", exact: true });
+    const starts = dialog.getByRole("spinbutton", { name: "Start port", exact: true });
+    const ends = dialog.getByRole("spinbutton", { name: "End port", exact: true });
+    await tabTo(add);
+    await page.keyboard.press("Enter");
+    assert.equal(await starts.count(), 1);
+    assert.equal(await hasFocus(starts.first()), true, "first Add focuses the new range");
+    // Typing already preserves focus; structural edits must not change that path.
+    await page.keyboard.press("Control+a");
+    await page.keyboard.type("443");
+    assert.equal(await starts.first().inputValue(), "443");
+    assert.equal(await hasFocus(starts.first()), true);
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(ends.first()), true);
+    await tabTo(add);
+    await page.keyboard.press("Space");
+    assert.equal(await starts.count(), 2);
+    assert.equal(await hasFocus(starts.nth(1)), true, "second Add focuses the new range");
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(ends.nth(1)), true);
+    await tabTo(dialog.getByRole("button", { name: "Remove Port ranges 1", exact: true }));
+    await page.keyboard.press("Enter");
+    assert.equal(await starts.count(), 1);
+    assert.equal(await starts.first().inputValue(), "1", "the next range survives removal");
+    assert.equal(await hasFocus(starts.first()), true, "Remove focuses the next range");
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(ends.first()), true);
+    // Removing the last of two ranges selects the preceding range instead.
+    await tabTo(add);
+    await page.keyboard.press("Enter");
+    await tabTo(dialog.getByRole("button", { name: "Remove Port ranges 2", exact: true }));
+    await page.keyboard.press("Space");
+    assert.equal(await starts.count(), 1);
+    assert.equal(await hasFocus(starts.first()), true, "Remove last focuses the previous range");
+    assert.equal(
+      await dialog.getByRole("button", { name: "Remove Port ranges 1", exact: true }).isDisabled(),
+      true,
+      "the real schema requires at least one range",
+    );
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(ends.first()), true);
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(add), true, "Tab skips the disabled minimum-range removal");
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "hidden" });
+    assert.deepEqual(
+      requests.filter(({ method, path }) => path.startsWith(base) && method !== "GET"),
+      [],
+      "the focus journey neither previews nor saves nor applies policy",
+    );
+    const unchanged = await fixture.request("GET", base);
+    assert.equal(unchanged.status, 200);
+    assert.deepEqual(record(unchanged.data).policy, record(original.data).policy);
+  });
 }
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
