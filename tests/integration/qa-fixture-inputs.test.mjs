@@ -802,6 +802,167 @@ test("failed QA startup retains only bounded timing records and respects output 
     },
   );
 });
+test(
+  "QA API refusals preserve HTTP errors with bounded private redacted diagnostics",
+  { timeout: 20_000 },
+  async (t) => {
+    const { requestQaApi } = await import("../helpers/qa-installation.mjs");
+    const { listen } = await import("../helpers/listen.mjs");
+    const directory = await temporaryDirectory(t, "qa-api-refusal-");
+    const secret = "registered-private-api-diagnostic";
+    registerQaSecret(secret);
+    const requests = [];
+    let oversizedClosed = false;
+    let stalledClosed = false;
+    const server = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) {
+        body += chunk;
+      }
+      requests.push({
+        method: request.method,
+        url: request.url,
+        key: request.headers["x-api-key"],
+        contentType: request.headers["content-type"],
+        body,
+      });
+      if (request.url === "/success") {
+        response.writeHead(201, { "content-type": "application/json" });
+        response.end(JSON.stringify({ data: { accepted: true } }));
+      } else if (request.url === "/empty") {
+        response.writeHead(204);
+        response.end();
+      } else if (request.url === "/malformed") {
+        response.writeHead(409);
+        response.end("not JSON; refusal body is still private");
+      } else if (request.url === "/oversized") {
+        response.writeHead(409);
+        response.write("safe-prefix\n");
+        const timer = setInterval(() => response.write("x".repeat(4096)), 2);
+        response.once("close", () => {
+          clearInterval(timer);
+          oversizedClosed = true;
+        });
+      } else if (request.url === "/stalled") {
+        response.writeHead(409);
+        response.write("partial");
+        response.once("close", () => {
+          stalledClosed = true;
+        });
+      } else {
+        response.writeHead(409, {
+          "content-type": "application/json",
+          "x-private-response": "response-header-must-not-be-captured",
+        });
+        response.end(
+          JSON.stringify({
+            error: {
+              code: "FIXTURE_REFUSAL",
+              message: `refused ${secret} environment-private-api-diagnostic`,
+              details: [{ path: "/configuration", code: "INVALID_VALUE" }],
+            },
+            authorization: "Bearer token-private-123456789",
+          }),
+        );
+      }
+    });
+    const port = await listen(t, server);
+    const f = {
+      apiUrl: `http://127.0.0.1:${port}`,
+      serviceKey: "synthetic-api-auth",
+      env: { QA_PRIVATE_INPUT: "environment-private-api-diagnostic" },
+      async write(name, value) {
+        await writeFile(join(directory, name), value, { mode: 0o600 });
+      },
+      async record() {
+        assert.fail("API refusal bodies must stay outside public evidence");
+      },
+    };
+    const refused = (path) =>
+      assert.rejects(
+        requestQaApi(f, "POST", path, { requestOnly: "request-body-must-not-be-captured" }),
+        (error) => {
+          assert.equal(error.code, "ERR_ASSERTION");
+          assert.equal(error.message, `OCC POST ${path}: HTTP 409`);
+          assert.equal(error.actual, false);
+          assert.equal(error.expected, true);
+          assert.doesNotMatch(
+            error.stack,
+            /FIXTURE_REFUSAL|registered-private|environment-private|token-private/,
+          );
+          return true;
+        },
+      );
+    await refused("/refused");
+    let files = await readdir(directory);
+    assert.equal(files.length, 1);
+    const capture = await readFile(join(directory, files[0]), "utf8");
+    assert.match(capture, /FIXTURE_REFUSAL/);
+    assert.match(capture, /\/configuration/);
+    assert.doesNotMatch(
+      capture,
+      /registered-private-api-diagnostic|environment-private-api-diagnostic|token-private-123456789|request-body-must-not-be-captured|response-header-must-not-be-captured|synthetic-api-auth/,
+    );
+    assert.equal((await stat(join(directory, files[0]))).mode & 0o777, 0o600);
+    assert.deepEqual(requests[0], {
+      method: "POST",
+      url: "/refused",
+      key: f.serviceKey,
+      contentType: "application/json",
+      body: JSON.stringify({ requestOnly: "request-body-must-not-be-captured" }),
+    });
+    await refused("/oversized");
+    files = await readdir(directory);
+    assert.equal(files.length, 2);
+    const capped = await Promise.all(files.map((name) => readFile(join(directory, name), "utf8")));
+    assert.ok(capped.some((text) => text.includes("safe-prefix") && text.includes("truncated")));
+    assert.ok(capped.every((text) => Buffer.byteLength(text) < 66_000));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(oversizedClosed, true, "the oversized response must be canceled");
+    await refused("/malformed");
+    const before = performance.now();
+    await refused("/stalled");
+    assert.ok(
+      performance.now() - before < 5000,
+      "diagnostics must not wait for the request's 30s timeout",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(stalledClosed, true, "the stalled body reader must be canceled");
+    f.write = async () => {
+      throw new Error(secret);
+    };
+    await refused("/write-fails");
+    f.write = async () => new Promise(() => {});
+    const writeStarted = performance.now();
+    await refused("/write-stalls");
+    assert.ok(
+      performance.now() - writeStarted < 5000,
+      "private writes cannot stall the original refusal",
+    );
+    f.env = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error(secret);
+        },
+      },
+    );
+    await refused("/redaction-fails");
+    assert.equal(
+      (await readdir(directory)).length,
+      3,
+      "failed diagnostics must not publish anything",
+    );
+    f.write = async () => {
+      assert.fail("successful API calls must not capture diagnostics");
+    };
+    assert.deepEqual(await requestQaApi(f, "POST", "/success", { normal: true }), {
+      accepted: true,
+    });
+    assert.equal(await requestQaApi(f, "GET", "/empty"), undefined);
+    assert.equal(requests.length, 9, "diagnostics must not retry API requests");
+  },
+);
 
 test("QA Compose recreation preserves private bounded startup diagnostics and original failure", async (t) => {
   const { recreateQaComposeServices } = await import("../helpers/qa-installation.mjs");

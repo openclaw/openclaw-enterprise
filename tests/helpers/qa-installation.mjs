@@ -237,6 +237,108 @@ export async function runQaCommand(f, command, args, options = {}) {
   }
 }
 
+// Error bodies stay in the private fixture directory. Cancel bounded reads and
+// stop waiting after 3s, including a failed or stalled diagnostic write. The
+// original API assertion is the only failure exposed to the matrix reporter.
+async function captureQaApiRefusal(f, response) {
+  let reader;
+  let expired = false;
+  let timer;
+  const cancel = () => {
+    try {
+      reader?.cancel().catch(() => {});
+    } catch {
+      // A closed/failed body cannot change the original HTTP refusal.
+    }
+  };
+  const capture = async () => {
+    reader = response.body?.getReader();
+    const chunks = [];
+    let remaining = 64 * 1024;
+    let truncated = false;
+    if (reader) {
+      while (remaining > 0) {
+        const { done, value } = await reader.read();
+        if (done || expired) {
+          break;
+        }
+        const chunk = value.subarray(0, remaining);
+        chunks.push(chunk);
+        remaining -= chunk.byteLength;
+        if (remaining === 0) {
+          truncated = true;
+          cancel();
+        }
+      }
+    }
+    if (expired) {
+      return;
+    }
+    let text = Buffer.concat(chunks).toString("utf8");
+    if (!truncated) {
+      try {
+        // Separate envelope fields before line redaction so a credential on
+        // one compact JSON line cannot hide an unrelated refusal code/path.
+        text = JSON.stringify(JSON.parse(text), null, 2);
+      } catch {
+        // Plain text and malformed JSON still receive the same redaction.
+      }
+      const formatted = Buffer.from(text);
+      if (formatted.byteLength > 64 * 1024) {
+        text = formatted.subarray(0, 64 * 1024).toString("utf8");
+        truncated = true;
+      }
+    }
+    if (truncated) {
+      // Do not retain a partial final line: the cap might split a credential
+      // that registered-value redaction could otherwise no longer recognize.
+      text = text.slice(0, text.lastIndexOf("\n") + 1);
+    }
+    const redacted = redactedQaTail(text, f.env, { lines: 65_536, lineChars: 65_536 }).join("\n");
+    if (!expired) {
+      await f.write(
+        `api-refusal-${randomUUID()}.log`,
+        `HTTP ${response.status}\n${truncated ? "[response truncated at 64 KiB]\n" : ""}${redacted}\n`,
+      );
+    }
+  };
+  try {
+    await Promise.race([
+      capture().catch(() => {}),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          expired = true;
+          cancel();
+          resolve();
+        }, 3000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    cancel();
+  }
+}
+
+export async function requestQaApi(f, method, path, body) {
+  const response = await fetch(f.apiUrl + path, {
+    method,
+    headers: {
+      "x-api-key": f.serviceKey,
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  try {
+    assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status}`);
+  } catch (error) {
+    await captureQaApiRefusal(f, response).catch(() => {});
+    throw error;
+  }
+  const text = await response.text();
+  return text ? JSON.parse(text).data : undefined;
+}
+
 // Preserve the exited services' bounded logs before the installation scope tears
 // them down. Diagnostics are redacted private files; they never replace the
 // original health/startup failure or become uploaded QA evidence.
@@ -622,29 +724,7 @@ export async function createQaInstallation(
       await f.kubectl("apply", "-f", path);
     },
     async api(method, path, body) {
-      const response = await fetch(f.apiUrl + path, {
-        method,
-        headers: {
-          "x-api-key": f.serviceKey,
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      const text = await response.text();
-      let code = "unknown";
-      if (!response.ok) {
-        try {
-          const candidate = JSON.parse(text).error?.code;
-          if (typeof candidate === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(candidate)) {
-            code = redactedQaTail(candidate, f.env, { lines: 1, lineChars: 80 });
-          }
-        } catch {
-          // Do not print an unstructured error body or provider response.
-        }
-      }
-      assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status} (${code})`);
-      return text ? JSON.parse(text).data : undefined;
+      return requestQaApi(f, method, path, body);
     },
     async compose(...args) {
       return f.run("docker", [
