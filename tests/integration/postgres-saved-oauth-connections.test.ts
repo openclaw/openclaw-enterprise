@@ -192,6 +192,46 @@ async function oauthAccounts(t: TestContext) {
     adminAccount,
     inject,
     providers,
+    refresh,
+    transport,
+    rotateClientSecret: async (source: string) => {
+      const replacement = await rotateKeycloakClientSecret(
+        issuer!,
+        secrets.admin,
+        clientId,
+        clientSecret,
+        tokenUrl,
+      );
+      // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
+      const clientRefused = await owner("POST", source + "/rotate");
+      assert.equal(clientRefused.statusCode, 503);
+      const repair = await owner("GET", source);
+      assert.equal(repair.statusCode, 200, repair.body);
+      const clientFailure = repair.json().data.status.refresh;
+      assert.deepEqual(
+        [clientFailure.state, clientFailure.failureCode, clientFailure.recoveryAction],
+        ["failed", "client_refused", "fix_configuration"],
+      );
+      const updatedClient = await inject("POST", `/oauth-clients/${oauthClientId}/rotate-secret`, {
+        clientSecret: replacement,
+      });
+      assert.equal(updatedClient.statusCode, 200);
+      assert.equal(updatedClient.json().data.id, oauthClientId);
+    },
+    setOptionalScopeVisible: async (visible: boolean) => {
+      assert.ok(optionalScopeId);
+      const path = "/client-scopes/" + optionalScopeId;
+      const scope = await keycloakRealmAdmin(issuer!, secrets.admin, "GET", path);
+      await keycloakRealmAdmin(issuer!, secrets.admin, "PUT", path, {
+        ...scope,
+        attributes: { ...scope.attributes, "include.in.token.scope": String(visible) },
+      });
+    },
+    preparedTokens,
+    oauthClientId,
+    tokenUrl,
+    clientId,
+    scopes,
     makeNamespace,
     secretDriver,
     namespaceId,
@@ -818,5 +858,158 @@ test(
         .json()
         .data.some((row: { credentialSourceId: string }) => row.credentialSourceId === grant.id),
     );
+
+    // Keycloak issues the same real user's grant to two separately admitted revisions.
+    // A transient write failure during one handoff must leave the account renewable for the other.
+    await setOptionalScopeVisible(true);
+    const shared = await begin(connections, input, "alice");
+    assert.match(
+      String((await owner("GET", shared.callback)).headers.location),
+      /connection=connected/,
+    );
+    const modelSecret = await owner("POST", base + "/secrets", {
+      name: "Harness key",
+      value: randomUUID(),
+    });
+    assert.equal(modelSecret.statusCode, 201, modelSecret.body);
+    const modelSource = await owner("POST", base + "/credential-sources", {
+      name: "Model credential",
+      type: "openai",
+      config: {},
+      secrets: { api_key: modelSecret.json().data.ref },
+    });
+    assert.equal(modelSource.statusCode, 201, modelSource.body);
+    const modelSourceId = modelSource.json().data.id;
+    const modelRole = await owner("POST", base + "/iam/roles", {
+      name: "Use model credential",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+    assert.equal(modelRole.statusCode, 201, modelRole.body);
+    const revisions = new Map<string, string>();
+    for (const id of [b, c]) {
+      const agent = await state.read((v) => v.agents.findAgent(namespaceId, id));
+      assert.ok(agent);
+      const modelGrant = await owner("POST", base + "/iam/access-bindings", {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: modelRole.json().data.id,
+        resourceKind: "credential_source",
+        resourceId: modelSourceId,
+      });
+      assert.equal(modelGrant.statusCode, 201, modelGrant.body);
+      const bound = await owner("PATCH", path(id), {
+        configurationId: config.json().data.id,
+        harnessAuth: { method: "credential_source", sourceId: modelSourceId },
+        credentialSources: [...(agent.credentialSources ?? []), { sourceId: modelSourceId }],
+        plugins: {
+          [pluginId]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256,
+              credentials: { [id === b ? slotId : "secondary"]: shared.id },
+            },
+          },
+        },
+      });
+      assert.equal(bound.statusCode, 200, bound.body);
+      const deployed = await owner("POST", path(id) + "/deploy");
+      assert.equal(deployed.statusCode, 202, deployed.body);
+      revisions.set(id, deployed.json().data.id);
+    }
+    const prepare = (agentId: string) =>
+      controller.prepareRevisionAccount(namespaceId, agentId, revisions.get(agentId)!, shared.id);
+    // Different placeholders in the same release produce distinct sender profiles.
+    const senderFor = async (id: string) => {
+      assert.ok(await prepare(id));
+      const revision = await state.read((v) =>
+        v.revisions.findRevision(namespaceId, id, revisions.get(id)!),
+      );
+      const delivery = revision?.credentialSources?.find(
+        (ref) => ref.sourceId === shared.id,
+      )?.accountDelivery;
+      assert.ok(delivery);
+      return openShellProviderName(delivery.profileId);
+    };
+    const primarySender = await senderFor(b);
+    const secondarySender = await senderFor(c);
+    assert.notEqual(primarySender, secondarySender);
+    const provider = (name: string) => [...providers.values()].find((p) => p.name === name);
+    const usable = async (name: string) => {
+      const current = provider(name);
+      const keys =
+        name === primarySender
+          ? [
+              primary.credentials.account.delivery.env,
+              ...primary.credentials.account.delivery.envAliases,
+            ]
+          : [primary.credentials.secondary.delivery.env];
+      assert.deepEqual(Object.keys(current.credentials).sort(), [...keys].sort());
+      assert.deepEqual(Object.keys(current.credentialExpirationTimes).sort(), [...keys].sort());
+      const bearer = current.credentials[keys[0]!];
+      for (const key of keys) {
+        assert.ok(
+          current.credentials[key] === bearer,
+          "each authorized alias carries the same access token",
+        );
+        assert.ok(Date.parse(current.credentialExpirationTimes[key]) > Date.now());
+      }
+      const result = await fetch(issuer + "/protocol/openid-connect/userinfo", {
+        headers: { authorization: "Bearer " + bearer },
+      });
+      assert.equal(result.status, 200);
+      return bearer;
+    };
+    const original = await usable(primarySender);
+    assert.ok((await usable(secondarySender)) === original);
+    const rotate = () => owner("POST", base + "/credential-sources/" + shared.id + "/rotate");
+    // Both Agents already use this account. Rotate the OAuth client before refreshing their existing grant.
+    await rotateClientSecret(base + "/credential-sources/" + shared.id);
+    const rotated = await rotate();
+    assert.equal(rotated.statusCode, 200, rotated.body);
+    const grants = await state.read((view) =>
+      view.savedConnections.listAgentConnections(namespaceId, b),
+    );
+    assert.ok(grants.some((account) => account.credentialSourceId === shared.id));
+    // Keep the secondary sender unavailable throughout both operations. The primary
+    // sender receives the renewed token while the failed sender keeps the old receipt.
+    const write = transport.updateProviderCredentialsConditionally.bind(transport);
+    const fault = t.mock.method(
+      transport,
+      "updateProviderCredentialsConditionally",
+      (...params: Parameters<typeof write>) => {
+        if (params[0].name === secondarySender) {
+          throw new Error("sender unavailable");
+        }
+        return write(...params);
+      },
+    );
+    try {
+      await assert.rejects(prepare(c), { name: "DependencyUnavailableError" });
+      assert.ok(await prepare(b));
+      assert.ok(
+        (await usable(primarySender)) !== original,
+        "the primary sender replaced its token",
+      );
+      assert.ok(
+        provider(secondarySender).credentials[primary.credentials.secondary.delivery.env] ===
+          original,
+        "the unavailable sender kept its original token",
+      );
+    } finally {
+      fault.mock.restore();
+    }
+    const revoked = await owner("DELETE", path(c) + "/connections/" + shared.id);
+    assert.equal(revoked.statusCode, 200, revoked.body);
+    assert.equal(await prepare(c), undefined);
+    assert.ok(await prepare(b));
+
+    // Keycloak now removes one formerly granted scope. The old revision's frozen presentation
+    // can no longer be used, even though the account still has an upstream access token.
+    await setOptionalScopeVisible(false);
+    assert.equal((await rotate()).statusCode, 200);
+    assert.equal(await prepare(b), undefined);
+    const withdrawn = provider(primarySender);
+    assert.deepEqual(Object.keys(withdrawn.credentials), []);
+    assert.deepEqual(Object.keys(withdrawn.credentialExpirationTimes), []);
   },
 );
