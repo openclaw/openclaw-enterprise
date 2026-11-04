@@ -10238,12 +10238,11 @@ export class OpenClawController {
       input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
-        kind: "agent",
-        id: input.agentId,
-        namespaceId: input.namespaceId,
-      });
+      const target = { kind: "agent", id: input.agentId, namespaceId: input.namespaceId } as const;
+      await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // Namespace IAM writes share this lock. Use the policy after any writer ahead of us.
+      await this.authorize(principalId, "update", target);
       const agent = await state.agents.lockAgent(namespace.id, input.agentId);
       if (!agent) {
         throw new ScopeViolationError(
