@@ -42,7 +42,6 @@ export async function runService(
     config: loaded.config,
     factory: loaded.factory,
     clock,
-    ...(loaded.providerQueue === undefined ? {} : { providerQueue: loaded.providerQueue }),
   });
   let listeners: BoundListeners;
   try {
