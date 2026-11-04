@@ -1,13 +1,11 @@
 # Recover a partial production upgrade
 
-Resume from the original checkout and keep the original
-[upgrade evidence directory](production-upgrade.md) private. Paths that resolve
-to the same directory share its lock. A different directory identity stops
-resume before live access.
+Resume from the original checkout and private
+[upgrade evidence directory](production-upgrade.md). Directory aliases share its
+lock; a different directory identity stops resume before live access.
 
-For a runtime upgrade, also keep the original private dispatch journal. The
-helper creates it at `<evidence-directory>.dispatch-state`, beside the evidence
-directory at its resolved path. Keep the current journal separate from evidence
+For a runtime upgrade, also keep the original private dispatch journal. It is
+`<evidence-directory>.dispatch-state`, beside the resolved evidence directory. Keep the current journal separate from evidence
 backups. A missing or invalid journal stops runtime resume before live access.
 If the journal may have been restored, stop and reconcile from OCC history and
 audit records before starting another run.
@@ -33,6 +31,12 @@ evidence before deciding to resume. If writing the marker failed, reconcile the
 live state first: its absence does not prove the upgrade is unfinished.
 `prepared` survives success and alone is not a reason to resume. Older runs may
 have completed without a `completed` marker.
+
+## Correct unusable comparison inputs
+
+`Cannot compare upgrade YAML` requires readable YAML mappings without empty
+documents and writable evidence. Correct inputs before retrying; this message
+does not establish drift.
 
 ## Clean up preflight resources
 

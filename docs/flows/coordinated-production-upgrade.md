@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-04"
-last_updated_session: "authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f"
+last_updated_session: "authoring-run/1320ca1e-663f-449a-aab9-29102e0c482f"
 ---
 
 # Production image upgrade flow
@@ -73,10 +73,11 @@ or evidence changes. Runtime upgrades also lock the private sibling dispatch
 journal for the frozen fleet. Restoring evidence leaves that journal intact.
 
 It checks protected inputs, cluster, deployed release and matching OCC/Secret Installation IDs.
-Candidates must match the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-as ordered YAML mappings, including images; non-mappings stop preparation before
-rendering. Only the Slack directory proxy and curated Codex PluginDriver selection
-may change before image flags apply. Broker checks compare references, not
+Candidates match the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
+as ordered YAML mappings, including images. `scripts/upgrade-production-images:matches_yaml`
+exits on unusable inputs or comparison-write failures with `Cannot compare upgrade YAML`,
+never drift. Only the Slack directory proxy and curated Codex PluginDriver selection
+may change before image selection. Broker checks compare references, not
 ConfigMap or Secret contents.
 
 Runtime upgrades require a complete authorized inventory and baseline versions.
@@ -320,6 +321,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 06:40: Diagnose unusable YAML. (authoring-run/1320ca1e-663f-449a-aab9-29102e0c482f - f150505ae48988083ddeebdaffd45978be48d588)
 
 - 2026-11-04 00:26: Record completion after final evidence capture and refuse resuming completed upgrades. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
 

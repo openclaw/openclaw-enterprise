@@ -2566,8 +2566,21 @@ test("resume rejects malformed protected inputs before another mutation", async 
   const f = await fixture(t);
   await f.failNext("lost-secret-response");
   await assert.rejects(f.run(), injectedFault);
-  await writeFile(join(f.directory, "values.json"), "");
-  await assert.rejects(f.run("--resume"), /protected Helm values changed/);
+  const path = join(f.directory, "values.json");
+  const original = await readFile(path, "utf8");
+  const events = await f.events();
+  // Real yq parses these files. An empty document or non-mapping must stop
+  // recovery before it tries the candidate alternative or repeats a write.
+  for (const content of ["", `${original}\n---\n`, `42\n---\n${original}`]) {
+    await writeFile(path, content);
+    await assert.rejects(f.run("--resume"), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Cannot compare upgrade YAML:.*only YAML mappings/);
+      assert.doesNotMatch(error.stderr, /protected Helm values changed|jq:|Error:/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), events);
+  }
   assert.equal((await f.events()).filter((event) => event === "migration").length, 0);
 });
 
