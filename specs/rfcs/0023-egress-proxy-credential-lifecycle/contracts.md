@@ -65,7 +65,9 @@ This section owns the shared admission contract; service-specific policy remains
 in its owning RFC. It does not qualify an installed runtime.
 
 Compute can contribute nonsecret service descriptors from original Configuration
-before Sandbox normalization. OCC freezes them on the Agent revision. General
+before Sandbox normalization. OCC supplies the runtime Installation ID as generic
+admission context; startup inputs cannot choose that identity. OCC freezes the
+descriptors on the Agent revision. General
 `admitProtectedNetworkPolicy` admission must acknowledge the exact descriptors
 and qualified defaults in the same `SandboxPolicySnapshot`; artifact-only
 admission below remains available when no services are selected. Both paired

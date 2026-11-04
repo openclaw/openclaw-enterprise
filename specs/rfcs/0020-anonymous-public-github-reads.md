@@ -105,6 +105,13 @@ absent selection or a covering network deny selects nothing. A request cannot
 supply a different service peer. Admission validates and canonicalizes the
 selection and records its repository scope with the revision.
 
+OCC supplies its runtime-owned Installation ID to `admitServiceAccess` alongside
+that Configuration and Harness. Compute freezes this identity in the service
+descriptor for registry ownership. The startup file must not supply or rename
+that identity; retain its existing recursive Installation-ID rejection. Profile
+and Helm inputs can use the actual ID to initialize the registry's owner label,
+but the renderer must omit it from Compute startup configuration.
+
 Sandbox owns enforcement around the Harness. Replace artifact-only protected
 policy admission with an explicit protected-network admission that can acknowledge
 the existing artifact map and approved credential-free services. Freeze the
