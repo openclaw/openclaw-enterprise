@@ -793,7 +793,7 @@ for (const { elapsed, held } of [
     await agentShown(page);
     assert.deepEqual(await shownFrames(page), [
       "none | none | no selector | none",
-      ...(pastDelay ? ["agents | Agents | selector | Loading…Reading this Agent."] : []),
+      ...(pastDelay ? ["agents | Agent details | selector | Loading…Reading this Agent."] : []),
       "agents | Fresh Agent | selector | Agent",
     ]);
     assert.equal(await page.locator('[aria-live="polite"][hidden]').count(), 0);
@@ -833,8 +833,8 @@ test("A fresh load whose session check outlasts the startup delay holds the load
   await agentShown(page);
   assert.deepEqual(await shownFrames(page), [
     "none | none | no selector | none",
-    "agents | Agents | selector | Loading…Checking Namespace access.",
-    "agents | Agents | selector | Loading…Reading this Agent.",
+    "agents | Agent details | selector | Loading…Checking Namespace access.",
+    "agents | Agent details | selector | Loading…Reading this Agent.",
     "agents | Session Agent | selector | Agent",
   ]);
 });

@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Compose fixtures and readable scenarios
 
 ## Overview

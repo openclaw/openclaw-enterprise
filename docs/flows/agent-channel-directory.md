@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-14
-last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
+updated: 2026-11-04
+last_updated_session: authoring-run/1bc99c10-f761-424e-9533-b6e6a6ae9975
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -116,8 +116,13 @@ provider work already started by the API.
 Selecting a result or confirming pasted IDs adds removable chips to the field;
 search text remains separate from committed IDs. Plugin approver fields accept
 raw Slack user IDs when lookup is unavailable; directory-selected approvers
-remain workspace-qualified. Arrow keys and Enter select results, and Escape
-closes the list. It resolves saved IDs again when the editor opens or the
+remain workspace-qualified. Arrow keys move the active option; Enter confirms it.
+Escape closes the list and retains input focus and text. With the list closed,
+plain Down starts a fresh authorized search and activates its first current result.
+Clicking the focused input also starts a fresh search, without an active option.
+Neither action commits a selection. Dismissal, new input, or a changed Secret
+cancels pending activation with the search.
+It resolves saved IDs again when the editor opens or the
 selected Secret changes. A view sends the first of these name lookups alone
 (`slack-directory.mjs:nameLookupInTurn`, `request-turns.mjs`); the others wait
 until one succeeds, then go at once. A `403` answers the lookups waiting behind
@@ -166,6 +171,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 22:37: Document closed-picker reopening and pending activation cancellation in the accompanying local change. (authoring-run/1bc99c10-f761-424e-9533-b6e6a6ae9975 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-10-30: Send a view's first name lookup alone and the rest after it succeeds, so a revoked grant costs one audited denial. (2939)
 

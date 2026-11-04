@@ -8,12 +8,12 @@ last_updated_session: authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06
 
 ## Overview
 
-The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
+The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci.md#qa-matrix).
+- `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
 - `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
@@ -66,7 +66,7 @@ preparation. `runLane` uses the same selector and retains the file's expected
 cases, environment and cleanup. Results carry `scope: focused`;
 `validateLaneEvidence` rejects them for full-lane aggregation, even for a one-file lane.
 
-CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci.md#tests-in-each-workflow) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`.
+CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`.
 
 The selector verifies that the tested merge has the event head as its second parent. It
 compares that tree with its first parent, the current base, using policy from the base.
@@ -152,7 +152,7 @@ manual profile. Production node provisioning remains outside CI ownership; see
 [Codex sandbox setup](../guides/deploy/codex-sandbox.md).
 
 `scripts/ci/staging-qualification.ts:pull` verifies release metadata and
-[isolates pull credentials](../testing/ci.md#qualify-a-published-release-for-staging).
+[isolates pull credentials](../testing/ci/staging-qualification.md).
 `smoke` runs trusted workflow code against the release images. Results identify
 both commits.
 
@@ -219,7 +219,7 @@ On POSIX, `scripts/ci/cleanup-command.mjs` leads each group. Caller exit,
 including SIGKILL or `process.exit()`, closes its private IPC channel;
 the supervisor kills its group. Completion drains output, kills grouped
 descendants, and returns command status.
-At its [deadline](../testing/ci.md#cleanup-command-deadlines), TERM then KILL
+At its [deadline](../testing/ci/configuration.md#runner-overrides), TERM then KILL
 bound the group despite direct-child exit. Escaped groups receive no signals;
 retained streams close after another grace. Windows provides direct-child
 termination and stream bounds, without this supervisor.
