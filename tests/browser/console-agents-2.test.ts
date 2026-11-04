@@ -2212,6 +2212,56 @@ for (const width of [1440, 390]) {
     assert.equal(await configuration.getAttribute("aria-invalid"), null);
     await choice.selectOption("gpt-6-sol");
     assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+
+    // Authentication owns its picker even when the model reset cannot merge the draft.
+    const keySecret = page.getByLabel("API key Secret", { exact: true });
+    const tokenSecret = page.getByLabel("Service account token Secret", { exact: true });
+    const authDraft = await editAllow("codex");
+    const authModel = await manual.inputValue();
+    const authMode = await mode.inputValue();
+    await authMethod.selectOption("codex_pat");
+    await assertBlocked(authDraft);
+    assert.equal(await authMethod.inputValue(), "codex_pat");
+    assert.equal(await keySecret.isVisible(), false);
+    assert.equal(await tokenSecret.isVisible(), true);
+    assert.equal(await manual.inputValue(), authModel);
+    assert.equal(await manual.isVisible(), true);
+    assert.equal(await mode.inputValue(), authMode);
+    await editAllow([]);
+    await authMethod.selectOption("api_key");
+    assert.equal(await keySecret.isVisible(), true);
+    assert.equal(await tokenSecret.isVisible(), false);
+    assert.equal(await choice.inputValue(), "");
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    await choice.selectOption("gpt-6-sol");
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+
+    // A refused Codex transition must leave the OpenClaw controls and policy together.
+    await harness.selectOption("openclaw");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(primary(await readValues()), "openai/gpt-6-sol");
+    const harnessDraft = await editAllow("codex");
+    const harnessModel = await manual.inputValue();
+    const openClawMode = await mode.inputValue();
+    const openClawAuth = await authMethod.inputValue();
+    await harness.selectOption("codex");
+    await assertBlocked(harnessDraft);
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await mode.inputValue(), openClawMode);
+    assert.equal(await authMethod.inputValue(), openClawAuth);
+    assert.equal(await manual.inputValue(), harnessModel);
+    assert.equal(await manual.isVisible(), true);
+    assert.equal(await keySecret.isVisible(), true);
+    assert.equal(await tokenSecret.isVisible(), false);
+    await editAllow([]);
+    await harness.selectOption("codex");
+    assert.equal(await harness.inputValue(), "codex");
+    assert.equal(await mode.inputValue(), "dedicated");
+    assert.equal(await authMethod.inputValue(), openClawAuth);
+    assert.equal(await manual.inputValue(), harnessModel);
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+    assert.deepEqual(record((await readValues()).plugins).allow, ["codex"]);
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
     assert.deepEqual(errors, []);
     assert.deepEqual(nonAuthWriteRequests(requests), []);
   });

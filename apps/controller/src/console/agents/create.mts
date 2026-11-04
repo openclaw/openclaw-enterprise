@@ -1622,10 +1622,19 @@ function renderAgentForm(
   });
   authMethod.addEventListener("change", () => {
     clearModelCredential();
-    resetModelChoices();
+    if (!resetModelChoices()) {
+      // The authentication choice still applies when the Configuration merge is blocked.
+      updateControls();
+    }
   });
   model.addEventListener("change", () => updateModelConfiguration());
   harness.addEventListener("change", () => {
+    const values = readModelConfiguration();
+    if (values === "invalid-allow") {
+      // Only Codex merges the allowlist; the other harness choice was OpenClaw.
+      harness.value = "openclaw";
+      return;
+    }
     // Embedded is OpenClaw's default because dedicated OpenClaw needs a provisioning
     // Sandbox Driver; operators opt into it through Execution mode. An Installation that
     // refuses Embedded preselects Dedicated when it accepts that (#2670).
@@ -1639,9 +1648,9 @@ function renderAgentForm(
     ) {
       authMethod.value = "api_key";
       clearModelCredential();
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
     updateControls();
   });
