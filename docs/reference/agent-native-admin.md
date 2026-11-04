@@ -1,26 +1,39 @@
 # Agent native admin UI
 
-Agent native admin UI access lets an authorized operator open the selected Agent's native OpenClaw administration UI from the platform console. It is an explicit pilot capability for trusted operators. It exposes the stock native administrator surface for one Agent gateway; it does not create an OCE-managed configuration editor.
-
-The feature is disabled by default. When enabled, the console shows **Native admin UI** on the Agent detail tabs only for callers with exact Agent `administer` permission. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
+Native admin UI is a disabled-by-default pilot for trusted operators. It exposes one Agent Gateway’s stock administration surface, subject to [Gateway managed mode](#gateway-managed-mode). OCC resolves the Agent host and proxies native HTTP and WebSocket traffic using the operator’s OCE session.
 
 ## Who can open it
 
-Native admin UI is the only Agent chat surface in the console, and it is for exact Agent `administer` holders with a human session (see [Authorization and availability](#authorization-and-availability)). Other people message the Agent through a channel its Configuration sets up, such as [Slack](../guides/integrations/slack.md), or ask someone who can edit that Configuration to let them in. An operator with cluster access can check a real response with [model verification](../guides/operate/model-verification.md) or the [OpenClaw TUI](../guides/deploy/production-tui.md).
+Native admin UI is the console’s Agent chat surface. It requires a human session and exact Agent `administer` permission. Other users need a configured channel such as [Slack](../guides/integrations/slack.md). Operators with cluster access can use [model verification](../guides/operate/model-verification.md) or the [OpenClaw TUI](../guides/deploy/production-tui.md).
 
 Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup rejects enablement (`<Provider> sign-in does not support native administration.`). That profile issues a host-only `__Host-openclaw_occ.session_token` session cookie on HTTPS, which cannot carry the `Domain` attribute that lets Agent hosts read the [shared session](authentication.md#native-admin-shared-sessions).
+
+## Enable during creation
+
+In **Create Agent**, select **Enable Native admin UI** for supported Dedicated
+provisioning. Unchecked by default, it requires Installation native admin
+enablement. API callers set `nativeAdmin: true` on
+`POST /namespaces/:namespaceId/agents/provision`.
+
+Provisioning saves `controlUi.enabled`, the exact derived HTTPS origin (including
+its port), `gateway.publicOrigin`, and trusted-proxy admin device approval in the
+initial Configuration. It preserves existing allowed origins, Secret bindings,
+and unrelated settings. Conflicting authentication modes, unsupported auth fields,
+disabled device authentication, and host-header origin fallback are refused.
+Retries retain the Agent identity and prepared Configuration. This option grants
+no Agent `administer` permission.
 
 ## Requirements
 
 - `agentNativeAdmin.enabled: true` in Helm, which sets `OCC_AGENT_NATIVE_ADMIN_ENABLED=true` on the API.
 - `agentNativeAdmin.domain` set to the Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path. Helm passes it as `OCC_AGENT_NATIVE_ADMIN_DOMAIN`. Use a previously unused DNS suffix for the first pilot rollout; the proxy blocks new service-worker registration but does not evict service workers that a prior experiment registered on the same origin.
 - `agentNativeAdmin.sharedCookieDomain` set to the explicit shared OCE session cookie parent domain, such as `oce.example.com`. Helm passes it as `OCC_AUTH_COOKIE_DOMAIN` when `agentNativeAdmin.enabled` is true. The console host and Agent host suffix must both be inside this parent on DNS-label boundaries. Public suffixes, malformed domains, and DNS-label boundary violations fail closed. Helm has no public suffix list, so it renders a suffix such as `co.uk` or `github.io`; the installation profile renderer refuses it, and so does API startup (`AUTH_BASE_URL_INVALID`). The Agent suffix may equal the cookie domain; OCC excludes its configured Console hostname from native proxy routing.
-- `gatewayRouting.enabled: true`. Helm rejects native admin enablement without private gateway routing because the API process must reach each Agent gateway through the private route.
+- Private gateway routing (enabled by default). [Prepare its prerequisites](../guides/deploy/workspace-routing.md#requirements) before installation. Helm rejects native admin when routing is disabled; the API needs each Agent's private route.
 - `OCC_AUTH_BASE_URL` set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
 - Better Auth cookie configuration using the shared cookie parent domain while preserving `Secure`, `HttpOnly`, appropriate `SameSite`, CSRF, and trusted-origin protections. A domain-scoped cookie cannot use a host-only `__Host-` prefix. The shared-domain session uses the `openclaw_occ_shared` cookie prefix and clears prior host-only `openclaw_occ` and `openclaw_occ_shared` session-cookie names during sign-in/sign-out migration. When native admin is disabled, OCC ignores leftover shared-cookie-domain configuration and keeps the legacy host-only `openclaw_occ` session cookie scope.
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
 - The Agent must be running with a selected version owned by the selected Compute Driver: both Driver ID and implementation must match the version. Its `ComputeDriver.getGatewayEndpoint` value must map from private `wss:` to private `https:`.
-- The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy admin device auto-approval. The support check rejects token auth, disabled device auth, and host-header origin fallback.
+- The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy device auto-approval. The machine identity grant supplies admin authority; device auto-approval can stay limited to read/write. The support check rejects token auth, disabled device auth, and host-header origin fallback.
 
 The local Compose-control-plane profile enables this capability only when both
 Kubernetes Compute and OpenShell are selected. Its development proxy terminates
@@ -61,9 +74,15 @@ logs one `native_admin.compute_owner_mismatch` warning per version and selected
 Driver, naming both Driver IDs and implementations. To restore access, select the
 version's Compute Driver again, with the same ID and implementation.
 
-When someone opens the Agent root `/` or a copied `/chat/main` link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also works for links ending in a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque key from the Agent host, in a URL fragment. It drops the chat session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
+When someone opens the Agent root `/` or a copied `/chat/main` link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also covers a trailing slash and a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque Agent host key, in a URL fragment, drops the session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
 
-The console checks the browser session and offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation then checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action. Only a user-activated, top-level HTML navigation qualifies for the redirect. Link previews, API requests, WebSocket upgrades, and actual authorization denials keep their ordinary refusal behavior.
+Only a user-activated (`Sec-Fetch-User: ?1`) top-level HTML navigation is redirected. The same page load without that header, including every Safari navigation, stays HTTP `403` with one **Sign in** link to that console URL. Link previews, API requests, and WebSocket upgrades send no navigation Fetch Metadata and keep their ordinary refusal.
+
+The console offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action.
+
+A signed-in person who cannot administer the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`. JSON requests still receive the JSON `403`; WebSocket upgrades still close.
+
+In an already-open Gateway tab, the Control UI offers **Reconnect in browser** if a reconnect fails and its same-origin health request receives `401` or `403`. Following the link opens `/` on the current Agent host. The UI does not navigate automatically or carry forward the chat path or query. The response is a reason to check access, not proof that a session expired. OCC decides whether that navigation reaches sign-in or is refused.
 
 ## Agent host identity
 
@@ -91,16 +110,25 @@ The console and Agent hosts share the ordinary OCE session cookie through the co
 
 Native chat or other activity in the Agent tab does not renew the console session. Session expiry, logout, session revocation, permission removal, pilot disablement, Agent unavailability, or a version change closes active WebSockets during the authorization lease. Reconnecting uses the same stable Agent host and the selected version when the shared OCE session, exact Agent permission, and native configuration remain valid.
 
+## Gateway managed mode
+
+Managed mode defaults on where the Compute Driver supports it. It prevents Gateway administrators from editing native
+configuration, opening Gateway-local terminals, and running Gateway-hosted command
+jobs. An Installation administrator can change the setting in OCE for the next
+deployment. See [Gateway managed mode](agents/gateway-managed-mode.md) for runtime
+requirements and behavior when managed mode is off.
+
 ## Native authority and drift
 
 The native admin UI runs with the same shared native trusted-proxy identity used by workspace files: `occ-workspace-files` with `operator.admin`. OCC attributes availability, proxy admission, and socket closure checks to the human session and exact Agent IAM decision. The native gateway sees the shared service identity, not a per-human native account.
 
-Native admin changes affect gateway-local state outside OCE Configurations and
-immutable AgentRevisions. Manage durable configuration through OCE. In the
-Kubernetes pilot, native configuration edits affect a Pod-local copy that resets
-from the managed snapshot when the Pod is recreated or the Agent is redeployed.
+When Gateway managed mode is off, native admin changes affect gateway-local state
+outside OCE Configurations and Agent revisions. To keep a setting across Pod
+recreation or redeployment, save it in the OCE Configuration. In the Kubernetes pilot, native configuration edits
+affect a Pod-local copy that resets from the managed snapshot when the Pod is
+recreated or the Agent is redeployed.
 See [Kubernetes managed native configuration](drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
-for the opt-in predicate, mounts, and copy lifecycle.
+for mount selection and the copy lifecycle.
 
 Do not change `gateway.bind`, `gateway.customBindHost`, or
 `gateway.tailscale.mode` in that copy. OCE checks these listener settings in the
@@ -140,6 +168,7 @@ device state, plugins, or other persistent gateway data.
 
 ## Changelog
 
+- 2026-11-03: Documented the unactivated sign-in page.
 - 2026-10-14 01:20: Documented the Compute-owner mismatch warning and how to restore access. (fix-1287)
 
 - 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)

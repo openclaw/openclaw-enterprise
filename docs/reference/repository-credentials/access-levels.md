@@ -3,6 +3,37 @@
 Choose the least access the Agent needs. Each binding selects one level for one
 repository; Namespace policy determines which levels are available.
 
+## Registry profiles
+
+The registry's `namespaces[].profiles` lists the access modes that Agents in that
+OCE Namespace may select for the repository. An Agent's
+`repositoryBindings[].profile` selects one allowed mode. OCE rejects a binding
+whose profile is not allowed by the Namespace policy.
+
+| Profile             | Permission selection                                                          |
+| ------------------- | ----------------------------------------------------------------------------- |
+| `github-repository` | Uses the registry's explicit `permissions` map for the selected repositories. |
+| `git-read`          | Requests the predefined read-access profile.                                  |
+| `git-write`         | Requests the predefined contribution profile.                                 |
+| `git-full`          | Requests the predefined contribution profile with issue management.           |
+
+For `github-repository`, `profiles` must contain only that value and the Namespace
+policy must include `permissions`. For example, `contents: write` and
+`metadata: read` permit content writes and metadata reads within the supported
+[protected repository route](protected-openshell-git.md#use-the-admitted-repository).
+GitHub App permissions and repository rules still apply. This profile does not
+accept an OCE branch allowlist; GitHub governs branch restrictions.
+
+The other profiles do not accept a custom registry `permissions` map. Their
+effective permissions and supported operations depend on the selected delivery,
+as described below. `git-full` does not mean unrestricted GitHub administration.
+
+Installation-wide access uses a separate
+[`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
+`github-installation` is not a value in a repository's `profiles` list.
+
+## Console access levels
+
 | Console choice          | Configuration value | Meaning                                                                       |
 | ----------------------- | ------------------- | ----------------------------------------------------------------------------- |
 | Read-only               | `git-read`          | Requests read access where the selected delivery supports it.                 |
@@ -40,7 +71,8 @@ Changing desired access affects future deployments only. An empty repositories
 array removes attachments while retaining the default.
 
 `repositoryAccess` and `repositoryBindings` are mutually exclusive request fields.
-For direct `repositoryBindings`, omitting `profile` still selects **`git-write`**.
+For direct `repositoryBindings`, omitting `profile` selects `github-repository`
+when that is the registry policy's sole profile; otherwise it selects `git-write`.
 Agents without saved intent open with their existing profiles marked custom.
 Omitting both fields during update preserves existing settings; updating direct
 bindings clears inheritance intent. Profiles remain subject to Namespace policy.
@@ -63,4 +95,4 @@ Use ordinary `git clone`, `git fetch` and `git push` to the approved ref. With a
 profile can also use `gh api` for permitted REST routes; it does not establish production GitHub
 App behavior.
 
-For Agent setup, use the [team runbook](../../guides/repository-credentials/team-runbook.md).
+For Agent setup, use the [repository access guide](../../guides/repository-credentials.md#create-and-deploy-an-agent).
