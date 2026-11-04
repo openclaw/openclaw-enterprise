@@ -116,6 +116,5 @@ only resources created by the run.
 - [Repository credentials](repository-credentials.md)
 - [Slack and ChatGPT service accounts](slack.md)
 - [Test fixtures and scenarios](fixtures-and-scenarios.md)
-- [Module and repository boundaries](module-boundaries.md)
 - [Developer skills](developer-skills.md)
 - [Code review](autoreview.md)

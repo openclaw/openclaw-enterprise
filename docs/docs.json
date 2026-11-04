@@ -866,10 +866,6 @@
                     "label": "Manual Tests"
                   },
                   {
-                    "page": "testing/module-boundaries",
-                    "label": "Module Boundaries"
-                  },
-                  {
                     "page": "testing/fixtures-and-scenarios",
                     "label": "Fixtures and Scenarios"
                   }
@@ -1140,6 +1136,10 @@
                   {
                     "page": "layout",
                     "label": "Repository Layout"
+                  },
+                  {
+                    "page": "testing/module-boundaries",
+                    "label": "Module Boundaries"
                   }
                 ]
               },

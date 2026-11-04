@@ -21,6 +21,8 @@ assign existing issues to a two-week iteration in the project.
   practical choices with one example.
 - [Repository layout](../layout.md) shows who owns each directory and where to
   put code, tests, and documentation.
+- [Module boundaries](../testing/module-boundaries.md) explains import rules,
+  dependency cycle checks, and policy exceptions.
 - [Driver development](driver-development.md) links the base interfaces for
   building or changing a Driver.
 
