@@ -91,7 +91,7 @@ function isCreateInput(value: unknown): value is {
 
 function createInput(body: unknown) {
   if (!isCreateInput(body)) {
-    throw new TypeError("The fixture requires an object with an Agent name.");
+    return "The preview requires an object with a string Agent name.";
   }
   const {
     initialWorkspaceFiles = {},
@@ -99,7 +99,7 @@ function createInput(body: unknown) {
     ...agentBody
   } = body;
   if (!isWorkspaceFiles(initialWorkspaceFiles)) {
-    throw new TypeError("The fixture requires string workspace file contents keyed by filename.");
+    return "The preview requires string workspace file contents keyed by filename.";
   }
   return { agentBody, initialWorkspaceFiles };
 }
@@ -117,7 +117,7 @@ function credentialSourceProjection(body: object) {
     return {};
   }
   if (!("sourceId" in auth) || typeof auth.sourceId !== "string") {
-    throw new TypeError("The fixture requires a credential source ID for credential_source auth.");
+    return undefined;
   }
   return { credentialSources: [{ sourceId: auth.sourceId }] };
 }
@@ -139,9 +139,17 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
   const provisioning = new Map<string, ProvisioningJob>();
   return function serve(resource: string, method: string, body: unknown): Response | undefined {
     if (resource === "agents" && method === "POST") {
-      const { agentBody, initialWorkspaceFiles } = createInput(body);
+      const input = createInput(body);
+      if (typeof input === "string") {
+        return error(400, "INVALID_REQUEST", input);
+      }
+      const { agentBody, initialWorkspaceFiles } = input;
       if (!("configurationId" in agentBody) || typeof agentBody.configurationId !== "string") {
-        throw new TypeError("The fixture requires an Agent Configuration ID.");
+        return error(
+          400,
+          "INVALID_REQUEST",
+          "The preview requires a string Agent Configuration ID.",
+        );
       }
       const saved: CreatedAgent = {
         ...agentBody,
@@ -164,17 +172,39 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
       return new Response(null, { status: 204 });
     }
     if (resource === "agents/provision" && method === "POST") {
-      const { agentBody: input, initialWorkspaceFiles } = createInput(body);
+      const parsed = createInput(body);
+      if (typeof parsed === "string") {
+        return error(400, "INVALID_REQUEST", parsed);
+      }
+      const { agentBody: input, initialWorkspaceFiles } = parsed;
       if (
         !("configuration" in input) ||
         !("requestId" in input) ||
         typeof input.requestId !== "string"
       ) {
-        throw new TypeError("The provisioning fixture requires a Configuration and request ID.");
+        return error(
+          400,
+          "INVALID_REQUEST",
+          "The preview requires a Configuration and string request ID.",
+        );
       }
       const { configuration: rawConfiguration, requestId, ...agentBody } = input;
       const configuration = configurationInput(rawConfiguration);
+      if (configuration === undefined) {
+        return error(
+          400,
+          "INVALID_REQUEST",
+          "The preview requires agent kind, JSON values and optional object bindings.",
+        );
+      }
       const credentialProjection = credentialSourceProjection(agentBody);
+      if (credentialProjection === undefined) {
+        return error(
+          400,
+          "INVALID_REQUEST",
+          "The preview requires a string sourceId for credential_source auth.",
+        );
+      }
       const workId = nextId("work");
       const savedConfig = {
         ...configuration,

@@ -45,16 +45,14 @@ function isJson(value: unknown): value is OpenClawConfigurationValue {
   );
 }
 
-export function configurationInput(value: unknown): ConfigurationInput {
+export function configurationInput(value: unknown): ConfigurationInput | undefined {
   if (
     !isDocument(value) ||
     value.kind !== "agent" ||
     !isDocument(value.values) ||
     (value.secretBindings !== undefined && !isDocument(value.secretBindings))
   ) {
-    throw new TypeError(
-      "The Configuration fixture requires kind, JSON values and optional bindings.",
-    );
+    return undefined;
   }
   return {
     ...value,
@@ -94,8 +92,16 @@ export function createConfigurationStore(
 
   function serve(resource: string, method: string, body: unknown): Response | undefined {
     if (resource === "configurations" && method === "POST") {
+      const input = configurationInput(body);
+      if (input === undefined) {
+        return error(
+          400,
+          "INVALID_REQUEST",
+          "The preview requires agent kind, JSON values and optional object bindings.",
+        );
+      }
       const saved: StoredConfiguration = {
-        ...configurationInput(body),
+        ...input,
         id: nextId("cfg"),
         namespaceId,
         generation: 1,
@@ -129,15 +135,32 @@ export function createConfigurationStore(
       if (method === "PATCH") {
         // Validate the resulting shape, retaining Object.assign's partial update and extra keys.
         const patch = objectInput(body);
+        if (patch === undefined) {
+          return error(
+            400,
+            "INVALID_REQUEST",
+            "The preview requires an object Configuration patch.",
+          );
+        }
         const result = { ...saved, ...patch };
-        configurationInput(result);
+        if (configurationInput(result) === undefined) {
+          return error(
+            400,
+            "INVALID_REQUEST",
+            "The preview requires agent kind, JSON values and optional object bindings.",
+          );
+        }
         // The route also consumes these fields on later reads and saves.
         if (
           ("id" in patch && typeof patch.id !== "string") ||
           ("namespaceId" in patch && typeof patch.namespaceId !== "string") ||
           ("createdAt" in patch && typeof patch.createdAt !== "string")
         ) {
-          throw new TypeError("The Configuration fixture requires string metadata.");
+          return error(
+            400,
+            "INVALID_REQUEST",
+            "The preview requires string Configuration metadata.",
+          );
         }
         Object.assign(saved, patch, { generation: saved.generation + 1 });
         return response({ ...saved, id: scenario.configurationSaveResponseId ?? saved.id });
@@ -149,9 +172,9 @@ export function createConfigurationStore(
 }
 
 // Body fields not consumed by a route are carried through without claiming their model type.
-function objectInput(value: unknown): object {
+function objectInput(value: unknown): object | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("The fixture route requires an object body.");
+    return undefined;
   }
   return value;
 }

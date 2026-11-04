@@ -599,38 +599,154 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     },
   );
 
-  await t.test("guards run after refusals and reject before creation", async () => {
-    installFixture(
-      { rules: [{ method: "POST", suffix: "/agents/provision", status: 403, once: true }] },
-      evidence(),
+  async function invalidRequest(resource: string, method: string, body: unknown) {
+    const reply = await request(resource, method, body);
+    assert.equal(reply.status, 400);
+    assert.equal(reply.headers.get("content-type"), "application/json");
+    const payload: unknown = await reply.json();
+    assert.partialDeepStrictEqual(payload, { error: { code: "INVALID_REQUEST" } });
+    assert.ok(payload !== null && typeof payload === "object" && "error" in payload);
+    assert.ok(
+      payload.error !== null && typeof payload.error === "object" && "message" in payload.error,
     );
-    assert.equal((await request("agents/provision", "POST", null)).status, 403);
-    await assert.rejects(
-      request("agents/provision", "POST", {
-        ...provisionBody,
-        initialWorkspaceFiles: { "AGENTS.md": 17 },
-      }),
-      TypeError,
-    );
-    await assert.rejects(
-      request("configurations", "POST", { kind: "agent", values: [] }),
-      TypeError,
-    );
-    await assert.rejects(
-      request("agents/provision", "POST", {
-        ...provisionBody,
-        harnessAuth: { method: "credential_source", sourceId: 17 },
-      }),
-      TypeError,
-    );
-    const admitted = await request("agents/provision", "POST", provisionBody);
-    assert.partialDeepStrictEqual(await admitted.json(), {
-      data: { provisioning: { workId: id("work", 100) } },
-    });
-    const job = `agents/provision/${id("work", 100)}`;
-    await request(job);
-    assert.partialDeepStrictEqual(await (await request(job)).json(), {
-      data: { provisioning: { status: "succeeded", revisionId: id("rev", 103) } },
-    });
-  });
+    assert.equal(typeof payload.error.message, "string");
+    assert.match(String(payload.error.message), /^The preview requires /);
+  }
+
+  await t.test(
+    "invalid Configuration writes return 400 without state or generation changes",
+    async () => {
+      installFixture({}, evidence());
+      for (const body of [
+        null,
+        [],
+        {},
+        { ...configuration, kind: "other" },
+        { ...configuration, values: [] },
+        { ...configuration, secretBindings: [] },
+      ]) {
+        await invalidRequest("configurations", "POST", body);
+      }
+      const created = await request("configurations", "POST", configuration);
+      assert.equal(created.status, 201);
+      const saved: unknown = await created.json();
+      const configPath = `configurations/${id("cfg", 100)}`;
+      assert.partialDeepStrictEqual(saved, { data: { id: id("cfg", 100), generation: 1 } });
+      for (const patch of [
+        null,
+        [],
+        { kind: "other" },
+        { values: null },
+        { secretBindings: [] },
+        { id: 17 },
+        { namespaceId: 17 },
+        { createdAt: 17 },
+      ]) {
+        await invalidRequest(configPath, "PATCH", patch);
+        assert.deepEqual(await (await request(configPath)).json(), saved);
+      }
+      // The next real write increments once; refusals neither consume IDs nor save values.
+      const updated = await request(configPath, "PATCH", { secretBindings: {} });
+      assert.equal(updated.status, 200);
+      assert.partialDeepStrictEqual(await updated.json(), {
+        data: { generation: 2, secretBindings: {} },
+      });
+      const next = await request("configurations", "POST", configuration);
+      assert.equal(next.status, 201);
+      assert.partialDeepStrictEqual(await next.json(), {
+        data: { id: id("cfg", 101), generation: 1 },
+      });
+    },
+  );
+
+  await t.test(
+    "invalid direct Create and provision return 400 before allocating resources",
+    async () => {
+      installFixture({}, evidence());
+      const before: unknown = await (await request("agents")).json();
+      const direct = { name: "Direct create", configurationId: id("cfg", 1) };
+      for (const body of [
+        null,
+        [],
+        { ...direct, name: 17 },
+        { name: direct.name },
+        { ...direct, configurationId: 17 },
+        { ...direct, initialWorkspaceFiles: { "AGENTS.md": 17 } },
+      ]) {
+        await invalidRequest("agents", "POST", body);
+      }
+      assert.deepEqual(await (await request("agents")).json(), before);
+      const created = await request("agents", "POST", direct);
+      assert.equal(created.status, 201);
+      assert.partialDeepStrictEqual(await created.json(), {
+        data: { id: id("agt", 100), name: direct.name },
+      });
+
+      installFixture({}, evidence());
+      for (const body of [
+        null,
+        { ...provisionBody, name: 17 },
+        { ...provisionBody, requestId: 17 },
+        { ...provisionBody, configuration: undefined },
+        { ...provisionBody, configuration: { ...configuration, values: [] } },
+        { ...provisionBody, initialWorkspaceFiles: { "AGENTS.md": 17 } },
+        { ...provisionBody, harnessAuth: { method: "credential_source" } },
+        { ...provisionBody, harnessAuth: { method: "credential_source", sourceId: 17 } },
+      ]) {
+        await invalidRequest("agents/provision", "POST", body);
+      }
+      assert.deepEqual(await (await request("agents")).json(), before);
+      assert.equal((await request(`configurations/${id("cfg", 101)}`)).status, 404);
+      assert.equal((await request(`agents/provision/${id("work", 100)}`)).status, 404);
+      const admitted = await request("agents/provision", "POST", provisionBody);
+      assert.equal(admitted.status, 202);
+      assert.partialDeepStrictEqual(await admitted.json(), {
+        data: { provisioning: { workId: id("work", 100) } },
+      });
+      const job = `agents/provision/${id("work", 100)}`;
+      await request(job);
+      assert.partialDeepStrictEqual(await (await request(job)).json(), {
+        data: {
+          provisioning: {
+            status: "succeeded",
+            agentId: id("agt", 102),
+            configurationId: id("cfg", 101),
+            revisionId: id("rev", 103),
+          },
+        },
+      });
+    },
+  );
+
+  await t.test(
+    "authored refusals and network errors precede guards; preflight stays permissive",
+    async () => {
+      // A rule refusal must not be replaced by input validation, even for a null body.
+      for (const status of [403, 503]) {
+        installFixture(
+          { rules: [{ method: "POST", suffix: "/agents/provision", status, once: true }] },
+          evidence(),
+        );
+        assert.equal((await request("agents/provision", "POST", null)).status, status);
+        await invalidRequest("agents/provision", "POST", null);
+      }
+      installFixture(
+        {
+          rules: [{ method: "POST", suffix: "/agents/provision", networkError: true, once: true }],
+        },
+        evidence(),
+      );
+      // Authored offline behavior is still a rejected fetch, unlike an HTTP input refusal.
+      await assert.rejects(request("agents/provision", "POST", provisionBody), {
+        name: "TypeError",
+        message: "Failed to fetch",
+      });
+      assert.equal((await request("agents/validate", "POST", null)).status, 204);
+      const admitted = await request("agents/provision", "POST", provisionBody);
+      assert.equal(admitted.status, 202);
+      assert.partialDeepStrictEqual(await admitted.json(), {
+        data: { provisioning: { workId: id("work", 100) } },
+      });
+    },
+  );
 });
