@@ -16,6 +16,18 @@ to verify the installation with `gog --version`. To make Google API calls, choos
 **Google account**, save the selection and deploy. The worker receives an
 OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
 
+To connect a new Google account, first save the enabled plugin with an empty
+account slot. Open the slot, choose a compatible connection template and
+select **Connect and attach**. Approve access in the same browser. The Console
+returns to the Agent draft, where the picker shows the saved account. Deploy
+the draft when ready. The action requires permission to update the Agent and
+create credentials in its Namespace.
+
+If the slot or your permissions change during consent, the account stays
+saved. Open the draft again and attach the saved account when you have access.
+To switch Google accounts, clear the old binding and detach its source before
+connecting the new account. Each Google source uses the same worker placeholder.
+
 The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
 `read` and `operate` on the source, and the Agent needs `operate`. If the
 package digest changes, select the account again. Clearing the slot or removing

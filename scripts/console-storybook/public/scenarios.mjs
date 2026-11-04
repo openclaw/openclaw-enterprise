@@ -4,7 +4,11 @@ import {
   credentialsRecoveryScenarios,
   credentialsThemeScenario,
 } from "./scenario-groups/credentials.mts";
-import { pluginsScenarios, pluginApproverScenarios } from "./scenario-groups/plugins.mts";
+import {
+  pluginsScenarios,
+  pluginApproverScenarios,
+  pluginConnectionReturn,
+} from "./scenario-groups/plugins.mts";
 import { channelsScenarios } from "./scenario-groups/channels.mts";
 import {
   createAgentFormScenarios,
@@ -1844,6 +1848,9 @@ export const scenarios = {
     gap: "Catalog and deployment responses are simulated. This does not verify plugin access, installation, policy enforcement, or a live Agent turn.",
   },
   ...pluginApproverScenarios(draft),
+  pluginConsentAttached: pluginConnectionReturn(draft, "attached"),
+  pluginConsentSaved: pluginConnectionReturn(draft, "saved"),
+  pluginConsentUnconfirmed: pluginConnectionReturn(draft, "unconfirmed"),
   pluginApproversLookup: {
     group: "Pages/Agent detail",
     name: "Find Slack plugin approvers",

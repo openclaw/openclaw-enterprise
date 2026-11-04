@@ -58,6 +58,14 @@ export function installFixture(scenario, evidence) {
   const deployments = new Map();
   const credentials = new Map();
   const credentialSources = new Map();
+  if (scenario.savedPluginAccount) {
+    credentialSources.set(scenario.savedPluginAccount.id, {
+      ...scenario.savedPluginAccount,
+      namespaceId,
+      kind: "oauth2",
+      state: "ready",
+    });
+  }
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map();
   const files = new Map();
@@ -1350,9 +1358,33 @@ export function installFixture(scenario, evidence) {
             truncated: false,
           });
         }
+        if (
+          scenario.savedPluginAccount &&
+          suffix === `/connections/${scenario.savedPluginAccount.id}` &&
+          method === "POST"
+        ) {
+          if (
+            !saved.credentialSources.some(
+              ({ sourceId }) => sourceId === scenario.savedPluginAccount.id,
+            )
+          ) {
+            saved.credentialSources.push({ sourceId: scenario.savedPluginAccount.id });
+          }
+          return new Response(null, { status: 204 });
+        }
         if (suffix === "/plugins/capabilities" && method === "GET" && scenario.pluginCapabilities) {
+          const capabilities = structuredClone(scenario.pluginCapabilities);
+          if (
+            scenario.savedPluginAccount &&
+            saved.credentialSources.some(
+              ({ sourceId }) => sourceId === scenario.savedPluginAccount.id,
+            )
+          ) {
+            const [slot] = capabilities.credentialSlots;
+            slot.sources = [scenario.savedPluginAccount];
+          }
           return response({
-            ...scenario.pluginCapabilities,
+            ...capabilities,
             discoveryCredential: scenario.pluginDiscoveryCredential ?? "required",
           });
         }

@@ -21,11 +21,13 @@ import {
 } from "../dom.mjs";
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
 import { isPluginSelections } from "./plugin-fields.mjs";
+import { type SlotTemplate } from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
   SAVE_REFUSALS,
   assertReadableConfiguration,
   describeFailure,
+  namespacePath,
   readFailure,
   rejectionMessage,
 } from "./list.mjs";
@@ -222,6 +224,58 @@ export function renderAgentPlugins(
     context,
     input,
     catalogPath: `${path}/plugins`,
+    slotConnection: {
+      unavailable(slot) {
+        if (updateDenied) {
+          return "You need permission to update this Agent to attach an account.";
+        }
+        if (pending || outcomeUnknown || reloadRequired) {
+          return "Reload the saved Agent before connecting an account.";
+        }
+        if (
+          !agent.plugins?.[slot.pluginId]?.enabled ||
+          input.value !== initialText ||
+          JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers)
+        ) {
+          return "Save your plugin selections before connecting an account.";
+        }
+        return undefined;
+      },
+      async list(slot) {
+        return (await context.request(
+          `${path}/plugins/${encodeURIComponent(slot.pluginId)}/credentials/${encodeURIComponent(slot.id)}/connection-templates`,
+        )) as readonly SlotTemplate[];
+      },
+      async start(slot, template) {
+        pending = true;
+        updateState();
+        try {
+          const result = (await context.request(`${path}/connections`, {
+            method: "POST",
+            body: {
+              pluginId: slot.pluginId,
+              slotId: slot.id,
+              releaseSha256: slot.releaseSha256,
+              expectedCredentialSourceId: null,
+              connectionTemplateId: template.id,
+              connectionTemplateVersion: template.version,
+            },
+          })) as { authorizationUrl: string };
+          const provider = new URL(result.authorizationUrl);
+          if (provider.protocol !== "https:" || provider.username || provider.password) {
+            throw new Error("Invalid provider URL.");
+          }
+          if (context.isCurrent()) {
+            window.location.assign(provider.href);
+          }
+        } finally {
+          pending = false;
+          if (context.isCurrent()) {
+            updateState();
+          }
+        }
+      },
+    },
     requestBody: (body) => body,
     canDiscover: () =>
       !updateDenied &&
@@ -525,7 +579,80 @@ export function renderAgentPlugins(
   }
 
   updateState();
-  if (savedNotice) {
+  const consentReturn = new URL(window.location.href);
+  const outcome = consentReturn.searchParams.get("connection");
+  if (outcome === "attached" || outcome === "saved" || outcome === "unconfirmed") {
+    const consentNotice = element("p", { className: "hint", role: "status" });
+    discovery.fields.section.before(consentNotice);
+    const sourceId = consentReturn.searchParams.get("sourceId");
+    consentReturn.searchParams.delete("connection");
+    consentReturn.searchParams.delete("sourceId");
+    window.history.replaceState(window.history.state, "", consentReturn.href);
+    if (outcome === "unconfirmed") {
+      consentNotice.textContent =
+        "Account saved. Check the current plugin selection to see whether the account was attached.";
+    } else if (outcome === "attached") {
+      consentNotice.textContent =
+        "Account saved and attached. The plugin’s account selection now shows the connected account.";
+    } else {
+      consentNotice.textContent = "Account saved. The plugin attachment could not finish.";
+      if (sourceId) {
+        const sourcePath = `${namespacePath(context.namespaceId)}/credential-sources/${encodeURIComponent(sourceId)}`;
+        void context
+          .request(sourcePath)
+          .then((result) => {
+            const source = result as { id: string; name: string };
+            if (!context.isCurrent() || source.id !== sourceId) {
+              return;
+            }
+            const retry = button(
+              `Attach saved account: ${source.name}`,
+              async () => {
+                if (
+                  pending ||
+                  updateDenied ||
+                  reloadRequired ||
+                  outcomeUnknown ||
+                  input.value !== initialText ||
+                  JSON.stringify(initialApprovers) !== JSON.stringify(pluginApprovers)
+                ) {
+                  consentNotice.textContent =
+                    "Save or discard pending plugin changes before attaching.";
+                  return;
+                }
+                retry.disabled = true;
+                try {
+                  await context.request(`${path}/connections/${encodeURIComponent(source.id)}`, {
+                    method: "POST",
+                    expectedStatus: 204,
+                  });
+                  if (!context.isCurrent()) {
+                    return;
+                  }
+                  consentNotice.textContent =
+                    "Account attached. Select it for the plugin and save your selections.";
+                  retry.remove();
+                  readCapabilities();
+                } catch (cause) {
+                  if (!context.isCurrent()) {
+                    return;
+                  }
+                  consentNotice.textContent = describeFailure(requestFailure(cause));
+                  retry.disabled = false;
+                }
+              },
+              { tone: "secondary", size: "sm" },
+            );
+            consentNotice.after(retry);
+          })
+          .catch((cause: unknown) => {
+            if (context.isCurrent()) {
+              consentNotice.textContent = `Account saved. ${describeFailure(requestFailure(cause))}`;
+            }
+          });
+      }
+    }
+  } else if (savedNotice) {
     feedback.textContent = savedNotice;
     describeControls();
   }

@@ -22,6 +22,7 @@ type PluginScenario = {
   steps?: string[];
   gap?: string;
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
+  connectionPreview?: ConnectionPreview;
 } & (
   | {
       group: "Components/Plugins";
@@ -43,7 +44,89 @@ type PluginScenario = {
 const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 
+type ConnectionPreview = "choose" | "bound" | "empty" | "denied" | "loading";
+
+function googleSlotStory(preview: ConnectionPreview) {
+  const pluginId = "occ-plugin:google@1.0.0";
+  const releaseSha256 = "a".repeat(64);
+  const boundId = "cs_00000000-0000-4000-8000-000000000010";
+  return {
+    group: "Components/Plugins" as const,
+    name: `Google Workspace account — ${preview}`,
+    component: "plugins" as const,
+    description: "Preview an explicit template choice for the Google Workspace account slot.",
+    gap: "Simulated template discovery and consent navigation. This component preview does not contact a provider or change an Agent grant.",
+    connectionPreview: preview,
+    pluginCatalog: {
+      status: "ready" as const,
+      entries: [
+        { id: pluginId, name: "Google Workspace", selectableWithoutTools: true, tools: [] },
+      ],
+    },
+    pluginCapabilities: {
+      ...pluginCapabilities,
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      policyScopeByPlugin: { [pluginId]: "enablement_only" as const },
+      credentialSlots: [
+        {
+          pluginId,
+          releaseSha256,
+          id: "account",
+          label: "Workspace account",
+          ...(preview !== "bound" && { connectAccount: true as const }),
+          sources: preview === "bound" ? [{ id: boundId, name: "Existing Gmail account" }] : [],
+        },
+      ],
+    },
+    pluginSelections: JSON.stringify({
+      [pluginId]: {
+        enabled: true,
+        ...(preview === "bound" && {
+          driverPolicy: { releaseSha256, credentials: { account: boundId } },
+        }),
+      },
+    }),
+    actions: [
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Google Workspace"]', click: true },
+      ...(["choose", "bound"].includes(preview) ? [] : [click("Choose a connection template")]),
+    ],
+  };
+}
+
+export function pluginConnectionReturn(
+  draft: string,
+  outcome: "saved" | "attached" | "unconfirmed",
+) {
+  const sourceId = "cs_00000000-0000-4000-8000-000000000010";
+  const bound = outcome === "attached";
+  const preview = googleSlotStory(bound ? "bound" : "choose");
+  return {
+    group: "Pages/Agent detail",
+    name: `Google Workspace consent return — ${outcome}`,
+    path: `${draft}&tab=plugins&connection=${outcome}${outcome === "saved" ? `&sourceId=${sourceId}` : ""}`,
+    harnessId: "openclaw",
+    auth: "runtime",
+    agentPlugins: JSON.parse(preview.pluginSelections),
+    credentialSources: bound ? [{ sourceId }] : [],
+    pluginCapabilities: preview.pluginCapabilities,
+    pluginDiscoveryCredential: "none",
+    pluginDiscovery: {
+      pages: { initial: { plugins: preview.pluginCatalog.entries, nextCursor: null } },
+    },
+    savedPluginAccount: { id: sourceId, name: "Existing Gmail account" },
+    description:
+      "Read the consent result on the saved Agent’s Plugins tab. If attachment failed, attach the saved account without starting consent again.",
+    gap: "The callback result, saved account, and Agent are Storybook fixtures. These previews do not contact a provider or issue runtime credentials.",
+  };
+}
+
 export const pluginsScenarios = {
+  pluginConnectChoose: googleSlotStory("choose"),
+  pluginConnectBound: googleSlotStory("bound"),
+  pluginConnectEmpty: googleSlotStory("empty"),
+  pluginConnectDenied: googleSlotStory("denied"),
+  pluginConnectLoading: googleSlotStory("loading"),
   pluginsAvailable: {
     group: "Components/Plugins",
     name: "Available catalog",

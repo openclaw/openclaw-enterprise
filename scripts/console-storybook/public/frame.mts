@@ -22,6 +22,7 @@ type FrameScenario = FrameScenarioBase &
     | {
         component: "plugins";
         pluginSelections?: string | undefined;
+        connectionPreview?: "choose" | "bound" | "empty" | "denied" | "loading";
         pluginCatalog?: PluginFieldsOptions["catalog"];
         pluginCapabilities?: PluginFieldsOptions["capabilities"];
         disabled?: boolean | undefined;
@@ -116,6 +117,33 @@ if (scenario.component === "plugins") {
   const fields = createPluginFields({
     input,
     catalog: scenario.pluginCatalog ?? null,
+    ...(scenario.connectionPreview && {
+      saveHint: "Changes are saved when you choose Save plugin selections.",
+      slotConnection: {
+        unavailable: () => undefined,
+        async list() {
+          if (scenario.connectionPreview === "denied") {
+            throw Object.assign(new Error("Access denied"), { status: 403 });
+          }
+          if (scenario.connectionPreview === "loading") {
+            return await new Promise<never>(() => {});
+          }
+          if (scenario.connectionPreview === "empty") {
+            return [];
+          }
+          return [
+            { id: "first", displayName: "Engineering Gmail", version: 2 },
+            { id: "second", displayName: "Shared Gmail", version: 1 },
+          ];
+        },
+        async start(_slot, template) {
+          const output = document.createElement("p");
+          output.setAttribute("role", "status");
+          output.textContent = `Simulated provider handoff for ${template.displayName}. No account has been connected.`;
+          document.getElementById("app")?.append(output);
+        },
+      },
+    }),
     capabilities: scenario.pluginCapabilities ?? null,
   });
   const panel = document.createElement("section");

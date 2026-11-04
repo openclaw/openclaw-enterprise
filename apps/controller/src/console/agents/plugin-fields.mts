@@ -20,6 +20,8 @@ import {
   setUnavailable,
 } from "../dom.mjs";
 
+import { pluginConnectionControl, type SlotConnection } from "./plugin-connection.mjs";
+
 export type CatalogDirection = "search" | "refresh" | "next" | "previous";
 export type ManagedToolConnection = { slot: string; sourceId: string };
 export type ManagedToolDiscovery = {
@@ -69,6 +71,7 @@ export interface PluginFieldsOptions {
   onCancelDiscovery?: (() => void) | null;
   onLoadTools?: ((id: string, managedConnection?: ManagedToolConnection) => void) | null;
   saveHint?: string;
+  slotConnection?: SlotConnection;
   createApproverField?: (options: ApproverFieldOptions) => HTMLElement & {
     refreshNames?(): void;
     pauseNames?(): void;
@@ -206,6 +209,7 @@ export function createPluginFields({
   onLoadTools = null,
   saveHint = "Changes are saved when you create the Agent.",
   createApproverField,
+  slotConnection,
 }: PluginFieldsOptions) {
   let disabled = false;
   let configuredOnly = false;
@@ -992,15 +996,35 @@ export function createPluginFields({
                 updateSelection(entry.id, (selection) => {
                   if (sourceId) {
                     selection.driverPolicy = {
+                      ...selection.driverPolicy,
                       releaseSha256: slot.releaseSha256,
-                      credentials: { [slot.id]: sourceId },
+                      credentials: {
+                        ...(isObject(bindings) && !stale ? bindings : {}),
+                        [slot.id]: sourceId,
+                      },
                     };
-                  } else {
-                    delete selection.driverPolicy;
+                  } else if (selection.driverPolicy && isObject(bindings)) {
+                    const credentials = { ...bindings };
+                    delete credentials[slot.id];
+                    const {
+                      credentials: _old,
+                      releaseSha256: _release,
+                      ...otherPolicy
+                    } = selection.driverPolicy;
+                    if (Object.keys(credentials).length) {
+                      selection.driverPolicy = { ...selection.driverPolicy, credentials };
+                    } else if (Object.keys(otherPolicy).length) {
+                      selection.driverPolicy = otherPolicy;
+                    } else {
+                      delete selection.driverPolicy;
+                    }
                   }
                 }),
             ),
           );
+          if (slot.connectAccount && slotConnection && !current) {
+            details.append(pluginConnectionControl(slot, slotConnection));
+          }
           if (!slot.sources.length) {
             details.append(
               element(
