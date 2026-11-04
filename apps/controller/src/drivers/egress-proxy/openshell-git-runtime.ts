@@ -1241,7 +1241,7 @@ export class OpenShellGitRuntime {
         return;
       }
       try {
-        const path = preview.arm(startupId);
+        const path = preview.arm(startupId, entry.authorization.delivery.repository);
         preview.confirm(await probe(path));
         await this.fenced(entry, signal);
       } catch (error) {
