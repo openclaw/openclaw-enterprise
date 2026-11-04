@@ -1,13 +1,12 @@
 # Render installation profiles
 
-Installation profiles generate Helm values and Installation startup YAML for the
-[custom production installation](production-installation.md). Choose a profile,
-prepare its JSON input, then [render the files](#render-files). Use the separate
-[Kubernetes setup](kubernetes-setup.md) or [EKS setup](eks-openshell-setup.md)
-procedure for an OpenShell installation and its shared first-Agent session.
+For a [custom production installation](production-installation.md), choose a
+profile and [render Helm values and Installation YAML](#render-files) from JSON.
+For OpenShell, use [Kubernetes setup](kubernetes-setup.md) or
+[EKS setup](eks-openshell-setup.md) and its first-Agent session.
 
-Profiles only render configuration for an already prepared environment. They do
-not create clusters, Secrets, databases, DNS, certificates, hosted plugin
+Profiles render configuration; they do not create clusters, Secrets, databases,
+DNS, certificates, hosted plugin
 credentials, ChatGPT service accounts, repository registries, or Slack consumers.
 Prepare [routing prerequisites](workspace-routing.md#requirements) before installation;
 rendering does not verify cluster readiness.
