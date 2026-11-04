@@ -1,8 +1,10 @@
 # Render installation profiles
 
-Installation profiles generate Helm values and the Installation startup YAML for
-a production OpenClaw Enterprise install. Use a profile for standard OpenClaw or
-Codex defaults instead of editing production examples.
+Installation profiles generate Helm values and Installation startup YAML for the
+[custom production installation](production-installation.md). Choose a profile,
+prepare its JSON input, then [render the files](#render-files). Use the separate
+[Kubernetes setup](kubernetes-setup.md) or [EKS setup](eks-openshell-setup.md)
+procedure for an OpenShell installation and its shared first-Agent session.
 
 Profiles only render configuration for an already prepared environment. They do
 not create clusters, Secrets, databases, DNS, certificates, hosted plugin

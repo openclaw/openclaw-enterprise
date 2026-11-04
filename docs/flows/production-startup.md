@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-03"
-last_updated_session: "authoring-run/e9eeaa5b-19a6-4496-9c6e-98357b25ef83"
+updated: "2026-11-04"
+last_updated_session: "authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f"
 ---
 
 # Production Startup Flow
@@ -154,6 +154,16 @@ diagnostics, without submitted values, except
 `apps/controller/src/composition/installation-fields.ts:requireChartListener`:
 `CHART_LISTENER_MISMATCH` names ports, hosts or paths refused when
 `OCC_EGRESS_AUTHORITY_PORT`/`OCC_OPENSHELL_GIT_PORT` is set.
+
+With chart-managed routing, `openclaw.listenerEnv` also passes
+`OCC_CHART_GATEWAY_ROUTING` to the hook, API, and worker. After validating the
+bundled Kubernetes Compute configuration,
+`apps/controller/src/composition/installation-fields.ts:requireChartGatewayRouting`
+compares its selected Gateway name, Gateway namespace, Envoy namespace, and
+effective hostname with that chart-owned expectation. The chart reuses its
+hostname helper for the listener and the expectation. A mismatch raises
+`CHART_LISTENER_MISMATCH` naming the field without its submitted value.
+External Compute Drivers and routing not selected in Compute are unchanged.
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and
@@ -365,6 +375,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 00:26: Check chart-managed private Gateway identity and hostname before rollout. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
 
 - 2026-11-03 11:28: Reconcile PostgreSQL compatibility checks with default Helm private routing. (authoring-run/e9eeaa5b-19a6-4496-9c6e-98357b25ef83 - ccc8f0359924ed62b12e619b2ef9f3ef57a3dd7a)
 

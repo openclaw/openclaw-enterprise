@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-03"
-last_updated_session: "authoring-run/1308615d-068b-473e-8062-2baec5b66ab0"
+updated: "2026-11-04"
+last_updated_session: "authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f"
 ---
 
 # Production image upgrade flow
@@ -69,7 +69,8 @@ inside the chart, including aliases. Keep the checkout unchanged throughout the 
 Other local edits and image provenance remain unchecked.
 
 Resume checks the evidence directory's canonical path, device and inode before cluster
-access. Aliases share its lock. Runtime upgrades also lock a private sibling dispatch journal
+access. A `completed` entry refuses resume before Kubernetes or OCC calls and leaves
+the evidence unchanged. Aliases share its lock. Runtime upgrades also lock a private sibling dispatch journal
 for the run and frozen fleet. Restoring evidence leaves the journal intact.
 
 It checks protected inputs, cluster, deployed release and matching OCC/Secret Installation IDs.
@@ -267,6 +268,10 @@ resume checks the replacement.
 
 Completion proves the selected Helm rollout and OCC access; runtime upgrades
 also verify recorded deployments, ready Pods, and Doctor without errors.
+After the final evidence capture, `scripts/upgrade-production-images` creates a
+private `completed` marker. A new upgrade requires a new evidence directory.
+If writing the marker fails, reconcile the retained evidence and live state:
+an absent marker does not prove that the operation is unfinished.
 Operators then verify model responses, providers, channels, credentials,
 workspace continuity, native access, and required restore behavior.
 
@@ -323,6 +328,8 @@ Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 00:26: Record completion after final evidence capture and refuse resuming completed upgrades. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
 
 - 2026-11-03 10:46: Document stock chart verification. (authoring-run/1308615d-068b-473e-8062-2baec5b66ab0 - 11099b579a5c197e0ec5c342bffb78036c321a32)
 
