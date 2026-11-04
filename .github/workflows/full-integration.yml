@@ -239,7 +239,7 @@ jobs:
 
   k3d-model:
     name: k3d Model Runtime
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
     if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-model'
     timeout-minutes: 120
@@ -266,7 +266,7 @@ jobs:
 
   gateway-routing:
     name: Gateway Routing
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
     if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'gateway-routing'
     timeout-minutes: 35
@@ -320,7 +320,7 @@ jobs:
 
   slack:
     name: Slack Live
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
     if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack'
     timeout-minutes: 50
@@ -381,7 +381,7 @@ jobs:
 
   k3d-otel:
     name: k3d OTEL
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
     if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-otel'
     timeout-minutes: 65

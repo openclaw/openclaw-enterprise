@@ -514,6 +514,11 @@ selected results. QA waits for Slack to finish, including after Slack failure.
 The PR column identifies suites reused by other workflows; Full Integration
 uses manual main dispatches and the temporary named-branch proof route above.
 
+The focused k3d Model Runtime, Gateway Routing, Slack Live and k3d OTEL jobs use
+`blacksmith-32vcpu-ubuntu-2404`. Its kernel supports their native Codex sandbox
+probe and enforced NetworkPolicy checks. The jobs retain their security checks
+and timeouts.
+
 | Jobs                                    | What they test / suite guide                                                                                                                                           | Exact manifests                                                                                                       | Runs on PRs                                              |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | Docker Model Runtime; k3d Model Runtime | [Docker](docker.md) deploy refusal; [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)          | No                                                       |
