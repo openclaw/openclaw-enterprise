@@ -6,10 +6,10 @@ author: kevinlin-openai
 
 # Proposal: Shared model provider configuration
 
-- **ID:** RFC-0027
+- **ID:** RFC-0028
 - **Created:** 2026-11-03
 - **Last updated:** 2026-11-03
-- **Implementation plan:** [Shared model provider delivery](../plans/0027-shared-model-provider.md)
+- **Implementation plan:** [Shared model provider delivery](../plans/0028-shared-model-provider.md)
 
 ## Summary
 
@@ -141,7 +141,7 @@ to verify endpoint selection and generated configuration.
 ## Delivery and verification
 
 Submit this RFC before contract code. Then implement the
-[delivery plan](../plans/0027-shared-model-provider.md), preserving any human
+[delivery plan](../plans/0028-shared-model-provider.md), preserving any human
 review holds. The RFC remains Proposed until accepted through the repository
 process.
 
@@ -171,6 +171,5 @@ private Embedded gateway support; that networking expansion is excluded.
 [PR #4512](https://github.com/openclaw/openclaw-enterprise/pull/4512) separates
 credential types and sources; this change keeps the current binding grammar.
 
-RFC-0027 is the next number on the inspected main branch. The other unmerged
-proposals also use that provisional number; reconcile it before merge under the
-[numbering rules](../../docs/contributing/specifications.md#files-and-numbering).
+RFC-0028 follows the current main branch. Recheck the number before merge under
+the [numbering rules](../../docs/contributing/specifications.md#files-and-numbering).

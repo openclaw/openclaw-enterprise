@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0027-shared-model-provider.md
+rfc: ../rfcs/0028-shared-model-provider.md
 ---
 
 # Implementation plan: Shared model provider configuration
 
-- **ID:** RFC-0027
+- **ID:** RFC-0028
 - **Delivery status:** In progress
 - **Source baseline:** `5fdd03a69781a11ab91600ace1608aea5160198e`
-- **Authority:** [Shared model provider RFC](../rfcs/0027-shared-model-provider.md)
+- **Authority:** [Shared model provider RFC](../rfcs/0028-shared-model-provider.md)
 
 ## Outcome and scope
 
@@ -64,7 +64,8 @@ routing state, which the regression detects.
 Local validation passed: 767 owner tests and 54 browser tests, typecheck, lint,
 formatting, workspace isolation, generated API, documentation, and test-lane
 registration. Fourteen existing cases were not selected: twelve need Helm, one
-needs PostgreSQL, and one needs a pinned native runtime image.
+needed PostgreSQL and subsequently passed in an owned disposable database, and
+one needs a pinned native runtime image.
 
 [Visual evidence](https://gist.github.com/kevinlin-openai/dd5c4f4a206055eb5f5ba7fae5ec96dd)
 shows simulated Console behavior. Implementation-head CI and independent review
