@@ -619,6 +619,27 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
 
   const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
   delete manifest.lanes.lane.requiredEnv;
+  manifest.lanes.lane.files[0].requiredEnv = ["CI_RUNNER_FILE_INPUT"];
+  await writeJson(join(root, "manifest.json"), manifest);
+  const missingFileEnv = run(root, [
+    "run",
+    "lane",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/lane.jsonl",
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(missingFileEnv.status, 1);
+  summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(
+    summary.issues.map((entry) => [entry.code, entry.env]),
+    [["missing-env", "CI_RUNNER_FILE_INPUT"]],
+  );
+  delete manifest.lanes.lane.files[0].requiredEnv;
   await writeJson(join(root, "manifest.json"), manifest);
   const selected = run(root, [
     "run",
@@ -5146,6 +5167,32 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       'test("measures", (t) => {',
       ...[
         measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: 1234,
+          transcript: "secretauthvalue-transcript",
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "secretauthvalue-stage",
+          outcome: "passed",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "secretauthvalue-outcome",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: "secretauthvalue-time",
+        }),
+
+        measurement({
           kind: "kubelet-volume-refresh",
           volume: "secret",
           nudge: "pod-annotation",
@@ -5281,6 +5328,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(summary.files[0].measurements, [
+    { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
     {
       kind: "kubelet-volume-refresh",
       volume: "secret",
