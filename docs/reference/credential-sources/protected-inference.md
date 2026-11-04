@@ -92,6 +92,15 @@ model selection and discovery are refused before reading the Secret. The trusted
 sender injects the selected version. Neither the Agent nor the admission snapshot
 receives its value.
 
+Responses requests may declare local function and custom tools, including namespaces,
+in the top-level `tools` list or a developer `additional_tools` input item. Inline
+declarations use the same local-tool restrictions; they do not authorize hosted tools.
+Local function parameter schemas accept `encrypted: true` only on a string schema.
+This annotation does not itself encrypt data. The JSON string in
+`client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
+`none`, `minimal`, `low`, `medium`, `high` or `xhigh`. This metadata grants no authority.
+Unknown request fields remain refused.
+
 Static provider generation two identifies whole-execution authority. A generation-one
 grant remains narrower. Adopting live material and authorizing the broader execution
 are explicit, separate decisions; a Secret edit grants neither. The first cutover

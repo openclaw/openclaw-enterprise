@@ -62,11 +62,11 @@ function jsonValue(value: unknown, depth = 0): boolean {
   );
 }
 
-function jsonSchema(value: unknown, depth = 0): boolean {
+function jsonSchema(value: unknown, depth = 0, localTool = false): boolean {
   if (depth > 16) {
     return false;
   }
-  const nested = (item: unknown) => jsonSchema(item, depth + 1);
+  const nested = (item: unknown) => jsonSchema(item, depth + 1, localTool);
   const definitions: Validator = (item) => {
     const record = asRecord(item);
     return (
@@ -97,6 +97,10 @@ function jsonSchema(value: unknown, depth = 0): boolean {
     multipleOf: (item) => number(item) && Number(item) > 0,
     minLength: integer,
     maxLength: integer,
+    // A local string-parameter annotation, not a grant or an encryption operation.
+    ...(localTool
+      ? { encrypted: (item: unknown) => item === true && asRecord(value)?.type === "string" }
+      : {}),
     minItems: integer,
     maxItems: integer,
     minProperties: integer,
@@ -114,7 +118,7 @@ function jsonSchema(value: unknown, depth = 0): boolean {
 }
 
 const functionTool = object(
-  { type: oneOf("function"), name, parameters: jsonSchema },
+  { type: oneOf("function"), name, parameters: (value) => jsonSchema(value, 0, true) },
   { description: text, strict: bool, defer_loading: bool },
 );
 const plainTextFormat = object({ type: oneOf("text") });
@@ -177,12 +181,23 @@ const toolCall: Validator = (value) => {
     { id: text, namespace: name, status },
   )(value);
 };
+// Codex can declare the same local tools in developer input instead of the top-level list.
+const additionalLocalTools = object(
+  { type: oneOf("additional_tools"), role: oneOf("developer"), tools },
+  { id: text },
+);
 const inputItems = array(
-  (item) => inputMessage(item) || reasoningItem(item) || toolCall(item) || toolOutput(item),
+  (item) =>
+    inputMessage(item) ||
+    reasoningItem(item) ||
+    toolCall(item) ||
+    toolOutput(item) ||
+    additionalLocalTools(item),
 );
 
+const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh");
 const reasoning = optionalFields({
-  effort: oneOf("none", "minimal", "low", "medium", "high", "xhigh"),
+  effort: reasoningEffort,
   summary: oneOf("auto", "concise", "detailed"),
   context: oneOf("auto", "current_turn", "all_turns"),
 });
@@ -232,6 +247,7 @@ const clientMetadata = optionalFields({
         analytics_enabled: bool,
         history_ingest_requested: bool,
         model: metadataText,
+        reasoning_effort: reasoningEffort,
       })(parseUnambiguousJson(String(value)));
     } catch {
       return false;

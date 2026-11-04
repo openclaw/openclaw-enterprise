@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: 2026-10-30
-last_updated_session: authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008
+updated: 2026-11-04
+last_updated_session: authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af
 ---
 
 # Protected credential request flow
@@ -270,11 +270,15 @@ exact attempt without retrying; returning bytes does not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
-Before credential access, the provider normalizes the nonsecret endpoint and classifies
-the actual request. `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools and ordinary Harness components,
-disables provider tools, and uses HTTP Responses without WebSockets or automatic retries.
-The runtime manifest preserves this profile. Its `--ignore-user-config` probe sets request
-and stream retries to zero and never repeats a timed-out protected probe.
+`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools,
+disables provider tools, and selects HTTP Responses without WebSockets or retries.
+Its `--ignore-user-config` probe disables
+request/stream retries and never repeats a timed-out protected probe.
+
+`apps/controller/src/drivers/egress-proxy/openai-provider.ts:openAiStaticProvider`
+checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
+through `openai-responses.ts:validResponsesRequest` before Secret resolution.
+Inline developer tools keep the local-tool restrictions.
 
 ### 6. Reduce the live credential policy
 
@@ -335,6 +339,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
 
 - 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 

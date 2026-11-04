@@ -91,8 +91,16 @@ It also rejects unknown fields/events, remote tools, duplicate JSON keys, incomp
 SSE, credential reflection split across distinct output-item IDs, and credentials
 escaped inside function-argument JSON or its accumulated streaming deltas.
 
-This capture proves the selected direct CLI wire shape against a synthetic provider.
-It does not establish byte identity with a runtime image, generated Harness execution,
+`tests/fixtures/static-egress/codex-inline-tools.json` reduces a sanitized packaged
+capture to two local tools and representative messages. The case authorizes its
+format header and rejects unsupported roles, hosted tools and invalid annotations
+before credential access. Public Codex source defines the
+[inline declarations and format header](https://github.com/openai/codex/blob/db3c44414c2cd4ae33adaf4fa33382cb3dde6bd5/codex-rs/core/src/client.rs#L995),
+[string-parameter annotation](https://github.com/openai/codex/blob/db3c44414c2cd4ae33adaf4fa33382cb3dde6bd5/codex-rs/tools/src/json_schema/types.rs#L50), and
+[reasoning metadata](https://github.com/openai/codex/blob/db3c44414c2cd4ae33adaf4fa33382cb3dde6bd5/codex-rs/core/src/turn_metadata.rs#L86).
+
+These fixtures exercise selected client wire shapes against a synthetic provider.
+They do not establish byte identity with a runtime image, generated Harness execution,
 a real model response or installed OpenShell enforcement. A separate interrupted
 response probe with request/stream retry counts set to zero observed one request
 and a failed CLI turn; it is not a provider-effect recovery test.

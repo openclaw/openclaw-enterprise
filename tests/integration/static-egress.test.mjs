@@ -1178,6 +1178,75 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   await check.wireBody(body);
   assert.deepEqual(f.providerRequests[0].body, wire.request);
   await check.wireBody(body.replaceAll("\n", "\r\n"), { label: "CRLF" });
+
+  // A reduced, sanitized packaged-client capture uses developer input for local tools.
+  // Its format header participates in the signed request. This proves the OCE
+  // contract with a fixture sender, not native relay or model-provider support.
+  const inline = JSON.parse(
+    readFileSync(new URL("../fixtures/static-egress/codex-inline-tools.json", import.meta.url)),
+  );
+  const captured = f.capture(inline.request);
+  captured.request.headers.push(
+    ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
+  );
+  const { ready } = await f.resolve(captured);
+  assert.ok(ready, "packaged inline local tools resolve through the installed provider");
+  assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+  f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
+  const protectedReply = await f.protect(captured, await f.send(captured, ready));
+  assert.equal(protectedReply.response_complete, true);
+  assert.equal(protectedReply.body.toString(), body);
+  assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+
+  // Inline declarations cannot expand the admitted local-tool grant or let
+  // client metadata select authority. Refuse before another Secret read/send.
+  const inlineReads = f.secretReads;
+  const inlineSends = f.providerRequests.length;
+  const mutations = [
+    ...["system", "user", "assistant"].map((role) => (request) => {
+      request.input[0].role = role;
+    }),
+    (request) => {
+      request.input[0].tools.push({ type: "web_search" });
+    },
+    (request) => {
+      request.input[0].tools[0].tools.push({ type: "web_search" });
+    },
+    (request) => {
+      request.input[0].authority = "owner";
+    },
+    (request) => {
+      request.input[0].tools[1].tools[0].parameters.properties.message.encrypted = false;
+    },
+    (request) => {
+      request.input[0].tools[1].tools[0].parameters.properties.message.type = "number";
+    },
+    (request) => {
+      const metadata = JSON.parse(request.client_metadata["x-codex-turn-metadata"]);
+      metadata.reasoning_effort = "unrecognized";
+      request.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+    },
+    (request) => {
+      request.client_metadata.namespace_id = f.namespace.id;
+    },
+    (request) => {
+      request.text.format = {
+        type: "json_schema",
+        name: "output",
+        schema: { type: "string", encrypted: true },
+      };
+    },
+    (request) => {
+      request.store = true;
+    },
+  ];
+  for (const mutate of mutations) {
+    const request = structuredClone(inline.request);
+    mutate(request);
+    assert.ok((await f.resolve(f.capture(request))).refused);
+  }
+  assert.equal(f.secretReads, inlineReads, "unsupported inline requests cannot read credentials");
+  assert.equal(f.providerRequests.length, inlineSends, "unsupported inline requests cannot send");
   const beforeReads = f.secretReads;
   for (const body of [
     { ...wire.request, tools: [...wire.request.tools, ...wire.refusedTools] },
