@@ -1,3 +1,18 @@
+import type {
+  AgentDeploymentStatusWire,
+  NamespaceStatus,
+  RepositoryOption,
+  RuntimeImage,
+  SecretDetailResponse,
+} from "@openclaw-enterprise/contracts";
+import type { WorkspaceFileResponse } from "../../../packages/contracts/src/api/resources.ts";
+import type { PluginFieldsOptions } from "../../../apps/controller/src/console/agents/plugin-fields.mts";
+import type { agentSaveGap } from "../../../apps/controller/src/console/agents/list.mts";
+import type { StoryAction } from "../story-action.mts";
+import type { createFixtureFetch } from "./preview-rules.mts";
+import type { createAgentLifecycle } from "./agent-lifecycle.mts";
+import type { configurationValues } from "./configuration-fixture.mts";
+import type { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 import {
   createAgentDetailPolicyScenarios,
   createAgentDetailPolicyWithoutSandboxDriver,
@@ -34,6 +49,61 @@ import { secretsScenarios } from "./scenario-groups/secrets.mts";
 import { settingsScenarios } from "./scenario-groups/settings.mts";
 import { signInScenarios } from "./scenario-groups/sign-in.mts";
 
+type FixtureRule = Parameters<typeof createFixtureFetch>[0][number];
+type AgentPermissions = NonNullable<Parameters<typeof agentSaveGap>[0]>;
+// These historical four-flag responses intentionally omit the newer permission fields.
+type PermissionSnapshot = Pick<AgentPermissions, "update" | "deploy" | "operate" | "delete">;
+type AuthoredRule = Omit<FixtureRule, "data"> &
+  (
+    | { data?: never }
+    | { suffix: "/native-admin"; data: { status: "unavailable" } }
+    | {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions";
+        data: PermissionSnapshot;
+      }
+    | { suffix: "/SOUL.md"; data: WorkspaceFileResponse["data"] }
+  );
+type LocalScenario = Parameters<typeof createAgentLifecycle>[0] &
+  Parameters<typeof configurationValues>[0] & {
+    group: string;
+    name: string;
+    description: string;
+    path?: string;
+    buildRevision?: string;
+    actions?: readonly StoryAction[];
+    rules?: readonly AuthoredRule[];
+    steps?: readonly string[];
+    workflow?: readonly string[];
+    gap?: string;
+    nextStory?: string;
+    mobile?: boolean;
+    runtimeImages?: {
+      status: "observed" | "undeployed" | "unsupported";
+      images: readonly RuntimeImage[];
+    };
+    nativeAdmin?: "available" | "stopped" | "unsupported" | "denied";
+    nativeAdminUrl?: string;
+    observabilityUrl?: string;
+    observabilityDenied?: boolean;
+    readOnlyPermissionSummary?: boolean;
+    agentCreateRestricted?: boolean;
+    emptyNamespaces?: boolean;
+    emptyBackends?: boolean;
+    namespaceName?: string;
+    namespaceStatus?: NamespaceStatus;
+    namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
+    candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
+    bootstrapFailure?: boolean;
+    agentPermissionSummary?: PermissionSnapshot;
+    swePreset?: boolean;
+    pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
+    pluginCapabilities?: PluginFieldsOptions["capabilities"];
+    fixturePluginCatalog?: true;
+    fixturePluginCatalogMessage?: string;
+    repositoryOptions?: readonly RepositoryOption[];
+    extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
+  };
+
 const draft =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=draft";
 const revision =
@@ -43,7 +113,7 @@ const currentVersion =
 const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
 // A SOUL.md long enough to scroll; its first line names the version that serves it.
-const soulVersion = (version) =>
+const soulVersion = (version: string) =>
   `# SOUL.md served by ${version}\n\n` +
   Array.from(
     { length: 40 },
@@ -56,9 +126,7 @@ const reservedConfigurationWrite = {
   code: "RESOURCE_CONFLICT",
   message:
     "The Configuration is reserved for provisioning and is not available for this operation.",
-};
-/** @typedef {import("../../../apps/controller/src/console/agents/plugin-fields.mts").PluginFieldsOptions} PluginFieldsOptions */
-/** @typedef {PluginFieldsOptions["catalog"]} PluginFieldCatalog */
+} satisfies Parameters<typeof channelsScenarios>[0]["reservedConfigurationWrite"];
 
 // Names and IDs from plugin-suggestions branch commit eb83563c.
 // Catalog availability and tool details are simulated in this Storybook fixture.
@@ -116,12 +184,11 @@ const devdayCuratedEntries = codexPluginSuggestions.map((suggestion) => {
         : [],
   };
 });
-/** @satisfies {PluginFieldCatalog} */
 const devdayPluginCatalog = {
   status: "ready",
   setup: pluginSetup,
   entries: [...devdayCuratedEntries, calendarPlugin],
-};
+} satisfies PluginFieldsOptions["catalog"];
 const devdayPluginDiscovery = {
   pages: {
     initial: {
@@ -130,11 +197,13 @@ const devdayPluginDiscovery = {
       setup: pluginSetup,
     },
   },
-  details: Object.fromEntries(devdayPluginCatalog.entries.map((entry) => [entry.remoteId, entry])),
-};
-const account = [{ selector: ".account-toggle", click: true }];
+  details: Object.fromEntries(
+    devdayPluginCatalog.entries.map((entry) => [entry.remoteId, entry] as const),
+  ),
+} satisfies Parameters<typeof servePluginDiscovery>[0];
+const account = [{ selector: ".account-toggle", click: true }] satisfies StoryAction[];
 const devdayRepositorySelector = 'input[data-repository-ref="openclaw/openclaw-enterprise"]';
-const devdayCreateCheckpoint = [
+const devdayCreateCheckpoint: StoryAction[] = [
   click("Create Agent"),
   { selector: "#agent-preset", value: "pre_swe_codex" },
   { selector: "#preset-variable-name", value: "devday claw" },
@@ -167,7 +236,7 @@ const devdayCreateCheckpoint = [
   { selector: '.agent-tabs button[role="tab"][aria-controls$="-deployment-panel"]', click: true },
   { selector: ".deployment-status" },
 ];
-const devdayAdminCheckpoint = [
+const devdayAdminCheckpoint: StoryAction[] = [
   { selector: 'a[href*="agt_00000000-0000-4000-8000-000000000001"]', click: true },
   { selector: ".native-admin-access a[href]" },
 ];
@@ -180,7 +249,7 @@ const agentDetailScenarios = createAgentDetailScenarios({
 });
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
-export const scenarios = {
+const authoredScenarios = {
   ...secretsScenarios({ presetSecretsPath, click }),
 
   runtimeImages: {
@@ -213,7 +282,7 @@ export const scenarios = {
     description:
       "Inspect the OCE commit and each Agent's observed runtime images. Expand an Agent, compare the gateway image ID, Enterprise source commit, and upstream OpenClaw commit, then navigate to Namespaces: debug=true remains enabled. Remove the flag to hide diagnostics.",
     gap: "Simulated image identities demonstrate presentation. Native Driver integration verifies actual Docker and Kubernetes observations separately.",
-  },
+  } satisfies LocalScenario,
   runtimeImagesUnavailable: {
     group: "Pages/Navigation",
     name: "Debug metadata unavailable",
@@ -222,7 +291,7 @@ export const scenarios = {
     actions: [{ selector: ".runtime-debug-images summary", click: true }],
     description:
       "A failed runtime read leaves normal navigation available and tells the operator to refresh. Unknown commits are never inferred from tags.",
-  },
+  } satisfies LocalScenario,
   overview: {
     group: "Overview",
     name: "Console coverage",
@@ -230,7 +299,7 @@ export const scenarios = {
     description:
       "Browse pages, component states, and guided Agent workflows. Every preview mounts the production console modules and styles in its own frame. Reset story discards all local changes.",
     gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. Namespace provisioning, Preset management, and experimental Backend setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
-  },
+  } satisfies LocalScenario,
   ...signInScenarios({ draft, click, account }),
   agents: {
     group: "Pages/Agents",
@@ -246,7 +315,7 @@ export const scenarios = {
       "Open Namespaces and return to Agents; the sidebar stays mounted while the destination data loads.",
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsRowNavigation: {
     group: "Pages/Agents",
     name: "Row navigation",
@@ -259,7 +328,7 @@ export const scenarios = {
       "Open Stop or Delete and cancel. The list stays visible. In Row restricted, disabled buttons and their icons do not open the Agent.",
       "Select part of an Agent ID with the mouse. Releasing the mouse keeps the selected text and list visible.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationFirstVisit: {
     group: "Pages/Navigation",
     name: "First visits",
@@ -275,7 +344,7 @@ export const scenarios = {
       "Open Documentation assistant again and switch to another window and back during its read: Loading agent details and Back to Agents stay. Double-click Back to Agents: the list opens once and the console stays.",
       "Reload the story: the cold visit shows the session status, then Agents, with no loading panels between them.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationAgentReadRetry: {
     group: "Pages/Navigation",
     name: "Retry opening an Agent",
@@ -294,7 +363,7 @@ export const scenarios = {
       "Open Documentation assistant. Loading agent details is replaced by Could not load agent details; the page heading stays Agent details.",
       "Choose Try again. Documentation assistant opens without a page reload, and Back returns to the list.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationRetained: {
     group: "Pages/Navigation",
     name: "Return to loaded pages",
@@ -315,7 +384,7 @@ export const scenarios = {
       "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationSlowRecheck: {
     group: "Pages/Navigation",
     name: "Slow rechecks",
@@ -329,7 +398,7 @@ export const scenarios = {
       "Focus Refresh, the Namespace selector or a sidebar link, switch windows, then return. When the list returns, focus is back on that control.",
       "Open the Agent. In the sidebar, focus Agents and press Enter. Focus waits on the page heading while the list loads, then returns to the Agent link; it does not drop to the page body.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationAgentReturn: {
     group: "Pages/Navigation",
     name: "Return to Agent panels",
@@ -344,7 +413,7 @@ export const scenarios = {
       "Return to Agents and use browser Back. Native admin access and expanded panels remain loaded after admission succeeds.",
       "Click Refresh access to explicitly check the native endpoint again. Page Refresh reloads all panels.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationDenied: {
     group: "Pages/Navigation",
     name: "Return access denied",
@@ -362,7 +431,7 @@ export const scenarios = {
       "Wait for the populated Agents list, open Create Agent, and return to Agents.",
       "Observe the retained list while the response is pending, then the access-denied state. Retry must not restore the old rows.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationBackendDenied: {
     group: "Pages/Navigation",
     name: "Return Backend access denied",
@@ -378,7 +447,7 @@ export const scenarios = {
       "Select Refresh and wait for Access denied, then use browser Back to return to Engineering.",
       "Confirm the previous Backend row stays absent while the session check runs and the denied state returns.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationExpired: {
     group: "Pages/Navigation",
     name: "Return session expired",
@@ -390,7 +459,7 @@ export const scenarios = {
       "When the session check fails, confirm the sign-in form replaces all private content.",
       "Sign in again and confirm the requested collection returns without replaying a write.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationOffline: {
     group: "Pages/Navigation",
     name: "Refresh while offline",
@@ -403,26 +472,26 @@ export const scenarios = {
       "Choose Retry: the same message returns and focus is on Retry again.",
       "Repeat at phone width.",
     ],
-  },
+  } satisfies LocalScenario,
   observabilityLink: {
     group: "Components/Navigation",
     name: "Admin Observability link",
     observabilityUrl: "https://observability.example.test/d/occ-observability",
     description:
       "Installation administrators see Observability with an external-link icon; it opens in a new tab.",
-  },
+  } satisfies LocalScenario,
   observabilityDenied: {
     group: "Components/Navigation",
     name: "Observability access denied",
     observabilityDenied: true,
     description: "Namespace-only access keeps Observability out of navigation.",
-  },
+  } satisfies LocalScenario,
   agentsEmpty: {
     group: "Pages/Agents",
     name: "Empty",
     emptyAgents: true,
     description: "A ready Namespace with no Agents offers creation.",
-  },
+  } satisfies LocalScenario,
   agentsEmptyMember: {
     group: "Pages/Agents",
     name: "Empty for a member",
@@ -430,7 +499,7 @@ export const scenarios = {
     readOnlyPermissionSummary: true,
     description:
       "A member without Agent create sees no Agents. The heading says none are shared with them, not that the Namespace has none, and nothing invites creating.",
-  },
+  } satisfies LocalScenario,
   agentsCreateBlockedByRestriction: {
     group: "Pages/Agents",
     name: "Create blocked by a Restriction",
@@ -441,7 +510,7 @@ export const scenarios = {
       "Check that Create Agent is disabled and that a screen reader names the note as its description.",
     ],
     gap: "The permission answer is advisory. The controller still authorizes each create.",
-  },
+  } satisfies LocalScenario,
   agentsUnreadableConfiguration: {
     group: "Pages/Agents",
     name: "Unreadable saved configuration",
@@ -453,7 +522,7 @@ export const scenarios = {
       "Open Research assistant and select Open draft. Its saved settings show a repair banner without editing or deployment controls.",
       "Select v1 to inspect the readable admitted snapshot. Return to Agents and open Documentation assistant to check that its draft remains editable.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsRowStopConfirm: {
     group: "Pages/Agents",
     name: "Stop from the list",
@@ -467,7 +536,7 @@ export const scenarios = {
       "In Populated, never-deployed Agents show no Stop icon, as on Agent detail.",
     ],
     gap: "The fixture records the requested state only. Live runtime shutdown is not simulated.",
-  },
+  } satisfies LocalScenario,
   agentsRowStopped: {
     group: "Pages/Agents",
     name: "Stop requested from the list",
@@ -478,7 +547,7 @@ export const scenarios = {
     ],
     description:
       "An accepted row Stop shows a status notice, a Stop requested badge, and a disabled Stop icon that keeps focus, described by the badge. Delete stays available.",
-  },
+  } satisfies LocalScenario,
   agentsRowDeleteConfirm: {
     group: "Pages/Agents",
     name: "Delete from the list",
@@ -492,7 +561,7 @@ export const scenarios = {
       "Select Refresh: the row still shows Deleting, because the list keeps an Agent until its cleanup finishes.",
     ],
     gap: "The fixture does not run cleanup. Open the Agent to follow deletion status.",
-  },
+  } satisfies LocalScenario,
   agentsRowStopDenied: {
     group: "Pages/Agents",
     name: "Stop from the list denied",
@@ -504,7 +573,7 @@ export const scenarios = {
     ],
     description:
       "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running. Its Stop icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent operate.",
-  },
+  } satisfies LocalScenario,
   agentsRowDeleteDenied: {
     group: "Pages/Agents",
     name: "Delete from the list denied",
@@ -522,7 +591,7 @@ export const scenarios = {
     ],
     description:
       "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list. Its Delete icon takes focus back and looks unavailable, described by the alert, and the row's note under the icons says Needs Agent delete.",
-  },
+  } satisfies LocalScenario,
   agentsRowDeleteRefusedOther: {
     group: "Pages/Agents",
     name: "Delete from the list refused for another reason",
@@ -543,7 +612,7 @@ export const scenarios = {
     ],
     description:
       "The row is stale: another person's deletion of this Agent failed after the list loaded, and the controller refuses this caller's Delete for that reason, not for a missing grant. The alert shows the API's text with the Agent's name. The row's note names no grant; it reads Not deleted: see above, so a narrow screen that scrolled the alert away still says why. Both icons stay in the Tab order, unavailable and described by the refusal, until Refresh; focus stays on Delete.",
-  },
+  } satisfies LocalScenario,
   agentsRowRefocusDeleting: {
     group: "Pages/Agents",
     name: "Refocus after another person's deletion, with a kept refusal",
@@ -568,7 +637,7 @@ export const scenarios = {
     steps: [
       "At 390 px, scroll until the note Not deleted: see above sits at the bottom of the window, with Delete Research assistant focused. Switch to another window, then return. The row reads Deleting, and Delete and its note are both in view.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsRowRefocusStopped: {
     group: "Pages/Agents",
     name: "Refocus after another person's stop",
@@ -579,7 +648,7 @@ export const scenarios = {
     steps: [
       "Press Tab until Stop Research assistant has focus. Switch to another window, then return. The row has no Stop icon, and focus is on the Research assistant link.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsRowRestricted: {
     group: "Pages/Agents",
     name: "Row actions unavailable for this caller",
@@ -593,7 +662,7 @@ export const scenarios = {
       "Open an Agent: its detail page explains the same restrictions.",
     ],
     gap: "The summary is advisory. The controller still authorizes each write.",
-  },
+  } satisfies LocalScenario,
   agentsRowStopPermissionDuringConfirmation: {
     group: "Pages/Agents",
     name: "Stop from the list, permission arrives while confirmation is open",
@@ -609,7 +678,7 @@ export const scenarios = {
       "Tab to Stop Agent. It takes focus and looks unavailable, described by the restriction; Enter, Space or a click sends nothing (finding 2935).",
     ],
     gap: "The permission answer is simulated; the API still authorizes every request.",
-  },
+  } satisfies LocalScenario,
   agentsRowStopUnknown: {
     group: "Pages/Agents",
     name: "Stop from the list outcome unknown",
@@ -621,13 +690,13 @@ export const scenarios = {
     ],
     description:
       "An unconfirmed row Stop disables that row's actions until Refresh rereads the list. The console never resends the request.",
-  },
+  } satisfies LocalScenario,
   agentsSearch: {
     group: "Pages/Agents",
     name: "No search matches",
     actions: [{ selector: 'input[type="search"]', value: "no-such-agent" }],
     description: "Search returns no matches without changing the Namespace.",
-  },
+  } satisfies LocalScenario,
   noNamespaces: {
     group: "Pages/Agents",
     name: "No readable Namespaces",
@@ -637,13 +706,13 @@ export const scenarios = {
       "Tab to the Namespace selector. It takes focus and looks unavailable, described by the panel's sentence; arrow keys and a click change nothing (finding 2936).",
     ],
     gap: "Create a Namespace from Namespaces; granting access still requires an administrator.",
-  },
+  } satisfies LocalScenario,
   namespaceMissing: {
     group: "Pages/Agents",
     name: "Namespace unavailable",
     path: "/console/agents?namespace=ns_missing",
     description: "A stale Namespace link asks the reader to switch scope.",
-  },
+  } satisfies LocalScenario,
   namespaceMissingNoneReadable: {
     group: "Pages/Agents",
     name: "Namespace unavailable, none readable",
@@ -651,7 +720,7 @@ export const scenarios = {
     path: "/console/agents?namespace=ns_missing",
     description:
       "A stale Namespace link for a reader with no readable Namespace points at the header's Refresh, with no Switch Namespace button.",
-  },
+  } satisfies LocalScenario,
   namespaceMissingAgentBookmark: {
     group: "Pages/Agents",
     name: "Namespace unavailable, Agent bookmark",
@@ -660,7 +729,7 @@ export const scenarios = {
     description:
       "An Agent bookmark in a Namespace the reader can no longer read shows the Agents header and the panel, without the Agent's ID, copy button or back link.",
     gap: "Simulated UI proof only; this preview does not revoke a grant.",
-  },
+  } satisfies LocalScenario,
   agentsCreateRestricted: {
     group: "Pages/Agents",
     name: "Create Agent unavailable for this caller",
@@ -670,7 +739,7 @@ export const scenarios = {
       "Find the explanation beside Create Agent. The action is unavailable; opening a readable Agent still works.",
       "Tab to Create Agent. It takes focus and looks unavailable, its description is the explanation, and Enter, Space or a click does nothing.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsCreateRestrictedEmpty: {
     group: "Pages/Agents",
     name: "Empty, Create Agent unavailable",
@@ -678,7 +747,7 @@ export const scenarios = {
     readOnlyPermissionSummary: true,
     description:
       "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
-  },
+  } satisfies LocalScenario,
   agentsNamespaceProvisioning: {
     group: "Pages/Agents",
     name: "Empty, Namespace still provisioning",
@@ -686,7 +755,7 @@ export const scenarios = {
     namespaceStatus: "provisioning",
     description:
       "A first run's Namespace is still provisioning: the page names its status and what waits for it, and Create Agent stays available for drafts.",
-  },
+  } satisfies LocalScenario,
   agentsNamespaceBecomesReady: {
     group: "Pages/Agents",
     name: "Namespace becomes ready",
@@ -699,7 +768,7 @@ export const scenarios = {
       'Keep the caret in Search Agents. After the first recheck (about 10 s) the note still begins "Namespace status: Provisioning."; within about 20 s it becomes "Namespace status: Ready. Agents created here can be deployed now."',
       "Confirm Search Agents keeps its text and focus, Research assistant is still listed, and Create Agent is enabled with no description pointing at the note. No further Namespace reads happen.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsNamespaceMissing: {
     group: "Pages/Agents",
     name: "Namespace leaves the list while provisioning",
@@ -714,7 +783,7 @@ export const scenarios = {
       'Within about 10 s the note "Namespace status: Provisioning." becomes "This Namespace is missing or you no longer have access. Choose another Namespace."',
       "Confirm Create Agent is disabled and described by that note, no empty-list message appears, and no further Namespace reads happen.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsNamespaceMissingStopDialog: {
     group: "Pages/Agents",
     name: "Namespace loss with Stop dialog",
@@ -727,7 +796,7 @@ export const scenarios = {
     steps: [
       "Wait for the recheck. The dialog, rows and previous feedback disappear. Search Agents receives focus, with no empty-list message.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsNamespaceMissingLateStop: {
     group: "Pages/Agents",
     name: "Namespace loss before Stop response",
@@ -743,7 +812,7 @@ export const scenarios = {
     steps: [
       "Wait for the result. Only generic acceptance and the unavailable warning remain, with no Agent name, ID or empty-list message.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsNamespaceMissingDeleteDialog: {
     group: "Pages/Agents",
     name: "Namespace loss with Delete dialog",
@@ -756,7 +825,7 @@ export const scenarios = {
     steps: [
       "Wait for the recheck. The dialog, rows and previous feedback disappear. Search Agents receives focus, with no empty-list message.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsNamespaceMissingPopulated: {
     group: "Pages/Agents",
     name: "Populated Namespace leaves the list",
@@ -769,26 +838,26 @@ export const scenarios = {
       "Wait for the missing-Namespace warning. Research assistant and its actions disappear.",
       "Clear Search Agents. The old rows must not return. Repeat at phone width.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", status: 403 }],
     description:
       "Collection authorization denial. Its request ID is behind a Request details disclosure, not in the reason. Retry would repeat the refusal, so the panel offers none; the header's Refresh checks access again.",
-  },
+  } satisfies LocalScenario,
   agentsError: {
     group: "Pages/Agents",
     name: "Read failure",
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", status: 503 }],
     description: "A failed collection read offers retry rather than presenting an empty result.",
-  },
+  } satisfies LocalScenario,
   agentsLoading: {
     group: "Pages/Agents",
     name: "Loading",
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", hold: true }],
     description: "The collection read remains pending until the real 15-second client timeout.",
-  },
+  } satisfies LocalScenario,
   agentsInterruptedResponse: {
     group: "Pages/Agents",
     name: "Interrupted response",
@@ -806,7 +875,7 @@ export const scenarios = {
       "Check that Request interrupted appears with Retry instead of an empty Agent collection.",
       "Select Retry. The populated Agent list returns without changing Namespace or saved resources.",
     ],
-  },
+  } satisfies LocalScenario,
   backends: {
     group: "Pages/Backends",
     name: "Configured",
@@ -814,21 +883,21 @@ export const scenarios = {
     description:
       "Experimental Installation-wide Backend discovery, separate from model provider selection.",
     gap: "This is a read-only page; configure experimental Backends through Installation configuration.",
-  },
+  } satisfies LocalScenario,
   backendsEmpty: {
     group: "Pages/Backends",
     name: "Empty",
     path: "/console/backends",
     emptyBackends: true,
     description: "No experimental Backends are configured.",
-  },
+  } satisfies LocalScenario,
   backendsError: {
     group: "Pages/Backends",
     name: "Discovery unavailable",
     path: "/console/backends",
     rules: [{ path: "/backends", status: 503 }],
     description: "Backend discovery fails and can be retried.",
-  },
+  } satisfies LocalScenario,
   backendsDenied: {
     group: "Pages/Backends",
     name: "Access denied",
@@ -836,7 +905,7 @@ export const scenarios = {
     rules: [{ path: "/backends", status: 403 }],
     description:
       "A caller without Installation access is told Backends apply to the whole Installation. The Namespace selector is hidden, since another Namespace would not change the answer.",
-  },
+  } satisfies LocalScenario,
   ...namespacesScenarios,
   ...settingsScenarios,
   notFound: {
@@ -844,7 +913,7 @@ export const scenarios = {
     name: "Page not found",
     path: "/console/missing",
     description: "An unknown console route offers a return to Agents.",
-  },
+  } satisfies LocalScenario,
   ...createAgentFormScenarios,
   ...pluginsScenarios,
   ...createAgentProvisioningScenarios,
@@ -865,7 +934,7 @@ export const scenarios = {
       "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
       "Tab to the long name and press Enter: the Agent opens.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsLongNameDigits: {
     group: "Pages/Agents",
     name: "Long name of digit groups",
@@ -878,7 +947,7 @@ export const scenarios = {
     steps: [
       "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsLongNamePunctuation: {
     group: "Pages/Agents",
     name: "Long name with punctuation after hyphens",
@@ -891,7 +960,7 @@ export const scenarios = {
     steps: [
       "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsLongNameDashes: {
     group: "Pages/Agents",
     name: "Long name of em dashes",
@@ -902,7 +971,7 @@ export const scenarios = {
     steps: [
       "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsLongNameJoiners: {
     group: "Pages/Agents",
     name: "Long name of word-joiner runs",
@@ -914,7 +983,7 @@ export const scenarios = {
     steps: [
       "Clear Search Agents, then type Joiners one letter at a time. Each letter filters the list at once, and the Agent stays listed.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsLongNameMixed: {
     group: "Pages/Agents",
     name: "Long name held by emoji, quotes and digits",
@@ -927,7 +996,7 @@ export const scenarios = {
     steps: [
       "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsLongNamePhone: {
     group: "Pages/Agents",
     name: "Long unbroken name (phone)",
@@ -936,7 +1005,7 @@ export const scenarios = {
     agentName: "ResearchAssistantForTheQuarterlyReleaseReviewAndSignOff".repeat(4).slice(0, 200),
     description:
       "The same 200-character name at 390 px wraps inside its stacked row, and the page does not scroll sideways.",
-  },
+  } satisfies LocalScenario,
   agentsIdLigaturesPhone: {
     group: "Pages/Agents",
     name: "Agent ID with ff (phone)",
@@ -945,7 +1014,7 @@ export const scenarios = {
     agentId: "agt_ffffffff-ffff-4fff-bfff-ffffffffffff",
     description:
       'Each character of an ID is its own glyph: "ff" never draws as a ligature, so this ID is as wide as one with no "f". To compare, view it where the monospace font has ligatures (Nimbus Mono PS, a common Linux default): before finding 2114 each "ff" there drew as one glyph, and this ID was a third shorter.',
-  },
+  } satisfies LocalScenario,
   agentsDeploymentFailed: {
     group: "Pages/Agents",
     name: "Latest deployment failed",
@@ -960,7 +1029,7 @@ export const scenarios = {
       "Hover the one-line failure to read its whole text.",
       "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
     ],
-  },
+  } satisfies LocalScenario,
   ...agentDetailScenarios.bootstrap,
   agentsDeploymentDenied: {
     group: "Pages/Agents",
@@ -973,7 +1042,7 @@ export const scenarios = {
     steps: [
       "Current version cannot be named by number without the versions read, so it shows the selected version's short ID as a link, in code type.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsDeploymentLoading: {
     group: "Pages/Agents",
     name: "Latest deployment loading",
@@ -985,7 +1054,7 @@ export const scenarios = {
     steps: [
       'Current version reads "Reading version…" and Latest deployment "Reading deployment…" until the versions read lands; then they read "v1" and "v1 · Completed".',
     ],
-  },
+  } satisfies LocalScenario,
   agentsCurrentVersionOlder: {
     group: "Pages/Agents",
     name: "Current version older than the first page",
@@ -1006,7 +1075,7 @@ export const scenarios = {
       'Latest deployment reads "v7 · Failed" while Current version still reads "Reading version…". About 4 s later it reads "v6".',
     ],
     gap: "The fixture lists one version per page so the current version falls off the first page; the API default is 50.",
-  },
+  } satisfies LocalScenario,
   agentsCurrentVersionDenied: {
     group: "Pages/Agents",
     name: "Current version unreadable",
@@ -1026,7 +1095,7 @@ export const scenarios = {
     steps: [
       'Current version reads "A version you cannot read" in muted text, with no link and no ID, and Latest deployment reads "v7 · Failed". Beside a failed deployment, the current version may be older or newer.',
     ],
-  },
+  } satisfies LocalScenario,
   agentsCurrentVersionHidden: {
     group: "Pages/Agents",
     name: "Current version newer and unreadable",
@@ -1048,7 +1117,7 @@ export const scenarios = {
       'Current version reads "A newer version you cannot read", with no link and no ID, and Latest deployment reads "v7 · Completed".',
       "The request log shows no read of the current version.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsReturnWhileDeploymentsLoad: {
     group: "Pages/Agents",
     name: "Return while deployments load",
@@ -1069,7 +1138,7 @@ export const scenarios = {
       "The list is usable immediately. Latest deployment starts blank; after 250 ms it says “Reading deployment…”, never linking to the old result. When access is denied, the Agent stays visible.",
       "After Back, focus the Research assistant link while its deployment still reads, switch windows, then return. The same list returns with focus on the link.",
     ],
-  },
+  } satisfies LocalScenario,
   agentsDeploymentError: {
     group: "Pages/Agents",
     name: "Latest deployment unavailable",
@@ -1078,7 +1147,7 @@ export const scenarios = {
     latestDeploymentReadStatus: 503,
     description:
       "An interrupted deployment read leaves the Agent and current pointer visible without guessing an outcome.",
-  },
+  } satisfies LocalScenario,
   ...agentDetailScenarios.runtime,
   buildRevision: {
     group: "Components/Navigation",
@@ -1087,21 +1156,21 @@ export const scenarios = {
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
       "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
-  },
+  } satisfies LocalScenario,
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
     path: "/console/agents?debug=true",
     description:
       "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
-  },
+  } satisfies LocalScenario,
   menu: {
     group: "Components/Navigation",
     name: "Account menu",
     actions: account,
     description:
       "The account row in the dark navigation opens a light menu with Settings and Sign out. Use the arrow keys to check focus inside the menu, then Escape to return to the account.",
-  },
+  } satisfies LocalScenario,
   menuMobile: {
     group: "Components/Navigation",
     name: "Mobile account menu",
@@ -1115,7 +1184,7 @@ export const scenarios = {
     steps: [
       "Press Escape; focus returns to the avatar. Open navigation, then check the menu closed.",
     ],
-  },
+  } satisfies LocalScenario,
   namespaceMenu: {
     group: "Components/Navigation",
     name: "Namespace switcher",
@@ -1126,7 +1195,7 @@ export const scenarios = {
       "Choose Engineering to return to its Agents, then use browser Back to restore Research.",
       "Open Namespaces; the Installation-wide list has no Namespace selector. Return to Agents to switch scope.",
     ],
-  },
+  } satisfies LocalScenario,
   namespaceSelectorMobile: {
     group: "Components/Navigation",
     name: "Mobile Namespace selector",
@@ -1138,7 +1207,7 @@ export const scenarios = {
       "Check that the compact control stays 32px tall and the long Namespace name truncates before the inset chevron.",
       "Choose Research, then return to the long Namespace and check the selection.",
     ],
-  },
+  } satisfies LocalScenario,
   mobile: {
     group: "Components/Navigation",
     name: "Mobile drawer",
@@ -1154,7 +1223,7 @@ export const scenarios = {
       "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
       "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",
     ],
-  },
+  } satisfies LocalScenario,
   navigationDrawerScroll: {
     group: "Components/Navigation",
     name: "Compact drawer scroll position",
@@ -1167,7 +1236,7 @@ export const scenarios = {
       "Choose Namespaces, then use Back. The Secrets heading and search return in view.",
       "Open navigation and press Escape. Scroll Secrets normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
     ],
-  },
+  } satisfies LocalScenario,
   ...channelsScenarios({
     click,
     draft,
@@ -1190,7 +1259,7 @@ export const scenarios = {
       "Check the selected version, completed deployment, and unverified live serving at desktop and phone widths.",
       "Open Deployment and expand Deployment details, then use Open Agent UI directly. Compare Denied and hidden: there is no launch or access warning there.",
     ],
-  },
+  } satisfies LocalScenario,
   nativeStopped: {
     group: "Components/Native admin",
     name: "Stopped",
@@ -1202,7 +1271,7 @@ export const scenarios = {
       "Tab to Open Agent UI in the header. It takes focus, looks unavailable, and pressing Enter opens nothing.",
     ],
     gap: "Deploying a new revision resumes the Agent; Console does not expose live shutdown completion evidence.",
-  },
+  } satisfies LocalScenario,
   nativeUnsupported: {
     group: "Components/Native admin",
     name: "Unsupported",
@@ -1210,7 +1279,7 @@ export const scenarios = {
     deployed: true,
     nativeAdmin: "unsupported",
     description: "The selected runtime does not expose a supported native admin endpoint.",
-  },
+  } satisfies LocalScenario,
   nativeDenied: {
     group: "Components/Native admin",
     name: "Denied and hidden",
@@ -1218,7 +1287,7 @@ export const scenarios = {
     deployed: true,
     nativeAdmin: "denied",
     description: "Denied native-admin access hides the whole panel.",
-  },
+  } satisfies LocalScenario,
   nativeRefreshing: {
     group: "Components/Native admin",
     name: "Refreshing access",
@@ -1230,7 +1299,7 @@ export const scenarios = {
     steps: [
       "Tab to Refresh access and press Enter. While Checking access… shows, focus stays on the button and Enter again sends nothing.",
     ],
-  },
+  } satisfies LocalScenario,
   nativeAvailableAfterDeploy: {
     group: "Components/Native admin",
     name: "Available once a deployment completes",
@@ -1249,7 +1318,7 @@ export const scenarios = {
       "Wait for the poll. The live Open Agent UI link replaces the button and keeps focus: press Tab once and focus moves to the next header control, not to the start of the page.",
     ],
     gap: "The deployment, its activation and native admin access are simulated.",
-  },
+  } satisfies LocalScenario,
   ...agentDetailScenarios.layout,
   workspaceLoading: {
     group: "Components/Workspace",
@@ -1265,7 +1334,7 @@ export const scenarios = {
     ],
     description:
       "File selection and role descriptions remain available during reads. Each file shows Loading and disables its editor until the read finishes.",
-  },
+  } satisfies LocalScenario,
   workspaceNavigation: {
     group: "Components/Workspace",
     name: "Keep unsaved files",
@@ -1284,7 +1353,7 @@ export const scenarios = {
       "Open Namespaces, return with Back, then save AGENTS.md and reload USER.md.",
     ],
     gap: "Simulated files; no live Agent gateway.",
-  },
+  } satisfies LocalScenario,
   workspace: {
     group: "Components/Workspace",
     name: "Editable files",
@@ -1292,7 +1361,7 @@ export const scenarios = {
     deployed: true,
     description:
       "Choose Instructions (AGENTS.md), Personality (SOUL.md), Identity (IDENTITY.md), or User context (USER.md). Each file has a role description and its own Save and Reload. Changes apply to the live workspace.",
-  },
+  } satisfies LocalScenario,
   workspaceCleanCRLF: {
     group: "Components/Workspace",
     name: "Unchanged Windows line endings",
@@ -1306,14 +1375,14 @@ export const scenarios = {
       "Edit USER.md, then Save and Reload.",
     ],
     gap: "Simulated files; no live Agent gateway.",
-  },
+  } satisfies LocalScenario,
   workspaceUnavailable: {
     group: "Components/Workspace",
     name: "No deployed revision",
     path: `${draft}&tab=workspace`,
     description:
       "Workspace editing requires a deployed Agent and reachable gateway; the note says to deploy the Agent.",
-  },
+  } satisfies LocalScenario,
   workspaceDenied: {
     group: "Components/Workspace",
     name: "Access denied",
@@ -1327,7 +1396,7 @@ export const scenarios = {
       },
     ],
     description: "Unauthorized reads do not enable blank overwrites.",
-  },
+  } satisfies LocalScenario,
   workspaceSaveDenied: {
     group: "Components/Workspace",
     name: "Save denied",
@@ -1343,7 +1412,7 @@ export const scenarios = {
     ],
     description:
       "A refused save names the Agent operate grant it needs and keeps the edit on screen.",
-  },
+  } satisfies LocalScenario,
   workspaceOperateDenied: {
     group: "Components/Workspace",
     name: "Save needs Agent operate",
@@ -1354,7 +1423,7 @@ export const scenarios = {
       "The Agent permission answer denies operate: the files load read-only, and each Save stays in the Tab order, looks disabled and is described by the note naming Agent operate.",
     steps: ["Tab to Save AGENTS.md and press Enter. Nothing is sent and the file is unchanged."],
     gap: "Simulated files and the first permission answer only. Operate answer on return covers a later grant and revocation while this editor stays mounted. The API still refuses the write.",
-  },
+  } satisfies LocalScenario,
   workspaceOperateRestored: {
     group: "Components/Workspace",
     name: "Operate answer on return",
@@ -1404,7 +1473,7 @@ export const scenarios = {
       "After the edit, the following Logs visit reads a revocation. Returning keeps the unsaved text and makes AGENTS.md read-only; Stop hides and Run diagnostics is disabled with its reason.",
     ],
     gap: "The permission changes and runtime refusal are simulated. The preview checks Stop and Run diagnostics after the grant only; the browser test also checks them after the revocation, changing the controller's real IAM policy across the same tab visits. A failed permission read is not shown; the page keeps the previous answer. The controller still authorizes every write.",
-  },
+  } satisfies LocalScenario,
   workspaceMissing: {
     group: "Components/Workspace",
     name: "Missing file",
@@ -1422,7 +1491,7 @@ export const scenarios = {
     ],
     description:
       "A file the API confirms missing says so on first load and can be created; unrelated file editors still load.",
-  },
+  } satisfies LocalScenario,
   workspaceResourceMissing: {
     group: "Components/Workspace",
     name: "Agent unavailable while reading a file",
@@ -1440,7 +1509,7 @@ export const scenarios = {
     ],
     description: "The Agent was unavailable, so the editor cannot assume AGENTS.md is empty.",
     steps: ["Choose Reload AGENTS.md. Once its contents load, edit the file to enable Save."],
-  },
+  } satisfies LocalScenario,
   workspaceUnknown: {
     group: "Components/Workspace",
     name: "Write outcome unknown",
@@ -1456,7 +1525,7 @@ export const scenarios = {
     ],
     description:
       "After an uncertain save, reload the same file to inspect its contents before deciding whether to save again.",
-  },
+  } satisfies LocalScenario,
   workspaceMissingReadback: {
     group: "Components/Workspace",
     name: "Missing file after uncertain create",
@@ -1478,7 +1547,7 @@ export const scenarios = {
     ],
     description:
       "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
-  },
+  } satisfies LocalScenario,
   workspaceVersionReread: {
     group: "Components/Workspace",
     name: "Reread after a version change",
@@ -1506,7 +1575,7 @@ export const scenarios = {
       "SOUL.md says it could not be reread. Click Reload SOUL.md: the warning is replaced by SOUL.md loaded.",
     ],
     gap: "Simulated API results demonstrate presentation only. Browser tests cover reread ordering and later rereads clearing a failure.",
-  },
+  } satisfies LocalScenario,
   workspaceVersionRereadFocused: {
     group: "Components/Workspace",
     name: "Reread keeps a focused editor's caret",
@@ -1533,7 +1602,7 @@ export const scenarios = {
       "The selection is still on line 20 and SOUL.md has not scrolled. Type a word: it replaces the selection on line 20.",
     ],
     gap: "Simulated API results demonstrate presentation only. Browser tests cover the caret and scroll after a changed reread.",
-  },
+  } satisfies LocalScenario,
   workspaceVersionRereadUnconfirmed: {
     group: "Components/Workspace",
     name: "Reread cannot confirm a missing file",
@@ -1568,7 +1637,7 @@ export const scenarios = {
       "IDENTITY.md says it could not be reread. Click Reload IDENTITY.md: the file now reads, and IDENTITY.md loaded. replaces the warning and the error.",
     ],
     gap: "Simulated API results demonstrate presentation only; the resource 404 is controlled.",
-  },
+  } satisfies LocalScenario,
   deletionPermissionDuringConfirmation: {
     group: "Components/Deletion",
     name: "Permission arrives while confirmation is open",
@@ -1582,7 +1651,7 @@ export const scenarios = {
       "Watch the open confirmation explain the restriction, make Permanently delete Agent unavailable, and move focus to Cancel. Tab to it: it takes focus, described by the restriction, and Enter, Space or a click sends nothing (finding 2935).",
       "Cancel or press Escape. The page explains why Delete is unavailable, without sending a delete request; Delete Agent stays in the Tab order, described by that note.",
     ],
-  },
+  } satisfies LocalScenario,
   deletionConfirm: {
     group: "Components/Deletion",
     name: "Confirmation",
@@ -1590,7 +1659,7 @@ export const scenarios = {
     actions: [click("Delete Agent")],
     description:
       "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
-  },
+  } satisfies LocalScenario,
   deleting: {
     group: "Components/Deletion",
     name: "Cleanup in progress",
@@ -1604,7 +1673,7 @@ export const scenarios = {
     ],
     description:
       "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
-  },
+  } satisfies LocalScenario,
   deletionRetryConfirm: {
     group: "Components/Deletion",
     name: "Repeat cleanup confirmation",
@@ -1613,7 +1682,7 @@ export const scenarios = {
     actions: [click("Request deletion again")],
     description:
       "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged, and separate cleanup commands stay collapsed until opened.",
-  },
+  } satisfies LocalScenario,
   deletionRetryAccessEnded: {
     group: "Components/Deletion",
     name: "Status access ends during repeat confirmation",
@@ -1627,7 +1696,7 @@ export const scenarios = {
       "Leave the confirmation open. It closes when the status check returns, without sending another deletion request.",
       "Focus returns to Delete Agent. The notice says you can no longer check whether cleanup finished.",
     ],
-  },
+  } satisfies LocalScenario,
   deletionRetryUnknown: {
     group: "Components/Deletion",
     name: "Repeat cleanup outcome unknown",
@@ -1647,7 +1716,7 @@ export const scenarios = {
     ],
     description:
       "An uncertain repeat request remains disabled until Refresh reads the already deleting Agent successfully. No write is automatically retried.",
-  },
+  } satisfies LocalScenario,
   deletionDenied: {
     group: "Components/Deletion",
     name: "Permission denied",
@@ -1666,7 +1735,7 @@ export const scenarios = {
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
       "Permission advice is unavailable. The attempted deletion is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Delete Agent unavailable, described by the refusal.",
-  },
+  } satisfies LocalScenario,
   deletionConflict: {
     group: "Components/Deletion",
     name: "Conflict",
@@ -1683,7 +1752,7 @@ export const scenarios = {
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
       "The API's conflict reason shows with the step that recovers: refresh deletion status before retrying.",
-  },
+  } satisfies LocalScenario,
   deletionUnknown: {
     group: "Components/Deletion",
     name: "Outcome unknown",
@@ -1701,7 +1770,7 @@ export const scenarios = {
     steps: [
       "Tab to Delete Agent. It takes focus and looks unavailable, described by the Outcome unknown alert; Enter, Space or a click sends nothing (finding 2935).",
     ],
-  },
+  } satisfies LocalScenario,
   createFlow: {
     group: "Flows",
     name: "Create and deploy an Agent",
@@ -1717,7 +1786,7 @@ export const scenarios = {
       "Use Versions to inspect the immutable snapshot and Workspace files to inspect runtime files seeded during creation.",
     ],
     gap: "The fixture supplies a ready Namespace, Preset, and model Secret. Set those up outside the console. Verify actual serving health and a model response outside this walkthrough.",
-  },
+  } satisfies LocalScenario,
   createHarnessFlow: {
     group: "Flows",
     name: "Choose provider, harness, and authentication",
@@ -1733,7 +1802,7 @@ export const scenarios = {
       "Select OpenClaw: authentication changes to API key and the token and model are cleared. Enter a dummy API key and select a model to continue creation.",
     ],
     gap: "This walkthrough covers form state and the fixed model choices. Real API integration and runtime checks establish credential routing and model execution.",
-  },
+  } satisfies LocalScenario,
   createExitFlow: {
     group: "Flows",
     name: "Keep an Agent draft",
@@ -1757,7 +1826,7 @@ export const scenarios = {
       "Select Cancel and confirm Discard this draft. Choose Create Agent: the initial choices are shown.",
     ],
     gap: "The fixture demonstrates simulated console state; it does not verify a live backend or deployment.",
-  },
+  } satisfies LocalScenario,
   createWorkspaceFlow: {
     group: "Flows",
     name: "Create with workspace files",
@@ -1773,7 +1842,7 @@ export const scenarios = {
       "Open Workspace files and inspect IDENTITY.md or USER.md to confirm the fixture carried the creation-time file contents into the deployed workspace.",
     ],
     gap: "This Storybook flow proves the UI request body and fixture readback path. It does not prove real gateway filesystem writes or serving health.",
-  },
+  } satisfies LocalScenario,
   createSlackSecretsFlow: {
     group: "Flows",
     name: "Create with Slack Secrets",
@@ -1800,7 +1869,7 @@ export const scenarios = {
       "Create the Agent to persist the Configuration and let the controller grant the Agent access to the staged Slack Secrets.",
     ],
     gap: "The fixture proves the Console request workflow with simulated Secret metadata. Use a live Namespace and Slack app to prove real Secret propagation and Slack replies.",
-  },
+  } satisfies LocalScenario,
   devdayCreateFlow: {
     group: "Flows",
     name: "DevDay segment 1: create devday claw",
@@ -1814,7 +1883,7 @@ export const scenarios = {
     swePreset: true,
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
-    fixturePluginCatalog: /** @type {const} */ (true),
+    fixturePluginCatalog: true,
     fixturePluginCatalogMessage:
       "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
@@ -1857,7 +1926,7 @@ export const scenarios = {
       "Use ← Agents and open oceclaw in the same fixture to continue segment 2. The next-segment link starts an independent resettable fixture.",
     ],
     gap: "This Storybook flow proves only the UI sequence and fixture state. It does not store a real credential, deploy a workload, prove GitHub authorization, or prove Slack delivery.",
-  },
+  } satisfies LocalScenario,
   devdayCreateCheckpoint: {
     group: "Flows",
     name: "DevDay segment 1 checkpoint: first deployment queued",
@@ -1871,7 +1940,7 @@ export const scenarios = {
     swePreset: true,
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
-    fixturePluginCatalog: /** @type {const} */ (true),
+    fixturePluginCatalog: true,
     fixturePluginCatalogMessage:
       "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
@@ -1908,7 +1977,7 @@ export const scenarios = {
       "This checkpoint clicks through the same controls, including the Linear plugin policy choices, and opens Agent details while the first deployment remains queued.",
     ],
     gap: "Checkpoint automation is a setup aid. Use the manual story for the demo video.",
-  },
+  } satisfies LocalScenario,
   devdayAdminFlow: {
     group: "Flows",
     name: "DevDay segment 2: oceclaw Admin UI",
@@ -1928,7 +1997,7 @@ export const scenarios = {
       "Enter a new message, click Send in the simulated Admin UI, and confirm the visible assistant reply.",
     ],
     gap: "The Admin UI target is a fixture page. It demonstrates the link target and chat-shaped result only; it does not connect to a gateway, Slack, credentials, or a model.",
-  },
+  } satisfies LocalScenario,
   devdayAdminCheckpoint: {
     group: "Flows",
     name: "DevDay segment 2 checkpoint: oceclaw detail",
@@ -1946,7 +2015,7 @@ export const scenarios = {
       "This checkpoint opens oceclaw and stops at the available native Admin UI link.",
     ],
     gap: "Checkpoint automation is a setup aid. The Admin UI remains a simulated fixture.",
-  },
+  } satisfies LocalScenario,
   updateFlow: {
     group: "Flows",
     name: "Update an Agent",
@@ -1963,7 +2032,7 @@ export const scenarios = {
       "Workspace file edits are separate: they save immediately without a new revision.",
     ],
     gap: "Native JSON edits use Configuration, while Slack has a dedicated drawer. The Slack drawer preserves existing policies; change unsupported policy fields through native JSON.",
-  },
+  } satisfies LocalScenario,
   slackChannelAccessFlow: {
     group: "Flows",
     name: "Change Slack channel senders",
@@ -1985,7 +2054,7 @@ export const scenarios = {
       "Choose Specific people and select users if you want to restrict channel senders before saving again.",
     ],
     gap: "The fixture proves saved Console state and request shape only. Use a live Slack app to prove channel delivery.",
-  },
+  } satisfies LocalScenario,
   stopPermissionDuringConfirmation: {
     group: "Components/Stop Agent",
     name: "Permission arrives while confirmation is open",
@@ -1999,7 +2068,7 @@ export const scenarios = {
       "Watch the open confirmation explain the restriction, make Stop Agent unavailable, and move focus to Cancel. Tab to it: it takes focus, described by the restriction, and Enter, Space or a click sends nothing (finding 2935).",
       "Cancel or press Escape. The page explains why Stop is unavailable, without sending a stop request; Stop Agent stays in the Tab order, described by that note.",
     ],
-  },
+  } satisfies LocalScenario,
   ...agentDetailScenarios.dangerZone,
   stopConfirm: {
     group: "Components/Stop Agent",
@@ -2012,7 +2081,7 @@ export const scenarios = {
       "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
       "For the revision clearing after Stop, use Flows / Stop an Agent.",
     ],
-  },
+  } satisfies LocalScenario,
   stopPending: {
     group: "Components/Stop Agent",
     name: "Stop pending",
@@ -2024,7 +2093,7 @@ export const scenarios = {
       "The Stop request is held, so the confirmation stays on Stopping…. The button is busy, not unavailable: it sets aria-busy and shows the progress pointer (finding 1927).",
     steps: ["Hover Stopping…: the pointer is progress, not not-allowed, and Cancel is disabled."],
     gap: "The request never answers; this story does not verify a stop.",
-  },
+  } satisfies LocalScenario,
   stopRequested: {
     group: "Components/Stop Agent",
     name: "Stop requested",
@@ -2038,7 +2107,7 @@ export const scenarios = {
     ],
     description:
       "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested. The Stop row replaces its action description with the result and restart guidance; shutdown completion is not verified here.",
-  },
+  } satisfies LocalScenario,
   stopReadDiscoversDeletion: {
     group: "Components/Stop Agent",
     name: "Deletion discovered",
@@ -2050,7 +2119,7 @@ export const scenarios = {
     steps: [
       "Choose Refresh stop status. The page shows deletion recovery and focuses Refresh deletion status without sending a write.",
     ],
-  },
+  } satisfies LocalScenario,
   stopRepeatConfirm: {
     group: "Components/Stop Agent",
     name: "Repeat confirmation",
@@ -2060,7 +2129,7 @@ export const scenarios = {
     actions: [click("Request Stop again")],
     description:
       "An explicit repeated Stop preserves the selected version. Its confirmation says the Agent is already requested to stop and that this sends the request again, not that it interrupts a running gateway (finding D815). Cancel or Escape returns keyboard focus to Request Stop again.",
-  },
+  } satisfies LocalScenario,
   stopNoSelection: {
     group: "Components/Stop Agent",
     name: "No selected version",
@@ -2070,7 +2139,7 @@ export const scenarios = {
     stopNoSelection: true,
     description:
       "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
-  },
+  } satisfies LocalScenario,
   stopFirstDeploymentFailed: {
     group: "Components/Stop Agent",
     name: "Failed first deployment",
@@ -2080,7 +2149,7 @@ export const scenarios = {
     description:
       "A failed readable deployment leaves the Agent requested to run with no selected version. Stop stays available because a newer queued deployment may be unreadable.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
-  },
+  } satisfies LocalScenario,
   stopFirstDeploymentQueued: {
     group: "Components/Stop Agent",
     name: "First deployment queued",
@@ -2091,14 +2160,14 @@ export const scenarios = {
     description:
       "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway. Confirming reports cancellation requested, not completed; later lifecycle reads retire that local result.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
-  },
+  } satisfies LocalScenario,
   stopNeverDeployed: {
     group: "Components/Stop Agent",
     name: "Never deployed",
     path: draft,
     description:
       "An Agent created without a deploy is stopped with no version, so the danger zone has no Stop row and the overview reports no stop request.",
-  },
+  } satisfies LocalScenario,
   stopRepeatUnknown: {
     group: "Components/Stop Agent",
     name: "Repeated Stop outcome unknown",
@@ -2112,7 +2181,7 @@ export const scenarios = {
     ],
     description:
       "An uncertain repeated Stop offers only Refresh stop status until a successful readback.",
-  },
+  } satisfies LocalScenario,
   stopDenied: {
     group: "Components/Stop Agent",
     name: "Permission denied",
@@ -2132,7 +2201,7 @@ export const scenarios = {
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
       "Permission advice is unavailable. The attempted stop is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Stop Agent unavailable, described by the refusal.",
-  },
+  } satisfies LocalScenario,
   stopUnknown: {
     group: "Components/Stop Agent",
     name: "Outcome unknown",
@@ -2142,7 +2211,7 @@ export const scenarios = {
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
       "Stop may have been accepted. Refresh stop status checks this Agent without sending another stop request.",
-  },
+  } satisfies LocalScenario,
   stopFlow: {
     group: "Flows",
     name: "Stop an Agent",
@@ -2160,7 +2229,7 @@ export const scenarios = {
       "Return to Open draft and Deploy new version to request running again.",
     ],
     gap: "The fixture separates Stop acceptance from the next read clearing the selected revision. Neither establishes that a live gateway shut down. Disabling a channel does not stop the Agent; deletion is destructive.",
-  },
+  } satisfies LocalScenario,
   deleteFlow: {
     group: "Flows",
     name: "Delete an Agent",
@@ -2176,20 +2245,46 @@ export const scenarios = {
       "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",
     ],
     gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",
-  },
+  } satisfies LocalScenario,
 };
 
-for (const [id, scenario] of createAgentDetailPolicyScenarios({ candidateVersion })) {
+// Keep the authored keys and values available to builders; only runtime lookup uses a dictionary.
+type AuthoredScenario = (typeof authoredScenarios)[keyof typeof authoredScenarios];
+type PolicyScenario = ReturnType<typeof createAgentDetailPolicyScenarios>[number][1];
+type RepositoryScenarios = ReturnType<typeof createAgentDetailRepositoryScenarios>;
+type CatalogScenario =
+  | AuthoredScenario
+  | PolicyScenario
+  | RepositoryScenarios[keyof RepositoryScenarios]
+  | (AuthoredScenario & { theme: "custom" | "long-name" });
+
+export const scenarios: typeof authoredScenarios & Record<string, CatalogScenario> =
+  authoredScenarios;
+
+const policyEntries = createAgentDetailPolicyScenarios({ candidateVersion });
+for (const [id, scenario] of policyEntries) {
   scenarios[id] = scenario;
 }
+
+// The policy factory returns string IDs. Check its required sources before deriving variants.
+const policySources = new Map(policyEntries);
+function policySource(
+  id: "policyDenialsUnsupported" | "policyRulesPopulated" | "policyDenialsDisabled",
+) {
+  const source = policySources.get(id);
+  if (source === undefined) {
+    throw new Error(`Missing policy scenario source: ${id}`);
+  }
+  return source;
+}
 scenarios.policyDenialsNoSandboxDriver = createAgentDetailPolicyWithoutSandboxDriver(
-  scenarios.policyDenialsUnsupported,
+  policySource("policyDenialsUnsupported"),
 );
 
-Object.assign(scenarios, createAgentDetailRepositoryScenarios(scenarios.repositoryEditor));
+Object.assign(scenarios, createAgentDetailRepositoryScenarios(authoredScenarios.repositoryEditor));
 
 // The shell and assets are produced by the API's actual theme loader/renderer.
-for (const [id, source, name, theme] of [
+const themeSources = [
   ["themeSignIn", "login", "Custom sign-in", "custom"],
   ["themeNavigation", "agents", "Custom desktop navigation", "custom"],
   ["themeMobile", "mobile", "Custom mobile navigation", "custom"],
@@ -2199,9 +2294,15 @@ for (const [id, source, name, theme] of [
   ["themeLoading", "agentsLoading", "Custom loading state", "custom"],
   credentialsThemeScenario,
   ["themePublicError", "sessionUnavailable", "Custom public error", "custom"],
-]) {
+] satisfies [
+  id: string,
+  source: keyof typeof authoredScenarios,
+  name: string,
+  theme: "custom" | "long-name",
+][];
+for (const [id, source, name, theme] of themeSources) {
   scenarios[id] = {
-    ...scenarios[source],
+    ...authoredScenarios[source],
     name,
     theme,
     description:
@@ -2210,8 +2311,8 @@ for (const [id, source, name, theme] of [
 }
 
 const policyOutcomes = createAgentDetailPolicyOutcomes({
-  populated: scenarios.policyRulesPopulated,
-  disabled: scenarios.policyDenialsDisabled,
+  populated: policySource("policyRulesPopulated"),
+  disabled: policySource("policyDenialsDisabled"),
 });
 for (const [id, scenario] of policyOutcomes.outcomes) {
   scenarios[id] = scenario;

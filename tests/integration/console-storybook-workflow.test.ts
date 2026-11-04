@@ -1279,7 +1279,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     "authored boolean race and Slack-only credential projection remain intact",
     async () => {
       const { scenarios: catalog } =
-        await import("../../scripts/console-storybook/public/scenarios.mjs");
+        await import("../../scripts/console-storybook/public/scenarios.mts");
       installFixture(catalog.channelChangedElsewhere, evidence());
       const configurationPath = `configurations/${id("cfg", 1)}`;
       const before: unknown = await (await request(configurationPath)).json();

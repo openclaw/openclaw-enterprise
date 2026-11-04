@@ -211,7 +211,13 @@ seven-day release-age policy, independently of root dependencies.
 - `prepare-assets.ts` reads the public Console assets through the controller's
   asset reader, then versions the preview in `dist/assets/`. Rebuild after source
   edits so the development server serves the new assets.
-- `public/scenarios.mjs` assembles the story catalog. Edit sign-in scenarios in
+- `public/scenarios.mts` assembles the story catalog and emits as
+  `/storybook-fixtures/scenarios.mjs`; the asset builder keeps its versioned URL.
+  Check local entries with `satisfies LocalScenario`. Keep partial or invalid
+  response fixtures explicit in their owning scenario types. Theme source IDs
+  must name an authored entry; generated policy sources are checked before use.
+  Preserve insertion order and shared fixture values when adding variants.
+  Edit sign-in scenarios in
   `public/scenario-groups/sign-in.mts` and Secrets scenarios in
   `public/scenario-groups/secrets.mts`. Edit Settings scenarios in
   `public/scenario-groups/settings.mts` and Create Agent scenarios in

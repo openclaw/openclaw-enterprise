@@ -20,7 +20,7 @@
       "/console/agents/plugin-fields.production.mjs": [
         "../apps/controller/src/console/agents/plugin-fields.mts"
       ],
-      "/storybook-fixtures/scenarios.mjs": ["./console-storybook/public/scenarios.mjs"],
+      "/storybook-fixtures/scenarios.mjs": ["./console-storybook/public/scenarios.mts"],
       "/console/default-codex-preset.mjs": ["./console-storybook/default-codex-preset.d.mts"],
       "/console/standard-codex-preset.mjs": ["./console-storybook/standard-codex-preset.d.mts"],
       "/console/standard-openclaw-preset.mjs": [
