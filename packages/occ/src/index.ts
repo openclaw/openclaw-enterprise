@@ -157,7 +157,6 @@ import type {
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
-  CredentialSourceDestination,
   CredentialSourceReference,
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
@@ -6885,19 +6884,7 @@ export class OpenClawController {
         await this.authorize(principalId, "operate", reference);
       }
     }
-    let destinations: Readonly<Record<string, CredentialSourceDestination>>;
-    try {
-      destinations = gateway.describeSourceDestinations({ type, config });
-    } catch (error) {
-      if (error instanceof CredentialSourceConfigError) {
-        throw error;
-      }
-      // The catalog offered this type moments earlier, so a Driver that cannot describe its
-      // destination is an Installation inconsistency rather than a caller scope error.
-      throw new DependencyUnavailableError(
-        "The Credential Gateway did not describe a credential destination.",
-      );
-    }
+    const destinations = gateway.describeSourceDestinations({ type, config });
     for (const [field, reference] of Object.entries(references)) {
       const secret = await state.secrets.findSecret(namespaceId, reference.id);
       const destination = destinations[field];
