@@ -6886,11 +6886,12 @@ export class OpenClawController {
           "The Credential Gateway did not describe a credential destination.",
         );
       }
-      // The source's own immutable destination authorizes a Secret without endpoint metadata;
-      // metadata, when present, must still name this destination.
+      // A Secret without endpoint metadata is authorized by the source's own immutable
+      // destination. Metadata, when present, must cover every enabled destination: matching
+      // one entry of a multi-destination profile cannot authorize the others.
       if (
         secret.authorizedEndpoint !== undefined &&
-        [destination.endpoint, ...(destination.additionalEndpoints ?? [])].every(
+        [destination.endpoint, ...(destination.additionalEndpoints ?? [])].some(
           (endpoint) => endpoint !== secret.authorizedEndpoint,
         )
       ) {

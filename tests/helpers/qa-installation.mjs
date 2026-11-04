@@ -946,7 +946,7 @@ export async function createQaAgent(
   if (customResponses) {
     endpoint = process.env.OCC_TEST_QA_RESPONSES_BASE_URL;
   } else if (apiKeyAuth) {
-    endpoint = f.configuration.drivers.compute.configuration.runtime.codexModelBaseUrl;
+    endpoint = f.configuration.drivers.compute.configuration.runtime.modelProvider?.baseUrl;
   }
   if (customResponses && !codex) {
     const reference = `custom/${model}`;

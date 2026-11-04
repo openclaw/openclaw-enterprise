@@ -5468,14 +5468,16 @@ export class ControllerWorker {
         for (const [field, reference] of Object.entries(source.secrets)) {
           const secret = await view.secrets.findSecret(namespaceId, reference.id);
           const destination = destinations[field];
+          // Registration and admission authorize a Secret without endpoint metadata through the
+          // source's own immutable destination; delivery must use the same rule. With metadata,
+          // every enabled destination must match, not merely one of them.
           if (
             secret === undefined ||
             destination === undefined ||
-            (secret.authorizedEndpoint === undefined
-              ? destination.isDefault !== true
-              : [destination.endpoint, ...(destination.additionalEndpoints ?? [])].every(
-                  (endpoint) => endpoint !== secret.authorizedEndpoint,
-                ))
+            (secret.authorizedEndpoint !== undefined &&
+              [destination.endpoint, ...(destination.additionalEndpoints ?? [])].some(
+                (endpoint) => endpoint !== secret.authorizedEndpoint,
+              ))
           ) {
             return { source: undefined, withdrawal };
           }

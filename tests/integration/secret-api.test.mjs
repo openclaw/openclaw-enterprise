@@ -1568,7 +1568,9 @@ test("authorized Installation discovery returns the normalized Codex endpoint on
         runtime: {
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
-          ...(endpoint === undefined ? {} : { codexModelBaseUrl: endpoint }),
+          ...(endpoint === undefined
+            ? {}
+            : { modelProvider: { protocol: "openai-responses", baseUrl: endpoint } }),
         },
       }),
     );

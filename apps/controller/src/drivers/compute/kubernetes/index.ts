@@ -4904,14 +4904,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "must match the custom Responses provider endpoint",
           );
         }
-        const destinations = embeddedModelDestinations(
-          configuration,
-          authentication.providerId,
-          callerSettingError,
-        );
-        // A Secret authorized for the Installation model provider is the installation-wide
-        // destination; per-model rows render their own adapters and are qualified separately.
+        // Shared OpenAI and Anthropic providers are routed by the Installation model provider, so
+        // their effective destination is the Installation endpoint. Configured aliases are not
+        // translated, so their provider and model-row destinations stay effective and are checked.
         const installationEndpoint = modelProviderBaseUrl(this.options.runtime?.modelProvider);
+        // Only the openai provider is translated to the Installation model provider; the primary
+        // model decides, as modelProviderConfiguration does for Embedded OpenClaw.
+        const translatedOpenAi =
+          authentication.providerId === "openai" && installationEndpoint !== undefined;
+        const destinations = translatedOpenAi
+          ? [installationEndpoint]
+          : embeddedModelDestinations(configuration, authentication.providerId, callerSettingError);
         const defaultDestination =
           providerAdapter === "anthropic-messages"
             ? "https://api.anthropic.com"
@@ -4919,13 +4922,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
               ? "https://api.openai.com/v1"
               : undefined;
         if (
-          endpoint !== installationEndpoint &&
-          (destinations.length === 0 ||
-            destinations.some((destination) =>
-              endpoint === undefined
-                ? destination !== defaultDestination
-                : destination !== endpoint,
-            ))
+          destinations.length === 0 ||
+          destinations.some((destination) =>
+            endpoint === undefined ? destination !== defaultDestination : destination !== endpoint,
+          )
         ) {
           throw callerSettingError(
             "harnessAuth.authorizedEndpoint",
@@ -14569,29 +14569,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ) {
       openaiBaseUrl = modelProviderBaseUrl(provider);
     }
-    const agentAuthorizedEndpoint =
-      revision.harness.id === "codex" &&
-      revision.harness.mode === "dedicated" &&
-      revision.harnessAuth?.method === "api_key"
-        ? revision.harnessAuth.authorizedEndpoint
-        : undefined;
-    if (agentAuthorizedEndpoint !== undefined) {
-      // The Agent's endpoint authorization overrides the Installation fallback: the projected key
-      // is bound to that destination, and every request must reach it.
-      openaiBaseUrl = agentAuthorizedEndpoint;
-    } else if (
+    if (
       openaiBaseUrl === undefined &&
       revision.harness.id === "codex" &&
       revision.harness.mode === "dedicated" &&
       revision.harnessAuth?.method === "api_key"
     ) {
+      // Installation-owned routing: Agent endpoint metadata authorizes the credential but does
+      // not redirect the runtime away from the Installation's model provider.
       openaiBaseUrl = this.options.runtime?.modelProvider?.baseUrl;
     }
-    const installationEndpoint = modelProviderBaseUrl(this.options.runtime?.modelProvider);
     const standaloneWebSearch =
       revision.harness.id === "codex" &&
       revision.harness.mode === "dedicated" &&
-      (agentAuthorizedEndpoint === undefined || agentAuthorizedEndpoint === installationEndpoint) &&
       provider?.supportsStandaloneWebSearch === true;
     if (openaiBaseUrl !== undefined) {
       const normalized = normalizeOpenAiBaseUrl(openaiBaseUrl);
