@@ -23,7 +23,7 @@ FROM ${NODE_RUNTIME_BASE_IMAGE} AS console-build
 WORKDIR /app
 ARG OCC_BUILD_REVISION=""
 COPY apps/controller/src/console/index.html apps/controller/src/console/index.html
-COPY scripts/build-console-metadata.mjs scripts/build-console-metadata.mjs
+COPY scripts/build-console-metadata.mjs scripts/build-console-metadata.ts scripts/
 RUN node scripts/build-console-metadata.mjs "$OCC_BUILD_REVISION"
 
 FROM dependencies AS development
