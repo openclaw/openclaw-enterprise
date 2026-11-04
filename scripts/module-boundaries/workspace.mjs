@@ -103,6 +103,7 @@ export async function readWorkspace(root, policy) {
 }
 
 // Records cross stage boundaries as immutable values; ASTs stay in source analysis.
+/** @template T @param {T} value @returns {T} */
 export function freezeRecord(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) {
     return value;

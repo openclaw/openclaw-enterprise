@@ -27,7 +27,7 @@ type Reference = {
   bindings: string[];
   line: number;
   mode: "require" | "import";
-  anchor: string | null;
+  anchor: string | null | undefined;
   value: Value;
   loaderIdentity?: string;
 };

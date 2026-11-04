@@ -1877,6 +1877,76 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.ok(violates(await check(), "apps/app/src/broken.ts", "source-syntax"));
   });
 
+  test("source analysis and frozen records retain concrete compiler types", () => {
+    const path = join(repository, "scripts/module-boundaries/source-imports.ts");
+    const program = ts.createProgram([path], {
+      allowJs: true,
+      allowImportingTsExtensions: true,
+      noEmit: true,
+      strict: true,
+      exactOptionalPropertyTypes: true,
+      noUncheckedIndexedAccess: true,
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      skipLibCheck: true,
+    });
+    const source = program.getSourceFile(path);
+    assert.ok(source);
+    const checker = program.getTypeChecker();
+    const declaration = source.statements.find(
+      (statement) =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === "collectSourceImports",
+    );
+    assert.ok(declaration);
+    const signature = checker.getSignatureFromDeclaration(declaration);
+    assert.ok(signature);
+    const checkType = (type, label, seen = new Set()) => {
+      assert.equal(type.flags & ts.TypeFlags.Any, 0, `${label} must not be any`);
+      if (seen.has(type)) {
+        return;
+      }
+      seen.add(type);
+      if (type.isUnionOrIntersection()) {
+        for (const member of type.types) {
+          checkType(member, label, seen);
+        }
+      } else if (checker.isArrayType(type)) {
+        for (const element of checker.getTypeArguments(type)) {
+          checkType(element, `${label}[]`, seen);
+        }
+      } else if (type.flags & ts.TypeFlags.Object) {
+        for (const property of checker.getPropertiesOfType(type)) {
+          checkType(
+            checker.getTypeOfSymbolAtLocation(property, source),
+            `${label}.${property.name}`,
+            seen,
+          );
+        }
+      }
+    };
+    checkType(checker.getReturnTypeOfSignature(signature), "collectSourceImports return");
+    const frozenCalls = [];
+    function visit(node) {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "freezeRecord"
+      ) {
+        frozenCalls.push(node);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    assert.equal(frozenCalls.length, 3);
+    for (const call of frozenCalls) {
+      checkType(
+        checker.getTypeAtLocation(call),
+        `freezeRecord at ${source.getLineAndCharacterOfPosition(call.pos).line + 1}`,
+      );
+    }
+  });
+
   test("reports parse errors without adding JavaScript grammar diagnostics or losing imports", async (t) => {
     const { write, check } = await workspace(t);
     const tsPath = "apps/app/src/parse-errors.ts";
