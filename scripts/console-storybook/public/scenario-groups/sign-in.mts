@@ -5,7 +5,24 @@ type SignInRule = {
   path: `/api/auth/${string}`;
   method?: "GET" | "POST";
 } & (
-  | { status: number; bodyError?: never; hold?: never; once?: never; data?: never }
+  | {
+      status: number;
+      delayMs?: number;
+      bodyError?: never;
+      hold?: never;
+      once?: never;
+      data?: never;
+    }
+  | {
+      path: "/api/auth/providers";
+      method: "GET";
+      delayMs: number;
+      status?: never;
+      bodyError?: never;
+      hold?: never;
+      once?: never;
+      data?: never;
+    }
   | { bodyError: true; status?: never; hold?: never; once?: never; data?: never }
   | { hold: true; status?: never; bodyError?: never; once?: never; data?: never }
   | {
@@ -76,10 +93,17 @@ export function signInScenarios({
       path: "/console/login",
       signedOut: true,
       githubEnabled: true,
+      rules: [
+        { path: "/api/auth/providers/github/start", method: "POST", delayMs: 5000, status: 403 },
+        { path: "/api/auth/sign-in/email", method: "POST", delayMs: 5000, status: 401 },
+      ],
       description:
-        "Provider discovery adds Continue with GitHub beside the password form. Clicking it demonstrates an unavailable provider; this fixture never navigates to GitHub.",
+        "Provider discovery adds Continue with GitHub beside the password form. Delayed refusals let you inspect keyboard focus during either sign-in request; this fixture never navigates to GitHub.",
       steps: [
-        "Check the GitHub icon and label, then select the button to see the unavailable message.",
+        "Enter a demo email and password, then Tab to Sign in and press Enter. Focus stays on Sign in while the provider button is disabled.",
+        "Press Enter and Space again while waiting. After the refusal, focus stays on Sign in and both buttons are available.",
+        "Retry, then press Shift+Tab while waiting. Focus moves to Password and stays there after the refusal.",
+        "Tab to Continue with GitHub and press Enter. Repeat Enter and Space while waiting: focus stays on the provider button through the refusal.",
       ],
       gap: "An administrator must attach the numeric GitHub identity to an existing account through the API. Enrollment, account creation, and recovery administration have no console controls. OAuth navigation and session issuance require backend verification.",
     },
@@ -111,8 +135,14 @@ export function signInScenarios({
       githubEnabled: true,
       googleEnabled: true,
       passwordRecoveryOnly: true,
+      rules: [{ path: "/api/auth/providers", method: "GET", delayMs: 5000 }],
       description:
-        "With OCC_AUTH_PASSWORD_SIGN_IN=recovery-only, ordinary accounts continue with GitHub or Google. The password form stays behind Recovery sign-in for the recovery account.",
+        "With OCC_AUTH_PASSWORD_SIGN_IN=recovery-only, ordinary accounts continue with GitHub or Google. Delayed discovery keeps an empty password form visible if the user has already focused it.",
+      steps: [
+        "Open or reset the story and immediately Tab to Email without entering text. When providers appear, Email stays focused and the recovery hint appears.",
+        "Type a demo email: the form remains usable without submitting a password request.",
+        "Reset and wait without focusing the form. Discovery hides it behind Recovery sign-in; select that button to reveal it.",
+      ],
     },
     recoveryOnlyForm: {
       group: "Pages/Sign in",
