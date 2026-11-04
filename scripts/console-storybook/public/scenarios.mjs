@@ -1844,8 +1844,8 @@ export const scenarios = {
     pluginCapabilities: {
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
       approvers: { agent: false, plugin: false, tools: false },
-      toolDefaults: { enabled: false },
-      tools: { enabled: false },
+      toolDefaults: { enabled: false, approval: [], reviewer: [] },
+      tools: { enabled: false, approval: [], reviewer: [] },
       driverPolicySchema: { type: "object", properties: {} },
       policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
       credentialSlots: [
