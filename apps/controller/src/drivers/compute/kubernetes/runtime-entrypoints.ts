@@ -3145,7 +3145,7 @@ function configureGateway(peerStatus) {
     const commands = ((config.gateway ??= {}).nodes ??= {}).commands ??= {};
     commands.allow = [...new Set([
       ...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create",
-      "dir.list", "workspace.memory", "workspace.skills", "system.which",
+      "dir.list", "workspace.memory", "workspace.skills",
       ...(managedMcpGatewayTools.length ? ["mcp.tools.call.v1"] : []),
     ])];
     if (environmentWorkspaceNodeId !== undefined || workspaceNodeBindingPath !== undefined) {
@@ -4783,7 +4783,7 @@ delete codexEnv.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeDisplayName = process.env.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeCommands = [
   ...(nodeDisplayName ? ["--display-name", nodeDisplayName] : []),
-  "--commands", "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills,system.which",
+  "--commands", "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills",
 ];
 // The kubelet swaps Secret volume contents atomically, but an empty, truncated
 // or otherwise undecodable code is treated as absent and never started.

@@ -11994,7 +11994,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (recorded === undefined) {
       // A Gateway receipt proves setup consumption, not credential possession.
-      // Persist its device before a probe can fail or status retention can expire.
+      // Persist its device before token authentication fails or status retention expires.
       required(secret.metadata.resourceVersion, "Workspace node Secret resource version");
       const clients = await this.clients(namespace.plane);
       await this.request(
@@ -12042,9 +12042,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     if (!connected && expiresAtMs <= Date.now()) {
       throw new DependencyUnavailableError(
-        "Workspace node credential possession could not be confirmed before setup expiry. Stop the Agent and wait for shutdown, " +
-          `then delete only its node Secret ${namespace.name}/${secret.metadata.name} and deploy a new revision. ` +
-          "Preserve the node identity and Harness workspace storage.",
+        "Node credential unconfirmed. Stop Agent; wait for shutdown. " +
+          `Delete only node Secret ${namespace.name}/${secret.metadata.name}, then redeploy. ` +
+          "Preserve node identity and workspace storage.",
       );
     }
     return { secret, connected };
@@ -12156,7 +12156,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       } else {
         // Preserve the Agent-owned Secret and its identity. An unredeemed setup
         // is replaced; a redeemed setup only gains the server-observed device.
-        required(existing.metadata.resourceVersion, "Workspace node Secret resource version");
+        const currentSecret = existing;
+        required(currentSecret.metadata.resourceVersion, "Workspace node Secret resource version");
         await this.request(
           () =>
             clients.core.replaceNamespacedSecret({
@@ -12165,11 +12166,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
               body: {
                 apiVersion: "v1",
                 kind: "Secret",
-                metadata: existing.metadata,
+                metadata: currentSecret.metadata,
                 type: "Opaque",
                 data: {
                   ...Object.fromEntries(
-                    Object.entries(existing.data ?? {}).filter(
+                    Object.entries(currentSecret.data ?? {}).filter(
                       ([key]) => key !== WORKSPACE_NODE_RECEIPT_DEVICE_KEY,
                     ),
                   ),

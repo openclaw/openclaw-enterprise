@@ -29,19 +29,21 @@
  [node-host authentication](/cli/node#gateway-auth-for-node-host).
 --- a/docs/cli/node.md
 +++ b/docs/cli/node.md
-@@ -87,6 +87,11 @@
+@@ -87,6 +87,13 @@
  
  Stopping a foreground node also cancels startup. If termination arrives before
  the Gateway connection is ready, the node drains its prepared resources and exits.
 +
 +Invocations cannot run before the node verifies its saved credential. Requests
-+arriving during that handoff receive `NODE_NOT_READY` after verification, allowing
-+bounded Gateway retry. Pending reply identities are bounded; overflowing that
-+bound closes the connection rather than retaining command payloads.
++arriving during verification on a retained connection receive `NODE_NOT_READY`
++after verification, allowing Gateway retry within the invocation deadline. The
++node retains at most 64 pending reply identities and 64 KiB of their encoded
++values; exceeding either limit closes the connection. Retiring a connection
++discards its pending identities without running the commands.
  
  Options:
  
-@@ -106,6 +111,7 @@
+@@ -106,6 +113,7 @@
  - `--display-name <name>`: Override the node display name
  - `--session-host`: Host worker sessions for this foreground process without changing the saved worker-hosting preference
  - `--auth-from-env`: Explicitly use environment Gateway credentials instead of the saved paired credential
@@ -49,7 +51,33 @@
  - `--commands <ids>`: Persist an exact comma-separated command allowlist (repeatable); advertise only available matches and their required capabilities. Disables computer use, skills, plugin tools, MCP servers, and worker hosting. Omitting the flag preserves the saved list.
  - `--all-commands`: Advertise the full default command surface and forget any saved `--commands` allowlist. Cannot be combined with `--commands`.
  - `--share-installed-apps`: On macOS, advertise installed applications through `device.apps`
-@@ -140,6 +146,12 @@
+@@ -114,7 +122,9 @@
+ ## Gateway auth for node host
+ 
+ `--pair` uses a 10-minute single-use bootstrap token for the first connection.
+-After pairing, reconnects use the durable device credential. Administrator-minted
++The node saves the returned device credential, reads it back, then reconnects
++using only that credential before reporting readiness. Later reconnects use the
++saved device credential directly. Administrator-minted
+ bootstrap enrollment approves the device and its first declared command surface,
+ including `system.run` when declared. Later command, capability, or permission
+ expansion still requires `openclaw nodes approve`. Gateway command policy and
+@@ -124,6 +134,14 @@
+ intentionally unavailable because a short-lived bearer setup link must not be
+ persisted in service arguments.
+ 
++For authenticated Gateway callers, `node.describe` includes
++`deviceTokenAuthenticated`. It is `true` only while the current connection has
++authenticated with the device token for the current pairing generation. It is
++`false` for a bootstrap connection, a disconnected node, or a connection whose
++pairing has changed. A connected node or a consumed setup code alone does not
++prove the node received its credential. Checking this field requires no extra
++node command grant.
++
+ For a managed foreground process, `--pair-if-needed` reuses native device-token
+ storage across restarts; it does not keep a separate enrollment marker. Preserve
+ the node state directory. After the setup code expires, the node can still reconnect
+@@ -140,6 +158,12 @@
  override that pairing. A paired service install does not save those ambient
  Gateway credentials in its service environment.
  
@@ -62,7 +90,7 @@
  For an intentional shared-token or password connection, use `--auth-from-env`:
  
  ```bash
-@@ -154,8 +166,8 @@
+@@ -154,8 +178,8 @@
  available paired credential, startup names the selected environment variable
  in a warning without printing its value.
  
@@ -73,7 +101,7 @@
  
  - `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD` are checked first.
  - Otherwise, local config fallback applies: `gateway.auth.token` / `gateway.auth.password`.
-@@ -165,8 +177,8 @@
+@@ -165,8 +189,8 @@
  - Node host auth resolution only honors `OPENCLAW_GATEWAY_*` env vars.
  - A CWD `.env` cannot supply `OPENCLAW_*` variables; those are blocked by workspace dotenv policy.
  
@@ -843,7 +871,7 @@
  }
  
  const storedToken = { token: "synthetic-stored-token", scopes: ["operator.read"] };
-@@ -194,6 +214,929 @@
+@@ -194,6 +214,953 @@
    protocol: PROTOCOL_VERSION,
    auth: { deviceToken: "synthetic-issued-token", role: "operator", scopes: ["operator.read"] },
  };
@@ -894,18 +922,40 @@
 +
 +  it("sends bootstrap auth first and reconnects with the accepted node receipt", async () => {
 +    const { gate, host, cache } = tokenStorage(savedNodeToken);
-+    const { socket, onHelloOk } = connect(host, nodeOptions);
++    const { socket, onHelloOk, onEvent } = connect(host, {
++      ...nodeOptions,
++      token: "synthetic-shared-token",
++      password: "synthetic-shared-password",
++    });
 +    expect(connectAuth(socket)).toEqual({ bootstrapToken: "synthetic-node-bootstrap" });
 +    socket.respond({ ...nodeHello, auth: { ...nodeHello.auth, method: "bootstrap-token" } });
++    socket.receive({
++      type: "event",
++      event: "node.invoke.request",
++      payload: {
++        id: "bootstrap-work",
++        nodeId: "synthetic-device",
++        command: "file.stat",
++        paramsJSON: "{}",
++      },
++    });
 +    gate.resolve();
 +    await vi.advanceTimersByTimeAsync(0);
-+    expect(onHelloOk).toHaveBeenCalledOnce();
++    expect(onHelloOk).not.toHaveBeenCalled();
++    expect(onEvent).not.toHaveBeenCalled();
 +    expect(cache.value).toEqual({ token: nodeHello.auth.deviceToken, scopes: [] });
 +
-+    // A later transport reconnect uses the accepted receipt, not the consumed setup.
-+    socket.close(1006, "transport retired");
-+    const replacement = await reconnectSocket();
++    // Readiness requires proof that the stored receipt authenticates a new
++    // session. This reconnect is automatic and cannot reuse setup or shared auth.
++    const replacement = await reconnectSocket(1, 250);
 +    expect(connectAuth(replacement)).toEqual({ deviceToken: nodeHello.auth.deviceToken });
++    replacement.respond(nodeHello);
++    await vi.advanceTimersByTimeAsync(1_000);
++    expect(onHelloOk).toHaveBeenCalledOnce();
++    expect(onEvent).not.toHaveBeenCalled();
++    expect(socket.send).toHaveBeenCalledOnce();
++    expect(replacement.send).toHaveBeenCalledOnce();
++    expect(MockWebSocket.instances).toHaveLength(2);
 +  });
 +
 +  it.each([
@@ -1017,13 +1067,15 @@
 +      gate.resolve();
 +      await vi.advanceTimersByTimeAsync(0);
 +      expect(cache.value?.token).toBe(nodeHello.auth.deviceToken);
-+      expect(onHelloOk).toHaveBeenCalledOnce();
-+      socket.close(1006, "reconnect with accepted receipt");
-+      const replacement = await reconnectSocket();
++      expect(onHelloOk).toHaveBeenCalledTimes(preferBootstrapToken ? 0 : 1);
++      if (!preferBootstrapToken) {
++        socket.close(1006, "reconnect with accepted receipt");
++      }
++      const replacement = await reconnectSocket(1, preferBootstrapToken ? 250 : 1_000);
 +      expect(connectAuth(replacement)).toEqual({ deviceToken: nodeHello.auth.deviceToken });
 +      replacement.respond({ ...nodeHello, auth: { role: "node", scopes: [] } });
 +      await vi.advanceTimersByTimeAsync(0);
-+      expect(onHelloOk).toHaveBeenCalledTimes(2);
++      expect(onHelloOk).toHaveBeenCalledTimes(preferBootstrapToken ? 1 : 2);
 +
 +      // Once established, losing that receipt must fail closed. Neither the
 +      // consumed setup bearer nor an empty auth frame can restore this session.
@@ -1089,7 +1141,7 @@
 +          cache.value = { token: params.token, scopes: params.scopes };
 +        },
 +      },
-+      nodeOptions,
++      { ...nodeOptions, bootstrapToken: undefined },
 +    );
 +    const socket = MockWebSocket.instances[0];
 +    assert(socket);
@@ -1107,7 +1159,7 @@
 +      event: "connect.challenge",
 +      payload: { nonce: "synthetic-nonce", ts: Date.now() },
 +    });
-+    expect(connectAuth(socket)).toEqual({ bootstrapToken: nodeOptions.bootstrapToken });
++    expect(connectAuth(socket)).toEqual({ deviceToken: savedNodeToken.token });
 +    socket.receive(invoke("before-hello"));
 +    socket.respond(nodeHello);
 +    await vi.advanceTimersByTimeAsync(0);
@@ -1775,7 +1827,7 @@
    it("rejects connection authority retired by socket registration and cleans the registration", () => {
 --- /dev/null
 +++ b/packages/gateway-client/src/client.node-invocation.test.ts
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,212 @@
 +import { once } from "node:events";
 +import { PROTOCOL_VERSION } from "@openclaw/gateway-protocol/version";
 +import { expect, it, vi } from "vitest";
@@ -1813,7 +1865,8 @@
 +  const onInvoke = vi.fn();
 +  const onHello = vi.fn();
 +  const replies: unknown[] = [];
-+  let saved: DeviceAuthTokenRecord | null = null;
++  let saved: DeviceAuthTokenRecord = { token: "synthetic-saved-node-token", scopes: [] };
++  let stored = false;
 +  let current = true;
 +  let connections = 0;
 +  let peer: WebSocket | undefined;
@@ -1871,9 +1924,11 @@
 +    role: "node",
 +    mode: "node",
 +    clientName: "node-host",
-+    bootstrapToken: "synthetic-bootstrap",
-+    preferBootstrapToken: true,
-+    nodeSetupAuth: { deviceId: "synthetic-device" },
++    nodeSetupAuth: {
++      deviceId: "synthetic-device",
++      deviceToken: saved.token,
++      savedGateway: { scope: url },
++    },
 +    deviceIdentity: {
 +      deviceId: "synthetic-device",
 +      privateKeyPem: "synthetic-key",
@@ -1888,8 +1943,8 @@
 +      signDevicePayload: () => "synthetic-signature",
 +      publicKeyRawBase64UrlFromPem: () => "synthetic-public",
 +      loadDeviceAuthToken: () => {
-+        if (!saved) {
-+          return null;
++        if (!stored) {
++          return saved;
 +        }
 +        readbackStarted.resolve();
 +        return readbackGate.promise.then(() => (outcome === "readback mismatch" ? null : saved));
@@ -1900,6 +1955,7 @@
 +          throw new Error("synthetic persistence failure");
 +        }
 +        saved = { token: params.token, scopes: params.scopes };
++        stored = true;
 +      },
 +    },
 +    onConnectError: receivedPending.reject,
@@ -2184,7 +2240,7 @@
            return assembled;
          };
          const storedAuth = this.opts.deviceIdentity
-@@ -462,17 +567,70 @@
+@@ -462,25 +567,113 @@
          } else {
            this.logError(msg);
          }
@@ -2199,6 +2255,10 @@
          const role = this.opts.role ?? "operator";
 -        const authInfo = helloOk.auth;
 +        const authInfo = helloOk?.auth;
++        const requiresDeviceTokenReconnect =
++          this.isNodeHostClient() &&
++          Boolean(assembled.params.auth?.bootstrapToken) &&
++          Boolean(this.opts.nodeSetupAuth || this.opts.nodeDeviceAuth);
 +        if (this.isNodeHostClient()) {
 +          // A node host may never persist a peer-selected role's credential.
 +          // Older peers may omit method, but an explicit method must attest setup auth.
@@ -2238,6 +2298,8 @@
 +          }
            if (authInfo?.deviceToken && (authInfo.role ?? role) === role && observation) {
              observation.token = authInfo.deviceToken;
+-          }
+-          if (this.opts.preferBootstrapToken) {
 +            for (const policy of [this.opts.nodeSetupAuth, this.opts.nodeDeviceAuth]) {
 +              if (!policy) {
 +                continue;
@@ -2254,10 +2316,11 @@
 +            // Losing its grant must not revive setup auth or an anonymous frame.
 +            this.opts.nodeDeviceAuth.required = true;
 +            this.opts.bootstrapToken = undefined;
-           }
-           if (this.opts.preferBootstrapToken) {
++          }
++          if (this.opts.preferBootstrapToken || requiresDeviceTokenReconnect) {
              // This accepted receipt redeems setup auth even when its transport has retired.
-@@ -481,6 +639,37 @@
+             this.opts.token = undefined;
+             this.opts.bootstrapToken = undefined;
              this.opts.password = undefined;
              this.opts.preferBootstrapToken = false;
            }
@@ -2295,7 +2358,7 @@
          };
          let stored: MaybePromise<void> = undefined;
          if (authInfo?.deviceToken && this.opts.deviceIdentity) {
-@@ -504,6 +693,13 @@
+@@ -504,6 +697,13 @@
              persisted,
              (error) => {
                assembled.persistenceFailed = true;
@@ -2309,7 +2372,20 @@
                const reported = this.notifyConnectError(error);
                this.logError(
                  `gateway device token persistence failed: ${formatGatewayClientErrorForLog(error)}`,
-@@ -550,30 +746,85 @@
+@@ -544,36 +744,98 @@
+             this.protocol.closeSocket(1012, "gateway protocol upgraded");
+             return;
+           }
++          if (requiresDeviceTokenReconnect) {
++            // Bootstrap registration cannot prove the node received its grant.
++            // Publish readiness only after a token-only handshake proves receipt.
++            this.protocol.resetReconnectBackoff(250);
++            this.protocol.closeSocket(1012, "node device token verification");
++            return;
++          }
+           this.lastTick = Date.now();
+           this.startTickWatch();
+         };
          return stored instanceof Promise ? stored.then(complete) : complete();
        },
        onHello: (hello) => {
@@ -2403,7 +2479,7 @@
          clearInterval(this.tickTimer ?? undefined);
          this.tickTimer = null;
          if (decision.notify) {
-@@ -586,7 +837,40 @@
+@@ -586,7 +848,40 @@
          this.notifyReconnectPaused({ code: 1008, reason: error.message, detailCode: null }),
        onParseError: (error) =>
          this.logDebug(`gateway client parse error: ${formatGatewayClientErrorForLog(error)}`),
@@ -2445,7 +2521,7 @@
        onGap: (info) => this.opts.onGap?.(info),
        onRequestTiming: (timing) => this.opts.onRequestTiming?.(timing),
        onActivity: () => {
-@@ -658,7 +942,27 @@
+@@ -658,7 +953,27 @@
    }
  
    private createSocket(handlers: GatewayProtocolSocketHandlers): GatewayProtocolSocket {
@@ -2473,7 +2549,7 @@
      const configuredEdgeAuthHeaders = this.opts.edgeAuthHeaders;
      const edgeAuthHeaders =
        configuredEdgeAuthHeaders && Object.keys(configuredEdgeAuthHeaders).length > 0
-@@ -815,6 +1119,8 @@
+@@ -815,6 +1130,8 @@
    }
  
    private beginStop(): Promise<void> | null {
@@ -2482,7 +2558,7 @@
      this.stopped = true;
      this.pendingDeviceTokenRetry = false;
      this.deviceTokenRetryBudgetUsed = false;
-@@ -854,6 +1160,12 @@
+@@ -854,6 +1171,12 @@
      return null;
    }
  
@@ -2495,7 +2571,7 @@
    private resolvePendingStop(ws: WebSocket): void {
      if (this.pendingStop?.ws !== ws) {
        return;
-@@ -896,6 +1208,10 @@
+@@ -896,6 +1219,10 @@
      error: GatewayProtocolRequestError,
      assembled: AssembledConnect,
    ) {
@@ -2506,7 +2582,7 @@
      if (this.shouldRetryWithAlternateNodeProtocol(error)) {
        const resetBackoff = !this.nodeProtocolTransitionPending;
        this.useLegacyNodeProtocolEnvelope = !this.useLegacyNodeProtocolEnvelope;
-@@ -911,6 +1227,13 @@
+@@ -911,6 +1238,13 @@
        return { closeCode: 1008, closeReason: "connect retry" };
      }
      this.nodeProtocolTransitionPending = false;
@@ -2520,7 +2596,7 @@
      const detailCode =
        error instanceof GatewayClientRequestError ? readConnectErrorDetailCode(error.details) : null;
      const shouldRetryWithDeviceToken = shouldRetryGatewayWithDeviceToken({
-@@ -919,9 +1242,18 @@
+@@ -919,9 +1253,18 @@
        explicitToken: this.opts.token?.trim() || undefined,
        storedToken: assembled.storedToken,
        trustedEndpoint: this.isTrustedDeviceRetryEndpoint(),
@@ -2539,7 +2615,7 @@
        this.pendingDeviceTokenRetry = true;
        this.deviceTokenRetryBudgetUsed = true;
        this.protocol.resetReconnectBackoff(250);
-@@ -985,6 +1317,36 @@
+@@ -985,6 +1328,36 @@
        context.connectFailure?.error instanceof GatewayClientRequestError
          ? context.connectFailure.error.details
          : undefined;
@@ -2576,7 +2652,7 @@
      if (context.code === 1013 && context.connectFailure?.reconnectDelayMs !== undefined) {
        return {
          retry: true,
-@@ -1016,6 +1378,7 @@
+@@ -1016,6 +1389,7 @@
        shouldPauseGatewayReconnect({
          details,
          deviceTokenRetryPending: this.pendingDeviceTokenRetry,
@@ -2584,7 +2660,7 @@
          tokenMismatchIsTerminal: true,
          protocolMismatchIsTerminal: !this.nodeProtocolTransitionPending,
          clientVersionMismatchIsTerminal: true,
-@@ -1052,10 +1415,25 @@
+@@ -1052,10 +1426,25 @@
      ) {
        return;
      }
@@ -2612,7 +2688,7 @@
      void this.clearDeviceToken(
        this.opts.deviceIdentity.deviceId,
        observation,
-@@ -1112,6 +1490,12 @@
+@@ -1112,6 +1501,12 @@
    }
  
    private notifyReconnectPaused(info: GatewayReconnectPausedInfo): void {
@@ -2625,7 +2701,7 @@
      try {
        this.opts.onReconnectPaused?.(info);
      } catch (err) {
-@@ -1127,6 +1511,40 @@
+@@ -1127,6 +1522,40 @@
      }
      const message = normalizeGatewayErrorText(error.message);
      return message.includes("invalid connect params") && message.includes(field);
@@ -7182,6 +7258,360 @@
          write({ type: "ready", computerUse: declaration.computerUse });
        })();
        void startup.catch(stopAfterError);
+--- a/src/gateway/node-registry-pairing.test.ts
++++ b/src/gateway/node-registry-pairing.test.ts
+@@ -30,6 +30,59 @@
+   vi.useRealTimers();
+   setActiveNodeContexts([]);
+ });
++
++it.each(["closing", "unregister", "invalidate", "replacement", "generation", "revocation"])(
++  "retires device-token possession proof on %s",
++  (retirement) => {
++    let published = { identity: "identity-a", generation: "generation-a" };
++    const registry = createNodeRegistry({
++      isPairingStateCurrent: (_nodeId, expected) =>
++        expected.identity === published.identity && expected.generation === published.generation,
++    });
++    const client = makeClient("proof-connection", "proof-node");
++    client.isDeviceTokenAuth = true;
++    const session = registerNodeSession(registry, client, {
++      pairingIdentity: "identity-a",
++      pairingGeneration: "generation-a",
++    });
++    expect(registry.isDeviceTokenAuthenticated(session)).toBe(true);
++
++    // Authentication belongs to the exact session and its admitted generation.
++    // A new bootstrap session or a live grant update cannot inherit that proof.
++    if (retirement === "closing") {
++      Object.assign(client.socket, { readyState: 2 });
++    } else if (retirement === "unregister") {
++      registry.unregister(client.connId);
++    } else if (retirement === "invalidate") {
++      registry.invalidateConnectionForPairingChange(client.connId);
++    } else if (retirement === "replacement") {
++      const replacement = registerNodeSession(
++        registry,
++        makeClient("replacement-connection", "proof-node"),
++        { pairingIdentity: "identity-a", pairingGeneration: "generation-a" },
++      );
++      expect(registry.isDeviceTokenAuthenticated(replacement)).toBe(false);
++    } else if (retirement === "generation") {
++      published = { ...published, generation: "generation-b" };
++      expect(
++        registry.updateSurface(
++          "proof-node",
++          { commands: [] },
++          {
++            expectedConnId: client.connId,
++            expectedPairingIdentity: "identity-a",
++            expectedPairingGeneration: "generation-a",
++            nextPairingGeneration: "generation-b",
++          },
++        ),
++      ).not.toBeNull();
++      expect(session.pairingGeneration).toBe("generation-b");
++    } else {
++      published = { identity: "revoked-identity", generation: "revoked-generation" };
++    }
++    expect(registry.isDeviceTokenAuthenticated(session)).toBe(false);
++  },
++);
+ 
+ it.each(["current", "revoked", "unavailable"])(
+   "uses the published pairing authority after a delayed read (%s)",
+--- a/src/gateway/node-registry.ts
++++ b/src/gateway/node-registry.ts
+@@ -142,6 +142,7 @@
+ 
+ export class NodeRegistry {
+   private nodesById = new Map<string, PairingBoundNodeSession>();
++  private readonly deviceTokenAuthenticatedSessions = new WeakMap<NodeSession, NodePairingLease>();
+   private nodesByConn = new Map<string, string>();
+   private eventTransportsByConn = new Map<string, NodeEventTransport>();
+   private pendingInvokes = new Map<string, PendingInvoke>();
+@@ -499,6 +500,13 @@
+       skills: [],
+       withheldCommands: connect.withheldCommands ?? [],
+     });
++    if (
++      client.isDeviceTokenAuth === true &&
++      connect.device?.id === nodeId &&
++      opts.pairingGeneration
++    ) {
++      this.deviceTokenAuthenticatedSessions.set(session, this.capturePairingLease(session));
++    }
+     this.mcpPolicy.retire(previousSession);
+     const replacesPresence = previousSession?.lastActiveAtMs !== undefined;
+     forgetNodeRunnerInventory(this, client.connId);
+@@ -680,6 +688,21 @@
+ 
+   get(nodeId: string): NodeSession | undefined {
+     return this.getRegisteredSession(nodeId);
++  }
++
++  /** Current-session proof of possession, never a persisted pairing or liveness claim. */
++  isDeviceTokenAuthenticated(node: NodeSession | undefined): boolean {
++    if (!node || !this.options.isPairingStateCurrent) {
++      return false;
++    }
++    const lease = this.deviceTokenAuthenticatedSessions.get(node);
++    return Boolean(
++      lease &&
++      this.currentSessionForLease(lease) === node &&
++      node.client.connect.device?.id === node.nodeId &&
++      node.client.socket.readyState === WEBSOCKET_OPEN_READY_STATE &&
++      isPublishedPairingCurrent(node, this.options.isPairingStateCurrent),
++    );
+   }
+ 
+   private getRegisteredSession(nodeId: string): PairingBoundNodeSession | undefined {
+--- a/src/gateway/server-methods/nodes.read.ts
++++ b/src/gateway/server-methods/nodes.read.ts
+@@ -230,6 +230,9 @@
+         {
+           ts: Date.now(),
+           ...node,
++          deviceTokenAuthenticated: context.nodeRegistry.isDeviceTokenAuthenticated(
++            connectedNodes.find((connected) => connected.nodeId === id),
++          ),
+           ...(context.nodeRegistry.getActiveNode(connectedNodes)?.nodeId === id
+             ? { active: true }
+             : {}),
+--- a/src/gateway/server.node-bootstrap-reconnect.test.ts
++++ b/src/gateway/server.node-bootstrap-reconnect.test.ts
+@@ -1,5 +1,8 @@
+ // Bootstrap retries must reuse unchanged node grants and their pairing generation.
+-import { expect, test } from "vitest";
++import path from "node:path";
++import { expect, test, vi } from "vitest";
++import { createDeferred, withinTest } from "../../test/helpers/promise.js";
++import { loadDeviceAuthToken, storeDeviceAuthToken } from "../infra/device-auth-store.js";
+ import { issueDeviceBootstrapToken } from "../infra/device-bootstrap.js";
+ import { captureNodePairingGeneration } from "../infra/device-pairing-node-state.js";
+ import { approveNodePairing, requestNodePairing } from "../infra/device-pairing-node.js";
+@@ -8,63 +11,174 @@
+   CLOUD_WORKER_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+   NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+ } from "../shared/device-bootstrap-profile.js";
++import { GatewayClient } from "./client.js";
+ import { openTrackedWs, pairDeviceIdentity } from "./device-authz.test-helpers.js";
+ import { describeWithGatewayServer } from "./server.node-pairing.test-support.js";
+-import { connectReq, installGatewayTestHooks } from "./test-helpers.js";
++import { connectOk, installGatewayTestHooks, rpcReq } from "./test-helpers.js";
+ 
+ installGatewayTestHooks({ scope: "suite" });
+ 
+ describeWithGatewayServer("node bootstrap reconnect", (getStarted) => {
+-  test.each([
++  test.for([
+     ["node-only", NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE],
+     ["cloud-worker", CLOUD_WORKER_PAIRING_SETUP_BOOTSTRAP_PROFILE],
+-  ] as const)("reuses the approved pairing for a %s profile", async (name, profile) => {
+-    const client = {
+-      id: "node-host" as const,
+-      version: "1.0.0",
+-      platform: "linux",
+-      mode: "node" as const,
+-    };
+-    const paired = await pairDeviceIdentity({
+-      name: `bootstrap-reconnect-${name}`,
+-      role: "node",
+-      scopes: [],
+-      clientId: client.id,
+-      clientMode: client.mode,
+-      platform: client.platform,
+-    });
+-    const surface = await requestNodePairing({
+-      nodeId: paired.identity.deviceId,
+-      platform: client.platform,
+-      commands: [],
+-    });
+-    await approveNodePairing(surface.request.requestId, { callerScopes: ["operator.pairing"] });
+-    const generation = await captureNodePairingGeneration(paired.identity.deviceId);
+-    expect(generation).not.toBeNull();
+-    const issued = await issueDeviceBootstrapToken({ profile });
+-    const ws = await openTrackedWs(getStarted().port);
+-    try {
+-      const response = await connectReq(ws, {
+-        client,
++  ] as const)(
++    "proves durable token possession without expanding a %s node grant",
++    async ([name, profile], { signal }) => {
++      const client = {
++        id: "node-host" as const,
++        version: "1.0.0",
++        platform: "linux",
++        mode: "node" as const,
++      };
++      const commands = [
++        "dir.list",
++        "file.create",
++        "file.fetch",
++        "file.stat",
++        "file.write",
++        "workspace.memory",
++        "workspace.skills",
++      ];
++      const paired = await pairDeviceIdentity({
++        name: `bootstrap-reconnect-${name}`,
+         role: "node",
+         scopes: [],
++        clientId: client.id,
++        clientMode: client.mode,
++        platform: client.platform,
++      });
++      const surface = await requestNodePairing({
++        nodeId: paired.identity.deviceId,
++        platform: client.platform,
++        commands,
++      });
++      const approved = await approveNodePairing(surface.request.requestId, {
++        callerScopes: ["operator.pairing", "operator.write"],
++      });
++      expect(approved && !("status" in approved)).toBe(true);
++      const generation = await captureNodePairingGeneration(paired.identity.deviceId);
++      expect(generation).not.toBeNull();
++      const issued = await issueDeviceBootstrapToken({ profile });
++      const url = `ws://127.0.0.1:${getStarted().port}`;
++      const env = {
++        ...process.env,
++        OPENCLAW_STATE_DIR: path.join(path.dirname(paired.identityPath), "node-cache"),
++      };
++      const lookup = { deviceId: paired.identity.deviceId, role: "node", env };
++      const observer = await openTrackedWs(getStarted().port);
++      await connectOk(observer, { scopes: ["operator.admin"] });
++      const describe = async () => {
++        const response = await rpcReq(observer, "node.describe", { nodeId: paired.identity.deviceId });
++        expect(response.ok).toBe(true);
++        return response.payload;
++      };
++      const stored = createDeferred();
++      const permitStore = createDeferred();
++      const ready = createDeferred();
++      // The store gate can fail before the test starts waiting for readiness.
++      void ready.promise.catch(() => {});
++      const onHello = vi.fn();
++      const node = new GatewayClient({
++        url,
++        env,
++        deviceIdentity: paired.identity,
++        clientName: client.id,
++        clientVersion: client.version,
++        platform: client.platform,
++        mode: client.mode,
++        role: "node",
++        scopes: [],
++        caps: [],
++        commands,
+         bootstrapToken: issued.token,
+-        skipDefaultAuth: true,
+-        prePairDevice: false,
+-        deviceIdentityPath: paired.identityPath,
++        preferBootstrapToken: true,
++        nodeSetupAuth: { deviceId: paired.identity.deviceId },
++        hostDeps: {
++          storeDeviceAuthToken: async (params) => {
++            stored.resolve();
++            await permitStore.promise;
++            return await storeDeviceAuthToken(params);
++          },
++        },
++        onHelloOk: () => {
++          onHello();
++          ready.resolve();
++        },
++        onConnectError: (error) => {
++          stored.reject(error);
++          ready.reject(error);
++        },
+       });
+-      expect.soft(response).toMatchObject({
+-        ok: true,
+-        payload: { type: "hello-ok", auth: { role: "node", scopes: [] } },
+-      });
+-      expect(await captureNodePairingGeneration(paired.identity.deviceId)).toEqual(generation);
+-      expect(
+-        (await listDevicePairing()).pending.filter(
+-          (request) => request.deviceId === paired.identity.deviceId,
+-        ),
+-      ).toEqual([]);
+-    } finally {
+-      ws.close();
+-    }
+-  });
++      let resumed: GatewayClient | undefined;
++      try {
++        node.start();
++        await withinTest(stored.promise, signal);
++        // Server-side setup consumption and an open bootstrap session do not
++        // establish receipt. Block the real credential write at the host boundary.
++        expect(await describe()).toMatchObject({
++          connected: true,
++          deviceTokenAuthenticated: false,
++          commands,
++        });
++        expect(await loadDeviceAuthToken(lookup)).toBeNull();
++        expect(onHello).not.toHaveBeenCalled();
++        permitStore.resolve();
++        await withinTest(ready.promise, signal);
++        const receipt = await loadDeviceAuthToken(lookup);
++        expect(receipt?.token).toEqual(expect.any(String));
++        expect(await describe()).toMatchObject({ connected: true, deviceTokenAuthenticated: true });
++        expect(onHello).toHaveBeenCalledOnce();
++        expect(await captureNodePairingGeneration(paired.identity.deviceId)).toEqual(generation);
++        expect(
++          (await listDevicePairing()).pending.filter(
++            (request) => request.deviceId === paired.identity.deviceId,
++          ),
++        ).toEqual([]);
++        await node.stopAndWait();
++        await expect.poll(describe).toMatchObject({
++          connected: false,
++          deviceTokenAuthenticated: false,
++        });
++
++        // A later process uses the exact retained grant directly. Neither another
++        // setup token nor an extra command such as system.which is needed.
++        const resumedReady = createDeferred();
++        resumed = new GatewayClient({
++          url,
++          env,
++          deviceIdentity: paired.identity,
++          clientName: client.id,
++          clientVersion: client.version,
++          platform: client.platform,
++          mode: client.mode,
++          role: "node",
++          scopes: [],
++          caps: [],
++          commands,
++          nodeSetupAuth: {
++            deviceId: paired.identity.deviceId,
++            deviceToken: receipt!.token,
++            savedGateway: { scope: url },
++          },
++          onHelloOk: () => resumedReady.resolve(),
++          onConnectError: resumedReady.reject,
++        });
++        resumed.start();
++        await withinTest(resumedReady.promise, signal);
++        expect(await describe()).toMatchObject({
++          connected: true,
++          deviceTokenAuthenticated: true,
++          commands,
++        });
++        expect((await loadDeviceAuthToken(lookup))?.token).toBe(receipt!.token);
++        expect(await captureNodePairingGeneration(paired.identity.deviceId)).toEqual(generation);
++      } finally {
++        permitStore.resolve();
++        await node.stopAndWait();
++        await resumed?.stopAndWait();
++        observer.close();
++      }
++    },
++  );
+ });
 --- a/src/infra/dotenv-global-core.ts
 +++ b/src/infra/dotenv-global-core.ts
 @@ -4,6 +4,7 @@

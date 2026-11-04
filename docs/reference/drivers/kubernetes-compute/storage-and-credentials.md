@@ -136,15 +136,13 @@ for older databases; a still-old database holds at `state-migration`.
 Setup expires after ten minutes. `--pair-or-reconnect` first tries fresh setup;
 only `AUTH_BOOTSTRAP_TOKEN_INVALID` permits a saved-token retry. Expired codes
 require saved credentials bound to the same device, Gateway scope and TLS pin.
-Initial enrollment saves the endpoint; renewal preserves it.
+Enrollment saves the endpoint; renewal preserves it.
 
-Both Gateway receipt types record `setupReceiptDeviceId` before further checks.
-Only an authenticated `system.which` response promotes it to `deviceId`;
-`{ bins: [] }` performs no filesystem lookup or execution. Explicit command denies
-still apply. Registry presence and local hello writes do not prove possession.
-Missing status cannot authorize fresh credentials. If possession remains
-unconfirmed after setup expiry, follow the recovery below. Readiness also records
-the current revision.
+Gateway receipts record `setupReceiptDeviceId` before checks.
+After saving and reading back its credential, the node reconnects using only that token. `node.describe` must confirm token authentication for the
+current session before setting `deviceId`. Disconnect or pairing replacement clears that fact. Command grants stay unchanged.
+Presence and hello writes do not prove possession. Missing status cannot
+authorize fresh credentials. For unconfirmed possession after expiry, follow recovery below. Readiness records the revision.
 
 Modes permitting endpoint changes retire credentials before switching; failed
 retirement blocks switching. All modes preserve identity. Exact-device resume

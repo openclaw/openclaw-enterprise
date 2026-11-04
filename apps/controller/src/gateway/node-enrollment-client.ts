@@ -5,7 +5,6 @@ import {
   type GatewayClientOptions,
 } from "@openclaw/gateway-client";
 import { setTimeout as delay } from "node:timers/promises";
-import { randomUUID } from "node:crypto";
 import { TransientDependencyError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
@@ -36,7 +35,7 @@ export interface GatewayNodeEnrollment {
     signal: AbortSignal,
     options?: NodeSetupObserveOptions,
   ): Promise<NodeSetupObservation | undefined>;
-  /** Requires the node's supported commands and a response after its accepted hello. */
+  /** Requires the supported commands and a current device-token-authenticated session. */
   isConnected(url: string, deviceId: string, signal: AbortSignal): Promise<boolean>;
 }
 
@@ -60,7 +59,6 @@ type GatewayRequest = (
 // One status read per interval while a caller waits for a node to pair.
 export const NODE_SETUP_POLL_MS = 250;
 const GATEWAY_CONNECT_BUDGET_MS = 10_000;
-const NODE_POSSESSION_PROBE_MS = 1_000;
 
 type GatewayHello = Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0];
 
@@ -256,7 +254,11 @@ async function isConnected(
   signal.throwIfAborted();
   const node = asRecord(await request("node.describe", { nodeId: deviceId }, { signal }));
   signal.throwIfAborted();
-  if (node?.nodeId !== deviceId || typeof node.connected !== "boolean") {
+  if (
+    node?.nodeId !== deviceId ||
+    typeof node.connected !== "boolean" ||
+    typeof node.deviceTokenAuthenticated !== "boolean"
+  ) {
     throw new Error("The Gateway returned an invalid node observation.");
   }
   if (!node.connected) {
@@ -271,60 +273,14 @@ async function isConnected(
     "dir.list",
     "workspace.memory",
     "workspace.skills",
-    "system.which",
   ].filter((command) => !commands.includes(command));
   if (missing.length > 0) {
     throw new Error(`The workspace node is missing required commands: ${missing.join(", ")}.`);
   }
-  // Native nodes dispatch only after accepting hello and reading back their
-  // saved credential. An empty lookup proves that round trip without depending
-  // on a workspace path, reading a file, or executing a program.
-  const probeBudget = AbortSignal.timeout(NODE_POSSESSION_PROBE_MS);
-  const probeSignal = AbortSignal.any([signal, probeBudget]);
-  let response: unknown;
-  try {
-    response = await request(
-      "node.invoke",
-      {
-        nodeId: deviceId,
-        command: "system.which",
-        params: { bins: [] },
-        timeoutMs: NODE_POSSESSION_PROBE_MS,
-        idempotencyKey: randomUUID(),
-      },
-      { signal: probeSignal },
-    );
-  } catch (error) {
-    signal.throwIfAborted();
-    if (probeBudget.aborted) {
-      return false;
-    }
-    const details = asRecord(asRecord(error)?.details);
-    const nodeError = asRecord(details?.nodeError);
-    if (
-      error instanceof GatewayClientRequestError &&
-      error.code === "UNAVAILABLE" &&
-      ["TIMEOUT", "NOT_CONNECTED", "DISCONNECTED", "NODE_NOT_READY", "ROUTE_CHANGED"].includes(
-        String(details?.code ?? nodeError?.code),
-      )
-    ) {
-      return false;
-    }
-    throw error;
-  }
-  signal.throwIfAborted();
-  const result = asRecord(response);
-  const bins = asRecord(asRecord(result?.payload)?.bins);
-  if (
-    result?.ok !== true ||
-    result.nodeId !== deviceId ||
-    result.command !== "system.which" ||
-    bins === undefined ||
-    Object.keys(bins).length !== 0
-  ) {
-    throw new Error("The Gateway returned an invalid workspace node possession response.");
-  }
-  return true;
+  // Bootstrap registration and its server receipt do not prove possession.
+  // Native exposes this fact only for the current open session after checking
+  // the exact device token and its still-current pairing generation.
+  return node.deviceTokenAuthenticated;
 }
 
 async function withGateway<T>(

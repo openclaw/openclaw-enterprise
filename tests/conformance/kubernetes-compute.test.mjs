@@ -131,6 +131,7 @@ import {
 } from "../fixtures/kubernetes-provider-readiness.mjs";
 import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
@@ -1059,6 +1060,7 @@ test("activation refuses a missing or foreign workspace node before changing the
 // pairs within the wait, and never sleeps.
 function dedicatedFirstDeployFixture({
   statusProxy = true,
+  namespace = kubernetesNamespaceName(tenant.id),
   clock,
   modelEndpoint,
   modelProtocol = "openai-responses",
@@ -1075,7 +1077,7 @@ function dedicatedFirstDeployFixture({
     // A retained setup receipt can name a device that is currently disconnected.
     redeemedDeviceId: undefined,
     setupDelivery: "confirmed",
-    // Registry presence does not imply a successful authenticated invocation.
+    // Registry presence does not imply a completed token-authenticated connection.
     possessionAvailable: undefined,
     possessionDevices: [],
     enrollmentAvailable: true,
@@ -1216,7 +1218,6 @@ function dedicatedFirstDeployFixture({
     },
   };
   revision.configuration = admitLoggingConfiguration(operatorSuppliedConfiguration, "info");
-  const namespace = kubernetesNamespaceName(tenant.id);
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const agentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
   const objects = new Map();
@@ -1235,21 +1236,19 @@ function dedicatedFirstDeployFixture({
     }
     return structuredClone(value);
   };
-  save({
-    ...driver.manifest("v1", "Namespace", namespace, { namespaceId: tenant.id }),
-    status: { phase: "Active" },
-  });
-  save({
-    ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
-    status: { phase: "Active" },
-  });
+  const executionNamespace = driver.gatewayNamespaceManifest({ namespaceId: tenant.id });
+  executionNamespace.metadata.name = namespace;
+  if (namespace !== kubernetesNamespaceName(tenant.id)) {
+    executionNamespace.metadata.annotations["openclaw.dev/namespace-lifecycle"] = "external";
+  }
+  save({ ...executionNamespace, status: { phase: "Active" } });
   save({
     ...driver.manifest(
       "v1",
       "Secret",
       `transport-${digest(revision.agentId)}`,
       { namespaceId: tenant.id, agentId: revision.agentId },
-      { name: kubernetesNamespaceName(tenant.id), plane: "control" },
+      { name: namespace, plane: "control" },
     ),
     type: "Opaque",
     metadata: {
@@ -1258,7 +1257,7 @@ function dedicatedFirstDeployFixture({
         "Secret",
         `transport-${digest(revision.agentId)}`,
         { namespaceId: tenant.id, agentId: revision.agentId },
-        { name: kubernetesNamespaceName(tenant.id), plane: "control" },
+        { name: namespace, plane: "control" },
       ).metadata,
       uid: "transport-uid",
       resourceVersion: "1",
@@ -1272,14 +1271,14 @@ function dedicatedFirstDeployFixture({
     kind: "Secret",
     metadata: {
       name: "occ-model-key",
-      namespace: kubernetesNamespaceName(tenant.id),
+      namespace,
       uid: "model-secret-uid",
     },
     data: { value: Buffer.from("fixture-model-key").toString("base64") },
   });
   for (const target of [
     { name: namespace, plane: "execution" },
-    { name: kubernetesNamespaceName(tenant.id), plane: "control" },
+    { name: namespace, plane: "control" },
   ]) {
     for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, target)) {
       save(policy);
@@ -1367,7 +1366,13 @@ function dedicatedFirstDeployFixture({
       api[`replaceNamespaced${kind}`] = (request) => write(request, { replace: true });
     }
   }
-  clients.core.listNamespace = async () => ({ items: [] });
+  clients.core.listNamespace = async ({ labelSelector }) => ({
+    items:
+      namespace !== kubernetesNamespaceName(tenant.id) &&
+      labelSelector === `openclaw.dev/namespace=${tenant.id}`
+        ? [read("Namespace", namespace)]
+        : [],
+  });
   clients.core.readNamespace = async ({ name }) => read("Namespace", name);
   clients.objects.read = async (object) =>
     read(object.kind, object.metadata.name, object.metadata.namespace);
@@ -1458,9 +1463,7 @@ function dedicatedFirstDeployFixture({
       assert.notEqual(clock, undefined, "pairAfterSetupMs needs the fake clock");
       state.pairAtMs = clock.now + state.pairAfterSetupMs;
     }
-    const binding = objects.get(
-      key("ConfigMap", `${gatewayName}-workspace-node`, kubernetesNamespaceName(tenant.id)),
-    );
+    const binding = objects.get(key("ConfigMap", `${gatewayName}-workspace-node`, namespace));
     if (name === "gateway-pod" && binding !== undefined && state.gatewayAppliesBinding) {
       // The kubelet refreshes the volume and the wrapper hot-applies the node.
       const { revisionId, deviceId } = JSON.parse(binding.data["workspace-node.json"]);
@@ -1499,13 +1502,10 @@ function dedicatedFirstDeployFixture({
     };
   };
   driver.apiClients = Promise.resolve(clients);
-  const prepare = () => driver.prepareRevision(revision, context ?? authContext(revision));
+  const prepare = () =>
+    driver.prepareRevision(revision, context ?? authContext(revision, namespace));
   const markReady = (name) => {
-    const object = read(
-      "Deployment",
-      name,
-      name === gatewayName ? kubernetesNamespaceName(tenant.id) : namespace,
-    );
+    const object = read("Deployment", name);
     object.status = {
       observedGeneration: object.metadata.generation,
       replicas: 1,
@@ -2389,13 +2389,17 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   // before it has.
   assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
   assert.deepEqual(withdrawals, []);
-  // A setup receipt alone cannot attribute the disconnected device to this revision.
-  // Keep its diagnostics exposed until a later readiness pass observes the connection.
+  // A setup receipt alone cannot confirm credentials for the disconnected device.
+  // Keep its diagnostics exposed until a token-authenticated connection is observed.
   state.redeemedDeviceId = "node-1";
   assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
   assert.equal(withdrawals.length, 0, "a disconnected receipt must keep diagnostics available");
   const nodeSecret = read("Secret", driver.workspaceNodeName(revision));
-  assert.equal(Buffer.from(nodeSecret.data.deviceId, "base64").toString("utf8"), "node-1");
+  assert.equal(
+    Buffer.from(nodeSecret.data.setupReceiptDeviceId, "base64").toString("utf8"),
+    "node-1",
+  );
+  assert.equal(nodeSecret.data.deviceId, undefined);
   assert.equal(nodeSecret.data.enrolledRevisionId, undefined);
   // A deletion the provider does not confirm keeps its class and the pass fails;
   // the provider completes the withdrawal on its next adoption.
@@ -2411,6 +2415,13 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   // nothing more; the connected node makes the revision ready.
   withdrawalFailure = undefined;
   assert.equal((await prepare()).ready, true);
+  const confirmedNodeSecret = read("Secret", driver.workspaceNodeName(revision));
+  assert.equal(confirmedNodeSecret.data.setupReceiptDeviceId, undefined);
+  assert.equal(Buffer.from(confirmedNodeSecret.data.deviceId, "base64").toString("utf8"), "node-1");
+  assert.equal(
+    Buffer.from(confirmedNodeSecret.data.enrolledRevisionId, "base64").toString("utf8"),
+    revision.id,
+  );
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
   assert.equal(withdrawals.length, 1);
   assert.deepEqual(read("NetworkPolicy", stale.metadata.name), stale);
@@ -2893,7 +2904,11 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
     // A Gateway can register a connected node before its credential-bearing
     // hello reaches the client. Neither preparation nor readiness may promote
     // that uncertain receipt into an enrolled device.
-    const uncertain = dedicatedFirstDeployFixture({ sandboxDriver, revision: nativeRevision });
+    const uncertain = dedicatedFirstDeployFixture({
+      sandboxDriver,
+      revision: nativeRevision,
+      namespace: "n".repeat(63),
+    });
     const uncertainKey = seedNodeSecret(uncertain, {
       setupId: "setup-uncertain",
       setupCode: "uncertain-setup-code",
@@ -2920,7 +2935,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
     if (expired) {
       await assert.rejects(
         uncertain.prepare(),
-        /credential possession could not be confirmed.*Stop the Agent/,
+        /credential.*(?:unconfirmed|could not be confirmed).*Stop/,
       );
     } else {
       assert.equal((await uncertain.prepare()).ready, false);
@@ -2937,14 +2952,129 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
     uncertain.state.redeemedDeviceId = undefined;
     uncertain.state.connected = false;
     if (expired) {
-      await assert.rejects(uncertain.prepare(), /credential possession could not be confirmed/);
+      await assert.rejects(
+        uncertain.prepare(),
+        /credential.*(?:unconfirmed|could not be confirmed)/,
+      );
     } else {
       assert.equal((await uncertain.prepare()).ready, false);
     }
     assert.deepEqual(uncertain.objects.get(uncertainKey), retained);
     assert.equal(uncertain.state.setupCalls, 0);
-    // Later status cannot redirect the stored identity. The probe remains
-    // bound to the original device even after the short-lived receipt is gone.
+    if (expired && delivery === "uncertain") {
+      // Follow the real Driver failure through the worker's bounded diagnostic
+      // filter. Local fixtures supply state, IAM, queue and transport only.
+      const { driver, revision: pendingRevision } = uncertain;
+      pendingRevision.backendId = null;
+      const actorId = "authorized-actor";
+      const claim = {
+        idempotencyKey: `agent_revision:${pendingRevision.id}:reconcile`,
+        namespaceId: pendingRevision.namespaceId,
+        agentId: pendingRevision.agentId,
+        revisionId: pendingRevision.id,
+        actorId,
+        attemptCount: 1,
+      };
+      const iam = {
+        id: "fixture-iam",
+        capability: "iam",
+        async authorize() {
+          return {
+            allowed: true,
+            reason: "authorized deployment",
+            driverId: this.id,
+            evidence: {
+              identityId: actorId,
+              groupIds: [],
+              roleIds: [],
+              bindingIds: [],
+              restrictionIds: [],
+            },
+          };
+        },
+      };
+      // The active pointer is committed before activation verifies readiness;
+      // recovery must still surface an unconfirmed node credential.
+      const agent = {
+        id: pendingRevision.agentId,
+        namespaceId: pendingRevision.namespaceId,
+        servicePrincipalId: pendingRevision.servicePrincipalId,
+        activeRevisionId: pendingRevision.id,
+        desiredRuntimeState: "running",
+      };
+      const view = {
+        namespaces: { findNamespace: () => tenant },
+        agents: { findAgent: () => agent },
+        revisions: {
+          findRevision: () => structuredClone(pendingRevision),
+          listRevisionMetadata: () => [pendingRevision],
+        },
+        secrets: {
+          findSecret: () => ({
+            id: pendingRevision.harnessAuth.source.id,
+            namespaceId: pendingRevision.namespaceId,
+            driverId: pendingRevision.harnessAuth.secretDriverId,
+            backendRef: authContext(pendingRevision, uncertain.namespace).harnessAuth.backendRef,
+          }),
+        },
+        workspaceSetups: { find: () => undefined },
+        credentialSources: { listCredentialWithdrawals: () => [] },
+      };
+      const events = [];
+      const worker = new ControllerWorker({
+        pool: {},
+        mode: "production",
+        emit: (event) => events.push(event),
+        drivers: {
+          installation: { drivers: { iam, compute: driver } },
+          computeDriver: driver,
+          secretDriver: { id: pendingRevision.harnessAuth.secretDriverId },
+          createIAMDriver: () => iam,
+        },
+      });
+      worker.installation = { id: "node-recovery-test" };
+      worker.state.loadNativeIAMState = () => ({
+        identities: [
+          { id: actorId },
+          {
+            id: agent.servicePrincipalId,
+            kind: "service_principal",
+            namespaceId: agent.namespaceId,
+            agentId: agent.id,
+          },
+        ],
+      });
+      worker.state.read = (read) => read(view);
+      worker.queue.findWorkAttempt = () => undefined;
+      worker.queue.heartbeat = () => ({ ageMs: 100 });
+      const deferred = [];
+      worker.state.transactWithQueue = (update) =>
+        update(view, {
+          heartbeat: () => claim,
+          defer: (_claim, result) => deferred.push(result.code),
+        });
+      worker.workOrigins.set(claim, performance.now() - 100);
+      await worker.process(claim);
+      const diagnostics = events.filter(({ event }) => event === "worker.compute-prepare-failed");
+      assert.equal(diagnostics.length, 1, JSON.stringify(events));
+      const diagnostic = diagnostics[0];
+      const nodeName = driver.workspaceNodeName(pendingRevision);
+      assert.equal(uncertain.namespace.length, 63);
+      assert.equal(nodeName.length, 40);
+      assert.equal(diagnostic.code, "KUBERNETES_DEPENDENCY_UNAVAILABLE");
+      assert.equal(diagnostic.candidatePreparationReached, true);
+      assert.equal(
+        diagnostic.message,
+        "Node credential unconfirmed. Stop Agent; wait for shutdown. " +
+          `Delete only node Secret ${uncertain.namespace}/${nodeName}, then redeploy. ` +
+          "Preserve node identity and workspace storage.",
+      );
+      assert.ok(diagnostic.message.length <= 256);
+      assert.deepEqual(deferred, ["REVISION_FINALIZATION_INCOMPLETE"]);
+      assert.deepEqual(uncertain.objects.get(uncertainKey), retained);
+    }
+    // Later status cannot redirect the stored identity. Token authentication
+    // remains bound to the original device after the short-lived receipt is gone.
     uncertain.state.setupDelivery = "confirmed";
     uncertain.state.redeemedDeviceId = "another-node";
     uncertain.state.possessionAvailable = true;

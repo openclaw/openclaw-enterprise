@@ -192,23 +192,23 @@ prove readiness.
 
 `kubernetes/index.ts:reconcileGatewayRoute` provisions operator routing plus an
 exact `/node` HTTPRoute and SecurityPolicy for dedicated runtimes.
-Only operator routes allow native admin UI subpaths; both strip authorization
-and cookies.
+Only operator routes allow admin UI subpaths; both strip authorization and cookies.
 The [node endpoint contract](../reference/gateway-routing.md#native-node-endpoint)
 owns route ownership across preparation, activation, stop and retirement.
 
 `prepareWorkspaceNode` uses
 `gateway/node-enrollment-client.ts:createGatewayNodeEnrollment` after Gateway
 readiness. An Agent-owned Secret per Harness kind stores setup and device identity.
-Preparation reuses verified devices or retains setup receipts before renewal.
-`confirmWorkspaceNodeSetup` persists `setupReceiptDeviceId` before a fallible
-`system.which { bins: [] }` probe. Only an authenticated response promotes
-`deviceId`; expired status cannot authorize new credentials. Readiness records
-the current revision after proof. [Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+`confirmWorkspaceNodeSetup` retains `setupReceiptDeviceId` before `node.describe`.
+In the native bridge, `packages/gateway-client/src/client.ts` saves and reads back
+the token, then reconnects using only that token. `src/gateway/server-methods/nodes.read.ts`
+reports `deviceTokenAuthenticated` from `src/gateway/node-registry.ts`, bound to
+the current session and pairing generation. Only true permits promotion; expired
+status cannot authorize credentials. Readiness records the revision. [Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 owns authentication and recovery. Native provisioning requires a Sandbox;
 unpaired expired setup waits for Gateway.
 
-- Gateway admits file, workspace and `system.which` commands before pairing,
+- Gateway admits the seven file and workspace commands before pairing,
   preserving explicit denies.
 - `addNodeEnrollmentState` retains Agent-scoped identity until Agent deletion in
   the Harness PVC's `/home/node/.openclaw-node` (`0700`, nonroot initializer).

@@ -191,7 +191,7 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo '703c239bd3c8a968b0cf5bc39106a8bb2aef62d18a005482b7ea665fc18a5e53  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo 'd0158980da2824f7654803e260e2be22b535af3b5d250eba9e1e56530363208b  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Run the bridge tests alongside the build using the same patched source.
@@ -216,6 +216,8 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     src/cli/connect-cli.reconnect.test.ts \
     packages/gateway-client/src/client.device-auth.test.ts \
     packages/gateway-client/src/client.node-invocation.test.ts \
+    src/gateway/node-registry-pairing.test.ts \
+    src/gateway/server.node-bootstrap-reconnect.test.ts \
     packages/gateway-client/src/reconnect-policy.test.ts \
     src/node-host/runtime.worker-hosting.test.ts \
     src/node-host/gateway-cloudflare-access.test.ts \
@@ -251,7 +253,7 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
 # Type-check production and the native/UI test graphs touched by the bridges.
 # The upstream runner generates database types and compiler cache under .artifacts.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
-    node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json '["core","core-test-packages","core-test-config-cli","core-test-gateway-other","core-test-infra","core-test-services","core-test-commands-doctor","test-root-other","core-test-plugins-platform","core-test-ui-chat","core-test-ui-app"]'
+    node scripts/run-tsgo-core-test-shards.mjs --ci-graphs-json '["core","core-test-packages","core-test-config-cli","core-test-gateway-other","core-test-gateway-root","core-test-gateway-server","core-test-infra","core-test-services","core-test-commands-doctor","test-root-other","core-test-plugins-platform","core-test-ui-chat","core-test-ui-app"]'
 # Check the changed CUA extension with the upstream strict compiler settings.
 # Limit extension roots to CUA while checking all of its transitive imports.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \

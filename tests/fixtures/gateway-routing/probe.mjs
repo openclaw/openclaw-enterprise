@@ -175,7 +175,6 @@ async function assertNativeNodeRouteAuthentication({
       "dir.list",
       "workspace.memory",
       "workspace.skills",
-      "system.which",
     ],
     deviceIdentity,
     hostDeps: {
@@ -225,6 +224,11 @@ async function assertNativeNodeRouteAuthentication({
         // The Gateway confirms its local write asynchronously after hello.
         // Neither receipt status is itself evidence of node possession.
         assert.ok(["confirmed", "uncertain"].includes(receipt.delivery));
+        assert.equal(
+          await enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
+          false,
+          "a bootstrap-authenticated session does not prove possession of the issued device token",
+        );
         return hello;
       },
     });
@@ -254,14 +258,29 @@ async function assertNativeNodeRouteAuthentication({
       onConnected: async (_client, hello) => {
         assert.equal(
           await enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
-          false,
-          "advertised commands alone do not prove this transport-only client can execute an invocation",
+          true,
+          "the unchanged seven-command node proves possession by authenticating with its issued token",
         );
         return hello;
       },
     });
     assert.equal(reconnected.auth?.role, "node");
     assert.deepEqual(reconnected.auth.scopes, []);
+    // Retirement must clear the fact; an earlier successful token connection
+    // must not establish readiness for a node that is now disconnected.
+    const retiredDeadline = Date.now() + 5_000;
+    let retired = false;
+    while (!retired && Date.now() < retiredDeadline) {
+      retired = !(await enrollment.isConnected(
+        url,
+        deviceIdentity.deviceId,
+        AbortSignal.timeout(5_000),
+      ));
+      if (!retired) {
+        await delay(50);
+      }
+    }
+    assert.equal(retired, true, "the retired token-authenticated session is no longer ready");
     await assert.rejects(
       () =>
         requestGatewayHello({

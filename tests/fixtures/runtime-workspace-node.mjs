@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const require = createRequire("/app/package.json");
 const { WebSocket, WebSocketServer } = require("ws");
+const { GatewayClient } = await import(require.resolve("openclaw/plugin-sdk/gateway-runtime"));
 const cli = "/app/openclaw.mjs";
 const commands = [
   "file.fetch",
@@ -20,7 +21,6 @@ const commands = [
   "dir.list",
   "workspace.memory",
   "workspace.skills",
-  "system.which",
 ].sort();
 const state = "/home/node/workspace-node";
 const home = "/home/node/workspace-node-home";
@@ -82,6 +82,12 @@ let setup;
 let child;
 let childLog = "";
 let lostHelloDeviceId;
+let holdNextBootstrapHello = false;
+let heldHello;
+let observer;
+function describeNode(nodeId) {
+  return observer.request("node.describe", { nodeId }, { timeoutMs: remainingMs("node.describe") });
+}
 const rejectedDeviceIds = [];
 const upstreamSockets = new Set();
 // The proxy changes only delivery: the native node signs its own connect and
@@ -92,6 +98,7 @@ proxy.on("connection", (downstream) => {
   upstreamSockets.add(upstream);
   let deviceId;
   let connectId;
+  let bootstrapConnect = false;
   const pending = [];
   const close = () => {
     downstream.terminate();
@@ -115,6 +122,7 @@ proxy.on("connection", (downstream) => {
     if (frame.type === "req" && frame.method === "connect") {
       deviceId = frame.params.device?.id;
       connectId = frame.id;
+      bootstrapConnect = Boolean(frame.params.auth?.bootstrapToken);
     }
     if (upstream.readyState === WebSocket.OPEN) {
       upstream.send(bytes, { binary: false });
@@ -129,6 +137,26 @@ proxy.on("connection", (downstream) => {
         lostHelloDeviceId = deviceId;
         // Keep the transport open until setupStatus is read: dropping this
         // frame must not race a successful Gateway write against a TCP reset.
+        return;
+      }
+      if (
+        holdNextBootstrapHello &&
+        bootstrapConnect &&
+        frame.ok &&
+        frame.payload?.auth?.deviceToken
+      ) {
+        holdNextBootstrapHello = false;
+        heldHello = {
+          deviceId,
+          release() {
+            assert.equal(
+              downstream.readyState,
+              WebSocket.OPEN,
+              "Replacement closed before observation.",
+            );
+            downstream.send(bytes, { binary: false });
+          },
+        };
         return;
       }
       if (!frame.ok) {
@@ -154,10 +182,14 @@ async function waitForTransportObservation(observed, step) {
 function readSavedNodeCredentials() {
   const db = new DatabaseSync(`${state}/client/credentials.sqlite`, { readOnly: true });
   try {
+    const token = db
+      .prepare("SELECT token FROM device_auth_tokens WHERE role = 'node'")
+      .get()?.token;
     return {
       deviceId: db
         .prepare("SELECT device_id FROM device_identities WHERE identity_key = 'primary'")
         .get()?.device_id,
+      tokenSha256: token ? createHash("sha256").update(token).digest("hex") : undefined,
       tokenCount: db
         .prepare("SELECT count(*) AS count FROM device_auth_tokens WHERE role = 'node'")
         .get().count,
@@ -183,6 +215,9 @@ async function waitForDisconnect(nodeId) {
   while (Date.now() < deadline) {
     const result = await call("node.list");
     if (!result.nodes.some((item) => item.nodeId === nodeId && item.connected)) {
+      const retired = await describeNode(nodeId);
+      assert.equal(retired.connected, false);
+      assert.equal(retired.deviceTokenAuthenticated, false);
       return;
     }
     await setTimeout(500);
@@ -230,7 +265,12 @@ async function waitForNode(expectedId) {
       if (expectedId) {
         assert.equal(node.nodeId, expectedId);
       }
-      return node.nodeId;
+      const current = await describeNode(node.nodeId);
+      if (current.connected && current.deviceTokenAuthenticated === true) {
+        assert.equal(current.nodeId, node.nodeId);
+        assert.deepEqual(current.commands.toSorted(), commands);
+        return node.nodeId;
+      }
     }
     await setTimeout(500);
   }
@@ -268,6 +308,32 @@ function start() {
   });
 }
 try {
+  // A persistent real operator connection lets us inspect the replacement while
+  // its hello is withheld, without spending its handshake budget starting a CLI.
+  const connected = Promise.withResolvers();
+  observer = new GatewayClient({
+    url: "ws://127.0.0.1:8080",
+    password: process.env.OPENCLAW_GATEWAY_PASSWORD,
+    clientName: "gateway-client",
+    mode: "backend",
+    role: "operator",
+    deviceIdentity: null,
+    scopes: ["operator.admin"],
+    requestTimeoutMs: remainingMs("operator observation"),
+    onHelloOk: connected.resolve,
+    onConnectError: connected.reject,
+  });
+  observer.start();
+  const connectionTimer = globalThis.setTimeout(
+    () =>
+      connected.reject(new Error("The operator observer did not connect within the proof budget.")),
+    remainingMs("operator connection"),
+  );
+  try {
+    await connected.promise;
+  } finally {
+    clearTimeout(connectionTimer);
+  }
   setup = await call("device.pair.setupCode", {
     publicUrl: setupGatewayUrl,
     bootstrapProfile: "node",
@@ -279,21 +345,15 @@ try {
   // A successful Gateway socket write is not a receipt from the node: the
   // proxy discarded this hello, but native setupStatus still reports completion.
   await waitForConfirmedSetup(lostHelloDeviceId);
-  const possessionProbe = (nodeId) =>
-    call("node.invoke", {
-      nodeId,
-      command: "system.which",
-      params: { bins: [] },
-      timeoutMs: 1_000,
-      idempotencyKey: randomUUID(),
-    });
-  // A registered node whose hello was lost cannot answer after durable token
-  // acceptance. Metadata and server-side completion alone are insufficient.
-  await assert.rejects(possessionProbe(lostHelloDeviceId));
+  // Even if the bootstrap socket is still registered, no connection has proved
+  // possession of the issued token. A completion cannot supply that fact.
+  const lostHelloNode = await describeNode(lostHelloDeviceId);
+  assert.equal(lostHelloNode.deviceTokenAuthenticated, false);
   await stop();
   await waitForDisconnect(lostHelloDeviceId);
   const missingCredentials = {
     deviceId: lostHelloDeviceId,
+    tokenSha256: undefined,
     tokenCount: 0,
     originTokenCount: 0,
   };
@@ -325,11 +385,6 @@ try {
   const nodeId = await waitForNode(lostHelloDeviceId);
   const completion = await waitForConfirmedSetup(nodeId);
   assert.equal(completion.access, "node");
-  const possession = await possessionProbe(nodeId);
-  assert.equal(possession.ok, true);
-  assert.equal(possession.nodeId, nodeId);
-  assert.equal(possession.command, "system.which");
-  assert.deepEqual(possession.payload, { bins: {} });
   await stop();
   await waitForDisconnect(nodeId);
   const savedCredentials = readSavedNodeCredentials();
@@ -339,6 +394,9 @@ try {
   // Success requires saved-device authentication, not a fresh bootstrap grant.
   start();
   await waitForNode(nodeId);
+  // This node was already paired with the seven-command surface. Redeployment
+  // must use the exact retained token and identity without capability approval.
+  assert.deepEqual(readSavedNodeCredentials(), savedCredentials);
   const reconnected = await call("device.pair.setupStatus", { setupId: setup.setupId });
   assert.deepEqual(reconnected.completion, completion);
 
@@ -349,7 +407,15 @@ try {
     bootstrapProfile: "node",
     includeQr: false,
   });
+  holdNextBootstrapHello = true;
   await publishSetup();
+  await waitForTransportObservation(() => heldHello, "the replacement bootstrap hello");
+  assert.equal(heldHello.deviceId, nodeId);
+  const replacement = await describeNode(nodeId);
+  assert.equal(replacement.connected, true);
+  assert.equal(replacement.deviceTokenAuthenticated, false);
+  heldHello.release();
+  heldHello = undefined;
   const replacementCompletion = await waitForConfirmedSetup(nodeId);
   assert.equal(replacementCompletion.access, "node");
   await waitForNode(nodeId);
@@ -395,6 +461,8 @@ try {
       consumedSetupRetryRejected: true,
       sameIdentityAfterPairingRecovery: true,
       possessionEstablishedAfterRecovery: true,
+      sameTokenAfterRedeploy: true,
+      possessionClearedOnRetirementAndReplacement: true,
       slowestCallMs,
     }),
   );
@@ -402,6 +470,7 @@ try {
   try {
     await stop();
   } finally {
+    observer?.stop();
     for (const socket of proxy.clients) {
       socket.terminate();
     }

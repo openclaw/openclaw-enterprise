@@ -462,7 +462,7 @@ test(
       "node",
       "run",
       "--commands",
-      "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills,system.which",
+      "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills",
     ]);
 
     // Missing and unparsable projections must not replay the earlier setup into

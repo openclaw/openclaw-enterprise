@@ -522,7 +522,9 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
       assert.equal(result.consumedSetupRetryRejected, true);
       assert.equal(result.sameIdentityAfterPairingRecovery, true);
       assert.equal(result.possessionEstablishedAfterRecovery, true);
-      assert.equal(result.commands.length, 8);
+      assert.equal(result.sameTokenAfterRedeploy, true);
+      assert.equal(result.possessionClearedOnRetirementAndReplacement, true);
+      assert.equal(result.commands.length, 7);
       t.diagnostic(`slowest gateway call: ${result.slowestCallMs} ms`);
     },
   );
