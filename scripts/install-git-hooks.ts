@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,14 +51,27 @@ if (!sourceHook.includes(`${managedMarker}\n`)) {
 }
 
 try {
-  const existingHookMetadata = await lstat(nativeHookPath);
+  const existingHookMetadata = await lstat(nativeHookPath, { bigint: true });
   if (!existingHookMetadata.isFile()) {
     throw new Error(`Refusing to replace unmanaged pre-push hook: ${nativeHookPath}`);
   }
 
-  const existingHook = await readFile(nativeHookPath, "utf8");
-  if (!existingHook.includes(`${managedMarker}\n`)) {
-    throw new Error(`Refusing to replace unmanaged pre-push hook: ${nativeHookPath}`);
+  const handle = await open(nativeHookPath, "r");
+  try {
+    const openedMetadata = await handle.stat({ bigint: true });
+    if (
+      !openedMetadata.isFile() ||
+      openedMetadata.dev !== existingHookMetadata.dev ||
+      openedMetadata.ino !== existingHookMetadata.ino
+    ) {
+      throw new Error(`Refusing to replace unmanaged pre-push hook: ${nativeHookPath}`);
+    }
+    const existingHook = await handle.readFile("utf8");
+    if (!existingHook.includes(`${managedMarker}\n`)) {
+      throw new Error(`Refusing to replace unmanaged pre-push hook: ${nativeHookPath}`);
+    }
+  } finally {
+    await handle.close();
   }
 } catch (error) {
   if (!isMissingFile(error)) {

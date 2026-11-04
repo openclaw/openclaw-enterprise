@@ -110,6 +110,22 @@ test("hook installation refuses to replace an existing unmanaged native hook", a
   assert.notEqual((await stat(nativeHookPath)).mode & 0o111, 0);
 });
 
+test("hook installation refuses a symlink without modifying its target", async (t) => {
+  const fixtureRoot = await createRepositoryFixture(t);
+  const nativeHookPath = join(fixtureRoot, ".git/hooks/pre-push");
+  const targetPath = join(fixtureRoot, "existing-hook");
+  const targetContent = await readFile(join(fixtureRoot, ".githooks/pre-push"), "utf8");
+  await writeFile(targetPath, targetContent);
+  await symlink(targetPath, nativeHookPath);
+
+  const result = installHooks(fixtureRoot);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unmanaged.*pre-push/i);
+  assert.equal(await readFile(targetPath, "utf8"), targetContent);
+  assert.equal(await readFile(nativeHookPath, "utf8"), targetContent);
+});
+
 test("the native pre-push hook runs installed Prettier directly and blocks formatting failures", async (t) => {
   const { format } = await import("prettier");
   const fixtureRoot = await createRepositoryFixture(t);
