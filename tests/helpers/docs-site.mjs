@@ -76,7 +76,7 @@ export function buildDocs(directory, ...args) {
 export function spawnDocsPreview(directory) {
   return spawn(
     process.execPath,
-    [join(repositoryRoot, "scripts/docs-site/serve.mjs"), "--port", "0"],
+    [join(repositoryRoot, "scripts/docs-site/serve.ts"), "--port", "0"],
     {
       cwd: directory,
       stdio: ["ignore", "pipe", "pipe"],

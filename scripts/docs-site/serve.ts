@@ -1,9 +1,9 @@
 import { constants } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
-import { createPreviewBuild } from "./preview-build.mjs";
+import { createPreviewBuild } from "./preview-build.ts";
 
 const { values } = parseArgs({
   options: { watch: { type: "boolean" }, port: { type: "string", default: "4173" } },
@@ -12,7 +12,7 @@ const port = Number(values.port);
 if (!/^\d+$/.test(values.port) || !Number.isInteger(port) || port < 0 || port > 65535) {
   throw new Error("Invalid preview port");
 }
-const clients = new Set();
+const clients = new Set<ServerResponse>();
 const preview = values.watch
   ? await createPreviewBuild((state) => {
       for (const client of clients) {
@@ -21,9 +21,9 @@ const preview = values.watch
     })
   : undefined;
 const staticRoot = preview ? undefined : await realpath(resolve("dist/docs"));
-const refreshScript = (revision) =>
+const refreshScript = (revision: string) =>
   `<script type="module" src="/__docs_preview/client.mjs" data-docs-preview="${revision}"></script>`;
-const mime = {
+const mime: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -42,14 +42,14 @@ const mime = {
 const server = createServer(async (request, response) => {
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("X-Content-Type-Options", "nosniff");
-  if (!["GET", "HEAD"].includes(request.method)) {
+  if (!["GET", "HEAD"].includes(request.method ?? "")) {
     response.writeHead(405, { Allow: "GET, HEAD" }).end();
     return;
   }
   let url;
   let pathname;
   try {
-    url = new URL(request.url, `http://${request.headers.host}`);
+    url = new URL(request.url ?? "", `http://${request.headers.host}`);
     pathname = decodeURIComponent(url.pathname);
     if (pathname.includes("\0")) {
       throw new Error("Invalid path");
@@ -97,6 +97,9 @@ const server = createServer(async (request, response) => {
     response.once("close", () => generation.release());
   }
   const root = generation?.directory ?? staticRoot;
+  if (!root) {
+    throw new Error("Missing preview root");
+  }
   let handle;
   try {
     let file = resolve(root, `.${pathname}`);
@@ -166,10 +169,13 @@ server.on("error", async (error) => {
   process.exitCode = 1;
 });
 server.listen(port, "127.0.0.1", () => {
-  process.stdout.write(`Docs preview: http://127.0.0.1:${server.address().port}/\n`);
+  const address = server.address();
+  if (address && typeof address !== "string") {
+    process.stdout.write(`Docs preview: http://127.0.0.1:${address.port}/\n`);
+  }
 });
 let closing = false;
-for (const signal of ["SIGINT", "SIGTERM"]) {
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, async () => {
     if (closing) {
       return;
