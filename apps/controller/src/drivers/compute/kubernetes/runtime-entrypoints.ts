@@ -3869,7 +3869,10 @@ function codexReadinessFailure(url, token) {
 // Preserve the legacy command bytes: running Sandboxes compare their immutable command.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
-function agentRuntimeEntrypoint(disableUnboundedConnectionRetries: boolean): string {
+function agentRuntimeEntrypoint(
+  disableUnboundedConnectionRetries: boolean,
+  computeOwned = false,
+): string {
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
@@ -3883,8 +3886,7 @@ ${CODEX_STDERR_FILTER_HELPER}
 ${CODEX_PLUGIN_STDIO_HELPER}
 ${HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
-${CODEX_READINESS_HELPER}
-
+${computeOwned ? CODEX_READINESS_HELPER + "\n" : ""}
 // codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
 // running (finding 2274). Login and the model check run that native binary instead.
 function codexExecutable() {
@@ -3908,7 +3910,17 @@ function agentRuntimeReady() {
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
     return false;
   }
-  let token = pluginBaseAppServerToken;
+${
+  computeOwned
+    ? ""
+    : String.raw`  let ReadinessWebSocket;
+  try {
+    ReadinessWebSocket = require("ws");
+  } catch {
+    return false;
+  }
+`
+}  let token = pluginBaseAppServerToken;
   try {
     if (pluginRuntimeStatusPort() !== undefined) {
       token = derivePluginAppServerToken(pluginStatusReport.startupId);
@@ -3916,7 +3928,34 @@ function agentRuntimeReady() {
   } catch {
     return false;
   }
-  return codexReadinessFailure(codexAppServerUrl(), token).then((reason) => reason === undefined);
+${
+  computeOwned
+    ? "  return codexReadinessFailure(codexAppServerUrl(), token).then((reason) => reason === undefined);"
+    : String.raw`  return new Promise((resolve) => {
+    let settled = false;
+    let timeout;
+    const socket = new ReadinessWebSocket(codexAppServerUrl(), {
+      headers: { Authorization: "Bearer " + token },
+    });
+    const settle = (ready) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try {
+        if (ready) socket.close();
+        else socket.terminate?.();
+      } catch {}
+      resolve(ready);
+    };
+    const onSocket = (event, listener) => {
+      if (typeof socket.addEventListener === "function") socket.addEventListener(event, listener);
+      else socket.on(event, listener);
+    };
+    timeout = setTimeout(() => settle(false), 2_000);
+    onSocket("open", () => settle(true));
+    onSocket("error", () => settle(false));
+  });`
+}
 }
 
 startPluginRuntimeStatusServer(agentRuntimeReady);
@@ -4521,6 +4560,10 @@ if (!protectedStartup) {
 
 export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false);
 export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
+// Compute owns these mutable Pod/process launches. Provider-owned immutable
+// Sandbox commands keep their existing bytes and provider readiness contract.
+export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false, true);
+export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true, true);
 
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
@@ -4954,6 +4997,13 @@ for (const slot of [...processes].reverse()) start(slot);
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(AGENT_RUNTIME_ENTRYPOINT);
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+);
+
+export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
+);
+export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
 );
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`

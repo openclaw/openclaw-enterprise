@@ -273,7 +273,7 @@ before replacing the controller images.
   [network profile](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   label. Private HTTP readiness returns `503` until native, plugin,
   authentication, or identity gates pass. Dedicated Codex clears its plugin
-  marker at process start to reject stale readiness. Its resident HTTP `GET /readyz`
+  marker at process start to reject stale readiness. For Compute-owned Harnesses, resident HTTP `GET /readyz`
   requires a successful loopback app-server `initialize` response. It creates no
   thread or model turn. The resident RPC check has a two-second internal deadline;
   Kubernetes retains its one-second default HTTP-probe timeout. This does not

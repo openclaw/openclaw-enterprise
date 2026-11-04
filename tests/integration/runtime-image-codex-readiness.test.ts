@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
-import { promisify } from "node:util";
 import {
   AGENT_READINESS_ENTRYPOINT,
-  AGENT_RUNTIME_ENTRYPOINT,
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
-const execute = promisify(execFile);
 const image = process.env.OCC_TEST_RUNTIME_IMAGE;
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
 
@@ -24,8 +21,8 @@ const { mkdirSync, readFileSync } = require("node:fs");
 const residentProgram = JSON.parse(readFileSync(0, "utf8")).residentProgram;
 const { connect } = require("node:net");
 const { promisify } = require("node:util");
-const { WebSocket, WebSocketServer } = require("ws");
 const execute = promisify(execFile);
+const { WebSocket, WebSocketServer } = require("ws");
 const token = randomBytes(32).toString("hex");
 const env = { PATH: process.env.PATH, HOME: "/tmp/readiness", CODEX_HOME: "/tmp/readiness/codex", RUST_LOG: "info,codex_otel=off", LOG_FORMAT: "json" };
 mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
@@ -175,9 +172,16 @@ test(
   },
   async (t) => {
     assert.ok(image);
+    const { runDockerCommand } = await import("../helpers/runtime-image-startup.mjs");
     const name = `oce-codex-readiness-${randomBytes(6).toString("hex")}`;
-    t.after(() => execute(docker, ["rm", "--force", name], { timeout: 10000 }).catch(() => {}));
-    const pending = execute(
+    t.after(() =>
+      runDockerCommand(docker, ["rm", "--force", name], { timeout: 10000 }).catch(() => {}),
+    );
+    const parts = AGENT_RUNTIME_ENTRYPOINT.split(
+      "\nconst loginMode = process.env.CODEX_LOGIN_MODE;",
+    );
+    assert.equal(parts.length, 2, "select the generated resident listener before model startup");
+    const result = await runDockerCommand(
       docker,
       [
         "run",
@@ -204,13 +208,8 @@ test(
         scenario,
       ],
       { timeout: 55000, maxBuffer: 65536 },
+      JSON.stringify({ residentProgram: parts[0] }),
     );
-    const parts = AGENT_RUNTIME_ENTRYPOINT.split(
-      "\nconst loginMode = process.env.CODEX_LOGIN_MODE;",
-    );
-    assert.equal(parts.length, 2, "select the generated resident listener before model startup");
-    pending.child.stdin!.end(JSON.stringify({ residentProgram: parts[0] }));
-    const result = await pending;
     assert.deepEqual(JSON.parse(result.stdout), { repeatedInitialization: true, peerCases: 7 });
   },
 );

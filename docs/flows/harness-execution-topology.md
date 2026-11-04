@@ -139,19 +139,13 @@ include version and network profile; Gateway selectors omit version for stabilit
 `deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
 before rendering NetworkPolicies. Values must be strings or native null; type
 errors identify the setting.
-`runtime.gatewayNodeSelector`
-independently places the Gateway Pod and private-state initializer on trusted nodes.
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentRuntimeReady`
-serves Kubernetes HTTP `GET /readyz`. It shares the authenticated Codex
-`initialize` check with the standalone Docker healthcheck. Codex's non-originating
-probe identity preserves ordinary clients' process-wide identity; the check
-creates no thread or model turn. The resident RPC check has a two-second internal
-deadline; Kubernetes retains its one-second default HTTP timeout. The standalone
-program's two-second deadline includes process startup. These checks verify local
-RPC service, not Gateway-to-Harness routing.
+`runtime.gatewayNodeSelector` places Gateways and private-state initializers.
+`runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
+Codex initialization for Compute-owned launches; provider commands remain
+unchanged. See the [readiness contract](../reference/drivers/kubernetes-compute.md#troubleshooting).
 
-After Harness readiness, preparation starts a candidate Gateway if its predecessor is stopped or unready. Activation waits for workspace node enrollment. Dedicated Codex keeps `agent-<agent digest>-workspace` across versions.
-`KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds its callbacks to the Agent route; `AGENT_WITH_NODE_ENTRYPOINT` prepares private capability storage and TLS trust, and OpenClaw authorizes callbacks. See [native hook routing](../reference/gateway-routing.md#native-node-endpoint).
+After Harness readiness, preparation replaces stopped or unready Gateways. Activation waits for workspace node enrollment; dedicated Codex retains `agent-<agent digest>-workspace`.
+`KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds callbacks; `AGENT_WITH_NODE_ENTRYPOINT` prepares capability storage and TLS for OpenClaw-authorized [native hooks](../reference/gateway-routing.md#native-node-endpoint).
 
 Compute owns the Gateway; SandboxDriver owns the native Harness, with separate
 ServiceAccounts. The Harness retains identity, workspace and model credentials.
@@ -181,8 +175,8 @@ Embedded OpenClaw combines identity and model credentials. Scoped worker permiss
 
 Sandbox receives projections and login mode through `HarnessWorkloadRequirements`; unsupported delivery fails.
 
-Every Compute Pod template, ordinary allow policy and Gateway/Harness peer requires
-the [network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
+Compute templates, allow policies and peers require the
+[network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
 
 For provider-owned Harnesses, `providerHarnessReady` requires exactly one nonterminating `Ready=True` Pod matching the active Service's Agent, Agent revision ID, and role labels. Malformed observations enter cleanup; activation rechecks before routing changes. The [readiness contract](../reference/drivers/kubernetes-compute.md#requirements) owns candidate rules and observation limits.
 
@@ -360,7 +354,7 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 ## Changelog
 
-- 2026-11-04 23:04: Require Codex RPC readiness without changing client identity. (authoring-run/5cb8a94e-e57d-47d0-b87e-890ea5b3f40e - 381845c12d3694fc19f836786831bb98cbe2c3e1)
+- 2026-11-04 23:04: Require Compute-owned Codex RPC readiness. (authoring-run/5cb8a94e-e57d-47d0-b87e-890ea5b3f40e - 381845c12d3694fc19f836786831bb98cbe2c3e1)
 
 - 2026-11-03 18:15: Trace provider guards. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
 

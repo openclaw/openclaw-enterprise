@@ -136,10 +136,10 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
         run.containerName,
         "node",
         "-e",
-        "Promise.all(Array.from({ length: 3 }, async () => { " +
+        "(async () => { const statuses = []; for (let index = 0; index < 3; index++) { " +
           "const response = await fetch('http://127.0.0.1:18791/readyz', { signal: AbortSignal.timeout(5000) }); " +
-          "await response.text(); return response.status; " +
-          "})).then(statuses => console.log(JSON.stringify(statuses)))" +
+          "await response.text(); statuses.push(response.status); " +
+          "} console.log(JSON.stringify(statuses)); })()" +
           ".catch(() => process.exit(1));",
       ]);
       assert.deepEqual(JSON.parse(observed.stdout), [200, 200, 200]);
