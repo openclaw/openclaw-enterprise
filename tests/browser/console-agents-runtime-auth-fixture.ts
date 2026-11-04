@@ -4,7 +4,11 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 
-type RuntimeAuthFixtureOptions = NonNullable<Parameters<typeof createConsoleAppFixture>[1]>;
+type RuntimeAuthFixtureOptions = NonNullable<Parameters<typeof createConsoleAppFixture>[1]> & {
+  computeDriver?: never;
+  state?: never;
+  agentGatewayManagedMode?: never;
+};
 
 export async function createRuntimeAuthFixture(
   t: TestContext,
