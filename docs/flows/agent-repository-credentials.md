@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-04"
-last_updated_session: authoring-run/f8adbdd1-f82e-45bf-8b9e-ad73edf1881c
+last_updated_session: authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195
 ---
 
 # Agent repository credential flow
@@ -145,12 +145,11 @@ Protected `repository.preparedGitHub` uses the installed Sandbox/Credential Prox
 Driver. Finite sessions need no native sender, control socket, broker CA or
 session files.
 
-`repository.nativeSender` selects `GitHubNativeRepositorySender`.
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
-validates native paths before registry/CA reads; diagnostics omit values.
-The sender owns sessions and files; the worker's prepared provider holds App keys
-and issues credentials. Before cutover, drain accepted work on its original owner.
-Cleanup uses recorded identity without policy resolution or restored authority.
+`repository.nativeSender` selects `GitHubNativeRepositorySender` for native
+GitHub custody. It owns sessions and files without an App key. Drain accepted
+work on its original owner before cutover. Cleanup uses recorded identity
+without resolving policy or restoring authority. The worker's prepared provider
+issues and holds credentials.
 
 ### 3. Record ownership before opening a session
 
@@ -395,8 +394,6 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-11-04 08:54: Document native path diagnostics. (authoring-run/f8adbdd1-f82e-45bf-8b9e-ad73edf1881c - 2be32bd9c7b2681b7576872329d396b46d65d2bd)
 
 - 2026-11-04 07:04: Trace symlink-safe native Git hook launchers. (authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195 - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
