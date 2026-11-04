@@ -1,8 +1,8 @@
-# Slack and ChatGPT service-account tests
+# Slack and service-account coverage
 
 ## Overview
 
-Run live Slack and ChatGPT service-account integration checks. Both need the [Kubernetes runtime](kubernetes.md#kubernetes-model-turns-and-secrets) and a [private environment file](README.md#requirements-and-credentials).
+Run live Slack integration checks with the [Kubernetes runtime](kubernetes.md#kubernetes-model-turns-and-secrets) and a [private environment file](README.md#requirements-and-credentials).
 
 ## Slack
 
@@ -27,25 +27,7 @@ OCC_TEST_SLACK_LIVE=1 \
 
 The test posts a real message and leaves it in the channel. It checks the reply and delayed duplicates. Run live Slack suites serially so Socket Mode consumers do not compete. The fixture enables bot mentions only for the test channel and keeps `requireMention` enabled. Do not enable bot access account-wide. Run the ordinary runtime file separately for its coverage; this Slack test does not verify Teams.
 
-## ChatGPT service accounts
-
-This test creates a real ChatGPT service account and credential, then runs a dedicated Codex model turn. Prepare a migrated disposable database and immutable images.
-
-Use an authorized workspace and an admin-key file with mode `0600`. The environment file must not contain `OCC_TEST_CHATGPT_ADMIN_KEY`: that value takes precedence over the key file. Select a model supported by the issued account with `OCC_TEST_OPENAI_MODEL`; API-key model availability does not prove support. The default is `gpt-6-astra`. This test uses the issued credential and does not require `OPENAI_API_KEY`.
-
-```sh
-(
-  unset OCC_TEST_CHATGPT_ADMIN_KEY
-  export OCC_TEST_CHATGPT_ADMIN_KEY_PATH=/absolute/path/to/private/chatgpt-admin-key
-  export OCC_TEST_CHATGPT_WORKSPACE_ID='<authorized-workspace-id>'
-  OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1 \
-    node --env-file="$TEST_ENV_FILE" --test tests/integration/service-account-driver-real.test.mjs
-)
-```
-
-The test attempts to delete the provider account and its scoped resources. Investigate any cleanup failure before rerunning. Selecting the test makes missing prerequisites fail; without the flag it skips. The protected CI lane builds and imports its runtime image if either gateway or Agent image is unset; direct local runs must import immutable images first.
-
-## Local and provider coverage
+## Service-account coverage
 
 `tests/conformance/service-account-driver.test.mjs` and `tests/integration/occ-api.test.mjs` cover lifecycle and API behavior with synthetic providers. The loopback HTTPS Backend regression requires `openssl`. [PostgreSQL tests](postgresql.md) cover persistence and deletion constraints. These do not prove live provider credential revocation or a model turn.
 

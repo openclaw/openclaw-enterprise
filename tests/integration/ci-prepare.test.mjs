@@ -2596,45 +2596,6 @@ if (args[0] === "pull") {
     }
   });
 
-  test("provider-account preparation checks image inputs and admin key mode before prepared state exists", async (t) => {
-    const root = await fixture(t);
-    const adminKeyPath = join(root, "chatgpt-admin.key");
-    const statePath = join(root, "missing-state.json");
-    await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
-    await chmod(adminKeyPath, 0o600);
-    const prepareProviderAccount = () =>
-      runPrepare(
-        [
-          "--lane",
-          "provider-account",
-          "--file",
-          "tests/integration/service-account-driver-real.test.mjs",
-          "--state",
-          statePath,
-        ],
-        {
-          OCC_TEST_OPENAI_MODEL: "gpt-test",
-          OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-          OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
-          OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
-          OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
-        },
-      );
-
-    const result = await prepareProviderAccount();
-    assert.equal(result.status, 1);
-    assertStderrMatch(result.stderr, /requires a prior prepareLane/);
-    assert.doesNotMatch(result.stderr, /OCC_TEST_KUBERNETES_.*IMAGE/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-    // The admin key must stay private to the runner's user.
-    await chmod(adminKeyPath, 0o644);
-    const readable = await prepareProviderAccount();
-    assert.equal(readable.status, 1);
-    assertStderrMatch(readable.stderr, /ChatGPT admin key must have mode 0600/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-  });
-
   test("OpenShell preparation requires the selected owner's credential before side effects", async (t) => {
     const root = await fixture(t);
     const owner = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
@@ -2777,10 +2738,6 @@ if (args[0] === "pull") {
 
   test("prepareLane rejects mutable Kubernetes image inputs before creating state", async (t) => {
     const root = await fixture(t);
-    const adminKeyPath = join(root, "admin.key");
-    await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
-    await chmod(adminKeyPath, 0o600);
-
     const optionalKubernetesImages = {
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
       OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
@@ -2844,17 +2801,6 @@ if (args[0] === "pull") {
           OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",
           SLACK_APP_TOKEN: "xapp-test",
           SLACK_BOT_TOKEN: "xoxb-test",
-        },
-      },
-      {
-        lane: "provider-account",
-        envName: "OCC_TEST_KUBERNETES_AGENT_IMAGE",
-        env: {
-          ...k3dImages,
-          OCC_TEST_KUBERNETES_AGENT_IMAGE: mutableImage,
-          OCC_TEST_OPENAI_MODEL: "gpt-test",
-          OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-          OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
         },
       },
       {

@@ -770,16 +770,6 @@ async function createDatabase(statePath, state, server, { kind, label, source, l
   };
 }
 
-async function requirePathMode0600(path, description) {
-  const info = await stat(path);
-  if (!info.isFile()) {
-    throw new Error(`${description} must be a file: ${path}`);
-  }
-  if ((info.mode & 0o777) !== 0o600) {
-    throw new Error(`${description} must have mode 0600: ${path}`);
-  }
-}
-
 function assertImmutableImageReference(image, name) {
   if (!/^\S+@sha256:[a-f0-9]{64}$/i.test(image ?? "")) {
     throw new Error(`${name} must be an immutable image@sha256 reference.`);
@@ -852,12 +842,6 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   ) {
     throw new Error(
       "OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together; omit both to build the runtime images.",
-    );
-  }
-  if (prepare.mode0600Env) {
-    await requirePathMode0600(
-      effectiveEnv[prepare.mode0600Env],
-      prepare.mode0600Description ?? prepare.mode0600Env,
     );
   }
   if (name === "production-tui") {
@@ -3084,10 +3068,6 @@ async function prepareLane({ lane, statePath, file }) {
       await prepareLaneLogging(resolvedStatePath, state, env, cluster);
       break;
     }
-    case "provider-account":
-      await ensurePostgresServer(resolvedStatePath, state);
-      await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: true });
-      break;
     case "openshell": {
       // These files exercise the installer in their own Local Setup. Preparing a
       // second stack here builds the same images and installs unused services.

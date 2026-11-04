@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-14
-last_updated_session: issue-2411
+updated: 2026-11-04
+last_updated_session: authoring-run/390095eb-01a9-4e24-b609-791b49f19f81
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -194,10 +194,6 @@ Refresh, rotation, and automated reconciliation remain deferred.
   oversized declared responses. The same suite checks that an oversized
   chunked body is cancelled at its byte limit. These cases do not prove live
   provider accounts or model execution.
-- Run `node --test tests/integration/service-account-driver-real.test.mjs`
-  with `OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1`, a protected admin-key file,
-  `OCC_TEST_CHATGPT_WORKSPACE_ID`, disposable Kubernetes/PostgreSQL, and real
-  digest-pinned OpenClaw/Codex images; do not use `OPENAI_API_KEY`.
 - Verify the provider account, private credential ID, exact-account Secret,
   Codex-only projection for that Agent revision, and genuine model response. For ownership,
   compensation, and ambiguous commits, see the [service-account guide](../reference/service-accounts.md)
@@ -219,6 +215,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Changelog
 
+- 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
 - 2026-10-15 05:30: Issuance and account deletion reclaim the token Secret and provider credential of an issuance that never committed. (fix-1397, finding 1397)
 - 2026-10-14 18:44: Cancel oversized chunked ChatGPT Admin API responses while reading, before complete buffering. (issue-2411 - 1dae0cc9b76f034f5ca8e1ff500c9b545aa44501)
 

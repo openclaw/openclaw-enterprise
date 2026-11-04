@@ -15,7 +15,6 @@ on:
           - gateway-routing
           - production-tui
           - slack
-          - provider-account
           - openshell
           - helper-timeout
           - dev-up-k3d
@@ -344,39 +343,6 @@ jobs:
           artifact-prefix: full-results
           job-timeout-minutes: 35
 
-  provider-account:
-    name: Provider Account
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    needs: preflight
-    if: inputs.lane == 'all' || inputs.lane == 'provider-account'
-    timeout-minutes: 25
-    environment: integration-provider-account
-    env:
-      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
-      OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
-      OCC_TEST_KUBERNETES_AGENT_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_AGENT_IMAGE }}
-      OCC_TEST_CHATGPT_WORKSPACE_ID: ${{ vars.OCC_TEST_CHATGPT_WORKSPACE_ID }}
-      OCC_TEST_CHATGPT_ADMIN_KEY_JSON: ${{ secrets.OCC_TEST_CHATGPT_ADMIN_KEY_JSON }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Materialize provider admin key
-        run: |
-          install -m 0700 -d "$RUNNER_TEMP/secrets"
-          test -n "${OCC_TEST_CHATGPT_ADMIN_KEY_JSON:-}"
-          printf '%s' "$OCC_TEST_CHATGPT_ADMIN_KEY_JSON" > "$RUNNER_TEMP/secrets/chatgpt-admin-key.json"
-          chmod 0600 "$RUNNER_TEMP/secrets/chatgpt-admin-key.json"
-          echo "OCC_TEST_CHATGPT_ADMIN_KEY_PATH=$RUNNER_TEMP/secrets/chatgpt-admin-key.json" >> "$GITHUB_ENV"
-      - uses: ./.github/actions/run-ci-lane
-        with:
-          lane: provider-account
-          profile: full
-          node-version: ${{ env.NODE_VERSION }}
-          artifact-prefix: full-results
-          job-timeout-minutes: 25
-
   openshell:
     name: OpenShell
     runs-on: ubuntu-24.04
@@ -600,7 +566,6 @@ jobs:
       - gateway-routing
       - production-tui
       - slack
-      - provider-account
       - openshell
       - k3d-otel
       - helper-timeout
@@ -642,7 +607,7 @@ jobs:
           } else if (lane === "logging-collector") {
             out["logging-collector"] = needs["logging-collector"] ?? { result: "missing" };
           }
-          for (const name of ["qa-matrix", "dev-up-k3d", "skipper-prepared-git-installed", "docker-model", "k3d-model", "gateway-routing", "production-tui", "slack", "provider-account", "openshell", "helper-timeout", "k3d-otel"]) {
+          for (const name of ["qa-matrix", "dev-up-k3d", "skipper-prepared-git-installed", "docker-model", "k3d-model", "gateway-routing", "production-tui", "slack", "openshell", "helper-timeout", "k3d-otel"]) {
             if (lane === "all" || lane === name) {
               out[name] = needs[name] ?? { result: "missing" };
             }

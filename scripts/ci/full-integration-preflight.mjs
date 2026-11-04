@@ -7,7 +7,6 @@ export const fullIntegrationLanes = Object.freeze([
   "gateway-routing",
   "production-tui",
   "slack",
-  "provider-account",
   "openshell",
   "helper-timeout",
   "dev-up-k3d",
@@ -24,7 +23,6 @@ const branchEligibleLanes = new Set([
   "dev-up-k3d",
   "skipper-prepared-git-installed",
 ]);
-const providerAccountEnvironment = "integration-provider-account";
 const laneEnvironments = Object.freeze({
   "qa-matrix": "integration-qa",
   "docker-model": "integration-model",
@@ -33,7 +31,6 @@ const laneEnvironments = Object.freeze({
   "k3d-otel": "integration-otel",
   "gateway-routing": "integration-routing",
   slack: "integration-slack",
-  "provider-account": providerAccountEnvironment,
   openshell: "integration-openshell",
 });
 
@@ -78,32 +75,11 @@ function hasMainBranchPolicy(policies) {
   return branchPolicies(policies).some((branch) => branch.name === "main");
 }
 
-function assertCustomMainOnlyPolicy(environmentName, environment, policies) {
-  const policy = environment.deployment_branch_policy;
-  if (policy?.custom_branch_policies !== true || policy?.protected_branches !== false) {
-    throw new Error(`Protected environment ${environmentName} must use custom main-only policy.`);
-  }
-  const branches = branchPolicies(policies);
-  if (
-    policies?.total_count !== branches.length ||
-    branches.length !== 1 ||
-    branches[0]?.name !== "main" ||
-    branches[0]?.type !== "branch"
-  ) {
-    throw new Error(`Protected environment ${environmentName} must allow only the main branch.`);
-  }
-}
-
 export function validateEnvironmentPolicy(environmentName, environment, policies) {
   const reviewers = requiredReviewersRule(environment);
   if ((reviewers?.reviewers ?? []).length > 0) {
     throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
   }
-  if (environmentName === providerAccountEnvironment) {
-    assertCustomMainOnlyPolicy(environmentName, environment, policies);
-    return;
-  }
-
   const policy = environment.deployment_branch_policy;
   if (policy?.protected_branches === true) {
     return;
@@ -118,13 +94,6 @@ export function validateEnvironmentPolicy(environmentName, environment, policies
       `Protected environment ${environmentName} has no main deployment branch policy.`,
     );
   }
-}
-
-function needsBranchPolicies(environmentName, environment) {
-  return (
-    environmentName === providerAccountEnvironment ||
-    environment.deployment_branch_policy?.custom_branch_policies === true
-  );
 }
 
 async function fetchGithubJson({ repository, token, path }) {
@@ -155,13 +124,14 @@ export async function validateFullIntegrationPreflight({
       token: env.GITHUB_TOKEN,
       path: `/environments/${environmentName}`,
     });
-    const policies = needsBranchPolicies(environmentName, environment)
-      ? await github({
-          repository: env.GITHUB_REPOSITORY,
-          token: env.GITHUB_TOKEN,
-          path: `/environments/${environmentName}/deployment-branch-policies`,
-        })
-      : undefined;
+    const policies =
+      environment.deployment_branch_policy?.custom_branch_policies === true
+        ? await github({
+            repository: env.GITHUB_REPOSITORY,
+            token: env.GITHUB_TOKEN,
+            path: `/environments/${environmentName}/deployment-branch-policies`,
+          })
+        : undefined;
     validateEnvironmentPolicy(environmentName, environment, policies);
     if (
       env.GITHUB_REF !== "refs/heads/main" &&

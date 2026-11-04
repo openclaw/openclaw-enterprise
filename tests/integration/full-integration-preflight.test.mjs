@@ -227,18 +227,6 @@ test("QA credential materializer validates isolated repository fixture target", 
   assert.match(workflowRepository.stderr, /must not target this workflow repository/);
 });
 
-function providerEnvironment(patch = {}) {
-  return {
-    name: "integration-provider-account",
-    protection_rules: [],
-    deployment_branch_policy: {
-      custom_branch_policies: true,
-      protected_branches: false,
-    },
-    ...patch,
-  };
-}
-
 function protectedEnvironment(patch = {}) {
   return {
     name: "integration-model",
@@ -259,15 +247,15 @@ const mainOnlyPolicies = Object.freeze({
 test("full integration preflight selects only manual workflow lanes", async () => {
   assert.equal(selectLane({ eventName: "workflow_dispatch", inputLane: "all" }), "all");
   assert.equal(
-    selectLane({ eventName: "workflow_dispatch", inputLane: "provider-account" }),
-    "provider-account",
+    selectLane({ eventName: "workflow_dispatch", inputLane: "docker-model" }),
+    "docker-model",
   );
   assert.throws(
     () => selectLane({ eventName: "push", inputLane: "all" }),
     /^Error: Unsupported full integration event: push$/,
   );
   assert.throws(
-    () => selectLane({ eventName: "pull_request", inputLane: "provider-account" }),
+    () => selectLane({ eventName: "pull_request", inputLane: "docker-model" }),
     /^Error: Unsupported full integration event: pull_request$/,
   );
   assert.doesNotThrow(() => assertSourceRef("refs/heads/main"));
@@ -278,9 +266,7 @@ test("full integration preflight selects only manual workflow lanes", async () =
     /must run from main/,
   );
   assert.throws(() => assertSourceRef("refs/pull/1/merge"), /must run from main/);
-  assert.deepEqual(requiredEnvironmentsForLane("provider-account"), [
-    "integration-provider-account",
-  ]);
+  assert.throws(() => requiredEnvironmentsForLane("provider-account"), /Unknown lane/);
   assert.deepEqual(requiredEnvironmentsForLane("qa-matrix"), ["integration-qa"]);
   assert.deepEqual(requiredEnvironmentsForLane("all"), [
     "integration-qa",
@@ -288,64 +274,12 @@ test("full integration preflight selects only manual workflow lanes", async () =
     "integration-otel",
     "integration-routing",
     "integration-slack",
-    "integration-provider-account",
     "integration-openshell",
   ]);
 });
 
-test("provider-account environment policy is main-only without required reviewers", () => {
-  assert.doesNotThrow(() =>
-    validateEnvironmentPolicy(
-      "integration-provider-account",
-      providerEnvironment(),
-      mainOnlyPolicies,
-    ),
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-provider-account",
-        providerEnvironment({
-          protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User" }] }],
-        }),
-        mainOnlyPolicies,
-      ),
-    /must not require reviewers/,
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-provider-account",
-        providerEnvironment({
-          deployment_branch_policy: { custom_branch_policies: false, protected_branches: true },
-        }),
-        mainOnlyPolicies,
-      ),
-    /custom main-only policy/,
-  );
-  for (const policies of [
-    { total_count: 2, branch_policies: [{ name: "main", type: "branch" }] },
-    {
-      total_count: 2,
-      branch_policies: [
-        { name: "main", type: "branch" },
-        { name: "release", type: "branch" },
-      ],
-    },
-    { total_count: 1, branch_policies: [{ name: "main" }] },
-  ]) {
-    assert.throws(
-      () =>
-        validateEnvironmentPolicy("integration-provider-account", providerEnvironment(), policies),
-      /must allow only the main branch/,
-    );
-  }
-});
-
 test("credentialed integration environments run without approval and retain branch restrictions", () => {
-  for (const name of requiredEnvironmentsForLane("all")
-    .filter((name) => name !== "integration-provider-account")
-    .concat("integration-qa")) {
+  for (const name of requiredEnvironmentsForLane("all")) {
     assert.doesNotThrow(() => validateEnvironmentPolicy(name, protectedEnvironment(), undefined));
     assert.throws(
       () =>
@@ -372,37 +306,40 @@ test("credentialed integration environments run without approval and retain bran
   }
 });
 
-test("preflight fetches only the provider environment for manual provider runs", async () => {
+test("preflight fetches only the selected environment for manual QA runs", async () => {
   const fetched = [];
   const result = await validateFullIntegrationPreflight({
     env: {
       GITHUB_REF: "refs/heads/main",
       GITHUB_EVENT_NAME: "workflow_dispatch",
-      INPUT_LANE: "provider-account",
+      INPUT_LANE: "qa-matrix",
       GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
       GITHUB_TOKEN: "token",
     },
     github: async ({ repository, path }) => {
       fetched.push({ repository, path });
-      if (path === "/environments/integration-provider-account") {
-        return providerEnvironment();
+      if (path === "/environments/integration-qa") {
+        return protectedEnvironment({
+          name: "integration-qa",
+          deployment_branch_policy: { custom_branch_policies: true, protected_branches: false },
+        });
       }
-      if (path === "/environments/integration-provider-account/deployment-branch-policies") {
+      if (path === "/environments/integration-qa/deployment-branch-policies") {
         return mainOnlyPolicies;
       }
       throw new Error(`unexpected path ${path}`);
     },
   });
 
-  assert.deepEqual(result, { selectedLane: "provider-account", runAll: false });
+  assert.deepEqual(result, { selectedLane: "qa-matrix", runAll: false });
   assert.deepEqual(fetched, [
     {
       repository: "openclaw/openclaw-enterprise",
-      path: "/environments/integration-provider-account",
+      path: "/environments/integration-qa",
     },
     {
       repository: "openclaw/openclaw-enterprise",
-      path: "/environments/integration-provider-account/deployment-branch-policies",
+      path: "/environments/integration-qa/deployment-branch-policies",
     },
   ]);
 });
@@ -415,7 +352,7 @@ test("preflight rejects non-main sources before fetching environment metadata", 
         env: {
           GITHUB_REF: "refs/tags/v1",
           GITHUB_EVENT_NAME: "push",
-          INPUT_LANE: "provider-account",
+          INPUT_LANE: "qa-matrix",
           GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
           GITHUB_TOKEN: "token",
         },
@@ -508,7 +445,7 @@ test("manual protected branch runs require an exact environment grant without pe
     GITHUB_EVENT_NAME: "workflow_dispatch",
     INPUT_LANE: "docker-model",
   };
-  for (const INPUT_LANE of ["all", "provider-account", "docker-model"]) {
+  for (const INPUT_LANE of ["all", "qa-matrix", "docker-model"]) {
     assert.throws(() => assertSourceRef(branchEnv.GITHUB_REF, INPUT_LANE), /must run from main/);
   }
   await assert.rejects(
@@ -551,7 +488,7 @@ for (const lane of ["dev-up-k3d", "skipper-prepared-git-installed"]) {
         /Unsupported full integration event/,
       );
     }
-    for (const lane of ["all", "docker-model", "provider-account", "qa-matrix"]) {
+    for (const lane of ["all", "docker-model", "qa-matrix"]) {
       assert.throws(() => assertSourceRef(env.GITHUB_REF, lane), /must run from main/);
     }
   });

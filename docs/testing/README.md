@@ -107,7 +107,7 @@ only resources created by the run.
 - [SSH](ssh.md)
 - [Agent plugins](plugins.md)
 - [Repository credentials](repository-credentials.md)
-- [Slack and ChatGPT service accounts](slack.md)
+- [Slack and service-account coverage](slack.md)
 - [Test fixtures and scenarios](fixtures-and-scenarios.md)
 - [Module and repository boundaries](module-boundaries.md)
 - [Developer skills](developer-skills.md)
