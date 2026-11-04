@@ -156,6 +156,12 @@ state after admission.
   one, and never a value. Fix or remove those settings, then deploy again.
   A dedicated Gateway's tool policy step holds the same check before OpenClaw
   starts when no invalid setting belongs to the tool policy.
+- When a Codex startup check returns `model_not_found`, the worker saves that
+  code. Codex can omit the code from its error event. In that case, the probe
+  recognizes the provider’s HTTP 404 missing-model message for the requested model.
+  The Console names the model from the failed version. It directs editors to
+  Configuration and tells other viewers to ask an editor to choose a model.
+  If the viewer cannot redeploy the Agent, it tells them who can.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout, a
   transient failure or a network or 5xx exit, and the second attempt failed that

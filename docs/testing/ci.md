@@ -340,12 +340,23 @@ Inspect `qa-advisory-local-first-agent-openshell-real-openshell` and its attempt
 
 Full advisory OpenShell runs use one Ubuntu 24.04 runner per file from the
 [OpenShell manifest](../../scripts/ci/test-suites/openshell.json). The files run in
-parallel across separate VMs. Each runner prepares its own Docker resources,
-cluster, kubeconfig, database, images and private state, then runs the selected
-file with its expected cases and cleanup. A failed shard does not cancel the
+parallel across separate VMs. The two first-Agent files provision and clean up
+through Local Setup. Their focused lane preparation records selection and state
+without building images or creating a second cluster, database, routing setup,
+OpenShell installation, or Keycloak instance. Other files retain their lane
+preparation. The runner enforces both lane-wide and per-file `requiredEnv`
+inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
 claiming full advisory OpenShell coverage. The manual Full Integration lane
-continues to run the full manifest serially.
+continues to run the full manifest serially and prepares the shared resources
+needed by its other files. First-Agent files do not request a separate CI database
+in either mode.
+
+First-Agent stage measurements appear in `files[].measurements`: Local Setup,
+initial deployment and model calls, nonce-only reuse, native deployment, native
+model execution, native redeployment, resumed model execution, and cleanup.
+Each record contains only a fixed stage, outcome, and elapsed milliseconds.
+The parent test duration includes its native subtest; do not add them together.
 
 The credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
 

@@ -1185,7 +1185,18 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   const role = fixture.policy.roles.find(({ id }) => id === "role-configuration-recovery");
   const boundOperate = grantSecretOperate(fixture, namespace.id, member.principal, [bound.id]);
   const { page } = await newPage(t, fixture, { browser });
-  await routeFailedRecord(page, fixture, namespace, agent, failed);
+  const error = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+    runtimeFailure: {
+      component: "agent",
+      check: "model-probe",
+      checkedAt: "2026-10-03T08:00:00.000Z",
+      code: "MODEL_PROBE_FAILED",
+      cause: { kind: "PROBE_STATUS", detail: "model_not_found" },
+    },
+  });
+  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, failed.id), (route) =>
+    route.fulfill(deploymentStatusResponse(failed, { status: "failed", error })),
+  );
   await trackSettledFetches(page);
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
@@ -1224,12 +1235,16 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   assert.equal(answer.configurationSecretsOperate, true);
   assert.equal(answer.agentSourcesOperate, false);
   assert.equal(answer.deploy, false);
-  assert.deepEqual(await links(), ["Open v1 Logs", "Open Configuration"]);
+  assert.deepEqual(await links(), ["Open Configuration", "Open v1 Logs"]);
+  await recovery
+    .getByText("Ask someone with deploy access to redeploy this Agent.", { exact: false })
+    .waitFor();
   // Deploy does not turn an editable Configuration into a draft to read.
   role.permissions.push({ action: "deploy", resourceKind: "agent" });
   answer = await shown();
   assert.equal(answer.deploy, true);
-  assert.deepEqual(await links(), ["Open v1 Logs", "Open Configuration"]);
+  assert.deepEqual(await links(), ["Open Configuration", "Open v1 Logs"]);
+  await recovery.getByText("then redeploy this Agent.", { exact: false }).waitFor();
 
   // Without operate on the bound Secret every Configuration save is refused, so the editor is
   // read-only: recovery offers the draft to read and deploy.
@@ -1237,6 +1252,12 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   answer = await shown();
   assert.equal(answer.configurationUpdate, true);
   assert.equal(answer.configurationSecretsOperate, false);
+  await recovery
+    .getByText(
+      "Ask a Configuration editor to choose a model this account can use. After they save it, redeploy this Agent.",
+      { exact: false },
+    )
+    .waitFor();
   await recovery.getByRole("link", { name: "Open draft", exact: true }).waitFor();
   assert.deepEqual(await links(), ["Open v1 Logs", "Open draft"]);
 
@@ -1255,6 +1276,18 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   answer = await shown();
   assert.equal(answer.deploy, false);
   assert.deepEqual(await links(), ["Open v1 Logs"]);
+  await recovery
+    .getByText(
+      "Ask a Configuration editor to choose a model this account can use. Someone with deploy access must then redeploy this Agent.",
+      { exact: false },
+    )
+    .waitFor();
+  await recovery.getByRole("link", { name: "Open v1 Logs" }).click();
+  await page.getByText(LOG_TEXT_DENIED).waitFor();
+  await recovery
+    .getByText("Ask someone with log access to check the failed version’s logs.", { exact: false })
+    .waitFor();
+  assert.deepEqual(await links(), []);
 });
 
 test("A failed version raises no recovery while the current version is on no loaded page", async (t) => {

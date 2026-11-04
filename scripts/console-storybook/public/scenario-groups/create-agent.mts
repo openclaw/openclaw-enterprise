@@ -61,6 +61,7 @@ type CreateAgentScenario = {
   presetAuth?: "codex_pat";
   presetVariables?: Readonly<Record<string, PresetVariable>>;
   presetWorkspaceFiles?: Readonly<Record<string, string>>;
+  malformedProvisioningReply?: "revision-id" | "error-message";
   provisionedDeploymentStatus?: AgentDeploymentStatusWire["status"];
   provisionedDeploymentAttempt?: Omit<
     NonNullable<NonNullable<AgentDeploymentStatusWire["progress"]>["lastAttempt"]>,
@@ -1018,6 +1019,47 @@ export const createAgentProvisioningScenarios = {
       "Click Create Agent and wait for the credential initialization failure.",
       "Open the existing Agent link; confirm the form offers no retry that would create another Agent.",
     ],
+  },
+  createMalformedProvisioningRevision: {
+    group: "Pages/Create Agent",
+    name: "Provisioning reply has an invalid version ID",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "failed",
+    malformedProvisioningReply: "revision-id",
+    rules: [
+      {
+        method: "POST",
+        prefix: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision/",
+        suffix: "/retry",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The Agent lifecycle does not allow provisioning retry.",
+      },
+    ],
+    description:
+      "An accepted job reports failure with its saved Agent ID but numeric revisionId 17. The unreadable identity leaves the outcome unknown, with no version link.",
+    steps: [
+      "Click Create Agent. Wait for Outcome unknown; confirm Create Agent is disabled, Retry provisioning request is available, and no Agent recovery link appears.",
+      "Click Retry provisioning request. The same job's /retry returns 409 because the Agent lifecycle no longer permits retry after handoff.",
+      "Confirm the form enables Create Agent to resend the same request ID. Stop here: this preview does not prove that a fresh Create is safe.",
+    ],
+    gap: "Simulated UI proof: only the outgoing terminal status has the invalid ID. Saved Agent, version, and deployment details remain valid; the retry rule simulates the Controller's lifecycle refusal.",
+  },
+  createMalformedProvisioningMessage: {
+    group: "Pages/Create Agent",
+    name: "Provisioning failure has an unreadable message",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "failed",
+    malformedProvisioningReply: "error-message",
+    description:
+      "The accepted job reports valid saved Agent and version IDs with a failure code but an object message. The form keeps the confirmed failure and uses plain generic text.",
+    steps: [
+      "Click Create Agent. Wait for Provisioning did not complete. Confirm no object text or Retry provisioning request appears, and the guidance does not suggest a new Agent.",
+      "Open Agent and deployment details. Confirm the link opens the existing Agent's failed version and its recovery guidance.",
+    ],
+    gap: "Simulated UI proof: only the outgoing terminal error message is malformed. Deployment details retain their normal failure message; this does not prove runtime recovery.",
   },
   createProvisioningStopped: {
     group: "Pages/Create Agent",

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { createRequire, registerHooks } from "node:module";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ChannelDirectoryResult } from "@openclaw-enterprise/contracts";
@@ -349,4 +350,664 @@ test("directory preview rejects malformed requests without losing search or ID l
     "The preview cursor is not recognized.",
   );
   await assert.rejects(fixture(url, { method: "POST", body: "{" }), SyntaxError);
+});
+
+test("Storybook creation routes preserve persistence, recovery and malformed terminal replies", async (t) => {
+  // Resolve the same authored Preset JSON that prepare-assets.ts wraps for browsers.
+  // The responder and its fetch dispatcher run unchanged; this is fixture proof, not Controller proof.
+  const presetFiles = new Map([
+    ["/console/default-codex-preset.mjs", "default-codex"],
+    ["/console/standard-codex-preset.mjs", "standard-codex"],
+    ["/console/standard-openclaw-preset.mjs", "standard-openclaw"],
+    ["/console/swe-preset.mjs", "swe-preset"],
+  ]);
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      const preset = presetFiles.get(specifier);
+      if (preset === undefined) {
+        return nextResolve(specifier, context);
+      }
+      const file = new URL(`../../deploy/presets/${preset}.json`, import.meta.url);
+      return {
+        url: `data:text/javascript,${encodeURIComponent(`export default ${readFileSync(file, "utf8")};`)}`,
+        shortCircuit: true,
+      };
+    },
+  });
+  t.after(() => hooks.deregister());
+  const { installFixture } = await import("../../scripts/console-storybook/public/fixtures.mjs");
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+  t.after(() => {
+    for (const [key, descriptor] of [
+      ["window", previousWindow],
+      ["sessionStorage", previousStorage],
+    ] as const) {
+      if (descriptor) {
+        Object.defineProperty(globalThis, key, descriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, key);
+      }
+    }
+  });
+  const storage = new Map<string, string>();
+  const frame = { fetch: globalThis.fetch };
+  Object.defineProperty(globalThis, "window", { configurable: true, value: frame });
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: {
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+  });
+  const namespace = "ns_00000000-0000-4000-8000-000000000001";
+  const path = `/namespaces/${namespace}/`;
+  const id = (prefix: string, serial: number) =>
+    `${prefix}_00000000-0000-4000-8000-${String(serial).padStart(12, "0")}`;
+  const request = (resource: string, method = "GET", body?: unknown) =>
+    frame.fetch(`https://preview.example.test${path}${resource}`, {
+      method,
+      ...(body === undefined
+        ? {}
+        : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
+    });
+  const evidence = () => ({ requests: [], directoryResponses: [], unhandled: [], ready: false });
+  const configuration = {
+    kind: "agent",
+    values: {
+      agents: { defaults: { model: "codex/gpt-4.1" } },
+      security: { preset: "historical" },
+    },
+  };
+  const provisionBody = {
+    name: "Created through fetch",
+    requestId: "req_00000000-0000-4000-8000-000000000050",
+    configuration,
+    executionMode: "dedicated",
+    harnessAuth: { method: "credential_source", sourceId: "cs_model" },
+    initialWorkspaceFiles: { "AGENTS.md": "Synthetic workspace instructions" },
+  };
+
+  await t.test("Configuration merge, partial save and Create staging", async () => {
+    installFixture(
+      {
+        configurationChangedElsewhere: {
+          values: { agents: { defaults: { model: "codex/gpt-5.1" } } },
+        },
+      },
+      evidence(),
+    );
+    const created = await request("configurations", "POST", configuration);
+    assert.equal(created.status, 201);
+    const configId = id("cfg", 100);
+    assert.partialDeepStrictEqual(await (await request(`configurations/${configId}`)).json(), {
+      data: { generation: 1, values: configuration.values },
+    });
+    assert.partialDeepStrictEqual(await (await request(`configurations/${configId}`)).json(), {
+      data: {
+        generation: 2,
+        values: {
+          agents: { defaults: { model: "codex/gpt-5.1" } },
+          security: { preset: "historical" },
+        },
+      },
+    });
+    assert.partialDeepStrictEqual(
+      await (await request(`configurations/${configId}`, "PATCH", { secretBindings: {} })).json(),
+      { data: { generation: 3, secretBindings: {} } },
+    );
+    const agent = await request("agents", "POST", {
+      ...provisionBody,
+      configuration: undefined,
+      requestId: undefined,
+      configurationId: configId,
+      workspaceDefaultsId: "synthetic-defaults",
+    });
+    assert.equal(agent.status, 201);
+    assert.partialDeepStrictEqual(await agent.json(), {
+      data: {
+        id: id("agt", 101),
+        name: provisionBody.name,
+        desiredRuntimeState: "stopped",
+        configurationId: configId,
+      },
+    });
+    assert.partialDeepStrictEqual(
+      await (await request(`agents/${id("agt", 101)}/runtime-credentials`)).json(),
+      { data: { transportConfigured: false } },
+    );
+    await request(`agents/${id("agt", 101)}/deploy`, "POST", {});
+    assert.partialDeepStrictEqual(
+      await (await request(`agents/${id("agt", 101)}/workspace/files/AGENTS.md`)).json(),
+      { data: { content: provisionBody.initialWorkspaceFiles["AGENTS.md"] } },
+    );
+  });
+
+  await t.test(
+    "deployment snapshots, one-time staging, stop readback and deferred deletion",
+    async () => {
+      installFixture({ clearRevisionOnStopReadback: true }, evidence());
+      const agentPath = `agents/${id("agt", 100)}`;
+      await request("agents", "POST", {
+        name: "Staged Agent",
+        configurationId: id("cfg", 1),
+        executionMode: "dedicated",
+        initialWorkspaceFiles: { "AGENTS.md": "Initial guidance" },
+      });
+      const firstRevision = id("rev", 101);
+      assert.equal((await request(`${agentPath}/deploy`, "POST", {})).status, 202);
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/deployments/${firstRevision}`)).json(),
+        {
+          data: { status: "queued" },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/deployments/${firstRevision}`)).json(),
+        {
+          data: { status: "succeeded" },
+        },
+      );
+      // Editing current inputs must not alter the admitted snapshot; staged files
+      // are consumed once, so redeploy must preserve a later workspace edit.
+      await request(`configurations/${id("cfg", 1)}`, "PATCH", {
+        values: { agents: { defaults: { model: "codex/gpt-5.1" } } },
+      });
+      await request(agentPath, "PATCH", {
+        executionMode: "embedded",
+        extraSetting: { retained: true },
+      });
+      await request(`${agentPath}/workspace/files/AGENTS.md`, "PUT", {
+        content: "Edited guidance",
+      });
+      await request(`${agentPath}/deploy`, "POST", {});
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions/${firstRevision}`)).json(),
+        {
+          data: {
+            revision: 1,
+            configurationGeneration: 1,
+            harness: { mode: "dedicated" },
+            configuration: { agents: { defaults: { model: "codex/gpt-4.1" } } },
+          },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions/${id("rev", 102)}`)).json(),
+        {
+          data: { revision: 2, configurationGeneration: 2, harness: { mode: "embedded" } },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/workspace/files/AGENTS.md`)).json(),
+        {
+          data: { content: "Edited guidance" },
+        },
+      );
+      // Stop acknowledges the old selection; only the following detail read clears it.
+      assert.partialDeepStrictEqual(await (await request(`${agentPath}/stop`, "POST", {})).json(), {
+        data: { desiredRuntimeState: "stopped", activeRevisionId: firstRevision },
+      });
+      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
+        data: { activeRevisionId: null, extraSetting: { retained: true } },
+      });
+      assert.equal((await request(agentPath, "DELETE")).status, 202);
+      assert.equal((await request(agentPath)).status, 404);
+    },
+  );
+
+  await t.test("version lookups and deployment polls stay with their owning Agent", async () => {
+    const { Check }: { Check(schema: unknown, value: unknown): boolean } =
+      controller("typebox/value");
+    const agentA = id("agt", 100);
+    const revisionA = id("rev", 101);
+    const agentB = id("agt", 102);
+    const revisionB = id("rev", 103);
+    installFixture(
+      {
+        rules: [
+          {
+            method: "GET",
+            suffix: `/agents/${agentB}/revisions/${revisionA}`,
+            status: 403,
+            code: "FORBIDDEN",
+            once: true,
+          },
+        ],
+      },
+      evidence(),
+    );
+    for (const agentId of [agentA, agentB]) {
+      assert.equal(
+        (
+          await request("agents", "POST", {
+            name: agentId,
+            configurationId: id("cfg", 1),
+            executionMode: "dedicated",
+          })
+        ).status,
+        201,
+      );
+      assert.equal((await request(`agents/${agentId}/deploy`, "POST", {})).status, 202);
+    }
+    // An authored denial still wins before the ownership check.
+    assert.equal((await request(`agents/${agentB}/revisions/${revisionA}`)).status, 403);
+    const notFound = {
+      error: { code: "NOT_FOUND", message: "The requested platform resource was not found." },
+      meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+    };
+    for (const [agentId, ownRevision, otherRevision] of [
+      [agentA, revisionA, revisionB],
+      [agentB, revisionB, revisionA],
+    ]) {
+      for (const revisionId of [otherRevision, id("rev", 999)]) {
+        for (const [suffix, method] of [
+          [`revisions/${revisionId}`, "GET"],
+          [`deployments/${revisionId}`, "GET"],
+          [`deployments/${revisionId}/runtime`, "GET"],
+          [`deployments/${revisionId}/diagnostics`, "POST"],
+        ]) {
+          const reply = await request(`agents/${agentId}/${suffix}`, method);
+          assert.equal(reply.status, 404, `${agentId}/${suffix}`);
+          const body: unknown = await reply.json();
+          assert.equal(Check(ErrorResponse, body), true);
+          assert.deepEqual(body, notFound);
+        }
+      }
+      const collection: unknown = await (await request(`agents/${agentId}/revisions`)).json();
+      assert.ok(
+        collection &&
+          typeof collection === "object" &&
+          "data" in collection &&
+          Array.isArray(collection.data),
+      );
+      assert.equal(collection.data.length, 1);
+      assert.partialDeepStrictEqual(collection, { data: [{ id: ownRevision, agentId }] });
+      assert.partialDeepStrictEqual(
+        await (await request(`agents/${agentId}/revisions/${ownRevision}`)).json(),
+        {
+          data: { id: ownRevision, agentId },
+        },
+      );
+      assert.equal(
+        (await request(`agents/${agentId}/deployments/${ownRevision}/runtime`)).status,
+        200,
+      );
+      assert.equal(
+        (await request(`agents/${agentId}/deployments/${ownRevision}/diagnostics`, "POST")).status,
+        200,
+      );
+    }
+    // Neither rejected lookups nor runtime/diagnostic reads may poll a deployment
+    // or select a version. Each owner's first actual poll must still be queued.
+    for (const [agentId, revisionId] of [
+      [agentA, revisionA],
+      [agentB, revisionB],
+    ]) {
+      assert.partialDeepStrictEqual(await (await request(`agents/${agentId}`)).json(), {
+        data: { activeRevisionId: null },
+      });
+      assert.partialDeepStrictEqual(
+        await (await request(`agents/${agentId}/deployments/${revisionId}`)).json(),
+        {
+          data: { status: "queued", agentId },
+        },
+      );
+    }
+    assert.partialDeepStrictEqual(
+      await (await request(`agents/${agentA}/deployments/${revisionA}`)).json(),
+      {
+        data: { status: "succeeded" },
+      },
+    );
+    assert.partialDeepStrictEqual(await (await request(`agents/${agentA}`)).json(), {
+      data: { activeRevisionId: revisionA },
+    });
+    assert.partialDeepStrictEqual(await (await request(`agents/${agentB}`)).json(), {
+      data: { activeRevisionId: null },
+    });
+    assert.partialDeepStrictEqual(
+      await (await request(`agents/${agentB}/deployments/${revisionB}`)).json(),
+      {
+        data: { status: "succeeded" },
+      },
+    );
+    assert.partialDeepStrictEqual(await (await request(`agents/${agentB}`)).json(), {
+      data: { activeRevisionId: revisionB },
+    });
+  });
+
+  await t.test(
+    "seeded revision pagination and runtime reads drive the failed redeploy race",
+    async () => {
+      installFixture(
+        {
+          deployed: true,
+          revisionHistory: 3,
+          stopElsewhereOnReread: true,
+          failedRedeployOnReread: true,
+        },
+        evidence(),
+      );
+      const agentPath = `agents/${id("agt", 1)}`;
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions?limit=2`)).json(),
+        {
+          data: [{ revision: 3 }, { revision: 2 }],
+          meta: { nextCursor: "v1.2" },
+        },
+      );
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/revisions?limit=2&cursor=v1.2`)).json(),
+        {
+          data: [{ revision: 1 }],
+          meta: { nextCursor: null },
+        },
+      );
+      const runtime = `${agentPath}/deployments/${id("rev", 1)}/runtime`;
+      await request(`${runtime}/logs`);
+      // The diagnostic module only signals a read. The lifecycle owner performs the
+      // competing stop and preserves omission rather than converting it to null.
+      const stopped = await request(agentPath);
+      assert.partialDeepStrictEqual(await stopped.clone().json(), {
+        data: { desiredRuntimeState: "stopped" },
+      });
+      assert.doesNotMatch(await stopped.text(), /"activeRevisionId"/);
+      // Rejected runtime reads must not contribute to the two-read redeploy race.
+      assert.equal(
+        (await request(`${agentPath}/deployments/${id("rev", 999)}/runtime`)).status,
+        404,
+      );
+      assert.equal(
+        (await request(`agents/${id("agt", 2)}/deployments/${id("rev", 1)}/runtime`)).status,
+        404,
+      );
+      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
+        data: { desiredRuntimeState: "stopped" },
+      });
+      await request(runtime);
+      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
+        data: { desiredRuntimeState: "stopped" },
+      });
+      await request(runtime);
+      const restarted = await request(agentPath);
+      assert.partialDeepStrictEqual(await restarted.clone().json(), {
+        data: { desiredRuntimeState: "running" },
+      });
+      assert.doesNotMatch(await restarted.text(), /"activeRevisionId"/);
+      assert.partialDeepStrictEqual(
+        await (await request(`${agentPath}/deployments/${id("rev", 18)}`)).json(),
+        {
+          data: { status: "failed", error: { code: "RUNTIME_MODEL_PROBE_TIMEOUT" } },
+        },
+      );
+    },
+  );
+
+  for (const malformedProvisioningReply of ["revision-id", "error-message"] as const) {
+    await t.test(
+      `failed job preserves stored deployment with ${malformedProvisioningReply}`,
+      async () => {
+        installFixture(
+          { provisionedDeploymentStatus: "failed", malformedProvisioningReply },
+          evidence(),
+        );
+        const admitted = await request("agents/provision", "POST", provisionBody);
+        assert.equal(admitted.status, 202);
+        const job = `agents/provision/${id("work", 100)}`;
+        assert.partialDeepStrictEqual(await (await request(job)).json(), {
+          data: { provisioning: { status: "running", phase: "configuration" } },
+        });
+        const terminal: unknown = await (await request(job)).json();
+        assert.partialDeepStrictEqual(terminal, {
+          data: {
+            provisioning: {
+              status: "failed",
+              phase: "handoff",
+              agentId: id("agt", 102),
+              ...(malformedProvisioningReply === "revision-id"
+                ? { revisionId: 17 }
+                : { error: { message: { detail: "Unreadable provisioning message" } } }),
+            },
+          },
+        });
+        assert.partialDeepStrictEqual(
+          await (await request(`agents/${id("agt", 102)}/deployments/${id("rev", 103)}`)).json(),
+          {
+            data: {
+              deploymentId: id("rev", 103),
+              status: "failed",
+              error: { code: "DEPENDENCY_UNAVAILABLE" },
+            },
+          },
+        );
+        assert.partialDeepStrictEqual(await (await request(`${job}/retry`, "POST", {})).json(), {
+          data: { provisioning: { status: "queued", attemptCount: 2 } },
+        });
+        assert.partialDeepStrictEqual(await (await request(job)).json(), {
+          data: { provisioning: { status: "running", phase: "configuration" } },
+        });
+        assert.partialDeepStrictEqual(await (await request(`agents/${id("agt", 102)}`)).json(), {
+          data: { credentialSources: [{ sourceId: "cs_model" }] },
+        });
+      },
+    );
+  }
+
+  await t.test("cancellation has no revision; deployment waits retain progress", async () => {
+    installFixture({ provisioningCancelledByStop: true }, evidence());
+    await request("agents/provision", "POST", provisionBody);
+    const job = `agents/provision/${id("work", 100)}`;
+    await request(job);
+    const cancelled: unknown = await (await request(job)).json();
+    assert.partialDeepStrictEqual(cancelled, {
+      data: { provisioning: { status: "failed", error: { code: "PROVISIONING_CANCELLED" } } },
+    });
+    assert.ok(cancelled !== null && typeof cancelled === "object" && "data" in cancelled);
+    const data = cancelled.data;
+    assert.ok(data !== null && typeof data === "object" && "provisioning" in data);
+    assert.ok(data.provisioning !== null && typeof data.provisioning === "object");
+    assert.equal("revisionId" in data.provisioning, false);
+    assert.partialDeepStrictEqual(await (await request(`agents/${id("agt", 102)}`)).json(), {
+      data: { desiredRuntimeState: "stopped", activeRevisionId: null },
+    });
+
+    const attempt = { code: "DEPENDENCY_UNAVAILABLE", message: "Waiting for the dependency" };
+    installFixture(
+      {
+        provisionedDeploymentStatus: "running",
+        provisioningNamesDeploymentWait: true,
+        provisionedDeploymentAttempt: attempt,
+      },
+      evidence(),
+    );
+    await request("agents/provision", "POST", provisionBody);
+    await request(job);
+    assert.partialDeepStrictEqual(await (await request(job)).json(), {
+      data: {
+        provisioning: {
+          status: "running",
+          phase: "handoff",
+          progress: { phase: "deployment", lastAttempt: attempt },
+        },
+      },
+    });
+  });
+
+  await t.test(
+    "authored boolean race and Slack-only credential projection remain intact",
+    async () => {
+      const { scenarios: catalog } =
+        await import("../../scripts/console-storybook/public/scenarios.mjs");
+      installFixture(catalog.channelChangedElsewhere, evidence());
+      const configurationPath = `configurations/${id("cfg", 1)}`;
+      const before: unknown = await (await request(configurationPath)).json();
+      assert.partialDeepStrictEqual(before, { data: { generation: 1 } });
+      assert.partialDeepStrictEqual(await (await request(configurationPath)).json(), {
+        data: { generation: 2 },
+      });
+      assert.partialDeepStrictEqual(await (await request(configurationPath)).json(), {
+        data: { generation: 2 },
+      });
+      installFixture(catalog.slackMcpTools, evidence());
+      const saved: unknown = await (await request(`agents/${id("agt", 1)}`)).json();
+      assert.ok(saved !== null && typeof saved === "object" && "data" in saved);
+      assert.ok(
+        saved.data !== null && typeof saved.data === "object" && "credentialSources" in saved.data,
+      );
+      assert.deepEqual(saved.data.credentialSources, catalog.slackMcpTools.credentialSources);
+      assert.equal(catalog.slackMcpTools.credentialSources.length, 1);
+    },
+  );
+
+  async function invalidRequest(resource: string, method: string, body: unknown) {
+    const reply = await request(resource, method, body);
+    assert.equal(reply.status, 400);
+    assert.equal(reply.headers.get("content-type"), "application/json");
+    const payload: unknown = await reply.json();
+    assert.partialDeepStrictEqual(payload, { error: { code: "INVALID_REQUEST" } });
+    assert.ok(payload !== null && typeof payload === "object" && "error" in payload);
+    assert.ok(
+      payload.error !== null && typeof payload.error === "object" && "message" in payload.error,
+    );
+    assert.equal(typeof payload.error.message, "string");
+    assert.match(String(payload.error.message), /^The preview requires /);
+  }
+
+  await t.test(
+    "invalid Configuration writes return 400 without state or generation changes",
+    async () => {
+      installFixture({}, evidence());
+      for (const body of [
+        null,
+        [],
+        {},
+        { ...configuration, kind: "other" },
+        { ...configuration, values: [] },
+        { ...configuration, secretBindings: [] },
+      ]) {
+        await invalidRequest("configurations", "POST", body);
+      }
+      const created = await request("configurations", "POST", configuration);
+      assert.equal(created.status, 201);
+      const saved: unknown = await created.json();
+      const configPath = `configurations/${id("cfg", 100)}`;
+      assert.partialDeepStrictEqual(saved, { data: { id: id("cfg", 100), generation: 1 } });
+      for (const patch of [
+        null,
+        [],
+        { kind: "other" },
+        { values: null },
+        { secretBindings: [] },
+        { id: 17 },
+        { namespaceId: 17 },
+        { createdAt: 17 },
+      ]) {
+        await invalidRequest(configPath, "PATCH", patch);
+        assert.deepEqual(await (await request(configPath)).json(), saved);
+      }
+      // The next real write increments once; refusals neither consume IDs nor save values.
+      const updated = await request(configPath, "PATCH", { secretBindings: {} });
+      assert.equal(updated.status, 200);
+      assert.partialDeepStrictEqual(await updated.json(), {
+        data: { generation: 2, secretBindings: {} },
+      });
+      const next = await request("configurations", "POST", configuration);
+      assert.equal(next.status, 201);
+      assert.partialDeepStrictEqual(await next.json(), {
+        data: { id: id("cfg", 101), generation: 1 },
+      });
+    },
+  );
+
+  await t.test(
+    "invalid direct Create and provision return 400 before allocating resources",
+    async () => {
+      installFixture({}, evidence());
+      const before: unknown = await (await request("agents")).json();
+      const direct = { name: "Direct create", configurationId: id("cfg", 1) };
+      for (const body of [
+        null,
+        [],
+        { ...direct, name: 17 },
+        { name: direct.name },
+        { ...direct, configurationId: 17 },
+        { ...direct, initialWorkspaceFiles: { "AGENTS.md": 17 } },
+      ]) {
+        await invalidRequest("agents", "POST", body);
+      }
+      assert.deepEqual(await (await request("agents")).json(), before);
+      const created = await request("agents", "POST", direct);
+      assert.equal(created.status, 201);
+      assert.partialDeepStrictEqual(await created.json(), {
+        data: { id: id("agt", 100), name: direct.name },
+      });
+
+      installFixture({}, evidence());
+      for (const body of [
+        null,
+        { ...provisionBody, name: 17 },
+        { ...provisionBody, requestId: 17 },
+        { ...provisionBody, configuration: undefined },
+        { ...provisionBody, configuration: { ...configuration, values: [] } },
+        { ...provisionBody, initialWorkspaceFiles: { "AGENTS.md": 17 } },
+        { ...provisionBody, harnessAuth: { method: "credential_source" } },
+        { ...provisionBody, harnessAuth: { method: "credential_source", sourceId: 17 } },
+      ]) {
+        await invalidRequest("agents/provision", "POST", body);
+      }
+      assert.deepEqual(await (await request("agents")).json(), before);
+      assert.equal((await request(`configurations/${id("cfg", 101)}`)).status, 404);
+      assert.equal((await request(`agents/provision/${id("work", 100)}`)).status, 404);
+      const admitted = await request("agents/provision", "POST", provisionBody);
+      assert.equal(admitted.status, 202);
+      assert.partialDeepStrictEqual(await admitted.json(), {
+        data: { provisioning: { workId: id("work", 100) } },
+      });
+      const job = `agents/provision/${id("work", 100)}`;
+      await request(job);
+      assert.partialDeepStrictEqual(await (await request(job)).json(), {
+        data: {
+          provisioning: {
+            status: "succeeded",
+            agentId: id("agt", 102),
+            configurationId: id("cfg", 101),
+            revisionId: id("rev", 103),
+          },
+        },
+      });
+    },
+  );
+
+  await t.test(
+    "authored refusals and network errors precede guards; preflight stays permissive",
+    async () => {
+      // A rule refusal must not be replaced by input validation, even for a null body.
+      for (const status of [403, 503]) {
+        installFixture(
+          { rules: [{ method: "POST", suffix: "/agents/provision", status, once: true }] },
+          evidence(),
+        );
+        assert.equal((await request("agents/provision", "POST", null)).status, status);
+        await invalidRequest("agents/provision", "POST", null);
+      }
+      installFixture(
+        {
+          rules: [{ method: "POST", suffix: "/agents/provision", networkError: true, once: true }],
+        },
+        evidence(),
+      );
+      // Authored offline behavior is still a rejected fetch, unlike an HTTP input refusal.
+      await assert.rejects(request("agents/provision", "POST", provisionBody), {
+        name: "TypeError",
+        message: "Failed to fetch",
+      });
+      assert.equal((await request("agents/validate", "POST", null)).status, 204);
+      const admitted = await request("agents/provision", "POST", provisionBody);
+      assert.equal(admitted.status, 202);
+      assert.partialDeepStrictEqual(await admitted.json(), {
+        data: { provisioning: { workId: id("work", 100) } },
+      });
+    },
+  );
 });

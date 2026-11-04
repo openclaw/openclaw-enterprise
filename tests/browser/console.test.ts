@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { cp, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { ServerResponse } from "node:http";
+import type { APIResponse, Locator, Page, Request, Response, Route } from "playwright";
+import type { createFastifyApp } from "../../apps/controller/src/index.ts";
+import type { Namespace, Restriction } from "../../packages/contracts/src/index.ts";
 
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../../apps/controller/src/admission/admission-verifier.ts";
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
@@ -43,14 +47,63 @@ import {
   SIGN_IN_UNAVAILABLE,
 } from "../helpers/refusal-text.mjs";
 
-const defaultCodexPreset = JSON.parse(
+type App = ReturnType<typeof createFastifyApp>;
+type RouteHandler = Parameters<App["get"]>[1]["handler"];
+type FastifyRequest = Parameters<RouteHandler>[0];
+type FastifyReply = Parameters<RouteHandler>[1];
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  assert.ok(isJsonObject(value));
+  return value;
+}
+
+// The legacy fixture returns decoded JSON. Only identity and display name are read here.
+function namedResource(value: unknown): Pick<Namespace, "id" | "name"> {
+  const resource = jsonObject(value);
+  assert.ok(typeof resource.id === "string");
+  assert.ok(typeof resource.name === "string");
+  return { id: resource.id, name: resource.name };
+}
+
+const defaultCodexPreset: unknown = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
-const createConsoleAppFixture = (t, options = {}) =>
-  createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+const createConsoleAppFixture = (
+  t: TestContext,
+  options: {
+    observabilityUrl?: string;
+    consoleTheme?: Awaited<ReturnType<typeof loadConsoleTheme>>;
+    onSend?: (request: FastifyRequest, reply: FastifyReply, payload: unknown) => Promise<unknown>;
+  } = {},
+) => createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 // The sign-in page tests share one app (fileConsoleApp): they make no Namespace, change no
 // policy and end no session. Every other test keeps an app of its own.
-const signInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
+const sharedSignInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
+type SignInFixture = Pick<
+  Awaited<ReturnType<typeof createConsoleAppFixture>>,
+  "origin" | "credentials"
+> & { sharedByFile: true };
+
+function isSignInFixture(value: unknown): value is SignInFixture {
+  return (
+    isJsonObject(value) &&
+    typeof value.origin === "string" &&
+    value.sharedByFile === true &&
+    isJsonObject(value.credentials) &&
+    typeof value.credentials.email === "string" &&
+    typeof value.credentials.password === "string"
+  );
+}
+
+async function signInApp(t: TestContext) {
+  const fixture: unknown = await sharedSignInApp(t);
+  assert.ok(isSignInFixture(fixture));
+  return fixture;
+}
 
 test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
   const directory = await temporaryDirectory(t, "occ-browser-theme-");
@@ -61,7 +114,7 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
     consoleTheme: await loadConsoleTheme(directory),
   });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Theme workflow", { ready: true });
+  const namespace = namedResource(await fixture.createNamespace("Theme workflow", { ready: true }));
   await fixture.createAgent(namespace.id, "Theme assistant");
   const { page } = await newPage(t, fixture);
   await page.goto(`${fixture.origin}/console/login`);
@@ -82,7 +135,11 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
     await page
       .locator(".brand img")
       .boundingBox()
-      .then(({ width, height }) => ({ width, height })),
+      .then((box) => {
+        assert.ok(box);
+        const { width, height } = box;
+        return { width, height };
+      }),
     { width: 40, height: 40 },
   );
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
@@ -90,7 +147,11 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
     await page
       .locator(".sidebar .brand img")
       .boundingBox()
-      .then(({ width, height }) => ({ width, height })),
+      .then((box) => {
+        assert.ok(box);
+        const { width, height } = box;
+        return { width, height };
+      }),
     { width: 48, height: 48 },
   );
   await page.getByText("Theme assistant", { exact: true }).click();
@@ -123,7 +184,7 @@ const mobile = {
 
 test("a collection body disconnected after headers shows interruption and Retry reloads real data", async (t) => {
   let interruptNextRead = false;
-  let interruptedBody;
+  let interruptedBody: ServerResponse | undefined;
   const fixture = await createConsoleAppFixture(t, {
     async onSend(request, reply, payload) {
       if (
@@ -137,10 +198,11 @@ test("a collection body disconnected after headers shows interruption and Retry 
       interruptNextRead = false;
       // The real authorized API already produced this list. Deliver its headers
       // and only a prefix, then break the socket after the browser sees headers.
-      assert.equal(typeof payload, "string");
+      assert.ok(typeof payload === "string", "Expected a serialized Controller response body");
       reply.hijack();
+      const headers: Record<string, string | number | string[] | undefined> = reply.getHeaders();
       reply.raw.writeHead(reply.statusCode, {
-        ...reply.getHeaders(),
+        ...headers,
         "content-length": Buffer.byteLength(payload),
       });
       reply.raw.write(payload.slice(0, 10));
@@ -150,7 +212,9 @@ test("a collection body disconnected after headers shows interruption and Retry 
   });
   t.after(() => interruptedBody?.destroy());
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Body interruption", { ready: true });
+  const namespace = namedResource(
+    await fixture.createNamespace("Body interruption", { ready: true }),
+  );
   await fixture.createAgent(namespace.id, "Research assistant");
   const { page, artifacts } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -165,6 +229,7 @@ test("a collection body disconnected after headers shows interruption and Retry 
   const received = await headers;
   assert.equal(received.status(), 200);
   assert.ok(Number((await received.allHeaders())["content-length"]) > 10);
+  assert.ok(interruptedBody);
   interruptedBody.destroy(new Error("Test connection closed after response headers"));
   await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
   await page.screenshot({ path: join(artifacts, "response-body-interrupted.png") });
@@ -186,11 +251,11 @@ test("a collection body disconnected after headers shows interruption and Retry 
 // them (the loading page 250 ms into a load, say) hands evaluate the node it replaced, detached,
 // while focus is already on the replacement (finding 2016). A detached node is no verdict, so
 // resolve the locator again.
-async function focusState(locator) {
+async function focusState(locator: Locator) {
   for (let attempt = 1; ; attempt += 1) {
     const sample = await locator.evaluate((node) => {
       const active = globalThis.document.activeElement;
-      const describe = (element) => {
+      const describe = (element: Element | null) => {
         if (!element || element === globalThis.document.body) {
           return element ? "<body>" : "nothing";
         }
@@ -217,29 +282,44 @@ async function focusState(locator) {
   }
 }
 
-async function openShellMenu(page) {
+async function openShellMenu(page: Page) {
   await page.locator(".account-toggle").click();
 }
 
-async function chooseNamespace(page, name, options) {
+function mainIsInert(page: Page) {
+  return page.locator("main").evaluate((node) => {
+    if (!(node instanceof HTMLElement)) {
+      throw new Error("Expected HTML content");
+    }
+    return node.inert;
+  });
+}
+
+async function chooseNamespace(
+  page: Page,
+  name: string,
+  options?: Parameters<Locator["selectOption"]>[1],
+) {
   await page
     .getByRole("combobox", { name: "Namespace", exact: true })
     .selectOption({ label: name }, options);
 }
 
 function deferred() {
-  let resolve;
-  const promise = new Promise((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
+  return Promise.withResolvers<void>();
 }
 
-async function waitForRoutePhase(promise, description, release, signal, describeState) {
-  let timeout;
-  let onAbort;
-  const deadline = new Promise((_, reject) => {
-    function fail(reason) {
+async function waitForRoutePhase(
+  promise: Promise<void>,
+  description: string,
+  release: () => void,
+  signal?: AbortSignal,
+  describeState?: () => string,
+) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    function fail(reason?: unknown) {
       // Read the hold's state before release() changes it.
       const state = describeState?.();
       release();
@@ -258,7 +338,7 @@ async function waitForRoutePhase(promise, description, release, signal, describe
     }
 
     timeout = setTimeout(() => fail(), routeHoldTimeoutMs);
-    onAbort = () => fail(signal.reason);
+    onAbort = () => fail(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
@@ -271,12 +351,23 @@ async function waitForRoutePhase(promise, description, release, signal, describe
   }
 }
 
-async function holdRoute(t, page, pattern, continueRoute, { fetchBeforeHold = true } = {}) {
+function errorMessage(error: unknown): unknown {
+  assert.ok(typeof error === "object" && error !== null && "message" in error);
+  return error.message;
+}
+
+async function holdRoute(
+  t: TestContext,
+  page: Page,
+  pattern: string,
+  continueRoute: (route: Route, response: APIResponse<unknown> | undefined) => Promise<void>,
+  { fetchBeforeHold = true } = {},
+) {
   const releaseGate = deferred();
   const captured = deferred();
   const completed = deferred();
   let released = false;
-  let releaseWatchdog;
+  let releaseWatchdog: ReturnType<typeof setTimeout> | undefined;
   let intercepted = 0;
 
   function release() {
@@ -293,21 +384,24 @@ async function holdRoute(t, page, pattern, continueRoute, { fetchBeforeHold = tr
     try {
       return `intercepted ${intercepted}, released ${released}, page ${page.url()}, pending requests: ${describePendingBrowserRequests(page)}`;
     } catch (error) {
-      return `state unavailable: ${error.message}`;
+      return `state unavailable: ${errorMessage(error)}`;
     }
   }
 
   t.signal?.addEventListener("abort", release, { once: true });
   await page.route(pattern, async (route) => {
     intercepted += 1;
-    let response;
+    let response: APIResponse<unknown> | undefined;
     if (fetchBeforeHold) {
       try {
         response = await route.fetch();
         noteBrowserEvent(page, `held route ${pattern} upstream status ${response.status()}`);
       } catch (error) {
         response = undefined;
-        noteBrowserEvent(page, `held route ${pattern} upstream fetch failed: ${error.message}`);
+        noteBrowserEvent(
+          page,
+          `held route ${pattern} upstream fetch failed: ${errorMessage(error)}`,
+        );
       }
     }
     captured.resolve();
@@ -321,7 +415,7 @@ async function holdRoute(t, page, pattern, continueRoute, { fetchBeforeHold = tr
       noteBrowserEvent(page, `held route ${pattern} continued`);
     } catch (error) {
       /* The page may already have aborted the obsolete read. */
-      noteBrowserEvent(page, `held route ${pattern} continue failed: ${error.message}`);
+      noteBrowserEvent(page, `held route ${pattern} continue failed: ${errorMessage(error)}`);
     } finally {
       completed.resolve();
     }
@@ -351,8 +445,8 @@ async function holdRoute(t, page, pattern, continueRoute, { fetchBeforeHold = tr
 test("console debug flag is opt-in and follows Namespace navigation without leaking prior Agent reads", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const alpha = await fixture.createNamespace("Debug Alpha", { ready: true });
-  const beta = await fixture.createNamespace("Debug Beta", { ready: true });
+  const alpha = namedResource(await fixture.createNamespace("Debug Alpha", { ready: true }));
+  const beta = namedResource(await fixture.createNamespace("Debug Beta", { ready: true }));
   await fixture.createAgent(alpha.id, "Alpha runtime");
   await fixture.createAgent(beta.id, "Beta runtime");
   const { page } = await newPage(t, fixture);
@@ -365,14 +459,22 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
   await page.goto(`${fixture.origin}/console/agents?namespace=${alpha.id}&debug=true`);
   const panel = page.getByRole("region", { name: "Build and runtime images" });
   await panel.getByText("No deployed runtime images observed.").waitFor({ state: "attached" });
-  assert.match(await panel.textContent(), /OCE commit.*Unavailable/s);
+  const initialPanelText = await panel.textContent();
+  assert.ok(initialPanelText !== null);
+  assert.match(initialPanelText, /OCE commit.*Unavailable/s);
   await chooseNamespace(page, "Debug Beta");
   await panel.getByText("Beta runtime", { exact: true }).waitFor();
-  assert.doesNotMatch(await panel.textContent(), /Alpha runtime/);
+  const changedPanelText = await panel.textContent();
+  assert.ok(changedPanelText !== null);
+  assert.doesNotMatch(changedPanelText, /Alpha runtime/);
   assert.equal(new URL(page.url()).searchParams.get("debug"), "true");
   await panel.getByText("No deployed runtime images observed.").waitFor({ state: "attached" });
   const runtimeRow = await panel.locator(".runtime-debug-images details").elementHandle();
+  assert.ok(runtimeRow);
   await runtimeRow.evaluate((node) => {
+    if (!(node instanceof HTMLDetailsElement)) {
+      throw new Error("Expected runtime details");
+    }
     node.open = true;
   });
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
@@ -381,7 +483,12 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
   await page.goBack();
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   assert.equal(
-    await runtimeRow.evaluate((node) => node.isConnected && node.open),
+    await runtimeRow.evaluate((node) => {
+      if (!(node instanceof HTMLDetailsElement)) {
+        throw new Error("Expected runtime details");
+      }
+      return node.isConnected && node.open;
+    }),
     true,
     "Returning preserves expanded runtime image diagnostics",
   );
@@ -393,10 +500,12 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
 test("console browser flow keeps Namespace URL state across global pages and logout", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const alpha = await fixture.createNamespace("Alpha", { ready: true });
-  const beta = await fixture.createNamespace("Beta", { ready: true });
-  const alphaAgent = await fixture.createAgent(alpha.id, "Alpha <script>alert(1)</script>");
-  const betaAgent = await fixture.createAgent(beta.id, "Beta agent");
+  const alpha = namedResource(await fixture.createNamespace("Alpha", { ready: true }));
+  const beta = namedResource(await fixture.createNamespace("Beta", { ready: true }));
+  const alphaAgent = namedResource(
+    await fixture.createAgent(alpha.id, "Alpha <script>alert(1)</script>"),
+  );
+  const betaAgent = namedResource(await fixture.createAgent(beta.id, "Beta agent"));
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
@@ -494,7 +603,9 @@ test("console shows the external observability link only to Installation adminis
   const url = "https://metrics.example.test/d/operations";
   const fixture = await createConsoleAppFixture(t, { observabilityUrl: url });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Observability access", { ready: true });
+  const namespace = namedResource(
+    await fixture.createNamespace("Observability access", { ready: true }),
+  );
   // The second account can open the console but has no Installation grant.
   const limited = await fixture.createAccountWithPolicy("observability-limited", (principal) => {
     fixture.policy.roles.push({
@@ -579,7 +690,10 @@ test("console shows the external observability link only to Installation adminis
 // The API audits every denied probe, so the Console must not repeat one it already sent. A
 // navigation's page load first asks the permission answer, then probes: the earlier probe can
 // still be pending at that point, or settle while the permission answer is read.
-async function navigateDuringInstallationAccessProbe(t, { settleFirst }) {
+async function navigateDuringInstallationAccessProbe(
+  t: TestContext,
+  { settleFirst }: { settleFirst: boolean },
+) {
   let answered = 0;
   const fixture = await createConsoleAppFixture(t, {
     observabilityUrl: "https://metrics.example.test/d/operations",
@@ -591,7 +705,7 @@ async function navigateDuringInstallationAccessProbe(t, { settleFirst }) {
     },
   });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Probe access", { ready: true });
+  const namespace = namedResource(await fixture.createNamespace("Probe access", { ready: true }));
   const limited = await fixture.createAccountWithPolicy("probe-limited", (principal) => {
     fixture.policy.roles.push({
       id: "role-browser-probe-reader",
@@ -622,7 +736,7 @@ async function navigateDuringInstallationAccessProbe(t, { settleFirst }) {
   });
   // The API has answered (and audited) the probe; its response reaches the page only later.
   const probe = await holdRoute(t, page, "**/observability", (route, response) =>
-    route.fulfill({ response }),
+    route.fulfill(response === undefined ? {} : { response }),
   );
   await login(page, fixture, "/console/agents", limited.credentials);
   await probe.waitForRelease();
@@ -651,8 +765,8 @@ test("a probe that settles while the next page reads its permission answer is no
 test("console ignores stale collection successes and errors while switching Namespaces", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const slow = await fixture.createNamespace("Slow", { ready: true });
-  const current = await fixture.createNamespace("Current", { ready: true });
+  const slow = namedResource(await fixture.createNamespace("Slow", { ready: true }));
+  const current = namedResource(await fixture.createNamespace("Current", { ready: true }));
   await fixture.createAgent(slow.id, "Slow agent");
   await fixture.createAgent(current.id, "Current agent");
   const { page } = await newPage(t, fixture);
@@ -672,7 +786,9 @@ test("console ignores stale collection successes and errors while switching Name
 
   await chooseNamespace(page, "Slow");
   await slowSuccess.waitForRelease();
-  const slowSuccessRead = (await settledFetches(page, slowAgentsPath)) + 1;
+  const slowSuccessCount: unknown = await settledFetches(page, slowAgentsPath);
+  assert.ok(typeof slowSuccessCount === "number");
+  const slowSuccessRead = slowSuccessCount + 1;
   await expectHeldPage(page, "Current agent", page.getByText("Slow agent", { exact: true }));
   // Namespace admission has finished, so switching away does not wait for the held read.
   await chooseNamespace(page, "Current");
@@ -691,7 +807,9 @@ test("console ignores stale collection successes and errors while switching Name
   t.after(() => slowError.release());
   await chooseNamespace(page, "Slow");
   await slowError.waitForRelease();
-  const slowErrorRead = (await settledFetches(page, slowAgentsPath)) + 1;
+  const slowErrorCount: unknown = await settledFetches(page, slowAgentsPath);
+  assert.ok(typeof slowErrorCount === "number");
+  const slowErrorRead = slowErrorCount + 1;
   await chooseNamespace(page, "Current");
   await page.getByText("Current agent").waitFor();
   slowError.release();
@@ -713,9 +831,9 @@ test("console ignores stale collection successes and errors while switching Name
 test("Agents with no readable Namespace names it once and keeps one Refresh", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const granted = await fixture.createNamespace("Granted later", { ready: true });
-  const agent = await fixture.createAgent(granted.id, "Bookmarked Agent");
-  const denyAll = {
+  const granted = namedResource(await fixture.createNamespace("Granted later", { ready: true }));
+  const agent = namedResource(await fixture.createAgent(granted.id, "Bookmarked Agent"));
+  const denyAll: Restriction = {
     id: "deny-all-namespace-read",
     resourceKind: "namespace",
     action: "read",
@@ -743,7 +861,7 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
       `${NAMESPACE_UNAVAILABLE}, and you cannot read any other Namespace. Ask an Installation administrator to give you access to one, then Refresh.`,
       "Unavailable",
     ],
-  ]) {
+  ] satisfies [string, string, string, string][]) {
     fixture.policy.restrictions.push(denyAll);
     const { page } = await newPage(t, fixture);
     await trackSettledFetches(page);
@@ -765,10 +883,20 @@ test("Agents with no readable Namespace names it once and keeps one Refresh", as
     // The compact selector shows its whole selection, not "Namespace una…" (finding 2423).
     assert.ok(
       await selector.evaluate((select) => {
+        if (!(select instanceof HTMLSelectElement)) {
+          throw new Error("Expected Namespace selector");
+        }
         const style = globalThis.getComputedStyle(select);
         const context = globalThis.document.createElement("canvas").getContext("2d");
+        if (context === null) {
+          throw new Error("Expected canvas context");
+        }
         context.font = style.font;
-        const text = context.measureText(select.selectedOptions[0].textContent).width;
+        const selected = select.selectedOptions[0];
+        if (selected === undefined || selected.textContent === null) {
+          throw new Error("Expected selected option text");
+        }
+        const text = context.measureText(selected.textContent).width;
         const room =
           select.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
         return text <= room;
@@ -814,7 +942,7 @@ test("an unchanged retained view without a Namespace selection selects the defau
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   await fixture.createNamespace("Granted later", { ready: true });
-  const denyAll = {
+  const denyAll: Restriction = {
     id: "deny-all-namespace-read",
     resourceKind: "namespace",
     action: "read",
@@ -841,7 +969,16 @@ test("an unchanged retained view without a Namespace selection selects the defau
   await page.waitForFunction(
     () =>
       globalThis.document.querySelector('.content [aria-live="polite"]:not([inert])') &&
-      globalThis.document.querySelector("#namespace-selector")?.disabled === false,
+      (() => {
+        const selector = globalThis.document.querySelector("#namespace-selector");
+        if (selector === null) {
+          return false;
+        }
+        if (!(selector instanceof HTMLSelectElement)) {
+          throw new Error("Expected Namespace selector");
+        }
+        return selector.disabled === false;
+      })(),
   );
   await page.getByText("openai-primary", { exact: true }).waitFor();
   const selection = new URL(page.url()).searchParams.get("namespace");
@@ -853,7 +990,11 @@ test("an unchanged retained view without a Namespace selection selects the defau
   await expectNoText(page, /No readable Namespaces/, () => waitForIdleFetches(page));
 });
 
-async function releaseHeldRoute(page, pattern, hold) {
+async function releaseHeldRoute(
+  page: Page,
+  pattern: string,
+  hold: Awaited<ReturnType<typeof holdRoute>>,
+) {
   hold.release();
   await hold.waitForCompletion();
   await page.unroute(pattern);
@@ -862,14 +1003,14 @@ async function releaseHeldRoute(page, pattern, hold) {
 // The console retains a view for Back and in-app returns only if it finished its reads before
 // the reader left; otherwise the return rebuilds it. Wait for this before leaving a view whose
 // DOM a test later expects to be reused. The page must run trackSettledFetches().
-async function waitForSettledView(page) {
+async function waitForSettledView(page: Page) {
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
   await waitForIdleFetches(page);
 }
 
 // A return keeps the page already on screen, inert, while the retained destination revalidates.
 // The destination's cached view is never painted before its reads pass (`hidden` stays absent).
-async function expectHeldPage(page, shownText, hidden) {
+async function expectHeldPage(page: Page, shownText: string, hidden?: Locator) {
   const held = page.locator('.content [aria-live="polite"][inert]');
   await held.getByText(shownText, { exact: true }).first().waitFor();
   assert.equal(await held.count(), 1);
@@ -887,9 +1028,11 @@ async function expectHeldPage(page, shownText, hidden) {
 test("console keeps loaded route families visible while return reads refresh", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Retained routes", { ready: true });
+  const namespace = namedResource(
+    await fixture.createNamespace("Retained routes", { ready: true }),
+  );
   await fixture.createNamespace("A second Namespace", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Retained route Agent");
+  const agent = namedResource(await fixture.createAgent(namespace.id, "Retained route Agent"));
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
 
@@ -1044,6 +1187,9 @@ test("console keeps loaded route families visible while return reads refresh", a
   // A default starter form is kept like any other draft and returns editable (finding 1902).
   await page.waitForFunction(() => {
     const name = globalThis.document.querySelector("#agent-name");
+    if (name !== null && !(name instanceof HTMLInputElement)) {
+      throw new Error("Expected Agent name input");
+    }
     return name?.value === "Retained draft Agent" && !name.closest("[inert]");
   });
   assert.equal(await page.getByLabel("Preset template").count(), 0);
@@ -1052,7 +1198,7 @@ test("console keeps loaded route families visible while return reads refresh", a
 test("the account menu stays open and focused while the page under it finishes loading", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Open menu", { ready: true });
+  const namespace = namedResource(await fixture.createNamespace("Open menu", { ready: true }));
   await fixture.createAgent(namespace.id, "Open menu Agent");
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
@@ -1094,7 +1240,7 @@ for (const focus of ["navigation link", "account menu"]) {
   test(`an open mobile drawer keeps its ${focus} focused while the page under it finishes loading`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Open drawer", { ready: true });
+    const namespace = namedResource(await fixture.createNamespace("Open drawer", { ready: true }));
     await fixture.createAgent(namespace.id, "Open drawer Agent");
     const { page } = await newPage(t, fixture, mobile);
     await trackSettledFetches(page);
@@ -1133,7 +1279,7 @@ for (const focus of ["navigation link", "account menu"]) {
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
 
     assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
-    assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
+    assert.equal(await mainIsInert(page), true);
     const kept = await focusState(focused);
     assert.equal(
       kept.held,
@@ -1144,14 +1290,14 @@ for (const focus of ["navigation link", "account menu"]) {
     const destination = focus === "account menu" ? "Settings" : "Agents";
     await page.getByRole("heading", { name: destination, exact: true }).waitFor();
     assert.equal(await toggle.getAttribute("aria-expanded"), "false", "Navigating closes it");
-    assert.equal(await page.locator("main").evaluate((node) => node.inert), false);
+    assert.equal(await mainIsInert(page), false);
   });
 }
 
 test("an open mobile drawer keeps its navigation link focused when an address without a Namespace finishes loading", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Cold drawer", { ready: true });
+  const namespace = namedResource(await fixture.createNamespace("Cold drawer", { ready: true }));
   await fixture.createAgent(namespace.id, "Cold drawer Agent");
   const { page } = await newPage(t, fixture, mobile);
   await trackSettledFetches(page);
@@ -1184,7 +1330,7 @@ test("an open mobile drawer keeps its navigation link focused when an address wi
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
 
   assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
-  assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
+  assert.equal(await mainIsInert(page), true);
   assert.equal(await agents.getAttribute("href"), `/console/agents?namespace=${namespace.id}`);
   const kept = await focusState(agents);
   assert.equal(
@@ -1194,14 +1340,16 @@ test("an open mobile drawer keeps its navigation link focused when an address wi
   );
   await page.keyboard.press("Escape");
   assert.equal(await toggle.getAttribute("aria-expanded"), "false", "Escape closes it");
-  assert.equal(await page.locator("main").evaluate((node) => node.inert), false);
+  assert.equal(await mainIsInert(page), false);
 });
 
 test("an Agent tab chosen while the detail is still loading is the one Back restores", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Early tab", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Early tab Agent");
+  const namespace = namedResource(await fixture.createNamespace("Early tab", { ready: true }));
+  const agent = jsonObject(await fixture.createAgent(namespace.id, "Early tab Agent"));
+  assert.ok(typeof agent.id === "string");
+  assert.ok(typeof agent.configurationId === "string");
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, "/console/agents?namespace=" + namespace.id);
@@ -1242,7 +1390,9 @@ test("an Agent tab chosen while the detail is still loading is the one Back rest
 test("Refresh reloads and focus restoration retains rows until fresh data arrives", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Background reads", { ready: true });
+  const namespace = namedResource(
+    await fixture.createNamespace("Background reads", { ready: true }),
+  );
   await fixture.createAgent(namespace.id, "Existing background Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
@@ -1277,8 +1427,10 @@ test("Refresh reloads and focus restoration retains rows until fresh data arrive
 test("console retained views clear after session expiry and exact Agent denial", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Retained invalidation", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Denied retained Agent");
+  const namespace = namedResource(
+    await fixture.createNamespace("Retained invalidation", { ready: true }),
+  );
+  const agent = namedResource(await fixture.createAgent(namespace.id, "Denied retained Agent"));
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
 
@@ -1361,7 +1513,9 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
   test(`console clears all retained pages after ${gate} fails`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Admission failure", { ready: true });
+    const namespace = namedResource(
+      await fixture.createNamespace("Admission failure", { ready: true }),
+    );
     await fixture.createAgent(namespace.id, "Private cached Agent");
     const { page } = await newPage(t, fixture);
     await trackSettledFetches(page);
@@ -1405,8 +1559,10 @@ for (const check of ["a page load", "an Agent page refocus"]) {
   test(`an account refused Namespace access can sign out after ${check}`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Removed identity", { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Removed identity Agent");
+    const namespace = namedResource(
+      await fixture.createNamespace("Removed identity", { ready: true }),
+    );
+    const agent = namedResource(await fixture.createAgent(namespace.id, "Removed identity Agent"));
     const { page } = await newPage(t, fixture);
     await trackSettledFetches(page);
     if (check === "a page load") {
@@ -1437,7 +1593,9 @@ for (const check of ["a page load", "an Agent page refocus"]) {
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await page.waitForURL(/\/console\/login$/);
     const session = await page.request.get(`${fixture.origin}/api/auth/session`);
-    assert.notEqual((await session.json()).data?.authenticated, true);
+    const body: unknown = await session.json();
+    const data = jsonObject(body).data;
+    assert.notEqual(data == null ? undefined : jsonObject(data).authenticated, true);
 
     await page.goto(`${fixture.origin}/console/namespaces`);
     await page.getByLabel("Email", { exact: true }).waitFor();
@@ -1448,7 +1606,9 @@ for (const check of ["a page load", "an Agent page refocus"]) {
 test("a session replaced by another tab signs this tab out instead of being adopted", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Session replacement", { ready: true });
+  const namespace = namedResource(
+    await fixture.createNamespace("Session replacement", { ready: true }),
+  );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
@@ -1494,7 +1654,7 @@ test("an abandoned GitHub attempt does not turn password sign-in into a GitHub f
   const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
-  const requests = [];
+  const requests: string[] = [];
   page.on("request", (request) => requests.push(new URL(request.url()).pathname));
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByLabel("Email", { exact: true }).waitFor();
@@ -1514,9 +1674,9 @@ test("an abandoned GitHub attempt does not turn password sign-in into a GitHub f
 test("Google sign-in accepts only a Google authorization URL and confirms through its own result", async (t) => {
   const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
-  const requests = [];
+  const requests: string[] = [];
   page.on("request", (request) => requests.push(new URL(request.url()).pathname));
-  const envelope = (data) => ({
+  const envelope = (data: unknown) => ({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({ data, meta: { requestId: "browser-google" } }),
@@ -1548,7 +1708,8 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
   );
   await google.click();
   const refused = await result;
-  assert.equal(refused.request().postDataJSON().attemptId, attemptId);
+  const submitted: unknown = refused.request().postDataJSON();
+  assert.equal(jsonObject(submitted).attemptId, attemptId);
   // The unconfigured controller refuses the result, so this tab adopts no session. The
   // callback already settled the identity, so the refusal does not read as an identity failure.
   // It is the answer for a provider removed after the start: starting again cannot help, so
@@ -1574,14 +1735,14 @@ const UNCONFIRMED_PASSWORD_SIGN_IN =
 for (const [lossPoint, afterHeaders] of [
   ["before response headers", false],
   ["after response headers", true],
-]) {
+] satisfies [string, boolean][]) {
   test(`an accepted password sign-in interrupted ${lossPoint} asks to check the session`, async (t) => {
     const signInPath = "/api/auth/sign-in/email";
     let observing = false;
     let submissions = 0;
-    let acceptedStatus;
+    let acceptedStatus: number | undefined;
     let cookieIssued = false;
-    let interruptedReply;
+    let interruptedReply: ServerResponse | undefined;
     const fixture = await createConsoleAppFixture(t, {
       async onSend(request, reply, payload) {
         if (!observing || request.method !== "POST" || request.url !== signInPath) {
@@ -1599,13 +1760,13 @@ for (const [lossPoint, afterHeaders] of [
         if (acceptedStatus !== 200) {
           return payload;
         }
-        const headers = reply.getHeaders();
+        const headers: Record<string, string | number | string[] | undefined> = reply.getHeaders();
         cookieIssued = headers["set-cookie"] !== undefined;
         reply.hijack();
         if (afterHeaders) {
           // The Controller accepted the request. Deliver its real headers and a body
           // prefix, then keep the socket open until the browser observes the 200.
-          assert.equal(typeof payload, "string");
+          assert.ok(typeof payload === "string", "Expected a serialized Controller response body");
           reply.raw.writeHead(reply.statusCode, {
             ...headers,
             "content-length": Buffer.byteLength(payload),
@@ -1631,7 +1792,7 @@ for (const [lossPoint, afterHeaders] of [
     await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
     await page.getByLabel("Password").fill(fixture.credentials.password);
     const sessionsBefore = fixture.memoryDatabase.session.length;
-    const isSignIn = (event) => new URL(event.url()).pathname === signInPath;
+    const isSignIn = (event: Request | Response) => new URL(event.url()).pathname === signInPath;
     const observed = afterHeaders
       ? page.waitForResponse(isSignIn)
       : page.waitForEvent("requestfailed", isSignIn);
@@ -1641,12 +1802,20 @@ for (const [lossPoint, afterHeaders] of [
     assert.equal(acceptedStatus, 200, "the real Controller must accept the password");
     assert.equal(cookieIssued, true, "the accepted sign-in must issue a cookie");
     assert.equal(fixture.memoryDatabase.session.length, sessionsBefore + 1);
-    const createdSession = fixture.memoryDatabase.session.at(-1);
+    const createdSession: unknown = fixture.memoryDatabase.session.at(-1);
+    const acceptedUserId = jsonObject(createdSession).userId;
+    assert.ok(
+      typeof acceptedUserId === "string" && acceptedUserId.length > 0,
+      "accepted fixture session must have a nonempty user ID",
+    );
     if (afterHeaders) {
+      assert.ok("status" in result);
       assert.equal(result.status(), 200);
       assert.ok(Number((await result.allHeaders())["content-length"]) > 1);
+      assert.ok(interruptedReply);
       interruptedReply.destroy();
     } else {
+      assert.ok("response" in result);
       assert.equal(await result.response(), null);
     }
     const feedback = page.locator('form [role="alert"]');
@@ -1661,10 +1830,17 @@ for (const [lossPoint, afterHeaders] of [
     await page.reload();
     const sessionResponse = await checkingSession;
     assert.equal(sessionResponse.status(), 200);
-    const { data: session } = await sessionResponse.json();
+    const body: unknown = await sessionResponse.json();
+    const session = jsonObject(body).data;
     if (afterHeaders) {
-      assert.equal(session?.authenticated, true);
-      assert.ok(session.user.id === createdSession.userId, "reload must find the accepted session");
+      const sessionData = session == null ? undefined : jsonObject(session);
+      assert.equal(sessionData?.authenticated, true);
+      assert.ok(sessionData);
+      assert.equal(
+        jsonObject(sessionData.user).id,
+        acceptedUserId,
+        "reload must find the accepted session",
+      );
       await page.waitForURL(/\/console\/agents(?:[/?#]|$)/);
     } else {
       assert.equal(session, null, "the browser received no session cookie");
@@ -1680,16 +1856,21 @@ for (const [lossPoint, afterHeaders] of [
 test("sign-in failures name a rate limit, an outage and the origin check", async (t) => {
   const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
-  const failure = (status, code, message, headers = {}) => ({
+  const failure = (
+    status: number,
+    code: string,
+    message: string,
+    headers: Record<string, string> = {},
+  ) => ({
     status,
     headers,
     contentType: "application/json",
     body: JSON.stringify({ error: { code, message }, meta: { requestId: "browser-sign-in" } }),
   });
-  const limited = (seconds) =>
+  const limited = (seconds: number) =>
     failure(429, "RATE_LIMITED", "Too many attempts.", { "retry-after": String(seconds) });
   const outage = failure(503, "DEPENDENCY_UNAVAILABLE", SIGN_IN_UNAVAILABLE);
-  const signIn = async (expected) => {
+  const signIn = async (expected: string) => {
     await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
     // A wrong password: no step may sign in, whatever the API answers.
     await page.getByLabel("Password").fill("not-the-password");
@@ -1734,7 +1915,7 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
       "Sign-in is temporarily unavailable because a service it depends on did not answer. Try again shortly. If it continues, ask an operator.",
     ],
     [null, UNCONFIRMED_PASSWORD_SIGN_IN],
-  ]) {
+  ] satisfies [ReturnType<typeof failure> | null, string][]) {
     await page.route("**/api/auth/sign-in/email", (route) =>
       response === null ? route.abort("connectionrefused") : route.fulfill(response),
     );
@@ -1743,7 +1924,7 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
   }
 
   // Provider start: a limit waits, and the origin check is not a provider outage.
-  const envelope = (data) => ({
+  const envelope = (data: unknown) => ({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({ data, meta: { requestId: "browser-sign-in" } }),
@@ -1785,7 +1966,7 @@ test("sign-in failures name a rate limit, an outage and the origin check", async
       failure(401, "UNAUTHENTICATED", "Google sign-in could not be confirmed."),
       GOOGLE_EXCHANGE_REFUSED,
     ],
-  ]) {
+  ] satisfies [ReturnType<typeof failure> | null, string][]) {
     await page.route("**/api/auth/providers/google/result", (route) => route.fulfill(response));
     await google.click();
     await page.getByText(expected, { exact: true }).waitFor();
@@ -1797,9 +1978,9 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
-  const requests = [];
+  const requests: string[] = [];
   page.on("request", (request) => requests.push(new URL(request.url()).pathname));
-  const envelope = (data) => ({
+  const envelope = (data: unknown) => ({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({ data, meta: { requestId: "browser-oidc" } }),
@@ -1839,7 +2020,8 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   );
   await oidc.click();
   const refused = await result;
-  assert.equal(refused.request().postDataJSON().attemptId, attemptId);
+  const submitted: unknown = refused.request().postDataJSON();
+  assert.equal(jsonObject(submitted).attemptId, attemptId);
   assert.equal(refused.status(), 403);
   await page
     .getByText(
@@ -1875,7 +2057,7 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
       }),
     }),
   );
-  const cases = [
+  const cases: [string, string, string][] = [
     [
       "membership",
       "Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an Installation administrator for access or use your password.",
@@ -1896,7 +2078,7 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
     for (const [available, message] of [
       [true, withPassword],
       [false, recoveryOnly],
-    ]) {
+    ] satisfies [boolean, string][]) {
       password = available;
       await page.goto(`${fixture.origin}/console/?authError=github&authReason=${reason}`);
       await page.getByText(message, { exact: true }).waitFor();
@@ -1990,7 +2172,7 @@ test("a provider outage says sign-in is unavailable, not to get attached", async
         false,
         `${label} sign-in is unavailable right now. Try again later. If you are an Installation administrator, use Recovery sign-in.`,
       ],
-    ]) {
+    ] satisfies [boolean, string][]) {
       password = available;
       // The provider could not answer, or refused this Installation's client.
       await page.goto(
@@ -2086,8 +2268,10 @@ test("password sign-in stays visible unless discovery reports it recovery-only",
 test("known Namespace revocation invalidates a cached global collection with another selection", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const allowed = await fixture.createNamespace("Still readable", { ready: true });
-  const revoked = await fixture.createNamespace("Removed from access", { ready: true });
+  const allowed = namedResource(await fixture.createNamespace("Still readable", { ready: true }));
+  const revoked = namedResource(
+    await fixture.createNamespace("Removed from access", { ready: true }),
+  );
   await fixture.createAgent(allowed.id, "Allowed Agent");
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
@@ -2122,9 +2306,9 @@ test("known Namespace revocation invalidates a cached global collection with ano
 test("Namespaces rows open their Agents and status badges use words with a tone", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const ready = await fixture.createNamespace("Linked ready", { ready: true });
-  const provisioning = await fixture.createNamespace("Linked provisioning");
-  const retiring = await fixture.createNamespace("Linked retiring", { ready: true });
+  const ready = namedResource(await fixture.createNamespace("Linked ready", { ready: true }));
+  const provisioning = namedResource(await fixture.createNamespace("Linked provisioning"));
+  const retiring = namedResource(await fixture.createNamespace("Linked retiring", { ready: true }));
   assert.equal((await fixture.request("DELETE", `/namespaces/${retiring.id}`)).status, 202);
   await fixture.createAgent(ready.id, "Linked Agent");
   const { page } = await newPage(t, fixture);
@@ -2135,7 +2319,7 @@ test("Namespaces rows open their Agents and status badges use words with a tone"
     [ready, "Ready", "success"],
     [provisioning, "Provisioning", "warning"],
     [retiring, "Deleting…", "warning"],
-  ]) {
+  ] satisfies [Pick<Namespace, "id" | "name">, string, string][]) {
     const row = list.getByRole("listitem").filter({ hasText: namespace.id });
     const link = row.getByRole("link", { name: namespace.name, exact: true });
     assert.equal(
@@ -2152,6 +2336,7 @@ test("Namespaces rows open their Agents and status badges use words with a tone"
   assert.equal(new URL(page.url()).pathname, "/console/namespaces");
   // Selecting anywhere else on the row opens that Namespace's Agents in place.
   const box = await row.boundingBox();
+  assert.ok(box);
   await row.click({ position: { x: box.width / 2, y: box.height - 6 } });
   await page.waitForURL(`**/console/agents?namespace=${ready.id}`);
   await page.getByText("Linked Agent", { exact: true }).waitFor();
@@ -2180,7 +2365,7 @@ test("Namespaces rows open their Agents and status badges use words with a tone"
 test("known Backend denial invalidates previews across Namespace selections", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const alpha = await fixture.createNamespace("Backend Alpha", { ready: true });
+  const alpha = namedResource(await fixture.createNamespace("Backend Alpha", { ready: true }));
   await fixture.createNamespace("Backend Beta", { ready: true });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/backends?namespace=${alpha.id}`);
@@ -2214,7 +2399,7 @@ test("known Backend denial invalidates previews across Namespace selections", as
 test("a Backends denial names the Installation-wide page and hides the Namespace selector", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Backend member", { ready: true });
+  const namespace = namedResource(await fixture.createNamespace("Backend member", { ready: true }));
   fixture.policy.restrictions.push({
     id: "deny-backend-administration",
     resourceKind: "installation",
@@ -2248,7 +2433,7 @@ test("a Backends denial names the Installation-wide page and hides the Namespace
 test("pagehide clears private content before persisted pageshow revalidates", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Page lifecycle", { ready: true });
+  const namespace = namedResource(await fixture.createNamespace("Page lifecycle", { ready: true }));
   await fixture.createAgent(namespace.id, "Before pagehide Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
@@ -2278,8 +2463,8 @@ test("pagehide clears private content before persisted pageshow revalidates", as
 test("mobile header switches Namespace without opening the navigation drawer", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const alpha = await fixture.createNamespace("Alpha", { ready: true });
-  const beta = await fixture.createNamespace("Beta", { ready: true });
+  const alpha = namedResource(await fixture.createNamespace("Alpha", { ready: true }));
+  const beta = namedResource(await fixture.createNamespace("Beta", { ready: true }));
   await fixture.createAgent(alpha.id, "Alpha mobile agent");
   await fixture.createAgent(beta.id, "Beta mobile agent");
   const { page } = await newPage(t, fixture, mobile);
@@ -2302,9 +2487,9 @@ test("mobile header switches Namespace without opening the navigation drawer", a
 test("header Namespace selection leaves Agent detail and creation for the selected collection", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const alpha = await fixture.createNamespace("Alpha", { ready: true });
-  const beta = await fixture.createNamespace("Beta", { ready: true });
-  const agent = await fixture.createAgent(alpha.id, "Alpha agent");
+  const alpha = namedResource(await fixture.createNamespace("Alpha", { ready: true }));
+  const beta = namedResource(await fixture.createNamespace("Beta", { ready: true }));
+  const agent = namedResource(await fixture.createAgent(alpha.id, "Alpha agent"));
   await fixture.createAgent(beta.id, "Beta agent");
   const { page } = await newPage(t, fixture);
 
@@ -2331,12 +2516,20 @@ test("header Namespace selection leaves Agent detail and creation for the select
 
 // A stale option can dispatch a change even on a disabled select. Check that it starts no
 // admission or navigation, including a reload of the same Namespace already in the URL.
-async function rejectStaleNamespaceOption(page, selector, staleId, requests) {
+async function rejectStaleNamespaceOption(
+  page: Page,
+  selector: Locator,
+  staleId: string,
+  requests: ReturnType<typeof apiRequests>,
+) {
   const url = page.url();
   // Count after a settle, so requests the page started earlier are already logged.
   await settlePageRequests(page);
   const count = requests.length;
   await selector.evaluate((select, id) => {
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error("Expected Namespace selector");
+    }
     const option = new globalThis.Option("Stale selection", id);
     select.add(option);
     select.value = id;
@@ -2356,8 +2549,10 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
     test(`${placement} Namespace selection waits for current admission during ${trigger}`, async (t) => {
       const fixture = await createConsoleAppFixture(t);
       await fixture.bootstrap();
-      const alpha = await fixture.createNamespace("Previously readable", { ready: true });
-      const beta = await fixture.createNamespace("Still readable", { ready: true });
+      const alpha = namedResource(
+        await fixture.createNamespace("Previously readable", { ready: true }),
+      );
+      const beta = namedResource(await fixture.createNamespace("Still readable", { ready: true }));
       const back = trigger !== "Refresh";
       const requested = back ? alpha.id : "ns_00000000-0000-4000-8000-000000000099";
       const target = `/console/${feature}?namespace=${requested}`;
@@ -2407,7 +2602,8 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       }
 
       const requests = apiRequests(page, fixture.origin);
-      const reply = (route, response) => route.fulfill({ response });
+      const reply = (route: Route, response: APIResponse<unknown> | undefined) =>
+        route.fulfill(response === undefined ? {} : { response });
       const session = "**/api/auth/session";
       const namespaces = "**/namespaces";
       const check = await holdRoute(t, page, session, reply);
@@ -2459,7 +2655,11 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       await releaseHeldRoute(page, namespaces, admission);
       const response = await listed;
       assert.equal(response.status(), 200);
-      const readable = (await response.json()).data.map(({ id }) => id);
+      const body: unknown = await response.json();
+      const data = jsonObject(body).data;
+      const isArray = (value: unknown): value is unknown[] => Array.isArray(value);
+      assert.ok(isArray(data));
+      const readable = data.map((item: unknown) => jsonObject(item).id);
       assert.equal(
         readable.includes(alpha.id),
         false,
@@ -2492,8 +2692,8 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
 test("Namespaces recovers stale selection inline and handles losing all readable scopes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const alpha = await fixture.createNamespace("Alpha", { ready: true });
-  const beta = await fixture.createNamespace("Beta", { ready: true });
+  const alpha = namedResource(await fixture.createNamespace("Alpha", { ready: true }));
+  const beta = namedResource(await fixture.createNamespace("Beta", { ready: true }));
   const missingId = "ns_00000000-0000-4000-8000-000000000099";
   const { page } = await newPage(t, fixture, mobile);
   await login(page, fixture, `/console/namespaces?namespace=${missingId}`);
@@ -2572,7 +2772,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
 test("console clears private content after session expiry, access revocation, and failed logout", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Revoked", { ready: true });
+  const namespace = namedResource(await fixture.createNamespace("Revoked", { ready: true }));
   await fixture.createAgent(namespace.id, "Revoked agent");
   const { page, artifacts } = await newPage(t, fixture);
   await trackSettledFetches(page);
@@ -2637,7 +2837,9 @@ test("console clears private content after session expiry, access revocation, an
 test("compact navigation preserves the page position while its drawer can still scroll", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Drawer scrolling", { ready: true });
+  const namespace = namedResource(
+    await fixture.createNamespace("Drawer scrolling", { ready: true }),
+  );
   // Agent credentials make a long Secret library; debug image rows later make the drawer scroll.
   for (let index = 1; index <= 6; index += 1) {
     await fixture.createAgent(namespace.id, `Scroll Agent ${index}`);
@@ -2677,6 +2879,9 @@ test("compact navigation preserves the page position while its drawer can still 
   const returned = await page.evaluate(() => {
     const heading = globalThis.document.querySelector("h1");
     const search = globalThis.document.querySelector("#secret-search");
+    if (heading === null || search === null) {
+      throw new Error("Expected Secrets heading and search");
+    }
     return {
       scrollY: globalThis.scrollY,
       headingTop: heading.getBoundingClientRect().top,
@@ -2701,11 +2906,16 @@ test("compact navigation preserves the page position while its drawer can still 
   await diagnostics.locator("summary").first().waitFor({ state: "attached" });
   assert.ok(await diagnostics.evaluate((node) => node.scrollHeight > node.clientHeight));
   const bounds = await diagnostics.boundingBox();
+  assert.ok(bounds);
   await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
   await page.mouse.wheel(0, 350);
-  await page.waitForFunction(
-    () => globalThis.document.querySelector(".runtime-debug").scrollTop > 0,
-  );
+  await page.waitForFunction(() => {
+    const panel = globalThis.document.querySelector(".runtime-debug");
+    if (panel === null) {
+      throw new Error("Expected runtime diagnostics");
+    }
+    return panel.scrollTop > 0;
+  });
   assert.equal(
     await page.evaluate(() => globalThis.scrollY),
     0,
@@ -2720,7 +2930,13 @@ test("compact navigation preserves the page position while its drawer can still 
   await page.evaluate(() => globalThis.scrollTo(0, 0));
   await toggle.click();
   await page.setViewportSize({ width: 1440, height: 480 });
-  await page.waitForFunction(() => !globalThis.document.querySelector("main").inert);
+  await page.waitForFunction(() => {
+    const main = globalThis.document.querySelector("main");
+    if (main === null) {
+      throw new Error("Expected main content");
+    }
+    return !main.inert;
+  });
   await page.mouse.move(1000, 300);
   await page.mouse.wheel(0, 350);
   await page.waitForFunction(() => globalThis.scrollY > 0);
@@ -2729,7 +2945,7 @@ test("compact navigation preserves the page position while its drawer can still 
 test("widening an open mobile drawer restores usable desktop content", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Drawer resize", { ready: true });
+  const namespace = namedResource(await fixture.createNamespace("Drawer resize", { ready: true }));
   await fixture.createAgent(namespace.id, "Resizable Agent");
   const { page } = await newPage(t, fixture, {
     context: { viewport: { width: 390, height: 844 } },
@@ -2737,11 +2953,17 @@ test("widening an open mobile drawer restores usable desktop content", async (t)
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByText("Resizable Agent", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
-  assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
+  assert.equal(await mainIsInert(page), true);
 
   // Desktop hides drawer controls, so content must become usable without Escape.
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.waitForFunction(() => !globalThis.document.querySelector("main").inert);
+  await page.waitForFunction(() => {
+    const main = globalThis.document.querySelector("main");
+    if (main === null) {
+      throw new Error("Expected main content");
+    }
+    return !main.inert;
+  });
   await page.getByRole("searchbox", { name: "Search Agents", exact: true }).fill("Resizable");
   await page.getByRole("link", { name: "Resizable Agent", exact: true }).waitFor();
   assert.equal(await page.locator(".drawer-open").count(), 0);
@@ -2752,13 +2974,15 @@ test("widening an open mobile drawer restores usable desktop content", async (t)
   await toggle.click();
   await page.keyboard.press("Escape");
   assert.equal(await toggle.evaluate((node) => node === globalThis.document.activeElement), true);
-  assert.equal(await page.locator("main").evaluate((node) => node.inert), false);
+  assert.equal(await mainIsInert(page), false);
 });
 
 test("keyboard page navigation focuses the destination before its controls", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Keyboard navigation", { ready: true });
+  const namespace = namedResource(
+    await fixture.createNamespace("Keyboard navigation", { ready: true }),
+  );
   await fixture.createAgent(namespace.id, "Keyboard Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
@@ -2798,16 +3022,18 @@ test("keyboard page navigation focuses the destination before its controls", asy
 test("login restores a scrubbed Agent destination only after the tab confirms its provider session", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Login destination", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Destination Agent");
+  const namespace = namedResource(
+    await fixture.createNamespace("Login destination", { ready: true }),
+  );
+  const agent = namedResource(await fixture.createAgent(namespace.id, "Destination Agent"));
   const { page } = await newPage(t, fixture);
   const attemptId = "d".repeat(43);
-  const envelope = (data) => ({
+  const envelope = (data: unknown) => ({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({ data, meta: { requestId: "browser-login" } }),
   });
-  let sessionKey;
+  let sessionKey: string | undefined;
   await page.route("**/api/auth/providers", (route) =>
     route.fulfill(envelope({ github: true, sessionBinding: true })),
   );
@@ -2826,12 +3052,15 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
     });
     assert.equal(signedIn.status(), 200);
     const session = await page.context().request.get(`${fixture.origin}/api/auth/session`);
-    sessionKey = (await session.json()).data.sessionKey;
-    assert.equal(typeof sessionKey, "string");
+    const body: unknown = await session.json();
+    const key = jsonObject(jsonObject(body).data).sessionKey;
+    assert.ok(typeof key === "string");
+    sessionKey = key;
     await route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } });
   });
   await page.route("**/api/auth/providers/github/result", async (route) => {
-    assert.equal(route.request().postDataJSON().attemptId, attemptId);
+    const submitted: unknown = route.request().postDataJSON();
+    assert.equal(jsonObject(submitted).attemptId, attemptId);
     await route.fulfill(envelope({ sessionKey }));
   });
   await page.goto(
@@ -2909,7 +3138,7 @@ test("a cold console visit shows neither navigation nor sign-in until its sessio
 
   async function visitWithSessionPending() {
     const held = await holdRoute(t, page, pattern, (route, response) =>
-      route.fulfill({ response }),
+      route.fulfill(response === undefined ? {} : { response }),
     );
     t.after(() => held.release());
     await page.goto(`${fixture.origin}/console/`);
@@ -2956,7 +3185,7 @@ test("a first visit to a deep link asks to sign in; a tab whose session expired 
 test("a page address with a trailing slash opens that page", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Trailing slash", { ready: true });
+  const namespace = namedResource(await fixture.createNamespace("Trailing slash", { ready: true }));
   const { page } = await newPage(t, fixture);
   await loginThroughForm(page, fixture, "/console/namespaces/");
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
@@ -2966,7 +3195,7 @@ test("a page address with a trailing slash opens that page", async (t) => {
   const url = new URL(page.url());
   assert.equal(url.pathname + url.search, `/console/agents/new?namespace=${namespace.id}`);
   // Every trailing slash goes, not only the last; the query and tab stay.
-  const agent = await fixture.createAgent(namespace.id, "Trailing assistant");
+  const agent = namedResource(await fixture.createAgent(namespace.id, "Trailing assistant"));
   await page.goto(`${fixture.origin}/console/agents//?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   const listUrl = new URL(page.url());
@@ -2982,8 +3211,8 @@ test("a page address with a trailing slash opens that page", async (t) => {
 test("login ignores untrusted returns and resolves an opaque Agent key only after authentication", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Shared Agent", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Shared Agent");
+  const namespace = namedResource(await fixture.createNamespace("Shared Agent", { ready: true }));
+  const agent = namedResource(await fixture.createAgent(namespace.id, "Shared Agent"));
   const { page } = await newPage(t, fixture);
   const key = "a".repeat(32);
   let lookups = 0;
@@ -3045,10 +3274,10 @@ test("login ignores untrusted returns and resolves an opaque Agent key only afte
 test("a refused provider exchange discards its pending login destination", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Refused login", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Old destination");
+  const namespace = namedResource(await fixture.createNamespace("Refused login", { ready: true }));
+  const agent = namedResource(await fixture.createAgent(namespace.id, "Old destination"));
   const { page } = await newPage(t, fixture);
-  const envelope = (data) => ({
+  const envelope = (data: unknown) => ({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({ data, meta: { requestId: "browser-refusal" } }),
@@ -3093,8 +3322,8 @@ test("a refused provider exchange discards its pending login destination", async
 test("Agent recovery survives a transient session check and tab refocus", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Recovery retry", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Recovery retry Agent");
+  const namespace = namedResource(await fixture.createNamespace("Recovery retry", { ready: true }));
+  const agent = namedResource(await fixture.createAgent(namespace.id, "Recovery retry Agent"));
   const { page } = await newPage(t, fixture);
   await login(page, fixture);
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
@@ -3138,7 +3367,9 @@ test("Agent recovery survives a transient session check and tab refocus", async 
 test("a naturally expired session returns to the requested page after sign-in", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Expired session", { ready: true });
+  const namespace = namedResource(
+    await fixture.createNamespace("Expired session", { ready: true }),
+  );
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -3159,7 +3390,9 @@ test("a naturally expired session returns to the requested page after sign-in", 
 test("session expiry after a failed check returns to the requested page", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Interrupted expiry", { ready: true });
+  const namespace = namedResource(
+    await fixture.createNamespace("Interrupted expiry", { ready: true }),
+  );
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -3189,8 +3422,8 @@ test("session expiry after a failed check returns to the requested page", async 
 test("expiry on an active Agent page returns safely and rechecks denied access", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Active expiry", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Expired page Agent");
+  const namespace = namedResource(await fixture.createNamespace("Active expiry", { ready: true }));
+  const agent = namedResource(await fixture.createAgent(namespace.id, "Expired page Agent"));
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const target = `/console/agents/${agent.id}?namespace=${namespace.id}&tab=configuration`;

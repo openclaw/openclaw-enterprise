@@ -1,3 +1,10 @@
+import {
+  credentialsOAuthScenarios,
+  credentialsScenarios,
+  credentialsRecoveryScenarios,
+  credentialsThemeScenario,
+} from "./scenario-groups/credentials.mts";
+import { pluginsScenarios, pluginApproverScenarios } from "./scenario-groups/plugins.mts";
 import { channelsScenarios } from "./scenario-groups/channels.mts";
 import {
   createAgentFormScenarios,
@@ -9,19 +16,17 @@ import {
   click,
   create,
   createSlackBotSecret,
-  deviceLoginSourceTypes,
   presetSecretsPath,
   readyForm,
 } from "./create-agent-form-data.mts";
 import {
   calendarPlugin,
   pluginCapabilities,
-  pluginCatalog,
   pluginDiscovery,
   pluginSelections,
+  pluginSelectionState,
   pluginSetup,
   pluginToolRefusal,
-  projectTrackerPlugin,
 } from "./plugin-scenario-data.mts";
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
 import { secretsScenarios } from "./scenario-groups/secrets.mts";
@@ -73,11 +78,8 @@ const reservedConfigurationWrite = {
   message:
     "The Configuration is reserved for provisioning and is not available for this operation.",
 };
-/** @type {"plugins"} */
-const pluginsComponent = "plugins";
-/** @typedef {import("/console/agents/plugin-fields.mjs").PluginFieldsOptions} PluginFieldsOptions */
+/** @typedef {import("../../../apps/controller/src/console/agents/plugin-fields.mts").PluginFieldsOptions} PluginFieldsOptions */
 /** @typedef {PluginFieldsOptions["catalog"]} PluginFieldCatalog */
-/** @typedef {PluginFieldsOptions["capabilities"]} PluginFieldCapabilities */
 
 const slackPluginId = "occ-plugin:slack@1.0.0";
 const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
@@ -143,27 +145,6 @@ const devdayCuratedEntries = codexPluginSuggestions.map((suggestion) => {
         : [],
   };
 });
-// Codex offers only Agent-wide approvers. These stories reuse its catalog to show the plugin and
-// tool fields that a Driver advertising them (OpenClaw) renders.
-const overrideApproverCapabilities = {
-  ...pluginCapabilities,
-  approvers: { agent: true, plugin: true, tools: true },
-};
-const overrideApproverGap =
-  "This is simulated UI and does not prove runtime approval authorization. The Codex Plugin Driver does not offer plugin or tool approvers; these fixtures enable them on its catalog to preview the fields.";
-const pluginApproverOverrides = JSON.parse(pluginSelections);
-pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].approvers = [];
-pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].tools[
-  "app_calendar/create_event"
-].approvers = [{ channel: "slack", id: "team:TDEMO123:user:UDEMO124" }];
-const pluginApproverNoneHints = JSON.parse(pluginSelections);
-pluginApproverNoneHints["codex-plugin:calendar@openai-curated-remote"].approvers = [];
-const pluginApproverPreservedHints = JSON.parse(pluginSelections);
-pluginApproverPreservedHints["codex-plugin:calendar@openai-curated-remote"].approvers = [
-  { channel: "teams", id: "person-1" },
-];
-const pluginPreviewGap =
-  "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 /** @satisfies {PluginFieldCatalog} */
 const devdayPluginCatalog = {
   status: "ready",
@@ -893,258 +874,7 @@ export const scenarios = {
     description: "An unknown console route offers a return to Agents.",
   },
   ...createAgentFormScenarios,
-  pluginsAvailable: {
-    group: "Components/Plugins",
-    name: "Available catalog",
-    component: pluginsComponent,
-    actions: [click("Configure plugins")],
-    pluginCatalog,
-    pluginCapabilities,
-    description:
-      "Browse a fixture catalog in the production plugin modal. Selecting a plugin opens its policies and a collapsed list of tools.",
-    steps: [
-      "Review the simulated Calendar and Documents logos. Project tracker’s intentionally missing image falls back to its initial. Choose each plugin to check the same logo or fallback in its detail heading.",
-      "Search plugins for Documents, then clear the query and choose Calendar.",
-      "Click Add Calendar. Its tool defaults remain omitted until you change them.",
-      "Choose Require approval for → Write actions. Reviewer stays separate; choose Human or Automatic review, or inherit the Harness reviewer.",
-      "Click Done and confirm toolDefaults.approval is write_actions. New tools inherit this default without needing entries in tools.",
-      "Review the Driver-specific policy fields supplied by the capability descriptor.",
-      "Expand Create event, change a tool setting, then click Done and inspect Plugin selections JSON.",
-      "Reopen Configure plugins, click inside its padding, then click the gray backdrop. Only the backdrop closes it; selections remain and focus returns to Configure plugins.",
-      "In a frame 1100 px wide or narrower (Components / Dialogs / Plugins (tablet) is 1024 px), the catalog and detail stack: choose Calendar to see only its detail, then Back to plugins to return to the catalog. Wider, both panes show side by side.",
-    ],
-    gap: pluginPreviewGap,
-  },
-  pluginsUnavailableReasonPopover: {
-    group: "Components/Plugins",
-    name: "Unavailable reason popover",
-    component: pluginsComponent,
-    pluginCatalog,
-    pluginCapabilities,
-    actions: [
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Why Team chat is unavailable"]', focus: true },
-    ],
-    description:
-      "Unavailable plugins keep compact rows. The information button opens the Driver's reason and help link without selecting the plugin or changing the list layout.",
-    steps: [
-      "Open Team chat's information button to review its administrator guidance and Manage workspace plugins link without following the external destination during fixture review.",
-      "Press Escape to dismiss the popover while keeping Configure plugins open. Focus the information button and press Enter to reopen it; click outside to dismiss it.",
-      "Open the information buttons for Analytics and Archive to compare plan and unsupported-runtime guidance. The list keeps its row heights as each popover opens.",
-      "Choose the Team chat row. Its detail pane retains the reason and help link, and Add Team chat stays disabled.",
-    ],
-    gap: pluginPreviewGap,
-  },
-  pluginsSelected: {
-    group: "Components/Plugins",
-    name: "Write approval and tool overrides",
-    component: pluginsComponent,
-    pluginCatalog,
-    pluginCapabilities,
-    pluginSelections,
-    actions: [
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Calendar"]', click: true },
-    ],
-    description:
-      "Calendar requires approval for write actions and uses automatic review, with explicit overrides for creating and deleting events. Tool reviewers inherit because this Driver advertises reviewer selection only at the default scope.",
-    steps: [
-      "Type create into Filter tools one character at a time; only Create event remains. Clear the search to restore the other tools.",
-      "Compare Create event's ID beneath its title with its key in Plugin selections JSON after Done.",
-      "Inspect Require approval for: Write actions is selected. Choose Every action, Provider default, or No additional approval to compare the available scopes.",
-      "Change Calendar's default reviewer to Human, click Done, and inspect toolDefaults.approval and toolDefaults.reviewer in Plugin selections JSON.",
-      "Choose inheritance to omit the reviewer field without changing default approval or tool overrides.",
-      "Use a tool toggle to set enabled or disabled explicitly; Tool policy opens overrides and lets you restore inheritance. Set reviewer for all tools jumps to the plugin default reviewer because this Driver does not support per-tool reviewers.",
-    ],
-    gap: pluginPreviewGap,
-  },
-  pluginsUnsupportedToolReviewer: {
-    group: "Components/Plugins",
-    name: "Unsupported saved tool reviewer",
-    component: pluginsComponent,
-    pluginCatalog,
-    pluginCapabilities,
-    pluginSelections: JSON.stringify(
-      {
-        "codex-plugin:calendar@openai-curated-remote": {
-          enabled: true,
-          toolDefaults: { approval: "provider_default", reviewer: "auto" },
-          tools: { "app_calendar/create_event": { approval: "all_actions", reviewer: "auto" } },
-        },
-      },
-      null,
-      2,
-    ),
-    actions: [
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Calendar"]', click: true },
-      {
-        selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
-        click: true,
-      },
-    ],
-    description:
-      "An explicit saved tool reviewer is unsupported when the Driver advertises no per-tool reviewer values, even when it equals the default reviewer. The editor preserves the value without treating it as inherited or enabling new unsupported choices.",
-    gap: pluginPreviewGap,
-  },
-  pluginsUnknownTools: {
-    group: "Components/Plugins",
-    name: "Tool catalog unavailable",
-    component: pluginsComponent,
-    pluginCapabilities,
-    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
-      status: "ready",
-      entries: [projectTrackerPlugin],
-    }),
-    actions: [
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Project tracker"]', click: true },
-    ],
-    description:
-      "Project tracker’s intentionally missing logo falls back to its initial in the list and detail. Its unavailable tool metadata remains distinct from a verified empty tool list.",
-    gap: pluginPreviewGap,
-  },
-  pluginsEmpty: {
-    group: "Components/Plugins",
-    name: "Empty catalog",
-    component: pluginsComponent,
-    actions: [click("Configure plugins")],
-    pluginCapabilities,
-    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({ status: "ready", entries: [] }),
-    description:
-      "An empty catalog has an explicit empty state and keeps the JSON editor available.",
-    gap: pluginPreviewGap,
-  },
-  pluginsLoading: {
-    group: "Components/Plugins",
-    name: "Catalog loading",
-    component: pluginsComponent,
-    actions: [click("Configure plugins")],
-    pluginCapabilities,
-    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({ status: "loading" }),
-    description: "A pending catalog is distinct from a successful empty catalog.",
-    gap: pluginPreviewGap,
-  },
-  pluginsDenied: {
-    group: "Components/Plugins",
-    name: "Catalog access denied",
-    component: pluginsComponent,
-    actions: [
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Available plugins"]', click: true },
-    ],
-    pluginCapabilities,
-    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
-      status: "error",
-      canLoad: true,
-      message: "This credential does not have access to the plugin catalog.",
-    }),
-    description:
-      "A simulated catalog permission error stays visible while existing configuration remains editable.",
-    pluginSelections,
-    gap: pluginPreviewGap,
-  },
-  pluginsError: {
-    group: "Components/Plugins",
-    name: "Catalog unavailable",
-    component: pluginsComponent,
-    actions: [click("Configure plugins")],
-    pluginCapabilities,
-    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
-      status: "error",
-      canLoad: true,
-      message: "The plugin catalog could not be loaded. Try again after restoring connectivity.",
-    }),
-    description: "A simulated catalog failure is shown as an error, not a successful empty result.",
-    gap: pluginPreviewGap,
-  },
-  pluginsUnavailable: {
-    group: "Components/Plugins",
-    name: "Discovery credential required",
-    component: pluginsComponent,
-    actions: [click("Configure plugins")],
-    pluginCapabilities,
-    description:
-      "The component explains that discovery requires an entered service account token with the Codex harness. The empty list points to Plugin selections JSON for adding a plugin by ID instead of the unavailable Load plugins.",
-  },
-  pluginsCapabilitiesUnavailable: {
-    group: "Components/Plugins",
-    name: "Policy capabilities unavailable",
-    component: pluginsComponent,
-    pluginCatalog,
-    pluginSelections,
-    actions: [
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Calendar"]', click: true },
-    ],
-    description:
-      "Without a Driver capability descriptor, saved policies remain visible and policy controls stay disabled. The component does not assume policy support from the catalog.",
-    gap: pluginPreviewGap,
-  },
-  managedGoogleInstall: {
-    group: "Components/Plugins",
-    name: "Install Google Workspace",
-    component: pluginsComponent,
-    pluginCapabilities: /** @satisfies {PluginFieldCapabilities} */ ({
-      ...pluginCapabilities,
-      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-      policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
-    }),
-    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
-      status: "ready",
-      entries: [
-        {
-          id: "occ-plugin:google@1.0.0",
-          name: "Google Workspace",
-          description:
-            "Install the pinned gog Google Workspace CLI on a dedicated OpenClaw worker using Kubernetes Compute.",
-          selectableWithoutTools: true,
-          tools: [],
-        },
-      ],
-    }),
-    actions: [
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Google Workspace"]', click: true },
-      click("Add Google Workspace"),
-    ],
-    description:
-      "Toggle Enable plugin. Open More actions to find Remove Google Workspace. Compare the Plugin policies, Driver policy, and Tools sections. Each shows which settings Google Workspace supports. This fixture simulates the catalog.",
-  },
-  pluginsNativeLimited: {
-    group: "Components/Plugins",
-    name: "Native Driver with unsupported saved policy",
-    component: pluginsComponent,
-    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
-      status: "ready",
-      entries: [{ id: "occ-plugin:diffs", name: "Diffs", tools: null }],
-    }),
-    pluginCapabilities: /** @satisfies {PluginFieldCapabilities} */ ({
-      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-      toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
-      tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
-      driverPolicySchema: { type: "object", properties: {}, additionalProperties: false },
-    }),
-    pluginSelections: JSON.stringify(
-      {
-        "occ-plugin:diffs": {
-          enabled: true,
-          toolDefaults: { approval: "write_actions" },
-        },
-      },
-      null,
-      2,
-    ),
-    actions: [click("Configure plugins"), { selector: 'button[aria-label="Diffs"]', click: true }],
-    description:
-      "The simulated native Driver supports Provider default and No additional approval. Every action and Write actions remain visible but disabled, with an explanation. A saved unsupported choice stays selected until the operator changes it.",
-    steps: [
-      "Inspect the selected Write actions (unsupported) value and the provider support explanation.",
-      "Open Require approval for: Every action and Write actions are visible but disabled.",
-      "Click Done and confirm the saved write_actions value remains unchanged. Reopen the modal, choose Provider default or inherit, then inspect the updated JSON.",
-    ],
-    gap: pluginPreviewGap,
-  },
+  ...pluginsScenarios,
   ...createAgentProvisioningScenarios,
   pluginsOAuthRevision: {
     group: "Pages/Agent detail",
@@ -1152,7 +882,7 @@ export const scenarios = {
     path: `${draft}&tab=plugins`,
     deployed: true,
     auth: "oauth",
-    agentPlugins: JSON.parse(pluginSelections),
+    agentPlugins: structuredClone(pluginSelectionState),
     pluginCapabilities,
     pluginDiscovery,
     description:
@@ -1161,74 +891,7 @@ export const scenarios = {
       "Tab to Save plugin selections and Discard changes. Each takes focus, looks unavailable and is described by No plugin changes to save.; Enter or Space does nothing. Edit the JSON: both become live.",
     ],
   },
-  authOAuthStartNavigation: {
-    group: "Components/Credentials",
-    name: "ChatGPT replacement interrupted by navigation (Experimental)",
-    path: `${draft}&tab=credentials`,
-    credentialSourceTypes: deviceLoginSourceTypes,
-    deployed: true,
-    auth: "oauth",
-    rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
-    description:
-      "Start a replacement sign-in, navigate to Secrets, and return with Back. The saved authentication remains; the unconfirmed replacement cannot start twice.",
-  },
-  authOAuthStartTabSwitch: {
-    group: "Components/Credentials",
-    name: "ChatGPT sign-in answered on another tab (Experimental)",
-    path: `${draft}&tab=credentials`,
-    credentialSourceTypes: deviceLoginSourceTypes,
-    deployed: true,
-    auth: "oauth",
-    oauthPending: true,
-    rules: [{ suffix: "/device-authorizations", method: "POST", delayMs: 3000, once: true }],
-    description:
-      "Start a replacement sign-in and open Configuration within 3 s. The reply arrives while Configuration shows; Credentials keeps it, so returning shows the code and Cancel login. The fixture delays the reply; it does not prove provider persistence.",
-  },
-  authOAuthStartTabSwitchRefused: {
-    group: "Components/Credentials",
-    name: "ChatGPT sign-in refused on another tab (Experimental)",
-    path: `${draft}&tab=credentials`,
-    credentialSourceTypes: deviceLoginSourceTypes,
-    deployed: true,
-    auth: "oauth",
-    rules: [
-      { suffix: "/device-authorizations", method: "POST", delayMs: 3000, status: 403, once: true },
-    ],
-    description:
-      "Start a replacement sign-in and open Configuration within 3 s. The simulated refusal arrives while Configuration shows; returning to Credentials names the missing grants and offers Sign in with OAuth again.",
-  },
-  authOAuthRestartTabSwitch: {
-    group: "Components/Credentials",
-    name: "ChatGPT sign-in restarted on another tab (Experimental)",
-    path: `${draft}&tab=credentials`,
-    credentialSourceTypes: deviceLoginSourceTypes,
-    deployed: true,
-    auth: "oauth",
-    oauthPending: true,
-    rules: [
-      { suffix: "/device-authorizations", method: "POST", delayMs: 3000, skip: 1, once: true },
-    ],
-    description:
-      "Start a replacement sign-in, choose Cancel login, then start again and open Configuration within 3 s. The second reply arrives while Configuration shows; Credentials keeps it, so returning shows the code. The fixture delays the reply; it does not prove provider persistence.",
-  },
-  authOAuthReconnect: {
-    group: "Components/Credentials",
-    name: "Explicit ChatGPT credential replacement (Experimental)",
-    path: `${draft}&tab=credentials`,
-    credentialSourceTypes: deviceLoginSourceTypes,
-    deployed: true,
-    auth: "oauth",
-    credentialSources: [
-      { sourceId: "cs_00000000-0000-4000-8000-000000000010" },
-      { sourceId: "cs_00000000-0000-4000-8000-000000000011" },
-    ],
-    description:
-      "Sign in and save a replacement explicitly. The Agent replaces its prior Harness source binding and retains unrelated tool bindings; deployment remains separate.",
-    steps: [
-      "Sign in with OAuth, wait for the simulated ready status, then Save authentication source.",
-      "Inspect the PATCH: credentialSources keeps the tool entry, removes the old Harness entry, and adds the new Harness source once.",
-    ],
-  },
+  ...credentialsOAuthScenarios({ draft }),
   ...createAgentOutcomeScenarios,
   draft: {
     group: "Pages/Agent detail",
@@ -2004,7 +1667,7 @@ export const scenarios = {
     path: `${draft}&tab=plugins`,
     deployed: true,
     auth: "codex_pat",
-    agentPlugins: JSON.parse(pluginSelections),
+    agentPlugins: structuredClone(pluginSelectionState),
     agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
     pluginCapabilities,
     pluginDiscovery,
@@ -2095,7 +1758,7 @@ export const scenarios = {
     path: draft,
     deployed: true,
     auth: "codex_pat",
-    agentPlugins: JSON.parse(pluginSelections),
+    agentPlugins: structuredClone(pluginSelectionState),
     pluginCapabilities,
     pluginDiscovery,
     actions: [click("Plugins"), click("Configuration")],
@@ -2119,8 +1782,8 @@ export const scenarios = {
     pluginCapabilities: {
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
       approvers: { agent: false, plugin: false, tools: false },
-      toolDefaults: { enabled: false },
-      tools: { enabled: false },
+      toolDefaults: { enabled: false, approval: [], reviewer: [] },
+      tools: { enabled: false, approval: [], reviewer: [] },
       driverPolicySchema: { type: "object", properties: {} },
       policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
       credentialSlots: [
@@ -2164,7 +1827,7 @@ export const scenarios = {
     path: draft,
     deployed: true,
     auth: "codex_pat",
-    agentPlugins: JSON.parse(pluginSelections),
+    agentPlugins: structuredClone(pluginSelectionState),
     pluginCapabilities,
     pluginDiscovery,
     actions: [click("Plugins")],
@@ -2180,112 +1843,14 @@ export const scenarios = {
     ],
     gap: "Catalog and deployment responses are simulated. This does not verify plugin access, installation, policy enforcement, or a live Agent turn.",
   },
-  pluginApproversInherited: {
-    group: "Pages/Agent detail",
-    name: "Plugin approver inheritance",
-    path: draft,
-    slack: true,
-    auth: "codex_pat",
-    agentPlugins: JSON.parse(pluginSelections),
-    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
-    pluginCapabilities: overrideApproverCapabilities,
-    pluginDiscovery,
-    actions: [
-      click("Plugins"),
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Calendar"]', click: true },
-      {
-        selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
-        click: true,
-      },
-    ],
-    description:
-      "The Agent default has one workspace-qualified Slack user. Calendar inherits that list, and Create event inherits Calendar. Clearing a plugin or tool override restores inheritance.",
-    gap: overrideApproverGap,
-  },
-  pluginApproversOverrides: {
-    group: "Pages/Agent detail",
-    name: "Plugin and tool approver overrides",
-    path: draft,
-    slack: true,
-    auth: "codex_pat",
-    agentPlugins: pluginApproverOverrides,
-    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
-    pluginCapabilities: overrideApproverCapabilities,
-    pluginDiscovery,
-    actions: [
-      click("Plugins"),
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Calendar"]', click: true },
-      {
-        selector: 'details.plugin-tool-row[data-tool="app_calendar/create_event"] > summary',
-        click: true,
-      },
-    ],
-    description:
-      "Calendar explicitly has no Slack approvers, while Create event overrides it with a different user. The UI distinguishes both from inherited lists.",
-    steps: [
-      "Change Calendar to Inherit Agent default approvers and inspect Plugin selections JSON.",
-      "Search Create event tool approvers people to distinguish the two Alex Chen results by their handles.",
-      "Open No Slack approvers hints and Preserved non-Slack approver for the hidden no-approvers sentences.",
-    ],
-    gap: overrideApproverGap,
-  },
-  pluginApproversNoneHints: {
-    group: "Pages/Agent detail",
-    name: "No Slack approvers hints",
-    path: draft,
-    slack: true,
-    auth: "codex_pat",
-    agentPlugins: pluginApproverNoneHints,
-    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
-    pluginCapabilities: overrideApproverCapabilities,
-    pluginDiscovery,
-    actions: [
-      click("Plugins"),
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Calendar"]', click: true },
-    ],
-    description:
-      "Calendar starts with an empty approver list on No Slack approvers. The hint says no Slack user can approve and the people picker is hidden. Selected Slack users with that empty list asks for people and shows the picker.",
-    steps: [
-      "Read Calendar plugin approvers: No Slack user can approve. The people picker is hidden.",
-      "Change Calendar plugin approvers to Selected Slack users and leave the list empty. The hint asks you to select people, and the picker is visible.",
-      "Change it back to No Slack approvers. The first sentence returns and the picker hides again.",
-    ],
-    gap: overrideApproverGap,
-  },
-  pluginApproversPreservedChannel: {
-    group: "Pages/Agent detail",
-    name: "Preserved non-Slack approver",
-    path: draft,
-    slack: true,
-    auth: "codex_pat",
-    agentPlugins: pluginApproverPreservedHints,
-    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
-    pluginCapabilities: overrideApproverCapabilities,
-    pluginDiscovery,
-    actions: [
-      click("Plugins"),
-      click("Configure plugins"),
-      { selector: 'button[aria-label="Calendar"]', click: true },
-    ],
-    description:
-      "Calendar has no Slack approvers and keeps one simulated non-Slack entry. No Slack approvers says no Slack user can approve, names that preserved entry, and hides the people picker. Selected Slack users still counts zero Slack approvers while that entry remains.",
-    steps: [
-      "Read Calendar plugin approvers: No Slack user can approve. 1 other channel entries are preserved. The people picker is hidden.",
-      "Change Calendar plugin approvers to Selected Slack users. The picker is shown, and the hint stays 0 Slack approvers selected because the simulated non-Slack entry remains.",
-      "Change it back to No Slack approvers. The preserved-entry sentence returns and the picker hides again. The teams / person-1 entry is fixture data, not a real channel.",
-    ],
-    gap: overrideApproverGap,
-  },
+  ...pluginApproverScenarios(draft),
   pluginApproversLookup: {
     group: "Pages/Agent detail",
     name: "Find Slack plugin approvers",
     path: draft,
     slack: true,
     auth: "codex_pat",
-    agentPlugins: JSON.parse(pluginSelections),
+    agentPlugins: structuredClone(pluginSelectionState),
     agentPluginApprovers: [],
     pluginCapabilities,
     actions: [
@@ -2310,7 +1875,7 @@ export const scenarios = {
     path: draft,
     slack: true,
     auth: "codex_pat",
-    agentPlugins: JSON.parse(pluginSelections),
+    agentPlugins: structuredClone(pluginSelectionState),
     agentPluginApprovers: [],
     pluginCapabilities,
     pluginDiscovery,
@@ -2340,7 +1905,7 @@ export const scenarios = {
     name: "Plugins in admitted version",
     path: revision,
     deployed: true,
-    agentPlugins: JSON.parse(pluginSelections),
+    agentPlugins: structuredClone(pluginSelectionState),
     pluginCapabilities,
     actions: [click("Plugins")],
     description: "An admitted version shows its immutable Agent-owned plugin selection and policy.",
@@ -3188,13 +2753,13 @@ export const scenarios = {
   },
   deploymentModelProbeFailed: {
     group: "Pages/Agent detail",
-    name: "New version failed its model check",
+    name: "New version uses an unavailable model",
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     description:
-      "Recovery comes first: v7 failed its startup model check, while selected v6 may have stopped. The detailed record preserves the reported cause without assuming a credential problem.",
+      "The recovery banner names the model configured for v7 and leads with Open Configuration so the operator can correct the model and deploy the same Agent.",
     steps: [
       "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
       "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration in the recovery card.",
@@ -3245,10 +2810,10 @@ export const scenarios = {
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     readOnlyPermissionSummary: true,
     description:
-      "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
+      "The viewer can read the Agent. Recovery tells them to ask a Configuration editor to choose a model and someone with deploy access to redeploy.",
     steps: [
       "Check that the recovery has one link, Open v7 Logs, and the header says Open draft. The picker includes Draft and its Configuration access.",
       "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
@@ -3261,7 +2826,7 @@ export const scenarios = {
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     agentPermissionSummary: {
       update: false,
       deploy: true,
@@ -3276,7 +2841,7 @@ export const scenarios = {
       sandboxPolicyRead: false,
     },
     description:
-      "Recovery offers Open draft when the viewer may deploy but cannot edit the Configuration, so the draft is theirs to read and deploy.",
+      "The viewer can deploy the Agent. Recovery tells them to ask a Configuration editor to choose a model, then redeploy after the editor saves it.",
     steps: [
       "Select Open draft and confirm the Configuration tab opens in view, focused, without deploying.",
     ],
@@ -3288,7 +2853,7 @@ export const scenarios = {
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     agentPermissionSummary: {
       update: true,
       deploy: false,
@@ -3305,7 +2870,7 @@ export const scenarios = {
     description:
       "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration.",
     steps: [
-      "Check that the recovery shows Open v7 Logs and Open Configuration, with no Deploy again.",
+      "Check that Open Configuration is first. Recovery tells the editor to choose a model and ask someone with deploy access to redeploy.",
       "Select Open Configuration and confirm the draft's Configuration tab opens in view with Edit Configuration available.",
     ],
     gap: "The failure and permissions are simulated; the API still authorizes every save.",
@@ -3393,7 +2958,7 @@ export const scenarios = {
     path: candidateVersion,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     agentPermissionSummary: {
       update: false,
       deploy: true,
@@ -3416,7 +2981,7 @@ export const scenarios = {
       },
     ],
     description:
-      "The startup model check failure for a viewer who may deploy but can neither edit nor read the Configuration. The draft Open draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
+      "The viewer has deploy access but cannot read the Configuration. Recovery asks them to involve a Configuration editor and someone who can redeploy, and offers only the Logs link.",
     steps: [
       "At 1440 and 390 wide, confirm the recovery shows one link, Open v7 Logs, and never shows Open draft.",
     ],
@@ -4425,450 +3990,7 @@ export const scenarios = {
     presetSecretsPath,
     reservedConfigurationWrite,
   }),
-  credentials: {
-    group: "Components/Credentials",
-    name: "Model authentication",
-    path: `${draft}&tab=credentials`,
-    description:
-      "The saved harness authentication source can be reviewed or changed before deployment.",
-  },
-  credentialsSecretCreateNotPermitted: {
-    group: "Components/Credentials",
-    name: "Model authentication, Secret creation not permitted",
-    path: `${draft}&tab=credentials`,
-    secretCreateNotPermitted: true,
-    description:
-      "The Namespace permission answer denies Secret creation. The Secret field still lists Create new Secret..., disabled with the reason, and its hint says to choose an existing Secret.",
-    steps: [
-      "Type a name no Secret has in the Secret field. Create new Secret... is listed with the access note under it and opens nothing.",
-    ],
-    gap: "The permission answer is simulated; the API still authorizes Secret creation.",
-  },
-  credentialsUpdateDenied: {
-    group: "Components/Credentials",
-    name: "Model authentication, viewer cannot update the Agent",
-    path: `${draft}&tab=credentials`,
-    readOnlyPermissionSummary: true,
-    description:
-      "The permission answer denies Agent update, so Save authentication source and its fields are disabled, and the note names the grant to ask for.",
-    steps: [
-      "Tab to Authentication source, API key Secret and Save authentication source. Each takes focus and looks unavailable. The select and Save are described by the note; the Secret field by its status. Enter, Space, a click, an arrow key or typing changes nothing.",
-    ],
-    gap: "The permission answer is simulated; the API still authorizes every save.",
-  },
-  credentialsSourcesOperateDenied: {
-    group: "Components/Credentials",
-    name: "Model authentication, editor cannot operate a bound source",
-    path: `${draft}&tab=credentials`,
-    agentPermissionSummary: {
-      update: true,
-      deploy: true,
-      operate: true,
-      delete: true,
-      administer: true,
-      configurationUpdate: true,
-      configurationRead: true,
-      configurationSecretsOperate: true,
-      configurationSecretsOperateDeniedBindings: [],
-      agentSourcesOperate: false,
-      sandboxPolicyRead: false,
-    },
-    description:
-      "The permission answer allows Agent update but not operate on every Secret and credential source the Agent and its Configuration bind, which each Agent update checks. Save authentication source and its fields are disabled, and the note names the missing grant. Plugins and repository access saves show the same note.",
-    gap: "The permission answer is simulated; the API still authorizes every save.",
-  },
-  credentialsServiceAccountReadDenied: {
-    group: "Components/Credentials",
-    name: "Model authentication, editor may lack read on the ChatGPT service account",
-    path: `${draft}&tab=credentials`,
-    auth: "service",
-    agentPermissionSummary: {
-      update: true,
-      deploy: true,
-      operate: true,
-      delete: true,
-      administer: true,
-      configurationUpdate: true,
-      configurationRead: true,
-      configurationSecretsOperate: true,
-      configurationSecretsOperateDeniedBindings: [],
-      agentSourcesOperate: false,
-      sandboxPolicyRead: false,
-    },
-    description:
-      "The Agent uses a ChatGPT service account for Harness authentication, which each Agent update reads. The permission answer says a source grant is missing but not which one, so the note names operate on the bound Secrets and credential sources and read on the service account.",
-    gap: "The permission answer is simulated; the API still authorizes every save.",
-  },
-  credentialsSlack: {
-    group: "Components/Credentials",
-    name: "Slack tokens missing",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackBindings: false,
-    description:
-      "Both Slack token bindings are empty and required before a Slack-enabled draft can deploy.",
-  },
-  credentialsSlackOtherKeys: {
-    group: "Components/Credentials",
-    name: "Slack tokens on other keys",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackTokens: {
-      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-      botToken: "${ACME_SLACK_BOT}",
-    },
-    slackBindings: ["SLACK_APP_TOKEN"],
-    description:
-      "The bot token reads ACME_SLACK_BOT, which the token pickers do not bind, so the tab lists each key the tokens read without pickers. Deploy waits until ACME_SLACK_BOT is bound through the Configuration API.",
-  },
-  credentialsSlackHttp: {
-    group: "Components/Credentials",
-    name: "Slack HTTP mode, bot token only",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackMode: "http",
-    slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
-    slackBindings: ["SLACK_BOT_TOKEN"],
-    description:
-      "HTTP mode reads no app token, so the tab offers only the Slack bot token picker, and Deploy is available while it is bound.",
-  },
-  credentialsSlackReader: {
-    group: "Components/Credentials",
-    name: "Slack tokens, viewer can only read",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackBindings: false,
-    readOnlyPermissionSummary: true,
-    description:
-      "The permission answer denies Configuration update, so the Slack token pickers are disabled, Save channel Secrets is not offered, and a note says why.",
-    gap: "The permission answer is simulated; the API still authorizes every save.",
-  },
-  credentialsSlackSecretsOperateDenied: {
-    group: "Components/Credentials",
-    name: "Slack tokens, editor cannot operate the bound Secrets",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    agentPermissionSummary: {
-      update: true,
-      deploy: true,
-      operate: true,
-      delete: true,
-      administer: true,
-      configurationUpdate: true,
-      configurationRead: true,
-      configurationSecretsOperate: false,
-      configurationSecretsOperateDeniedBindings: [],
-      agentSourcesOperate: false,
-      sandboxPolicyRead: false,
-    },
-    description:
-      "The permission answer allows Configuration update but not Secret operate on every Secret the Configuration binds, which each Configuration save needs. The Slack token pickers are disabled, Save channel Secrets is not offered, and a note names the missing grant. Each Agent update checks the same Secrets, so Save authentication source is disabled too.",
-    steps: [
-      "Tab to Slack app token and Slack bot token. Each takes focus and looks unavailable, its description is its status line, and an arrow key or typing opens no list and changes nothing.",
-    ],
-    gap: "The permission answer is simulated; the API still authorizes every save.",
-  },
-  credentialsSlackReplaceDenied: {
-    group: "Components/Credentials",
-    name: "Slack tokens, editor must replace the bot token Secret",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    agentPermissionSummary: {
-      update: true,
-      deploy: true,
-      operate: true,
-      delete: true,
-      administer: true,
-      configurationUpdate: true,
-      configurationRead: true,
-      configurationSecretsOperate: false,
-      configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
-      agentSourcesOperate: false,
-      sandboxPolicyRead: true,
-    },
-    description:
-      "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. A save is checked on the Secrets it submits, so the Slack token pickers stay editable and a note says to choose another Secret for the bot token. A save that keeps it is refused before any request.",
-    steps: [
-      "Choose the Slack backup token for the app token and select Save channel Secrets. The panel says the save keeps Slack bot token and sends nothing.",
-      "Choose the Slack backup token for the bot token too, then Save channel Secrets. The save goes through; do not deploy.",
-    ],
-    gap: "The permission answer is simulated; the API still authorizes every save and the Secrets it binds.",
-  },
-  credentialsSlackOperateDenied: {
-    group: "Components/Credentials",
-    name: "Slack tokens, editor cannot operate one readable Secret",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    secretOperateDenied: ["sec_demo_slack_backup_token"],
-    description:
-      "The Secret answer lists the Slack backup token as readable but not operable for this editor. Each Secret field lists it disabled with the reason and never stages it, since a save that binds it would be refused. Secret operate is then granted per Secret, so each field lists Create new Secret... disabled with the reason too.",
-    steps: [
-      "Type backup in Slack bot token. Slack backup token (simulated) is listed with the access note under it; choosing it stages nothing and Save channel Secrets stays disabled.",
-      "Type backup in API key Secret: the same option is listed the same way.",
-      "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
-    ],
-    gap: "The Secret answer is simulated; the API still authorizes every save and the Secrets it binds.",
-  },
-  credentialsSlackStored: {
-    group: "Components/Credentials",
-    name: "Slack tokens stored",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    description:
-      "Readable Secret names show existing bindings. The console does not retrieve stored token values.",
-    steps: [
-      "Tab to Save channel Secrets. It takes focus, looks unavailable and is described by No channel Secret changes to save.; Enter submits nothing.",
-    ],
-  },
-  credentialsSlackReplacement: {
-    group: "Components/Credentials",
-    name: "Slack token switch",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-    description:
-      "A different app Secret is selected but not saved. Deploy would use the saved Secret, not the one shown in the picker.",
-    steps: [
-      "Deploy new version is disabled. Choose the saved Slack app token again; Deploy becomes available without a save.",
-      "Choose the Slack backup token, then Save channel Secrets. Deploy becomes available when the save succeeds; do not deploy.",
-    ],
-  },
-  credentialsDiscardSecretChoice: {
-    group: "Components/Credentials",
-    name: "Discard an unsaved Secret choice",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    unreadableSecretId: "sec_demo_slack_bot_token",
-    description:
-      "The saved Slack bot token is not readable. After choosing a different Secret, you can discard that unsaved choice without finding the original in the picker.",
-    steps: [
-      "Slack bot token shows “Bound Secret”. Choose “Slack backup token (simulated)”; Deploy is disabled until you save or reload.",
-      "Choose Reset story to reopen the saved configuration, as a page reload would. The bot token again shows “Bound Secret” and Deploy is available. Do not deploy.",
-    ],
-  },
-  credentialsSaveProvisioningReserved: {
-    group: "Components/Credentials",
-    name: "Secret choices after a refused save",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    rules: [reservedConfigurationWrite],
-    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-    description:
-      "Provisioning has reserved the Configuration. The app token selection is an unsaved choice, not a new binding.",
-    steps: [
-      "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
-      "The unsaved choice stays selected and Deploy stays disabled. Choose the saved Slack app token again to make Deploy available; no retry or reload is needed.",
-    ],
-  },
-  credentialsSaveChannelRefused: {
-    group: "Components/Credentials",
-    name: "Channel Secret save refused for a channel setting",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        status: 400,
-        code: "INVALID_REQUEST",
-        message:
-          "Configuration setting channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings.",
-      },
-    ],
-    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-    description:
-      "The stored Configuration holds a Slack token form that save now refuses, so saving channel Secrets, which resends the stored values, is refused for that setting.",
-    gap: "The refusal is simulated; the API refuses the stored form on the bundled Kubernetes Compute.",
-    steps: [
-      "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says to fix it in the Configuration JSON on the Configuration tab.",
-    ],
-  },
-  credentialsSaveChannelBindingRefused: {
-    group: "Components/Credentials",
-    name: "Channel Secret save refused for a missing binding",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        status: 400,
-        code: "INVALID_REQUEST",
-        message:
-          "Configuration setting channels.slack.signingSecret references SLACK_SIGNING_SECRET without a Configuration Secret binding: bind SLACK_SIGNING_SECRET in secretBindings to an environment-backed Secret, or remove the reference.",
-      },
-    ],
-    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-    description:
-      "The stored Configuration references a name that has no Secret binding, so saving channel Secrets, which resends the stored values, is refused for that setting.",
-    gap: "The refusal is simulated; the API refuses the unbound reference on the bundled Kubernetes Compute.",
-    steps: [
-      "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says where the console binds a Secret: this tab for SLACK_APP_TOKEN and SLACK_BOT_TOKEN, the Configuration API for other names.",
-    ],
-  },
-  credentialsSaveConflict: {
-    group: "Components/Credentials",
-    name: "Secret choices after a conflict",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    rules: [
-      {
-        ...reservedConfigurationWrite,
-        message: "The requested platform resource already exists.",
-      },
-    ],
-    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-    description:
-      "A save meets a generic conflict. The Console explains that the Secret choices conflict with saved state, without claiming a duplicate or a stale generation.",
-    steps: [
-      "Press Save channel Secrets. The backup token stays selected, Deploy stays disabled, and no second save is sent. The message does not say the Secret already exists or offer Reload draft.",
-      "Choose the saved Slack app token again. Deploy becomes available; no deployment or second save is needed.",
-    ],
-  },
-  credentialsSlackCarried: {
-    group: "Components/Credentials",
-    name: "Slack token choice carried through a conflict",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    configurationChangedElsewhere: true,
-    actions: [
-      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
-      click("Save channel Secrets"),
-      click("Reload draft"),
-    ],
-    description:
-      "Another browser saved this Configuration first. The chosen app token stays shown, and Reload draft applies it over the reread bindings for Save channel Secrets.",
-  },
-  credentialsSecretListDenied: {
-    group: "Components/Credentials",
-    name: "Secret list denied",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
-        method: "GET",
-        status: 403,
-      },
-    ],
-    description:
-      "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
-  },
-  credentialsSecretListRefresh: {
-    group: "Components/Credentials",
-    name: "Refresh Secret list without saving",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-    // Setup makes three exact collection reads; the permission endpoint is separate.
-    rules: [{ path: presetSecretsPath, method: "GET", skip: 3, once: true, delayMs: 3000 }],
-    description:
-      "The first explicit refresh waits three seconds, preserving query, focus and the staged app token. Save channel Secrets applies the choices.",
-    steps: [
-      "Type a nonmatching name in Slack bot token. ArrowDown highlights Create; a second ArrowDown highlights Refresh Secret list. Press Enter.",
-      "Loading Secrets is disabled during the three-second read. Check that query, focus and staged app token remain. Afterward, choose a Secret; only Save channel Secrets saves bindings. Existing access restrictions still apply.",
-    ],
-    gap: "The delay is simulated. Real two-tab persistence, races and grants require the browser test; no provider readiness is established.",
-  },
-  credentialsSecretListRetry: {
-    group: "Components/Credentials",
-    name: "Retry Secret list without losing a choice",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-    // Fail the first explicit collection read, after the three successful setup reads.
-    rules: [
-      {
-        path: presetSecretsPath,
-        method: "GET",
-        skip: 3,
-        once: true,
-        status: 503,
-        code: "UNAVAILABLE",
-      },
-    ],
-    description:
-      "The first explicit refresh fails; retry succeeds without clearing the query or staged app token, or saving bindings.",
-    steps: [
-      "Type a nonmatching name in Slack bot token. Press ArrowDown twice to pass Create and highlight Refresh Secret list, then Enter. Check Secrets unavailable, retained query/focus and the staged app token.",
-      "Choose Refresh Secret list again. The read succeeds with query, focus and staged app token intact. Clear the query to choose a Secret; Save channel Secrets alone persists the choices.",
-    ],
-    gap: "The one-shot failure is simulated. Real staged-choice preservation, late responses and grants require the browser test; no provider readiness is established.",
-  },
-  credentialsSecretListScrolling: {
-    group: "Components/Credentials",
-    name: "Scrolling Secret list",
-    path: `${draft}&tab=credentials`,
-    extraSecrets: [1, 2, 3, 4, 5, 6, 7, 8].map((index) => ({
-      id: `sec_story_scroll_${index}`,
-      name: `Scrolling Secret ${index} (simulated)`,
-    })),
-    description:
-      "With more readable Secrets than fit, the open API key Secret list scrolls. It is not a Tab stop: focus stays in the field and moves on with Tab.",
-    steps: [
-      "Click API key Secret. The list opens and scrolls.",
-      "Press Tab. The list closes and focus moves to the metadata link below the field, not to the page.",
-      "Click the field, type Scrolling, then drag the list's scrollbar. The list stays open with the search kept, and the field keeps focus.",
-    ],
-  },
-  credentialsSecretListFailsAfterStaging: {
-    group: "Components/Credentials",
-    name: "Secret list fails after a staged Secret",
-    path: `${draft}&tab=credentials`,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
-        method: "GET",
-        delayMs: 4000,
-        status: 503,
-      },
-    ],
-    actions: [
-      { selector: "#harness-auth-secret", value: "__openclaw_create_secret__" },
-      { selector: "#create-harness-auth-secret-name", value: "Created while loading (simulated)" },
-      { selector: "#create-harness-auth-secret-value", value: "synthetic-demo-key" },
-      click("Create Secret"),
-    ],
-    description:
-      "A Secret created while the list loads is staged. The list read then fails, and the hint still says the binding is staged instead of showing a list error.",
-    steps: [
-      "Wait four seconds for the simulated list failure. The hint under API key Secret still reads Secret binding staged. Save changes to apply it.",
-      "Choose Reset story to replay it.",
-    ],
-    gap: "The list failure is simulated; a lost session (401) still ends the session as before.",
-  },
-  credentialsSlackGrantDenied: {
-    group: "Components/Credentials",
-    name: "Slack grant denied",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    actions: [
-      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
-      click("Save channel Secrets"),
-    ],
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/iam/access-bindings",
-        method: "POST",
-        status: 403,
-      },
-    ],
-    description:
-      "The Configuration saves, but the follow-up exact Secret access grant is refused (403). The warning says only an Installation administrator can grant it, the saved app token reads Bound · Agent access not confirmed, and Retry Secret access retries the grant without another save.",
-  },
-  credentialsSlackGrantMissing: {
-    group: "Components/Credentials",
-    name: "Slack Secret bound without an Agent grant",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackGrantMissing: "SLACK_APP_TOKEN",
-    description:
-      "An Installation administrator opens an Agent whose saved app token Secret has no Agent grant, for example after a member's refused grant. The console reads the Namespace IAM policy, marks the token, blocks Deploy, and offers Retry Secret access.",
-    steps: [
-      "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying would be refused.",
-      "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
-    ],
-  },
+  ...credentialsScenarios({ draft, reservedConfigurationWrite }),
   authenticationReadDenied: {
     group: "Pages/Agent detail",
     name: "Authentication Save read denied",
@@ -4910,430 +4032,7 @@ export const scenarios = {
       "Refocus to see the partial Agent with Configuration unavailable. Select Retry after access recovers; the unsaved edit must not return.",
     ],
   },
-  credentialsSavedRetryReadDenied: {
-    group: "Components/Credentials",
-    name: "Saved channel bindings, retry read denied",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    rules: [
-      { method: "POST", suffix: "/iam/access-bindings", status: 403, once: true },
-      {
-        method: "GET",
-        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        skip: 2,
-        status: 403,
-        once: true,
-      },
-    ],
-    actions: [
-      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
-      click("Save channel Secrets"),
-    ],
-    description:
-      "Bindings saved, but their grant failed. Retry then loses Configuration read access. A sanitized receipt preserves the successful save while removing binding metadata.",
-    steps: [
-      "Select Retry Secret access. The receipt says bindings are saved and the Configuration could not be read. No additional PATCH or grant starts.",
-      "Select Refresh, then Retry Secret access after reads recover. The saved replacement remains and only its missing grant is retried.",
-    ],
-  },
-  credentialsBindingReadDenied: {
-    group: "Components/Credentials",
-    name: "Channel binding read denied",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        method: "GET",
-        skip: 1,
-        status: 403,
-        once: true,
-      },
-    ],
-    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-    description:
-      "The binding preflight is refused once. Its receipt remains visible, but the saved bindings and staged choice are removed. Refresh reads the saved state without repeating a write.",
-    steps: [
-      "Select Save channel Secrets. Check Access denied and the failed preflight receipt; no token picker or saved binding remains.",
-      "Select Refresh. The simulated read succeeds again and restores the saved bindings, without applying the staged choice.",
-      "Select Slack backup token (simulated) again, then Save channel Secrets once. A fresh preflight and one PATCH save that replacement. See unreadable-configuration-workflow.md for the complete walkthrough.",
-    ],
-  },
-  credentialsSlackLeftoverGrantMissing: {
-    group: "Components/Credentials",
-    name: "Slack key left bound without an Agent grant",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackMode: "http",
-    slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
-    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    slackGrantMissing: "SLACK_APP_TOKEN",
-    description:
-      "HTTP mode reads no app token, but SLACK_APP_TOKEN is still bound from Socket Mode and its Secret has no Agent grant. Deploy checks every bound Secret, so the tab lists the key as read by no Slack setting, marks it, blocks Deploy, and offers Retry Secret access.",
-    steps: [
-      "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; the warning says deploying would be refused.",
-      "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
-    ],
-  },
-  credentialsSlackOffGrantMissing: {
-    group: "Components/Credentials",
-    name: "Slack off with a bound Secret without an Agent grant",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackOff: true,
-    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    slackGrantMissing: "SLACK_APP_TOKEN",
-    description:
-      "Disable Slack kept both token bindings, and the app token Secret has no Agent grant. Deploy checks every bound Secret, so with Slack off the tab still lists the bound keys as read by no Slack setting, marks the app token, blocks Deploy, and offers Retry Secret access (finding 3018).",
-    steps: [
-      "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; Deploy new version names SLACK_APP_TOKEN and says to select Retry Secret access.",
-      "Select Retry Secret access. The section says Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy (finding 3021).",
-    ],
-  },
-  credentialsSlackOffRetryUnconfirmed: {
-    group: "Components/Credentials",
-    name: "Slack off Retry with an unconfirmed grant",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackOff: true,
-    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    slackGrantMissing: "SLACK_APP_TOKEN",
-    rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
-    actions: [click("Retry Secret access")],
-    description:
-      "With Slack off, Retry Secret access sends the app token Secret's grant, and the IAM API is unavailable (503), so the grant is not confirmed. A Retry saves no Configuration, so the warning names only the grant and what to do next (finding 3023).",
-    gap: "The unavailable IAM API is simulated.",
-    steps: [
-      "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator. It does not say Configuration saved.",
-      "Select Retry Secret access again. The section says Secret access granted and Deploy new version is available; do not deploy.",
-    ],
-  },
-  credentialsSlackOffRetryAnswerLost: {
-    group: "Components/Credentials",
-    name: "Slack off Retry whose answer is lost",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackOff: true,
-    slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    slackGrantMissing: "SLACK_APP_TOKEN",
-    rules: [{ suffix: "/iam/access-bindings", method: "POST", lostAnswer: true, once: true }],
-    // Another browser saves the Configuration after the first Retry, so the second one asks for
-    // Reload draft.
-    configurationChangedElsewhere: {
-      afterReads: 2,
-      values: { channels: { slack: { allowFrom: ["UOTHER99"] } } },
-    },
-    actions: [click("Retry Secret access")],
-    description:
-      "With Slack off, Retry Secret access makes the app token Secret's grant, but its answer is lost, so the grant is not confirmed. Reload draft rebuilds the section, and its grant read finds the grant: the section says that access is confirmed and takes focus, instead of disappearing (finding 3030).",
-    gap: "The lost answer and the other browser's save are simulated; the simulated API keeps the grant.",
-    steps: [
-      "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator.",
-      "Select Retry Secret access: another browser changed the Configuration, so the section asks for Reload draft.",
-      "Select Reload draft. Once the grant read lands, the section says Secret access confirmed. This Agent can use its bound Secrets. Deploy the new version to deliver them. Focus is on that message, and Deploy new version is available; do not deploy.",
-    ],
-  },
-  credentialsSlackGrantReadPending: {
-    group: "Components/Credentials",
-    name: "Slack grant read in progress",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackGrantMissing: "SLACK_APP_TOKEN",
-    rules: [{ suffix: "/iam/access-bindings", method: "GET", delayMs: 4000 }],
-    description:
-      "An Installation administrator opens an Agent while the console still reads the Namespace IAM policy for the bound Slack Secrets' grants. Deploy waits for that read, then stays blocked because the app token Secret has no Agent grant.",
-    gap: "The slow policy read is simulated.",
-    steps: [
-      "While the read is held, Prepare says Checking this Agent's credential access before deploying. and Deploy new version is disabled.",
-      "After the read lands, the Slack app token reads Bound · Agent access not confirmed and Deploy stays disabled until Retry Secret access grants it.",
-    ],
-  },
-  credentialsSlackSigningSecretMissing: {
-    group: "Components/Credentials",
-    name: "Slack signing secret without a binding",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackTokens: {
-      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-      botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-      signingSecret: "${SLACK_SIGNING_SECRET}",
-    },
-    description:
-      "Both token pickers are bound, but the signing secret reads SLACK_SIGNING_SECRET, which has no binding. Save and deployment refuse that, so the tab lists the key as Missing below the pickers and Deploy waits until it is bound through the Configuration API.",
-  },
-  credentialsSavePending: {
-    group: "Components/Credentials",
-    name: "Channel Secret save pending",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        hold: true,
-        once: true,
-      },
-    ],
-    actions: [
-      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
-      click("Save channel Secrets"),
-    ],
-    description:
-      "Saving and deployment stay blocked while the channel Secret binding save is pending. After the 15-second timeout, select Reload draft and inspect the saved app token binding before retrying.",
-  },
-  credentialsSaveUnknown: {
-    group: "Components/Credentials",
-    name: "Channel Secret save outcome unknown",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        status: 503,
-        once: true,
-      },
-    ],
-    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-    description:
-      "Press Save channel Secrets to simulate an uncertain save. Select Reload draft and inspect the saved app token binding before deploying or retrying; the Console does not retry automatically.",
-  },
-  credentialsSlackPartial: {
-    group: "Components/Credentials",
-    name: "One Slack token missing",
-    path: `${draft}&tab=credentials`,
-    slack: true,
-    slackBindings: "app",
-    description:
-      "The app token is already bound; the missing bot token remains empty and required.",
-  },
-  authenticationNavigation: {
-    group: "Components/Credentials",
-    name: "Keep authentication choices",
-    path: `${draft}&tab=credentials`,
-    auth: null,
-    actions: [
-      { selector: "#harness-auth-method", value: "api_key" },
-      { selector: "#harness-auth-secret", value: "sec_demo_model" },
-    ],
-    description:
-      "Authentication method and existing source references survive navigation. Reload authentication source discards the choice.",
-    steps: [
-      "Switch to Configuration and back to Credentials.",
-      "Open Namespaces and return. Reload authentication source to restore saved settings.",
-    ],
-    gap: "Simulated Secret metadata, not provider authentication proof.",
-  },
-  authMissing: {
-    group: "Components/Credentials",
-    name: "No authentication source",
-    path: `${draft}&tab=credentials`,
-    auth: null,
-    description: "Select a source before deployment.",
-    gap: "The API-key field expects an existing Secret or a Secret created through the picker. It never reads raw credential values back.",
-  },
-  authApiKeySwitch: {
-    group: "Components/Credentials",
-    name: "API key Secret switch",
-    path: `${draft}&tab=credentials`,
-    extraSecrets: [
-      { id: "sec_demo_model_replacement", name: "Replacement model API key (simulated)" },
-    ],
-    actions: [{ selector: "#harness-auth-secret", value: "sec_demo_model_replacement" }],
-    description:
-      "The authentication source picker displays Secret names and stages a different API-key Secret.",
-  },
-  authSecretReplacement: {
-    group: "Components/Credentials",
-    name: "Replace model Secret",
-    path: `${draft}&tab=credentials`,
-    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
-    actions: [
-      { selector: "#harness-auth-method", value: "codex_pat" },
-      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
-    ],
-    description:
-      "Save the selected model Secret, then confirm the exact Agent grant through Namespace IAM. Saving does not establish model readiness.",
-    steps: [
-      "Click Save authentication source.",
-      "Look for “Authentication source saved.” Focus stays at Save authentication source; the request log shows the Agent PATCH followed by access for that Secret.",
-    ],
-  },
-  authSecretGrantDenied: {
-    group: "Components/Credentials",
-    name: "Authentication saved, grant denied",
-    path: `${draft}&tab=credentials`,
-    rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 403, once: true }],
-    actions: [click("Save authentication source")],
-    description:
-      "The Agent binding is saved, but the request to grant its Secret access is refused (403). The warning says that request was refused, names the Installation administrator step, and keeps Retry credential access for when access is restored. Deployment stays blocked in this view until access is confirmed.",
-    steps: [
-      "Read the partial-save message and disabled authentication controls.",
-      "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
-      "The form refreshes without another Agent PATCH.",
-    ],
-  },
-  authSecretGrantMissing: {
-    group: "Components/Credentials",
-    name: "Authentication Secret without an Agent grant",
-    path: `${draft}&tab=credentials`,
-    harnessGrantMissing: true,
-    description:
-      "An Installation administrator opens an Agent whose saved model Secret has no Agent grant, for example after a member saved it. The console reads the Namespace IAM policy, says deploying would be refused, names Save authentication source and blocks Deploy.",
-    steps: [
-      "Read the warning under the authentication form; Prepare says to confirm authentication and Secret access in Credentials.",
-      "Select Save authentication source. The grant is written, the tab rebuilds without the warning, and Deploy new version is available; do not deploy.",
-    ],
-  },
-  authSecretGrantParked: {
-    group: "Components/Credentials",
-    name: "Parked authentication grant",
-    path: `${draft}&tab=credentials`,
-    harnessGrantMissing: true,
-    rules: [
-      { suffix: "/iam/roles", delayMs: 4000 },
-      { suffix: "/iam/access-bindings", delayMs: 4000 },
-    ],
-    actions: [
-      { selector: "#harness-auth-method" },
-      click("Configuration"),
-      click("Set up credentials"),
-      { selector: 'p.status[data-tone="warning"][role="alert"]' },
-    ],
-    description:
-      "An Installation administrator opens Credentials while Namespace IAM is still answering, switches to Configuration, and returns after the read finds no operate grant. The warning is written on the parked form, so Credentials still names Save authentication source. Deploy stays disabled.",
-    steps: [
-      "Credentials shows the saved API-key Secret with Save authentication source enabled. The missing-grant warning is absent while Namespace IAM is delayed.",
-      "The story selects Configuration before that read finishes. Deploy new version becomes disabled and says to confirm authentication and Secret access in Credentials.",
-      "Set up credentials returns to the same form. The warning says deploying would be refused and names Save authentication source. The authentication source control stays enabled.",
-    ],
-    gap: "The IAM delay is simulated. The browser test holds the controller's real Namespace IAM read across the same tab change.",
-  },
-  authSecretGrantMemberUnverified: {
-    group: "Components/Credentials",
-    name: "Member authentication saved, access checked at deploy",
-    path: `${draft}&tab=credentials`,
-    observabilityDenied: true,
-    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
-    actions: [
-      { selector: "#harness-auth-method", value: "codex_pat" },
-      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
-      click("Save authentication source"),
-    ],
-    description:
-      "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The card settles to one saved status: deploying checks that the Agent can use the selected Secret, and an Installation administrator gives the Agent Secret operate on it if it cannot. It offers no Retry credential access.",
-    steps: [
-      "Read the status: the source saved, the deploy checks the Agent's access, and an Installation administrator gives it.",
-      "The method select, the Secret picker and Save authentication source stay enabled. Pick another Secret: the staged hint replaces the saved status.",
-      "Deploy new version stays available, since the API checks the Agent's access when it deploys. The request log shows the Agent PATCH and no /iam/ request.",
-    ],
-    gap: "The member browser test uses a member account and the real Installation permission check.",
-  },
-  authSaveRefused: {
-    group: "Components/Credentials",
-    name: "Authentication save refused",
-    path: `${draft}&tab=credentials`,
-    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
-    rules: [
-      {
-        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        status: 403,
-        code: "FORBIDDEN",
-      },
-    ],
-    actions: [
-      { selector: "#harness-auth-method", value: "codex_pat" },
-      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
-      click("Save authentication source"),
-    ],
-    description:
-      "The Agent update is refused. The refusal is a danger block that takes focus; progress (“Saving authentication…”) stays a grey hint.",
-    gap: "The refusal is simulated; the API decides every save.",
-  },
-  authSecretGrantLoading: {
-    group: "Components/Credentials",
-    name: "Checking model Secret access",
-    path: `${draft}&tab=credentials`,
-    rules: [{ suffix: "/iam/access-bindings", method: "POST", hold: true }],
-    actions: [click("Save authentication source")],
-    description:
-      "Authentication is saved while the grant is pending. Saving and deployment remain disabled; a timeout reports partial success.",
-  },
-  authSaveHoldsNavigation: {
-    group: "Components/Credentials",
-    name: "Authentication save holds navigation",
-    path: `${draft}&tab=credentials`,
-    rules: [
-      {
-        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        delayMs: 3600,
-      },
-    ],
-    actions: [
-      click("Save authentication source"),
-      { selector: 'a[data-nav="agents"]', click: true },
-    ],
-    description:
-      "The story selects Save authentication source, then Agents in the sidebar. The page stays, and a note in the authentication form says why until the simulated save answers 3.6 s later.",
-    steps: [
-      "While the note “This page stays open until the authentication save finishes.” shows, select ← Agents or choose another Namespace. The page and selected Namespace stay the same. Reset the story to try again.",
-      "When the save answers, the note goes; Agents in the sidebar now leaves.",
-    ],
-  },
-  authSaveUnknown: {
-    group: "Components/Credentials",
-    name: "Authentication save unknown",
-    path: `${draft}&tab=credentials`,
-    rules: [
-      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", method: "PATCH", status: 503 },
-    ],
-    actions: [click("Save authentication source")],
-    description:
-      "An unavailable save response requires Refresh to inspect persisted state before another save or grant attempt.",
-  },
-  authRuntime: {
-    group: "Components/Credentials",
-    name: "Operator-managed authentication",
-    path: `${draft}&tab=credentials`,
-    auth: "runtime",
-    description:
-      "The operator configures runtime credentials. The console cannot validate provider login or model readiness.",
-  },
-  authService: {
-    group: "Components/Credentials",
-    name: "ChatGPT service account",
-    path: `${draft}&tab=credentials`,
-    auth: "service",
-    description:
-      "Select an issued service account, or switch to an imported Service Accounts token Secret. Both use the same PAT login method.",
-    gap: "Service-account issuance is outside the console.",
-  },
-  authServiceEmpty: {
-    group: "Components/Credentials",
-    name: "No issued service accounts",
-    path: `${draft}&tab=credentials`,
-    auth: null,
-    serviceAccountsEmpty: true,
-    actions: [{ selector: "#harness-auth-method", value: "service_account" }],
-    description:
-      "An empty issued-account list cannot be saved. Choose another authentication source.",
-  },
-  authServiceDenied: {
-    group: "Components/Credentials",
-    name: "Issued service accounts unavailable",
-    path: `${draft}&tab=credentials`,
-    auth: "service",
-    rules: [{ suffix: "/service-accounts", method: "GET", status: 403 }],
-    description:
-      "A failed list request preserves the saved account and explains that accounts are unavailable only while issued-account authentication is selected.",
-    steps: [
-      "Switch Authentication source to API key, Service Accounts, and Operator-managed credentials. The issued-account error disappears; each source shows its own fields with consistent styling.",
-      "Return to Issued ChatGPT service account. The unavailable-account feedback and saved account return; the failed lookup does not change its selection.",
-      "Tab to the account select. It takes focus and looks unavailable, its description is the feedback, and Enter, Space, a click or an arrow key changes nothing.",
-    ],
-  },
+  ...credentialsRecoveryScenarios({ draft }),
   nativeAdmin: {
     group: "Components/Native admin",
     name: "Available",
@@ -6688,7 +5387,7 @@ for (const [id, source, name, theme] of [
   ["themeEmpty", "agentsEmpty", "Custom empty state", "custom"],
   ["themeDenied", "agentsDenied", "Custom denied state", "custom"],
   ["themeLoading", "agentsLoading", "Custom loading state", "custom"],
-  ["themeCredentials", "authMissing", "Custom missing credentials", "custom"],
+  credentialsThemeScenario,
   ["themePublicError", "sessionUnavailable", "Custom public error", "custom"],
 ]) {
   scenarios[id] = {
