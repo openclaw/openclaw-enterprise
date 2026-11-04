@@ -57,7 +57,7 @@ import {
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import { responseTo } from "./console-action-helpers.ts";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,

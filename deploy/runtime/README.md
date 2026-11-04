@@ -52,15 +52,9 @@ does the same.
 private Linux PID namespace stopped recover only Gateway records from that
 namespace. OC still compares its lock fingerprint before recovery. An
 unattributed owner requires operator confirmation.
-`openclaw-linux-private-store-setgid.patch` normalizes only an owner-only
-Linux directory newly created with inherited setgid before private-store
-admission. This lets native setup create its control, client and state stores
-under the Sandbox workspace without changing existing parent permissions or
-relaxing ownership and symlink checks. The build runs the owning private-store
-regressions with the patched source.
-`openclaw-plugin-config-startup-report.patch` (openclaw/openclaw#189392) makes
-startup name each invalid plugin setting and exit 78. Remove both bridges after
-selecting an OpenClaw commit that contains them.
+OpenClaw normalizes newly created owner-only Linux directories that inherit
+setgid and reports invalid plugin settings during startup. The build runs the
+upstream private-store regressions.
 The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
@@ -87,7 +81,9 @@ OCE does not write the retired `nodeHost.workerRuns.nativeInferenceConfig` field
 The selected source includes required placement activation, node-local
 model/workspace projection, and the Codex native-child relay. OCE advertises
 `pinned-runtime` native-worker support, so the Console offers Dedicated OpenClaw
-without a custom-image declaration. Deployment still requires a provisioning
+without a custom-image declaration. When the same node hosts an admitted MCP
+tool, the worker can call its MCP client locally. Tools that require Gateway
+policy hooks continue through the Gateway. Deployment still requires a provisioning
 SandboxDriver with networking, filesystem, and process containment.
 
 The images-runtime-startup lane runs the production Gateway and Harness
@@ -100,10 +96,10 @@ enrollment, containment, workspace access, or model execution.
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Build base                                            | `docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a` |
 | OpenClaw commit, archive SHA-256, and build timestamp | [Source manifest](openclaw-source.json)                                                                           |
-| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                 |
+| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The source's package version is `2026.10.8`; it does not identify this custom
+The source's package version is `2026.10.10`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
@@ -186,7 +182,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/513c12703ad9a9161cc123e0b8ed4ecb811aa6b3/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing

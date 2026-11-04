@@ -83,7 +83,7 @@ API-key provider fingerprint in `AgentRevision.compute.admission`.
 The worker claims version work, rechecks actor/ownership and the frozen Harness,
 then calls `ComputeDriver.prepareRevision`. `apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
 supplies native administration controls to the Gateway child after OCE setup.
-Dedicated Gateway launchers apply the model tool policy in both administration modes.
+Dedicated Gateways enforce tool policy, including [MCP routing](agent-plugins.md#2-admit-an-immutable-plugin-deployment), in both administration modes.
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
