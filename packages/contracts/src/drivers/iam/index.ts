@@ -3,6 +3,7 @@ import type {
   AccessBinding,
   AuthorizationDecision,
   AuthorizationRequest,
+  Group,
   Identity,
   IdentityAccessCoverageRequest,
   IdentityLookup,
@@ -74,31 +75,24 @@ export interface IAMDriver extends Driver {
     context: IAMPolicyManagementContext,
     input: IAMManagedServicePrincipalInput,
   ): Promise<Readonly<ServicePrincipal>>;
-  /** Principal ids in one Installation-level Group, such as Default users. */
-  listGroupMembers?(context: IAMPolicyReadContext, groupId: string): Promise<readonly string[]>;
-  /** False when the Principal is already a member. */
-  addGroupMember?(
-    context: IAMPolicyManagementContext,
-    input: IAMGroupMemberInput,
-  ): Promise<boolean>;
-  /** False when the Principal was not a member. */
-  removeGroupMember?(
-    context: IAMPolicyManagementContext,
-    input: IAMGroupMemberInput,
-  ): Promise<boolean>;
   /**
-   * Binds a creator to the built-in Owner Role: Namespace-wide for a Namespace, exact for any
+   * Binds a creator to the configured Owner Role: Namespace-wide for a Namespace, exact for any
    * other resource. A Driver without this member grants creators nothing.
    */
   createOwnerBinding?(
     context: IAMPolicyManagementContext,
     input: IAMOwnerBindingInput,
   ): Promise<Readonly<AccessBinding>>;
-  /** Writes or deletes one built-in Default users binding. False when nothing changed. */
-  setDefaultUsersBinding?(
+  /**
+   * Makes the configured Roles, Groups, and Group bindings in policy match `input.policy`:
+   * writes the missing ones, updates changed Role permissions, and deletes configured rows that
+   * the policy no longer lists. With `namespaceId`, it writes only the missing bindings in that
+   * Namespace and the missing Roles and Groups they name, and changes nothing else.
+   */
+  applyConfiguredPolicy?(
     context: IAMPolicyManagementContext,
-    input: IAMDefaultUsersBindingInput,
-  ): Promise<boolean>;
+    input: IAMConfiguredPolicyInput,
+  ): Promise<IAMConfiguredPolicyChanges>;
 }
 
 export interface IAMPolicyReadRepository {
@@ -125,18 +119,26 @@ export interface IAMPolicyReadRepository {
     namespaceId: string,
     servicePrincipalId: string,
   ): Promise<Readonly<ServicePrincipal> | undefined>;
-  /** Principal ids in one Installation-level Group. */
-  listGroupMembers(groupId: string): Promise<readonly string[]>;
+  /** The Roles, Groups, and bindings with configured ID prefixes. */
+  listConfiguredPolicy(): Promise<IAMConfiguredPolicy>;
 }
 
 export interface IAMPolicyRepository extends IAMPolicyReadRepository {
   createRole(role: Role): Promise<Readonly<Role>>;
-  createGroupMembership(groupId: string, principalId: string): Promise<boolean>;
-  deleteGroupMembership(groupId: string, principalId: string): Promise<boolean>;
-  /** Writes a binding to a built-in Role; false when its id already exists. */
-  createBuiltInBinding(binding: AccessBinding): Promise<boolean>;
-  /** Deletes a binding to a built-in Role; false when it did not exist. */
-  deleteBuiltInBinding(bindingId: string): Promise<boolean>;
+  /** Writes a configured Installation Role, or updates its name and permissions. */
+  putConfiguredRole(role: Role): Promise<"created" | "updated" | "unchanged">;
+  /** Deletes a configured Role; refuses while any binding uses it. */
+  deleteConfiguredRole(roleId: string): Promise<void>;
+  createConfiguredGroup(group: Group): Promise<void>;
+  /** Deletes a configured Group and its memberships; refuses while any binding uses it. */
+  deleteConfiguredGroup(groupId: string): Promise<void>;
+  /**
+   * Writes a binding that OCC owns, to a configured Role: a configured Group binding or a
+   * creator's Owner binding. False when its id already exists.
+   */
+  createOCCBinding(binding: AccessBinding): Promise<boolean>;
+  /** Deletes a configured Group binding; false when it did not exist. */
+  deleteConfiguredBinding(bindingId: string): Promise<boolean>;
   deleteRole(namespaceId: string, roleId: string): Promise<boolean>;
   createAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
   deleteAccessBinding(namespaceId: string, bindingId: string): Promise<boolean>;
@@ -179,34 +181,46 @@ export interface IAMManagedAccessBindingInput {
   readonly resourceId: string;
 }
 
-export interface IAMGroupMemberInput {
-  readonly groupId: string;
-  readonly principalId: string;
-}
-
 export interface IAMOwnerBindingInput {
   readonly id: string;
   readonly namespaceId: string;
   readonly principalId: string;
+  /** The configured Owner Role. */
+  readonly roleId: string;
   /** The created resource; a Namespace takes no resource and gets a Namespace-wide binding. */
   readonly resourceKind?: ResourceKind;
   readonly resourceId?: string;
 }
 
 /**
- * Agent Creator binds Default users in one Namespace (`namespaceId` required); Namespace
- * Creator binds them Installation-wide (no `namespaceId`).
+ * The Roles, Groups, and Group bindings that the Installation `iam` configuration declares, with
+ * configured ID prefixes and Namespace names resolved to IDs.
  */
-export type IAMDefaultUsersBindingInput =
-  | {
-      readonly role: "agentCreator";
-      readonly namespaceId: string;
-      readonly bound: boolean;
-    }
-  | {
-      readonly role: "namespaceCreator";
-      readonly bound: boolean;
-    };
+export interface IAMConfiguredPolicy {
+  readonly roles: readonly Role[];
+  readonly groups: readonly Group[];
+  readonly bindings: readonly AccessBinding[];
+}
+
+export interface IAMConfiguredPolicyInput {
+  readonly policy: IAMConfiguredPolicy;
+  /** Write only the missing bindings in this Namespace, such as a Namespace just created. */
+  readonly namespaceId?: string;
+}
+
+/** What `applyConfiguredPolicy` changed, for audit. */
+export interface IAMConfiguredPolicyChanges {
+  readonly roles: {
+    readonly created: readonly Readonly<Role>[];
+    readonly updated: readonly Readonly<Role>[];
+    readonly deleted: readonly string[];
+  };
+  readonly groups: { readonly created: readonly string[]; readonly deleted: readonly string[] };
+  readonly bindings: {
+    readonly created: readonly Readonly<AccessBinding>[];
+    readonly deleted: readonly Readonly<AccessBinding>[];
+  };
+}
 
 /** A non-Agent automation identity fixed to one Namespace; it carries no grant. */
 export interface IAMManagedServicePrincipalInput {

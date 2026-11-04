@@ -280,8 +280,6 @@ test(
     assert.deepEqual(
       audits.rows.map(({ action }) => action).sort(),
       [
-        // The creator's Namespace-wide Owner binding (RFC-0026).
-        "openclaw.iam.access_bindings.create",
         "openclaw.namespaces.create",
         "openclaw.namespaces.delete",
         "openclaw.namespaces.lifecycle.delete",

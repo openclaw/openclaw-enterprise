@@ -29,13 +29,6 @@ test(
         appOptions: { agentRuntimeLogs: { enabled: true, cursorSecret: authSecret } },
       });
     const { namespace, agent, revision } = await deployAgent("Runtime logs");
-    // The administrator created the Namespace and Agent, so it owns them, and the Owner Role
-    // holds read_logs. Drop those Owner bindings so these reads take the administer path.
-    await pool.query(
-      `DELETE FROM occ.iam_access_bindings
-       WHERE namespace_id = $1 AND identity_subject_id = $2 AND role_id = 'role_builtin_owner'`,
-      [namespace.id, principal.id],
-    );
     computeDriver.state.lines = [{ time: "2026-09-30T12:00:01.000000001Z", raw: "first line" }];
     const logs = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}/runtime/logs?source=gateway`;
     const viewRows = () =>

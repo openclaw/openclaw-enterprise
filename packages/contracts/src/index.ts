@@ -1241,92 +1241,18 @@ export interface Role extends Scope {
 }
 
 /**
- * The built-in Roles and Group of the Default users design (RFC-0026). They are
- * Installation-level rows that nobody can change or delete, and only OCC binds them. The
- * database enforces each Role's binding shape: Agent Creator binds Default users in one
- * Namespace, Namespace Creator binds Default users Installation-wide, Owner binds one creator
- * to the resource it created, and Namespace member binds Namespace-wide.
+ * ID prefixes of the Roles, Groups, and Group bindings that OCC writes from the Installation
+ * `iam` configuration (RFC-0026). OCC adds, changes, and deletes only rows with these prefixes
+ * when the configuration changes.
  */
-export const BUILT_IN_ROLE_IDS = Object.freeze({
-  agentCreator: "role_builtin_agent_creator",
-  namespaceCreator: "role_builtin_namespace_creator",
-  owner: "role_builtin_owner",
-  namespaceMember: "role_builtin_namespace_member",
+export const CONFIGURED_IAM_ID_PREFIXES = Object.freeze({
+  role: "role_config_",
+  group: "group_config_",
+  binding: "binding_config_",
 } as const);
 
-export const DEFAULT_USERS_GROUP_ID = "group_builtin_default_users";
-
-/** The two Default users bindings; their fixed ids keep each one unique. */
-export const DEFAULT_USERS_BINDING_IDS = Object.freeze({
-  agentCreator: "binding_builtin_default_users_agent_create",
-  namespaceCreator: "binding_builtin_default_users_namespace_create",
-} as const);
-
-function permissions(
-  resourceKind: ResourceKind,
-  actions: readonly PermissionAction[],
-): readonly Permission[] {
-  return actions.map((action) => Object.freeze({ action, resourceKind }));
-}
-
-/** Every action OCC checks on each resource kind inside a Namespace. */
-const NAMESPACE_RESOURCE_PERMISSIONS: readonly Permission[] = Object.freeze([
-  ...permissions("agent", [
-    "create",
-    "read",
-    "update",
-    "delete",
-    "deploy",
-    "operate",
-    "administer",
-    "read_logs",
-    "manage_policy",
-  ]),
-  ...permissions("agent_revision", ["read"]),
-  ...permissions("sandbox_policy", ["read", "update"]),
-  ...permissions("configuration", ["create", "read", "update", "delete"]),
-  ...permissions("preset", ["create", "read", "update", "delete"]),
-  ...permissions("service_account", ["create", "read", "update", "delete"]),
-  ...permissions("secret", ["create", "read", "update", "delete", "operate"]),
-  ...permissions("credential_source", ["create", "read", "update", "delete", "operate"]),
-  ...permissions("namespace", ["read"]),
-]);
-
-export const BUILT_IN_ROLES: readonly Readonly<Role>[] = Object.freeze([
-  Object.freeze({
-    id: BUILT_IN_ROLE_IDS.agentCreator,
-    name: "Agent Creator",
-    permissions: Object.freeze([
-      ...permissions("agent", ["create"]),
-      ...permissions("configuration", ["create"]),
-      ...permissions("secret", ["create"]),
-      ...permissions("credential_source", ["create"]),
-      ...permissions("namespace", ["read"]),
-      ...permissions("preset", ["read"]),
-    ]),
-  }),
-  Object.freeze({
-    id: BUILT_IN_ROLE_IDS.namespaceCreator,
-    name: "Namespace Creator",
-    permissions: Object.freeze(permissions("namespace", ["create"])),
-  }),
-  Object.freeze({
-    id: BUILT_IN_ROLE_IDS.owner,
-    name: "Owner",
-    permissions: Object.freeze([
-      ...NAMESPACE_RESOURCE_PERMISSIONS,
-      ...permissions("namespace", ["delete"]),
-    ]),
-  }),
-  Object.freeze({
-    id: BUILT_IN_ROLE_IDS.namespaceMember,
-    name: "Namespace member",
-    permissions: NAMESPACE_RESOURCE_PERMISSIONS,
-  }),
-]);
-
-export function isBuiltInRoleId(roleId: string): boolean {
-  return Object.values(BUILT_IN_ROLE_IDS).some((id) => id === roleId);
+export function isConfiguredRoleId(roleId: string): boolean {
+  return roleId.startsWith(CONFIGURED_IAM_ID_PREFIXES.role);
 }
 
 export interface Group extends Scope {
@@ -1462,9 +1388,10 @@ export type {
   IAMManagedRoleInput,
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
-  IAMGroupMemberInput,
   IAMOwnerBindingInput,
-  IAMDefaultUsersBindingInput,
+  IAMConfiguredPolicy,
+  IAMConfiguredPolicyInput,
+  IAMConfiguredPolicyChanges,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
 export type { SecretDriver } from "./drivers/secret/index.ts";

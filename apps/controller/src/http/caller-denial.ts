@@ -77,9 +77,9 @@ export function callerDenialMessage(
   }
   if (action === "create") {
     // A collection create targets its parent: the Installation for a Namespace, otherwise the
-    // Namespace. Only built-in Roles hold a create permission, and only OCC binds them, so no
-    // grant request helps: an Installation administrator creates one, as the console's
-    // AGENT_CREATE_DENIED says (finding 2581).
+    // Namespace. Only Roles from the Installation configuration hold a create permission, and
+    // only OCC binds them, so no grant request helps: an Installation administrator creates one,
+    // as the console's AGENT_CREATE_DENIED says (finding 2581).
     const kinds = pluralKind(kind);
     if (resource.kind === "namespace") {
       return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Only an Installation administrator can create ${kinds}: ask one to create it.`;

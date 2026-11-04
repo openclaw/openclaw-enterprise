@@ -253,14 +253,17 @@ singleton Installation, and stays available with GitHub sign-in enabled. One
 transaction writes the account, Principal, grant, enrollment and an optional
 `"github":{"subject":"<numeric id>"}` identity (`409` if GitHub is off or taken).
 
-An optional `roleId` binds an existing Installation Role (`400` if unknown or
-Namespace-scoped); without one the account has no grants. It cannot create Roles
-or infer grants. Audit records `principalId` and `roleId` or `grant: "none"`.
+An optional `roleId` binds an existing Installation Role (`400` if unknown,
+Namespace-scoped, or a configured `role_config_` Role); without one the account
+has no grants. It cannot create Roles or infer grants. The same transaction adds
+the account to each
+[configured default Group](authorization/default-users.md#group-membership).
+Audit records `principalId`, `roleId` or `grant: "none"`, and any `groupIds`.
 Creation issues no session.
 
-The only Installation Role is the built-in Installation administrator
-(`role_admin_<uuid>`). No API creates another, and the Namespace policy API
-omits this one. Its Installation-scoped binding grants only
+Apart from configured Roles, the only Installation Role is the built-in
+Installation administrator (`role_admin_<uuid>`). No API creates another, and
+the Namespace policy API omits this one. Its Installation-scoped binding grants only
 `installation:administer` and `installation:read`; see
 [Appoint an administrator](../guides/topics/iam.md#appoint-an-administrator).
 A representative provisioning body is:

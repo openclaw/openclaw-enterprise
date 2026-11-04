@@ -28,7 +28,12 @@ import {
   requireConfiguration,
   serializeStartupConfiguration,
 } from "@openclaw-enterprise/contracts";
-import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
+import {
+  isSupportedPermission,
+  PERMISSION_ACTIONS,
+  RESOURCE_KINDS,
+  validateSandboxNetworkGrants,
+} from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
@@ -46,6 +51,7 @@ import type {
   Identity,
   BackendDefinition,
   OpenShellBackendDefinition,
+  Permission,
   Preset,
   BackendSummary,
   RepositoryPolicyDriver,
@@ -63,6 +69,7 @@ import {
   type BundledPresetVersion,
   type ControllerOptions,
   type CredentialProxyCapacity,
+  type InstallationIAMConfiguration,
   type NativeWorkerSupport,
   resolveCredentialProxyCapacity,
   type OpenClawController,
@@ -138,8 +145,8 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 export interface InstallationStartupConfiguration {
   readonly repository?: SelectedDriverConfiguration;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
-  /** RFC-0026 Default users; see the configuration reference. */
-  readonly defaultUser?: { readonly namespaceCreate: boolean };
+  /** RFC-0026 configured Roles, Groups, and Group bindings; see the configuration reference. */
+  readonly iam?: InstallationIAMConfiguration;
   readonly occ: { readonly cluster: string };
   readonly logging: LoggingConfiguration;
   readonly presets?: { readonly includeDefaults: boolean; readonly files?: readonly string[] };
@@ -198,16 +205,14 @@ export function installationControllerOptions(
   ControllerOptions,
   | "driverConfigurations"
   | "sandboxNetworkPolicyCeiling"
-  | "defaultUserNamespaceCreate"
+  | "iamConfiguration"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
 > {
   return {
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
-    ...(installation?.defaultUser === undefined
-      ? {}
-      : { defaultUserNamespaceCreate: installation.defaultUser.namespaceCreate }),
+    ...(installation?.iam === undefined ? {} : { iamConfiguration: installation.iam }),
     ...(installation?.runtime === undefined
       ? {}
       : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
@@ -385,19 +390,118 @@ function credentialProxyCapacityConfiguration(input: unknown): CredentialProxyCa
   return resolved.capacity;
 }
 
-function defaultUserConfiguration(
-  value: unknown,
-): { readonly namespaceCreate: boolean } | undefined {
+const IAM_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+
+function iamName(value: unknown, path: string): string {
+  if (typeof value !== "string" || !IAM_NAME.test(value)) {
+    throw new Error(
+      `${path} must be 1-63 lowercase letters, digits, "_", or "-", starting with a letter or digit.`,
+    );
+  }
+  return value;
+}
+
+function iamPermission(value: unknown, path: string): Permission {
+  const [resourceKind, action, extra] = typeof value === "string" ? value.split(":") : [];
+  const permission = { action, resourceKind } as Permission;
+  if (
+    extra !== undefined ||
+    !PERMISSION_ACTIONS.some((candidate) => candidate === action) ||
+    !RESOURCE_KINDS.some((candidate) => candidate === resourceKind) ||
+    !isSupportedPermission(permission)
+  ) {
+    throw new Error(`${path} must be a supported "resourceKind:action" permission.`);
+  }
+  // Installation authority stays with the administrator Role that bootstrap creates.
+  if (resourceKind === "installation") {
+    throw new Error(`${path} cannot grant an installation permission.`);
+  }
+  return Object.freeze(permission);
+}
+
+function unique(values: readonly string[], path: string): void {
+  if (new Set(values).size !== values.length) {
+    throw new Error(`${path} must not repeat an entry.`);
+  }
+}
+
+function iamConfiguration(value: unknown): InstallationIAMConfiguration | undefined {
   if (value === undefined) {
     return undefined;
   }
-  const configuration = object(value, "defaultUser");
-  closed(configuration, ["namespaceCreate"], "defaultUser");
-  const namespaceCreate = configuration.namespaceCreate;
-  if (typeof namespaceCreate !== "boolean") {
-    throw new Error("defaultUser.namespaceCreate must be a boolean.");
-  }
-  return Object.freeze({ namespaceCreate });
+  const configuration = object(value, "iam");
+  closed(configuration, ["roles", "defaultUserGroups", "ownerRole", "roleBindings"], "iam");
+  const listed = (field: string): readonly unknown[] => {
+    const entries = configuration[field] ?? [];
+    if (!Array.isArray(entries)) {
+      throw new Error(`iam.${field} must be an array.`);
+    }
+    return entries;
+  };
+  const roles = listed("roles").map((entry, index) => {
+    const path = `iam.roles[${index}]`;
+    const role = object(entry, path);
+    closed(role, ["id", "permissions"], path);
+    if (!Array.isArray(role.permissions) || role.permissions.length === 0) {
+      throw new Error(`${path}.permissions must be a nonempty array.`);
+    }
+    const permissions = role.permissions.map((permission, permissionIndex) =>
+      iamPermission(permission, `${path}.permissions[${permissionIndex}]`),
+    );
+    unique(
+      permissions.map(({ action, resourceKind }) => `${resourceKind}:${action}`),
+      `${path}.permissions`,
+    );
+    return Object.freeze({
+      id: iamName(role.id, `${path}.id`),
+      permissions: Object.freeze(permissions),
+    });
+  });
+  const roleIds = roles.map((role) => role.id);
+  unique(roleIds, "iam.roles");
+  const configuredRole = (id: unknown, path: string): string => {
+    const name = iamName(id, path);
+    if (!roleIds.includes(name)) {
+      throw new Error(`${path} must name a Role in iam.roles.`);
+    }
+    return name;
+  };
+  const defaultUserGroups = listed("defaultUserGroups").map((group, index) =>
+    iamName(group, `iam.defaultUserGroups[${index}]`),
+  );
+  unique(defaultUserGroups, "iam.defaultUserGroups");
+  const roleBindings = listed("roleBindings").map((entry, index) => {
+    const path = `iam.roleBindings[${index}]`;
+    const binding = object(entry, path);
+    closed(binding, ["group", "role", "scope"], path);
+    let scope: "installation" | { readonly namespace: string };
+    if (binding.scope === "installation") {
+      scope = "installation";
+    } else {
+      const namespaceScope = object(binding.scope, `${path}.scope`);
+      closed(namespaceScope, ["namespace"], `${path}.scope`);
+      scope = Object.freeze({
+        namespace: nonempty(namespaceScope.namespace, `${path}.scope.namespace`),
+      });
+    }
+    return Object.freeze({
+      group: iamName(binding.group, `${path}.group`),
+      role: configuredRole(binding.role, `${path}.role`),
+      scope,
+    });
+  });
+  unique(
+    roleBindings.map(({ group, role, scope }) => JSON.stringify([group, role, scope])),
+    "iam.roleBindings",
+  );
+  return Object.freeze({
+    roles: Object.freeze(roles),
+    defaultUserGroups: Object.freeze(defaultUserGroups),
+    ...(configuration.ownerRole === undefined
+      ? {}
+      : { ownerRole: configuredRole(configuration.ownerRole, "iam.ownerRole") }),
+    roleBindings: Object.freeze(roleBindings),
+  });
 }
 
 function runtimeConfiguration(
@@ -679,7 +783,7 @@ export async function loadInstallationConfiguration(options: {
     validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
   }
   const observability = observabilityConfiguration(configuration.observability);
-  const defaultUser = defaultUserConfiguration(configuration.defaultUser);
+  const iamSettings = iamConfiguration(configuration.iam);
   const runtime = runtimeConfiguration(configuration.runtime);
   const drivers = object(configuration.drivers, "drivers");
   if (Object.hasOwn(drivers, "conduit")) {
@@ -1102,7 +1206,7 @@ export async function loadInstallationConfiguration(options: {
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
     ...(sandboxNetworkPolicyCeiling === undefined ? {} : { sandboxNetworkPolicyCeiling }),
-    ...(defaultUser === undefined ? {} : { defaultUser }),
+    ...(iamSettings === undefined ? {} : { iam: iamSettings }),
     presets: Object.freeze({ includeDefaults }),
     logging,
     ...(observability === undefined ? {} : { observability }),

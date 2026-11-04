@@ -5,37 +5,46 @@ import test from "node:test";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
-import { OpenClawController, PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
+import {
+  OpenClawController,
+  PostgresHumanAuthentication,
+  type PostgresPlatformState,
+} from "../../packages/occ/src/index.ts";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
+import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const OWNER_ROLE = "role_builtin_owner";
+const OWNER_ROLE = "role_config_owner";
+const AGENT_CREATOR_ROLE = "role_config_agent_creator";
+const DEFAULT_USER_GROUP = "group_config_default-user";
 
 type AgentApp = Awaited<ReturnType<typeof createPostgresAgentApp>>;
 
 /**
  * The real Fastify app over PostgreSQL and Native IAM, with password accounts created by the
- * bootstrap administrator the way the development PostgreSQL composition provisions them.
+ * bootstrap administrator the way the development PostgreSQL composition provisions them. Its
+ * controller applies the Default users `iam` configuration, as the compositions do at startup.
  */
 async function defaultUsersApp(
   t: test.TestContext,
   label: string,
-  controllerOptions: Record<string, unknown> = {},
+  iam: ReturnType<typeof defaultUsersIAM> = defaultUsersIAM(),
 ) {
   type ProvisionAuthAccount = NonNullable<ControllerAppOptions["provisionAuthAccount"]>;
   const accounts: { provision?: ProvisionAuthAccount } = {};
   const agentApp = await createPostgresAgentApp(t, {
     label,
     authSecret: "default-users-postgres-auth-secret-minimum-32-chars",
-    controllerOptions,
+    controllerOptions: { iamConfiguration: controllerIAMConfiguration(iam) },
     appOptions: {
       provisionAuthAccount: ((...args) =>
         accounts.provision!(...args)) satisfies ProvisionAuthAccount,
     },
   });
   const { app, controller, inject, state } = agentApp;
+  await controller.applyIAMConfiguration();
   const installationId = controller.installation.id;
   const humanAuthentication = new PostgresHumanAuthentication(
     state,
@@ -51,7 +60,8 @@ async function defaultUsersApp(
     await humanAuthentication.provisionPasswordAccount(prepared, seed, auditEvent, external);
   };
 
-  // An ordinary password account with no grant, created by the administrator.
+  // A password account with no grant, created by the administrator. It joins the configured
+  // default-user Group as it is created.
   async function account(name: string) {
     const credentials = {
       email: `default-users-${name}-${randomUUID()}@example.com`,
@@ -70,12 +80,27 @@ async function defaultUsersApp(
     };
   }
 
-  async function addDefaultUser(principalId: string) {
-    const added = await inject("PUT", `/iam/default-users/${principalId}`);
-    assert.equal(added.statusCode, 204, added.body);
-  }
+  return { ...agentApp, account };
+}
 
-  return { ...agentApp, account, addDefaultUser };
+/**
+ * A controller restarted on the same database with another `iam` configuration. Its
+ * `applyIAMConfiguration` is the startup call of the compositions.
+ */
+function restartedController(
+  controller: OpenClawController,
+  state: PostgresPlatformState,
+  iam: ReturnType<typeof defaultUsersIAM>,
+) {
+  const restarted = new OpenClawController(controller.installation, {
+    state,
+    recordOperations: false,
+    iamConfiguration: controllerIAMConfiguration(iam),
+  });
+  const driver = new NativeIAMDriver(state, { id: `restart-iam-${randomUUID()}` });
+  restarted.registerDriver(driver);
+  restarted.selectDriver("iam", driver.id);
+  return restarted;
 }
 
 /** The Namespace named default that bootstrap created, ready as reconciliation leaves it. */
@@ -96,45 +121,56 @@ test(
   requiresPostgres,
   async (t) => {
     const agentApp = await defaultUsersApp(t, "default-users");
-    const { inject, pool, account, addDefaultUser } = agentApp;
+    const { inject, pool, account } = agentApp;
     const namespaceId = await defaultNamespace(agentApp);
     const base = `/namespaces/${namespaceId}`;
-    const alice = await account("alice");
-    const bob = await account("bob");
 
-    // Bootstrap bound Default users to Agent Creator in default, and nothing else in it.
-    const builtIn = await pool.query(
-      `SELECT namespace_id, group_subject_id, role_id FROM occ.iam_access_bindings
-       WHERE id = 'binding_builtin_default_users_agent_create'`,
+    // Applying the configuration wrote the Roles and the Group as ordinary IAM rows, and bound
+    // the Group to Agent creation in default only: no Group binding grants Owner.
+    const roles = await pool.query(
+      "SELECT id FROM occ.iam_roles WHERE id LIKE 'role\\_config\\_%' ORDER BY id",
     );
-    assert.deepEqual(builtIn.rows, [
-      {
-        namespace_id: namespaceId,
-        group_subject_id: "group_builtin_default_users",
-        role_id: "role_builtin_agent_creator",
-      },
+    assert.deepEqual(
+      roles.rows.map(({ id }) => id),
+      ["role_config_agent_creator", "role_config_namespace_creator", "role_config_owner"],
+    );
+    // The application role may update only configured Roles: the administrator Role stays fixed.
+    await assert.rejects(
+      pool.query(
+        "UPDATE occ.iam_roles SET name = 'changed' WHERE id LIKE 'role\\_admin\\_%' RETURNING id",
+      ),
+      /iam_roles row is not configured/,
+    );
+    const groupBindings = await pool.query(
+      `SELECT namespace_id, role_id FROM occ.iam_access_bindings WHERE group_subject_id = $1`,
+      [DEFAULT_USER_GROUP],
+    );
+    assert.deepEqual(groupBindings.rows, [
+      { namespace_id: namespaceId, role_id: AGENT_CREATOR_ROLE },
     ]);
 
-    // Before membership, an ordinary account cannot create anything in default.
-    const refused = await alice.request("POST", `${base}/secrets`, {
-      name: `alice key ${randomUUID()}`,
-      value: `test-key-${randomUUID()}`,
-    });
-    assert.equal(refused.status, 403);
-
-    await addDefaultUser(alice.principalId);
-    await addDefaultUser(bob.principalId);
-    const members = await inject("GET", "/iam/default-users");
-    const memberIds = members
-      .json()
-      .data.map(({ principalId }: { principalId: string }) => principalId);
-    assert.ok(memberIds.includes(alice.principalId) && memberIds.includes(bob.principalId));
-    // Membership administration is Installation-administrator only.
-    assert.equal((await alice.request("GET", "/iam/default-users")).status, 403);
+    // Each account the administrator creates joins the configured Group in the same transaction,
+    // and its audit event says so.
+    const alice = await account("alice");
+    const bob = await account("bob");
+    const members = await pool.query(
+      "SELECT principal_id FROM occ.iam_group_memberships WHERE group_id = $1",
+      [DEFAULT_USER_GROUP],
+    );
+    assert.deepEqual(
+      members.rows.map(({ principal_id }) => principal_id).sort(),
+      [alice.principalId, bob.principalId].sort(),
+    );
+    const accountAudit = await pool.query(
+      `SELECT details->'groupIds' AS group_ids FROM occ.audit_events
+       WHERE action = 'openclaw.auth.accounts.create' AND details->>'principalId' = $1`,
+      [alice.principalId],
+    );
+    assert.deepEqual(accountAudit.rows, [{ group_ids: [DEFAULT_USER_GROUP] }]);
 
     // Alice completes the Agent workflow in default with no administrator action. Each create
-    // binds her to the Owner Role on exactly that resource, and her deploy, allowed by Owner,
-    // gives the Agent's ServicePrincipal operate on its Secret.
+    // binds her to the configured Owner Role on exactly that resource, and her deploy gives the
+    // Agent's ServicePrincipal operate on the Secret she can operate.
     const configuration = await alice.request("POST", `${base}/configurations`, {
       kind: "agent",
       values: createHarnessConfiguration("openclaw", "gpt-4.1"),
@@ -261,148 +297,155 @@ test(
       403,
     );
 
-    // With defaultUser.namespaceCreate absent, Default users cannot create Namespaces.
+    // The configuration binds no Namespace Creator, so Default users cannot create Namespaces.
     assert.equal(
       (await alice.request("POST", "/namespaces", { name: `alice ${randomUUID()}` })).status,
       403,
     );
 
-    // A deploy allowed only by a custom Role writes no grant and is refused as today: an
-    // administrator grants Bob deploy and operate on an Agent and Secret the administrator
-    // created, but not the Agent's ServicePrincipal.
+    // Any Role works for deploy-time grants. The administrator grants Bob deploy on its Agent
+    // and read on the Configuration through a custom Namespace Role, but not operate on the
+    // Agent's Secret: Bob's deploy writes no grant and the Agent principal check refuses it.
     const adminSecret = await inject("POST", `${base}/secrets`, {
       name: `admin key ${randomUUID()}`,
       value: `test-key-${randomUUID()}`,
     });
     assert.equal(adminSecret.statusCode, 201, adminSecret.body);
+    const adminSecretId = adminSecret.json().data.ref.id as string;
     const adminAgent = await inject("POST", `${base}/agents`, {
       name: `admin agent ${randomUUID()}`,
       configurationId: configuration.data.id,
       harnessAuth: { method: "api_key", source: adminSecret.json().data.ref },
     });
     assert.equal(adminAgent.statusCode, 201, adminAgent.body);
-    const role = await inject("POST", `${base}/iam/roles`, {
-      permissions: [
+    const adminAgentId = adminAgent.json().data.id as string;
+    const adminAgentPrincipal = adminAgent.json().data.servicePrincipalId as string;
+    const grantBob = async (
+      permissions: readonly { action: string; resourceKind: string }[],
+      targets: readonly [string, string][],
+    ) => {
+      const role = await inject("POST", `${base}/iam/roles`, { permissions });
+      assert.equal(role.statusCode, 201, role.body);
+      for (const [resourceKind, resourceId] of targets) {
+        const binding = await inject("POST", `${base}/iam/access-bindings`, {
+          subjectKind: "identity",
+          subjectId: bob.principalId,
+          roleId: role.json().data.id,
+          resourceKind,
+          resourceId,
+        });
+        assert.equal(binding.statusCode, 201, binding.body);
+      }
+    };
+    await grantBob(
+      [
         { action: "deploy", resourceKind: "agent" },
         { action: "read", resourceKind: "configuration" },
-        { action: "operate", resourceKind: "secret" },
       ],
-    });
-    assert.equal(role.statusCode, 201, role.body);
-    for (const [resourceKind, resourceId] of [
-      ["agent", adminAgent.json().data.id],
-      ["configuration", configuration.data.id],
-      ["secret", adminSecret.json().data.ref.id],
-    ]) {
-      const binding = await inject("POST", `${base}/iam/access-bindings`, {
-        subjectKind: "identity",
-        subjectId: bob.principalId,
-        roleId: role.json().data.id,
-        resourceKind,
-        resourceId,
-      });
-      assert.equal(binding.statusCode, 201, binding.body);
-    }
-    const customDeploy = await bob.request(
-      "POST",
-      `${base}/agents/${adminAgent.json().data.id}/deploy`,
+      [
+        ["agent", adminAgentId],
+        ["configuration", configuration.data.id],
+      ],
     );
-    assert.equal(customDeploy.status, 403);
-    const customGrants = await pool.query(
-      "SELECT 1 FROM occ.iam_access_bindings WHERE identity_subject_id = $1",
-      [adminAgent.json().data.servicePrincipalId],
+    const agentGrants = async () =>
+      (
+        await pool.query("SELECT 1 FROM occ.iam_access_bindings WHERE identity_subject_id = $1", [
+          adminAgentPrincipal,
+        ])
+      ).rowCount;
+    assert.equal((await bob.request("POST", `${base}/agents/${adminAgentId}/deploy`)).status, 403);
+    assert.equal(await agentGrants(), 0);
+    // Once a custom Role also lets Bob operate that Secret, his deploy grants the Agent exactly it.
+    await grantBob([{ action: "operate", resourceKind: "secret" }], [["secret", adminSecretId]]);
+    const customDeploy = await bob.request("POST", `${base}/agents/${adminAgentId}/deploy`);
+    assert.equal(customDeploy.status, 202, JSON.stringify(customDeploy.error));
+    const customGrant = await pool.query(
+      "SELECT resource_kind, resource_id FROM occ.iam_access_bindings WHERE identity_subject_id = $1",
+      [adminAgentPrincipal],
     );
-    assert.equal(customGrants.rowCount, 0);
-
-    // Removal stops new creates at once. What Alice created stays: her Agent and its Owner
-    // binding remain, though without Namespace read she cannot reach them through default.
-    const removed = await inject("DELETE", `/iam/default-users/${alice.principalId}`);
-    assert.equal(removed.statusCode, 204, removed.body);
-    const afterRemoval = await alice.request("POST", `${base}/secrets`, {
-      name: `alice key ${randomUUID()}`,
-      value: `test-key-${randomUUID()}`,
-    });
-    assert.equal(afterRemoval.status, 403);
-    const kept = await inject("GET", `${base}/agents/${agent.data.id}`);
-    assert.equal(kept.statusCode, 200, kept.body);
-    const keptOwner = await pool.query(
-      `SELECT 1 FROM occ.iam_access_bindings
-       WHERE identity_subject_id = $1 AND role_id = $2 AND resource_id = $3`,
-      [alice.principalId, OWNER_ROLE, agent.data.id],
-    );
-    assert.equal(keptOwner.rowCount, 1);
-    const membershipAudit = await pool.query(
-      `SELECT action FROM occ.audit_events
-       WHERE action LIKE 'openclaw.iam.default_users.%' AND details->>'principalId' = $1
-       ORDER BY occurred_at`,
-      [alice.principalId],
-    );
-    assert.deepEqual(
-      membershipAudit.rows.map(({ action }) => action),
-      ["openclaw.iam.default_users.add", "openclaw.iam.default_users.remove"],
-    );
+    assert.deepEqual(customGrant.rows, [{ resource_kind: "secret", resource_id: adminSecretId }]);
   },
 );
 
 test(
-  "defaultUser.namespaceCreate lets Default users create and own Namespaces until it is turned off",
+  "an iam configuration change at restart revokes Group grants and keeps what members created",
   requiresPostgres,
   async (t) => {
-    const agentApp = await defaultUsersApp(t, "default-users-namespaces", {
-      defaultUserNamespaceCreate: true,
-    });
-    const { controller, pool, principal, state, account, addDefaultUser } = agentApp;
-    // The compositions apply the setting at startup; this is the same call.
-    await controller.applyDefaultUserSettings();
+    const agentApp = await defaultUsersApp(
+      t,
+      "default-users-configuration",
+      defaultUsersIAM({ namespaceCreate: true }),
+    );
+    const { controller, pool, principal, state, account } = agentApp;
     const alice = await account("alice");
     const bob = await account("bob");
-    await addDefaultUser(alice.principalId);
 
-    // A Default users member creates a Namespace and owns all of it: a Namespace-wide Owner
-    // binding, which also let the same unit create the default Presets.
+    // With the Namespace Creator binding configured, a member creates a Namespace and owns all of
+    // it: a Namespace-wide Owner binding, which also let the same unit create the default Presets.
     const created = await alice.request("POST", "/namespaces", { name: `alice ${randomUUID()}` });
     assert.equal(created.status, 201);
     const namespace = created.data;
     const owners = await pool.query(
       `SELECT identity_subject_id, resource_kind FROM occ.iam_access_bindings
-       WHERE namespace_id = $1 AND role_id = $2 AND resource_kind IS NULL`,
+       WHERE namespace_id = $1 AND role_id = $2`,
       [namespace.id, OWNER_ROLE],
     );
     assert.deepEqual(owners.rows, [
       { identity_subject_id: alice.principalId, resource_kind: null },
     ]);
     assert.equal((await alice.request("GET", `/namespaces/${namespace.id}/presets`)).status, 200);
-    // Bob, who is not a member, can neither create a Namespace nor see Alice's.
-    assert.equal(
-      (await bob.request("POST", "/namespaces", { name: `bob ${randomUUID()}` })).status,
-      403,
-    );
+    // Bob, also a member, cannot see Alice's Namespace.
     assert.equal((await bob.request("GET", `/namespaces/${namespace.id}`)).status, 403);
 
-    // Restarting with the setting off deletes the Namespace Creator binding, audited, so new
-    // Namespaces stop while Alice keeps the one she owns.
-    const restarted = new OpenClawController(controller.installation, {
-      state,
-      recordOperations: false,
-      defaultUserNamespaceCreate: false,
-    });
-    const iam = new NativeIAMDriver(state, { id: "default-users-namespaces-restart-iam" });
-    restarted.registerDriver(iam);
-    restarted.selectDriver("iam", iam.id);
-    await restarted.applyDefaultUserSettings();
-    const deleted = await pool.query(
-      `SELECT actor_id FROM occ.audit_events
-       WHERE action = 'openclaw.iam.access_bindings.delete'
-         AND details->>'bindingId' = 'binding_builtin_default_users_namespace_create'
-         AND details->>'reason' = 'installation_configuration'`,
+    // A restart without the Namespace Creator binding and Role deletes both, audited with the
+    // Installation as actor, and narrows Agent Creator to Agents and Secrets. New Namespaces
+    // stop; Alice keeps the Namespace she owns.
+    const narrowed = defaultUsersIAM();
+    narrowed.roles = narrowed.roles
+      .filter((role) => role.id !== "namespace_creator")
+      .map((role) =>
+        role.id === "agent_creator"
+          ? { ...role, permissions: ["agent:create", "secret:create", "namespace:read"] }
+          : role,
+      );
+    await restartedController(controller, state, narrowed).applyIAMConfiguration();
+    const changes = await pool.query(
+      `SELECT action, details->>'roleId' AS role_id FROM occ.audit_events
+       WHERE actor_id = $1 AND details->>'reason' = 'installation_configuration'
+         AND action IN ('openclaw.iam.access_bindings.delete', 'openclaw.iam.roles.delete',
+                        'openclaw.iam.roles.update')
+       ORDER BY action`,
+      [controller.installation.id],
     );
-    assert.deepEqual(deleted.rows.at(-1), { actor_id: controller.installation.id });
+    assert.deepEqual(changes.rows, [
+      { action: "openclaw.iam.access_bindings.delete", role_id: "role_config_namespace_creator" },
+      { action: "openclaw.iam.roles.delete", role_id: "role_config_namespace_creator" },
+      { action: "openclaw.iam.roles.update", role_id: AGENT_CREATOR_ROLE },
+    ]);
     assert.equal(
       (await alice.request("POST", "/namespaces", { name: `alice ${randomUUID()}` })).status,
       403,
     );
     await controller.handleNamespaceLifecycle(principal.id, namespace.id, "ready");
     assert.equal((await alice.request("GET", `/namespaces/${namespace.id}`)).status, 200);
+    // The updated Role takes effect at once: Configuration create is gone in default.
+    const base = `/namespaces/${await defaultNamespace(agentApp)}`;
+    const configuration = await alice.request("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+    });
+    assert.equal(configuration.status, 403);
+
+    // The configuration cannot drop the Owner Role while Owner bindings use it: startup fails,
+    // names a binding, and changes nothing.
+    const withoutOwner = { ...narrowed, roles: narrowed.roles.filter(({ id }) => id !== "owner") };
+    delete (withoutOwner as { ownerRole?: string }).ownerRole;
+    await assert.rejects(
+      restartedController(controller, state, withoutOwner).applyIAMConfiguration(),
+      /role_config_owner.*binding_owner_/,
+    );
+    const ownerRole = await pool.query("SELECT 1 FROM occ.iam_roles WHERE id = $1", [OWNER_ROLE]);
+    assert.equal(ownerRole.rowCount, 1);
   },
 );
 
@@ -422,7 +465,7 @@ async function lockWaiters(pool: AgentApp["pool"], count: number) {
   }
 }
 
-/** The Default user's Secret, Configuration, and Agent in default, ready to deploy. */
+/** A Default user's Secret, Configuration, and Agent in default, ready to deploy. */
 async function ownedAgent(
   base: string,
   owner: { request: Awaited<ReturnType<typeof createAuthenticatedControllerRequest>> },
@@ -451,10 +494,9 @@ test(
   requiresPostgres,
   async (t) => {
     const agentApp = await defaultUsersApp(t, "default-users-session-fence");
-    const { pool, account, addDefaultUser } = agentApp;
+    const { pool, account } = agentApp;
     const base = `/namespaces/${await defaultNamespace(agentApp)}`;
     const alice = await account("alice");
-    await addDefaultUser(alice.principalId);
     const { secretId, agent } = await ownedAgent(base, alice);
     const user = await pool.query('SELECT id FROM occ."user" WHERE email = $1', [alice.email]);
     const userId = user.rows[0].id;
@@ -487,15 +529,14 @@ test(
 );
 
 test(
-  "a Default users removal and a member's create commit one after the other",
+  "an iam configuration change and a member's create commit one after the other",
   requiresPostgres,
   async (t) => {
-    const agentApp = await defaultUsersApp(t, "default-users-membership-fence");
-    const { pool, inject, account, addDefaultUser } = agentApp;
+    const agentApp = await defaultUsersApp(t, "default-users-configuration-fence");
+    const { controller, pool, state, account } = agentApp;
     const namespaceId = await defaultNamespace(agentApp);
     const base = `/namespaces/${namespaceId}`;
     const alice = await account("alice");
-    await addDefaultUser(alice.principalId);
     const user = await pool.query('SELECT id FROM occ."user" WHERE email = $1', [alice.email]);
     const secretCount = async () =>
       (
@@ -503,30 +544,33 @@ test(
           namespaceId,
         ])
       ).rows[0].n as number;
+    // A restart whose configuration no longer binds the Group in default.
+    const withoutAgentCreation = { ...defaultUsersIAM(), roleBindings: [] };
 
-    // Removal first: Alice's create waits at its authority fence while the administrator's
-    // removal commits. The create then authorizes against the committed removal and writes
-    // nothing, so no Owner binding is created from a membership that no longer exists.
+    // Configuration change first: Alice's create waits at its session fence while a restart
+    // applies the change and commits. The create then holds the IAM configuration lock,
+    // authorizes against the committed change, and writes nothing, so no Owner binding is
+    // created from a Group binding that no longer exists.
     const before = await secretCount();
     const userLock = await pool.connect();
     await userLock.query("BEGIN");
     await userLock.query('SELECT id FROM occ."user" WHERE id = $1 FOR UPDATE', [user.rows[0].id]);
     const refusedCreate = alice.request("POST", `${base}/secrets`, {
-      name: `alice after removal ${randomUUID()}`,
+      name: `alice after the change ${randomUUID()}`,
       value: `test-key-${randomUUID()}`,
     });
     await lockWaiters(pool, 1);
-    const removed = await inject("DELETE", `/iam/default-users/${alice.principalId}`);
-    assert.equal(removed.statusCode, 204, removed.body);
+    await restartedController(controller, state, withoutAgentCreation).applyIAMConfiguration();
     await userLock.query("COMMIT");
     userLock.release();
     assert.equal((await refusedCreate).status, 403);
     assert.equal(await secretCount(), before);
 
-    // Create first: Alice's create has authorized and holds her identity, then waits on the
-    // Namespace lock. The removal waits for that create to COMMIT, so the create keeps its Owner
-    // binding, as revocation keeps what people created, and her next create is refused.
-    await addDefaultUser(alice.principalId);
+    // Create first: Alice's create holds the IAM configuration lock shared and waits on the
+    // Namespace lock. The restart's exclusive lock waits for that create to COMMIT, so the create
+    // keeps its Owner binding, as a configuration change keeps what people created, and her next
+    // create is refused.
+    await restartedController(controller, state, defaultUsersIAM()).applyIAMConfiguration();
     const namespaceLock = await pool.connect();
     await namespaceLock.query("BEGIN");
     await namespaceLock.query("SELECT id FROM occ.namespaces WHERE id = $1 FOR UPDATE", [
@@ -535,7 +579,7 @@ test(
     const settled: string[] = [];
     const creating = alice
       .request("POST", `${base}/secrets`, {
-        name: `alice before removal ${randomUUID()}`,
+        name: `alice before the change ${randomUUID()}`,
         value: `test-key-${randomUUID()}`,
       })
       .then((response) => {
@@ -543,19 +587,17 @@ test(
         return response;
       });
     await lockWaiters(pool, 1);
-    const removing = inject("DELETE", `/iam/default-users/${alice.principalId}`).then(
-      (response) => {
-        settled.push("removal");
-        return response;
-      },
-    );
+    const changing = restartedController(controller, state, withoutAgentCreation)
+      .applyIAMConfiguration()
+      .then(() => {
+        settled.push("configuration");
+      });
     await lockWaiters(pool, 2);
     await namespaceLock.query("COMMIT");
     namespaceLock.release();
-    const [created, removedAfter] = await Promise.all([creating, removing]);
+    const [created] = await Promise.all([creating, changing]);
     assert.equal(created.status, 201, JSON.stringify(created.error));
-    assert.equal(removedAfter.statusCode, 204, removedAfter.body);
-    assert.deepEqual(settled, ["create", "removal"]);
+    assert.deepEqual(settled, ["create", "configuration"]);
     const owner = await pool.query(
       "SELECT 1 FROM occ.iam_access_bindings WHERE id = $1 AND identity_subject_id = $2",
       [`binding_owner_${created.data.ref.id}`, alice.principalId],
@@ -574,11 +616,10 @@ test(
   requiresPostgres,
   async (t) => {
     const agentApp = await defaultUsersApp(t, "default-users-owner-revocation");
-    const { pool, inject, account, addDefaultUser } = agentApp;
+    const { pool, inject, account } = agentApp;
     const namespaceId = await defaultNamespace(agentApp);
     const base = `/namespaces/${namespaceId}`;
     const alice = await account("alice");
-    await addDefaultUser(alice.principalId);
     const { secretId, agent } = await ownedAgent(base, alice);
 
     // Another writer holds the Namespace lock. The administrator's delete of only the Agent's

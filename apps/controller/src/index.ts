@@ -8,7 +8,6 @@ import {
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
   CredentialSourceResponse,
-  DEFAULT_USERS_GROUP_ID,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   isSecretHarnessAuth,
@@ -155,7 +154,7 @@ import {
 } from "./http/route-compilers.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
-import type { RequestContext, ResourceHandler, ResourceHandlers } from "./http/types.ts";
+import type { RequestContext, ResourceHandlers } from "./http/types.ts";
 
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
 
@@ -2197,7 +2196,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             event(operation, request, target, "bootstrap", context, decision.evidence),
           );
         });
-        await created.applyDefaultUserSettings();
+        await created.applyIAMConfiguration();
         controller = created;
         reply.status(201).send({
           data: clientInstallation(
@@ -2264,63 +2263,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: { url: options.observabilityUrl ?? null },
         meta: { requestId: request.id },
       });
-      return;
-    }
-
-    // IAM policy writes hold the caller's session through COMMIT, so a sign-out or account
-    // disable cannot commit in between.
-    const transactHoldingSession: Parameters<ResourceHandler>[0]["transactIAM"] = (work) => {
-      const admitted = admissions.get(request);
-      if (admitted === undefined) {
-        throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
-      }
-      if (admitted.method !== "session") {
-        return controller!.transact(work);
-      }
-      return options.auth.withSessionAuthority(admitted.session, () =>
-        controller!.transact(async (unit) => {
-          await options.auth.holdSession(unit, admitted.session, request);
-          const result = await work(unit);
-          // Recheck the session after the protected policy and audit work.
-          await options.auth.holdSession(unit, admitted.session, request);
-          return result;
-        }),
-      );
-    };
-
-    if (operation.operationId === "listDefaultUsers") {
-      const members = await controller.listDefaultUsers(context.actorId);
-      reply.send({
-        data: members.map((principalId) => ({ principalId })),
-        meta: { requestId: request.id },
-      });
-      return;
-    }
-
-    if (
-      operation.operationId === "addDefaultUser" ||
-      operation.operationId === "removeDefaultUser"
-    ) {
-      const principalId = params.principalId as string;
-      await transactHoldingSession(async (unit) => {
-        const changed = await controller!.setDefaultUser(
-          context.actorId,
-          principalId,
-          operation.operationId === "addDefaultUser",
-        );
-        const recorded = event(
-          operation,
-          request,
-          { kind: "installation", id: installationId },
-          "mutation",
-          context,
-        );
-        await unit.audit.append({
-          ...recorded,
-          details: { ...recorded.details, groupId: DEFAULT_USERS_GROUP_ID, principalId, changed },
-        });
-      });
-      reply.status(204).send();
       return;
     }
 
@@ -2624,7 +2566,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         body,
         namespaceId,
         callerMay: (action, resource) => callerMay(context.actorId, action, resource),
-        transactIAM: (work) => transactHoldingSession(work),
+        transactIAM: async (work) => {
+          const admitted = admissions.get(request);
+          if (admitted === undefined) {
+            throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
+          }
+          if (admitted.method !== "session") {
+            return controller!.transact(work);
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            controller!.transact(async (unit) => {
+              await options.auth.holdSession(unit, admitted.session, request);
+              const result = await work(unit);
+              // Recheck the session after the protected policy and audit work.
+              await options.auth.holdSession(unit, admitted.session, request);
+              return result;
+            }),
+          );
+        },
         mutationEvent: (resource, details, authorization, failure) => {
           const recorded = event(
             operation,
@@ -4371,10 +4330,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           password,
           ...(name === undefined ? {} : { name }),
         });
-        const seed = options.auth.principalSeed(
-          prepared,
-          roleId === undefined ? { grant: "none" } : { roleId },
-        );
+        // Each new account joins the configured `iam.defaultUserGroups` in its creating unit.
+        const groupIds = controller?.defaultUserGroupIds ?? [];
+        const seed = {
+          ...options.auth.principalSeed(
+            prepared,
+            roleId === undefined ? { grant: "none" } : { roleId },
+          ),
+          ...(groupIds.length === 0 ? {} : { groupIds }),
+        };
         const baseAuditEvent = event(
           createAuthAccountOperation,
           request,
@@ -4390,6 +4354,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ...baseAuditEvent.details,
             principalId: seed.principal.id,
             ...(roleId === undefined ? { grant: "none" } : { roleId }),
+            ...(groupIds.length === 0 ? {} : { groupIds }),
           },
         };
         try {

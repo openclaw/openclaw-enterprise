@@ -1,101 +1,161 @@
-# Default users and built-in Roles
+# Default users and configured Roles
 
-An Installation administrator can let selected people create Agents without
-other grants. Each such person is a member of the built-in **Default users**
-Group. Members create Agents, Configurations, Secrets, and credential sources in
-the shared `default` Namespace, and each creator owns what it creates. An
-Installation setting can also let members create their own Namespaces. This page
-defines the built-in Roles, the Group, the Owner bindings, the Namespace create
-setting, and the grants that OCC writes at deployment. To add or remove a
-member, follow
+An Installation administrator can let people create Agents without other
+grants. The Installation configuration declares ordinary Roles, Groups, and
+Group bindings. Each account created through the accounts API joins the
+configured default Groups. A Group binding can let members create Agents,
+Configurations, Secrets, and credential sources in the shared `default`
+Namespace, or create Namespaces. Each creator owns what it creates. This page
+defines the `iam` configuration, how OCC applies it, the Owner bindings, and the
+grants that OCC writes at deployment. To set it up, follow
 [Let people create Agents](../../guides/topics/iam.md#let-people-create-agents).
 [Authorization](../authorization.md) defines the general policy model.
 
-## Built-in Roles
+## Installation iam configuration
 
-The database stores four Installation-level Roles. Nobody can change or delete
-them, only OCC binds them, and each Role admits one binding shape:
+The optional `iam` block of the
+[Installation startup configuration](../configuration.md#installation-startup-configuration)
+has four fields:
 
-| Role ID                          | Name              | Permissions                                      | Permitted bindings                                                                                                   |
-| -------------------------------- | ----------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `role_builtin_agent_creator`     | Agent Creator     | The Agent Creator set below                      | Only `binding_builtin_default_users_agent_create`: Default users, Namespace-wide in one Namespace.                   |
-| `role_builtin_namespace_creator` | Namespace Creator | `namespace:create`                               | Only `binding_builtin_default_users_namespace_create`: Default users, Installation-wide.                             |
-| `role_builtin_owner`             | Owner             | The Namespace set below, plus `namespace:delete` | One identity in one Namespace: an exact resource that is not a Namespace, or Namespace-wide for the whole Namespace. |
-| `role_builtin_namespace_member`  | Namespace member  | The Namespace set below                          | Namespace-wide. No current operation binds it.                                                                       |
+| Field               | Value                                                                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `roles`             | Roles, each an `id` and a nonempty `permissions` list of `resourceKind:action` strings, such as `agent:create`.                         |
+| `defaultUserGroups` | Group names. Each account created through `POST /api/auth/accounts` joins each of these Groups.                                         |
+| `ownerRole`         | The ID of a configured Role. OCC binds each creator to it on what it creates.                                                           |
+| `roleBindings`      | Entries of `group`, `role`, and `scope`. The scope is `installation`, or `{ namespace: <name> }` for each Namespace that has that name. |
 
-The Agent Creator set is `create` on `agent`, `configuration`, `secret`, and
-`credential_source`, and `read` on `namespace` and `preset`.
+Role IDs and Group names are 1–63 lowercase letters, digits, `_`, or `-`. A
+permission must be one that some operation checks, as the
+[permissions cheat sheet](../cheatsheets/permissions.md) lists, and cannot be an
+`installation` permission. A binding names a configured Role. A Group named in a
+binding but not in `defaultUserGroups` gets no members. Startup refuses a
+configuration that breaks these rules. This example lets Default users create
+Agents in `default` and Namespaces of their own, and own what they create:
 
-The Namespace set holds every action that OCC checks inside a Namespace:
+```yaml
+iam:
+  roles:
+    - id: agent_creator
+      permissions:
+        - agent:create
+        - configuration:create
+        - secret:create
+        - credential_source:create
+        - namespace:read
+        - preset:read
+    - id: namespace_creator
+      permissions: [namespace:create]
+    - id: owner
+      permissions:
+        [
+          agent:create,
+          agent:read,
+          agent:update,
+          agent:delete,
+          agent:deploy,
+          agent:operate,
+          agent:administer,
+          agent:read_logs,
+          agent:manage_policy,
+          agent_revision:read,
+          sandbox_policy:read,
+          sandbox_policy:update,
+          configuration:create,
+          configuration:read,
+          configuration:update,
+          configuration:delete,
+          preset:create,
+          preset:read,
+          preset:update,
+          preset:delete,
+          service_account:create,
+          service_account:read,
+          service_account:update,
+          service_account:delete,
+          secret:create,
+          secret:read,
+          secret:update,
+          secret:delete,
+          secret:operate,
+          credential_source:create,
+          credential_source:read,
+          credential_source:update,
+          credential_source:delete,
+          credential_source:operate,
+          namespace:read,
+          namespace:delete,
+        ]
+  defaultUserGroups: [default-user]
+  ownerRole: owner
+  roleBindings:
+    - group: default-user
+      role: agent_creator
+      scope: { namespace: default }
+    - group: default-user
+      role: namespace_creator
+      scope: installation
+```
 
-| Resource kind                                | Actions                                                                                               |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `agent`                                      | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `manage_policy` |
-| `configuration`, `preset`, `service_account` | `create`, `read`, `update`, `delete`                                                                  |
-| `secret`, `credential_source`                | `create`, `read`, `update`, `delete`, `operate`                                                       |
-| `sandbox_policy`                             | `read`, `update`                                                                                      |
-| `agent_revision`, `namespace`                | `read`                                                                                                |
+Do not bind the Owner Role to a Group: a Namespace-wide Owner binding gives
+every member every permission on every resource in that Namespace.
 
-An exact binding applies only the permissions whose kind matches its resource,
-so one Owner Role serves every resource kind. An exact Agent binding also
-applies to the Agent's revisions and sandbox policy. No built-in Role changes IAM
-policy or holds an `installation` permission. Per-Agent sandbox policy editing
-still needs an administrator to enable it; see
-[policy authority](../sandbox-policies.md#authority-and-admission).
+## How OCC applies the configuration
 
-Database triggers refuse updates and deletes of the four Roles, the Default
-users Group, and the Agent Creator binding. Namespace deletion removes the Agent
-Creator binding with the rest of the Namespace's policy. The
-`iam_access_bindings_built_in_role_shape` constraint enforces the binding
-shapes in the table. The
+At startup, and right after Installation bootstrap, OCC writes the configuration
+to IAM policy in one transaction:
+
+| Configuration item | IAM policy row                                            |
+| ------------------ | --------------------------------------------------------- |
+| Role `<id>`        | Installation Role `role_config_<id>`, named `<id>`.       |
+| Group `<name>`     | Installation Group `group_config_<name>`, named `<name>`. |
+| Binding in a scope | Group binding `binding_config_<digest>` with no resource. |
+
+OCC adds the rows that are missing and updates a Role's permissions when they
+changed. It deletes each `binding_config_` binding that the configuration no
+longer lists, then each configured Role or Group that the configuration no
+longer lists. If a binding that OCC did not configure, such as an Owner
+binding, still uses a removed Role or Group, startup fails and names the
+binding. Delete that binding, or list the Role or Group again. API and worker
+must use the same `iam` value.
+
+When OCC creates a Namespace, it writes the configured bindings whose scope names
+that Namespace in the same transaction. Bootstrap creates `default`, so a binding
+scoped to `default` exists once the configuration is applied. Deleting a
+Namespace deletes its configured bindings with the rest of its policy.
+
+Each change records an audit event with the Installation as actor and
+`reason: "installation_configuration"`, or the creator as actor and
+`reason: "namespace_create"`: `openclaw.iam.roles.create`, `.update`, or
+`.delete`; `openclaw.iam.groups.create` or `.delete`; and
+`openclaw.iam.access_bindings.create` or `.delete`.
+
+Database constraints keep a `role_config_` Role at Installation scope without
+`installation` permissions. Only configured Roles can change, and only
+configured Groups and their memberships can be deleted. The
 [Namespace policy API](../authorization.md#manage-namespace-policy) cannot bind
-these Roles because they are not Namespace Roles, and
-[account provisioning](../authentication.md#account-provisioning) refuses them
-as a `roleId`.
+configured Roles because they are not Namespace Roles. It can delete a
+configured binding in a Namespace; the next startup writes it again.
+[Account provisioning](../authentication.md#account-provisioning) refuses a
+configured Role as `roleId`.
 
-## Default users Group
+## Group membership
 
-The Group `group_builtin_default_users` ("Default users") holds Installation
-Principals: human accounts without a Namespace. Signing in does not add a person
-to the Group; an Installation administrator adds each member explicitly.
+Each account that `POST /api/auth/accounts` creates joins every
+`defaultUserGroups` Group in the transaction that creates it. Its
+`openclaw.auth.accounts.create` audit event lists them in `groupIds`. Signing in
+does not change membership.
 
-| Operation                                 | Result                                                            |
-| ----------------------------------------- | ----------------------------------------------------------------- |
-| `GET /iam/default-users`                  | `200` with `data`, a list of `{ "principalId": "..." }` entries.  |
-| `PUT /iam/default-users/{principalId}`    | `204`. Adding an existing member changes nothing.                 |
-| `DELETE /iam/default-users/{principalId}` | `204`. Removing a Principal that is not a member changes nothing. |
+There is no API to add or remove a member. An account created before a Group was
+listed does not join it. To end a person's access, remove the binding from the
+configuration or disable the account.
 
-Each operation requires Installation `administer`. The
-[generated API reference](../api.md#get-iamdefaultusers) owns the schemas.
-There is no CLI or console support.
-
-- A `principalId` that is not an Installation Principal, such as a
-  ServicePrincipal, returns `400 INVALID_REQUEST` at `/principalId`.
-- A disabled acting account returns `403`.
-- An IAM Driver without the Group membership methods, or one that does not
-  declare `namespacePolicyTransaction: "platform-unit-of-work"`, returns
-  `503 DEPENDENCY_UNAVAILABLE`; see the
-  [IAM Driver contract](../drivers/iam.md#group-membership-and-built-in-binding-operations).
-
-Each `PUT` and `DELETE` records `openclaw.iam.default_users.add` or
-`openclaw.iam.default_users.remove` with the Installation as resource and
-`groupId`, `principalId`, and `changed` in details. `changed` is `false` when
-the membership already matched.
-
-Removal stops new creates at once. Everything the person created stays: their
-Owner bindings, Namespaces, Agents, and deploy-time grants remain until an
-administrator deletes them or moves the Owner binding. Without Agent Creator, a
-removed person loses `namespace:read` on `default` and cannot reach their Agents
-there through the API, but those Agents keep running.
+A configuration change or a disabled account stops new creates at once.
+Everything the person created stays: their Owner bindings, Namespaces, Agents,
+and deploy-time grants remain until an administrator deletes them or moves the
+Owner binding. Without Namespace read on `default`, the person cannot reach
+their Agents there through the API, but those Agents keep running.
 
 ## The default Namespace
-
-Default users create Agents in the Namespace named `default`, which
-[Installation bootstrap](../namespaces.md) creates. When OCC creates a Namespace
-with that name, it also writes the Agent Creator binding for Default users
-there, audited as `openclaw.iam.access_bindings.create` with
-`reason: "default_namespace"`. Migration `0066_default_users` writes the same
-binding for an Installation that already has the Namespace.
 
 Members of `default` share one Kubernetes namespace. Lists return only the
 resources that the caller can read, so each member sees only their own Agents,
@@ -110,75 +170,61 @@ except in Namespaces they own.
 
 ## Creators own what they create
 
-When a principal creates a Namespace, Agent, Configuration, Secret, credential
-source, Preset, or ServiceAccount, OCC binds that principal to the Owner Role in
-the same transaction. Guided provisioning binds the person who requested it to
-the Agent and Configuration it creates. The rule covers every creator, including
-administrators and ServiceAccounts:
+When `ownerRole` is set and a principal creates a Namespace, Agent,
+Configuration, Secret, credential source, Preset, or ServiceAccount, OCC binds
+that principal to the Owner Role in the same transaction. Guided provisioning
+binds the person who requested it to the Agent and Configuration it creates. The
+rule covers every creator, including administrators and ServiceAccounts:
 
-- A Namespace gets a Namespace-wide binding, so the creator holds every
-  Namespace permission there. That grant lets the same transaction create the
-  Namespace's default Presets.
+- A Namespace gets a Namespace-wide binding, so the creator holds every Owner
+  permission there. That grant lets the same transaction create the Namespace's
+  default Presets.
 - Any other resource gets an exact binding on that resource. An Agent's Owner
   binding also covers its revisions and sandbox policy, so the owner can read
   each revision and the deployment status of its deploys.
 - The binding ID is `binding_owner_<resource-id>`. The audit event is
   `openclaw.iam.access_bindings.create` with `reason: "creator"`.
 
-Deleting a resource deletes its exact bindings, including the Owner binding. To
-change an owner, an administrator deletes the Owner binding by its ID through
-the Namespace policy API and grants the new owner. An administrator's Owner
-bindings add nothing to the administrator binding, but they stay if that binding
-is removed.
+Without `ownerRole`, OCC writes no Owner binding. Deleting a resource deletes its
+exact bindings, including the Owner binding. To change an owner, an
+administrator deletes the Owner binding by its ID through the Namespace policy
+API and grants the new owner. An administrator's Owner bindings add nothing to
+the administrator binding, but they stay if that binding is removed.
 
-Each create or deploy that writes an Owner binding or a deploy-time grant
-holds the caller's session until COMMIT and authorizes only after that. A
-sign-out, account disable, removal from Default users, or delete of an
-AccessBinding that allowed the request commits either before it, so the request
-is refused and writes nothing, or after its COMMIT.
+Each create or deploy that writes an Owner binding or a deploy-time grant holds
+the caller's session and the IAM configuration lock until COMMIT, and authorizes
+only after that. A sign-out, account disable, configuration change, or delete of
+an AccessBinding that allowed the request commits either before it, so the
+request is refused and writes nothing, or after its COMMIT.
 
 OCC writes no Owner binding when the selected IAM Driver has no
 `createOwnerBinding` member. A Driver that has it but does not join the platform
 transaction makes every create return `503` and write nothing.
 
-## Let Default users create Namespaces
-
-The `defaultUser.namespaceCreate` field in
-[Installation startup configuration](../configuration.md#installation-startup-configuration)
-is `false` when absent. At startup, and right after Installation bootstrap, OCC
-writes or deletes the Namespace Creator binding to match it. Each change records
-`openclaw.iam.access_bindings.create` or `openclaw.iam.access_bindings.delete`
-with the Installation as actor and resource and
-`reason: "installation_configuration"`.
-
-With the setting on, a member's `POST /namespaces` creates the Namespace and its
-Namespace-wide Owner binding. `existingNamespace` still requires Installation
-`administer`. Turning the setting off stops new Namespaces; the Namespaces that
-members own stay. OCC has no Namespace limit for each person.
-
 ## Grant an Agent its credentials at deployment
 
 The Agent's own ServicePrincipal needs `operate` on each Secret and credential
-source the Agent uses. When the built-in Owner or Namespace member Role is among
-the Roles that allow the caller `agent:deploy`, the deploy request writes the
-missing grants. OCC checks each source that the Agent references:
+source the Agent uses. A caller allowed to deploy the Agent writes the missing
+grants in the deploy request. OCC checks each source that the Agent references:
 
 - Secrets in the Configuration's `secretBindings`.
 - The Secret or credential source in the Agent's `harnessAuth`.
 - Each entry in the Agent's `credentialSources`.
 
-For each source where a built-in Role also allows the caller `operate`, and the
-Agent's ServicePrincipal does not have `operate`, OCC binds the ServicePrincipal
-to that exact source. In `default`, that is only a source the caller owns. OCC
-uses the Role `role_<namespace-id>_agent_secret_operate` or
+For each source that the caller can `operate`, through any Role, and on which
+the Agent's ServicePrincipal does not have `operate`, OCC binds the
+ServicePrincipal to that exact source. In `default`, a Default user can operate
+only the sources they own. OCC uses the Role
+`role_<namespace-id>_agent_secret_operate` or
 `role_<namespace-id>_agent_credential_source_operate`, created on first use,
 and the binding ID `binding_<agent-id>_<source-id>_operate`. Each binding
 records `openclaw.iam.access_bindings.create` with the source as resource and
 `reason: "agent_deploy"` and `agentId` in details. The grants commit with the
 deployment; a refused deployment writes none.
 
-A deploy that only custom Roles allow writes no grant. The Agent principal check
-then refuses it until an administrator grants access, as in
+A source that the caller cannot operate gets no grant. The Agent principal check
+then refuses the deploy until someone who can operate the source deploys, or an
+administrator grants access as in
 [Let an Agent use a Secret](../../guides/topics/iam.md#let-an-agent-use-a-secret).
 OCC does not remove these grants when the Agent stops using a source. Deleting
 the Agent or the source removes them, as
@@ -188,10 +234,10 @@ the Agent or the source removes them, as
 
 These parts of the Default users design are not implemented:
 
-- Identity provider group mappings and membership changes at sign-in.
-  Administrators still create each account and add each member.
+- Identity provider group mappings, membership changes at sign-in, and an API
+  to add or remove Group members.
 - Namespace-wide and Group bindings through the Namespace policy API.
-- Shared team Namespaces. Nothing binds the Namespace member Role.
+- Shared team Namespaces.
 - Removal of deploy-time grants when an Agent stops using a source.
 - CLI and console support for Default users.
 

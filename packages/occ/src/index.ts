@@ -28,9 +28,7 @@ export {
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
-  BUILT_IN_ROLE_IDS,
-  DEFAULT_USERS_BINDING_IDS,
-  DEFAULT_USERS_GROUP_ID,
+  CONFIGURED_IAM_ID_PREFIXES,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
@@ -173,7 +171,8 @@ import type {
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
   HarnessExecutionMode,
-  IAMDefaultUsersBindingInput,
+  IAMConfiguredPolicy,
+  IAMConfiguredPolicyChanges,
   IAMDriver,
   Installation,
   InstallationDeploymentInventory,
@@ -778,15 +777,32 @@ export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 /** Holds the caller's authority in a unit of work; throws when it is no longer current. */
 export type AuthorityFence = (state: PlatformUnitOfWork) => Promise<void>;
 
+/**
+ * The Installation `iam` configuration (RFC-0026), with the configuration's own names. OCC writes
+ * each Role, Group, and binding as an ordinary IAM row with a configured ID prefix.
+ */
+export interface InstallationIAMConfiguration {
+  readonly roles: readonly {
+    readonly id: string;
+    readonly permissions: readonly Permission[];
+  }[];
+  /** Groups that each account created through `POST /api/auth/accounts` joins. */
+  readonly defaultUserGroups: readonly string[];
+  /** The configured Role that OCC binds to each creator on what it creates. */
+  readonly ownerRole?: string;
+  readonly roleBindings: readonly {
+    readonly group: string;
+    readonly role: string;
+    readonly scope: "installation" | { readonly namespace: string };
+  }[];
+}
+
 export interface ControllerOptions {
   readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
-  /**
-   * Installation configuration `defaultUser.namespaceCreate`: whether Default users may create
-   * Namespaces. `applyDefaultUserSettings` writes or deletes the Namespace Creator binding.
-   */
-  readonly defaultUserNamespaceCreate?: boolean;
+  /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
+  readonly iamConfiguration?: InstallationIAMConfiguration;
   readonly authorize?: (
     request: AuthorizationRequest,
   ) => AuthorizationDecision | Promise<AuthorizationDecision>;
@@ -1996,7 +2012,7 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
-  private readonly defaultUserNamespaceCreate: boolean;
+  private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
@@ -2044,7 +2060,9 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
-    this.defaultUserNamespaceCreate = options.defaultUserNamespaceCreate === true;
+    if (options.iamConfiguration !== undefined) {
+      this.iamConfiguration = options.iamConfiguration;
+    }
     for (const registration of options.driverConfigurations ?? []) {
       this.configurations.register(registration);
     }
@@ -2539,52 +2557,16 @@ export class OpenClawController {
     );
   }
 
-  /** Principal ids in the built-in Default users Group; Installation administrators only. */
-  async listDefaultUsers(principalId: string): Promise<readonly string[]> {
-    await this.authorize(principalId, "administer", {
-      kind: "installation",
-      id: this.installation.id,
-    });
-    const driver = this.iamPolicyDriver("listGroupMembers");
-    return this.read((state) =>
-      this.iamPolicyOperation(() =>
-        driver.listGroupMembers!({ policy: state.iamPolicy }, DEFAULT_USERS_GROUP_ID),
-      ),
-    );
-  }
-
   /**
-   * Adds or removes one Installation Principal in Default users. Returns false when the
-   * membership already matched. Removal leaves the Namespaces the person owns in place.
+   * Configured Group IDs that each account created through the API joins: none when the
+   * selected IAM Driver does not hold configured policy in this State.
    */
-  async setDefaultUser(principalId: string, memberId: string, member: boolean): Promise<boolean> {
-    if (!isNonEmptyString(memberId)) {
-      throw new IAMPolicyValidationError(
-        "/principalId",
-        "The exact Principal identity is missing.",
-      );
+  get defaultUserGroupIds(): readonly string[] {
+    const groups = this.iamConfiguration?.defaultUserGroups ?? [];
+    if (groups.length === 0 || this.occBindingDriver("applyConfiguredPolicy") === undefined) {
+      return Object.freeze([]);
     }
-    const driver = this.iamPolicyDriver(member ? "addGroupMember" : "removeGroupMember");
-    if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
-      throw new DependencyUnavailableError(
-        "Group membership changes require transactional IAM Driver support.",
-      );
-    }
-    return this.mutate(async (state) => {
-      if (!(await state.installations.holdPrincipalAccount(principalId))) {
-        throw new CallerStateDeniedError("The acting account is disabled.");
-      }
-      await this.authorize(principalId, "administer", {
-        kind: "installation",
-        id: this.installation.id,
-      });
-      const input = { groupId: DEFAULT_USERS_GROUP_ID, principalId: memberId };
-      return this.iamPolicyOperation(() =>
-        member
-          ? driver.addGroupMember!({ policy: state.iamPolicy }, input)
-          : driver.removeGroupMember!({ policy: state.iamPolicy }, input),
-      );
-    });
+    return Object.freeze(groups.map(configuredGroupId));
   }
 
   async createIAMAccessBinding(
@@ -4851,7 +4833,7 @@ export class OpenClawController {
       throw new ScopeViolationError("The Namespace name is invalid.");
     }
     return this.mutate(async (state) => {
-      await this.holdAuthority(state, principalId);
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "namespace",
         id: this.installation.id,
@@ -4891,13 +4873,8 @@ export class OpenClawController {
         id: namespace.id,
         namespaceId: namespace.id,
       });
-      if (namespace.name === BOOTSTRAP_DEFAULT_NAMESPACE_NAME) {
-        await this.bindDefaultUsers(state, principalId, {
-          role: "agentCreator",
-          namespaceId: namespace.id,
-          bound: true,
-        });
-      }
+      // Configured Group bindings that name this Namespace, such as Agent creation in default.
+      await this.applyConfiguredPolicy(state, principalId, namespace);
       await this.ensureNamespaceDefaultPresets(state, principalId, namespace);
       await this.record(state, {
         kind: "namespace",
@@ -4912,13 +4889,14 @@ export class OpenClawController {
   }
 
   /**
-   * The IAM Driver that writes built-in bindings, or undefined when it has no such member or
+   * The IAM Driver that writes configured policy, Owner bindings, and deploy-time grants, or
+   * undefined when it has no such member or
    * this controller's State is not where its policy lives: decisions from the `authorize`
    * option, or a Native IAM Driver that reads another store. Only the Driver's own policy
    * source can hold bindings it will read.
    */
-  private builtInBindingDriver(
-    method: "createOwnerBinding" | "setDefaultUsersBinding",
+  private occBindingDriver(
+    method: "createOwnerBinding" | "applyConfiguredPolicy" | "createNamespaceAccessBinding",
   ): IAMDriver | undefined {
     if (this.authorization !== undefined) {
       return undefined;
@@ -4933,16 +4911,12 @@ export class OpenClawController {
     }
     if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
       throw new DependencyUnavailableError(
-        "Built-in IAM bindings require transactional IAM Driver support.",
+        "Configured IAM policy requires transactional IAM Driver support.",
       );
     }
     return driver;
   }
 
-  /**
-   * The creator of a resource gets the built-in Owner Role on it, in the creating unit
-   * (RFC-0026): Namespace-wide for a Namespace, exact for anything else.
-   */
   /**
    * Runs `work` with a fence that each transaction writing durable authority applies first: the
    * HTTP layer holds the caller's session through COMMIT, as Namespace policy writes do, so a
@@ -4954,22 +4928,31 @@ export class OpenClawController {
 
   /**
    * Fences a transaction that writes durable authority (an Owner binding or deploy-time grants)
-   * before it authorizes. It applies the caller's session fence, if any, then holds the
-   * Principal's authority lock, which a Default users removal takes exclusively, so the removal either
-   * commits first and the authorization below sees it, or waits for this COMMIT. Session, then
-   * identity: the order a removal takes them too.
+   * before it authorizes. It applies the caller's session fence, if any, then holds the IAM
+   * configuration lock shared. Applying a changed `iam` configuration takes that lock
+   * exclusively, so it commits either before this, and the authorization below sees it, or
+   * after this COMMIT.
    */
-  private async holdAuthority(state: PlatformUnitOfWork, principalId: string): Promise<void> {
+  private async holdAuthority(state: PlatformUnitOfWork): Promise<void> {
     await this.authorityFence.getStore()?.(state);
-    await state.installations.holdPrincipalIdentity(principalId);
+    await state.installations.holdIAMConfiguration("shared");
   }
 
+  /**
+   * The creator of a resource gets the configured Owner Role on it, in the creating unit
+   * (RFC-0026): Namespace-wide for a Namespace, exact for anything else. Without `ownerRole`,
+   * OCC writes no Owner binding.
+   */
   private async bindCreator(
     state: PlatformUnitOfWork,
     principalId: string,
     resource: ResourceRef & { readonly namespaceId: string },
   ): Promise<void> {
-    const driver = this.builtInBindingDriver("createOwnerBinding");
+    const ownerRole = this.iamConfiguration?.ownerRole;
+    if (ownerRole === undefined) {
+      return;
+    }
+    const driver = this.occBindingDriver("createOwnerBinding");
     if (driver === undefined) {
       return;
     }
@@ -4980,6 +4963,7 @@ export class OpenClawController {
           id: `binding_owner_${resource.id}`,
           namespaceId: resource.namespaceId,
           principalId,
+          roleId: configuredRoleId(ownerRole),
           ...(resource.kind === "namespace"
             ? {}
             : { resourceKind: resource.kind, resourceId: resource.id }),
@@ -4990,43 +4974,127 @@ export class OpenClawController {
   }
 
   /**
-   * Writes or deletes one built-in Default users binding, audited when it changes. The Agent
-   * Creator binding follows the Namespace named `default`; the Namespace Creator binding
-   * follows `defaultUser.namespaceCreate`.
+   * The configured policy that OCC writes: each Role and Group with its configured ID, and each
+   * Group binding in its scope. A binding that names a Namespace is written for each of
+   * `namespaces` with that name.
    */
-  private async bindDefaultUsers(
+  private configuredPolicy(namespaces: readonly Readonly<Namespace>[]): IAMConfiguredPolicy {
+    const configuration = this.iamConfiguration;
+    if (configuration === undefined) {
+      return Object.freeze({ roles: [], groups: [], bindings: [] });
+    }
+    const groupNames = new Set([
+      ...configuration.defaultUserGroups,
+      ...configuration.roleBindings.map((binding) => binding.group),
+    ]);
+    const bindings: AccessBinding[] = [];
+    for (const { group, role, scope } of configuration.roleBindings) {
+      const namespaceIds =
+        scope === "installation"
+          ? [undefined]
+          : namespaces
+              .filter((namespace) => namespace.name === scope.namespace)
+              .map((namespace) => namespace.id);
+      for (const namespaceId of namespaceIds) {
+        bindings.push({
+          id: configuredBindingId(group, role, namespaceId),
+          ...(namespaceId === undefined ? {} : { namespaceId }),
+          subjectKind: "group",
+          subjectId: configuredGroupId(group),
+          roleId: configuredRoleId(role),
+        });
+      }
+    }
+    return Object.freeze({
+      roles: configuration.roles.map((role) => ({
+        id: configuredRoleId(role.id),
+        name: role.id,
+        permissions: role.permissions,
+      })),
+      groups: [...groupNames].map((name) => ({ id: configuredGroupId(name), name })),
+      bindings,
+    });
+  }
+
+  /**
+   * Writes the configured Group bindings that name a Namespace OCC just created, in the unit that
+   * creates it. The creator's authority fence holds the IAM configuration lock shared.
+   */
+  private async applyConfiguredPolicy(
     state: PlatformUnitOfWork,
     actorId: string,
-    input: IAMDefaultUsersBindingInput,
+    namespace: Readonly<Namespace>,
   ): Promise<void> {
-    const driver = this.builtInBindingDriver("setDefaultUsersBinding");
-    if (driver === undefined) {
+    const driver = this.occBindingDriver("applyConfiguredPolicy");
+    if (driver === undefined || this.iamConfiguration === undefined) {
       return;
     }
-    const changed = await this.iamPolicyOperation(() =>
-      driver.setDefaultUsersBinding!({ policy: state.iamPolicy }, input),
+    const changes = await this.iamPolicyOperation(() =>
+      driver.applyConfiguredPolicy!(
+        { policy: state.iamPolicy },
+        { policy: this.configuredPolicy([namespace]), namespaceId: namespace.id },
+      ),
     );
-    if (!changed) {
-      return;
+    await this.auditConfiguredPolicy(state, actorId, changes, "namespace_create");
+  }
+
+  /** Audits each change that applying the configured policy made. */
+  private async auditConfiguredPolicy(
+    state: PlatformUnitOfWork,
+    actorId: string,
+    changes: IAMConfiguredPolicyChanges,
+    reason: "installation_configuration" | "namespace_create",
+  ): Promise<void> {
+    const installation: ResourceRef = { kind: "installation", id: this.installation.id };
+    const bindingResource = (binding: Readonly<AccessBinding>): ResourceRef =>
+      binding.namespaceId === undefined
+        ? installation
+        : { kind: "namespace", id: binding.namespaceId, namespaceId: binding.namespaceId };
+    for (const binding of changes.bindings.deleted) {
+      await this.auditBinding(state, actorId, binding, bindingResource(binding), {
+        reason,
+        deleted: true,
+      });
     }
-    const binding: AccessBinding = {
-      id: DEFAULT_USERS_BINDING_IDS[input.role],
-      ...(input.role === "agentCreator" ? { namespaceId: input.namespaceId } : {}),
-      subjectKind: "group",
-      subjectId: DEFAULT_USERS_GROUP_ID,
-      roleId: BUILT_IN_ROLE_IDS[input.role],
-    };
-    await this.auditBinding(
-      state,
-      actorId,
-      binding,
-      input.role === "agentCreator"
-        ? { kind: "namespace", id: input.namespaceId, namespaceId: input.namespaceId }
-        : { kind: "installation", id: this.installation.id },
-      input.role === "agentCreator"
-        ? { reason: "default_namespace" }
-        : { reason: "installation_configuration", deleted: !input.bound },
-    );
+    for (const binding of changes.bindings.created) {
+      await this.auditBinding(state, actorId, binding, bindingResource(binding), { reason });
+    }
+    const policyChanges: [string, Record<string, unknown>][] = [
+      ...changes.roles.created.map((role): [string, Record<string, unknown>] => [
+        "openclaw.iam.roles.create",
+        { roleId: role.id, permissions: role.permissions },
+      ]),
+      ...changes.roles.updated.map((role): [string, Record<string, unknown>] => [
+        "openclaw.iam.roles.update",
+        { roleId: role.id, permissions: role.permissions },
+      ]),
+      ...changes.roles.deleted.map((roleId): [string, Record<string, unknown>] => [
+        "openclaw.iam.roles.delete",
+        { roleId },
+      ]),
+      ...changes.groups.created.map((groupId): [string, Record<string, unknown>] => [
+        "openclaw.iam.groups.create",
+        { groupId },
+      ]),
+      ...changes.groups.deleted.map((groupId): [string, Record<string, unknown>] => [
+        "openclaw.iam.groups.delete",
+        { groupId },
+      ]),
+    ];
+    for (const [action, details] of policyChanges) {
+      await state.audit.append({
+        id: `aud_${crypto.randomUUID()}`,
+        installationId: this.installation.id,
+        occurredAt: this.timestamp(),
+        kind: "mutation",
+        actorId,
+        source: "occ",
+        action,
+        resource: installation,
+        outcome: "success",
+        details: { ...details, reason },
+      });
+    }
   }
 
   private async auditBinding(
@@ -5061,20 +5129,49 @@ export class OpenClawController {
   }
 
   /**
-   * Makes the Namespace Creator binding match `defaultUser.namespaceCreate`. The composition
-   * calls it at startup, and Installation bootstrap calls it once the Installation exists.
-   * Turning the setting off stops new Namespaces; Namespaces that members own stay.
+   * Makes the configured Roles, Groups, and Group bindings in IAM policy match the `iam`
+   * configuration. The composition calls it at startup, and Installation bootstrap calls it once
+   * the Installation exists. It holds the IAM configuration lock exclusively, so a write of
+   * durable authority commits wholly before or after it. Owner bindings, deploy-time grants, and
+   * Group memberships stay when the configuration changes.
    */
-  async applyDefaultUserSettings(): Promise<void> {
-    if (this.builtInBindingDriver("setDefaultUsersBinding") === undefined) {
+  async applyIAMConfiguration(): Promise<void> {
+    const driver = this.occBindingDriver("applyConfiguredPolicy");
+    if (driver === undefined) {
       return;
     }
-    await this.mutate((state) =>
-      this.bindDefaultUsers(state, this.installation.id, {
-        role: "namespaceCreator",
-        bound: this.defaultUserNamespaceCreate,
-      }),
-    );
+    await this.mutate(async (state) => {
+      await state.installations.holdIAMConfiguration("exclusive");
+      const namespaces = await state.namespaces.listNamespaces();
+      const available = namespaces.filter(
+        (namespace) => namespace.status === "provisioning" || namespace.status === "ready",
+      );
+      const desired = this.configuredPolicy(available);
+      // A Namespace that cannot take new policy now, such as a failed one, keeps the configured
+      // bindings it has that the configuration still lists; Namespace deletion removes them with
+      // the rest of its policy.
+      const listed = new Set(this.configuredPolicy(namespaces).bindings.map(({ id }) => id));
+      const availableIds = new Set(available.map((namespace) => namespace.id));
+      const kept = (await state.iamPolicy.listConfiguredPolicy()).bindings.filter(
+        (binding) =>
+          binding.namespaceId !== undefined &&
+          !availableIds.has(binding.namespaceId) &&
+          listed.has(binding.id),
+      );
+      const policy: IAMConfiguredPolicy = {
+        ...desired,
+        bindings: [...desired.bindings, ...kept],
+      };
+      const changes = await this.iamPolicyOperation(() =>
+        driver.applyConfiguredPolicy!({ policy: state.iamPolicy }, { policy }),
+      );
+      await this.auditConfiguredPolicy(
+        state,
+        this.installation.id,
+        changes,
+        "installation_configuration",
+      );
+    });
   }
 
   /**
@@ -5305,7 +5402,7 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.holdAuthority(state, principalId);
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "preset",
         id: input.namespaceId,
@@ -5668,7 +5765,7 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.holdAuthority(state, principalId);
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "secret",
         id: input.namespaceId,
@@ -6822,7 +6919,7 @@ export class OpenClawController {
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
     const registration = await this.mutate(async (state) => {
-      await this.holdAuthority(state, principalId);
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "credential_source",
         id: input.namespaceId,
@@ -7583,7 +7680,7 @@ export class OpenClawController {
     const values = frozenValues(input.values);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.holdAuthority(state, principalId);
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "configuration",
         id: input.namespaceId,
@@ -7665,7 +7762,7 @@ export class OpenClawController {
     }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.holdAuthority(state, principalId);
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "service_account",
         id: input.namespaceId,
@@ -9982,7 +10079,7 @@ export class OpenClawController {
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.holdAuthority(state, principalId);
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "agent",
         id: input.namespaceId,
@@ -10715,7 +10812,7 @@ export class OpenClawController {
     await this.validateDeploymentChannels(principalId, input);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.holdAuthority(state, principalId);
+      await this.holdAuthority(state);
       const target: ResourceRef = {
         kind: "agent",
         id: input.agentId,
@@ -10723,8 +10820,8 @@ export class OpenClawController {
       };
       await this.authorize(principalId, "deploy", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
-      // AccessBinding deletes hold this lock: the decision taken now, not the one taken
-      // before the wait, selects the Roles whose grants this deploy may write.
+      // AccessBinding deletes hold this lock: authorize again so a revocation that committed
+      // while this deploy waited stops it before it writes Agent grants.
       const authorization = await this.authorize(principalId, "deploy", target);
       const agent = await state.agents.findAgent(namespace.id, input.agentId);
       if (!agent) {
@@ -10817,7 +10914,6 @@ export class OpenClawController {
       await this.grantDeployedAgentSources(
         state,
         principalId,
-        authorization.decision.evidence.roleIds,
         lockedAgent,
         this.bindings(metadata.secretBindings),
       );
@@ -13120,9 +13216,9 @@ export class OpenClawController {
         throw new ResourceStateConflictError("The Agent lifecycle changed during provisioning.");
       }
     }
-    // Hold the requester's membership so a removal from Default users commits before this
-    // check or after the Owner bindings that provisioning writes for the requester.
-    await state.installations.holdPrincipalIdentity(record.actorId);
+    // Hold the IAM configuration lock so a configuration change that revokes the requester's
+    // Group binding commits before this check or after the Owner bindings provisioning writes.
+    await state.installations.holdIAMConfiguration("shared");
     await this.authorizeProvisioningRecord(state, record.actorId, record);
     return state.provisioning.checkpoint(claim, {
       completedPhase: record.completedPhase,
@@ -13941,19 +14037,18 @@ export class OpenClawController {
   }
 
   /**
-   * A caller whose Agent deploy and source operate grants come from a built-in Namespace Role
-   * gives the Agent's ServicePrincipal the exact operate grants it lacks, in the deploy unit
-   * (RFC-0026). A deploy allowed only by other Roles changes no grant, so existing custom
-   * Roles gain nothing; the Agent principal checks that follow still decide the deploy.
+   * A caller allowed to deploy the Agent gives its ServicePrincipal the exact operate grant it
+   * lacks on each referenced Secret and credential source that the caller can operate, in the
+   * deploy unit (RFC-0026). A source the caller cannot operate gets no grant; the Agent principal
+   * checks that follow then refuse the deploy.
    */
   private async grantDeployedAgentSources(
     state: PlatformUnitOfWork,
     principalId: string,
-    deployRoleIds: readonly string[],
     agent: Readonly<Agent>,
     secretBindings: SecretBindings,
   ): Promise<void> {
-    if (!grantedByBuiltInRole(deployRoleIds)) {
+    if (this.occBindingDriver("createNamespaceAccessBinding") === undefined) {
       return;
     }
     const referenced = new Map<string, SecretReference | CredentialSourceReference>();
@@ -13974,7 +14069,7 @@ export class OpenClawController {
     const missing: (SecretReference | CredentialSourceReference)[] = [];
     for (const source of referenced.values()) {
       const caller = (await this.authorizationDecision(principalId, "operate", source)).decision;
-      if (!caller.allowed || !grantedByBuiltInRole(caller.evidence.roleIds)) {
+      if (!caller.allowed) {
         continue;
       }
       const current = await this.authorizationDecision(agent.servicePrincipalId, "operate", source);
@@ -15915,11 +16010,21 @@ export class OpenClawController {
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
 
-/** True when the built-in Owner or Namespace member Role is among the granting Roles. */
-function grantedByBuiltInRole(roleIds: readonly string[]): boolean {
-  return roleIds.some(
-    (roleId) => roleId === BUILT_IN_ROLE_IDS.owner || roleId === BUILT_IN_ROLE_IDS.namespaceMember,
-  );
+function configuredRoleId(id: string): string {
+  return `${CONFIGURED_IAM_ID_PREFIXES.role}${id}`;
+}
+
+function configuredGroupId(name: string): string {
+  return `${CONFIGURED_IAM_ID_PREFIXES.group}${name}`;
+}
+
+/** A configured Group binding's ID: a digest, because configured names may contain `_`. */
+function configuredBindingId(group: string, role: string, namespaceId: string | undefined): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify([group, role, namespaceId ?? null]))
+    .digest("hex")
+    .slice(0, 32);
+  return `${CONFIGURED_IAM_ID_PREFIXES.binding}${digest}`;
 }
 
 /** Keep internal reduction custody out of caller-visible withdrawal status. */

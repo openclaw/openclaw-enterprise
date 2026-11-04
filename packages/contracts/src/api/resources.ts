@@ -1243,19 +1243,6 @@ export const IAMRoleResponse = Type.Object(
   { additionalProperties: false },
 );
 
-export const DefaultUserListResponse = Type.Object(
-  {
-    data: Type.Array(
-      Type.Object(
-        { principalId: Type.String({ minLength: 1, maxLength: 200 }) },
-        { additionalProperties: false },
-      ),
-    ),
-    meta: Meta,
-  },
-  { additionalProperties: false },
-);
-
 export const IAMRoleListResponse = Type.Object(
   { data: Type.Array(IAMRoleSchema), meta: Meta },
   { additionalProperties: false },
@@ -2030,7 +2017,6 @@ export type AgentResponse = Type.Static<typeof AgentResponse>;
 export type AgentRuntimeCredentialResponse = Type.Static<typeof AgentRuntimeCredentialResponse>;
 export type IAMRoleResponse = Type.Static<typeof IAMRoleResponse>;
 export type IAMRoleListResponse = Type.Static<typeof IAMRoleListResponse>;
-export type DefaultUserListResponse = Type.Static<typeof DefaultUserListResponse>;
 export type IAMAccessBindingResponse = Type.Static<typeof IAMAccessBindingResponse>;
 export type IAMAccessBindingListResponse = Type.Static<typeof IAMAccessBindingListResponse>;
 export type IAMServicePrincipalResponse = Type.Static<typeof IAMServicePrincipalResponse>;

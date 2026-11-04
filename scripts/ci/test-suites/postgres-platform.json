@@ -17,7 +17,6 @@
     "tests/integration/postgres-agent-deletion-audit.test.mjs",
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
     "tests/integration/postgres-default-users.test.ts",
-    "tests/integration/postgres-default-namespace-deletion.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.mjs",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
@@ -222,16 +221,10 @@
       "path": "tests/integration/postgres-default-users.test.ts",
       "expectedTests": [
         "Default users create Agents in the default Namespace and own what they create",
-        "defaultUser.namespaceCreate lets Default users create and own Namespaces until it is turned off",
+        "an iam configuration change at restart revokes Group grants and keeps what members created",
         "a session revoked while a Default user's deploy waits commits no Agent grant",
-        "a Default users removal and a member's create commit one after the other",
+        "an iam configuration change and a member's create commit one after the other",
         "an Agent Owner binding deleted while its owner's deploy waits commits no Agent grant"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-default-namespace-deletion.test.ts",
-      "expectedTests": [
-        "deleting the default Namespace removes its Default users binding with the rest of its policy"
       ]
     },
     {

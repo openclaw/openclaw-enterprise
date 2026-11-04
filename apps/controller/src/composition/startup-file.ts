@@ -118,7 +118,7 @@ export async function startupConfiguration(
       "observability",
       "runtime",
       "sandboxNetworkPolicyCeiling",
-      "defaultUser",
+      "iam",
     ],
     "Installation startup configuration",
   );

@@ -339,7 +339,8 @@ Stores human Principals and service identities, including those owned by an Agen
 ### `iam_groups`
 
 Defines native IAM groups at Installation or Namespace scope, including the
-built-in, immutable Default users Group.
+[configured Groups](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`group_config_` IDs), which OCC can delete.
 
 - `id`
 - `namespace_id`
@@ -347,8 +348,8 @@ built-in, immutable Default users Group.
 
 ### `iam_group_memberships`
 
-Links human Principals to their native IAM groups. Rows can be deleted but not
-updated.
+Links human Principals to their native IAM groups. Rows cannot be updated;
+memberships of a configured Group can be deleted.
 
 - `namespace_id`
 - `group_id`
@@ -356,8 +357,10 @@ updated.
 
 ### `iam_roles`
 
-Defines native IAM roles as sets of actions and resource kinds, including the
-four immutable [built-in Roles](../authorization/default-users.md#built-in-roles).
+Defines native IAM roles as sets of actions and resource kinds. Only
+[configured Roles](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`role_config_` IDs) can change; a check constraint keeps them at Installation
+scope without `installation` permissions.
 
 - `id`
 - `namespace_id`
@@ -367,9 +370,9 @@ four immutable [built-in Roles](../authorization/default-users.md#built-in-roles
 ### `iam_access_bindings`
 
 Grants a native IAM role to an identity or group, optionally for a specific resource.
-A check constraint limits each built-in Role to its binding shape, including the
+OCC also writes configured Group bindings and the
 [Owner bindings](../authorization/default-users.md#creators-own-what-they-create)
-that OCC writes for each creator.
+of creators here.
 
 - `id`
 - `namespace_id`

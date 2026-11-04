@@ -19,8 +19,8 @@ export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
 // A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
 // each answer's own ID is hidden: the text never says whether the resource exists.
 export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
-// A create needs the collection grant, which only OCC-bound built-in Roles hold: an
-// Installation administrator creates one. `kinds` is the plural, such as "Secrets".
+// A create needs the collection grant, which only Roles from the Installation configuration
+// hold: an Installation administrator creates one. `kinds` is the plural, such as "Secrets".
 export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
   `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
 // The same create refused by a Restriction to a caller who administers the Installation, as the

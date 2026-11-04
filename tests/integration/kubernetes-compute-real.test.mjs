@@ -375,9 +375,10 @@ test(
       "the real worker must recover explicit namespace selection from PostgreSQL",
     );
 
-    // The caller created each Agent and its Secrets, so it owns them, and its deploy gives the
-    // Agent's ServicePrincipal operate on exactly those Secrets (RFC-0026). A deploy that only
-    // custom Roles allow writes no grant and is refused; postgres-default-users.test.ts covers it.
+    // The caller can operate each Agent's Secrets, so its deploy gives the Agent's
+    // ServicePrincipal operate on exactly those Secrets (RFC-0026). A deploy by a caller who
+    // cannot operate a source writes no grant and is refused; postgres-default-users.test.ts
+    // covers it.
     async function assertDeployGrants(namespaceId, agent) {
       const bindings = await request("GET", `/namespaces/${namespaceId}/iam/access-bindings`);
       assert.equal(bindings.status, 200, JSON.stringify(bindings.error));

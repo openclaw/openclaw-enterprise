@@ -55,18 +55,13 @@ An account created with the Installation administrator `roleId` holds only
 `installation:administer` and `installation:read`; see
 [Appoint an administrator](../../guides/topics/iam.md#appoint-an-administrator).
 
-## Built-in Roles
+## Configured Roles
 
-Four Installation-level Roles cannot be changed or deleted, and only OCC binds
-them. See [Default users and built-in Roles](../authorization/default-users.md)
-for their full permissions and binding rules.
-
-| Role ID                          | Grants                                                                                                       | Bound                                                                                       |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `role_builtin_agent_creator`     | `create` on `agent`, `configuration`, `secret`, and `credential_source`; `read` on `namespace` and `preset`. | Default users, across the `default` Namespace.                                              |
-| `role_builtin_namespace_creator` | `namespace:create`                                                                                           | Default users, Installation-wide, when `defaultUser.namespaceCreate` is on.                 |
-| `role_builtin_owner`             | Every action OCC checks inside a Namespace, plus `namespace:delete`.                                         | The creator of a resource, on that resource; Namespace-wide for the creator of a Namespace. |
-| `role_builtin_namespace_member`  | The Owner grants without `namespace:delete`.                                                                 | Namespace-wide. No current operation binds it.                                              |
+The Installation `iam` configuration can declare Installation-level Roles with
+any permission in the table above except `installation` ones. OCC writes each as
+`role_config_<id>` and binds it only as the configuration says, or to each
+creator as the `ownerRole`. See
+[Default users and configured Roles](../authorization/default-users.md).
 
 ## Denial messages
 
@@ -74,8 +69,8 @@ A `403 FORBIDDEN` for a grant you lack names it and who grants it, for example
 `Not authorized: this needs Agent deploy on Agent agt_1. Ask an Installation
 administrator to grant it.` The Namespace policy API cannot grant create, so a
 create denial names its Namespace and says only an Installation administrator
-can create it. The message does not mention [Default users](#built-in-roles)
-or the built-in Roles, which also grant create. The
+can create it. The message does not mention [configured Roles](#configured-roles),
+which can also grant create. The
 message names a resource ID only when your request sent it in the path or an ID
 field, or you can already read that resource, never a binding, Role or
 Restriction. A Secret or credential source that an Agent, Configuration or
@@ -95,8 +90,8 @@ operation was not authorized.`
   (device login) requires Namespace `agent:create`, or exact `agent:read` and
   `agent:update` for an existing Agent. Start also requires `secret:create` and
   `credential_source:create`, which the Namespace policy API cannot grant, so
-  only an Installation administrator, a Default users member in `default`, or
-  a Namespace owner can start it. Polling and closure require the initiating actor
+  only an Installation administrator or a holder of a configured Role with
+  those permissions can start it. Polling and closure require the initiating actor
   and exact session `secret:operate`; source use requires exact
   `credential_source:operate`. The session holds only an opaque Gateway handle.
   Saved-Agent discovery also checks the Agent principal's source grant.
@@ -115,9 +110,9 @@ operation was not authorized.`
   associations, `secret:operate` for bound Secrets, and `credential_source:operate`
   for each source in `credentialSources`. At
   deployment the Agent’s own service principal also needs `secret:operate` on each
-  bound Secret and `credential_source:operate` on each source. A deploy that a
-  built-in Namespace Role allows
-  [writes the missing grants](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment).
+  bound Secret and `credential_source:operate` on each source. The deploy
+  [writes the missing grants](../authorization/default-users.md#grant-an-agent-its-credentials-at-deployment)
+  for each source the caller can operate.
 - Creating an Agent with [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode)
   off or changing the setting also requires `installation:administer`.
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
@@ -148,8 +143,6 @@ operation was not authorized.`
   separate permission resource kinds.
 - [Reading the observability destination](../api.md#get-observability) uses
   `installation:administer`. The configured external service enforces its own access.
-- [Listing, adding, or removing Default users](../api.md#get-iamdefaultusers)
-  requires `installation:administer`.
 
 The [Namespace policy API](../authorization.md#manage-namespace-policy) accepts
 the per-kind actions in the table above on `agent`, `agent_revision`,

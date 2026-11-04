@@ -47,30 +47,26 @@ original transaction; policy and audit must commit or roll back together.
 OCC rejects a write before invoking a Driver without that declaration. Reads
 remain available when their methods are implemented.
 
-### Group membership and built-in binding operations
+### Configured policy and Owner binding operations
 
 These optional methods support [Default users](../authorization/default-users.md).
-The write methods have the same transaction requirement as Namespace policy
-writes. OCC returns `503 DEPENDENCY_UNAVAILABLE` when a membership method is
-absent.
+They have the same transaction requirement as Namespace policy writes; OCC
+returns `503 DEPENDENCY_UNAVAILABLE` when a Driver has one without that
+declaration.
 
-| Method                                   | Contract                                                                                                                                                                                      |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `listGroupMembers(context, groupId)`     | Returns the Principal IDs in one Installation-level Group.                                                                                                                                    |
-| `addGroupMember(context, input)`         | Takes `groupId` and `principalId`. Returns `false` when the Principal is already a member. The repository refuses a non-Installation Principal.                                               |
-| `removeGroupMember(context, input)`      | Takes `groupId` and `principalId`. Returns `false` when the Principal was not a member.                                                                                                       |
-| `createOwnerBinding(context, input)`     | Takes binding `id`, `namespaceId`, `principalId`, and an optional `resourceKind` and `resourceId`. Binds that identity to the built-in Owner Role: exact, or Namespace-wide with no resource. |
-| `setDefaultUsersBinding(context, input)` | Takes `role` (`agentCreator` with a `namespaceId`, or `namespaceCreator`) and `bound`. Writes or deletes that Default users binding. Returns `false` when nothing changed.                    |
+| Method                                  | Contract                                                                                                                                                                                                                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `applyConfiguredPolicy(context, input)` | Takes `policy` (configured `roles`, `groups`, and Group `bindings`, with configured IDs) and an optional `namespaceId`. Makes the configured rows match `policy` and returns what it created, updated, and deleted. With `namespaceId`, it only writes what is missing for that Namespace. |
+| `createOwnerBinding(context, input)`    | Takes binding `id`, `namespaceId`, `principalId`, the configured Owner `roleId`, and an optional `resourceKind` and `resourceId`. Binds that identity to the Role: exact, or Namespace-wide with no resource.                                                                              |
 
-OCC calls the membership methods for the Default users routes. It calls
-`createOwnerBinding` after each create, and skips Owner bindings when the
-Driver has no such method. It calls `setDefaultUsersBinding` when it creates the
-Namespace named `default` and when it applies `defaultUser.namespaceCreate`. The
-supplied `IAMPolicyRepository` provides `listGroupMembers`,
-`createGroupMembership`, `deleteGroupMembership`, `createBuiltInBinding`, and
-`deleteBuiltInBinding` for these methods. The repository writes only bindings
-to built-in Roles, and only in a `provisioning` or `ready` Namespace or
-Installation-wide.
+OCC calls `applyConfiguredPolicy` at startup and when it creates a Namespace,
+and `createOwnerBinding` after each create when `ownerRole` is set. It skips each
+when the Driver has no such method. The supplied `IAMPolicyRepository` provides
+`listConfiguredPolicy`, `putConfiguredRole`, `deleteConfiguredRole`,
+`createConfiguredGroup`, `deleteConfiguredGroup`, `createOCCBinding`, and
+`deleteConfiguredBinding` for these methods. They change only rows with
+configured ID prefixes, and write bindings only to configured Roles, in a
+`provisioning` or `ready` Namespace or Installation-wide.
 
 ## IAM
 
@@ -122,13 +118,13 @@ supported resource actions and Restrictions.
 
 ## Troubleshooting
 
-| Symptom                                                            | What to check                                                                                                                                    |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Valid credentials do not resolve an identity                       | Check the issuer and subject, Namespace scope, and that exactly one matching identity was provisioned. Signing in does not provision a Role.     |
-| A known identity is denied                                         | Check the exact action and resource, applicable bindings and Roles, and overriding Restrictions. For a ServicePrincipal, check its own bindings. |
-| Previously queued work is denied                                   | Check whether the original caller or its grant was revoked. Restore only the intended permission or start a newly authorized operation.          |
-| IAM or policy storage is unavailable                               | Restore the dependency and retry; never turn an error or malformed decision into an allow.                                                       |
-| Default users routes or a member's Namespace creation return `503` | Check that the Driver implements the Group membership and owner methods and declares `namespacePolicyTransaction: "platform-unit-of-work"`.      |
+| Symptom                                                     | What to check                                                                                                                                    |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Valid credentials do not resolve an identity                | Check the issuer and subject, Namespace scope, and that exactly one matching identity was provisioned. Signing in does not provision a Role.     |
+| A known identity is denied                                  | Check the exact action and resource, applicable bindings and Roles, and overriding Restrictions. For a ServicePrincipal, check its own bindings. |
+| Previously queued work is denied                            | Check whether the original caller or its grant was revoked. Restore only the intended permission or start a newly authorized operation.          |
+| IAM or policy storage is unavailable                        | Restore the dependency and retry; never turn an error or malformed decision into an allow.                                                       |
+| Creates or startup return `503` with an `iam` configuration | Check that the Driver declares `namespacePolicyTransaction: "platform-unit-of-work"` with its configured policy and owner methods.               |
 
 ## Implementations
 

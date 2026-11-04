@@ -38,6 +38,7 @@ import {
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
+import { defaultUsersIAM } from "./default-users-iam.mjs";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -1193,9 +1194,9 @@ async function grantSecretOperate(pool, namespaceId, subjectId, secretId) {
 }
 
 /**
- * An ordinary account with no grant, created through the accounts API and added to the built-in
- * Default users Group by the Installation administrator. Default users hold Agent Creator in the
- * Namespace named default; each create there makes the caller that resource's Owner.
+ * An ordinary account with no grant, created through the accounts API. It joins the configured
+ * default-user Group as it is created; that Group holds Agent creation in the Namespace named
+ * default, and each create there makes the caller that resource's Owner.
  */
 async function createDefaultUserRequest({ adminRequest, requestFactory }) {
   const identifier = randomUUID();
@@ -1206,27 +1207,28 @@ async function createDefaultUserRequest({ adminRequest, requestFactory }) {
   const account = await adminRequest("POST", "/api/auth/accounts", credentials);
   assert.equal(account.status, 201, JSON.stringify(account.error));
   const { principalId } = account.data;
-  const added = await adminRequest("PUT", `/iam/default-users/${principalId}`);
-  assert.equal(added.status, 204, JSON.stringify(added.error));
   return { request: await requestFactory(credentials), principalId };
 }
 
 /**
- * The caller's deploy, allowed by its Owner binding on the Agent it created, gave the Agent's
- * ServicePrincipal operate on exactly the Secret the caller created, audited as the caller.
+ * The caller's deploy gave the Agent's ServicePrincipal operate on exactly the Secret the caller
+ * can operate, audited as the caller. A Default user can operate it because it created it and
+ * owns it, so its Owner bindings on the Agent and Secret are checked too.
  */
-async function assertOwnerDeployGrant(pool, { namespaceId, agent, secretId, ownerId }) {
-  const owned = await pool.query(
-    `SELECT resource_kind, resource_id FROM occ.iam_access_bindings
-      WHERE namespace_id = $1 AND identity_subject_id = $2 AND role_id = 'role_builtin_owner'
-        AND resource_id = ANY($3::text[])
-      ORDER BY resource_kind`,
-    [namespaceId, ownerId, [agent.id, secretId]],
-  );
-  assert.deepEqual(owned.rows, [
-    { resource_kind: "agent", resource_id: agent.id },
-    { resource_kind: "secret", resource_id: secretId },
-  ]);
+async function assertDeployGrant(pool, { namespaceId, agent, secretId, callerId, owner }) {
+  if (owner) {
+    const owned = await pool.query(
+      `SELECT resource_kind, resource_id FROM occ.iam_access_bindings
+        WHERE namespace_id = $1 AND identity_subject_id = $2 AND role_id = 'role_config_owner'
+          AND resource_id = ANY($3::text[])
+        ORDER BY resource_kind`,
+      [namespaceId, callerId, [agent.id, secretId]],
+    );
+    assert.deepEqual(owned.rows, [
+      { resource_kind: "agent", resource_id: agent.id },
+      { resource_kind: "secret", resource_id: secretId },
+    ]);
+  }
   const grant = await pool.query(
     `SELECT identity_subject_id, resource_kind, resource_id FROM occ.iam_access_bindings
       WHERE id = $1`,
@@ -1245,7 +1247,7 @@ async function assertOwnerDeployGrant(pool, { namespaceId, agent, secretId, owne
         AND details->>'reason' = 'agent_deploy'`,
     [secretId],
   );
-  assert.deepEqual(audit.rows, [{ actor_id: ownerId, agent_id: agent.id }]);
+  assert.deepEqual(audit.rows, [{ actor_id: callerId, agent_id: agent.id }]);
 }
 
 async function createSecretAssignmentCallerRequest({
@@ -1645,6 +1647,10 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
   );
+  if (options.defaultUser === true) {
+    // Default users create Agents in default and own what they create (RFC-0026).
+    workerConfiguration.iam = defaultUsersIAM();
+  }
   const publicGithubRead =
     options.publicGithubRead !== true
       ? undefined
@@ -2300,9 +2306,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       options.legacyRuntimeCredentials === true
         ? await resource("secret", legacyTransportName, placement)
         : undefined;
-    // The caller created the Agent and its Secrets, so it owns them, and its deploy writes the
-    // Agent ServicePrincipal's operate grants. A deploy that only custom Roles allow writes none
-    // and is refused; tests/integration/postgres-default-users.test.ts covers that refusal.
+    // The caller can operate the Agent's Secrets, so its deploy writes the Agent
+    // ServicePrincipal's operate grants. A deploy by a caller who cannot operate a source writes
+    // none and is refused; tests/integration/postgres-default-users.test.ts covers that refusal.
 
     deployed = await request("POST", `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`);
     assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
@@ -2338,7 +2344,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     );
   });
   // Guided provisioning deploys as the administrator through the worker, which writes its own
-  // grants; only the caller's own deploy writes these owner grants.
+  // grants; only the caller's own deploy writes these.
   if (!options.provisionNativeAdmin) {
     for (const secret of [
       secretApi.model,
@@ -2347,11 +2353,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       secretApi.probe,
       secretApi.sharedProbe,
     ].filter(Boolean)) {
-      await assertOwnerDeployGrant(observerPool, {
+      await assertDeployGrant(observerPool, {
         namespaceId,
         agent: persistedAgent,
         secretId: secret.ref.id,
-        ownerId: secretAssignmentPrincipalId,
+        callerId: secretAssignmentPrincipalId,
+        owner: options.defaultUser === true,
       });
     }
   }

@@ -126,10 +126,11 @@ export interface InstallationRepository extends InstallationReadRepository {
   /** Holds the user/session through COMMIT and validates expiry at commit; authentication validates its profile. */
   holdAuthenticationSession(sessionId: string, userId: string): Promise<boolean>;
   /**
-   * Holds a Principal's authority lock, shared, until COMMIT before a write of durable authority,
-   * so a Default users membership removal, which takes it exclusively, serializes with it.
+   * Holds the Installation's IAM configuration lock until COMMIT: shared before a write of
+   * durable authority (an Owner binding, a deploy-time grant, or a Group membership), exclusive
+   * while OCC applies the `iam` configuration, so the two commit one after the other.
    */
-  holdPrincipalIdentity(principalId: string): Promise<void>;
+  holdIAMConfiguration(mode: "shared" | "exclusive"): Promise<void>;
 }
 
 export interface NamespaceReadRepository {
@@ -1648,7 +1649,7 @@ function repositories(
     // Memory authentication owns its sessions outside platform State.
     holdAuthenticationSession: async () => false,
     // One in-process State applies each unit of work alone; there is nothing to serialize with.
-    holdPrincipalIdentity: async () => undefined,
+    holdIAMConfiguration: async () => undefined,
   };
 
   const namespaces: NamespaceRepository = {
@@ -3456,22 +3457,27 @@ function repositories(
     },
     deleteAccessBinding: async (namespaceId, bindingId) =>
       snapshot.bindings.delete(iamPolicyKey(namespaceId, bindingId)),
-    // TODO: the in-memory store keeps no Group memberships; its fixtures supply them through
-    // their own NativeIAMState. Store them here if an in-memory caller needs Group writes.
-    listGroupMembers: async () => Object.freeze([]),
-    createGroupMembership: async () => {
-      throw new DependencyUnavailableError("The in-memory state does not store Group memberships.");
+    // In-memory State is no Native IAM Driver's policy source, so OCC writes no configured
+    // policy or Owner bindings here (OpenClawController.occBindingDriver).
+    listConfiguredPolicy: async () =>
+      Object.freeze({ roles: Object.freeze([]), groups: Object.freeze([]), bindings: [] }),
+    putConfiguredRole: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Roles.");
     },
-    deleteGroupMembership: async () => {
-      throw new DependencyUnavailableError("The in-memory state does not store Group memberships.");
+    deleteConfiguredRole: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Roles.");
     },
-    // In-memory State is no Native IAM Driver's policy source, so OCC writes no built-in
-    // bindings here (OpenClawController.builtInBindingDriver).
-    createBuiltInBinding: async () => {
-      throw new DependencyUnavailableError("The in-memory state does not store built-in bindings.");
+    createConfiguredGroup: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Groups.");
     },
-    deleteBuiltInBinding: async () => {
-      throw new DependencyUnavailableError("The in-memory state does not store built-in bindings.");
+    deleteConfiguredGroup: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store configured Groups.");
+    },
+    createOCCBinding: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store OCC bindings.");
+    },
+    deleteConfiguredBinding: async () => {
+      throw new DependencyUnavailableError("The in-memory state does not store OCC bindings.");
     },
     listServicePrincipals: async (namespaceId) =>
       Object.freeze(

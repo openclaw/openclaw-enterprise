@@ -1073,6 +1073,12 @@ export const iamRoles = occSchema.table(
   (table) => [
     unique("iam_roles_namespace_id_id_unique").on(table.namespaceId, table.id).nullsNotDistinct(),
     check("iam_roles_permissions_array", sql`jsonb_typeof(${table.permissions}) = 'array'`),
+    check(
+      "iam_roles_configured_scope",
+      sql`${table.id} NOT LIKE 'role\\_config\\_%'
+        OR (${table.namespaceId} IS NULL
+          AND NOT ${table.permissions} @> '[{"resourceKind":"installation"}]'::jsonb)`,
+    ),
   ],
 );
 
@@ -1148,25 +1154,6 @@ export const iamAccessBindings = occSchema.table(
     check(
       "iam_access_bindings_resource_pair",
       sql`(${table.resourceKind} IS NULL) = (${table.resourceId} IS NULL)`,
-    ),
-    check(
-      "iam_access_bindings_built_in_role_shape",
-      sql`CASE ${table.roleId}
-        WHEN 'role_builtin_agent_creator' THEN
-          ${table.id} = 'binding_builtin_default_users_agent_create'
-          AND ${table.groupSubjectId} = 'group_builtin_default_users'
-          AND ${table.namespaceId} IS NOT NULL AND ${table.resourceKind} IS NULL
-        WHEN 'role_builtin_namespace_creator' THEN
-          ${table.id} = 'binding_builtin_default_users_namespace_create'
-          AND ${table.groupSubjectId} = 'group_builtin_default_users'
-          AND ${table.namespaceId} IS NULL AND ${table.resourceKind} IS NULL
-        WHEN 'role_builtin_owner' THEN
-          ${table.namespaceId} IS NOT NULL AND ${table.identitySubjectId} IS NOT NULL
-          AND ${table.resourceKind} IS DISTINCT FROM 'namespace'
-        WHEN 'role_builtin_namespace_member' THEN
-          ${table.namespaceId} IS NOT NULL AND ${table.resourceKind} IS NULL
-        ELSE true
-      END`,
     ),
   ],
 );

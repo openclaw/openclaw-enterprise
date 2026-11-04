@@ -1,6 +1,6 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-02
+updated: 2026-11-04
 last_updated_session: "claude/session_01HzmRt1DGB79VEnEWHt7PRy"
 ---
 
@@ -14,15 +14,15 @@ AccessBinding, or to list, create, or read a Namespace ServicePrincipal. OCC aut
 belongs to the requested Namespace, and delegates the policy mutation to the
 selected IAM Driver. The flow stops after the policy and audit event commit
 together in the platform state transaction. Phase 6 covers the other policy
-writes: Default users membership, the Owner binding that each create writes,
-the built-in Default users bindings, and the Agent grants that a deploy writes.
+writes: the configured Roles, Groups, and Group bindings, Group membership at
+account creation, the Owner binding that each create writes, and the Agent
+grants that a deploy writes.
 
 ## Entry Points
 
 - Trigger: `GET`, `POST`, or `DELETE` under `/namespaces/:namespaceId/iam/*`
-- Trigger: `GET`, `PUT`, or `DELETE` under `/iam/default-users`, and
-  `POST /namespaces` or `POST /namespaces/:namespaceId/agents/:agentId/deploy`
-  allowed by a built-in Role
+- Trigger: controller startup with an `iam` configuration, `POST /api/auth/accounts`,
+  each create in a Namespace, and `POST /namespaces/:namespaceId/agents/:agentId/deploy`
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`
 - Source: `apps/controller/src/index.ts:requiredPermissions`
 - Source: `apps/controller/src/http/iam.ts:iamHandlers`
@@ -49,8 +49,8 @@ graph TD
   D --> H["API returns policy metadata"]
   G -->|COMMIT validates held session| H
   G -->|held session expired| X
-  M["Administrator calls /iam/default-users"] --> P["IAM Driver adds or removes the Group membership"]
-  N["Default user creates Namespace, or built-in Namespace Role allows deploy"] --> O["OCC writes owner binding or missing Agent operate grants"]
+  M["Startup applies the iam configuration"] --> P["IAM Driver writes configured Roles, Groups, and Group bindings"]
+  N["Caller creates a resource or deploys an Agent"] --> O["OCC writes the Owner binding or missing Agent operate grants"]
   P --> Q["Policy and audit commit in the same transaction"]
   O --> Q
 ```
@@ -207,31 +207,37 @@ selected account, session, and policy writers join the same protocol.
 [Default users](../reference/authorization/default-users.md) defines the
 behavior; this phase traces the writes.
 
-- **Membership.** `apps/controller/src/index.ts:createFastifyApp` handles
-  `addDefaultUser` and `removeDefaultUser` inside `transactHoldingSession`, which
-  holds the session through COMMIT. `setDefaultUser` holds the acting account, authorizes Installation
-  `administer`, and calls the Driver's `addGroupMember` or `removeGroupMember`
-  for `group_builtin_default_users`. PostgreSQL State refuses a member that is
-  not an Installation Principal, and `deleteGroupMembership` takes the member's
-  authority advisory lock exclusively. The route appends the
-  `openclaw.iam.default_users.*` event with `changed` in the same unit.
+- **Configured policy.** The compositions call `applyIAMConfiguration` at
+  startup, and the bootstrap route after bootstrap. It takes the IAM
+  configuration lock exclusively. `configuredPolicy` turns the `iam`
+  configuration into `role_config_`, `group_config_`, and `binding_config_` rows.
+  The Driver's `applyConfiguredPolicy` compares them with
+  `listConfiguredPolicy`, writes missing rows, updates changed Roles, and
+  deletes unlisted rows; `deleteConfiguredRole` refuses a Role that another
+  binding uses. `createNamespace` calls it with the new `namespaceId`, which
+  writes only what that Namespace lacks. `auditConfiguredPolicy` records each
+  change.
+- **Membership.** The `createAuthAccount` route adds
+  `controller.defaultUserGroupIds` to the account seed and its audit event as
+  `groupIds`. `insertNativeIAMPrincipal` takes the IAM configuration lock shared
+  and inserts each membership with the account.
 - **Authority fence.** `performFenced` runs each session request inside
   `controller.withAuthorityFence`. The create paths below and
   `deployAgentWithAuthorization` call `holdAuthority` first: it holds the
-  session through COMMIT and takes the Principal's authority lock shared before
-  the authorization. Each create in a Namespace and the deploy
-  authorize again after `lockNamespace`, which AccessBinding deletes also take,
-  and the deploy's grants use that second decision. `fenceAgentProvisioning`
-  takes the requester's authority lock before `authorizeProvisioningRecord`.
+  session through COMMIT and takes the IAM configuration lock shared before
+  the authorization. Each create in a Namespace and the deploy authorize again
+  after `lockNamespace`, which AccessBinding deletes also take.
+  `fenceAgentProvisioning` takes the IAM configuration lock before
+  `authorizeProvisioningRecord`.
 - **Owner bindings.** Each create path calls `bindCreator` after it inserts the
   resource row, in the same unit: `createNamespace`, `createAgent`,
   `createConfiguration`, `createSecret`, `createCredentialSource`,
   `createPreset`, `ensureNamespaceDefaultPresets`, `createServiceAccount`, and
   `processAgentProvisioningConfiguration` for the provisioning requester.
-  `bindCreator` skips the write when the selected Driver has no
-  `createOwnerBinding` or the controller was built with the `authorize` option.
-  Otherwise the Driver writes `binding_owner_<resource-id>` through
-  `createBuiltInBinding`, and `auditBinding` appends the event with
+  `bindCreator` skips the write without `ownerRole`, when the selected Driver has
+  no `createOwnerBinding`, or when the controller was built with the `authorize`
+  option. Otherwise the Driver writes `binding_owner_<resource-id>` through
+  `createOCCBinding`, and `auditBinding` appends the event with
   `reason: "creator"`. A Namespace's Owner binding comes before its default
   Presets, so the creator's own grant creates them.
 - **Parent checks.** `authorizationDecision` passes `parentAgentId` with each
@@ -240,20 +246,12 @@ behavior; this phase traces the writes.
   only that Agent's revision. A sandbox policy's parent derives from its ID,
   which migration 0058 ties to the Agent ID. The native Driver's `sameResource`
   then matches an exact binding on that Agent.
-- **Built-in Default users bindings.** When `createNamespace` creates the
-  Namespace named `default`, `bindDefaultUsers` calls the Driver's
-  `setDefaultUsersBinding` for Agent Creator there. `applyDefaultUserSettings`,
-  which the production and development compositions call at startup and the
-  bootstrap route calls after bootstrap, writes or deletes the Namespace Creator
-  binding to match `defaultUser.namespaceCreate`. Each change is audited.
 - **Deployment.** `deployAgentWithAuthorization` calls
-  `grantDeployedAgentSources` with the Roles that allowed `agent:deploy`. If
-  `role_builtin_owner` or `role_builtin_namespace_member` is among
-  them, OCC collects the Agent's Secret and credential source references. For
-  each reference that a built-in Role lets the caller `operate`, and
-  that the Agent ServicePrincipal cannot `operate`, `ensureAgentOperateGrants`
-  writes the exact binding. OCC appends one event for each with
-  `reason: "agent_deploy"`. A later deploy failure rolls back the grants.
+  `grantDeployedAgentSources`, which collects the Agent's Secret and credential
+  source references. For each reference that the caller can `operate` and the
+  Agent ServicePrincipal cannot, `ensureAgentOperateGrants` writes the exact
+  binding. OCC appends one event for each with `reason: "agent_deploy"`. A later
+  deploy failure rolls back the grants.
 
 ## Debugging and Verification
 
@@ -261,10 +259,9 @@ behavior; this phase traces the writes.
   API admission behavior for Namespace IAM policy, including refusal of all five
   writes without declared transaction participation.
 - `node --test tests/integration/postgres-default-users.test.ts` checks, with
-  real PostgreSQL and HTTP admission, membership administration, Agent creation
-  and Owner bindings in `default`, refusal of a second member, deploy-time
-  grants, a custom-Role deploy that writes nothing, removal that keeps created
-  resources, and the `defaultUser.namespaceCreate` setting on and off.
+  real PostgreSQL and HTTP admission, the configured rows, membership, Owner
+  bindings in `default`, refusal of a second member, deploy-time grants, a
+  configuration change at restart, and the authority fences.
 - `node --test tests/conformance/occ-api-security.test.mjs` checks that Agent
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.mjs` checks
@@ -290,7 +287,7 @@ behavior; this phase traces the writes.
 ## Related docs
 
 - [Identity and access management](../reference/authorization.md)
-- [Default users and built-in Roles](../reference/authorization/default-users.md)
+- [Default users and configured Roles](../reference/authorization/default-users.md)
 - [Agents](../reference/agents.md)
 - [API reference](../reference/api.md)
 
@@ -300,6 +297,7 @@ behavior; this phase traces the writes.
 
 ## Changelog
 
+- 2026-11-04 12:00: Replace the built-in Roles, Group, and membership routes with the configured policy and membership at account creation; deploy grants for any Role. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-02 10:00: Trace Owner bindings for every create, the default Namespace binding, and the Namespace Creator setting; drop the Namespace limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - aba993606)
 - 2026-11-02 16:00: Trace parent checks that apply an exact Agent binding to the Agent's revisions and sandbox policy. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-02 21:00: Trace the second authorization under the Namespace lock for creates and deploy, and the provisioning authority lock. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)

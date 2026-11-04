@@ -47,9 +47,11 @@ test(
     const { context } = topologyTeardown(testContext);
     // First in this file: each case's teardown deletes its tenant namespace, and Default users
     // create Agents only in default, so this case must be the one that creates the Installation.
-    // The caller is an ordinary account that the administrator only added to Default users. It
-    // creates the model Secret, Configuration, and Agent in default and deploys with no other
-    // grant; arrangeProductionTopology asserts its Owner bindings and the deploy-written grant.
+    // The Installation configuration declares the Default users Roles, Group, and bindings. The
+    // caller is an ordinary account the administrator created, which joined the default-user
+    // Group as it was created. It creates the model Secret, Configuration, and Agent in default
+    // and deploys with no other grant; arrangeProductionTopology asserts its Owner bindings and
+    // the deploy-written grant.
     const topology = await arrangeProductionTopology(context, "embedded", undefined, {
       defaultUser: true,
     });
