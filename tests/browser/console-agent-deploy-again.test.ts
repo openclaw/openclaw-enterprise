@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import type { TestContext } from "node:test";
+import type { BrowserContextOptions, Page } from "playwright";
+import type {
+  Agent,
+  AgentRevision,
+  Namespace,
+  PluginDeploymentWarning,
+} from "../../packages/contracts/src/index.ts";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
@@ -35,6 +43,44 @@ import {
   READ_OUTAGE_REASON,
 } from "../helpers/refusal-text.mjs";
 
+type ConsoleFixture = Awaited<ReturnType<typeof createReadyConsoleNamespace>>["fixture"];
+
+function resourceId(value: unknown): Pick<Namespace, "id"> {
+  assert.ok(typeof value === "object" && value !== null && "id" in value);
+  assert.ok(typeof value.id === "string");
+  return { id: value.id };
+}
+
+function configuredAgent(value: unknown): Pick<Agent, "id" | "configurationId"> {
+  const { id } = resourceId(value);
+  assert.ok(typeof value === "object" && value !== null && "configurationId" in value);
+  assert.ok(typeof value.configurationId === "string");
+  return { id, configurationId: value.configurationId };
+}
+
+function numberedRevision(value: unknown): Pick<AgentRevision, "id" | "revision"> {
+  const { id } = resourceId(value);
+  assert.ok(typeof value === "object" && value !== null && "revision" in value);
+  assert.ok(typeof value.revision === "number");
+  return { id, revision: value.revision };
+}
+
+function permissionData(value: unknown) {
+  assert.ok(typeof value === "object" && value !== null && "data" in value);
+  const data = value.data;
+  assert.ok(typeof data === "object" && data !== null);
+  return data;
+}
+
+async function noticeLabels(page: Page) {
+  const texts: unknown = await page.evaluate((): unknown => Reflect.get(globalThis, "noticeTexts"));
+  assert.ok(Array.isArray(texts));
+  return texts.map((text: unknown) => {
+    assert.ok(typeof text === "string");
+    return text.split(" ·")[0];
+  });
+}
+
 // Failed-version recovery's Deploy again: the API's DEPENDENCY_UNAVAILABLE message says to deploy
 // again, and the link opens the draft at its Deploy new version. That button is built only from a
 // readable Configuration and only for a caller who may deploy, so the link is offered only once
@@ -45,18 +91,32 @@ const browser = fileBrowser();
 
 // An Agent whose v1 keeps serving while its v2 redeploy failed with DEPENDENCY_UNAVAILABLE.
 async function failedRedeploy(
-  t,
-  name,
-  { viewport, auditSink, code = "DEPENDENCY_UNAVAILABLE" } = {},
+  t: TestContext,
+  name: string,
+  {
+    viewport,
+    auditSink,
+    code = "DEPENDENCY_UNAVAILABLE",
+  }: {
+    viewport?: BrowserContextOptions["viewport"];
+    auditSink?: InMemoryAuditSink;
+    code?: "DEPENDENCY_UNAVAILABLE" | "RUNTIME_MODEL_PROBE_FAILED";
+  } = {},
 ) {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, name, {
-    computeDriver: createRuntimeLogComputeDriver(),
-    agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
-    ...(auditSink ? { auditSink } : {}),
-  });
-  const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1"));
-  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  const { fixture, namespace: namespaceValue }: { fixture: ConsoleFixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, name, {
+      computeDriver: createRuntimeLogComputeDriver(),
+      agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
+      ...(auditSink ? { auditSink } : {}),
+    });
+  const namespace = resourceId(namespaceValue);
+  const agent = configuredAgent(
+    await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1")),
+  );
+  const active = {
+    revision: resourceId((await fixture.seedActiveAgentRevision(namespace.id, agent.id)).revision),
+  };
+  const failed = resourceId(await fixture.deployAgent(namespace.id, agent.id));
   const { page } = await newPage(t, fixture, {
     browser,
     ...(viewport ? { context: { viewport } } : {}),
@@ -71,16 +131,16 @@ async function failedRedeploy(
   return { fixture, namespace, agent, active, page, configurationUrl };
 }
 
-const recoveryOf = (page) => page.getByRole("region", { name: "Deployment needs attention" });
+const recoveryOf = (page: Page) => page.getByRole("region", { name: "Deployment needs attention" });
 
 // Records whether a Deploy again link was ever in the page, so a link shown and then withdrawn
 // still fails. Install it before the page loads.
 function watchDeployAgain() {
-  globalThis.deployAgainSeen = false;
+  const observed = Object.assign(globalThis, { deployAgainSeen: false });
   const check = () => {
     for (const node of globalThis.document.querySelectorAll(".deployment-recovery a")) {
       if (node.textContent === "Deploy again") {
-        globalThis.deployAgainSeen = true;
+        observed.deployAgainSeen = true;
       }
     }
   };
@@ -95,10 +155,11 @@ function watchDeployAgain() {
 const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again later.");
 
 // A Namespace member whose role grants Agent deploy and log reading but no Configuration read.
-function deployerWithoutConfiguration(fixture, namespace) {
+function deployerWithoutConfiguration(fixture: ConsoleFixture, namespace: Pick<Namespace, "id">) {
   return fixture.createAccountWithPolicy("deployer-without-configuration", (principal) => {
     grantRole(fixture.policy, principal.id, {
       id: "role-deployer-without-configuration",
+      resource: undefined,
       namespaceId: namespace.id,
       permissions: {
         namespace: ["read"],
@@ -138,11 +199,13 @@ for (const tab of ["configuration", "logs", "channels"]) {
       deployer.credentials,
     );
     // The API's own answer: this caller may deploy.
-    assert.equal((await (await permissions).json()).data.deploy, true);
+    const answer = permissionData(await (await permissions).json());
+    assert.ok("deploy" in answer);
+    assert.equal(answer.deploy, true);
     const recovery = recoveryOf(page);
-    await recovery
-      .getByText(persistedDeploymentError("DEPENDENCY_UNAVAILABLE").message, { exact: false })
-      .waitFor();
+    const error = persistedDeploymentError("DEPENDENCY_UNAVAILABLE");
+    assert.ok(error);
+    await recovery.getByText(error.message, { exact: false }).waitFor();
     const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
     await logs.waitFor();
     // Only a successful read shows the Configuration is readable, so the page asks.
@@ -150,8 +213,13 @@ for (const tab of ["configuration", "logs", "channels"]) {
     await nextFrames(page);
     assert.equal(await logs.getAttribute("class"), "button button--primary");
     assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
-    assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
-    assert.equal(authorizationDenials(auditSink, "openclaw.configurations.read").length, 1);
+    assert.equal(
+      await page.evaluate((): unknown => Reflect.get(globalThis, "deployAgainSeen")),
+      false,
+    );
+    const denials: unknown = authorizationDenials(auditSink, "openclaw.configurations.read");
+    assert.ok(Array.isArray(denials));
+    assert.equal(denials.length, 1);
   });
 }
 
@@ -191,7 +259,10 @@ test("A failed Configuration read leaves Deploy again hidden and is not repeated
   const configurationPath = new URL(configurationUrl).pathname;
   assert.equal(pathRequests(requests, "GET", configurationPath).length, 1);
   assert.equal(await logs.getAttribute("class"), "button button--primary");
-  assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
+  assert.equal(
+    await page.evaluate((): unknown => Reflect.get(globalThis, "deployAgainSeen")),
+    false,
+  );
 });
 
 // On the draft, its own Configuration read decides: a read that fails for another reason than a
@@ -218,7 +289,10 @@ test("The draft offers no Deploy again when its Configuration read fails", async
   await nextFrames(page);
   assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
-  assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
+  assert.equal(
+    await page.evaluate((): unknown => Reflect.get(globalThis, "deployAgainSeen")),
+    false,
+  );
 });
 
 // Deploy again waits for that read: while it is held the banner offers Logs, and only its success
@@ -252,7 +326,7 @@ test("Recovery on another version offers Deploy again only after the Configurati
 // Opens Deploy again from v1's Configuration tab with the draft's own Configuration read held, and
 // waits until the draft page shows while that read is still out: its Deploy new version card does
 // not exist yet, so the link's focus waits for it.
-async function deployAgainWithHeldDraft(t, name) {
+async function deployAgainWithHeldDraft(t: TestContext, name: string) {
   const setup = await failedRedeploy(t, name, { viewport: { width: 390, height: 844 } });
   const { fixture, namespace, agent, active, page, configurationUrl } = setup;
   await login(
@@ -289,6 +363,7 @@ test("Deploy again focuses Deploy new version once a held draft read lands", asy
     const box = active?.getBoundingClientRect();
     return (
       active?.textContent === "Deploy new version" &&
+      box !== undefined &&
       box.top >= 0 &&
       box.bottom <= globalThis.innerHeight
     );
@@ -334,7 +409,10 @@ test("Recovery offers no Deploy again when the caller's permission answer fails"
   await nextFrames(page);
   assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
-  assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
+  assert.equal(
+    await page.evaluate((): unknown => Reflect.get(globalThis, "deployAgainSeen")),
+    false,
+  );
 });
 
 // A startup model check failure sends the caller to the draft's Configuration. A deployer without
@@ -350,11 +428,11 @@ test("A deployer who cannot read the Configuration gets no Open draft", async (t
   );
   const deployer = await deployerWithoutConfiguration(fixture, namespace);
   await page.addInitScript(() => {
-    globalThis.openDraftSeen = false;
+    const observed = Object.assign(globalThis, { openDraftSeen: false });
     new globalThis.MutationObserver(() => {
       for (const node of globalThis.document.querySelectorAll(".deployment-recovery a")) {
         if (node.textContent === "Open draft") {
-          globalThis.openDraftSeen = true;
+          observed.openDraftSeen = true;
         }
       }
     }).observe(globalThis.document, { childList: true, subtree: true, characterData: true });
@@ -372,7 +450,8 @@ test("A deployer who cannot read the Configuration gets no Open draft", async (t
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
     deployer.credentials,
   );
-  const answer = (await (await permissions).json()).data;
+  const answer = permissionData(await (await permissions).json());
+  assert.ok("deploy" in answer && "update" in answer);
   assert.equal(answer.deploy, true);
   assert.equal(answer.update, false);
   const recovery = recoveryOf(page);
@@ -382,13 +461,15 @@ test("A deployer who cannot read the Configuration gets no Open draft", async (t
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
   // The link used to render with Logs, before any Configuration read.
-  assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
+  assert.equal(await page.evaluate((): unknown => Reflect.get(globalThis, "openDraftSeen")), false);
   await denied;
   await nextFrames(page);
   assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Open draft" }).count(), 0);
-  assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
-  assert.equal(authorizationDenials(auditSink, "openclaw.configurations.read").length, 1);
+  assert.equal(await page.evaluate((): unknown => Reflect.get(globalThis, "openDraftSeen")), false);
+  const denials: unknown = authorizationDenials(auditSink, "openclaw.configurations.read");
+  assert.ok(Array.isArray(denials));
+  assert.equal(denials.length, 1);
 });
 
 // A deployer who can read it gets the link once the read succeeds, not before.
@@ -401,6 +482,7 @@ test("Open draft waits for the Configuration read to succeed", async (t) => {
   const deployer = await fixture.createAccountWithPolicy("deployer-reads-configuration", (p) => {
     grantRole(fixture.policy, p.id, {
       id: "role-deployer-reads-configuration",
+      resource: undefined,
       namespaceId: namespace.id,
       permissions: {
         namespace: ["read"],
@@ -440,7 +522,7 @@ test("Open draft waits for the Configuration read to succeed", async (t) => {
 // newest deployment's reads, and `warnings` are its startup warnings. With `older`, a version
 // admitted before the deploying one is neither current nor deploying.
 // The record route sends no 429: that one comes from a rate limit in front of the API.
-const failure = (status) =>
+const failure = (status: 429 | 403 | 503) =>
   status === 429
     ? proxyErrorResponse(429)
     : status === 403
@@ -449,17 +531,45 @@ const failure = (status) =>
 const UNAVAILABLE = failure(503);
 
 async function deployingVersion(
-  t,
-  name,
-  { status = "running", older = false, beforeLogin = undefined } = {},
+  t: TestContext,
+  name: string,
+  {
+    status = "running",
+    older = false,
+    beforeLogin,
+  }: {
+    status?: "queued" | "running" | "succeeded";
+    older?: boolean;
+    beforeLogin?: (
+      page: Page,
+      resources: {
+        namespace: Pick<Namespace, "id">;
+        agent: Pick<Agent, "id">;
+        current: Pick<AgentRevision, "id">;
+        next: Pick<AgentRevision, "id" | "revision">;
+      },
+    ) => ReturnType<Page["route"]>;
+  } = {},
 ) {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
-  const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1"));
-  const { revision: current } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const previous = older ? await fixture.deployAgent(namespace.id, agent.id) : null;
-  const next = await fixture.deployAgent(namespace.id, agent.id);
+  const { fixture, namespace: namespaceValue }: { fixture: ConsoleFixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, name);
+  const namespace = resourceId(namespaceValue);
+  const agent = resourceId(
+    await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1")),
+  );
+  const current = resourceId(
+    (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).revision,
+  );
+  const previous = older ? resourceId(await fixture.deployAgent(namespace.id, agent.id)) : null;
+  const next = numberedRevision(await fixture.deployAgent(namespace.id, agent.id));
   const { page } = await newPage(t, fixture, { browser });
-  const record = { status, fail: false, agentFail: false, recordReads: 0, warnings: [] };
+  const record: {
+    status: "queued" | "running" | "succeeded" | "failed";
+    fail: false | 503 | 403 | 429;
+    agentFail: boolean;
+    recordReads: number;
+    warnings: PluginDeploymentWarning[];
+  } = { status, fail: false, agentFail: false, recordReads: 0, warnings: [] };
   await page.route(
     (url) => url.pathname === `/namespaces/${namespace.id}/agents/${agent.id}`,
     (route) =>
@@ -509,10 +619,10 @@ async function deployingVersion(
 }
 
 // Every text the version notice shows, in order, from now on.
-const watchNotice = (page) =>
+const watchNotice = (page: Page) =>
   page.evaluate(() => {
-    const seen = [];
-    globalThis.noticeTexts = seen;
+    const seen: string[] = [];
+    Object.assign(globalThis, { noticeTexts: seen });
     const note = () => {
       const text = globalThis.document.querySelector(".version-selection-notice")?.textContent;
       if (text && seen.at(-1) !== text) {
@@ -548,9 +658,7 @@ test("A version that is deploying is labelled Deploying, not Historical, until i
   await page.getByText(/^Current version · read-only admitted snapshot/).waitFor();
   await summary.locator("strong").filter({ hasText: /^v2$/ }).waitFor();
   assert.equal(await page.getByText(/^Deploying version/).count(), 0);
-  const labels = (await page.evaluate(() => globalThis.noticeTexts)).map(
-    (text) => text.split(" ·")[0],
-  );
+  const labels = await noticeLabels(page);
   assert.equal(labels.at(-1), "Current version");
   assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
 });
@@ -633,6 +741,7 @@ test("A queued version is labelled Deploying, and an older version browsed meanw
     status: "queued",
     older: true,
   });
+  assert.ok(previous);
   await page.goto(detailUrl(fixture, namespace.id, agent.id, previous.id, "configuration").href);
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deploying version/).count(), 0);
@@ -658,16 +767,14 @@ test("A completed deployment whose Agent reread fails is labelled Deployed, not 
       { exact: true },
     )
     .waitFor();
-  const labels = (await page.evaluate(() => globalThis.noticeTexts)).map(
-    (text) => text.split(" ·")[0],
-  );
+  const labels = await noticeLabels(page);
   assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
 });
 
 for (const [status, label] of [
   ["succeeded", "Completed"],
   ["failed", "Failed"],
-]) {
+] satisfies ["succeeded" | "failed", string][]) {
   test(`A ${status} deployment stays visible when the overview returns another Agent`, async (t) => {
     const { fixture, namespace, agent, page, record, summary } = await deployingVersion(
       t,
@@ -713,9 +820,7 @@ test("One failed status read keeps a deploying version Deploying and polling", a
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await summary.getByText("v2 · Completed", { exact: true }).waitFor();
   await page.getByText(/^Current version · read-only admitted snapshot/).waitFor();
-  const labels = (await page.evaluate(() => globalThis.noticeTexts)).map(
-    (text) => text.split(" ·")[0],
-  );
+  const labels = await noticeLabels(page);
   assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
 });
 
@@ -753,11 +858,17 @@ test("A completed record with no failed Agent reread leaves the newest version H
 // already known to be older than the current one. A failed Agent reread on Refresh deployment
 // changes nothing about that: v2 stays Historical, not Deployed (internal review of finding 2085).
 test("A failed reread leaves the newest readable version Historical under a hidden current one", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Hidden current");
-  const agent = await fixture.createAgent(namespace.id, "Hidden current Agent", nativeValues("v1"));
-  const { revision: first } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const next = await fixture.deployAgent(namespace.id, agent.id);
-  const hidden = await fixture.deployAgent(namespace.id, agent.id);
+  const { fixture, namespace: namespaceValue }: { fixture: ConsoleFixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Hidden current");
+  const namespace = resourceId(namespaceValue);
+  const agent = resourceId(
+    await fixture.createAgent(namespace.id, "Hidden current Agent", nativeValues("v1")),
+  );
+  const first = resourceId(
+    (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).revision,
+  );
+  const next = resourceId(await fixture.deployAgent(namespace.id, agent.id));
+  const hidden = resourceId(await fixture.deployAgent(namespace.id, agent.id));
   await fixture.activateRevision(namespace.id, agent.id, hidden.id, first.id);
   denyRevisionRead(fixture, namespace, hidden);
   const { page } = await newPage(t, fixture, { browser });
@@ -815,7 +926,8 @@ test("A failure read by a refresh that cannot reread the Agent keeps its warning
   // The panel renders the warning and the card folds the details in one task, so once the
   // warning is in the page the details' state is settled.
   await warning.waitFor({ state: "attached" });
-  assert.equal(await deploymentDetailsOpen(page), true);
+  const detailsOpen: unknown = await deploymentDetailsOpen(page);
+  assert.equal(detailsOpen, true);
   assert.equal(await warning.evaluate((node) => node.checkVisibility()), true);
 });
 
@@ -832,7 +944,8 @@ test("A failure read with startup warnings keeps them in view", async (t) => {
     .locator(".deployment-status")
     .getByText("remote-calendar was disabled for this startup", { exact: false });
   await warning.waitFor({ state: "attached" });
-  assert.equal(await deploymentDetailsOpen(page), true);
+  const detailsOpen: unknown = await deploymentDetailsOpen(page);
+  assert.equal(detailsOpen, true);
   assert.equal(await warning.evaluate((node) => node.checkVisibility()), true);
 });
 
