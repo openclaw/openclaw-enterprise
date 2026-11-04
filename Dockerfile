@@ -69,6 +69,7 @@ COPY --chown=node:node packages/occ/src packages/occ/src
 COPY --chown=node:node packages/utils/package.json packages/utils/package.json
 COPY --chown=node:node packages/utils/src packages/utils/src
 COPY --chown=node:node apps/controller/src apps/controller/src
+COPY --chown=node:node apps/controller/plugins apps/controller/plugins
 COPY --from=console-build --chown=node:node /app/apps/controller/src/console/index.html apps/controller/src/console/index.html
 COPY --chown=node:node migrations/[0-9]*.sql migrations/
 COPY --chown=node:node migrations/meta/_journal.json migrations/meta/_journal.json
@@ -79,7 +80,9 @@ COPY --chown=node:node scripts/migration-catalog.mjs scripts/migration-catalog.m
 COPY --chown=node:node scripts/bootstrap-installation.mjs scripts/bootstrap-installation.mjs
 COPY --chown=node:node scripts/lib/bootstrap-configuration.mjs scripts/lib/bootstrap-configuration.mjs
 COPY --chown=node:node scripts/auth-maintain.mjs scripts/auth-maintain.mjs
+COPY --chown=node:node scripts/auth-maintain.ts scripts/auth-maintain.ts
 COPY --chown=node:node scripts/lib/auth-maintain-arguments.mjs scripts/lib/auth-maintain-arguments.mjs
+COPY --chown=node:node scripts/lib/auth-maintain-arguments.ts scripts/lib/auth-maintain-arguments.ts
 COPY --chown=node:node deploy/presets deploy/presets
 COPY --chown=node:node scripts/production-healthcheck.mjs scripts/production-healthcheck.mjs
 # As in the development stage: precompiled route validators and serializers for this image.

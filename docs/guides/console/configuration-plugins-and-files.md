@@ -19,7 +19,36 @@ after **Deploy new version**; a workspace file save applies at once.
 
 In the draft, **Enable gateway password access** stages the generated-password
 reference; authentication mode and proxy settings stay unchanged. The Compute
-Driver owns the password; the Console shows only its reference.
+Driver owns the password; the Console shows only its reference. If the saved
+reference is one OpenClaw cannot read, such as one without a provider, the page
+shows the refusal and **Deploy new version** stays disabled; use the button to
+replace it. If `secrets.defaults` holds an alias OpenClaw refuses, the page names
+that setting instead and hides the button: fix the alias in the editor first.
+If OpenClaw cannot read the generated reference on the default env alias, for
+example because that provider's `allowlist` omits `OPENCLAW_GATEWAY_PASSWORD`,
+the page states why and hides the button until you fix it.
+
+**Collaboration and safety** shows two Gateway settings as a deployment of the
+draft applies them, and whether each value is the default or set in the
+Configuration:
+
+- **Other participants can steer a running turn**
+  (`messages.queue.allowCollaborativeSteering`, default on): another Gateway
+  participant in the conversation can add guidance to a running turn. The turn
+  keeps the identity and permissions of the participant who started it, even when
+  the participant steering has fewer. Participants are channel users or local
+  operators with distinct Gateway identities. OCE native admin and workspace
+  access share one Gateway identity, so this setting does not separate OCE users.
+  When steering is off, the Gateway queues their message as a separate turn by
+  default. If you set `messages.queue.collaborativeSteeringFallback` to `"reject"`,
+  the Gateway asks the participant to resend the message with `/followup`.
+- **apply_patch changes files only in the workspace**
+  (`tools.exec.applyPatch.workspaceOnly`, default on).
+
+**Strict mode** turns collaborative steering off and restricts `apply_patch` to
+the workspace. Turning Strict mode off removes those two settings. Setting an
+individual toggle back to its default removes just that value. Changing the
+toggles requires Configuration `update`. Save the draft, then deploy a new version.
 
 **Edit Configuration** edits native JSON. **Save Configuration** requires an object;
 **Cancel** discards edits. **Edit current Configuration** opens the current draft's editor,
@@ -27,6 +56,17 @@ not a historical copy. Without Configuration `update`, or Secret `operate` on a 
 Configuration binds, it reads **Open draft** and opens the draft read-only. Saving preserves Secret bindings and saved versions;
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.
+
+If a draft contains `security.preset`, remove that field in **Edit Configuration**.
+If you used `corporate`, set the restrictions you relied on explicitly before
+saving. For example, set `tools.fs.workspaceOnly` to
+`true` to confine file tools to the workspace, or set `session.dmScope` to
+`"per-account-channel-peer"` to separate direct-message sessions. Strict mode
+leaves those settings alone. Also review any restrictions you relied on for
+command approvals, elevated execution, session visibility, and messaging between
+Agents or conversations. OCE isolates each Agent and requires OpenClaw's own
+sandbox to stay off. See the [former preset values](https://github.com/openclaw/openclaw/blob/762a2fe60cc37cf6b8c9d05e61c329866e0d3f6f/docs/gateway/security/presets.md#what-the-presets-select)
+and [OCE's deployment defaults](../../reference/configuration.md#agent-references-and-immutable-versions).
 
 Unsaved edits, pending saves, and stale or unknown outcomes block deployment,
 tab switching, and version navigation. Save checks Configuration association and

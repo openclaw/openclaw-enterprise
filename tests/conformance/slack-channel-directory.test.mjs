@@ -6,12 +6,15 @@ import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { refusingPort } from "../helpers/available-port.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { SLACK_ROUTE_NOT_CONFIGURED } from "../helpers/refusal-text.mjs";
 import {
   connectThroughProxy,
   requestThroughProxy,
   startSlackProxy,
 } from "../helpers/slack-proxy.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 const { Agent, fetch: undiciFetch } = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -27,8 +30,7 @@ test("Slack directory sends HTTPS requests through its selected CONNECT proxy", 
     assert.equal(request.headers.authorization, undefined);
     socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
   });
-  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-  t.after(() => proxy.close());
+  await listen(t, proxy);
   const address = proxy.address();
   assert.ok(address && typeof address !== "string");
   const driver = new SlackChannelDriver(globalThis.fetch, `http://127.0.0.1:${address.port}`);
@@ -81,8 +83,7 @@ test("bundled Slack proxy process restricts methods and CONNECT targets", async 
     socket.on("error", () => {});
     socket.write("fixture-upstream");
   });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
+  await listen(t, upstream);
   // A fixed proxy port, so the test proves the proxy honours OCC_SLACK_PROXY_PORT.
   const { port: proxyPort } = await startSlackProxy(t, {
     fixedPort: true,
@@ -114,8 +115,7 @@ test("bundled Slack proxy process exits on SIGTERM and closes open tunnels", asy
   const upstream = net.createServer((socket) => {
     socket.on("error", () => {});
   });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
+  await listen(t, upstream);
   const { child, port: proxyPort } = await startSlackProxy(t, {
     upstreamPort: upstream.address().port,
   });
@@ -147,16 +147,8 @@ test("bundled Slack proxy process exits on SIGTERM and closes open tunnels", asy
   });
 
   child.kill("SIGTERM");
-  const bound = (promise, what) =>
-    Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        const timer = setTimeout(() => reject(new Error(`${what} within 5 s`)), 5_000);
-        timer.unref();
-      }),
-    ]);
-  assert.deepEqual(await bound(exited, "proxy exit"), { code: 0, signal: null });
-  await bound(tunnelClosed, "tunnel close");
+  assert.deepEqual(await within(exited, "proxy exit", 5_000), { code: 0, signal: null });
+  await within(tunnelClosed, "tunnel close", 5_000);
 });
 
 function auth() {
@@ -511,9 +503,10 @@ test("Slack credential checks name the missing proxy only when production expect
     return `http://127.0.0.1:${server.address().port}/`;
   };
   const sendTo = (url) => (_slack, options) => globalThis.fetch(url, options);
-  const closed = net.createServer();
-  const closedUrl = await listen(closed);
-  closed.close();
+  // A released port could be taken by a parallel listener; this one refuses until released.
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  const closedUrl = `http://127.0.0.1:${refusing.port}/`;
   // A refused connection and an expired time budget are the two ways Slack never answers.
   await assert.rejects(
     check(new SlackChannelDriver(sendTo(closedUrl), undefined, { expectProxy: true })),

@@ -5,16 +5,26 @@ on:
     paths:
       - "apps/controller/src/console/**"
       - "apps/controller/src/console-assets.ts"
+      - "deploy/examples/console-theme/**"
+      - "deploy/presets/*.json"
       - "packages/contracts/src/preset-variables.mjs"
       - "scripts/console-storybook/**"
+      - "!scripts/console-storybook/evidence/**/*.png"
+      - "!scripts/console-storybook/evidence/**/*.mp4"
+      - "!scripts/console-storybook/evidence/**/*.webm"
       - ".github/workflows/console-storybook.yml"
   push:
     branches: [main]
     paths:
       - "apps/controller/src/console/**"
       - "apps/controller/src/console-assets.ts"
+      - "deploy/examples/console-theme/**"
+      - "deploy/presets/*.json"
       - "packages/contracts/src/preset-variables.mjs"
       - "scripts/console-storybook/**"
+      - "!scripts/console-storybook/evidence/**/*.png"
+      - "!scripts/console-storybook/evidence/**/*.mp4"
+      - "!scripts/console-storybook/evidence/**/*.webm"
       - ".github/workflows/console-storybook.yml"
   workflow_dispatch:
 

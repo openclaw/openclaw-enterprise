@@ -115,7 +115,7 @@ The public status contains only `sessionId`, `state`, `deadlineWallMs` and `bind
 
 Keep requested, selected and admitted bindings distinct, including Provider, upstream-instance, repository and grant identities. `created/recovered/missing`, `recoverOnly` and `new/retained` material express real recovery obligations. Status cannot regenerate files. Command routing selects an immutable generation from the actual target/effective remotes, rejects ambiguity and conflicting selectors, and never changes a global selected-repository file.
 
-Ownership places the public contract in `packages/contracts/src/repo.ts`, the adapter in `drivers/repo/github/driver.ts`, common machinery in `drivers/repo/credentials/`, and native GitHub policy/backend/client code in `drivers/repo/github/credentials/`. Providers retain configured control clients; composition retains loading and separate-process assembly. Registration, selection, consumers, exact source guards and emitted packaging must agree on these paths. Preserve opaque Driver identities and persisted credential payload fields; no migration follows from the rename.
+Ownership places the public contract in `packages/contracts/src/drivers/repo/index.ts`, the adapter in `drivers/repo/github/driver.ts`, common machinery in `drivers/repo/credentials/`, and native GitHub policy/backend/client code in `drivers/repo/github/credentials/`. Providers retain configured control clients; composition retains loading and separate-process assembly. Registration, selection, consumers, exact source guards and emitted packaging must agree on these paths. Preserve opaque Driver identities and persisted credential payload fields; no migration follows from the rename.
 
 ## Acceptance and delivery
 
@@ -150,7 +150,7 @@ Before enabling personal mode:
 
 Keep OCE sign-in separate: identity-only login neither establishes repository delegation nor supplies repository credentials. Qualification must demonstrate both modes, consent and withdrawal, cross-user isolation, and refusal without fallback before claiming support.
 
-[contract]: ../../../packages/contracts/src/repo.ts
+[contract]: ../../../packages/contracts/src/drivers/repo/index.ts
 [design]: ../../../docs/design/drivers.md#drivers-and-providers
 [reference]: ../../../docs/reference/repository-credentials.md
 [agent-flow]: ../../../docs/flows/agent-repository-credentials.md

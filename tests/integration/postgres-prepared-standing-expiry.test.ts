@@ -183,7 +183,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     ).rows[0].scope;
     operation.pull.repository = grant.repository;
     const used = await f.owner.use(f.request(operation));
-    assert.ok("exchangeId" in used);
+    assert.ok("value" in used, "native use must return material, not just a receipt");
     assert.equal(
       (
         await f.pool.query(
@@ -197,11 +197,12 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     if (!draftPullLimit) {
       const brokerRequest =
         f.request() as import("../../packages/contracts/src/index.ts").PreparedGitHubUseRequest;
-      assert.equal(
-        await f.owner.authorizeOpenShellRequest(brokerRequest, used, t.signal),
-        true,
-        "the explicitly selected protocol-1 broker retains its original decision",
-      );
+      const recovered = await f.owner.use(brokerRequest, t.signal);
+      assert.ok("value" in recovered, "native use must return material, not just a receipt");
+      assert.equal(recovered.exchangeId, brokerRequest.exchangeId);
+      assert.equal(recovered.preparationAttemptId, used.preparationAttemptId);
+      assert.equal(recovered.materialVersion, used.materialVersion);
+      assert.equal(recovered.value, used.value);
     }
     const owner = await startProtectedOwner(f);
     const signal = t.signal;

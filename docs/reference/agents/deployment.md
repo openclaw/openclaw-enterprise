@@ -1,6 +1,6 @@
 # Agent identity and deployment
 
-Use this reference to select an [Agent](../agents.md) execution mode and understand its stable identity, immutable version, and asynchronous deployment. Creating or editing an Agent alone does not start a workload.
+Select an [Agent](../agents.md) execution mode. Creating or editing an Agent does not start a workload.
 
 ## Agent service principal and workload credentials
 
@@ -56,8 +56,7 @@ The Agent's native Configuration selects a Harness through model/provider
 owns supported runtime selections, model catalogs, transport, and credential
 boundaries. OCC rejects conflicting, unknown, missing, or mode-incompatible
 selections before admitting a version: deploy returns `400 INVALID_REQUEST`
-with the specific reason, such as "The configured Agent model requires an
-explicit supported Harness runtime." A selected SandboxDriver currently requires
+with a reason that names the setting to change. A selected SandboxDriver currently requires
 `dedicated` Codex execution; it does not support embedded OpenClaw.
 
 An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
@@ -82,11 +81,9 @@ runtime selection, identity boundaries, and activation.
 
 ## Versions and deployment
 
-An Agent revision (`AgentRevision`) records one Agent deployment's saved
-configuration and execution settings. It cannot change. The Agent keeps an
-ordered version history and at most one selected version, identified by
-`activeRevisionId`. Saving a version does not select it or prove workload
-readiness. See [Agent revisions](../../guides/topics/agent-revisions.md).
+[Agent revisions](../../guides/topics/agent-revisions.md) preserve configuration
+and execution settings in immutable, ordered history. `activeRevisionId` identifies
+the selected version; saving a revision does not select it or prove readiness.
 
 The Agent revision records the source `configurationId`, `configurationKind`, and
 `configurationGeneration`, [`gatewayManagedMode`](../agent-native-admin.md#gateway-managed-mode), its complete saved native `configuration`
@@ -98,18 +95,15 @@ unresolved inline SecretRefs because the saved document is persisted and
 returned through the API; see [secret boundaries](../configuration/secrets.md#secret-boundaries).
 Nested objects and arrays are immutable.
 
-When a SandboxDriver is selected, its `configureAgent` hook can transform a
-copy of the source document before OCC checks and saves it; it does not
-update the reusable Configuration or its generation. The saved version
-therefore records the source generation and the effective document after that
-transformation. Its SandboxDriver selection and the Agent's stable service
-principal remain internal; the current HTTP Agent revision schema omits them.
+A selected SandboxDriver's `configureAgent` hook can transform a copy before OCC
+checks and saves it. The revision records that effective document and the unchanged
+source generation. The reusable Configuration remains unchanged. HTTP revisions omit
+the SandboxDriver selection and Agent service principal.
 See [SandboxDriver](../drivers/sandbox.md).
 
-After its checks pass, deployment saves the Agent `name` as the sole roster
-entry's `identity.name`, under `agents.entries.main` when the roster is omitted.
-The native admin UI shows it, up to 50 characters, instead of `Assistant`. OCC
-keeps a name the Configuration sets and does not name entries of a larger roster.
+Deployment saves the Agent `name` as the sole roster entry's `identity.name`,
+under `agents.entries.main` if no roster exists. The native admin UI shows up to
+50 characters. OCC preserves configured names and does not name larger rosters.
 
 The bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy` requires a
 `ready` Namespace, exact-Agent `deploy`, exact
@@ -117,12 +111,10 @@ Configuration `read`, and, for managed credentials, the selected
 [harness source permissions](../agents.md#harness-authentication). If the selected
 Compute Driver requires generated transport credentials and they are missing
 before any Agent revision, deployment also requires exact-Agent `read` and
-`operate` to create them. Missing credentials after any Agent revision
-block deployment and require operator investigation. A
-`202` confirms OCC saved the version and queued deployment work;
-it does not mean the workload is ready. Later Configuration edits or changes to
-an account's selected credential reference affect only future deployments. A
-snapshot freezes a Secret reference, not its stored value.
+`operate` to create them. Missing credentials after any revision
+block deployment and require operator investigation. A `202` confirms a saved
+version and queued work, not readiness. Configuration or account credential-reference
+edits affect future deployments. Snapshots freeze Secret references, not their values.
 
 The PostgreSQL worker prepares the Agent gateway and the
 workload for that version, sets `activeRevisionId`, activates its route, and retires its
@@ -214,10 +206,11 @@ continues, or past its convergence deadline stops the candidate and fails
 newer version supersedes still finishes the stop, even of a lifted refusal,
 then ends superseded.
 
-`AGENT_STOP_YIELDED` means the Agent was stopped and its gateway is
-still draining; `PREDECESSOR_STOP_YIELDED` means a dedicated replacement waits for
-the previous version's gateway to drain. Meanwhile the worker runs other due work,
-then repeats the stop without spending attempts.
+`AGENT_STOP_YIELDED` (the Agent was stopped), `PREDECESSOR_STOP_YIELDED` (a
+dedicated replacement waits for the previous version) and
+`SUPERSEDED_STOP_YIELDED` (a newer version replaced this dedicated one) mean a
+gateway is still draining. Meanwhile the worker runs other due work, then
+repeats the stop without spending attempts.
 
 ### Model check failure cause
 
@@ -278,6 +271,23 @@ Agent revision list and read operations are scoped beneath the exact Namespace a
 Agent. Each returned Agent revision requires its own authorized read; substituting a
 parent does not grant access to another Agent's history. Public response shapes
 are defined by the [API reference](../api.md).
+
+## Guarded first deployment
+
+`POST /namespaces/:namespaceId/agents/:agentId/deploy-first` accepts `key`,
+`expectedConfigurationId`, and `expectedGeneration`. Fresh admission requires
+`active` status, stopped desired state, no history, the reviewed Configuration, and
+ordinary deployment validation. `202` returns an admission receipt; conflicts create no revision.
+
+Receipts bind those inputs, Installation, caller, Namespace, Agent, and operation.
+The bodyless `GET /namespaces/:namespaceId/agents/:agentId/deploy-first/:key/:expectedConfigurationId/:expectedGeneration`
+returns the receipt or `null`, with `Cache-Control: no-store`. Recovery requires
+current exact Agent `deploy` and reviewed Configuration `read`.
+
+A matching POST or GET adds no Secret, provider, model, or work calls. Concurrent
+fresh POSTs can repeat channel credential preparation before committing.
+A miss does not authorize a resend. Follow the
+[recovery procedure](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery).
 
 ## Stop and resume
 

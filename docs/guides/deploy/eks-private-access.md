@@ -18,8 +18,13 @@ permissions. Do not expose the API publicly to work around connectivity.
 
 ## Open a tunnel
 
-First create the dedicated kubeconfig and export `AWS_REGION`, `EKS_CLUSTER`,
-`KUBECONFIG_FILE`, and `CONTEXT` as in [Select the cluster](eks.md#select-the-cluster).
+First [select the cluster](eks-openshell-setup.md#select-the-cluster) in setup. Reuse its private kubeconfig and Kubernetes namespace:
+
+```bash
+export KUBECONFIG_FILE="${KUBECONFIG:?Use the setup kubeconfig}"
+: "${PLATFORM_NS:?Use the setup Kubernetes namespace}"
+```
+
 Confirm the AWS account and cluster, and choose the approved instance and an
 unused local port. `describe-cluster` must report the intended private endpoint:
 
@@ -29,7 +34,7 @@ aws eks describe-cluster --region "$AWS_REGION" --name "$EKS_CLUSTER" \
   --query 'cluster.{name:name,endpoint:endpoint,private:resourcesVpcConfig.endpointPrivateAccess}'
 export EKS_ENDPOINT="$(aws eks describe-cluster --region "$AWS_REGION" --name "$EKS_CLUSTER" --query cluster.endpoint --output text)"
 export EKS_HOST="${EKS_ENDPOINT#https://}"
-export EKS_LOCAL_PORT='18443'
+export EKS_LOCAL_PORT='18444' # Keep 18443 available for browser access.
 export SSM_TARGET='<approved-managed-instance-id>'
 ```
 
@@ -70,15 +75,48 @@ working. Restore the connection and check the exact cluster, namespace,
 release, and operation before repeating a mutation. For the production example:
 
 ```bash
-helm status oce --namespace openclaw-system \
+helm status oce --namespace "$PLATFORM_NS" \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT"
-helm history oce --namespace openclaw-system \
+helm history oce --namespace "$PLATFORM_NS" \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT"
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  --namespace openclaw-system get jobs,pods
+  --namespace "$PLATFORM_NS" get jobs,pods
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  --namespace openclaw-system get events --sort-by=.lastTimestamp
+  --namespace "$PLATFORM_NS" get events --sort-by=.lastTimestamp
 ```
+
+Choose a Pod for your intended release from `get jobs,pods` above, replace
+`<pod-name>` once, and use the chosen kubeconfig, context, and namespace.
+JSON Lines show that Pod's returned namespace/name/UID and declared containers
+only; release ownership, other replicas, traffic, and data remain unverified.
+Check the exit status before using the output. A nonzero status means the snapshot failed.
+
+```bash
+(
+set -o pipefail
+pod='<pod-name>'; pod_namespace="$PLATFORM_NS"
+kubectl --kubeconfig "${KUBECONFIG_FILE:?Set a kubeconfig}" \
+  --context "${CONTEXT:?Set a context}" --namespace "${pod_namespace:?Set a namespace}" \
+  --request-timeout=15s get "pod/${pod:?Set a Pod name}" -o json 2>/dev/null |
+jq -ce --arg pod "$pod" --arg ns "$pod_namespace" '
+  def rows($kind; $declared; $statuses): $declared[]? as $c |
+    ([$statuses[]? | select(.name == $c.name)][0] // {}) as $s |
+    {kind: $kind, name: $c.name, restartPolicy: $c.restartPolicy,
+     ready: $s.ready, restartCount: $s.restartCount, waitingReason: $s.state.waiting.reason,
+     currentExit: $s.state.terminated.exitCode, previousReason: $s.lastState.terminated.reason,
+     previousExit: $s.lastState.terminated.exitCode};
+  select(.metadata.name == $pod and .metadata.namespace == $ns) |
+  {namespace: .metadata.namespace, name: .metadata.name, uid: .metadata.uid},
+  rows("ordinary"; .spec.containers; .status.containerStatuses),
+  rows("init"; .spec.initContainers; .status.initContainerStatuses)' 2>/dev/null
+)
+```
+
+`null` means absent or unknown; `false` and numeric `0` are actual values,
+including `previousExit: 0`.
+An `init` with `restartPolicy: "Always"` is a restartable sidecar whose false
+readiness is not setup completion; other init containers with `currentExit: 0`
+have completed setup even if not ready.
 
 Compare the release revision and status, hook Jobs and their logs, and observed
 workload images with the intended operation. Check the Installation Secret's

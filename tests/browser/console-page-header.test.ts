@@ -11,6 +11,7 @@ import {
   settledView,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 
 // The page header (UX plan D3, spec 3.2): collections show the Namespace selector as one compact
 // 32 px control beside Refresh; an Agent's page and Create Agent lead with ← Agents and carry the
@@ -313,13 +314,7 @@ test("Settings offers no Namespace recovery, which needs the selector it no long
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/backends?namespace=${revoked.id}`);
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
-  fixture.policy.restrictions.push({
-    id: "deny-revoked-read",
-    namespaceId: revoked.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "read", "namespace", { namespaceId: revoked.id });
 
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   const recover = page.getByRole("button", { name: "Switch Namespace", exact: true });

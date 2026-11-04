@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { CODEX_FAILURE_OUTPUT_CLASS_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
 import {
@@ -40,6 +41,30 @@ const probeAuthenticationFailure = { ...probeFailure(), code: "AUTHENTICATION_FA
 
 const errorEvent = (message) => ({ type: "error", message });
 const failedTurn = (message) => ({ type: "turn.failed", error: { message } });
+
+test("verifier-only Codex refuses enabled plugins with API-key login before app-server spawn", (t) => {
+  // Login/probe output is scripted here; the generated wrapper owns this refusal.
+  // No fake plugin response is used to establish installation behavior.
+  const runtime = createCodexStartup(t, {
+    transportToken: "verifier",
+    native: [
+      login(),
+      probe([
+        { type: "turn.started" },
+        { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+        { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      ]),
+    ],
+    environment: pluginRuntimeEnvironment({
+      kind: "codex",
+      selections: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+    }),
+  });
+  assert.throws(() => runtime.start(), /API-key authentication cannot install them/);
+  assert.equal(runtime.appServerStarts, 0);
+  assert.equal(runtime.marker(), undefined);
+  runtime.assertNativeScriptConsumed();
+});
 
 // Component conformance: scripted native output, real generated entrypoint and status handler.
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {

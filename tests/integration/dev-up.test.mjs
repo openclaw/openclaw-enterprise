@@ -374,6 +374,29 @@ for (const scenario of [
   });
 }
 
+test("Kubernetes dev-up keeps the failed stack for inspection when KEEP_ON_FAILURE is set", async (t) => {
+  // The inspection override must skip rollback entirely: the state directory,
+  // cluster, and any copied service key stay for diagnosis, and the operator
+  // gets a cleanup hint naming occ dev down instead of a rollback error.
+  const fixture = await kubernetesFixture(t, "api-unauthorized");
+  fixture.env.OCC_DEVELOPMENT_KEEP_ON_FAILURE = "1";
+  const keyOutput = join(fixture.directory, "retained-key.json");
+  const result = await fixture.start(["--key-output", keyOutput]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /authorization failed/);
+  assert.match(result.stdout, /OCC_DEVELOPMENT_KEEP_ON_FAILURE is set; kept the failed stack/);
+  assert.doesNotMatch(result.stderr, /rollback incomplete; preserving/);
+  const directory = fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
+  await assert.ok((await stat(directory)).isDirectory());
+  // The authorization failure happens before the service key is copied, so
+  // the kept stack holds no key material to clean up.
+  await assert.rejects(stat(keyOutput), { code: "ENOENT" });
+  // The kept stack must still clean up through the recorded state.
+  const cleaned = await runDevDown(fixture.env);
+  assert.equal(cleaned.status, 0, cleaned.stderr);
+  await assert.rejects(stat(directory), { code: "ENOENT" });
+});
+
 test("Kubernetes-only dev-up stops and rolls back when the node resolver refuses queries", async (t) => {
   const fixture = await kubernetesFixture(t, "node-dns-refused");
   fixture.env.OCC_DEVELOPMENT_CONTROL_PLANE = "kubernetes";

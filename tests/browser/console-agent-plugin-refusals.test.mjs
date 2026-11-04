@@ -16,6 +16,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { openAdvancedSettings } from "./console-agents-test-support.mjs";
 import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
+import { liftRestriction } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -157,7 +158,7 @@ async function refusedCreateForm(t, name, entries, width = 1280) {
   const deniedCreate = page.waitForResponse(isAgentPost);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.equal((await deniedCreate).status(), 403);
-  fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(denied), 1);
+  liftRestriction(fixture.policy, denied);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   // The Configuration is saved now, and its editor with it.
   assert.equal(await configuration.isDisabled(), true);

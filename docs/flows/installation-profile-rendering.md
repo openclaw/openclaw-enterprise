@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-18
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+updated: 2026-11-03
+last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
 ---
 
 # Installation Profile Rendering Flow
@@ -32,7 +32,9 @@ graph TD
   A["Operator invokes renderer"] --> B["Parse profile, input path, and output directory"]
   B --> C{"Profile is openclaw or codex?"}
   C -->|No| X["Exit before reading input"]
-  C -->|Yes| R["Clear prior generated files and preflight"]
+  C -->|Yes| P{"Input shares a generated file identity?"}
+  P -->|Yes| Q["Refuse without changing existing files"]
+  P -->|No| R["Clear prior generated files and preflight"]
   R --> D["Load deploy/profiles/<profile>.json and input JSON"]
   D --> E["Reject unsupported sections and fields"]
   E --> F["Build objects and validate consumed inputs"]
@@ -59,7 +61,12 @@ graph TD
 before output. Profiles are `openclaw` or `codex`, with no `default`. JSON supplies
 the release name and namespace for Helm and Installation settings.
 
-After valid arguments, the renderer removes prior `values.yaml`,
+Before cleanup, the renderer compares the input file identity with each of its
+three output files. It refuses a shared file, including directory aliases,
+symbolic links, and hard links, without deleting or replacing existing files.
+Choose another input filename or output directory.
+
+After this check, the renderer removes prior `values.yaml`,
 `installation.yaml`, and `preflight.json` before loading input. Unreadable or
 malformed JSON cannot leave stale deployment files or success reports; other
 files remain untouched.
@@ -178,6 +185,11 @@ when that name is a DNS-1035 Service label of at most 63 characters. The
 chart's upgrade guard still requires an explicit current broker Service name,
 and the same DNS-1035 check cannot fail after a successful preflight.
 
+Helm merges `dns.podLabels` over the chart default `k8s-app: kube-dns`. When the
+selector lacks `k8s-app`, `values.yaml` sets it to `null` so Helm deletes it.
+`installation.yaml` keeps the exact selector: Compute does not merge, and the
+profile schema accepts only string labels.
+
 ### 5. Build Installation startup YAML
 
 `scripts/render-installation-profile.mjs:buildRendered`
@@ -190,7 +202,7 @@ storage class, node selectors, and transport Secret prefix. The Codex profile
 also consumes the reviewed `runtime.codexSeccompProfile` path. Preflight applies
 the Compute driver's localhost-profile rule and refuses an absolute path, a
 backslash, an empty, `.`, or `..` segment, or a segment named `unconfined`,
-before writing `installation.yaml`. Optional `runtime.codexModelBaseUrl` gets
+before writing `installation.yaml`. Optional `runtime.modelProvider.baseUrl` gets
 Compute's endpoint rule. When optional
 managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
 matching ServiceAccount Driver; otherwise Codex Agents use the existing
@@ -293,6 +305,10 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
+
+- 2026-10-28 20:25: Refuse input/output file collisions before cleanup in the accompanying change. (authoring-run/ebaa9b91-58b3-47dc-97d9-ad103250247d - 420d76bcbd15dcd3644e474d413484c35ce22797)
 
 - 2026-10-18 14:40: Compare database CA mount destinations with Helm. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
 

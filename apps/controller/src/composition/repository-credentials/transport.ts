@@ -1,21 +1,10 @@
-import type { CredentialProxyBinding } from "@openclaw-enterprise/contracts";
+import type {
+  CredentialProxyBinding,
+  ProtectedRepositoryGitAuthority,
+} from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
-import type { startPreparedGitHubGitOwner } from "../../backends/repository-credentials/prepared-git-owner.ts";
-import type { OpenShellGitRuntimeEmit } from "../../drivers/egress-proxy/openshell-git-runtime.ts";
+import type { RepositoryTransportEmit } from "./contracts.ts";
 import type { InstallationRuntimeDrivers } from "../installation-config.ts";
-
-/** Worker-selected authority. The sender never chooses its issuer or the host's recipient evidence. */
-export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
-  const { tokenService, repositoryGitDriver: driver, repositoryTransport } = drivers;
-  if (!tokenService) {
-    throw new Error("Prepared repository Git requires the installed Token Service.");
-  }
-  return {
-    tokenService,
-    ...(driver && { protectedGitDriver: driver.ref }),
-    ...(driver && repositoryTransport && { protectedGitEvidence: repositoryTransport.evidence }),
-  };
-}
 
 /**
  * A delivery that keeps failing writes `worker.repository-delivery-pending` at most this often:
@@ -73,9 +62,9 @@ interface RepositoryGitTransportOptions {
 /** Bind the selected sender. The worker retains storage and the right to start the credential owner. */
 export async function bindRepositoryGitTransport(
   drivers: InstallationRuntimeDrivers,
-  owner: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>>,
+  authority: ProtectedRepositoryGitAuthority | undefined,
   pool: PostgresPool,
-  emit?: OpenShellGitRuntimeEmit,
+  emit?: RepositoryTransportEmit,
   {
     pendingLog = new RepositoryDeliveryPendingLog(),
     reconcileIntervalMs = REPOSITORY_RECONCILE_INTERVAL_MS,
@@ -83,16 +72,16 @@ export async function bindRepositoryGitTransport(
 ): Promise<CredentialProxyBinding | undefined> {
   const { repositoryTransport, repositoryGitDriver } = drivers;
   if (
-    repositoryGitDriver &&
-    (!owner.protectedGit || repositoryGitDriver !== drivers.protectedDriver)
+    (repositoryGitDriver || repositoryTransport) &&
+    (!authority || !repositoryGitDriver || repositoryGitDriver !== drivers.protectedDriver)
   ) {
     throw new Error("Missing the selected Driver's protected repository Git authority.");
   }
-  if (repositoryTransport) {
-    return repositoryTransport.bind(owner, pool, emit);
+  if (repositoryTransport && authority) {
+    return repositoryTransport.bind(authority, pool, emit);
   }
-  if (repositoryGitDriver && owner.protectedGit) {
-    const binding = await repositoryGitDriver.requireRepositoryGitTransport()(owner.protectedGit);
+  if (repositoryGitDriver && authority) {
+    const binding = await repositoryGitDriver.requireRepositoryGitTransport()(authority);
     if (!binding.reconcile) {
       return binding;
     }

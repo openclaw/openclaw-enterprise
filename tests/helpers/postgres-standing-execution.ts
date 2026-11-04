@@ -1,9 +1,9 @@
+import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import type { InstallationStartupConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
@@ -23,7 +23,8 @@ export async function standingExecutionFixture(
     backendId: string;
     protectedDriver?: import("../../packages/occ/src/index.ts").InstalledDriver;
     credentialGateway?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver;
-    modelConfig?: { base_url: string };
+    modelConfig?: { authorized_base_url: string };
+    modelProvider?: import("../../apps/controller/src/drivers/compute/model-provider.ts").ModelProviderConfiguration;
     activePredecessor?: boolean;
     requestedBinding?: {
       repositoryRef: string;
@@ -34,6 +35,13 @@ export async function standingExecutionFixture(
 ) {
   const f = await standingExecutionPlatform(t, testUrl, driverSelections);
   const external = await setupRepository?.(f.observerPool, f.namespace.id);
+  if (external?.modelProvider) {
+    // Preserve production admission while the fixture supplies unrelated infrastructure.
+    const admission = createTestKubernetesComputeDriver(f.compute.id, {
+      modelProvider: external.modelProvider,
+    });
+    Object.assign(f.compute, { admitRevision: admission.admitRevision.bind(admission) });
+  }
   const registry =
     external?.registry ??
     ({
@@ -63,13 +71,8 @@ export async function standingExecutionFixture(
     } as const);
   const driver = new GitHubRepositoryPolicy(
     {
-      id: registry.backendId,
-      client: external?.protectedDriver
-        ? undefined
-        : new UnixRepositoryCredentialControlClient({
-            controlSocket: external?.controlSocket ?? "/unused-execution-contract/control.sock",
-          }),
-      drivers: { repo: registry.backendId },
+      driverId: external?.backendId ?? "execution-proof",
+      backendId: external?.backendId ?? "execution-proof",
     },
     registry,
     { sessionDurationSeconds: 120 },
@@ -195,6 +198,7 @@ export async function standingExecutionPlatform(
   t: TestContext,
   testUrl: string,
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  backends: import("../../packages/contracts/src/index.ts").BackendDefinition[] = [],
 ) {
   await ensurePostgresAgentBootstrap(t, {
     label: "standing-execution",
@@ -212,6 +216,6 @@ export async function standingExecutionPlatform(
       }
     }
   });
-  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections };
+  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections, backends };
   return createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
 }

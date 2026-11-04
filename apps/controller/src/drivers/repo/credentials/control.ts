@@ -308,12 +308,7 @@ export function createControlAdmission(
             if (disposed) {
               throw new Error("CONTROL_CLOSED");
             }
-            const standing = result.standing;
-            opened = prepared.open(async (sessionId) => {
-              if (standing) {
-                await journal!.authorizeStanding(id, sessionId, admittedInput);
-              }
-            });
+            opened = prepared.open();
           } catch (error) {
             refused = error;
           }

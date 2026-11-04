@@ -229,6 +229,13 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if result == nil {
 			return
 		}
+		if os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
+			// Inspection override: keep the failed stack, the state directory, and
+			// any copied service key for diagnosis; occ dev down with the same
+			// state directory performs the cleanup.
+			fmt.Fprintf(r.opts.Out, "OCC_DEVELOPMENT_KEEP_ON_FAILURE is set; kept the failed stack and %s for inspection. Run occ dev down with the same state directory to clean up.\n", directory)
+			return
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		var cleanupErr error

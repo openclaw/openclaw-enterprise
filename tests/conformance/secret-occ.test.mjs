@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -25,6 +26,8 @@ import {
 } from "../helpers/development.mjs";
 import { bindRole, grantRole, principalIAMState } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
+import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.mjs";
 
 const administrator = "principal-secret-administrator";
 const deployer = "principal-secret-deployer";
@@ -476,6 +479,7 @@ test("deployment admission stamps immutable native logging after sandbox policy"
     id: "secret-occ-sandbox",
     capability: "sandbox",
     implementation: "test-sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["filesystem"],
     configureAgent(values) {
       return { ...values, sandboxed: true, logging: { ...values.logging, level: "error" } };
@@ -490,22 +494,27 @@ test("deployment admission stamps immutable native logging after sandbox policy"
   });
 
   assert.deepEqual(stored.values, originalValues);
-  assert.deepEqual(revision.configuration, {
-    ...originalValues,
-    sandboxed: true,
-    logging: {
-      level: "info",
-      consoleLevel: "info",
-      consoleStyle: "json",
-      tenant: "kept",
-    },
-    diagnostics: { otel: { logs: false, traces: true } },
-    // OpenClaw's earlier values for settings its security preset would otherwise fill.
-    messages: { queue: { allowCollaborativeSteering: false } },
-    tools: { exec: { applyPatch: { workspaceOnly: true } } },
-    // The omitted roster gains its served main entry, named after the OCC Agent.
-    agents: { ...originalValues.agents, entries: { main: { identity: { name: agent.name } } } },
-  });
+  // The omitted roster gains its served main entry, named after the OCC Agent, and admission
+  // fills the Gateway security defaults.
+  assert.deepEqual(
+    revision.configuration,
+    withGatewaySecurityDefaults(
+      servedAs(
+        {
+          ...originalValues,
+          sandboxed: true,
+          logging: {
+            level: "info",
+            consoleLevel: "info",
+            consoleStyle: "json",
+            tenant: "kept",
+          },
+          diagnostics: { otel: { logs: false, traces: true } },
+        },
+        agent.name,
+      ),
+    ),
+  );
 });
 
 test("deploying a bound Secret requires both the caller and Agent service principal to operate it", async () => {

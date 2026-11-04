@@ -12,6 +12,7 @@ import {
 } from "./postgres-backend-state.mjs";
 import { waitFor } from "./wait-for.mjs";
 import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
+import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
@@ -265,6 +266,7 @@ export function createWorkerRevisionFixtures(
       metrics,
       repoDriver,
       driverSelections = {},
+      backends = /** @type {import("../../packages/contracts/src/index.ts").BackendDefinition[]} */ ([]),
       secretAuthMethod = "api_key",
       // Shorter teardown step limits, for a test of the teardown itself.
       disposeLimitsMs: limitsMs,
@@ -342,7 +344,7 @@ export function createWorkerRevisionFixtures(
     const controller = createBackendController(
       { installation, state },
       {
-        backends: [],
+        backends,
         driverConfigurations: installationDriverConfigurations({ drivers: driverSelections }),
       },
     );
@@ -603,7 +605,7 @@ export function createWorkerRevisionFixtures(
       if (protectedRepositoryDriver) {
         const sandbox = protectedRepositoryDriver.require("sandbox");
         await state.transact(async (unit) => {
-          const auth = await controller.admitHarnessAuth(unit, actorId, owner);
+          const [auth] = await controller.admitHarnessAuth(unit, actorId, owner);
           assert.deepEqual(auth, harnessAuth);
           const sources = await controller.admitCredentialSources(unit, actorId, owner, sandbox);
           assert.deepEqual(sources, credentialSources);
@@ -652,6 +654,10 @@ export function createWorkerRevisionFixtures(
         // cannot deadlock with a worker holding the Namespace while locking the Agent.
         await unit.namespaces.lockNamespace(namespace.id);
         await unit.agents.lockAgent(namespace.id, owner.id);
+        const admission = compute.admitRevision?.(freezeAgentRevision(candidate));
+        if (admission !== undefined) {
+          candidate.compute = { ...candidate.compute, admission };
+        }
         admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,
@@ -729,6 +735,7 @@ export function createWorkerRevisionFixtures(
         providers,
         pool = workerPool,
         transformDrivers = (drivers) => drivers,
+        repositoryGitMaterial,
       } = {},
     ) {
       const configuredDrivers = createBackendWorkerDrivers(computeDriver, providers ?? []);
@@ -751,6 +758,7 @@ export function createWorkerRevisionFixtures(
         onProgress,
         ...(drivers === undefined ? { computeDriver } : { drivers }),
         ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),
+        ...(repositoryGitMaterial === undefined ? {} : { repositoryGitMaterial }),
         emit,
       });
       database.workers.add(worker);

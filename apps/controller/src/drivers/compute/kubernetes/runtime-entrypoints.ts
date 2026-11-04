@@ -6,8 +6,15 @@ import {
   RUNTIME_FAILURE_CHECKS,
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
+import { readFileSync } from "node:fs";
+import {
+  MANAGED_PLUGIN_CREDENTIAL_HELPER,
+  managedCredentialEnvironment,
+} from "../../sandbox/openshell-plugin-runtime.ts";
+import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
+import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import {
@@ -77,12 +84,38 @@ function derivePluginAppServerTokenFromBase(baseToken, revisionId, startupId) {
 }
 `;
 
+// A readiness check can spawn "openclaw node identity" or open a Codex app-server
+// WebSocket, so concurrent requests share the running check instead of each starting
+// another (finding 1789). No answer is cached: a request after it settles checks again.
+// Each check bounds itself (2 s), and the shared check has an outer deadline too: a
+// check that never settles answers "not ready" after 5 s and frees the slot, so it
+// cannot stall every later probe (finding 2941).
 const RUNTIME_READINESS_RESPONSE_HELPER = String.raw`
+const RUNTIME_READINESS_DEADLINE_MS = 5000;
+let runtimeReadinessCheck;
+function sharedRuntimeReadiness(readiness) {
+  if (runtimeReadinessCheck !== undefined) return runtimeReadinessCheck;
+  let deadline;
+  runtimeReadinessCheck = Promise.race([
+    (async () => {
+      try {
+        return await readiness() === true;
+      } catch {
+        return false;
+      }
+    })(),
+    new Promise((resolve) => {
+      deadline = setTimeout(() => resolve(false), RUNTIME_READINESS_DEADLINE_MS);
+      deadline.unref?.();
+    }),
+  ]).finally(() => {
+    clearTimeout(deadline);
+    runtimeReadinessCheck = undefined;
+  });
+  return runtimeReadinessCheck;
+}
 async function answerRuntimeReadiness(response, readiness) {
-  let ready = false;
-  try {
-    ready = await readiness() === true;
-  } catch {}
+  const ready = await sharedRuntimeReadiness(readiness);
   if (response.destroyed) return;
   response.writeHead(ready ? 200 : 503, { "cache-control": "no-store" });
   response.end();
@@ -230,6 +263,78 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
     console.error("Held runtime failure server failed: " + (error?.code ?? "unknown"));
   });
   server.listen(port, "0.0.0.0");
+}
+`;
+
+// Reserve every bundled credential alias even when no package is selected. Independent
+// attachments may supply an issued placeholder; ordinary environment values must not.
+const managedPluginCredentialEnvironments = JSON.parse(
+  readFileSync(new URL("../../../../plugins/marketplace.json", import.meta.url), "utf8"),
+).plugins.flatMap(({ name }: { name: string }) => {
+  const release = JSON.parse(
+    readFileSync(
+      new URL(`../../../../plugins/${name}/ai.openclaw.oce/release.json`, import.meta.url),
+      "utf8",
+    ),
+  );
+  return Object.values(release.credentials).map((slot) => ({
+    env: (slot as { delivery: { env: string } }).delivery.env,
+    kind: release.capabilities.harness.includes("mcp") ? "mcp" : "cli",
+  }));
+});
+
+export const MANAGED_PLUGIN_ENVIRONMENT = "OPENCLAW_MANAGED_PLUGIN_JSON";
+
+const MANAGED_INSTALL_HELPERS = String.raw`
+function verifiedPluginFile(path, expected) {
+  const bytes = require("node:fs").readFileSync(path);
+  if (require("node:crypto").createHash("sha256").update(bytes).digest("hex") !== expected) {
+    throw new Error("The managed plugin failed its image integrity check: " + path);
+  }
+  return bytes;
+}
+
+function managedPluginInstallation() {
+  const selection = process.env[${JSON.stringify(MANAGED_PLUGIN_ENVIRONMENT)}];
+  if (selection === undefined) return undefined;
+  const { id, kind, packageName, releaseSha256, slotId, toolNames = [] } = JSON.parse(selection);
+  if ((kind !== "cli" && kind !== "mcp") || typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
+    throw new Error("The managed plugin package type or name is invalid.");
+  }
+  const root = "/usr/local/lib/oce/plugin-catalog/" + packageName;
+  const release = releaseSha256 === undefined ? undefined
+    : JSON.parse(verifiedPluginFile(root + "/ai.openclaw.oce/release.json", releaseSha256));
+  if (release && !release.capabilities?.harness?.includes(kind)) {
+    throw new Error("The managed plugin type differs from its reviewed release.");
+  }
+  const credential = release?.credentials?.[slotId];
+  const skills = root + "/skills";
+  let skill;
+  if (release?.capabilities.gateway.includes("skill")) {
+    const directory = skills + "/" + release.skill;
+    skill = { directory, instructions: directory + "/SKILL.md" };
+  }
+  if (kind === "cli") {
+    if (release && (
+      typeof release.runtimeDirectory !== "string" || !/^\/usr\/local\/lib\/oce\/plugins\/[a-z][a-z0-9-]*$/.test(release.runtimeDirectory) ||
+      typeof release.executable !== "string" || !/^[a-z][a-z0-9-]*$/.test(release.executable)
+    )) throw new Error("The managed CLI installation paths are invalid.");
+    return { id, kind, root, release, skills, skill, credential };
+  }
+  if (!Array.isArray(toolNames) || (release ? !credential?.mcp?.server : toolNames.length > 0) ||
+      !toolNames.every((name) => typeof name === "string" &&
+        /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
+        ("oce_mcp_" + credential?.mcp?.server + "_" + name).length <= 64) ||
+      new Set(toolNames.map((name) => name.toLowerCase())).size !== toolNames.length) {
+    throw new Error("The selected MCP tools must have distinct literal names and OpenClaw aliases within 64 characters.");
+  }
+  const mcp = credential && {
+    delivery: credential.delivery,
+    server: credential.mcp.server,
+    localServer: "oce_mcp_" + credential.mcp.server,
+    toolNames,
+  };
+  return { id, kind, root, release, skills, skill, credential, mcp };
 }
 `;
 
@@ -1596,19 +1701,22 @@ function codexAppServerRequestSequence(requests, timeoutMs) {
   });
 }
 
+function codexPluginInitializeParams() {
+  return {
+    clientInfo: {
+      name: "openclaw-enterprise-plugin-runtime",
+      title: "OpenClaw Enterprise Plugin Runtime",
+      version: "1.0.0",
+    },
+    capabilities: { experimentalApi: true },
+  };
+}
 async function codexAppServerRequest(method, params) {
   const responses = await codexAppServerRequestSequence(
     [
       {
         method: "initialize",
-        params: {
-          clientInfo: {
-            name: "openclaw-enterprise-plugin-runtime",
-            title: "OpenClaw Enterprise Plugin Runtime",
-            version: "1.0.0",
-          },
-          capabilities: { experimentalApi: true },
-        },
+        params: codexPluginInitializeParams(),
       },
       { method, params },
     ],
@@ -1638,8 +1746,8 @@ function codexPluginConfigEdits(configuration) {
   ];
 }
 
-async function writeCodexPluginConfiguration(configuration) {
-  const effective = await readCodexPluginConfiguration();
+async function writeCodexPluginConfiguration(configuration, request = codexAppServerRequest) {
+  const effective = await readCodexPluginConfiguration(request);
   const edits = codexPluginConfigEdits(configuration);
   // Replacing a user table does not erase descendants inherited from other
   // config layers. Materialize the selection and approval policy at those keys.
@@ -1678,16 +1786,16 @@ async function writeCodexPluginConfiguration(configuration) {
       }
     }
   }
-  await codexAppServerRequest("config/batchWrite", {
+  await request("config/batchWrite", {
     edits,
     reloadUserConfig: true,
   });
 }
 
-async function readCodexPluginConfiguration() {
+async function readCodexPluginConfiguration(request = codexAppServerRequest) {
   // Match the dedicated Harness workspace; a thread-agnostic read omits its
   // trusted .codex layers and can validate a different policy than the Agent uses.
-  const response = await codexAppServerRequest("config/read", {
+  const response = await request("config/read", {
     cwd: process.env.OPENCLAW_WORKSPACE_DIR || "/home/node/workspace",
   });
   return response?.config;
@@ -1752,11 +1860,11 @@ function verifyCodexPluginConfiguration(configuration, effective) {
   }
 }
 
-async function verifyCodexReviewerConfiguration(configuration, effective) {
+async function verifyCodexReviewerConfiguration(configuration, effective, request) {
   const requestedApps = Object.entries(configuration.apps ?? {})
     .filter(([, app]) => app.approvals_reviewer !== undefined);
   if (requestedApps.length === 0) return;
-  const response = await codexAppServerRequest("configRequirements/read", {});
+  const response = await request("configRequirements/read", {});
   if (!isPlainObject(response) ||
       (response.requirements !== null && !isPlainObject(response.requirements))) {
     throw new Error("Codex reviewer requirements are unavailable; use a runtime supporting configRequirements/read.");
@@ -1829,13 +1937,13 @@ function enabledCodexSelectionIds(selections) {
   );
 }
 
-async function readCodexToolStatuses() {
+async function readCodexToolStatuses(request = codexAppServerRequest) {
   const statuses = [];
   const cursors = new Set();
   let cursor;
   // Bound startup discovery even if a server keeps returning fresh cursors.
   for (let page = 0; page < 100; page += 1) {
-    const response = await codexAppServerRequest("mcpServerStatus/list", {
+    const response = await request("mcpServerStatus/list", {
       detail: "toolsAndAuthOnly",
       ...(cursor === undefined ? {} : { cursor }),
     });
@@ -1872,19 +1980,48 @@ async function readCodexPluginDetails(readParamsList, read = (params) => codexAp
   return details;
 }
 
-async function installCodexSelectionSet(selections, failures = []) {
+async function searchCodexSelectionParams(selections, request, deadline) {
+  const resolved = [];
+  for (const selection of pluginRuntimeTranslator.codexSearchPlan(selections)) {
+    let cursor;
+    const seen = new Set();
+    for (;;) {
+      const response = await request("plugin/search", {
+        ...selection.params, ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (Date.now() >= deadline) {
+        throw new Error("Codex plugin search deadline expired.");
+      }
+      const params = pluginRuntimeTranslator.codexReadParamsFromSearch(selection.pluginId, response);
+      if (params !== undefined) {
+        resolved.push(params);
+        break;
+      }
+      if (typeof response.nextCursor !== "string" || response.nextCursor.length === 0) {
+        throw new Error("Codex plugin catalog did not contain the selected plugin.");
+      }
+      if (seen.has(response.nextCursor)) {
+        throw new Error("Codex plugin search repeated its cursor.");
+      }
+      cursor = response.nextCursor;
+      seen.add(cursor);
+    }
+  }
+  return resolved;
+}
+
+async function installCodexSelectionSet(selections, failures, request, deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS) {
   if (Object.keys(selections).length === 0) return { successfulPluginIds: [], failures: [] };
   const enabledPluginIds = enabledCodexSelectionIds(selections);
-  const listed = await codexAppServerRequest("plugin/list", {});
-  const readParamsList = pluginRuntimeTranslator.codexReadParamsForSelections(selections, listed);
-  const resolvedDetails = await readCodexPluginDetails(readParamsList);
+  const readParamsList = await searchCodexSelectionParams(selections, request, deadline);
+  const resolvedDetails = await readCodexPluginDetails(readParamsList, (params) => request("plugin/read", params));
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
   const successfulPluginIds = [];
   const installs = pluginRuntimeTranslator.codexInstallPlan(selections, resolvedDetails);
   // Native installation reports connector auth only for enabled plugins.
   // Grant validated selections before installation; app grants still wait for revalidation.
-  await codexAppServerRequest("config/batchWrite", {
+  await request("config/batchWrite", {
     edits: [{ keyPath: "plugins", mergeStrategy: "replace", value: {
       _default: { enabled: false },
       ...Object.fromEntries(installs.map((plugin) => [plugin.nativeId, {
@@ -1901,7 +2038,7 @@ async function installCodexSelectionSet(selections, failures = []) {
     if (selectedPlugin !== undefined && failedIds.has(selectedPlugin.pluginId)) continue;
     let install;
     try {
-      install = await codexAppServerRequest("plugin/install", readParams);
+      install = await request("plugin/install", readParams);
     } catch (error) {
       if (
         error instanceof CodexAppServerRequestError &&
@@ -1955,7 +2092,7 @@ async function installCodexSelectionSet(selections, failures = []) {
     Object.entries(selections).filter(([pluginId]) => enabledPluginIds.has(pluginId) && !failedIds.has(pluginId)),
   );
   const toolStatuses = pluginRuntimeTranslator.codexNeedsToolInventory(enabledSelections)
-    ? await readCodexToolStatuses()
+    ? await readCodexToolStatuses(request)
     : [];
   const effectiveResolvedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, resolvedDetails, failed, toolStatuses);
   const installedDetails = await readCodexPluginDetails(readParamsList, (readParams, index) => {
@@ -1968,7 +2105,7 @@ async function installCodexSelectionSet(selections, failures = []) {
     ) {
       return resolvedDetails[index];
     }
-    return codexAppServerRequest("plugin/read", readParams);
+    return request("plugin/read", readParams);
   });
   const installedArtifact = pluginRuntimeTranslator.codexRuntimeArtifact(selections, installedDetails, failed, toolStatuses);
   if (JSON.stringify(installedArtifact.installs) !== JSON.stringify(effectiveResolvedArtifact.installs)) {
@@ -1979,12 +2116,12 @@ async function installCodexSelectionSet(selections, failures = []) {
   }
   // Remote plugin/read reports catalog metadata, not cached bundle contents.
   // Recheck the admitted release and app mapping before granting apps.
-  await writeCodexPluginConfiguration(effectiveResolvedArtifact.configuration);
+  await writeCodexPluginConfiguration(effectiveResolvedArtifact.configuration, request);
   const enabledReadParams = readParamsList.filter((readParams) => installs.some(
     (plugin) => plugin.remotePluginId === readParams.pluginName &&
       !failedIds.has(plugin.pluginId) && enabledPluginIds.has(plugin.pluginId),
   ));
-  const enabledDetails = await readCodexPluginDetails(enabledReadParams);
+  const enabledDetails = await readCodexPluginDetails(enabledReadParams, (params) => request("plugin/read", params));
   for (const plugin of effectiveResolvedArtifact.installs) {
     if (failedIds.has(plugin.pluginId) || !enabledPluginIds.has(plugin.pluginId)) continue;
     const readParams = enabledReadParams.find((candidate) => candidate.pluginName === plugin.remotePluginId);
@@ -1997,8 +2134,8 @@ async function installCodexSelectionSet(selections, failures = []) {
   // TODO: use native effective app/tool policy introspection when available.
   // Codex 0.156 config/read omits managed app requirements applied at execution;
   // this readback verifies loaded configuration, not future thread policy.
-  const effectiveConfiguration = await readCodexPluginConfiguration();
-  await verifyCodexReviewerConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
+  const effectiveConfiguration = await readCodexPluginConfiguration(request);
+  await verifyCodexReviewerConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration, request);
   verifyCodexPluginConfiguration(effectiveResolvedArtifact.configuration, effectiveConfiguration);
   return { successfulPluginIds, failures: failed };
 }
@@ -2007,7 +2144,7 @@ async function installCodexSelectionSet(selections, failures = []) {
 // API-key login ("api key auth is not supported"), so retrying cannot succeed.
 // Disable every enabled selection as an authentication requirement and turn the
 // plugin features off instead of holding the Harness unready.
-async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = []) {
+async function disableCodexSelectionsWithoutChatGptLogin(selections, failures, request) {
   const failed = [...failures];
   const failedIds = pluginFailureIds(failed);
   for (const pluginId of enabledCodexSelectionIds(selections)) {
@@ -2033,8 +2170,8 @@ async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = 
     let lastError = new Error("Codex plugin disable deadline expired before the first attempt.");
     while (Date.now() < deadline) {
       try {
-        await writeCodexPluginConfiguration(configuration);
-        verifyCodexPluginConfiguration(configuration, await readCodexPluginConfiguration());
+        await writeCodexPluginConfiguration(configuration, request);
+        verifyCodexPluginConfiguration(configuration, await readCodexPluginConfiguration(request));
         lastError = undefined;
         break;
       } catch (error) {
@@ -2051,18 +2188,23 @@ async function disableCodexSelectionsWithoutChatGptLogin(selections, failures = 
   return { successfulPluginIds: [], failures: failed };
 }
 
-async function installCodexPlugins(runtime, failures = []) {
+async function installCodexPlugins(runtime, failures = [], request) {
   assertCodexPluginRuntime(runtime);
   const selections = runtime.manifest.selections ?? {};
+  // The owner supplies the authenticated native session. Never fall back to
+  // ambient credentials when a nonempty preparation has no valid caller.
+  if (Object.keys(selections).length > 0 && typeof request !== "function") {
+    throw new Error("Codex plugin preparation requires a native request caller.");
+  }
   if (process.env.CODEX_LOGIN_MODE === "api_key") {
-    return disableCodexSelectionsWithoutChatGptLogin(selections, failures);
+    return disableCodexSelectionsWithoutChatGptLogin(selections, failures, request);
   }
   const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
   let lastError = new Error("Codex plugin installation deadline expired before the first attempt.");
   let result = { successfulPluginIds: [], failures };
   while (Date.now() < deadline) {
     try {
-      result = await installCodexSelectionSet(selections, failures);
+      result = await installCodexSelectionSet(selections, failures, request, deadline);
       lastError = undefined;
       break;
     } catch (error) {
@@ -2289,9 +2431,12 @@ function runOpenClawAuthenticationProbe(fs, capMs, cleanup) {
     let output;
     try { output = JSON.parse(result.stdout); } catch { return probeFailure("INVALID_OUTPUT", "json"); }
     const results = output?.auth?.probes?.results;
+    // Configured custom-provider env references are reported by native OpenClaw as
+    // models.json; built-in ambient credentials retain the env source requirement.
+    const source = credentialEnvironment === "OCE_MODEL_API_KEY" ? "models.json" : "env";
     if (!Array.isArray(results) || results.length !== 1 ||
       results[0]?.provider !== provider || results[0].model !== model ||
-      results[0].source !== "env") return probeFailure("INVALID_OUTPUT", "shape");
+      results[0].source !== source) return probeFailure("INVALID_OUTPUT", "shape");
     const status = results[0].status;
     if (status === "ok") return undefined;
     if (status === "auth") return "AUTHENTICATION_FAILED";
@@ -2370,11 +2515,13 @@ const { spawn } = require("node:child_process");
 process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
 ${PLUGIN_RUNTIME_HELPERS}
+${MANAGED_INSTALL_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
 ${openClawStateMigrationHelper("Gateway", "restart the Pod")}
+${OPENCLAW_CONFIG_ISSUE_HELPER}
 
 function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
@@ -2401,6 +2548,11 @@ function nativeGatewayAnswers(path) {
   });
 }
 
+// Whether a native Gateway this wrapper started has answered its /readyz, which the
+// kubelet's readiness probe asks every 2 s. Until one has, an exit may be OpenClaw refusing
+// its configuration at startup.
+let gatewayServed = false;
+
 // OpenClaw's /readyz admits a Gateway whose agent databases are still in
 // background startup inspection, and a chat turn then gets HTTP 500 until it
 // finishes (19.6 s after start in finding 2185). /startupz stays 503 until
@@ -2411,6 +2563,7 @@ async function gatewayRuntimeReady() {
     return false;
   }
   const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
+  if (answers[1]) gatewayServed = true;
   return answers.every((ready) => ready);
 }
 
@@ -2512,14 +2665,40 @@ function configureNativeWorkerProfile() {
 }
 
 // Admission applies the same rule (configuration-rules.ts); a parity test pins the two.
+// OpenClaw matches a deny entry trimmed and lowercased, and plugins.enabled false
+// turns off every plugin.
 function requireWorkspaceNodePlugins(config) {
   const plugins = isPlainObject(config.plugins) ? config.plugins : {};
-  if (
-    plugins.deny?.includes("file-transfer") ||
-    plugins.entries?.["file-transfer"]?.enabled === false
-  ) {
+  const deny = plugins.deny;
+  const denied = Array.isArray(deny)
+    ? deny.some((id) => typeof id === "string" && id.trim().toLowerCase() === "file-transfer")
+    : deny?.includes("file-transfer");
+  if (denied || plugins.enabled === false || plugins.entries?.["file-transfer"]?.enabled === false) {
     throw new Error("The workspace node requires the file-transfer plugin.");
   }
+}
+
+function installGatewayPlugins(runtime, failures, install) {
+  if (runtime.manifest.kind !== "openclaw" || !install) return installOpenClawPlugins(runtime, failures);
+
+  // The image supplies the managed skill. Only native packages go through OpenClaw's installer.
+  const { id, release, skills: skillsDirectory, skill } = install;
+  if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
+  const { [id]: selection, ...selections } = runtime.manifest.selections ?? {};
+  if (!selection || Boolean(selection.enabled) !== Boolean(release)) throw new Error("The managed plugin selection differs from the runtime release.");
+  const native = { ...runtime, manifest: { ...runtime.manifest, selections } };
+  const result = installOpenClawPlugins(native, failures);
+
+  const config = readOpenClawConfig();
+  if (skill || config.skills?.load?.extraDirs?.includes(skillsDirectory)) {
+    const skills = config.skills ??= {};
+    const load = skills.load ??= {};
+    const directories = (load.extraDirs ?? []).filter((path) => path !== skillsDirectory);
+    load.extraDirs = skill ? [...directories, skillsDirectory] : directories;
+    writeOpenClawConfig(config);
+  }
+  if (release) result.successfulPluginIds.push(id);
+  return result;
 }
 
 // Every change this makes is under plugins.*, which OpenClaw hot-applies.
@@ -2561,6 +2740,9 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   ];
   const nodes = fileConfig.nodes ??= {};
   if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
+    // Native workspace.skills checks the source root for discovery, the skill directory for
+    // resources and the instruction file for reads. This release needs exactly those paths.
+    const install = managedPluginInstallation();
     nodes[workspaceNodeId] = {
       ask: "off",
       allowReadPaths: [
@@ -2568,6 +2750,7 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
         remoteRoot + "/**",
         "/home/node/.openclaw",
         ...skillRoots.flatMap((root) => [root, root + "/**"]),
+        ...(install?.skill ? [install.skills, install.skill.directory, install.skill.instructions] : []),
       ],
       allowWritePaths: [
         ...editable.map((name) => remoteRoot + "/" + name),
@@ -2824,7 +3007,8 @@ if (process.env.OPENCLAW_WORKSPACE_DIR !== undefined) {
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
 const followsPeerStatus =
-  pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime);
+  pluginRuntime?.manifest?.kind === "codex" && hasEnabledPluginSelections(pluginRuntime) &&
+  process.env.OPENCLAW_CODEX_PLUGINS_PREPARED !== "true";
 // A respawn configures from the file a container restart would start from.
 const initialConfigPath = process.env.OPENCLAW_CONFIG_PATH;
 const appliesGatewayToolPolicy = Boolean(process.env.APP_SERVER_URL || process.env.OPENCLAW_NATIVE_WORKER_PROFILE);
@@ -2927,10 +3111,14 @@ function configureGateway(peerStatus) {
     process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(peerStatus.startupId);
   }
   const pluginInstallStartedAt = Date.now();
+  const install = pluginRuntime?.manifest.kind === "openclaw" ? managedPluginInstallation() : undefined;
   const pluginResult =
     pluginRuntime === undefined
       ? { successfulPluginIds: [], failures: peerFailures }
-      : installOpenClawPlugins(pluginRuntime, peerFailures);
+      : installGatewayPlugins(pluginRuntime, peerFailures, install);
+  const mcp = install?.mcp;
+  // Reviewed MCP names fit OpenClaw's node-host descriptor limits without normalization.
+  const managedMcpGatewayTools = mcp?.toolNames.map((name) => mcp.localServer + "_" + name) ?? [];
   if (pluginRuntime !== undefined) {
     logStartupPhase("plugin-install", pluginInstallStartedAt);
   }
@@ -2955,7 +3143,11 @@ function configureGateway(peerStatus) {
     // The first pairing records its command grant before a node ID is available.
     // gateway.* changes restart OpenClaw, so this is written only before a spawn.
     const commands = ((config.gateway ??= {}).nodes ??= {}).commands ??= {};
-    commands.allow = [...new Set([...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create", "dir.list", "workspace.memory", "workspace.skills"])];
+    commands.allow = [...new Set([
+      ...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create",
+      "dir.list", "workspace.memory", "workspace.skills",
+      ...(managedMcpGatewayTools.length ? ["mcp.tools.call.v1"] : []),
+    ])];
     if (environmentWorkspaceNodeId !== undefined || workspaceNodeBindingPath !== undefined) {
       // Refuse a revision that cannot host its node now, not when the node arrives.
       workspaceNodeId = environmentWorkspaceNodeId ?? readWorkspaceNodeBinding();
@@ -2964,7 +3156,7 @@ function configureGateway(peerStatus) {
     }
     writeOpenClawConfig(config);
   }
-  if (appliesGatewayToolPolicy) configureManagedGatewayTools(gatewayToolPolicyInput);
+  if (appliesGatewayToolPolicy) configureManagedGatewayTools(gatewayToolPolicyInput, managedMcpGatewayTools);
   return { pluginResult, workspaceNodeId };
 }
 
@@ -2993,6 +3185,39 @@ function gatewayEnvironment() {
   }
 }
 
+let gatewayConfigurationHeld = false;
+
+// OpenClaw exits at startup (status 78) when any setting fails its schema, including a plugin
+// entry's config when that plugin is disabled or denied (finding 3043; the runtime image carries
+// openclaw/openclaw#189392, so OpenClaw's own log names a failing plugin setting too). Each
+// restart fails the same way, until the convergence deadline. So once a Gateway that never
+// served exits non-zero, OpenClaw's own validator checks the same configuration. An invalid
+// one is held as check gateway-config, which ends the deployment at once, and the log names
+// the settings. Any other exit, or a validator that prints no report (it failed or timed
+// out), restarts the container as before, as does a Gateway with no Compute status port to
+// serve the hold on.
+function holdInvalidGatewayConfiguration(code, signal) {
+  if (runtimeStatusPort() === undefined) return false;
+  const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
+    env: { ...gatewayEnvironment(), OPENCLAW_CONFIG_READONLY: "1" },
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
+  });
+  let report;
+  try {
+    report = JSON.parse(validation.stdout);
+  } catch {
+    return false;
+  }
+  if (report?.valid !== false) return false;
+  gatewayConfigurationHeld = true;
+  publishRuntimeFailure("gateway-config", "UNAVAILABLE");
+  console.error(invalidOpenClawConfigurationLine(
+    "The OpenClaw Gateway exited (" + (signal ?? "exit-" + code) + ") before it served", report.issues,
+  ));
+  setInterval(() => {}, 3600000);
+  return true;
+}
+
 function startGatewayProcess() {
   const spawned = spawn(
     "node",
@@ -3011,6 +3236,9 @@ function startGatewayProcess() {
         return;
       }
       if (gatewayTerminating || ((!respawning || waitingForPeerDuringOutage || verifyingServingReplacement) && spawned === child)) {
+        if (!gatewayTerminating && !gatewayServed && code !== 0 && holdInvalidGatewayConfiguration(code, signal)) {
+          return;
+        }
         process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
       }
     });
@@ -3160,7 +3388,7 @@ if (workspaceNodeBindingPath !== undefined) {
     }
   };
   const workspaceNodePoll = setInterval(async () => {
-    if (pollInFlight || respawning) return;
+    if (pollInFlight || respawning || gatewayConfigurationHeld) return;
     pollInFlight = true;
     try {
       await pollWorkspaceNode();
@@ -3300,7 +3528,7 @@ if (followsPeerStatus) {
     }
   };
   const peerStatusPoll = setInterval(async () => {
-    if (pollInFlight || respawning || stoppingContainer) return;
+    if (pollInFlight || respawning || stoppingContainer || gatewayConfigurationHeld) return;
     pollInFlight = true;
     try {
       let current;
@@ -3582,6 +3810,7 @@ ${PLUGIN_RUNTIME_HELPERS}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
+${CODEX_PLUGIN_STDIO_HELPER}
 ${HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
 
@@ -3696,7 +3925,14 @@ if (providerManagedPat) {
     JSON.stringify({ personal_access_token: accessToken }), { mode: 0o600 });
 }
 const loginFlag = loginMode === "api_key" ? "--with-api-key" : "--with-access-token";
+// Native metrics have a separate upstream exporter default from logs.
+const nativeTelemetryArguments = [
+  "-c", "otel.exporter=\"none\"",
+  "-c", "otel.metrics_exporter=\"none\"",
+  "-c", "otel.log_user_prompt=false",
+];
 const loginArguments = [
+  ...nativeTelemetryArguments,
   "-c", "cli_auth_credentials_store=file", "login", providerManagedPat ? "status" : loginFlag,
 ];
 function codexChildEnvironment() {
@@ -3927,6 +4163,7 @@ function probeCodexAuthentication(timeout) {
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
     result = spawnSync(codexExecutable(), [
+      ...nativeTelemetryArguments,
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
@@ -4116,15 +4353,15 @@ if (configuredTokenSha !== undefined && !/^[a-f0-9]{64}$/.test(configuredTokenSh
 if (configuredTokenSha !== undefined && process.env.APP_SERVER_TOKEN !== undefined) {
   throw new Error("Codex app-server token inputs are mutually exclusive.");
 }
+if (configuredTokenSha !== undefined && loginMode === "api_key" && hasEnabledPluginSelections(pluginRuntime)) {
+  throw new Error("Codex plugins require a ChatGPT login; API-key authentication cannot install them.");
+}
 if (pluginRuntimeStatusPort() !== undefined) {
   if (configuredTokenSha !== undefined) {
     throw new Error("Codex plugins require the app-server base token.");
   }
   process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(pluginStatusReport.startupId);
 }
-publishRuntimeReady();
-// Everything before this line delays the Codex app-server.
-logStartupPhase("native-spawn", startupPhaseOrigin);
 let digest = configuredTokenSha;
 if (digest === undefined) {
   if (typeof process.env.APP_SERVER_TOKEN !== "string" || process.env.APP_SERVER_TOKEN.length === 0) {
@@ -4132,16 +4369,11 @@ if (digest === undefined) {
   }
   digest = createHash("sha256").update(process.env.APP_SERVER_TOKEN).digest("hex");
 }
-const child = spawn(
-  "codex",
-  [
+const nativeArguments = [
+    ...nativeTelemetryArguments,
     // Preserve the admitted model selection for native policy readback.
     "-c",
     "model=" + JSON.stringify(process.env.OPENCLAW_HARNESS_MODEL.slice(process.env.OPENCLAW_HARNESS_MODEL.indexOf("/") + 1)),
-    "-c",
-    "otel.exporter=\"none\"",
-    "-c",
-    "otel.log_user_prompt=false",
     // Managed container tools must retain the runtime PATH, including Skill dependencies.
     // Login profiles otherwise replace it with the image's system-only PATH.
     "-c",
@@ -4153,35 +4385,53 @@ const child = spawn(
     ...shellNodeCaArguments(),
     ...(loginMode === "chatgptAuthTokens" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
 ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_retries",\n' : ""}    "app-server",
-    "--listen",
-    "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
-    "--ws-auth",
-    "capability-token",
-    "--ws-token-sha256",
-    digest,
-  ],
-  // stdout is the protocol stream; stderr passes through the span-noise filter.
-  { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
-);
-forwardTermination(child);
-const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
-child.on("exit", (code, signal) => {
-  const status = code ?? (signal === "SIGTERM" ? 0 : 1);
-  // Forward Codex's last lines; a descendant holding the pipe cannot delay exit
-  // by more than 2 s. The unref'd timer never keeps an otherwise idle wrapper alive.
-  setTimeout(() => process.exit(status), 2000).unref();
-  codexStderrDone.then(() => process.exit(status));
-});
+];
 (async () => {
+  if (configuredTokenSha !== undefined && hasEnabledPluginSelections(pluginRuntime)) {
+    const preparationStartedAt = Date.now();
+    try {
+      await withCodexPluginStdio(codexExecutable(), nativeArguments,
+        { cwd: workspaceDirectory, env: codexChildEnvironment() }, (request) =>
+          installCodexSelectionSet(pluginRuntime.manifest.selections, [], request));
+      logStartupPhase("plugin-install", preparationStartedAt);
+    } catch (error) {
+      logStartupPhase("plugin-install", preparationStartedAt, "failed", codexPluginStartupFailureCode(error));
+      console.error(JSON.stringify({ event: "codex.plugin_preparation_failed", ...error.preparation }));
+      console.error("Codex plugin preparation failed before native WebSocket startup.");
+      process.exit(1);
+      return;
+    }
+  }
+  publishRuntimeReady();
+  // Preparation, when required, has exited before the serving process starts.
+  logStartupPhase("native-spawn", startupPhaseOrigin);
+  const child = spawn(
+    "codex",
+    [...nativeArguments, "--listen", "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
+      "--ws-auth", "capability-token", "--ws-token-sha256", digest],
+    { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
+  );
+  forwardTermination(child);
+  const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
+  child.on("exit", (code, signal) => {
+    const status = code ?? (signal === "SIGTERM" ? 0 : 1);
+    // Forward Codex's last lines; a descendant holding the pipe cannot delay exit
+    // by more than 2 s. The unref'd timer never keeps an otherwise idle wrapper alive.
+    setTimeout(() => process.exit(status), 2000).unref();
+    codexStderrDone.then(() => process.exit(status));
+  });
   const pluginInstallStartedAt = Date.now();
   let pluginInstallLogged = false;
   try {
-    if (pluginRuntime !== undefined) {
-      const result = await installCodexPlugins(pluginRuntime);
+    if (pluginRuntime !== undefined && configuredTokenSha === undefined) {
+      const result = await installCodexPlugins(pluginRuntime, [], codexAppServerRequest);
       logStartupPhase("plugin-install", pluginInstallStartedAt);
       pluginInstallLogged = true;
       publishPluginRuntimeStatus({ phase: "ready", ...result });
     } else {
+      if (pluginRuntime !== undefined && !hasEnabledPluginSelections(pluginRuntime)) {
+        logStartupPhase("plugin-install", pluginInstallStartedAt);
+      }
       publishPluginRuntimeStatus({ phase: "ready", successfulPluginIds: [], failures: [] });
     }
     pluginRuntimeReady();
@@ -4239,7 +4489,7 @@ function agentWithNodeEntrypoint(entrypoint: string): string {
   return String.raw`
 const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
-const { execFile, spawn, spawnSync } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
@@ -4330,15 +4580,14 @@ function withoutOpenClawCommandHints(text) {
 }
 // What a failed native setup reported: its message on one line of at most 400
 // characters, and up to five invalid setting paths (names, never values).
+${OPENCLAW_CONFIG_ISSUE_HELPER}
 function workspaceBaselineReport(path) {
   let reported;
   try {
     reported = JSON.parse(workspaceBaselineOutput(path));
   } catch {}
   const message = reported?.error?.message;
-  const settings = [...new Set((Array.isArray(reported?.issues) ? reported.issues : [])
-    .map((issue) => issue?.path)
-    .filter((setting) => typeof setting === "string" && setting.length <= 64 && /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/.test(setting)))].slice(0, 5);
+  const settings = openClawConfigIssues(reported?.issues).map((issue) => issue.path);
   // A message that is only a hint is still what OpenClaw reported: keep it whole.
   const collapsed = typeof message === "string"
     ? message.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, " ").trim()
@@ -4359,11 +4608,12 @@ if (outdatedDatabases.length > 0 && !(await migrateOpenClawState(state, outdated
 }
 // The workspace belongs to the Harness. Native setup creates missing defaults
 // without replacing owner edits; neither child may serve an uninitialized workspace.
-// Its JSON result goes to a file: spawnSync kills a child whose output outgrows a
-// pipe's buffer, which would fail a setup that succeeded. The result is a multi-line
-// document that runtime logs withhold as a possible payload, so a failure names only
-// its message and invalid setting paths, on one bounded line. A failure holds the
-// Harness: a restart would run the same setup on the same configuration.
+// Its JSON result goes to a file: a pipe would need the whole result buffered, and
+// spawnSync killed a child whose output outgrew it, failing a setup that succeeded.
+// The result is a multi-line document that runtime logs withhold as a possible
+// payload, so a failure names only its message and invalid setting paths, on one
+// bounded line. A failure holds the Harness: a restart would run the same setup on
+// the same configuration.
 const baselineStartedAt = Date.now();
 const baselineResultPath = join(state, "workspace-baseline.json");
 const baselineResult = openSync(baselineResultPath, "w", 0o600);
@@ -4373,13 +4623,19 @@ const baselineOutputPath = join(state, "workspace-baseline.log");
 const baselineOutput = openSync(baselineOutputPath, "w", 0o600);
 let baseline;
 try {
-  baseline = spawnSync(process.execPath, [
-    "/app/openclaw.mjs", "setup", "--baseline", "--workspace", workspaceDirectory, "--json",
-  ], { env: nodeEnv, stdio: ["inherit", baselineResult, baselineOutput] });
+  // Setup holds the node state's owner lock on the workspace claim, which every
+  // later revision's Harness opens. A Pod stopped during setup lets it finish and
+  // release the lock before the container ends.
+  baseline = await runOpenClawStateOwner(
+    ["setup", "--baseline", "--workspace", workspaceDirectory, "--json"],
+    { env: nodeEnv, stdio: ["inherit", baselineResult, baselineOutput] },
+    { forwardStop: false },
+  );
 } finally {
   closeSync(baselineResult);
   closeSync(baselineOutput);
 }
+if (baseline.terminating) process.exit(0);
 try {
   for (const line of workspaceBaselineOutput(baselineOutputPath, true).split("\n")) {
     const kept = withoutOpenClawCommandHints(line);
@@ -4586,11 +4842,33 @@ function start(slot) {
       slot.timer = setTimeout(() => start(slot), 1_000);
     }
   }
-  child.on("error", () => {
+  child.on("error", (error) => {
+    try {
+      const codes = ["ENOENT", "EACCES", "ENOMEM", "E2BIG", "EMFILE", "ENFILE"];
+      console.error(JSON.stringify({ event: "runtime.process_error", component: slot.name === "Codex" ? "codex-wrapper" : "workspace-node", code: codes.includes(error?.code) ? error.code : "OTHER" }));
+    } catch {
+      // A diagnostic failure cannot change the existing start-error recovery.
+    }
     console.error(slot.name + " failed to start.");
     finish();
   });
-  child.on("exit", () => {
+  child.on("exit", (code, signal) => {
+    try {
+      const signals = ["SIGINT", "SIGTERM", "SIGKILL", "SIGSEGV", "SIGABRT", "SIGHUP", "SIGBUS", "SIGPIPE"];
+      let observedSignal = null;
+      if (signal !== null) {
+        observedSignal = signals.includes(signal) ? signal : "OTHER";
+      }
+      console.error(JSON.stringify({
+        event: "runtime.process_exit",
+        component: slot.name === "Codex" ? "codex-wrapper" : "workspace-node",
+        exitCode: Number.isInteger(code) && code >= 0 && code <= 255 ? code : null,
+        signal: observedSignal,
+        stopping,
+      }));
+    } catch {
+      // Reporting must not change the existing group retirement or restart schedule.
+    }
     // The Codex wrapper may exit after plugin failure while its app-server is
     // still shutting down. Retire that group before starting another wrapper.
     killGroup(child, "SIGKILL");
@@ -4633,6 +4911,8 @@ const { join } = require("node:path");
 const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
+${MANAGED_INSTALL_HELPERS}
+${MANAGED_PLUGIN_CREDENTIAL_HELPER}
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
@@ -4668,6 +4948,59 @@ if (
 // Until Doctor has brought it current, readiness does not open it.
 const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
 let nodeStateCurrent = outdatedNodeDatabases.length === 0;
+
+const install = managedPluginInstallation();
+const release = install?.release;
+const boundCredentialEnv = process.env[${JSON.stringify(managedCredentialEnvironment)}];
+const boundMarker = boundCredentialEnv === undefined ? undefined : process.env[boundCredentialEnv];
+if (boundCredentialEnv !== undefined && (
+  install?.kind !== "cli" || install.credential?.delivery?.env !== boundCredentialEnv ||
+  (boundMarker !== undefined && !isManagedPluginPlaceholder(boundCredentialEnv, boundMarker, "cli"))
+)) throw new Error("The selected account requires its issued credential placeholder.");
+// The credential adapter recognizes issued markers. A withdrawn attachment supplies no
+// marker after restart; unrelated raw environment values are never treated as credentials.
+const credentialEnvironments = [
+  ...${JSON.stringify(managedPluginCredentialEnvironments)},
+  ...Object.values(release?.credentials ?? {}).map((slot) => ({ env: slot.delivery.env, kind: install.kind })),
+];
+for (const { env, kind } of credentialEnvironments) {
+  if (!isManagedPluginPlaceholder(env, process.env[env], kind)) delete process.env[env];
+}
+const pluginBin = install?.kind === "cli" && release ? join(release.runtimeDirectory, "bin") : undefined;
+if (pluginBin) {
+  const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
+  verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
+}
+
+// The selected credential runtime supplies the placeholder. A withdrawn account
+// leaves the MCP definition staged with discovery disabled.
+let nodeMcp;
+if (install?.mcp) {
+  const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
+  const manifest = JSON.parse(bytes);
+  const { delivery, server, localServer, toolNames } = install.mcp;
+  const endpoint = manifest.mcpServers[server];
+  if (endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:") {
+    throw new Error("The managed MCP server declaration is invalid.");
+  }
+  const placeholder = process.env[delivery.env];
+  const matchingPlaceholder = isManagedPluginPlaceholder(delivery.env, placeholder, "mcp");
+  const enabled = toolNames.length > 0 && matchingPlaceholder;
+  if (!matchingPlaceholder) delete process.env[delivery.env];
+  nodeMcp = {
+    servers: {
+      [localServer]: {
+        enabled,
+        transport: endpoint.type,
+        url: endpoint.url,
+        ...(enabled && {
+          headers: { Authorization: "Bearer " + placeholder },
+          toolFilter: { include: toolNames },
+        }),
+      },
+    },
+  };
+}
 
 function nativeWorkerReady() {
   return new Promise((resolve) => {
@@ -4730,6 +5063,7 @@ writeFileSync(workerConfigPath, JSON.stringify({
     entries: { "file-transfer": { enabled: true } },
   },
   nodeHost: {
+    ...(nodeMcp && { mcp: nodeMcp }),
     workerRuns: {
       enabled: true,
       capacity: workerCapacity,
@@ -4742,6 +5076,7 @@ delete process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 delete process.env.OPENCLAW_HARNESS_PROBE_CONFIG;
 const nodeEnv = {
   ...process.env,
+  ...(pluginBin && { PATH: [pluginBin, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };

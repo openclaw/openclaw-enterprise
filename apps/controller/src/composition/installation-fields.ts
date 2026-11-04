@@ -1,8 +1,8 @@
 // Shared Installation value validation. File loading, environment access and
 // Driver binding remain in their owning composition modules.
-import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
+import type { KubernetesGatewayRoutingOptions } from "../drivers/compute/kubernetes/index.ts";
 
 export type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -77,40 +77,6 @@ export class InstallationFieldError extends Error {
     super(bounded.map((detail) => detail.message).join(" "));
     this.details = bounded;
   }
-}
-
-/** Only the three public native sender path diagnostics may cross this boundary. */
-export function rejectNativeRepositoryPath(
-  variant: "public-ca-format" | "control-socket-format" | "control-socket-length",
-): never {
-  let detail: InstallationFieldDetail;
-  switch (variant) {
-    case "public-ca-format":
-    case "control-socket-format": {
-      const field = variant === "public-ca-format" ? "publicCaPath" : "controlSocket";
-      detail = {
-        path: `/repository/nativeSender/${field}`,
-        code: "INVALID_FORMAT",
-        message: `repository.nativeSender.${field} must be a canonical absolute path without control characters. Use an absolute path with no dot segments, repeated separators, trailing separator or control characters.`,
-      };
-      break;
-    }
-    case "control-socket-length":
-      detail = {
-        path: "/repository/nativeSender/controlSocket",
-        code: "INVALID_RANGE",
-        message:
-          "repository.nativeSender.controlSocket must be at most 103 UTF-8 bytes. Use a shorter socket path.",
-      };
-      break;
-    default:
-      throw new Error("Invalid native repository diagnostic.");
-  }
-  // Startup consumers rely on configuration-error identity as well as safe details.
-  const error = new ConfigurationValidationError([Object.freeze(detail)]);
-  Object.freeze(error.error.details);
-  Object.freeze(error.error);
-  throw Object.freeze(error);
 }
 
 const egressAuthorityFiles = ["certificatePath", "privateKeyPath", "issuerPublicKeyPath"];
@@ -212,7 +178,8 @@ export function egressAuthorityConfiguration(
  * An Installation listener that the production chart's Service cannot reach: the chart
  * serves no such listener, serves it on another port, the listener does not bind all
  * addresses, or it names TLS or issuer files where the chart mounts none. Startup and the
- * chart's upgrade check report it as `CHART_LISTENER_MISMATCH`.
+ * chart's upgrade check report it as `CHART_LISTENER_MISMATCH`. Private Gateway
+ * routing must also agree with the chart's listener and resource identity.
  * The message names the Installation and Helm settings and values, which hold no secret;
  * `path` is the refused Installation setting as a JSON Pointer (finding 2213).
  */
@@ -321,6 +288,56 @@ export function requireChartListener(
         `${listener.path}.${field}`,
       );
     }
+  }
+}
+
+/** Compare selected Kubernetes routing with the private Gateway this chart renders. */
+export function requireChartGatewayRouting(
+  routing: KubernetesGatewayRoutingOptions | undefined,
+  environment: Readonly<Record<string, string | undefined>>,
+): void {
+  const encoded = environment.OCC_CHART_GATEWAY_ROUTING;
+  // Direct routing and Gateways managed outside this chart have no chart-owned expectation.
+  if (encoded === undefined || routing === undefined) {
+    return;
+  }
+  const path = "drivers.compute.configuration.gatewayRouting";
+  let declared: ConfigurationRecord | undefined;
+  try {
+    declared = asRecord(JSON.parse(encoded));
+  } catch {
+    // Report only the chart-owned setting, never the submitted JSON.
+  }
+  if (
+    declared === undefined ||
+    ["gatewayName", "gatewayNamespace", "envoyNamespace", "hostname", "defaultHostname"].some(
+      (field) => !isNonEmptyString(declared?.[field]),
+    )
+  ) {
+    throw new ChartListenerMismatchError(
+      "OCC_CHART_GATEWAY_ROUTING must contain the private Gateway expectation rendered by the Helm chart.",
+      path,
+    );
+  }
+  for (const [field, chart] of [
+    ["gatewayName", "Helm gatewayRouting.gatewayName"],
+    ["gatewayNamespace", "the Helm release namespace"],
+    ["envoyNamespace", "Helm gatewayRouting.envoyNamespace"],
+  ] as const) {
+    if (routing[field] !== declared[field]) {
+      throw new ChartListenerMismatchError(
+        `${path}.${field} must match ${chart}.`,
+        `${path}.${field}`,
+      );
+    }
+  }
+  // Matching resource identities give Compute the same automatic Service DNS as the chart.
+  // Keep the chart's existing derivation as the source for both its listener and this check.
+  if ((routing.hostname || declared.defaultHostname) !== declared.hostname) {
+    throw new ChartListenerMismatchError(
+      `${path}.hostname must match Helm gatewayRouting.hostname. Set both to the same DNS name, or omit both for automatic Service DNS.`,
+      `${path}.hostname`,
+    );
   }
 }
 

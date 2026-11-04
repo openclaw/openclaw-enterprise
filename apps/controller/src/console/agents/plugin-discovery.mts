@@ -3,6 +3,8 @@ import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import {
   type CatalogDirection,
   type CatalogEntry,
+  type ManagedToolConnection,
+  type ManagedToolDiscovery,
   type PluginFieldCatalog,
   type PluginFieldsOptions,
   createPluginFields,
@@ -107,7 +109,7 @@ export function createPluginDiscovery({
       }
     },
     onCancelDiscovery: cancel,
-    onLoadTools: (id) => void loadTools(id),
+    onLoadTools: (id, connection) => void loadTools(id, connection),
   });
 
   function render() {
@@ -146,6 +148,9 @@ export function createPluginDiscovery({
       if (entry.toolStatus === "loading") {
         entries.set(id, { ...entry, toolStatus: undefined });
       }
+      if (entry.managedTools?.status === "loading") {
+        entries.set(id, { ...entries.get(id)!, managedTools: undefined });
+      }
     }
   }
 
@@ -172,8 +177,9 @@ export function createPluginDiscovery({
     if (context.isCurrent() && canDiscover() && !isPending()) {
       catalog.status = "loading";
       searchTimer = setTimeout(() => {
-        // Submitting the form can pause discovery before this delayed read starts.
-        if (isPending()) {
+        // A form submission or tab change can prevent this deferred read from starting.
+        // Release the loading state so reopening a retained tab can load its catalog.
+        if (!context.isCurrent() || isPending()) {
           prefetched = false;
           cancel();
           return;
@@ -280,37 +286,58 @@ export function createPluginDiscovery({
     }
   }
 
-  async function loadTools(id: string) {
+  async function loadTools(id: string, connection?: ManagedToolConnection) {
     const entry = entries.get(id);
-    if (
-      !canDiscover() ||
-      isPending() ||
-      catalog.status === "loading" ||
-      !entry?.remoteId ||
-      entry.toolStatus === "loading"
-    ) {
+    if (!canDiscover() || isPending() || catalog.status === "loading" || !entry) {
       return;
     }
+    const pending: ManagedToolDiscovery | undefined = connection && {
+      connection,
+      status: "loading",
+    };
+    if (pending) {
+      entries.set(id, { ...entry, managedTools: pending });
+    } else {
+      if (!entry.remoteId || entry.toolStatus === "loading") {
+        return;
+      }
+      entries.set(id, { ...entry, toolStatus: "loading", toolError: undefined });
+    }
     const active = generation;
-    entries.set(id, { ...entry, toolStatus: "loading", toolError: undefined });
+    const currentEntry = () => {
+      const current = entries.get(id);
+      return context.isCurrent() &&
+        active === generation &&
+        (pending ? current?.managedTools === pending : current?.remoteId === entry.remoteId)
+        ? current
+        : undefined;
+    };
     render();
     try {
       const detail = (await context.request(`${catalogPath}/details`, {
         method: "POST",
         readOnly: true,
         signal: requests.signal,
-        body: requestBody({ pluginId: entry.remoteId }),
+        body: connection
+          ? { pluginId: id, managedConnection: connection }
+          : requestBody({ pluginId: entry.remoteId! }),
       })) as PluginCatalogEntry;
-      if (
-        !context.isCurrent() ||
-        active !== generation ||
-        entries.get(id)?.remoteId !== entry.remoteId
-      ) {
+      const current = currentEntry();
+      if (!current) {
         return;
       }
-      entries.set(id, { ...entry, ...detail, toolStatus: "loaded", toolError: undefined });
+      entries.set(
+        id,
+        pending
+          ? {
+              ...current,
+              managedTools: { ...pending, status: "loaded", tools: detail.tools ?? [] },
+            }
+          : { ...current, ...detail, toolStatus: "loaded", toolError: undefined },
+      );
     } catch (cause) {
-      if (!context.isCurrent() || active !== generation) {
+      const current = currentEntry();
+      if (!current) {
         return;
       }
       const error = requestFailure(cause);
@@ -318,10 +345,21 @@ export function createPluginDiscovery({
         context.onExpired();
         return;
       }
-      entries.set(id, {
-        ...entry,
-        toolError: discoveryError(error, deniedMessage, unsupportedMessage),
-      });
+      const message = discoveryError(
+        error,
+        pending
+          ? "Tool discovery requires Agent edit access and permission to use the selected credential."
+          : deniedMessage,
+        pending
+          ? "Authenticated tool discovery is unavailable for this connection."
+          : unsupportedMessage,
+      );
+      entries.set(
+        id,
+        pending
+          ? { ...current, managedTools: { ...pending, status: "error", message } }
+          : { ...current, toolStatus: undefined, toolError: message },
+      );
     } finally {
       if (context.isCurrent() && active === generation) {
         render();

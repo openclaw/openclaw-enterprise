@@ -14,6 +14,11 @@ import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
+  createEnvoyWorkspaceGatewayPlan,
+  ensureEnvoyGatewayControllers,
+  startWorkspaceGatewayHostRelay,
+} from "./envoy-workspace-gateway.mjs";
+import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
@@ -155,11 +160,19 @@ function installationAdministratorServicePrincipal(iamState) {
   return principal;
 }
 
-function createAgentPluginApi({ request, namespaceId }) {
+function createAgentPluginApi({ request, namespaceId, gatewayAuth }) {
   async function createAgent({ harnessId, executionMode, name, harnessAuth, backendId }) {
+    const values = nativeConfiguration(harnessId);
+    if (gatewayAuth !== undefined) {
+      values.gateway = {
+        ...values.gateway,
+        ...gatewayAuth,
+        auth: { ...gatewayAuth.auth, password: values.gateway.auth.password },
+      };
+    }
     const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
       kind: "agent",
-      values: nativeConfiguration(harnessId),
+      values,
     });
     assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
     const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
@@ -240,6 +253,7 @@ function installationConfiguration({
   pluginDriverId,
   pluginDriverConfiguration,
   codexServiceAccountImport,
+  workspaceGateway,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
     authentication,
@@ -258,6 +272,12 @@ function installationConfiguration({
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
   configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
+  if (workspaceGateway !== undefined) {
+    configuration.drivers.compute.configuration.gatewayRouting = workspaceGateway.routing;
+    configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
+      workspaceGateway.nativeOptions.gatewayAuth.trustedProxies;
+    delete configuration.drivers.compute.configuration.network.gatewayClients;
+  }
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     pluginProofPluginStatusProxyCidrs();
   if (codexServiceAccountImport !== undefined) {
@@ -438,6 +458,15 @@ function sanitizedPluginProofWorkerEvents(events, revisionId) {
       revisionId: event.revisionId,
       outcome: event.outcome,
       code: event.code,
+      step: event.step,
+      status: event.status,
+      errorClass: event.errorClass,
+      dependency: event.dependency,
+      cause: event.cause,
+      reason: event.reason,
+      method: event.method,
+      grpcStatus: event.grpcStatus,
+      validationCategory: event.validationCategory,
     }));
 }
 
@@ -619,6 +648,15 @@ const sessionEvidenceScript = String.raw`
         hasMarker,
         stopReason: message.stopReason,
         mirrorIdentity,
+        runId: message.__openclaw?.runId,
+        runTerminal: message.__openclaw?.runTerminal === true,
+        codexSource: message.__openclaw?.mirrorOrigin === "codex-app-server" &&
+          typeof message.__openclaw?.mirrorSourceFingerprint === "string" &&
+          message.__openclaw.mirrorSourceFingerprint.length > 0,
+        textMarker: textOf(message.content).includes(marker),
+        toolCallIds: message.role === "assistant" && Array.isArray(message.content)
+          ? message.content.filter((block) => block?.type === "toolCall").map((block) => block.id) : [],
+        toolCallId: message.toolCallId,
       });
       if (message.role === "assistant" && Array.isArray(message.content)) {
         for (const block of message.content) {
@@ -765,6 +803,50 @@ const sessionEvidenceScript = String.raw`
         resultToolNames.add(message.toolName);
       }
     }
+    // A Gateway run can finish in a later Codex turn or in a separate, tool-free finalizer.
+    // Both stamp the answer with the admitted run's ID and terminal ownership. The native
+    // prompt and tool pair must still come from one turn before that answer.
+    const prompt = messages[0];
+    const sourcePrefix = prefixForMirrorIdentity(prompt?.mirrorIdentity, ":prompt");
+    const sourceTurn = codexTurns.get(sourcePrefix);
+    if (sourceTurn?.promptSeen && !sourceTurn.terminalAssistantSeen && prompt.textMarker &&
+        prompt.codexSource && prompt.runId && markerUserMessages.length === 1) {
+      const belongsToSource = (row) => typeof row.mirrorIdentity === "string" &&
+        row.mirrorIdentity.startsWith(sourcePrefix + ":");
+      const run = messages.filter((row) => row.runId === prompt.runId || belongsToSource(row));
+      const terminal = run.pop();
+      const source = run.filter(belongsToSource);
+      const completion = terminal?.mirrorIdentity === "settled-finalizer:" + prompt.runId
+        ? "settled-finalizer"
+        : prefixForMirrorIdentity(terminal?.mirrorIdentity, ":assistant") &&
+          !belongsToSource(terminal) ? "native-continuation" : undefined;
+      if (completion && terminal.role === "assistant" && terminal.textMarker &&
+          terminal.codexSource && terminal.runTerminal && terminal.runId === prompt.runId &&
+          run.every((row) => row.role !== "user" || row === prompt) &&
+          source.every((row) => row.codexSource && row.runId === prompt.runId)) {
+        // Progress from a continuation belongs to that later native turn. Only the
+        // original turn needs to supply the pair, even when testing another tool's absence.
+        const callsByMirror = new Map();
+        for (const row of source) {
+          if (row.role === "assistant" && row.toolCallIds.length) {
+            callsByMirror.set(row.mirrorIdentity, row.toolCallIds);
+          } else if (row.role === "toolResult" &&
+              prefixForToolMirrorIdentity(row.mirrorIdentity, ":result") === sourcePrefix) {
+            const callIdentity = row.mirrorIdentity.slice(0, -":result".length) + ":call";
+            if (typeof row.toolCallId === "string" && row.toolCallId.trim() &&
+                callsByMirror.get(callIdentity)?.includes(row.toolCallId)) {
+              sourceTurn.gatewayRunCompletion = completion;
+              break;
+            }
+          }
+        }
+      }
+    }
+    const markerAssistantMessages = messages
+      .filter((row) => row.role === "assistant" && row.textMarker)
+      .slice(-5)
+      .map(({ seq, stopReason, mirrorIdentity, runId, runTerminal }) =>
+        ({ seq, stopReason, mirrorIdentity, runId, runTerminal }));
     process.stdout.write(JSON.stringify({
       databasePath,
       sessionKey,
@@ -791,6 +873,7 @@ const sessionEvidenceScript = String.raw`
       results,
       codexTurns: Array.from(codexTurns.values()),
       markerUserMessages,
+      markerAssistantMessages,
       diagnostics: {
         eventCount: rows.length,
         eventTypeCounts,
@@ -865,6 +948,24 @@ export function automaticReviewerErrored(results) {
         (result.approvalReviews ?? []).length > 0 &&
         result.approvalReviews.every((review) => approvalReviewKind(review) === "reviewer-error"),
     )
+  );
+}
+
+function completedCodexRun(turn) {
+  return turn?.promptSeen && (turn.terminalAssistantSeen || turn.gatewayRunCompletion);
+}
+
+// For a later reply, a different valid pair can establish that the run completed.
+// It cannot establish which tool produced the result we are reporting.
+function completedCodexToolPair(turn, call, result) {
+  return (
+    completedCodexRun(turn) &&
+    (turn.terminalAssistantSeen ||
+      (typeof call.id === "string" &&
+        call.id.trim().length > 0 &&
+        result.toolCallId === call.id &&
+        call.seq < result.seq &&
+        result.mirrorIdentity === call.mirrorIdentity.slice(0, -":call".length) + ":result"))
   );
 }
 
@@ -945,17 +1046,25 @@ async function useLocalPluginRuntimeAppServerToken() {
 const codexNativeCatalogScript = String.raw`
 ${PLUGIN_RUNTIME_HELPERS}
 ${codexLocalAppServerTokenScript}
+let catalogStage = "local app-server authentication";
 (async () => {
   await useLocalPluginRuntimeAppServerToken();
-  // Startup has already resolved and installed A from this native catalog.
-  const listed = await codexAppServerRequest("plugin/list", {});
-  const requestedIds = new Set(JSON.parse(process.argv[1]));
+  const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
   const entries = [];
-  for (const entry of pluginRuntimeTranslator.codexCatalogEntries(listed)) {
-    if (!requestedIds.has(entry.id)) continue;
-    const [params] = pluginRuntimeTranslator.codexReadParamsForSelections({
-      [entry.id]: { enabled: true, toolDefaults: { approval: "provider_default", reviewer: "auto" } },
-    }, listed);
+  for (const id of new Set(JSON.parse(process.argv[1]))) {
+    // Look up only the requested plugin, through the same paginated search as startup.
+    catalogStage = "plugin/search";
+    let params;
+    try {
+      [params] = await searchCodexSelectionParams({ [id]: {} }, codexAppServerRequest, deadline);
+    } catch (error) {
+      // The plugin-driver scenario supplies alternative candidates that may be absent.
+      if (error.message === "Codex plugin catalog did not contain the selected plugin.") {
+        continue;
+      }
+      throw error;
+    }
+    catalogStage = "plugin/read";
     try {
       const detail = await codexAppServerRequest("plugin/read", params);
       if (!isPlainObject(detail?.plugin) || !Array.isArray(detail.plugin.apps)) {
@@ -964,15 +1073,18 @@ ${codexLocalAppServerTokenScript}
       const appIds = detail.plugin.apps
         .map((app) => app?.id)
         .filter((id) => typeof id === "string" && id.length > 0);
-      entries.push({ ...entry, remotePluginId: params.pluginName,
+      entries.push({ id, remotePluginId: params.pluginName,
         detailAvailable: true, appCount: detail.plugin.apps.length, appIds });
     } catch {
-      entries.push({ ...entry, remotePluginId: params.pluginName, detailAvailable: false });
+      entries.push({ id, remotePluginId: params.pluginName, detailAvailable: false });
     }
   }
   process.stdout.write(JSON.stringify({ entries }));
-})().catch(() => {
-  process.stderr.write("Native Codex catalog query failed.");
+})().catch((error) => {
+  // RPC errors can contain upstream response text. Emit only locally classified facts.
+  const timedOut = error.message?.startsWith("Codex app-server plugin runtime request timed out during ");
+  const reason = timedOut ? "timed out" : "failed";
+  process.stderr.write("Native Codex catalog query " + reason + " during " + catalogStage + ".");
   process.exitCode = 1;
 });
 `;
@@ -1776,6 +1888,7 @@ export function createNativePluginAssertions({
         `native tool ${matched.name} must exit with code ${options.expectedExitCode}: ${JSON.stringify(result.resultDetails)}`,
       );
     }
+    let codexTurn;
     if (proofMode === "codex") {
       const callPrefix = codexToolTurnPrefix(matched.mirrorIdentity, ":call");
       const resultPrefix = codexToolTurnPrefix(result?.mirrorIdentity, ":result");
@@ -1783,19 +1896,19 @@ export function createNativePluginAssertions({
         callPrefix && callPrefix === resultPrefix,
         `${options.sessionKey} Codex native tool call/result must share one mirrored turn.`,
       );
-      const turn = evidence.codexTurns.find((candidate) => candidate.turnPrefix === callPrefix);
+      codexTurn = evidence.codexTurns.find((candidate) => candidate.turnPrefix === callPrefix);
       assert.ok(
-        turn?.promptSeen &&
-          turn.terminalAssistantSeen &&
-          turn.toolCallMirrorSeen &&
-          turn.toolResultMirrorSeen,
-        `${options.sessionKey} Codex native turn must include prompt, tool call, tool result, and terminal assistant mirror identities: ${JSON.stringify(
+        completedCodexToolPair(codexTurn, matched, result) &&
+          codexTurn.toolCallMirrorSeen &&
+          codexTurn.toolResultMirrorSeen,
+        `${options.sessionKey} Codex run must include a native prompt and tool call/result plus an owned terminal reply: ${JSON.stringify(
           {
             runtime: evidence.runtime,
             sessionId: evidence.sessionId,
             turnPrefix: callPrefix,
-            turn,
+            turn: codexTurn,
             markerUserMessages: evidence.markerUserMessages,
+            markerAssistantMessages: evidence.markerAssistantMessages,
           },
         )}`,
       );
@@ -1823,7 +1936,10 @@ export function createNativePluginAssertions({
       ...(proofMode === "openclaw"
         ? { promptReport: { ...evidence.promptReportShape, toolNames: evidence.promptToolNames } }
         : {}),
-      ...(proofMode === "codex" ? { codexMirrorTurnVerified: true } : {}),
+      ...(codexTurn?.terminalAssistantSeen ? { codexMirrorTurnVerified: true } : {}),
+      ...(codexTurn?.gatewayRunCompletion
+        ? { codexGatewayRunCompletion: codexTurn.gatewayRunCompletion }
+        : {}),
       resultMatched: true,
       ...(options.codeModeCall ? { codeModeProgramVerified: result.codeModeProgramVerified } : {}),
       ...(options.expectedExitCode === undefined ? {} : { exitCode: result.exitCode }),
@@ -1861,17 +1977,17 @@ export function createNativePluginAssertions({
       );
       const turn = evidence.codexTurns.find((value) => value.turnPrefix === prefix);
       assert.ok(
-        turn?.promptSeen &&
-          turn.terminalAssistantSeen &&
+        completedCodexToolPair(turn, evidence.calls[0], evidence.results[0]) &&
           turn.toolCallMirrorSeen &&
           turn.toolResultMirrorSeen,
-        `${options.sessionKey} denied Codex native turn must include prompt, tool call, tool result, and terminal assistant mirror identities: ${JSON.stringify(
+        `${options.sessionKey} denied Codex run must include a native prompt and tool call/result plus an owned terminal reply: ${JSON.stringify(
           {
             runtime: evidence.runtime,
             sessionId: evidence.sessionId,
             turnPrefix: prefix,
             turn,
             markerUserMessages: evidence.markerUserMessages,
+            markerAssistantMessages: evidence.markerAssistantMessages,
           },
         )}`,
       );
@@ -1971,18 +2087,17 @@ export function createNativePluginAssertions({
         )}`,
       );
     } else {
-      // The gateway prompt report does not include native Codex tools. Require
-      // the completed native turn as well as zero calls, not just an empty mirror.
+      // The Gateway prompt report omits native Codex tools. An empty trace alone cannot
+      // distinguish a filtered tool from a turn that never ran or finished.
       assert.ok(
-        evidence.codexTurns.some((turn) => turn.promptSeen && turn.terminalAssistantSeen),
-        `${options.sessionKey} must include a completed marker-bearing native Codex turn: ${JSON.stringify(
-          {
-            runtime: evidence.runtime,
-            sessionId: evidence.sessionId,
-            codexTurns: evidence.codexTurns,
-            markerUserMessages: evidence.markerUserMessages,
-          },
-        )}`,
+        evidence.codexTurns.some(completedCodexRun),
+        `${options.sessionKey} must include a completed marker-bearing Codex run: ${JSON.stringify({
+          runtime: evidence.runtime,
+          sessionId: evidence.sessionId,
+          codexTurns: evidence.codexTurns,
+          markerUserMessages: evidence.markerUserMessages,
+          markerAssistantMessages: evidence.markerAssistantMessages,
+        })}`,
       );
     }
     assert.equal(
@@ -2010,7 +2125,6 @@ export function createNativePluginAssertions({
     assert.ok(Array.isArray(parsed.entries), "native Codex catalog discovery must return entries.");
     return parsed.entries.map((entry) => ({
       id: String(entry.id),
-      name: String(entry.name),
       remotePluginId: String(entry.remotePluginId),
       detailAvailable: entry.detailAvailable === true,
       appCount: Number.isSafeInteger(entry.appCount) ? entry.appCount : undefined,
@@ -2161,6 +2275,8 @@ export async function createPluginDriverRealFixture(
     validatePrerequisites,
     provisionAgentTransportSecret,
     startPortForward,
+    startPortForwardTarget,
+    applyManifest,
   } = createRealKubernetesFixture({
     kubeconfigPath,
     kubernetesContext,
@@ -2267,6 +2383,30 @@ export async function createPluginDriverRealFixture(
   });
 
   await kubectl("create", "namespace", platformNamespace);
+  // Dedicated Agents use the production routed endpoint. The fixture owns the
+  // real Envoy resources; Compute creates each Agent's route during deployment.
+  let workspaceGateway;
+  if (pluginDriverId === "codex-plugin") {
+    const helpers = {
+      kubectl,
+      resource,
+      resources,
+      waitFor,
+      startPortForwardTarget,
+      applyManifest,
+    };
+    await ensureEnvoyGatewayControllers(helpers);
+    workspaceGateway = await createEnvoyWorkspaceGatewayPlan(
+      context,
+      { platformNamespace },
+      helpers,
+    );
+    workspaceGateway.routing.endpointPort = await startWorkspaceGatewayHostRelay(
+      context,
+      workspaceGateway,
+      { ...helpers, gatewayImage },
+    );
+  }
   await kubectl(
     "create",
     "clusterrole",
@@ -2279,7 +2419,7 @@ export async function createPluginDriverRealFixture(
     "clusterrole",
     `${proofPrefix}-tenant-${suffix}`,
     "--verb=create,get,list,patch,update,delete",
-    "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges,persistentvolumeclaims",
+    "--resource=deployments.apps,services,serviceaccounts,configmaps,endpointslices.discovery.k8s.io,networkpolicies.networking.k8s.io,resourcequotas,limitranges,persistentvolumeclaims,jobs.batch,httproutes.gateway.networking.k8s.io,securitypolicies.gateway.envoyproxy.io",
   );
   await kubectl(
     "create",
@@ -2338,6 +2478,7 @@ export async function createPluginDriverRealFixture(
           pluginDriverId,
           pluginDriverConfiguration,
           codexServiceAccountImport,
+          workspaceGateway,
         }),
       ),
       { mode: 0o600 },
@@ -2353,11 +2494,20 @@ export async function createPluginDriverRealFixture(
           pluginDriverId,
           pluginDriverConfiguration,
           codexServiceAccountImport,
+          workspaceGateway,
         }),
       ),
       { mode: 0o600 },
     ),
   ]);
+
+  const driverEnvironment = {};
+  if (workspaceGateway !== undefined) {
+    const keyPath = join(directory, "gateway-api-key");
+    await writeFile(keyPath, workspaceGateway.apiKey, { mode: 0o600 });
+    driverEnvironment.OCC_GATEWAY_API_KEY_PATH = keyPath;
+    driverEnvironment.OCC_GATEWAY_CA_PATH = process.env.OCC_TEST_GATEWAY_CA_CERT_PATH;
+  }
 
   const [
     { PostgresPlatformState },
@@ -2378,11 +2528,11 @@ export async function createPluginDriverRealFixture(
   const [apiDrivers, workerDrivers] = await Promise.all([
     loadInstallationConfiguration({
       mode: "production",
-      environment: { OCC_CONFIG_PATH: apiConfigurationPath },
+      environment: { ...driverEnvironment, OCC_CONFIG_PATH: apiConfigurationPath },
     }),
     loadInstallationConfiguration({
       mode: "production",
-      environment: { OCC_CONFIG_PATH: workerConfigurationPath },
+      environment: { ...driverEnvironment, OCC_CONFIG_PATH: workerConfigurationPath },
     }),
   ]);
   assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);
@@ -2529,7 +2679,11 @@ export async function createPluginDriverRealFixture(
     return observed.data.status === "ready" ? observed.data : undefined;
   });
 
-  const agentApi = createAgentPluginApi({ request, namespaceId: createdNamespace.data.id });
+  const agentApi = createAgentPluginApi({
+    request,
+    namespaceId: createdNamespace.data.id,
+    gatewayAuth: workspaceGateway?.nativeOptions.gatewayAuth,
+  });
 
   async function createCodexServiceAccountFromToken({ accessToken, name }) {
     assert.ok(
@@ -2670,6 +2824,40 @@ export async function createPluginDriverRealFixture(
         };
       }),
       workerEvents: sanitizedPluginProofWorkerEvents(workerEvents, revisionId),
+      runtime: await safeDiagnostic(async () => {
+        const pods = (await resources("pods", gatewayPlacement)).filter(
+          (pod) => pod.metadata.labels?.["openclaw.dev/agent"] === agent.id,
+        );
+        const privateDiagnostics = await mkdtemp(join(tmpdir(), "occ-plugin-proof-failure-"));
+        // Keep raw native logs private and outside the fixture directory that cleanup removes.
+        for (const pod of pods) {
+          try {
+            const logs = await kubectl(
+              "logs",
+              pod.metadata.name,
+              "--namespace",
+              gatewayPlacement,
+              "--all-containers=true",
+              "--tail=200",
+            );
+            await writeFile(join(privateDiagnostics, `${pod.metadata.name}.log`), logs, {
+              mode: 0o600,
+            });
+          } catch {
+            // Preserve the deployment failure when a removed Pod has no logs.
+          }
+        }
+        return {
+          privateDiagnostics,
+          pods: pods.map((pod) => ({
+            name: pod.metadata.name,
+            revisionId: pod.metadata.labels?.["openclaw.dev/revision"],
+            role: pod.metadata.labels?.["openclaw.dev/workload-role"],
+            phase: pod.status?.phase,
+            ready: isPodReady(pod),
+          })),
+        };
+      }),
     };
   }
 

@@ -16,6 +16,8 @@ import {
   askAdministratorTo,
   askForGrant,
   CONFIGURATION_SAVE_REFUSED,
+  type CredentialChoiceGap,
+  NAMESPACE_UNAVAILABLE,
   notIncluded,
   SAVE_READ_REFUSED,
 } from "./access-reasons.mjs";
@@ -88,7 +90,7 @@ export function namespaceCreation(
 export const NAMESPACE_MISSING = Object.freeze({
   blocked: true,
   missing: true,
-  note: "This Namespace is missing or you no longer have access. Choose another Namespace.",
+  note: `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`,
 });
 
 // The API's catch-all answers: a caller's own denial that names no grant (api-client.mts) and an
@@ -329,26 +331,43 @@ export const AGENT_SOURCES_DENIED = `Saving these settings needs operate on each
 // 2459).
 export const AGENT_SOURCES_SERVICE_ACCOUNT_DENIED = `Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. ${askForGrant("that access")}`;
 
-// Why the permission answer says an Agent-side save would be refused, or undefined when it allows
-// the save or is unknown. Each Agent update also needs Configuration read and checks the caller's
+// Which grant the permission answer says an Agent-side save lacks, or undefined when it allows the
+// save or is unknown. Each Agent update also needs Configuration read and checks the caller's
 // grant on every source the Agent and its Configuration bind (finding 2441).
-export function agentSaveDenial(
+export function agentSaveGap(
   permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null | undefined,
-  agent?: Partial<Pick<Agent, "harnessAuth">>,
-): string | undefined {
+  agent?: { harnessAuth?: { method: string; source?: { kind: string } } | null | undefined },
+): CredentialChoiceGap | undefined {
   if (permissions?.update === false) {
-    return AGENT_UPDATE_DENIED;
+    return "update";
   }
   if (permissions?.configurationRead === false) {
-    return AGENT_CONFIGURATION_READ_DENIED;
+    return "configurationRead";
   }
   if (permissions?.agentSourcesOperate !== false) {
     return undefined;
   }
   const harnessAuth = agent?.harnessAuth;
-  return harnessAuth?.method === "codex_pat" && harnessAuth.source.kind === "service_account"
-    ? AGENT_SOURCES_SERVICE_ACCOUNT_DENIED
-    : AGENT_SOURCES_DENIED;
+  return harnessAuth?.method === "codex_pat" && harnessAuth.source?.kind === "service_account"
+    ? "serviceAccount"
+    : "sources";
+}
+
+const AGENT_SAVE_DENIALS: Record<CredentialChoiceGap, string> = {
+  update: AGENT_UPDATE_DENIED,
+  configurationRead: AGENT_CONFIGURATION_READ_DENIED,
+  sources: AGENT_SOURCES_DENIED,
+  serviceAccount: AGENT_SOURCES_SERVICE_ACCOUNT_DENIED,
+};
+
+// Why the permission answer says an Agent-side save would be refused, or undefined when it allows
+// the save or is unknown.
+export function agentSaveDenial(
+  permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null | undefined,
+  agent?: Partial<Pick<Agent, "harnessAuth">>,
+): string | undefined {
+  const gap = agentSaveGap(permissions, agent);
+  return gap === undefined ? undefined : AGENT_SAVE_DENIALS[gap];
 }
 
 // Marks a 403 from a save so message() names the grants it needs: the save's own when the
@@ -520,6 +539,11 @@ export const readFailure = (subject: string, cause: unknown, need?: AccessNeed) 
 // the field that holds the Configuration.
 const CHANNEL_REFERENCE_REFUSAL =
   / (?:without a Configuration Secret binding|the runtime does not substitute): | holds /;
+// Where the console binds a Secret that a channel refusal asks for: Slack's standard names on the
+// Credentials tab or in the Channels tab's Slack editor, other names only through the API. The
+// Agent page's Configuration JSON editor and the Credentials tab both say it (findings 2494, 2542).
+export const CHANNEL_BINDING_PLACES =
+  "bind SLACK_APP_TOKEN and SLACK_BOT_TOKEN on the Credentials tab or in the Slack editor on the Channels tab, and other names through the Configuration API.";
 export function channelBindingRefusal(cause: unknown): string | undefined {
   const { status, serverMessage } = requestFailure(cause);
   return status === 400 &&

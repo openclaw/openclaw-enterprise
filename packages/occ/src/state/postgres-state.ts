@@ -52,7 +52,6 @@ import type {
   ServicePrincipal,
 } from "@openclaw-enterprise/contracts";
 import {
-  harnessAuthBindingFromSnapshot,
   normalizePluginDesiredState,
   normalizePluginApprovers,
   normalizeHarnessAuthBinding,
@@ -118,11 +117,13 @@ import {
 } from "./agent-provisioning.ts";
 import {
   assertHarnessAuthAvailable,
+  assertRevisionAuthAvailable,
   assertSameCredentialSourceFields,
   harnessAuthMatches,
   credentialSourcesMatch,
   validCredentialSourceSnapshots,
   namespaceRoleGrantsBeyondRead,
+  assertBindingSubjectNotEmail,
   validHarnessAuthSnapshot,
 } from "./platform-state.ts";
 import {
@@ -3772,6 +3773,32 @@ export class PostgresPlatformState implements PlatformStateStore {
     };
 
     const revisions: AgentRevisionRepository = {
+      findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
+        const row = rows(
+          (
+            await client.query(
+              `SELECT r.id, r.namespace_id, r.agent_id, r.admitted_at,
+                  r.admitted_spec->>'configuration_id' AS configuration_id,
+                  r.admitted_spec->>'configuration_generation' AS configuration_generation
+           FROM occ.agent_revisions r
+           JOIN occ.namespaces n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+           WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.revision_number = 1
+             AND r.first_deployment_digest = $3`,
+              [namespaceId, agentId, digest],
+            )
+          ).rows,
+        )[0];
+        return row === undefined
+          ? undefined
+          : Object.freeze({
+              revisionId: text(row, "id"),
+              namespaceId,
+              agentId,
+              configurationId: text(row, "configuration_id"),
+              configurationGeneration: Number(row.configuration_generation),
+              createdAt: timestamp(row, "admitted_at"),
+            });
+      },
       findRevision: async (namespaceId, agentId, revisionId) => {
         const row = await findRevisionRow(namespaceId, agentId, revisionId);
         return row === undefined ? undefined : revisionFromRow(row);
@@ -3837,7 +3864,8 @@ export class PostgresPlatformState implements PlatformStateStore {
           ...(found.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
         });
       },
-      createRevision: async (revision) => {
+      createRevision: async (input, firstDeploymentDigest) => {
+        const revision = immutableCopy(input);
         await this.requireInitialized(context);
         try {
           assertExecutionAdmission(revision);
@@ -3855,10 +3883,44 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The AgentRevision harness authentication is invalid or legacy.",
           );
         }
-        await assertHarnessAuthAvailable(
+        if (
+          revision.credentialSources?.length ||
+          revision.harnessAuth?.method === "credential_source"
+        ) {
+          // OCC admission takes Namespace, Agent, then source locks. Take the ownership
+          // locks before sources too, rather than waiting for the Agent FK at INSERT.
+          await client.query(
+            "SELECT id FROM occ.namespaces WHERE id = $1 AND deleted_at IS NULL FOR SHARE",
+            [revision.namespaceId],
+          );
+          await client.query(
+            "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR KEY SHARE",
+            [revision.namespaceId, revision.agentId],
+          );
+        }
+        await assertRevisionAuthAvailable(
           { secrets, serviceAccounts, credentialSources },
-          revision.namespaceId,
-          harnessAuthBindingFromSnapshot(revision.harnessAuth),
+          revision,
+          async (ids) =>
+            rows(
+              (
+                await client.query(
+                  `SELECT cs.id, cs.namespace_id, cs.type, cs.state, cs.owner_capability, cs.driver_id
+                   FROM occ.credential_sources AS cs
+                   JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
+                   WHERE cs.namespace_id = $1 AND cs.id = ANY($2::text[])
+                   ORDER BY cs.id COLLATE "C" FOR SHARE OF cs`,
+                  [revision.namespaceId, ids],
+                )
+              ).rows,
+            ).map((row) => ({
+              id: text(row, "id"),
+              namespaceId: text(row, "namespace_id"),
+              type: text(row, "type"),
+              state: text(row, "state") as CredentialSource["state"],
+              ownerCapability: text(row, "owner_capability") as CredentialSource["ownerCapability"],
+              driverId: text(row, "driver_id"),
+            })),
         );
         const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
         if (
@@ -3887,8 +3949,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         // skew (finding 1195). The caller's createdAt is replaced, not stored.
         const admitted = await client.query(
           `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, clock_timestamp())
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, gateway_managed_mode, admitted_at, first_deployment_digest)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, clock_timestamp(), $8)
            RETURNING admitted_at`,
           [
             revision.id,
@@ -3934,6 +3996,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                 : { credential_sources: revision.credentialSources }),
             }),
             revision.gatewayManagedMode,
+            firstDeploymentDigest ?? null,
           ],
         );
         const [stamped] = rows(admitted.rows);
@@ -4141,6 +4204,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             "The IAM AccessBinding must belong to an available Namespace.",
           );
         }
+        assertBindingSubjectNotEmail(binding.subjectId);
         // Same subject rule as the in-memory adapter: a human without a Namespace, a
         // non-Agent ServicePrincipal of the exact Namespace, or the ServicePrincipal of a
         // live Agent there. The Agent owner key is deferred, so it cannot vouch mid-unit.

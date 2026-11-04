@@ -38,11 +38,11 @@ drivers:
 
 The curated catalog includes Linear, Slack, GitHub, Notion, Figma, Canva,
 Datadog, Sentry, Adobe, Coursera Learning, and Google Contacts. Their recorded
-identities and presentation metadata omit tool inventory and account-specific
-availability. Notion, Figma, Canva, and Adobe include supported
-hosted apps with skills. Sentry remains unavailable because its recorded release
-has no concrete hosted app. Select a plugin and set its default policy; per-tool controls are
-unavailable until the catalog supplies tool details.
+entries omit tool inventory and account-specific availability, so set a default
+policy per plugin; per-tool controls need tool details. Notion, Figma, Canva, and
+Adobe include supported hosted apps with skills. Sentry is unavailable: its
+recorded release has no concrete hosted app. Details accept an entry's `remoteId`
+or `id`.
 
 An optional controller-side native `listCatalog` reader for hosted mode uses a
 separate Codex profile:
@@ -75,6 +75,7 @@ clears results and preloads a fresh first page; selections remain. Search waits
 once) and resets pagination for a new query. Loading feedback lasts until the
 response, even with no earlier entries; tool lookups show it until details
 arrive. Closing the picker or changing its credential cancels pending searches.
+Hidden tabs cancel deferred prefetches; reopening the picker can request the catalog again.
 Configured-plugin and tool filters stay instant and local. Requests have a 15-second deadline and 4 MiB response limit.
 Discovery does not read Codex home, install plugins, or return download URLs.
 Plugin details show available website, privacy-policy, and terms-of-service
@@ -246,18 +247,19 @@ when best-effort preparation allows authentication warnings, startup disables
 their selections and app/plugin features rather than retrying an unsupported
 login mode.
 
-The Driver rejects, rather than overwrites, raw Configuration that conflicts
-with its managed fields: for OpenClaw, a selected plugin entry in
-`values.plugins.entries` whose JSON differs from the managed entry; for Codex, a
-differing `values.plugins.entries.codex.config.codexPlugins` bridge selection.
-Identical managed entries are accepted. An enabled native plugin entry also
-conflicts with `plugins.enabled:false`, a matching `plugins.deny` entry, or a
-nonempty `plugins.allow` that excludes it. This includes the Codex transport
-plugin required by selected Codex apps. Disabled OpenClaw selections can remain
-denied. Gateway startup rejects these conflicts before OpenClaw package
-installation or starting the gateway; save-time policy checks do not inspect raw
-native Configuration for them. Native configuration outside managed fields,
-including tool denies and profiles, is retained.
+Gateway startup rejects, rather than overwrites, conflicting raw Configuration
+before package installation: a selected OpenClaw plugin's `plugins.entries`
+entry differing from the managed entry, a differing Codex
+`codexPlugins` bridge, or, for an enabled native plugin including the Codex
+transport plugin, `plugins.enabled:false`, a matching `plugins.deny` item, or a
+nonempty `plugins.allow` that excludes it. With an OpenClaw Harness, the
+OpenClaw Driver refuses the OpenClaw conflicts at Agent save, provisioning and
+deployment, but accepts exact copies: `{"enabled":false}` if disabled,
+`{"enabled":true}` if enabled. If `gateway.controlUi.allowedOrigins` lists an
+HTTPS `gateway.publicOrigin`, it refuses an enabled selection's entry, since
+the Gateway adds a public-origin `config` and PostgreSQL reorders a copy's keys;
+this over-refuses `{"enabled":true}` on Docker Compute with password
+authentication.
 
 ## Preparation and security
 
