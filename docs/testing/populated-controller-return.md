@@ -31,15 +31,17 @@ or transfer the OCI artifacts from successful
 [native image checks](../release/containers.md#check-native-images-without-publication).
 Public registry publication is not required. For transferred artifacts, retain
 the source SHA, native build/check run and attempt, platform receipt, and OCI
-blob hashes. Verify them before loading the images; the source revision label
-alone does not establish approval.
+blob hashes. Verify the archive's root, platform receipt, and reachable blobs
+before loading the images; the source revision label alone does not establish
+approval.
 
 Use owned local image names with their actual SHA-256 digests. Load the same
 verified OCI archive into Docker and the owned k3d node's containerd, retaining
 its original manifest or index target. Do not use an export that replaces an
 index with a selected platform manifest. Verify the imported image identity:
-the rehearsal checks the Docker index, platform manifest and configuration
-bytes, then checks the running controller against those identities. Stop if
+the rehearsal compares Docker's reported root digest with the selected digest,
+hashes the selected platform manifest and configuration, then checks the running
+controller against those identities. Stop if
 transport changes or loses the expected identity; do not assign a published
 name to an unverified local image. Keep one approved runtime image fixed across
 both controllers.

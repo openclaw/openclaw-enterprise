@@ -41,6 +41,15 @@ test("return rehearsal rejects different manifest references that contain the sa
     () => assertDistinctControllers(previous, controller("4", "2", "6")),
     /platform configs must differ/u,
   );
+  // Renaming an imported image cannot make its root a different release.
+  assert.throws(
+    () =>
+      assertDistinctControllers(previous, {
+        ...controller("4", "5", "6"),
+        reference: `localhost/oce-rehearsal/candidate@sha256:${"1".repeat(64)}`,
+      }),
+    /manifest digests must differ/u,
+  );
   // Local transport must retain the same immutable image contract as deployment.
   for (const reference of [
     "localhost/oce-rehearsal/controller:candidate",
@@ -186,6 +195,15 @@ test("release checkout admission rejects hidden edits and ignored execution inpu
   await assert.rejects(selectRehearsalControllers(run, env), /reached image inspection/u);
   assert.equal(dockerCalls, 1);
   dockerCalls = 0;
+  // Reject aliases of one root before inspecting either local image.
+  await assert.rejects(
+    selectRehearsalControllers(run, {
+      ...env,
+      OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: `localhost/oce-rehearsal/candidate@sha256:${"1".repeat(64)}`,
+    }),
+    /manifest digests must differ/u,
+  );
+  assert.equal(dockerCalls, 0);
   // These real Git index flags hide worktree edits from porcelain status.
   for (const flag of ["assume-unchanged", "skip-worktree"]) {
     await git(["update-index", `--${flag}`, "upgrade-script"]);

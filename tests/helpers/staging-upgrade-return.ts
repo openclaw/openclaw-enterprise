@@ -109,8 +109,8 @@ export function assertDistinctControllers(
     assert.match(image.revision, commitPattern);
   }
   assert.notEqual(
-    previous.reference,
-    candidate.reference,
+    previous.reference.split("@")[1],
+    candidate.reference.split("@")[1],
     "controller manifest digests must differ",
   );
   assert.notEqual(
@@ -224,8 +224,8 @@ export async function selectRehearsalControllers(run: FixtureRun, env: NodeJS.Pr
     "candidate",
   );
   assert.notEqual(
-    previousSource.reference,
-    candidateSource.reference,
+    previousSource.reference.split("@")[1],
+    candidateSource.reference.split("@")[1],
     "controller manifest digests must differ",
   );
   assert.notEqual(
