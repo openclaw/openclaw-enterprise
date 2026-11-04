@@ -3248,6 +3248,11 @@ export function registerSharingCredentialsAndChannelsCases(
     const directoryBodies: DirectoryBody[] = [];
     const pendingDirectory = deferred<Request>();
     const releaseDirectory = deferred<void>();
+    const releaseChangedQuery = deferred<void>();
+    t.after(() => {
+      releaseDirectory.resolve();
+      releaseChangedQuery.resolve();
+    });
     // The browser test owns Console selection and saved API state; only provider directory data is simulated.
     await page.route(
       `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
@@ -3258,6 +3263,9 @@ export function registerSharingCredentialsAndChannelsCases(
         if (body.query === "pending") {
           pendingDirectory.resolve(route.request());
           await releaseDirectory.promise;
+        }
+        if (body.query === "pending-query") {
+          await releaseChangedQuery.promise;
         }
         let nextCursor;
         let candidates: ChannelDirectoryResult["candidates"];
@@ -3310,8 +3318,13 @@ export function registerSharingCredentialsAndChannelsCases(
     const channelSearch = channelDialog.getByRole("combobox", { name: "Channels", exact: true });
     const channelPicker = channelSearch.locator("..").locator("..");
     await channelPicker.getByText("#existing-room", { exact: true }).waitFor();
-    await channelSearch.focus();
+    await channelSearch.click();
     await channelPicker.getByRole("option", { name: /existing-room.*CEXIST123/ }).waitFor();
+    assert.equal(
+      directoryBodies.filter((body) => body.kind === "channels" && !body.ids).length,
+      1,
+      "pointer focus and click start only one lookup",
+    );
     // Advance browser time explicitly: intermediate keystrokes and dismissed searches must not query.
     const clockTime = new Date("2026-09-27T12:00:00Z");
     await page.clock.install({ time: new Date("2026-09-27T11:59:00Z") });
@@ -3339,17 +3352,44 @@ export function registerSharingCredentialsAndChannelsCases(
       directoryBodies.some((body) => body.query === "dismissed"),
       false,
     );
-    // A new query aborts the old browser request, even while its provider response is held.
+    // Escape cancels a keyboard reopen while its synthetic directory response is held.
     await channelSearch.fill("pending");
-    await channelSearch.press("Enter");
+    await channelSearch.press("Escape");
+    await channelSearch.press("ArrowDown");
     const pendingRequest = await pendingDirectory.promise;
+    await channelSearch.press("ArrowDown");
+    await channelSearch.press("ArrowDown");
+    await page.clock.runFor(300);
+    assert.equal(directoryBodies.filter((body) => body.query === "pending").length, 1);
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
     const canceledRequest = page.waitForEvent(
       "requestfailed",
       (request) => request === pendingRequest,
     );
-    await channelSearch.fill("general");
+    await channelSearch.press("Escape");
     await canceledRequest;
     releaseDirectory.resolve();
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    // Changing the query also aborts the exact held request, independently of dismissal.
+    const changingQuery = page.waitForRequest(
+      (request) =>
+        request.url() === `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup` &&
+        request.method() === "POST" &&
+        directoryBody(request.postDataJSON()).query === "pending-query",
+      { timeout: 10_000 },
+    );
+    await channelSearch.fill("pending-query");
+    await channelSearch.press("Enter");
+    const changedQueryRequest = await changingQuery;
+    const canceledByQuery = page.waitForEvent("requestfailed", {
+      predicate: (request) => request === changedQueryRequest,
+      timeout: 10_000,
+    });
+    await channelSearch.fill("general");
+    await canceledByQuery;
+    releaseChangedQuery.resolve();
     // Enter submits immediately and removes the queued debounce, so it cannot send the same query twice.
     await channelSearch.press("Enter");
     await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
@@ -3367,6 +3407,52 @@ export function registerSharingCredentialsAndChannelsCases(
     await channelSearch.press("Escape");
     assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
     assert.equal(await channelDialog.isVisible(), true);
+    assert.equal(await channelSearch.evaluate((input) => input === document.activeElement), true);
+    assert.equal(await channelSearch.inputValue(), "general");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    const directoryPath = `/namespaces/${namespace.id}/channel-directory/lookup`;
+    const directoryResponse = () =>
+      page.waitForResponse(
+        (response) =>
+          response.url() === `${fixture.origin}${directoryPath}` &&
+          response.request().method() === "POST",
+      );
+    const beforeReopen = pathRequests(requests, "POST", directoryPath).length;
+    const reopened = directoryResponse();
+    await channelSearch.press("ArrowDown");
+    assert.equal((await reopened).status(), 200);
+    await channelPicker.locator('[role="option"].active').waitFor();
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    assert.equal(directoryBodies.filter((body) => body.query === "general").length, 3);
+    assert.equal(
+      await channelSearch.getAttribute("aria-activedescendant"),
+      await channelPicker.getByRole("option").first().getAttribute("id"),
+    );
+    assert.equal(await channelSearch.evaluate((input) => input === document.activeElement), true);
+    await channelSearch.press("ArrowDown");
+    assert.equal(
+      await channelSearch.getAttribute("aria-activedescendant"),
+      await channelPicker.getByRole("option").nth(1).getAttribute("id"),
+    );
+    assert.equal(pathRequests(requests, "POST", directoryPath).length, beforeReopen + 1);
+    await channelSearch.press("Escape");
+    const clicked = directoryResponse();
+    await channelSearch.click();
+    assert.equal((await clicked).status(), 200);
+    await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
+    assert.equal(pathRequests(requests, "POST", directoryPath).length, beforeReopen + 2);
+    assert.equal(directoryBodies.filter((body) => body.query === "general").length, 4);
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    await channelSearch.press("Tab");
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    assert.equal(await channelSearch.evaluate((input) => input === document.activeElement), false);
+    assert.equal(await slackSelectionValue(channelSearch), "CEXIST123");
+    assert.deepEqual(
+      nonAuthWriteRequests(requests).filter((request) => request.path !== directoryPath),
+      [],
+    );
     await channelSearch.fill("GENERALX");
     await channelPicker.getByRole("option", { name: /GENERALX-first.*CUPPER111/ }).waitFor();
     assert.equal(await channelPicker.getByRole("option").count(), 5);

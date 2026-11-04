@@ -610,11 +610,19 @@ export function createSlackDirectoryField({
     nextCursor = null;
     searchAsName = false;
   }
-  function startSearch() {
+  function startSearch(activateFirst = false) {
     prepareSearch();
-    return load(0);
+    return load(0, activateFirst);
   }
-  async function load(index: number): Promise<void> {
+  function activateOption(index: number) {
+    const options = [...results.querySelectorAll("button")];
+    activeOption = index;
+    options.forEach((option, index) => option.classList.toggle("active", index === activeOption));
+    const active = options[activeOption]!;
+    search.setAttribute("aria-activedescendant", active.id);
+    active.scrollIntoView({ block: "nearest" });
+  }
+  async function load(index: number, activateFirst = false): Promise<void> {
     const secretId = getSecretId();
     if (!secretId || (index >= pages.length && pages.length > 0 && !nextCursor)) {
       return;
@@ -737,6 +745,9 @@ export function createSlackDirectoryField({
           );
         }),
       );
+      if (activateFirst && candidates.length && document.activeElement === search) {
+        activateOption(0);
+      }
       status.textContent = wrongWorkspace
         ? `That ID belongs to workspace ${exactTarget.teamId}; this bot belongs to ${page.workspaceId}.`
         : candidates.length
@@ -765,6 +776,11 @@ export function createSlackDirectoryField({
       void startSearch();
     }
   });
+  search.addEventListener("click", () => {
+    if (panel.hidden) {
+      void startSearch();
+    }
+  });
   search.addEventListener("input", () => {
     prepareSearch();
     timer = setTimeout(() => {
@@ -774,19 +790,30 @@ export function createSlackDirectoryField({
     }, 300);
   });
   search.addEventListener("keydown", (event) => {
+    if (
+      panel.hidden &&
+      event.key === "ArrowDown" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !event.isComposing &&
+      event.keyCode !== 229
+    ) {
+      event.preventDefault();
+      void startSearch(true);
+      return;
+    }
     const options = [...results.querySelectorAll("button")];
     if (!panel.hidden && (event.key === "ArrowDown" || event.key === "ArrowUp") && options.length) {
       event.preventDefault();
-      activeOption =
+      activateOption(
         activeOption < 0
           ? event.key === "ArrowDown"
             ? 0
             : options.length - 1
-          : (activeOption + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
-      options.forEach((option, index) => option.classList.toggle("active", index === activeOption));
-      const active = options[activeOption]!;
-      search.setAttribute("aria-activedescendant", active.id);
-      active.scrollIntoView({ block: "nearest" });
+          : (activeOption + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length,
+      );
     } else if (event.key === "Escape" && !panel.hidden) {
       event.preventDefault();
       event.stopPropagation();
