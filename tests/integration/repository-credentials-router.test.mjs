@@ -242,6 +242,13 @@ describe("repository credential router", { concurrency: true }, () => {
     const selected = material.manifest.bindings.find(
       ({ repositoryRef }) => repositoryRef === "permitted",
     );
+    const stalePin = {
+      OCE_REPOSITORY_SELECTION: JSON.stringify([
+        "0".repeat(64),
+        "permitted",
+        permitted.session.sessionId,
+      ]),
+    };
     const notAllowed = "repository-push-ref-not-allowed\n";
     // [environment, destination, input, exit code (undefined: any failure), stderr]
     const cases = [
@@ -273,18 +280,8 @@ describe("repository credential router", { concurrency: true }, () => {
       ],
       [{ OCE_REPOSITORY_SELECTION: pin(material, selected) }, undefined, "topic", 0],
       [ref("permitted"), other.client.gitRemote, "topic", undefined],
-      [
-        {
-          OCE_REPOSITORY_SELECTION: JSON.stringify([
-            "0".repeat(64),
-            "permitted",
-            permitted.session.sessionId,
-          ]),
-        },
-        undefined,
-        "topic",
-        undefined,
-      ],
+      [stalePin, undefined, "topic", undefined],
+      [stalePin, "https://unrelated.example.test/example/repository.git", "topic", 0],
       [ref("restricted"), "/unmanaged/local/repository", "topic", 0],
       [ref("permitted"), undefined, "relativeTopic", 0],
       [ref("permitted"), undefined, "relativeMain", 1, notAllowed],
