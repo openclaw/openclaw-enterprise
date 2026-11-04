@@ -345,9 +345,10 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   const sentinel = `synthetic-inline-key-${randomUUID()}`;
   const configuration = page.getByLabel("Configuration JSON");
   const edited = object(JSON.parse(await configuration.inputValue()));
+  const models = object(edited.models ?? {});
   edited.models = {
-    ...object(edited.models),
-    providers: { ...object(object(edited.models).providers), openai: { apiKey: sentinel } },
+    ...models,
+    providers: { ...object(models.providers ?? {}), openai: { apiKey: sentinel } },
   };
   await configuration.fill(JSON.stringify(edited, null, 2));
   const rejected = page.waitForResponse(
@@ -1129,10 +1130,11 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON");
   const edited = object(JSON.parse(await configuration.inputValue()));
+  const models = object(edited.models ?? {});
   edited.models = {
-    ...object(edited.models),
+    ...models,
     providers: {
-      ...object(object(edited.models).providers),
+      ...object(models.providers ?? {}),
       openai: { apiKey: `synthetic-inline-key-${randomUUID()}` },
     },
   };
