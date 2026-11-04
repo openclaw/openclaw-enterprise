@@ -13,26 +13,27 @@ Install OpenClaw Enterprise (OCE) in a private k3d cluster.
 
 ## 1. Prepare the quickstart files and select a matching release
 
-Start at the root of the OCE checkout. Run each block in the same Bash shell. If a command fails, correct the error before continuing.
+At the root of the OCE checkout, start a child Bash shell. Run the remaining blocks there. A failed command stops setup and returns you to your original terminal. Keep the printed run directory for recovery.
 
 ```bash
-set -o pipefail
+bash --noprofile --norc
+```
+
+```bash
+set -euo pipefail
 set +x
 umask 077
 
 # Keep this run's files, credentials and kubeconfig separate from earlier installations.
 run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
-install -d -m 700 "$run_root" &&
-  RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX") &&
-  printf 'Private session directory: %s\n' "$RUN_DIR"
+install -d -m 700 "$run_root"
+RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX")
+printf 'Private session directory: %s\n' "$RUN_DIR"
 
 # Stage the network policy for cluster startup and the configuration script for the Helm reload.
-(
-  set -e
-  install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
-  install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
-  source docs/snippets/openshell-quickstart/stage-session.sh
-)
+install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
+install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
+source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
 Choose one image path before starting the cluster.
@@ -139,6 +140,7 @@ namespace=$(request GET /namespaces | jq -er '[.data[]|select(.name=="default" a
 base="/namespaces/$namespace"
 TENANT_NAMESPACE=$(kube get ns -l "openclaw.dev/namespace=$namespace" -o json |
   jq -er '[.items[]]|select(length==1)|first.metadata.name')
+save_session
 ```
 
 The [operator session reference](quickstart-session.md) defines these inputs and helpers. Keep tracing off. If a mutation times out, read back its state before retrying.
