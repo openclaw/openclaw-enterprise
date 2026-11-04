@@ -84,6 +84,16 @@ function safeMeasurement(message) {
     }
     return { kind: value.kind, stage: value.stage, elapsedMs: value.elapsedMs };
   }
+  if (isRecord(value) && value.kind === "local-first-agent-capacity") {
+    const result = { kind: value.kind };
+    for (const key of ["cpus", "totalMiB", "minimumFreeMiB", "maximumLoadHundredths", "samples"]) {
+      if (!Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > 10_000_000) {
+        return undefined;
+      }
+      result[key] = value[key];
+    }
+    return result;
+  }
   if (isRecord(value) && value.kind === "local-first-agent-command") {
     if (
       !["setup", "cleanup"].includes(value.phase) ||

@@ -196,6 +196,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       'import test from "node:test";',
       'test("first file sees scoped env", () => {',
       '  assert.equal(process.env.CI_RUNNER_SCOPED_VALUE, "one");',
+      "  assert.equal(process.env.ACTIONS_RUNTIME_TOKEN, undefined);",
+      "  assert.equal(process.env.ACTIONS_RESULTS_URL, undefined);",
       "  assert.match(process.env.OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE, /@sha256:d{64}$/);",
       "  assert.match(process.env.OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE, /@sha256:e{64}$/);",
       "});",
@@ -254,6 +256,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       resultsPath,
     ],
     {
+      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-token",
+      ACTIONS_RESULTS_URL: "https://cache.example.test/",
       OCC_PROBE_CONTROLLER_IMAGE: `private.example/current-controller@sha256:${"b".repeat(64)}`,
       OCC_PROBE_BROKER_IMAGE: `private.example/current-broker@sha256:${"c".repeat(64)}`,
       OCC_PROBE_OLD_CONTROLLER_IMAGE: `private.example/old-controller@sha256:${"d".repeat(64)}`,
@@ -5154,6 +5158,53 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
     ["need-not-success"],
   );
   assert.equal(summary.issues[0].need, "audit");
+});
+
+test("first-Agent scenario ownership drains child work before teardown after failure or cancellation", async (t) => {
+  for (const mode of ["failure", "cancel"]) {
+    const root = await fixture(t);
+    const trace = join(root, "trace");
+    const file = join(root, "scenario.test.mjs");
+    const owner = pathToFileURL(
+      join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs"),
+    ).href;
+    await writeFile(
+      file,
+      `
+import test from 'node:test';
+import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { ownFirstAgentWork } from ${JSON.stringify(owner)};
+const controller = new AbortController();
+test('scenario', { signal: controller.signal }, async (t) => {
+  const own = ownFirstAgentWork(t);
+  t.after(() => appendFileSync(${JSON.stringify(trace)}, 'cleanup|'));
+  let ready;
+  const started = new Promise(resolve => { ready = resolve; });
+  t.test('native', { signal: t.signal }, (native) => own(new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 50)); console.log('ready'); setTimeout(() => process.exit(0), 300);"], { stdio: ['ignore', 'pipe', 'ignore'] });
+    native.signal.addEventListener('abort', () => child.kill('SIGTERM'), { once: true });
+    child.stdout.once('data', ready);
+    child.once('error', reject);
+    child.once('close', () => { appendFileSync(${JSON.stringify(trace)}, 'settled|'); resolve(); });
+  })));
+  await started;
+  if (${JSON.stringify(mode)} === 'cancel') { controller.abort(); }
+  else { throw new Error('scenario-failed'); }
+});
+`,
+    );
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    delete env.NODE_TEST_WORKER_ID;
+    const result = spawnSync(process.execPath, ["--test", file], {
+      env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(await readFile(trace, "utf8"), "settled|cleanup|", mode);
+  }
 });
 
 test("run records only allowlisted measurements from test diagnostics", async (t) => {

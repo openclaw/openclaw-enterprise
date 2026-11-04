@@ -57,6 +57,21 @@ runs:
         CI_SELECTED_LANE: ${{ inputs.lane }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
       run: node scripts/ci/run-tests.mjs check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
+    - name: Select first-Agent image preparation
+      id: image-mode
+      shell: bash
+      env:
+        CI_SELECTED_LANE: ${{ inputs.lane }}
+        CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
+      run: |
+        node --input-type=module <<'NODE'
+        import { appendFileSync } from 'node:fs';
+        import { loadTestSuites } from './scripts/ci/test-suites.mjs';
+        const lanes = loadTestSuites('scripts/ci/test-suites.json').lanes;
+        const selected = process.env.CI_SELECTED_LANE === 'openshell' &&
+          lanes.openshell.prepare.selfProvisionedFiles.includes(process.env.CI_SELECTED_TEST_FILE);
+        appendFileSync(process.env.GITHUB_OUTPUT, `first-agent=${selected}\n`);
+        NODE
     - id: pnpm-store
       uses: ./.github/actions/setup-pnpm-store-cache
       with:
@@ -79,7 +94,8 @@ runs:
         LOGGING_SETUP_STARTED_NS: ${{ steps.logging-docker-start.outputs.started-ns }}
         LOGGING_SETUP_OUTCOME: ${{ steps.test-docker.outcome }}
       run: node scripts/ci/logging-setup-timing.ts finish docker-setup
-    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+    - id: builder
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       if: >-
         (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
         inputs.lane != 'docker-model' && inputs.lane != 'logging-collector' &&
@@ -88,6 +104,8 @@ runs:
         # GitHub-hosted and Blacksmith runners are per-job VMs, so skip the builder
         # removal; a persistent runner would accumulate buildx_buildkit_* containers.
         cleanup: false
+        # Ordinary Compose builds must load images from this job's selected builder.
+        driver-opts: ${{ steps.image-mode.outputs.first-agent == 'true' && 'default-load=true' || '' }}
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
@@ -195,14 +213,14 @@ runs:
       shell: bash
       run: node apps/controller/src/precompile-route-schemas.mjs
     - name: Prepare hosted platform disk capacity
-      if: startsWith(inputs.lane, 'k3d-observability') && runner.environment == 'github-hosted'
+      if: (startsWith(inputs.lane, 'k3d-observability') || inputs.lane == 'openshell') && runner.environment == 'github-hosted'
       shell: bash
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs.lane }}
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
+      if: steps.image-mode.outputs.first-agent == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -220,7 +238,8 @@ runs:
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ (steps.image-mode.outputs.first-agent == 'true' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
+        OCC_CI_FIRST_AGENT_BUILDER: ${{ steps.image-mode.outputs.first-agent == 'true' && steps.builder.outputs.name || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}

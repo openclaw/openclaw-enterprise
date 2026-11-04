@@ -30,6 +30,19 @@ const setupPoints = [
   ["OpenClaw Enterprise development stack is ready.", "ready"],
 ];
 
+// Register before Local Setup's teardown. A cancelled Node subtest can settle
+// before its async body, so retain the actual operations until their work stops.
+export function ownFirstAgentWork(context) {
+  const operations = [];
+  context.after(async () => {
+    await Promise.allSettled(operations);
+  });
+  return (operation) => {
+    operations.push(operation);
+    return operation;
+  };
+}
+
 // The reporter retains only fixed stage names, outcome and elapsed time.
 export async function measureFirstAgentStage(context, stage, operation) {
   const started = performance.now();
@@ -425,6 +438,33 @@ export async function localFirstAgentStack(context) {
     );
     context.after(() => rm(policyFile, { force: true }));
     startupArguments.push("--sandbox-network-policy-file", policyFile);
+  }
+  const buildRevision = environment.OCC_TEST_LOCAL_FIRST_AGENT_BUILD_REVISION;
+  if (buildRevision !== undefined) {
+    if (
+      controlPlane !== "compose" ||
+      !/^[a-f0-9]{40}$/.test(buildRevision) ||
+      !environment.BUILDX_BUILDER
+    ) {
+      throw new Error("Invalid prepared Compose build selection.");
+    }
+    const buildFile = `${directory}-build.json`;
+    await writeFile(
+      buildFile,
+      JSON.stringify({
+        services: Object.fromEntries(
+          ["migrate", "bootstrap", "controller", "worker-kubernetes", "browser-proxy"].map(
+            (service) => [
+              service,
+              { build: { args: { SOURCE_DATE_EPOCH: "0", OCC_BUILD_REVISION: buildRevision } } },
+            ],
+          ),
+        ),
+      }),
+      { mode: 0o600, flag: "wx" },
+    );
+    context.after(() => rm(buildFile, { force: true }));
+    startupArguments.push("--", "-f", buildFile);
   }
   let initializationAttempted = false;
   context.after(async () => {

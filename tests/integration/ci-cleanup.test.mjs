@@ -1389,3 +1389,77 @@ test("QA image cleanup reports an unavailable final inventory without inventing 
     missing: null,
   });
 });
+
+// Test ownership decisions against Docker's inspect contract. The credentialed
+// first-Agent shards separately prove creation and removal of real resources.
+test("first-Agent image cleanup refuses foreign ownership and changed image identities", async (t) => {
+  for (const scenario of ["owned", "foreign-container", "replaced-image", "foreign-tag"]) {
+    const root = await fixture(t);
+    const prefix = "openclaw-ci-local-first-images-test";
+    const name = "openclaw-ci-first-images-test";
+    const id = "sha256:" + "a".repeat(64);
+    const containerId = "b".repeat(64);
+    const tag = `127.0.0.1:5000/${name}/runtime:checkout`;
+    const log = join(root, "calls.jsonl");
+    const image = { Id: scenario === "replaced-image" ? "sha256:" + "c".repeat(64) : id };
+    const container = {
+      Id: containerId,
+      Config: {
+        Labels: {
+          "openclaw.dev/ci-owner": scenario === "foreign-container" ? "another-owner" : prefix,
+        },
+      },
+    };
+    const docker = await writeCommand(
+      join(root, "bin"),
+      "docker",
+      `
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (args[1] === 'inspect') { console.log(JSON.stringify([args[0] === 'image' ? ${JSON.stringify(image)} : ${JSON.stringify(container)}])); }
+else if (args[1] !== 'rm') { process.exit(99); }
+`,
+      { interpreter: process.execPath },
+    );
+    const statePath = join(root, "state.json");
+    await writeState(statePath, {
+      version: 1,
+      repositoryRoot,
+      prefix,
+      resources: [
+        {
+          id: "first-images",
+          kind: "first-agent-image-registry",
+          owner: prefix,
+          name,
+          port: 5000,
+          images:
+            scenario === "foreign-container"
+              ? []
+              : [{ tag: scenario === "foreign-tag" ? "foreign/image:latest" : tag, id }],
+        },
+      ],
+    });
+    const result = runCleanup(statePath, { OCC_DOCKER_BIN: docker });
+    const calls = await readFile(log, "utf8").catch((error) => {
+      if (error.code === "ENOENT") {
+        return "";
+      }
+      throw error;
+    });
+    if (scenario === "owned") {
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(calls, new RegExp(containerId));
+      await assert.rejects(readFile(statePath), { code: "ENOENT" });
+      assert.ok(calls.includes(JSON.stringify(["image", "rm", "--force", tag])));
+      assert.ok(
+        calls.includes(JSON.stringify(["container", "rm", "--force", "--volumes", containerId])),
+      );
+    } else {
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(JSON.parse(await readFile(statePath, "utf8")).resources.length, 1);
+      assert.doesNotMatch(calls, /"rm"/);
+    }
+  }
+});

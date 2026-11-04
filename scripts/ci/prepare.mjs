@@ -952,6 +952,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
 // Lanes that restore the hosted BuildKit cache. Only the main-only warm job
 // (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
+  ["openshell", { localStore: false }],
   ["images-packaging", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
@@ -1025,6 +1026,9 @@ function imageBuildArgs(state, role, localStore) {
       "buildx",
       "build",
       "--load",
+      ...(state.lane === "openshell" && process.env.OCC_CI_FIRST_AGENT_BUILDER
+        ? ["--builder", process.env.OCC_CI_FIRST_AGENT_BUILDER]
+        : []),
       // An image ID covers each history entry's creation time. A fixed epoch lets
       // builders that write the same layers agree on the ID, so reuseEngineImage
       // can match an image another job built. It sets the config and history
@@ -1104,6 +1108,30 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
   }
 }
 
+// Keep cache evidence without build arguments, URLs, command text or credentials.
+function firstAgentCacheObservation(state, role, phase, output) {
+  if (state.lane !== "openshell") {
+    return;
+  }
+  const text = output ?? "";
+  const cached = new Set([...text.matchAll(/^#(\d+) CACHED\r?$/gm)].map((match) => match[1]));
+  const sourceBuild = [...text.matchAll(/^#(\d+) \[openclaw-build [^\]]+\] RUN /gm)].map(
+    (match) => match[1],
+  );
+  progress(
+    state.lane,
+    JSON.stringify({
+      stage: "first-agent-image-cache",
+      role,
+      phase,
+      cacheImports: [...text.matchAll(/^#\d+ importing cache manifest /gm)].length,
+      cachedSteps: cached.size,
+      openclawBuildSteps: sourceBuild.length,
+      openclawBuildCached: sourceBuild.filter((id) => cached.has(id)).length,
+    }),
+  );
+}
+
 // A restored build otherwise downloads every cached layer (about 20 s for the
 // runtime image) only to load an image the engine often already holds: the
 // hosted runners' Docker data comes from a shared image cache. Resolve the
@@ -1143,11 +1171,12 @@ async function reuseEngineImage(state, role, args, tag) {
     // A cache miss builds the image here; the build below then reuses those
     // steps from the same builder and only exports and loads.
     const budgetMs = imageBuildBudgetMs();
+    let probeResult;
     if (budgetMs === undefined) {
-      await execFile(docker, probeArgs, { timeoutMs: 20 * 60_000 });
+      probeResult = await execFile(docker, probeArgs, { timeoutMs: 20 * 60_000 });
     } else {
       try {
-        await laneImageCommand(role, probeArgs, budgetMs);
+        probeResult = await laneImageCommand(role, probeArgs, budgetMs);
       } catch (error) {
         if (error.imageBuildOutOfTime) {
           outcome = "out-of-time";
@@ -1155,6 +1184,7 @@ async function reuseEngineImage(state, role, args, tag) {
         throw error;
       }
     }
+    firstAgentCacheObservation(state, role, "probe", probeResult.stderr);
     const id = JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"];
     if (!/^sha256:[a-f0-9]{64}$/u.test(id ?? "")) {
       return false;
@@ -1213,12 +1243,31 @@ async function buildRuntimeImages(
     nodeBaseImage = process.env.NODE_BASE_IMAGE,
     localStore = false,
     cacheWarm = false,
+    revision,
+    controllerTarget = "runtime",
+    buildConcurrency,
   } = {},
 ) {
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
   // prints it per image and command once that ends (parallel builds stay
   // readable), also when it fails or overruns its own deadline inside the job's.
-  const plainProgress = cacheWarm ? ["--progress=plain"] : [];
+  const plainProgress = cacheWarm || state.lane === "openshell" ? ["--progress=plain"] : [];
+  if (revision !== undefined && !/^[a-f0-9]{40}$/.test(revision)) {
+    throw new Error("Image builds require a complete checkout revision.");
+  }
+  if (!["runtime", "development"].includes(controllerTarget)) {
+    throw new Error("Unsupported controller build target.");
+  }
+  const revisionArgs =
+    revision === undefined
+      ? []
+      : [
+          "--build-arg",
+          `OCC_BUILD_REVISION=${revision}`,
+          "--label",
+          `org.opencontainers.image.revision=${revision}`,
+          "--provenance=false",
+        ];
   const warmCommand = async (heading, args, timeoutMs) => {
     let output = "";
     try {
@@ -1234,7 +1283,9 @@ async function buildRuntimeImages(
   };
   const build = async (role, args) => {
     if (!cacheWarm) {
-      return laneImageCommand(role, args);
+      const result = await laneImageCommand(role, args);
+      firstAgentCacheObservation(state, role, "load", result.stderr);
+      return result;
     }
     const exportArgs = imageCacheExportArgs(role, args);
     // A failed or overrunning build fails the job and keeps nothing. The first
@@ -1316,7 +1367,8 @@ async function buildRuntimeImages(
         ...plainProgress,
         "--pull=false",
         "--target",
-        "runtime",
+        controllerTarget,
+        ...revisionArgs,
         "--build-arg",
         `NODE_BASE_IMAGE=${nodeBaseImage}`,
         "-t",
@@ -1338,6 +1390,7 @@ async function buildRuntimeImages(
           ? [
               ...imageBuildArgs(state, "runtime", localStore),
               ...plainProgress,
+              ...revisionArgs,
               ...sourceArguments,
               "--pull=false",
               "-f",
@@ -1384,11 +1437,119 @@ async function buildRuntimeImages(
       }
       await markResourceReady(statePath, state, entry.resource);
     }),
+    buildConcurrency,
   );
   for (const entry of builds) {
     Object.assign(env, entry.env);
   }
   return { env, resourceIds: resources.map((resource) => resource.id) };
+}
+
+// Restore current-source image layers only. Local Setup still owns its cluster,
+// installation, Agent workflow and teardown. The loopback registry is CI-owned.
+async function prepareFirstAgentImages(statePath, state, env, file) {
+  imageBuildArgs(state, "runtime", false); // Validate the hosted cache boundary before resources.
+  if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
+    throw new Error("First-Agent image preparation requires the checkout's pinned runtime source.");
+  }
+  const builder = process.env.OCC_CI_FIRST_AGENT_BUILDER;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(builder ?? "")) {
+    throw new Error("First-Agent image preparation requires its selected job builder.");
+  }
+  const revision = (await execFile("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
+  const compose = file === "tests/integration/local-first-agent-openshell-real.test.mjs";
+  const nodeBaseImage = effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE;
+  assertNodeBaseImage(nodeBaseImage);
+  const built = await timedPreparation(state.lane, "first-agent-images", () =>
+    buildRuntimeImages(statePath, state, {
+      controller: true,
+      runtime: true,
+      nodeBaseImage,
+      revision,
+      controllerTarget: compose ? "development" : "runtime",
+      // A cold runtime compilation needs most of the standard runner's memory.
+      buildConcurrency: 1,
+    }),
+  );
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const registryImage =
+    "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
+  const port = await reserveLoopbackPort();
+  const registry = addResource(state, "first-agent-image-registry", {
+    name: ownedName("openclaw-ci-first-images", state.prefix, { maxLength: 63 }),
+    port,
+    images: [],
+  });
+  await writeState(statePath, state);
+  await ensureDockerSourceImage(state, registryImage, "first-Agent registry image");
+  await execFile(docker, [
+    "run",
+    "--detach",
+    "--name",
+    registry.name,
+    "--label",
+    `openclaw.dev/ci-owner=${state.prefix}`,
+    "--publish",
+    `127.0.0.1:${port}:5000`,
+    registryImage,
+  ]);
+  const registryOrigin = `http://127.0.0.1:${port}`;
+  const registryDeadline = Date.now() + 30_000;
+  let registryReady = false;
+  while (Date.now() < registryDeadline) {
+    try {
+      registryReady = (await fetch(`${registryOrigin}/v2/`, { signal: AbortSignal.timeout(1000) }))
+        .ok;
+    } catch {
+      registryReady = false;
+    }
+    if (registryReady) {
+      break;
+    }
+    await delay(250);
+  }
+  if (!registryReady) {
+    throw new Error("First-Agent image registry did not become ready.");
+  }
+  const selected = {};
+  for (const [role, source] of Object.entries({
+    ...(compose ? {} : { controller: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE }),
+    runtime: built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
+  })) {
+    const tag = `127.0.0.1:${port}/${registry.name}/${role}:checkout`;
+    const info = JSON.parse((await execFile(docker, ["image", "inspect", source])).stdout)[0];
+    if (info.Config.Labels?.["org.opencontainers.image.revision"] !== revision) {
+      throw new Error("Built first-Agent image does not identify the current checkout.");
+    }
+    registry.images.push({ tag, id: info.Id });
+    await writeState(statePath, state);
+    await execFile(docker, ["tag", source, tag]);
+    await timedPreparation(state.lane, `first-agent-${role}-publish`, () =>
+      execFile(docker, ["push", tag], { timeoutMs: 10 * 60_000 }),
+    );
+    const published = JSON.parse((await execFile(docker, ["image", "inspect", tag])).stdout)[0];
+    const repository = tag.slice(0, tag.lastIndexOf(":"));
+    const reference = published.RepoDigests?.find((value) =>
+      value.startsWith(`${repository}@sha256:`),
+    );
+    assertImmutableImageReference(reference, "first-Agent image");
+    if (published.Id !== info.Id) {
+      throw new Error("Image publication changed the selected image identity.");
+    }
+    selected[role] = reference;
+  }
+  await markResourceReady(statePath, state, registry);
+  env.NODE_BASE_IMAGE = nodeBaseImage;
+  env.OCC_KUBERNETES_RUNTIME_IMAGE = selected.runtime;
+  if (compose) {
+    // Compose builds the development target, whose leaf is not in the main
+    // runtime-target cache. Reuse this job's measured development build locally.
+    env.BUILDX_BUILDER = builder;
+    env.OCC_TEST_LOCAL_FIRST_AGENT_BUILD_REVISION = revision;
+  } else {
+    env.OCC_DEVELOPMENT_CONTROLLER_IMAGE = selected.controller;
+    env.OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER = registry.name;
+  }
 }
 
 async function k3dStage(state, stage, run) {
@@ -3092,6 +3253,9 @@ async function prepareLane({ lane, statePath, file }) {
       // These files exercise the installer in their own Local Setup. Preparing a
       // second stack here builds the same images and installs unused services.
       if (lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
+        if (process.env.OCC_CI_IMAGE_CACHE === "1") {
+          await prepareFirstAgentImages(resolvedStatePath, state, env, relativeFile);
+        }
         break;
       }
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);

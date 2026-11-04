@@ -1,3 +1,5 @@
+import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
+
 export function recordFirstAgentPodTiming(context, stage, role, pod, requestedAt) {
   const created = Date.parse(pod.metadata.creationTimestamp);
   const sinceCreated = (value) =>
@@ -25,4 +27,33 @@ export function recordFirstAgentPodTiming(context, stage, role, pod, requestedAt
         restarts: containers.reduce((total, item) => total + (item.restartCount ?? 0), 0),
       }),
   );
+}
+
+// Sample the owned hosted VM while both real Agents run; retain no process names.
+export function sampleFirstAgentCapacity(context) {
+  const samples = [];
+  const sample = () => samples.push({ free: freemem(), load: loadavg()[0] });
+  sample();
+  const timer = setInterval(sample, 2000);
+  timer.unref();
+  let finished = false;
+  return () => {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    clearInterval(timer);
+    sample();
+    context.diagnostic(
+      "openclaw-ci-measurement " +
+        JSON.stringify({
+          kind: "local-first-agent-capacity",
+          cpus: availableParallelism(),
+          totalMiB: Math.round(totalmem() / 1024 ** 2),
+          minimumFreeMiB: Math.round(Math.min(...samples.map(({ free }) => free)) / 1024 ** 2),
+          maximumLoadHundredths: Math.round(Math.max(...samples.map(({ load }) => load)) * 100),
+          samples: samples.length,
+        }),
+    );
+  };
 }
