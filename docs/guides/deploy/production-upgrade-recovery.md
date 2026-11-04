@@ -34,9 +34,9 @@ have completed without a `completed` marker.
 
 ## Correct unusable comparison inputs
 
-`Cannot compare upgrade YAML` requires readable YAML mappings without empty
-documents and writable evidence. Correct inputs before retrying; this message
-does not establish drift.
+`Cannot compare upgrade YAML` requires readable YAML mappings (including candidates)
+without empty documents and writable evidence. Correct inputs before retrying;
+this does not establish drift.
 
 ## Clean up preflight resources
 
