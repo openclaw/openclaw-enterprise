@@ -134,7 +134,8 @@
     "tests/conformance/gitlab-repository-client.test.mjs",
     "tests/conformance/gitlab-repository-config.test.mjs",
     "tests/conformance/gitlab-repository-policy.test.mjs",
-    "tests/conformance/gitlab-repository-credentials.test.mjs"
+    "tests/conformance/gitlab-repository-credentials.test.mjs",
+    "tests/conformance/repository-material-client-compatibility.test.mjs"
   ],
   "files": [
     {
@@ -680,6 +681,9 @@
     },
     {
       "path": "tests/conformance/gitlab-repository-credentials.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-material-client-compatibility.test.mjs"
     }
   ]
 }

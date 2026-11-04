@@ -14,6 +14,8 @@ import { createTlsMaterial } from "../fixtures/repository-credentials/process.mj
 const tokenFile = process.env.GITLAB_TEST_TOKEN_FILE;
 const project = process.env.GITLAB_TEST_PROJECT;
 const projectId = process.env.GITLAB_TEST_PROJECT_ID;
+// A source branch with no open merge request; the lane provisions a fresh branch per run,
+// because GitLab refuses a second open merge request from the same source branch.
 const writeBranch = process.env.GITLAB_TEST_WRITE_BRANCH;
 const live = process.env.GITLAB_TEST_LIVE === "1";
 
@@ -77,6 +79,7 @@ async function startGitLabService(t, limits = {}) {
       tls,
       upstreamOrigins: ["https://gitlab.com"],
       trustedUpstreamOrigins: new Set(["https://gitlab.com"]),
+      trustSystemUpstream: true,
     });
     const registry = validateGitLabRepositoryRegistry(
       {
@@ -115,20 +118,20 @@ async function startGitLabService(t, limits = {}) {
       deadlineWallMs: clock.wallNow() + 900000,
       preparedOnly: true,
     });
-    return { ...started, resources, opened };
+    return { ...started, clock, tls, config, resources, opened };
   } catch (error) {
     await resources.close(error);
   }
 }
 
 test(
-  "GitLab Agent sessions read, refuse forbidden operations, and stop after authority withdrawal",
+  "GitLab Agent sessions read, refuse a forbidden route before dispatch, and stop after withdrawal",
   { skip: !live },
   async (t) => {
     requireLiveAuthorization();
     const fixture = await startGitLabService(t);
     const allowed = await gatewayRequest(fixture, `/api/v4/projects/${projectId}`);
-    assert.equal(allowed.status, 200);
+    assert.equal(allowed.status, 200, allowed.body);
     assert.equal(JSON.parse(allowed.body).path_with_namespace, project);
 
     const forbidden = await gatewayRequest(
@@ -136,12 +139,12 @@ test(
       `/api/v4/projects/${projectId}/repository/commits?per_page=100`,
     );
     assert.equal(forbidden.status, 400);
-    assert.equal(JSON.parse(forbidden.body).error, "unsupported-request");
+    assert.equal(JSON.parse(forbidden.body).error.code, "unsupported-request");
 
     fixture.service.close(fixture.opened.session.sessionId);
     const withdrawn = await gatewayRequest(fixture, `/api/v4/projects/${projectId}`);
     assert.equal(withdrawn.status, 401);
-    assert.equal(JSON.parse(withdrawn.body).error, "invalid-credential");
+    assert.equal(JSON.parse(withdrawn.body).error.code, "session-unavailable");
   },
 );
 
@@ -169,7 +172,7 @@ test(
       verification,
       `/api/v4/projects/${projectId}/merge_requests?state=opened&per_page=100`,
     );
-    assert.equal(listed.status, 200);
+    assert.equal(listed.status, 200, listed.body);
     const matches = JSON.parse(listed.body).filter((mergeRequest) => mergeRequest.title === title);
     assert.equal(matches.length, 1);
     assert.equal(matches[0].draft, true);

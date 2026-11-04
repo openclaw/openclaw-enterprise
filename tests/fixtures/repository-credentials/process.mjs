@@ -15,7 +15,12 @@ import { sharedRsaPrivateKeyPem } from "./shared-keys.mjs";
 // receives one sets maintenance.auto=false itself (git.mjs, the router test's target).
 export function cleanEnvironment(extra = {}) {
   return {
-    PATH: "/usr/local/bin:/usr/bin:/bin",
+    // macOS ships LibreSSL, which lacks the `-addext` flag used to mint fixture
+    // certificates; prefer Homebrew OpenSSL on a developer Mac.
+    PATH:
+      process.platform === "darwin"
+        ? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        : "/usr/local/bin:/usr/bin:/bin",
     LANG: "C.UTF-8",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
