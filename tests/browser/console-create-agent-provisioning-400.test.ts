@@ -66,7 +66,7 @@ import {
   routeProvisioningJob,
   provisioningJob,
 } from "./console-agents-test-support.mjs";
-import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   AGENT_NAME_CONFLICT,

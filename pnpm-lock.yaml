@@ -41,6 +41,9 @@ importers:
       prettier:
         specifier: 3.9.10
         version: 3.9.10
+      typebox:
+        specifier: 1.4.3
+        version: 1.4.3
       typescript:
         specifier: npm:@typescript/typescript6@6.0.2
         version: '@typescript/typescript6@6.0.2'

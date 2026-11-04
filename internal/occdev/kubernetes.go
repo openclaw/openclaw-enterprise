@@ -545,8 +545,6 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
-			// Keep the existing delay before the first Gateway uses the route.
-			"startupDelayMs": 30000,
 			"gateway": map[string]any{
 				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{

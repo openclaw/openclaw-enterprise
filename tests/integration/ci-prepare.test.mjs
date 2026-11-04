@@ -2254,12 +2254,70 @@ for (let index = 0; index < Number(times); index += 1) {
     }
   });
 
+  test("prepareLane reports skipped image pulls when logging image configuration cannot be read", async (t) => {
+    const root = await fixture(t);
+    const summary = join(root, "summary.md");
+    const preload = join(root, "fail-collector-config.mts");
+    const prepareUrl = new URL("../../scripts/ci/prepare.mjs", import.meta.url).href;
+    // The preload also supplies the logging module when the prepare CLI imports it.
+    await writeFile(
+      preload,
+      `import { registerHooks } from "node:module";
+
+export function prepareLogging(): never {
+  throw new Error("unexpected logging setup");
+}
+
+export async function readDefaultCollectorImage(): Promise<never> {
+  throw new Error("fixture collector config read failed");
+}
+
+const prepareUrl = ${JSON.stringify(prepareUrl)};
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "./logging.mjs" && context.parentURL === prepareUrl) {
+      return { url: import.meta.url, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+`,
+    );
+    const result = await spawnResult(
+      process.execPath,
+      [
+        "--import",
+        preload,
+        preparePath,
+        "--lane",
+        "logging-collector",
+        "--state",
+        join(root, "state.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          GITHUB_ENV: "",
+          GITHUB_OUTPUT: "",
+          GITHUB_STEP_SUMMARY: summary,
+          OCC_DOCKER_BIN: join(root, "must-not-run"),
+        },
+      },
+    );
+
+    assert.equal(result.status, 1, result.stderr);
+    assertStderrMatch(result.stderr, /^fixture collector config read failed$/m);
+    assert.doesNotMatch(result.stderr, /\[ci-timing\]/);
+    assert.equal(await readFile(summary, "utf8"), "- logging-collector / image-pulls: skipped\n");
+  });
+
   test("prepareLane pre-pulls logging and metrics images with retry and preserves its Node override", async (t) => {
     for (const failure of ["transient", "missing-manifest"]) {
       await t.test(failure, async (t) => {
         const root = await fixture(t);
         const statePath = join(root, "logging-state.json");
         const githubEnv = join(root, "github.env");
+        const summary = join(root, "summary.md");
         const customNodeImage =
           "docker.io/library/node:24-bookworm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         const collectorImage = loadYaml(
@@ -2315,7 +2373,14 @@ process.exit(2);
             OCC_DOCKER_BIN: dockerPath,
             OCC_TEST_LOGGING_NODE_IMAGE: customNodeImage,
             CI_METRICS_PULL_FAILURE: failure,
+            GITHUB_STEP_SUMMARY: summary,
           },
+        );
+
+        const outcome = failure === "missing-manifest" ? "failure" : "success";
+        assert.match(
+          await readFile(summary, "utf8"),
+          new RegExp(`^- logging-collector / image-pulls: ${outcome} \\(\\d+ ms\\)\\n$`),
         );
 
         const pulls = (await readJsonLines(join(root, "docker.jsonl")))

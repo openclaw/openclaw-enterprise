@@ -650,7 +650,7 @@ for (const lane of ["dev-up-k3d", "skipper-prepared-git-installed"]) {
   });
 }
 
-test("manual dev-up workflow prepares the complete lane and aggregates its exact source", async () => {
+test("manual dev-up workflow prepares the complete lane and aggregates its exact source", async (t) => {
   const { loadYaml } = createRequire(
     new URL("../../apps/controller/package.json", import.meta.url),
   )("@kubernetes/client-node");
@@ -844,11 +844,37 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     }
   }
   const inputs = { lane: "dev-up-k3d", profile: run.with.profile };
+  const directory = await temporaryDirectory(t, "manual-dev-up-image-mode-");
+  const output = join(directory, "outputs");
+  const mode = action.runs.steps.find(({ id }) => id === "image-mode");
+  const selection = spawnSync("bash", ["-c", mode.run], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CI_SELECTED_LANE: inputs.lane,
+      CI_SELECTED_TEST_FILE: "",
+      GITHUB_OUTPUT: output,
+    },
+  });
+  assert.equal(selection.status, 0, selection.stderr);
+  const firstAgent = /^first-agent=(true|false)$/m.exec(await readFile(output, "utf8"))?.[1];
+  assert.ok(firstAgent, "the shipped image selection must publish its mode");
   const evaluate = (expression) =>
-    runInNewContext(expression.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
-      inputs,
-      startsWith: (value, prefix) => value.startsWith(prefix),
-    });
+    runInNewContext(
+      expression
+        .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+        // GitHub property names may contain hyphens; JavaScript needs brackets.
+        .replaceAll(
+          "steps.image-mode.outputs.first-agent",
+          'steps["image-mode"].outputs["first-agent"]',
+        ),
+      {
+        inputs,
+        steps: { "image-mode": { outputs: { "first-agent": firstAgent } } },
+        startsWith: (value, prefix) => value.startsWith(prefix),
+      },
+    );
   for (const name of [
     "Set up Go toolchain",
     "Build Go CLI for development installation proof",
