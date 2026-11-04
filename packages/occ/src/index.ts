@@ -29,6 +29,7 @@ export {
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
   connectionValuesChanged,
+  validateConnectionTemplateAuthorization,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
@@ -1262,7 +1263,7 @@ const SECRET_CONSUMER_FIELDS: Readonly<
 function connectionTemplateValues(
   input: Omit<ConnectionTemplateInput, "displayName">,
 ): ConnectionTemplateValues {
-  return {
+  const values = {
     issuer: input.issuer,
     authorizationUrl: input.authorizationUrl,
     tokenUrl: input.tokenUrl,
@@ -1277,6 +1278,8 @@ function connectionTemplateValues(
     },
     envVar: input.envVar,
   };
+  validateConnectionTemplateAuthorization(values);
+  return values;
 }
 
 /**

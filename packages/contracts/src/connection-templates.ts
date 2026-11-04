@@ -49,6 +49,58 @@ export interface ConnectionClientRegistration {
   readonly createdAt: string;
 }
 
+const flowParameters = new Set([
+  "response_type",
+  "client_id",
+  "redirect_uri",
+  "scope",
+  "state",
+  "code_challenge",
+  "code_challenge_method",
+]);
+
+export function isFlowOwnedOAuthParameter(name: string): boolean {
+  return flowParameters.has(name);
+}
+
+export class ConnectionTemplateValidationError extends Error {
+  readonly field: string;
+
+  constructor(field: string, message: string) {
+    super(message);
+    this.field = field;
+    this.name = "ConnectionTemplateValidationError";
+  }
+}
+
+/** Validate immutable OAuth settings before the Refresh Driver stages a client secret. */
+export function validateConnectionTemplateAuthorization(
+  values: Pick<
+    ConnectionTemplateValues,
+    "issuer" | "authorizationUrl" | "tokenUrl" | "authorizationParameters"
+  >,
+): void {
+  for (const field of ["issuer", "authorizationUrl", "tokenUrl"] as const) {
+    const value = values[field];
+    if (
+      !/^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(value) ||
+      !URL.canParse(value) ||
+      (field !== "authorizationUrl" && value.includes("?"))
+    ) {
+      throw new ConnectionTemplateValidationError(
+        field,
+        `${field} must be a valid HTTPS URL without userinfo or a fragment${field === "authorizationUrl" ? "." : " or query."}`,
+      );
+    }
+  }
+  if (Object.keys(values.authorizationParameters).some(isFlowOwnedOAuthParameter)) {
+    throw new ConnectionTemplateValidationError(
+      "authorizationParameters",
+      "The template cannot override a parameter that the OAuth flow supplies.",
+    );
+  }
+}
+
 /** True when `next` changes a value a person approved, so it needs a new version. */
 export function connectionValuesChanged(
   current: Readonly<ConnectionTemplateValues>,

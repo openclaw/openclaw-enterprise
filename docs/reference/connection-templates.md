@@ -18,6 +18,11 @@ authorization URL, token URL, client ID, approved scopes, environment variable,
 and allowed destination. The gateway must support the destination and access
 settings. Supply the client secret when registering a new confidential client.
 
+Use valid HTTPS URLs without userinfo or fragments. Only the authorization URL
+may include a query. In `authorizationParameters`, use provider options such as
+`prompt`. OCC refuses `response_type`, `client_id`, `redirect_uri`, `scope`,
+`state`, `code_challenge`, and `code_challenge_method` because the OAuth flow sets them.
+
 The response contains the template ID, its current version and the client
 registration ID. The Refresh Driver holds the client secret. Two templates
 share a registration only when their scope, issuer, and client ID match.

@@ -36,6 +36,16 @@ test(
     assert.equal(ns.statusCode, 201, ns.body);
     const namespaceId = ns.json().data.id;
     const input = templateInput();
+    // Invalid OAuth settings must be refused before registering any operator-held secret.
+    for (const invalid of [
+      { authorizationParameters: { state: "custom" } },
+      { issuer: "https://[broken" },
+      { authorizationUrl: "https://[broken" },
+    ]) {
+      const refused = await inject("POST", "/connection-templates", { ...input, ...invalid });
+      assert.equal(refused.statusCode, 400, refused.body);
+      assert.equal(providers.size, 0);
+    }
     const global = await inject("POST", "/connection-templates", input);
     assert.equal(global.statusCode, 201, global.body);
     const globalTemplate = global.json().data;
@@ -57,6 +67,13 @@ test(
     assert.equal(blocked.statusCode, 409, blocked.body);
 
     const localPath = `/connection-templates/${localTemplate.id}`;
+    const reserved = await inject("PATCH", localPath, {
+      authorizationParameters: { code_challenge: "custom" },
+    });
+    assert.equal(reserved.statusCode, 400, reserved.body);
+    const original = await inject("GET", localPath, undefined);
+    assert.equal(original.json().data.current.version, 1);
+    assert.deepEqual(original.json().data.current.authorizationParameters, {});
     const rename = await inject("PATCH", localPath, { displayName: "Engineering inbox" });
     assert.equal(rename.statusCode, 200, rename.body);
     assert.equal(rename.json().data.current.version, 1);

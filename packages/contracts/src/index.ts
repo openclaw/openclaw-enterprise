@@ -147,7 +147,12 @@ export type {
   ConnectionTemplateValues,
   ConnectionTemplateVersion,
 } from "./connection-templates.ts";
-export { connectionValuesChanged } from "./connection-templates.ts";
+export {
+  ConnectionTemplateValidationError,
+  connectionValuesChanged,
+  isFlowOwnedOAuthParameter,
+  validateConnectionTemplateAuthorization,
+} from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 
