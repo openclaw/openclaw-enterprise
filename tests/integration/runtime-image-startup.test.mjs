@@ -8,13 +8,7 @@ import {
   cpuScaledImageTimeoutMs,
   imageSmokeTimeoutMultiplier,
 } from "../helpers/image-smoke-timeout.mjs";
-import {
-  AGENT_RUNTIME_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
-  GATEWAY_STOP_TIMEOUT_MS,
-  NATIVE_WORKER_ENTRYPOINT,
-  PLUGIN_RUNTIME_HELPERS,
-} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { runtimeImageEntrypoints } from "../helpers/runtime-image-entrypoints.mjs";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OPENSHELL_CODEX_APP_SERVER_POLICY } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
@@ -55,6 +49,13 @@ const historicalCodex = stagingCodexVersion === "0.163.0-alpha.2";
 if (historicalCodex) {
   assert.equal(process.env.EXPECTED_OCC_REVISION, "54bfa7fc1b99e362450beb5f9211e164991fa7b4");
 }
+const {
+  AGENT_RUNTIME_ENTRYPOINT,
+  GATEWAY_RUNTIME_ENTRYPOINT: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+  GATEWAY_STOP_TIMEOUT_MS,
+  NATIVE_WORKER_ENTRYPOINT,
+  PLUGIN_RUNTIME_HELPERS,
+} = runtimeImageEntrypoints();
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 

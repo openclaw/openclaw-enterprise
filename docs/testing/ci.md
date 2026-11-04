@@ -101,6 +101,13 @@ pull receipt records the historical image source separately. No historical host
 code is built or executed. Historical images receive only the existing isolated
 fixture mounts, not the runner workspace, Docker socket, or Actions credentials.
 
+For the reviewed October 30 profile, the tests read production startup commands
+from its matching published controller in a network-disabled, read-only container.
+Those commands preserve the qualified source and database schema versions of
+that image pair. Current-image cases use the current checkout's commands.
+A missing controller, source-label mismatch, or missing production export fails
+qualification. The host tests still execute from the trusted current checkout.
+
 The runner selects the controller and runtime startup files from
 `images-packaging` and `images-runtime-startup`. Missing, failed, or skipped cases
 fail the lane. Preparation, tests, and cleanup must succeed before the command

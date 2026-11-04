@@ -600,6 +600,7 @@ async function checkRuntimeChild(t: TestContext) {
           OPENCLAW_ENTERPRISE_CI_STATE: state,
           OCC_TEST_CODEX_SECCOMP_PROFILE: profile,
           OCC_TEST_RUNTIME_IMAGE: `sha256:${"a".repeat(64)}`,
+          OCC_TEST_PRODUCTION_IMAGE: `sha256:${"c".repeat(64)}`,
           OCC_TEST_WORKSPACE_ENVOY_IMAGE:
             original.prepare.defaultEnv.OCC_TEST_WORKSPACE_ENVOY_IMAGE,
           OCC_TEST_STAGING_CODEX_VERSION: version,
