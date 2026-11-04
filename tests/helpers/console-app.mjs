@@ -16,6 +16,13 @@ import { backendSummariesFromDefinitions } from "../../apps/controller/src/compo
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import {
+  AgentResponse,
+  AgentRevisionResponse,
+  ConfigurationResponse,
+  NamespaceResponse,
+  SecretResponse,
+} from "../../packages/contracts/src/api/resources.ts";
 import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
@@ -630,11 +637,11 @@ export async function createConsoleAppFixture(t, options = {}) {
 
   async function createNamespace(name, { ready = false } = {}) {
     const result = await request("POST", "/namespaces", { body: { name } });
-    const namespace = fixtureResponse(result, 201, "namespace", "create Namespace");
+    const namespace = fixtureResponse(result, 201, NamespaceResponse, "create Namespace").data;
     if (ready) {
       await makeNamespaceReady(namespace.id);
       const current = await request("GET", `/namespaces/${namespace.id}`);
-      return fixtureResponse(current, 200, "namespace", "read ready Namespace");
+      return fixtureResponse(current, 200, NamespaceResponse, "read ready Namespace").data;
     }
     return namespace;
   }
@@ -658,7 +665,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.secretBindings === undefined ? {} : { secretBindings: options.secretBindings }),
       },
     });
-    return fixtureResponse(configuration, 201, "configuration", "create Configuration");
+    return fixtureResponse(configuration, 201, ConfigurationResponse, "create Configuration").data;
   }
 
   async function updateConfiguration(namespaceId, configurationId, values = {}, options = {}) {
@@ -767,7 +774,12 @@ export async function createConsoleAppFixture(t, options = {}) {
       secretBindings: options.secretBindings,
     });
     const namespaceResponse = await request("GET", `/namespaces/${namespaceId}`);
-    const namespace = fixtureResponse(namespaceResponse, 200, "namespace", "read Agent Namespace");
+    const namespace = fixtureResponse(
+      namespaceResponse,
+      200,
+      NamespaceResponse,
+      "read Agent Namespace",
+    ).data;
     const harnessAuth =
       options.harnessAuth === undefined && secretDriver && namespace.status === "ready"
         ? {
@@ -792,7 +804,7 @@ export async function createConsoleAppFixture(t, options = {}) {
           : { gatewayManagedMode: defaultAgentGatewayManagedMode }),
       },
     });
-    const created = fixtureResponse(agent, 201, "agent", "create Agent");
+    const created = fixtureResponse(agent, 201, AgentResponse, "create Agent").data;
     // An Installation administrator's console reads the model credential's grant as it reads bound
     // channel Secrets' grants, so it is listed too (finding 2260).
     if (harnessAuth?.method === "api_key") {
@@ -811,12 +823,12 @@ export async function createConsoleAppFixture(t, options = {}) {
     const agent = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
       body,
     });
-    return fixtureResponse(agent, 200, "agent", "update Agent");
+    return fixtureResponse(agent, 200, AgentResponse, "update Agent").data;
   }
 
   async function deployAgent(namespaceId, agentId) {
     const revision = await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/deploy`);
-    return fixtureResponse(revision, 202, "revision", "deploy Agent");
+    return fixtureResponse(revision, 202, AgentRevisionResponse, "deploy Agent").data;
   }
 
   async function activateRevision(namespaceId, agentId, revisionId, expectedRevisionId) {
@@ -840,7 +852,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     const secret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
       body: { name, value },
     });
-    return fixtureResponse(secret, 201, "secret", "create Secret");
+    return fixtureResponse(secret, 201, SecretResponse, "create Secret").data;
   }
 
   /**
