@@ -113,6 +113,9 @@ final runtime installs all three generated Debian packages together and records
 their source and package checksums under `/usr/share/doc/curl/oce/`. Debian
 package metadata and the changelog retain the base version and the `+oce1`
 backport revision; a vulnerability scanner may still report the upstream CVE.
+The final install compares fresh APT indexes with the recorded Debian base
+version before selecting local packages, so a cached backport cannot silently
+replace a newer Debian security update.
 
 The build runs the caller-authority, Gateway recovery and Linux private-store
 tests offline. The private-store bridge normalizes inherited setgid only for a

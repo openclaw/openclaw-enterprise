@@ -55,5 +55,6 @@ for package in curl libcurl4 libcurl3-gnutls; do
   cp "../${package}_${version}+oce1_$(dpkg --print-architecture).deb" /out/
 done
 sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz /tmp/curl/CVE-2026-86414.patch > /out/source.sha256
+printf '%s\n' "$version" > /out/debian-version
 cd /out
 sha256sum ./*.deb > packages.sha256

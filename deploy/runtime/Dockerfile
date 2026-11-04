@@ -332,6 +332,9 @@ RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(
 
 RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
     apt-get update \
+    && candidate="$(apt-cache policy curl | sed -n 's/^  Candidate: //p')" \
+    && expected="$(cat /tmp/curl-packages/debian-version)" \
+    && { [ "$candidate" = "$expected" ] || { echo "Refresh the curl backport: Debian candidate is $candidate, source is $expected" >&2; exit 1; }; } \
     && apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb \
     && mkdir -p /usr/share/doc/curl/oce \
     && cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/ \
