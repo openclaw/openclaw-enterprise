@@ -62,7 +62,8 @@ export function selectPackageExport(exports: unknown, subpath: string, condition
     if (Object.keys(value).some((key) => key.startsWith(".") || /^(0|[1-9][0-9]*)$/.test(key))) {
       return invalid();
     }
-    for (const [condition, branch] of Object.entries(value)) {
+    const entries: [string, unknown][] = Object.entries(value);
+    for (const [condition, branch] of entries) {
       if (condition === "default" || conditions.has(condition)) {
         const selected = target(branch, wildcard);
         if (selected !== undefined) {
