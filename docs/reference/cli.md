@@ -140,7 +140,8 @@ All three commands require `--kubeconfig`, `--context`, `--kube-namespace` and
   Optional `--receipt` requires the original target, install marker and captured
   UID for exit zero on completion. Alternatively, use `--expect-job-uid` for a
   recorded UID. With neither flag, exit zero describes the current Job only.
-  Both commands are read-only. [Interpret receipt files and resume an interrupted installation](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
+  Both commands are read-only. Report delivery failure makes the command
+  unsuccessful, including when the Job completed. [Interpret receipt files and resume an interrupted installation](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff).
 
 ## Runtime status and logs
 

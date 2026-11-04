@@ -684,6 +684,10 @@
                     "label": "Observability"
                   },
                   {
+                    "page": "guides/observability/worker-terminations",
+                    "label": "Worker Exits"
+                  },
+                  {
                     "page": "guides/observability/metrics",
                     "label": "Metrics Scraping"
                   },
@@ -769,6 +773,7 @@
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
+              "guides/deploy/prerequisite-diagnosis",
               "guides/deploy/production-tui",
               "reference/settings/oidc"
             ]

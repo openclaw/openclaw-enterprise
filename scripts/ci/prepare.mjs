@@ -3074,30 +3074,49 @@ async function prepareLane({ lane, statePath, file }) {
         OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
         OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE: production.logging.collector.image,
       };
-      const [cluster, built, , fixture] = await timedPreparation(name, "cluster-build-pull", () =>
-        prepareTogether([
-          () => ensureK3dCluster(resolvedStatePath, state),
-          async () => {
-            await ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE, "NODE_BASE_IMAGE");
-            return buildRuntimeImages(resolvedStatePath, state, {
-              controller: true,
-              nodeBaseImage: inputs.NODE_BASE_IMAGE,
-              localStore: true,
-            });
-          },
-          () =>
-            prepareTogether(
-              Object.entries(externalImages)
-                .filter(([, image]) => image !== inputs.NODE_BASE_IMAGE)
-                .map(
-                  ([variable, image]) =>
-                    () =>
-                      ensureDockerSourceImage(state, image, variable),
-                ),
-              2,
-            ),
-          () => buildFixtureImage(resolvedStatePath, state),
-        ]),
+      const [cluster, built, , fixture, serviceTag] = await timedPreparation(
+        name,
+        "cluster-build-pull",
+        () =>
+          prepareTogether([
+            () => ensureK3dCluster(resolvedStatePath, state),
+            async () => {
+              await ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE, "NODE_BASE_IMAGE");
+              return buildRuntimeImages(resolvedStatePath, state, {
+                controller: true,
+                nodeBaseImage: inputs.NODE_BASE_IMAGE,
+                localStore: true,
+              });
+            },
+            () =>
+              prepareTogether(
+                Object.entries(externalImages)
+                  .filter(([, image]) => image !== inputs.NODE_BASE_IMAGE)
+                  .map(
+                    ([variable, image]) =>
+                      () =>
+                        ensureDockerSourceImage(state, image, variable),
+                  ),
+                2,
+              ),
+            () => buildFixtureImage(resolvedStatePath, state),
+            () =>
+              prepareRepositoryCredentials({
+                repositoryRoot,
+                imagePrefix: `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}`,
+                execFile,
+                serviceOnly: true,
+                registerImage: async (tag) => {
+                  const resource = addResource(state, "image-tag", { name: tag });
+                  await writeState(resolvedStatePath, state);
+                  return resource;
+                },
+                markImageReady: async (resource, imageId) => {
+                  resource.imageId = imageId;
+                  await markResourceReady(resolvedStatePath, state, resource);
+                },
+              }),
+          ]),
       );
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
@@ -3116,6 +3135,7 @@ async function prepareLane({ lane, statePath, file }) {
             },
             ...Object.entries({
               OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
+              OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE: serviceTag,
               ...externalImages,
             }).map(([variable, image]) => async () => {
               progress(name, `Importing ${variable}.`);

@@ -77,8 +77,9 @@ OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
   node --test tests/integration/installation-handoff-k3d-real.test.ts
 ```
 
-This covers named-Job access, replacement and interrupted Helm dispatch.
-The [production observability lane](local.md#kubernetes-observability-acceptance)
+Checks named-Job access, replacement, interrupted Helm dispatch, CRDs/controllers,
+quota headroom, address drift and denials. EKS connectivity and Envoy acceptance
+remain unproved. The [production observability lane](local.md#kubernetes-observability-acceptance)
 runs `installation-receipt-k3d-real.test.ts` with PostgreSQL to check bootstrap
 after interruption before and after UID capture.
 

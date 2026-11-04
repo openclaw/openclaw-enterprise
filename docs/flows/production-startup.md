@@ -1,17 +1,16 @@
 ---
 created: 2026-08-25
 updated: "2026-11-04"
-last_updated_session: "authoring-run/6c8eb7c1-4921-456d-bd96-cf1e8303b58b"
+last_updated_session: "authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a"
 ---
 
 # Production Startup Flow
 
 ## Overview
 
-Prepare a fresh protected bootstrap PVC; install Helm with approved images,
-PostgreSQL/authentication credentials, trusted Installation YAML and network
-policies. Wait for private API/worker readiness; authenticate `/installation`
-with the service key.
+Prepare a fresh protected bootstrap PVC and install Helm with approved images,
+PostgreSQL/authentication credentials, trusted Installation YAML and policies.
+After private API/worker readiness, authenticate `/installation` with the service key.
 
 [Deployment guide](../guides/deploy.md).
 
@@ -34,8 +33,8 @@ First install requires [empty OCE history](../reference/settings/operations.md#m
 ```mermaid
 graph TD
     subgraph Operator["Operator-owned preparation"]
-        A["Edit native values, Installation YAML, and bootstrap PVC manifest"]
-        B["Create system namespace and file-backed Secrets"]
+        A["Prepare values, Installation YAML and bootstrap PVC"]
+        B["Create namespace and Secrets; check prerequisites"]
         C["Create fresh bootstrap PVC"]
         D["prepare-bootstrap-volume verifies empty output and root permissions"]
         D --> RC["CLI snapshots inputs and syncs intent"]
@@ -81,19 +80,21 @@ The process continues; the next query opens a new connection.
 
 ### 1. Prepare native production inputs
 
+`scripts/diagnose-kubernetes-prerequisites.mjs:diagnose` reads CRDs, controllers,
+addresses and object quota headroom. EKS binds account, ARN, endpoint and CA.
+[Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
+
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Prepare values, Installation YAML and bootstrap PVC outside the checkout. Helm
-selects controller images, API endpoint, Secrets, claim,
-client/node selectors and egress. `openclaw.validate` requires a DNS-1123
-release Namespace label up to 63 characters. Installation YAML selects IAM,
-Configuration, Compute, optional Backends, gateway/Agent images, projected
-workload identity and runtime networking/storage.
+Keep values, Installation YAML and bootstrap PVC outside the checkout. Helm
+selects images, endpoint, Secrets, claim, selectors and egress.
+`openclaw.validate` requires a DNS-1123 release Namespace label (maximum 63 characters).
+Installation YAML selects Drivers, Backends, runtime images, projected identity,
+networking and storage.
 
-File-backed Kubernetes Secrets supply Installation startup, database URLs/optional
-CA, Better Auth signing, and optional ChatGPT administrator credentials. These
-inputs are not synchronization targets. Helm neither rewrites Driver
-configuration nor infers gateway/Agent images.
+File-backed Secrets supply Installation startup, database URLs/optional CA, Better Auth
+signing, and optional ChatGPT administrator credentials. Helm neither synchronizes
+inputs, rewrites Driver configuration, nor infers runtime images.
 
 ### 2. Prepare the fresh bootstrap volume
 
@@ -164,7 +165,9 @@ receipt namespace, release and reader's cluster connection before a named Job re
 `initializationEvidence` checks the marker, captured UID, chart steps, controller
 and terminal status. Missing UID, replacement, refusal or inconclusive status
 leaves the original checkpoint unknown. Doctor reports Helm's recorded outcome
-separately. Plan adds read-only recovery steps.
+separately. Plan adds read-only recovery steps. Both buffer their report, including
+Helm outcome, and check `WriteTo` before returning Job status. Returned write
+errors reach `cmd/occ/main.go:main`, which reports stderr diagnostics and exits `1`.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -375,9 +378,15 @@ until tenant deployment/TUI procedures run.
 
 ## Changelog
 
+- 2026-11-04 23:30: Check complete handoff reports, including receipt outcomes. (authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a - ce06d47cfb0b4fb29495ad4bc85bb71aa5941975)
+
+- 2026-11-04 23:14: Document report write failures. (authoring-run/58196aeb-45b5-4ea5-850d-e368b48f15f9 - 582236adfbbb392c2247995dde054eef929ca6c1)
+
 - 2026-11-04 23:07: Require the captured UID for original Job completion. (authoring-run/6c8eb7c1-4921-456d-bd96-cf1e8303b58b - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-11-04 23:05: Trace durable first-install receipts and read-only attempt reconciliation. (authoring-run/1b2cbf33-0aef-45e7-bac1-2b40f26eeb3e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
+
+- 2026-11-04 22:57: Trace prerequisite diagnosis. (authoring-run/9ad2db0a-6b05-4873-aeda-52d96af2405e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-11-04 07:10: Trace read-only initialization handoff and exact current chart recognition. (authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446 - 0c39ae057d294e7c1a244666fb6b98a1200b7f52)
 
