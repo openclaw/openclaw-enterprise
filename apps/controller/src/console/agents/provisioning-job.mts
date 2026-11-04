@@ -4,7 +4,7 @@ import { responseFields } from "../api-client.mjs";
 type ProvisioningJob = Pick<AgentProvisioningStatusWire, "url" | "status"> & {
   agentId?: string;
   revisionId?: string;
-  error?: { code: string; message?: string };
+  error?: { code?: string; message?: string };
   progress?: { lastAttempt: { code: string; message: string } };
 };
 
@@ -58,9 +58,10 @@ export function provisioningJob(
   const error = responseFields(job.error);
   if (typeof error.code === "string" && error.code.trim()) {
     result.error = { code: error.code };
-    if (typeof error.message === "string" && error.message.trim()) {
-      result.error.message = error.message;
-    }
+  }
+  if (typeof error.message === "string" && error.message.trim()) {
+    result.error ??= {};
+    result.error.message = error.message;
   }
   const attempt = responseFields(responseFields(job.progress).lastAttempt);
   if (

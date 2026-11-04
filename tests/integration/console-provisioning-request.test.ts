@@ -94,6 +94,7 @@ test("the Console projects only safe consumed provisioning fields", () => {
     "PROVISIONING_CANCELLED",
     "REVISION_STOPPED",
     "REVISION_SUPERSEDED",
+    "UNKNOWN",
   ]) {
     assert.deepEqual(parse({ ...job, error: { code, message: "Useful reason." } }), {
       url,
@@ -108,7 +109,32 @@ test("the Console projects only safe consumed provisioning fields", () => {
       });
     }
   }
-  for (const error of [undefined, null, {}, { code: {}, message: "Reason" }, { code: " " }]) {
+  // Display text survives an absent or malformed code without inventing an outcome code.
+  const message = "Deployment was superseded.";
+  assert.deepEqual(parse({ ...job, agentId, revisionId, error: { message } }), {
+    url,
+    status: "failed",
+    agentId,
+    revisionId,
+    error: { message },
+  });
+  for (const code of [undefined, null, {}, 17, "", "   "]) {
+    assert.deepEqual(parse({ ...job, agentId, revisionId, error: { code, message } }), {
+      url,
+      status: "failed",
+      agentId,
+      revisionId,
+      error: { message },
+    });
+  }
+  assert.deepEqual(parse({ ...job, agentId, revisionId, error: { code: "UNKNOWN", message } }), {
+    url,
+    status: "failed",
+    agentId,
+    revisionId,
+    error: { code: "UNKNOWN", message },
+  });
+  for (const error of [undefined, null, {}, { code: {}, message: {} }, { code: " " }]) {
     assert.deepEqual(parse({ ...job, error }), { url, status: "failed" });
   }
   for (const code of [
