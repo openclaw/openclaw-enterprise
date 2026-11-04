@@ -59,8 +59,12 @@ source. OCE checks the requested scopes, validates the callback issuer, and
 verifies the granted scopes at exchange. The Token Service refreshes with the
 same pinned client, resource, and token endpoint. It checks each renewed grant
 against the connection's selected scopes before use.
-Changed endpoints require a new version and consent. The deployed worker exposes
-every tool the server lists for that connection (`tools/list`). [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
+Changed endpoints require a new version and consent. [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
+
+At Agent setup, Console uses `tools/list` to show available tools. An authorized
+caller selects tools by exact name for that Agent and server. By default the
+selection is empty. The deployed worker exposes only selected tools permitted
+by the Agent's policy. Newly advertised tools require explicit selection and deployment.
 
 ### Client registrations
 
@@ -105,7 +109,12 @@ approved values. At completion, the Driver validates the ID token
 ([OIDC Core](https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation))
 against keys from that JWKS URL only: signature, `iss` equal to the recorded
 `issuer`, `aud` containing the client ID, expiry, and nonce. It refetches the key
-set once for an unknown key ID, then rejects. It returns only a verified `email`.
+set once for an unknown key ID, then rejects the connection if it cannot validate
+the token.
+
+The Driver returns `accountEmail` only when that validated ID token contains a
+nonempty `email` string and the boolean claim `email_verified` is `true`.
+When either condition is unmet, the connection can complete without `accountEmail`.
 
 ## IAM Driver
 
@@ -156,15 +165,16 @@ to the plugin descriptor and release. The helper derives the bearer route from
 the server URL’s HTTPS host, effective port and literal path. OpenShell permits
 `POST` for messages, `GET` for streams and `DELETE` for session closure at that
 endpoint. Installing the plugin alone grants no route.
-Discovery, registration and refresh use separate management endpoints.
+OAuth metadata discovery, registration and refresh use separate management endpoints.
 
 The sender authenticates the deployed execution and checks its current authority
 to use the attached source. It evaluates the actual request before presenting the
 credential. A connector policy can restrict the operation and its arguments:
 for a Gmail metadata-only binding, `format=metadata` may pass while
 `format=full` fails on the same message URL. Apply those checks both to `gog` and
-to a direct script. For an MCP policy restricting individual tools, the guard
-must check the tool name and policy-relevant arguments in the posted message.
+to a direct script. For each MCP `tools/call`, the sender checks the requested
+name against the deployed selection for that Agent and server and enforces any
+argument restrictions before forwarding the call.
 If the selected route cannot enforce a promised restriction, refuse deployment.
 
 ## Failure and recovery
@@ -206,10 +216,15 @@ issue seven-day refresh tokens.
   the new access token. With no eligible prepared token, verify that OpenShell
   refuses the request without contacting the issuer.
 - **MCP.** Verify supplied clients, successful DCR, and the prompt for a supplied
-  client when DCR is unavailable or refused. On a dedicated worker, verify a Console tool call uses the selected scopes and that
-  an unselected scope stays unavailable after refresh. Bind two different MCP
-  servers, including one on a nondefault port, and verify each placeholder works
-  only at its own endpoint.
+  client when DCR is unavailable or refused. On a dedicated worker, verify a
+  Console tool call uses the selected scopes and an unselected scope stays
+  unavailable after refresh. Deploy an Agent with only a search tool selected,
+  then have the server advertise a write tool covered by the same OAuth grant.
+  Refresh the picker and verify it lists the write tool. Verify the Agent can
+  still call search and its tool list omits the write tool. Send a direct
+  `tools/call` for the write tool and verify the sender denies it before it
+  reaches the server. Bind two different MCP servers, including one on a
+  nondefault port, and verify each placeholder works only at its own endpoint.
 - **Client registrations.** Two connection templates with the same `clientId` in
   two Keycloak realms keep independent secrets: rotating one leaves the other's
   sources refreshing.
@@ -219,7 +234,9 @@ issue seven-day refresh tokens.
   refused. Only Installation administrators can create or delete the bindings.
 - **OIDC.** Reject a version whose metadata issuer or endpoints differ, and an ID
   token with a wrong issuer, an untrusted signing key, a wrong audience, or a wrong
-  nonce. Show the verified address on success.
+  nonce. With a valid token, store and display the address when
+  `email_verified` is `true`. With the same address and a false or missing
+  claim, verify the source becomes ready without a stored or displayed address.
 - **Real k3d and OpenShell.** Through the regular Agent create path, connect via
   Keycloak and prove: a tool reaches its endpoint with no added network policy; a
   write fails under `read-only`; a tool and a script get the same allow and deny

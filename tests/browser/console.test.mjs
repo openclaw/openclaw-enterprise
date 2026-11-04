@@ -24,6 +24,7 @@ import {
   login,
   loginThroughForm,
   newPage,
+  nextFrames,
   nonAuthWriteRequests,
   settledFetches,
   settledView,
@@ -2631,6 +2632,98 @@ test("console clears private content after session expiry, access revocation, an
   await expectNoText(page, /Revoked agent/, () => waitForIdleFetches(page));
 
   await page.screenshot({ path: join(artifacts, "session-isolation.png"), fullPage: true });
+});
+
+test("compact navigation preserves the page position while its drawer can still scroll", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Drawer scrolling", { ready: true });
+  // Agent credentials make a long Secret library; debug image rows later make the drawer scroll.
+  for (let index = 1; index <= 6; index += 1) {
+    await fixture.createAgent(namespace.id, `Scroll Agent ${index}`);
+  }
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 480 } },
+  });
+  const secretsPath = `/console/secrets?namespace=${namespace.id}`;
+  await login(page, fixture, secretsPath);
+  await page.locator(settledView).waitFor();
+  assert.ok(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollHeight > globalThis.innerHeight,
+    ),
+    "exercise a page that can scroll behind the drawer",
+  );
+
+  const toggle = page.getByRole("button", { name: "Open navigation", exact: true });
+  await toggle.click();
+  await page.keyboard.press("PageDown");
+  await nextFrames(page);
+  assert.equal(await page.evaluate(() => globalThis.scrollY), 0, "Page Down stays in the drawer");
+  await page.mouse.move(380, 300);
+  await page.mouse.wheel(0, 350);
+  await nextFrames(page);
+  assert.equal(
+    await page.evaluate(() => globalThis.scrollY),
+    0,
+    "the scrim cannot scroll the page",
+  );
+
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await toggle.click();
+  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.locator(settledView).waitFor();
+  const returned = await page.evaluate(() => {
+    const heading = globalThis.document.querySelector("h1");
+    const search = globalThis.document.querySelector("#secret-search");
+    return {
+      scrollY: globalThis.scrollY,
+      headingTop: heading.getBoundingClientRect().top,
+      searchTop: search.getBoundingClientRect().top,
+      focused: globalThis.document.activeElement === heading,
+    };
+  });
+  assert.equal(
+    returned.scrollY,
+    0,
+    "returning retains the position from before opening the drawer",
+  );
+  assert.ok(
+    returned.focused && returned.headingTop >= 0 && returned.searchTop >= 0,
+    JSON.stringify(returned),
+  );
+
+  await page.goto(`${fixture.origin}${secretsPath}&debug=true`);
+  await page.locator(settledView).waitFor();
+  await toggle.click();
+  const diagnostics = page.getByRole("region", { name: "Build and runtime images" });
+  await diagnostics.locator("summary").first().waitFor({ state: "attached" });
+  assert.ok(await diagnostics.evaluate((node) => node.scrollHeight > node.clientHeight));
+  const bounds = await diagnostics.boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.wheel(0, 350);
+  await page.waitForFunction(
+    () => globalThis.document.querySelector(".runtime-debug").scrollTop > 0,
+  );
+  assert.equal(
+    await page.evaluate(() => globalThis.scrollY),
+    0,
+    "the drawer scrolls independently",
+  );
+
+  // Closing the drawer restores document input, not just a different computed overflow value.
+  await page.keyboard.press("Escape");
+  await page.mouse.move(380, 300);
+  await page.mouse.wheel(0, 350);
+  await page.waitForFunction(() => globalThis.scrollY > 0);
+  await page.evaluate(() => globalThis.scrollTo(0, 0));
+  await toggle.click();
+  await page.setViewportSize({ width: 1440, height: 480 });
+  await page.waitForFunction(() => !globalThis.document.querySelector("main").inert);
+  await page.mouse.move(1000, 300);
+  await page.mouse.wheel(0, 350);
+  await page.waitForFunction(() => globalThis.scrollY > 0);
 });
 
 test("widening an open mobile drawer restores usable desktop content", async (t) => {

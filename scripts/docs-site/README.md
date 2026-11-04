@@ -94,7 +94,9 @@ refresh client.
 
 `site.mjs` owns mobile navigation, per-tab sidebar scroll restoration, local
 Pagefind search, theme switching, code copying, heading links, Mermaid rendering,
-and Driver matrix filtering. Sidebar scroll uses session storage and leaves the
+and Driver matrix filtering. Heading links navigate to the generated heading ID
+with native browser history and also copy the URL when clipboard access is available.
+Sidebar scroll uses session storage and leaves the
 navigation at the default position when storage is unavailable. Driver matrix
 pages use custom replacement blocks around generated GitHub fallback tables:
 

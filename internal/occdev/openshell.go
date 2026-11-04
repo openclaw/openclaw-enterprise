@@ -303,18 +303,9 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
 	}
-	// Docker's containerd image store cannot save a manifest-list reference
-	// as one complete image (see resolveDevelopmentImageSource), so point the
-	// staging tag at the platform child the list names for this host when there
-	// is one.
-	resolved, err := r.resolveDevelopmentImageSource(ctx, source, platform)
+	childStaged, err := r.stageDevelopmentPlatformChild(ctx, source, platform, stagingTag)
 	if err != nil {
 		return "", err
-	}
-	if resolved != source {
-		if err := r.run(ctx, r.engine, "tag", resolved, stagingTag); err != nil {
-			return "", err
-		}
 	}
 	archive := filepath.Join(root, component+"-image.tar")
 	defer func() {
@@ -327,7 +318,7 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	// child, keep the platform filter: it still works where the engine can
 	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" && resolved == source {
+	if r.engine == "docker" && !childStaged {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, recorded)

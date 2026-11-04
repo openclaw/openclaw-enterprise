@@ -667,7 +667,9 @@ export function createOpenShellOnlineGitAuthority(
         if (options.authorizeOnlineRequest) {
           const result = await options.authorizeOnlineRequest(q, installed, signal);
           if (result.kind === "denied") {
-            allowed = result.reason !== "unavailable" && result.reason;
+            const { reason } = result;
+            allowed =
+              reason === "draft_already_opened" || reason === "access_withdrawn" ? reason : false;
           } else if (
             result.kind === "allow" &&
             !signal.aborted &&

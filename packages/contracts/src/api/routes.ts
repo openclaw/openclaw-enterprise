@@ -1545,7 +1545,7 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "agent",
     summary:
-      "Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants",
+      "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,

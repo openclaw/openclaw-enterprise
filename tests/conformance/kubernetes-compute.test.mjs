@@ -72,10 +72,9 @@ import {
   withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
-import {
-  managedGoogleInstall,
-  managedSlackInstall,
-} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
+import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -1727,14 +1726,64 @@ test("standalone Codex search requires an explicit model endpoint and a boolean 
   }
 });
 
-test("dedicated OpenClaw delivers the selected managed release digest without a Sandbox provider file", async () => {
-  await verifyManagedRelease("GOOGLE", managedGoogleInstall);
-  await verifyManagedRelease("SLACK", managedSlackInstall);
+test("dedicated OpenClaw delivers managed releases and selected MCP tools without a Sandbox provider file", async () => {
+  await verifyManagedRelease(managedGoogleInstall);
+  for (const install of managedMcpInstalls) {
+    await verifyManagedRelease({
+      ...install,
+      toolNames: ["slack_search_public", "slack_send_message"],
+    });
+  }
 });
 
-async function verifyManagedRelease(prefix, { id, releaseSha256 }) {
-  for (const enabled of [true, false]) {
-    const selections = { [id]: { enabled } };
+test("the dedicated Gateway exposes reviewed MCP tools subject to its admitted allowlist", () => {
+  const tool = "oce_mcp_docs_ListItems";
+  const standard = { tools: { alsoAllow: ["diffs"] } };
+  const { tools } = managedGatewayConfiguration(standard, standard, false, undefined, [tool]);
+  assert.deepEqual(tools.alsoAllow, ["diffs", "oce_mcp_docs_listitems"]);
+  assert.ok(tools.gatewayPolicy.allow.includes("oce_mcp_docs_listitems"));
+
+  const explicit = { tools: { allow: ["exec"], deny: ["oce_mcp_docs_listitems"] } };
+  const configured = managedGatewayConfiguration(explicit, explicit, false, undefined, [tool]);
+  assert.deepEqual(configured.tools.allow, ["exec", "oce_mcp_docs_listitems"]);
+  assert.equal(configured.tools.alsoAllow, undefined);
+  assert.deepEqual(configured.tools.deny, explicit.tools.deny);
+
+  const restricted = { tools: { gatewayPolicy: { allow: ["exec"] } } };
+  const denied = managedGatewayConfiguration(restricted, restricted, false, undefined, [tool]);
+  assert.deepEqual(denied.tools.gatewayPolicy.allow, ["exec"]);
+  assert.equal(denied.tools.alsoAllow, undefined);
+  assert.throws(
+    () => managedGatewayConfiguration(standard, standard, false, undefined, ["gateway_exec"]),
+    /must not grant Gateway administrative tools/,
+  );
+});
+
+async function verifyManagedRelease({
+  id,
+  kind,
+  packageName,
+  releaseSha256,
+  credentials,
+  toolNames,
+}) {
+  const slotId = Object.keys(credentials)[0];
+  const selectionCases = [{ enabled: true }, { enabled: false }];
+  if (toolNames !== undefined) {
+    for (const selectedNames of [toolNames, [], undefined]) {
+      selectionCases.push({
+        enabled: true,
+        driverPolicy: {
+          releaseSha256,
+          credentials: { [slotId]: "cs_test_account" },
+          ...(selectedNames === undefined ? {} : { toolNames: selectedNames }),
+        },
+      });
+    }
+  }
+  for (const selection of selectionCases) {
+    const { enabled, driverPolicy } = selection;
+    const selections = { [id]: selection };
     let worker;
     const sandboxDriver = {
       id: "native-sandbox",
@@ -1757,6 +1806,11 @@ async function verifyManagedRelease(prefix, { id, releaseSha256 }) {
     };
     const fixture = dedicatedFirstDeployFixture({
       sandboxDriver,
+      credentialGatewayDriver: {
+        id: "openshell-credentials",
+        implementation: "openshell",
+        capability: "credential_gateway",
+      },
       revision: {
         harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
         sandboxDriverId: sandboxDriver.id,
@@ -1772,24 +1826,28 @@ async function verifyManagedRelease(prefix, { id, releaseSha256 }) {
     await fixture.prepare();
     assert.deepEqual(worker.files, []);
     const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
-    for (const environment of [worker.environment, gateway.containers[0].env]) {
-      const digest = environment.find(
-        ({ name }) => name === `OPENCLAW_MANAGED_${prefix}_RELEASE_SHA256`,
+    const gatewayEnv = gateway.containers[0].env;
+    const variable = (environment, name) => environment.find((item) => item.name === name)?.value;
+    const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_PLUGIN_JSON");
+    const gatewaySettings = variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON");
+    const expected = {
+      kind,
+      packageName,
+      slotId,
+      ...(enabled && { releaseSha256 }),
+      ...(driverPolicy?.toolNames?.length && { toolNames: driverPolicy.toolNames }),
+    };
+    assert.deepEqual(workerSettings && JSON.parse(workerSettings), enabled ? expected : undefined);
+    assert.deepEqual(JSON.parse(gatewaySettings), { ...expected, id });
+    // An Agent editor cannot replace deployment inputs with Secret bindings.
+    for (const { name } of gatewayEnv.filter(({ name }) => name.startsWith("OPENCLAW_MANAGED_"))) {
+      assert.throws(
+        () =>
+          normalizeSecretBindings({
+            [name]: { source: { kind: "secret", namespaceId: "ns", id: "secret" } },
+          }),
+        { destinationRule: "reserved_prefix" },
       );
-      assert.equal(digest?.value, enabled ? releaseSha256 : undefined);
-    }
-    if (enabled) {
-      // An Agent editor must not be able to substitute either control with a Secret binding.
-      for (const value of [id, releaseSha256]) {
-        const { name } = gateway.containers[0].env.find((variable) => variable.value === value);
-        assert.throws(
-          () =>
-            normalizeSecretBindings({
-              [name]: { source: { kind: "secret", namespaceId: "ns", id: "secret" } },
-            }),
-          { destinationRule: "reserved_prefix" },
-        );
-      }
     }
     const volume = gateway.volumes.find(({ name }) => name === "openclaw-plugin-runtime");
     const manifest = fixture.read("ConfigMap", volume.configMap.name).data["runtime.json"];

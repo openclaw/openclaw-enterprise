@@ -540,13 +540,28 @@ export const DiscoverSavedAgentPluginsBody = Type.Object(
   { additionalProperties: false },
 );
 
-export const DiscoverSavedAgentPluginDetailsBody = Type.Object(
-  {
-    pluginId: Type.String({ minLength: 1, maxLength: 256 }),
-    credentialSource: Type.Optional(CredentialSourceReference),
-  },
-  { additionalProperties: false },
-);
+export const DiscoverSavedAgentPluginDetailsBody = Type.Union([
+  Type.Object(
+    {
+      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+      credentialSource: Type.Optional(CredentialSourceReference),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+      managedConnection: Type.Object(
+        {
+          slot: Type.String({ minLength: 1, maxLength: 64 }),
+          sourceId: CredentialSourceId,
+        },
+        { additionalProperties: false },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 export const PermissionActionSchema = Type.Union([
   Type.Literal("create"),
@@ -1143,6 +1158,9 @@ export type IAMAccessBindingId = Type.Static<typeof IAMAccessBindingId>;
 export type IAMServicePrincipalId = Type.Static<typeof IAMServicePrincipalId>;
 export type ConfigurationGeneration = Type.Static<typeof ConfigurationGeneration>;
 export type AgentId = Type.Static<typeof AgentId>;
+export type DiscoverSavedAgentPluginDetailsBody = Type.Static<
+  typeof DiscoverSavedAgentPluginDetailsBody
+>;
 export type RevisionId = Type.Static<typeof RevisionId>;
 export type AuditId = Type.Static<typeof AuditId>;
 export type RequestId = Type.Static<typeof RequestId>;
