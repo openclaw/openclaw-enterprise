@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-04
-last_updated_session: authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95
+last_updated_session: authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b
 ---
 
 # Protected credential request flow
@@ -249,7 +249,8 @@ and held responses despite later progress.
 Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
 For Responses, `openai-responses.ts:isResponsesEvent` admits null local-tool metadata
-only in responses. Protection checks SDK snapshots, joined assistant text and
+only in responses and validates the optional effective image policy as a closed object.
+Unknown members or invalid policy values withhold the whole response. Protection checks SDK snapshots, joined assistant text and
 completed/streamed Codex Plans; ambiguous order or indexes refuse. It parses
 function arguments once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
@@ -339,6 +340,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
 
 - 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
 

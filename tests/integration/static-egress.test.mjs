@@ -1472,6 +1472,29 @@ test("live-shaped Responses envelopes pass while undeclared or credential-bearin
     { ...completed, sequence_number: base.length + 1 },
   ];
   await check.events(live, false, "documented envelope fields on every envelope event");
+  // The provider reports its effective image policy even when the request omits it.
+  // Check each envelope event and preserve its original bytes through signed egress.
+  const withImage = (image) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, image } } : event,
+    );
+  for (const context_compression of ["enabled", "disabled"]) {
+    await check.events(
+      withImage({ context_compression }),
+      false,
+      `documented image context compression: ${context_compression}`,
+    );
+  }
+  for (const [label, image] of [
+    ["null image policy", null],
+    ["missing image context compression", {}],
+    ["request-only automatic image policy", { context_compression: "auto" }],
+    ["wrong image context compression type", { context_compression: true }],
+    ["unknown image policy member", { context_compression: "enabled", extra: false }],
+    ["image policy reflects selected material", { context_compression: selectedMaterial }],
+  ]) {
+    await check.events(withImage(image), true, label);
+  }
   // The admitted local declarations omit optional fields. Responses may echo their
   // documented null defaults; they must not turn an otherwise valid turn into a 502.
   const functionTool = {
