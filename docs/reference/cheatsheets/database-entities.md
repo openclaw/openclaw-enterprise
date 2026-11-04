@@ -361,6 +361,13 @@ Defines native IAM roles as sets of actions and resource kinds.
 - `name`
 - `permissions`
 
+### `namespace_agent_operator_profiles`
+
+Records the [Agent Operator team assignment](../../guides/topics/iam.md#stage-an-agent-operator-team) for a Namespace. A staged assignment grants no access.
+
+- `namespace_id`, `generation`, `status`
+- `provider_id`, `organization_id`, `team_id`
+
 ### `iam_access_bindings`
 
 Grants a native IAM role to an identity or group, optionally for a specific resource.
