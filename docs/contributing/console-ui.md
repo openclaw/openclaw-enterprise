@@ -62,7 +62,7 @@ Keep a one-page layout with that page. When another page needs the same
 pattern, move the shared rule next to the component it extends and use it in
 both places. Register new assets in the
 [controller's allowlist](../../apps/controller/src/console-assets.ts).
-[Storybook](../../scripts/console-storybook/prepare-assets.mjs) prepares its preview
+[Storybook](../../scripts/console-storybook/prepare-assets.ts) prepares its preview
 with the same list and asset reader, then simulates API responses for each story.
 
 ## Review the result

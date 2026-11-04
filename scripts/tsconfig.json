@@ -20,7 +20,8 @@
     "ci/**/*.ts",
     "lib/**/*.ts",
     "docs-site/compute-matrix.ts",
-    "module-boundaries/*.ts"
+    "module-boundaries/*.ts",
+    "console-storybook/prepare-assets.ts"
   ],
   "references": [
     {

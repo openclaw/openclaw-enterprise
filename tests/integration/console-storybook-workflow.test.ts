@@ -32,10 +32,15 @@ function selects(file: string, patterns: string[]): boolean {
 
 const evidence = "scripts/console-storybook/evidence/console-navigation";
 const scenarios = [
-  // prepare-assets.mjs renders the preview frame from the example theme.
+  // The preview asset builder renders the preview frame from the example theme.
   { name: "theme only", changed: ["deploy/examples/console-theme/theme.json"], builds: true },
-  // prepare-assets.mjs bundles the shipped Presets into the preview.
+  // The preview asset builder bundles the shipped Presets into the preview.
   { name: "consumed Preset only", changed: ["deploy/presets/swe-preset.json"], builds: true },
+  {
+    name: "typed asset preparer only",
+    changed: ["scripts/console-storybook/prepare-assets.ts"],
+    builds: true,
+  },
   // Recordings are outside the published Storybook assets, so they need no build.
   {
     name: "recorded media only",
