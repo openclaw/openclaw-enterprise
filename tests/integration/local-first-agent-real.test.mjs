@@ -1636,10 +1636,7 @@ test(
         expiresAtMs: initialSetup.expiresAtMs,
         deviceId: initialSetup.deviceId,
       });
-      assert.deepEqual(
-        await readCompletion(replacementProvider, initialSetup.setupId),
-        completion,
-      );
+      assert.deepEqual(await readCompletion(replacementProvider, initialSetup.setupId), completion);
       assert.notEqual(replacementProvider.pod.metadata.uid, initialProvider.pod.metadata.uid);
       assert.notEqual(
         replacementProvider.sandbox.metadata.uid,
