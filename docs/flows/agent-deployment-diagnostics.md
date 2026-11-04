@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-30
-last_updated_session: authoring-run/62495070-6f26-49ba-b4b9-e00ac1a9bccd
+updated: 2026-11-04
+last_updated_session: authoring-run/06bc63c9-f110-4607-a058-a816a61dd579
 ---
 
 # Agent deployment diagnostics flow
@@ -13,10 +13,6 @@ bodyless API call. OpenClaw Control Plane (OCC) authorizes the exact target,
 asks the selected Compute Driver for runtime checks with time and size limits, and returns that
 observation. The call ends at the API response; it does not change deployment
 work or select a live version.
-
-Guarded first deployment has a separate admission and receipt-recovery path below.
-It ends when OCC commits the immutable revision and reconcile work; the worker owns
-subsequent deployment. The diagnostics flow observes runtime state after admission.
 
 ## Entry Points
 
@@ -123,62 +119,10 @@ and Agent state stay unchanged.
 
 ## Guarded first admission
 
-`apps/controller/src/http/agents.ts` handles `deployAgentFirst` and
-`recoverAgentFirstDeployment`. The POST accepts an intent; the GET carries the same
-key, reviewed Configuration ID, and generation in path parameters. Both use the
-stock authenticated actor. The [Agent revisions guide](../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
-owns the request contract and operator commands.
-
-Both controller methods capture the Namespace, Agent, key, Configuration ID, and
-generation on entry. They use those values for the digest and each permission check.
-The first admission read checks exact receipt authority through
-`authorizeFirstDeploymentReceipt`, then reads
-the receipt, matching draft metadata, and history in one snapshot. PostgreSQL uses
-REPEATABLE READ. A changed Agent binding refuses fresh admission without reading or
-authorizing a different Configuration. A stale tuple, existing history, or read error
-ends the request from that snapshot. Only preparation after a valid fresh tuple can
-fall back to locked recovery.
-
-`prepareDeploymentChannels` shares ordinary deployment's Configuration and Channel
-validation outside the transaction. `validateChannelCredentials` enforces exact
-Secret scope and `operate`, checks again before `withValue`, and reauthorizes before
-the provider callback. Registered Drivers are trusted application code. No separate
-composition allowlist or refusing Secret reader applies to first deployment.
-Concurrent fresh submissions can repeat preparation.
-
-The private `admitAgentDeployment` reuses ordinary admission's Namespace and Agent
-locks. Under the Agent lock it rechecks current exact receipt permissions and performs
-one receipt lookup, before fresh-only dependencies or a saved preparation error can
-refuse the request. A match returns the minimal receipt without decoding the revision
-or calling Secrets, providers, models, or work. A contender may already have performed
-preparation before this lookup; observing a match adds no fresh work. A different actor
-cannot match.
-
-On a locked miss, admission checks stopped desired state, empty history, binding,
-generation, and equality with the validated Configuration. It rechecks Secret and
-other ordinary admission permissions. `assertPreparedDeploymentDrivers` checks the
-actual selected Configuration and Channel instances after locking and immediately
-before revision insertion: database locks do not freeze process-local selections.
-Any drift refuses admission and queues no work.
-
-The revision repository stores a SHA-256 digest of the versioned operation,
-Installation, actor, Namespace, Agent, key, and expected Configuration tuple in
-`agent_revisions.first_deployment_digest`. The digest commits with revision 1 and
-its reconcile work. It is separate from the admitted snapshot and is never projected
-to workers or normal revision responses. The GET reads the original minimal receipt
-without consulting the Agent's current Configuration binding or admitting work.
-Absence is an observation, not a cancellation or proof of failure.
-
-The in-process HTTP control in `tests/integration/occ-api.test.mjs` listens on loopback
-and uses the real Slack validator with a synthetic sender. Enabled Slack admits one
-revision, work item, and audit event; GET and matching POST recover the same minimal
-receipt without extra calls. Ordinary and disabled-Slack controls remain. Additional
-cases cover exact Secret checks, draft/Driver drift, late dependency failure,
-revocation, and the canonical generation boundary.
-
-The separate `tests/integration/postgres-platform-state.test.mjs` control checks
-persisted recovery through a reopened adapter, reconcile counts, and one distinct
-successful deploy audit row. Its sender is synthetic. The HTTP fixture does not test PostgreSQL persistence.
+The [Configuration persistence flow](configuration-driver/persistence-and-revisions.md#guarded-first-admission)
+traces first-deployment admission and receipt recovery. That path ends when OCC
+commits an Agent revision and queues reconciliation. Diagnostics observes runtime
+state after admission.
 
 ## Debugging and Verification
 
@@ -204,6 +148,14 @@ successful deploy audit row. Its sender is synthetic. The HTTP fixture does not 
   stop cleanly, and the restarted container cannot verify that the lock holder
   stopped. The log line quotes OpenClaw's holder description. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+- A `gateway` `gateway-config` check with code `UNAVAILABLE` is a Kubernetes
+  Gateway that exited before it served, and `openclaw config validate` reports
+  its configuration invalid. A plugin entry whose `config` fails the plugin's
+  schema causes this even when the plugin is disabled or denied. The log line
+  names up to five setting paths, with the schema message where OpenClaw gives
+  one, and never a value. Fix or remove those settings, then deploy again.
+  A dedicated Gateway's tool policy step holds the same check before OpenClaw
+  starts when no invalid setting belongs to the tool policy.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout, a
   transient failure or a network or 5xx exit, and the second attempt failed that
@@ -245,6 +197,12 @@ successful deploy audit row. Its sender is synthetic. The HTTP fixture does not 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 07:41: Move the first-admission trace to the Configuration persistence owner and retain its diagnostics link. (authoring-run/06bc63c9-f110-4607-a058-a816a61dd579 - 6371064e)
+
+- 2026-10-31 15:00: Hold a dedicated Gateway's invalid settings outside its tool policy as check `gateway-config` instead of `gateway-tool-policy`. (fix-3045, finding 3045)
+
+- 2026-10-31 13:00: Hold a Kubernetes Gateway whose configuration OpenClaw refuses at startup as check `gateway-config`. (fix-3043b, finding 3043)
 
 - 2026-10-30 16:53: Document guarded first admission, receipt recovery, and how both controller calls bind authorization to the request captured on entry. (authoring-run/62495070-6f26-49ba-b4b9-e00ac1a9bccd - 460529c7)
 

@@ -2050,27 +2050,29 @@ test(
         const decoded = JSON.parse(structured.stdout);
         const records = Array.isArray(decoded) ? decoded : [decoded];
         if (command[1] === "revisions") {
-          // Revision summaries carry no saved settings, so no read error either.
+          // Revision summaries carry no saved settings, so no read error either. The CLI
+          // keeps each deployment status OCC listed, though the Agent's settings are unreadable.
           assert.ok(table.stdout.includes(malformedRevisionId));
-          assert.match(structured.stderr, /Agent saved configuration is unreadable/u);
-          assert.ok(records.every((record) => record.deploymentStatus === null));
+          assert.match(table.stdout, /queued/u);
+          assert.equal(structured.stderr, "");
+          assert.deepEqual(
+            records.map(({ id, deploymentStatus }) => ({ id, deploymentStatus })),
+            revisions.data.map(({ id, deploymentStatus }) => ({ id, deploymentStatus })),
+          );
           continue;
         }
         assert.match(table.stdout, /CONFIGURATION ERROR/u);
         assert.match(table.stdout, /SAVED_CONFIGURATION_UNREADABLE \(plugins\)/u);
         assert.ok(records.some((record) => record.configurationReadError?.code === readError.code));
       }
-      // A readable Agent can still have an unreadable historical snapshot. Keep
-      // its healthy sibling and do not enrich the error variant through strict reads.
+      // A readable Agent can still have an unreadable historical snapshot. The list never
+      // decodes it, so the CLI lists it beside its healthy sibling without a strict read.
       await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
         agent.id,
         JSON.stringify(agent.plugins ?? {}),
       ]);
       const history = await execute(cli, [...cliArguments, "agent", "revisions", agent.id]);
-      assert.match(
-        history.stderr,
-        new RegExp(`deployment status of revision ${malformedRevisionId} is unavailable`, "u"),
-      );
+      assert.equal(history.stderr, "");
       assert.ok(history.stdout.includes(revision.id));
       assert.match(history.stdout, /queued/u);
       assert.ok(history.stdout.includes(malformedRevisionId));
@@ -2831,8 +2833,49 @@ test(
     assert.match(stored.rows[0].first_deployment_digest, /^[a-f0-9]{64}$/);
     assert.equal(JSON.stringify(stored.rows[0].admitted_spec).includes(winnerIntent.key), false);
     assert.equal(JSON.stringify(stored.rows[0].admitted_spec).includes(principalId), false);
+    const sibling = await reopened.createAgent(principalId, {
+      namespaceId: namespace.id,
+      name: "guarded-digest-constraint",
+      configurationId: configuration.id,
+      harnessAuth: agent.harnessAuth,
+    });
+    await grantAgentSecretOperate(pool, sibling, secret.id);
+    await grantAgentSecretOperate(pool, sibling, bot.id);
+    // Revision updates are already forbidden by the immutable-row trigger. These new
+    // rows keep the admitted snapshot and Namespace intact, and isolate each CHECK rule:
+    // a malformed digest on revision one, then a well-formed digest on revision two.
+    for (const [agentId, revisionNumber, digest] of [
+      [sibling.id, 1, "invalid-digest"],
+      [agent.id, 2, "a".repeat(64)],
+    ]) {
+      await assert.rejects(
+        pool.query(
+          `INSERT INTO occ.agent_revisions
+           (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec,
+            gateway_managed_mode, admitted_at, first_deployment_digest)
+           SELECT $1, namespace_id, $2, $3, backend_id, admitted_spec,
+                  gateway_managed_mode, admitted_at, $4
+           FROM occ.agent_revisions WHERE id = $5`,
+          [`rev_${randomUUID()}`, agentId, revisionNumber, digest, receipt.revisionId],
+        ),
+        { code: "23514", constraint: "agent_revisions_first_deployment_digest" },
+      );
+    }
+    assert.deepEqual(await count(), { revisions: 1, work: 1, audit: 1 });
+    assert.deepEqual(
+      await state.read((unit) => unit.revisions.listRevisionMetadata(namespace.id, sibling.id)),
+      [],
+    );
     const next = await reopened.deployAgent(principalId, input, resolveApprovedHarness);
     assert.equal(next.revision, 2);
+    const unchanged = await pool.query(
+      "SELECT id, first_deployment_digest FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2 ORDER BY revision_number",
+      [namespace.id, agent.id],
+    );
+    assert.deepEqual(unchanged.rows, [
+      { id: receipt.revisionId, first_deployment_digest: stored.rows[0].first_deployment_digest },
+      { id: next.id, first_deployment_digest: null },
+    ]);
     await reopened.updateConfiguration(principalId, {
       namespaceId: namespace.id,
       configurationId: configuration.id,

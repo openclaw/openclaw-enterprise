@@ -101,11 +101,11 @@ runs:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -118,6 +118,11 @@ runs:
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
       run: pnpm lint
+    - name: Set up formatter
+      if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+      with:
+        bun-version-file: .bun-version
     - name: Run format check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
@@ -189,7 +194,7 @@ runs:
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
     - name: Install trusted browser certificate tooling
-      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d'
+      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell'
       shell: bash
       run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libnss3-tools
     - name: Run lane

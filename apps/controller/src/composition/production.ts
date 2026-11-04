@@ -295,17 +295,21 @@ export async function composeProduction(
         expectProxy: config.apiHttpsEgressOpen !== true,
       },
     );
-    const controller = new OpenClawController(persistedInstallation, {
-      ...installationControllerOptions(config.drivers.installation),
-      state,
-      ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
-      recordOperations: true,
-      backends: installation.backend,
-      defaultPresets: config.drivers.defaultPresets ?? [],
-      bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
-      refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
-      loggingLevel: config.drivers.installation.logging.level,
-    });
+    const controller = OpenClawController.forInstallation(
+      persistedInstallation,
+      {
+        ...installationControllerOptions(config.drivers.installation),
+        state,
+        ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
+        recordOperations: true,
+        backends: installation.backend,
+        defaultPresets: config.drivers.defaultPresets ?? [],
+        bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
+        refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
+        loggingLevel: config.drivers.installation.logging.level,
+      },
+      config.drivers.repositoryAdmission,
+    );
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);

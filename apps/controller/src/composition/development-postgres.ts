@@ -249,17 +249,21 @@ export async function composePostgresDevelopment(
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
     const channelDriver = new SlackChannelDriver();
-    const controller = new OpenClawController(persistedInstallation, {
-      ...installationControllerOptions(drivers?.installation),
-      state,
-      ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
-      recordOperations: true,
-      defaultPresets: drivers?.defaultPresets ?? [],
-      bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
-      refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
-      ...(loggingLevel === undefined ? {} : { loggingLevel }),
-      ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
-    });
+    const controller = OpenClawController.forInstallation(
+      persistedInstallation,
+      {
+        ...installationControllerOptions(drivers?.installation),
+        state,
+        ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
+        recordOperations: true,
+        defaultPresets: drivers?.defaultPresets ?? [],
+        bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
+        refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
+        ...(loggingLevel === undefined ? {} : { loggingLevel }),
+        ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
+      },
+      drivers?.repositoryAdmission,
+    );
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);

@@ -14,11 +14,11 @@ import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
-import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
+import { nodeTestSummary } from "../helpers/node-test-summary.ts";
 import {
   assertStderrMatch,
   fixture,
@@ -1062,6 +1062,7 @@ describe("CI preparation", { concurrency }, () => {
     for (const input of [
       ".dockerignore",
       "scripts/ci/prepare.mjs",
+      "scripts/ci/resource-names.ts",
       "scripts/ci/test-suites/images-packaging.json",
       ".github/workflows/ci-image-cache.yml",
     ]) {
@@ -1421,7 +1422,7 @@ await template.cleanup();
     const root = await fixture(t);
     const statePath = join(root, "state.json");
     const orderPath = join(root, "order");
-    const lock = new URL("../../scripts/ci/state-lock.mjs", import.meta.url).href;
+    const lock = new URL("../../scripts/ci/state-lock.ts", import.meta.url).href;
     // Each contender takes the lock `times` times in a row and records its name while
     // holding it for 50 ms.
     const contender = (name, times) =>
@@ -1873,7 +1874,7 @@ for (let index = 0; index < Number(times); index += 1) {
           cluster,
           image: immutableImage,
           // The current runtime must still reject unrelated setup failures before node writes.
-          codexVersion: "0.163.0-alpha.2",
+          codexVersion: "0.164.0",
           execFile: execFileForRuntimeDefaultFailure((command, args) => {
             const commandText = `${command} ${args.join(" ")}`;
             assert.match(commandText, /--namespace/);
@@ -2065,11 +2066,7 @@ for (let index = 0; index < Number(times); index += 1) {
     assert.match(seccomp.profileSha256, /^[a-f0-9]{64}$/);
     assert.equal(
       seccomp.dockerProfilePath,
-      join(
-        clusterDirectory,
-        "docker-seccomp",
-        `codex-0.163.0-alpha.2-${seccomp.profileSha256}.json`,
-      ),
+      join(clusterDirectory, "docker-seccomp", `codex-0.164.0-${seccomp.profileSha256}.json`),
     );
     const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
     assert.deepEqual(JSON.parse(profileData), installedProfile);

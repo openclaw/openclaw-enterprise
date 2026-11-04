@@ -32,7 +32,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
 import { spawnSync } from "node:child_process";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservedPortArgs, reservePort } from "../helpers/available-port.mjs";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -77,9 +77,9 @@ const productionServer = {
 // process that never exits: every boot here ends in a startup refusal within a second or two
 // on an idle machine, and on a loaded runner the same boot took more than 10 s.
 const limit = concurrencyLimit();
-async function boot(script, env, timeout = 30_000) {
+async function boot(script, env, timeout = 30_000, nodeArguments = []) {
   const { signal, ...result } = await limit(() =>
-    captureChild(process.execPath, [script], {
+    captureChild(process.execPath, [...nodeArguments, script], {
       cwd: process.cwd(),
       env: { ...env, NODE_COMPILE_CACHE: compileCache },
       timeout,
@@ -811,6 +811,29 @@ async function repositoryInstallation(t) {
   return { configuration, registry, registrySource, tls, writableCaPath };
 }
 
+for (const mode of ["native", "selected-blocked", "selected"]) {
+  test(`Installation loads prepared GitHub lifecycle only for selected metadata: ${mode}`, async (t) => {
+    const configuration =
+      mode === "native"
+        ? (await repositoryInstallation(t)).configuration
+        : credentialProxyInstallation();
+    if (mode !== "native") {
+      configuration.drivers.credential_proxy.configuration.preparedGitHub = {
+        custodyKeyPath: "/nonexistent/fixture-custody.key",
+      };
+    }
+    const path = await fixture(t, configuration);
+    const result = spawnSync(
+      process.execPath,
+      ["tests/fixtures/repository-credentials/installation-module-guard.ts", path, mode],
+      { encoding: "utf8", timeout: 30_000, env: { PATH: process.env.PATH } },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr);
+  });
+}
+
 test("repository startup constructs the same local resolver without a private socket or App key", async (t) => {
   const { configuration, registry, registrySource } = await repositoryInstallation(t);
   const path = await fixture(t, configuration);
@@ -992,13 +1015,18 @@ test("the worker binds bundled OpenShell Git with the prepared owner's protected
   const { nativeSender: _native, ...protectedRepository } = repository.repository;
   const directory = dirname(protectedRepository.preparedGitHub.custodyKeyPath);
   const issuerPublicKeyPath = join(directory, "gateway-public.pem");
+  // The worker binds the Git authority on this port seconds after its configuration names it,
+  // once its boot gets a slot. Hold the port until the worker exits, so a test file running in
+  // parallel cannot take it (finding 3024's race).
+  const authority = await reservePort();
+  t.after(() => authority.release());
   configuration.repository = {
     ...protectedRepository,
     openShell: {
       registrationName: "oce-prepared-git",
       authority: {
         host: "127.0.0.1",
-        port: await availablePort(),
+        port: authority.port,
         certificatePath: tls.certFile,
         privateKeyPath: tls.keyFile,
         issuerPublicKeyPath,
@@ -1021,12 +1049,17 @@ test("the worker binds bundled OpenShell Git with the prepared owner's protected
       generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }),
     ),
   ]);
-  const worker = await boot("apps/controller/src/worker.mjs", {
-    PATH: process.env.PATH,
-    NODE_ENV: "production",
-    OCC_CONFIG_PATH: await fixture(t, configuration),
-    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-  });
+  const worker = await boot(
+    "apps/controller/src/worker.mjs",
+    {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: await fixture(t, configuration),
+      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+    },
+    undefined,
+    reservedPortArgs(authority),
+  );
   assert.equal(worker.status, 1, worker.stderr);
   // The bundled sender reads the authority's online port, which the owner does not have: handing
   // over the owner fails the bind (WORKER_STARTUP_FAILED) before the database is reached.

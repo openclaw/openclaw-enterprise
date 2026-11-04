@@ -465,7 +465,14 @@ test(
           assert.equal(selection.material_version, old.materialVersion);
           await due(); // Only advance the periodic scan, not eligibility, owner or any token bytes.
           const reports = [];
-          fresh.startWorker((code) => reports.push(code));
+          const diagnostics = [];
+          fresh.startWorker((code, context, severity = "error") => {
+            if (severity === "error") {
+              reports.push(code);
+            } else {
+              diagnostics.push({ code, context });
+            }
+          });
           // Observe only the ledger. No request or readiness call drives this proactive renewal.
           await waitUntil(
             "the background loop to proactively renew",
@@ -485,6 +492,28 @@ test(
           await fresh.connect(f.pool);
           assert.deepEqual(reports, []);
           renewed = await fresh.readWarm(source, readWindow());
+          // Correlate the background report with actual encrypted PostgreSQL publication.
+          assert.equal(diagnostics.length, 1);
+          assert.equal(diagnostics[0].code, "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC");
+          const diagnostic = diagnostics[0].context;
+          const {
+            rows: [attempt],
+          } = await f.pool.query(
+            "SELECT id FROM occ.prepared_github_attempts WHERE source_id=$1 AND material_version=$2",
+            [source.key.source.id, renewed.materialVersion],
+          );
+          assert.equal(diagnostic.attemptId, attempt.id);
+          assert.equal(diagnostic.httpStatus, 201);
+          assert.equal(diagnostic.responseComplete, true);
+          assert.equal(diagnostic.requestEndCalled, true);
+          assert.equal(diagnostic.candidateIdentified, true);
+          assert.equal(diagnostic.validationKind, "validated");
+          assert.equal(diagnostic.publication, "committed");
+          assert.equal(diagnostic.clockTolerance, true);
+          assert.equal(diagnostic.firstFailureStage, undefined);
+          for (const secret of [old.value, renewed.value, String(secretValue), "PRIVATE KEY"]) {
+            assert.equal(JSON.stringify(diagnostics).includes(secret), false);
+          }
           assert.notEqual(renewed.materialVersion, old.materialVersion);
           const issues = gh.issuesOfTokens.length;
           const reads = f.secretReads;

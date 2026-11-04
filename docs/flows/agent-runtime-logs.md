@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-10-26
-last_updated_session: authoring-run/3954aa04-12f8-4a8e-bb62-a4d9a8603edd
+updated: "2026-10-30"
+last_updated_session: fix-3012
 ---
 
 # Agent runtime logs flow
@@ -196,10 +196,12 @@ take `-previous.log` from the request.
 
 `console/agents/logs.mts` clears output when status selects another source, Pod or instance.
 Only a readable replacement starts a fresh tail. Status denial preserves log access; cached `403` avoids repeat denials.
-A version the page could not read gets no status read.
+A version the page could not read, or a status denial (remembered or fresh), gets no further status read; its poll rereads only the Agent, as a refocus recheck does on every tab (3000, 3005, 3010).
 With no running Pod, each status poll rereads the Agent (`detail.mts:runningVersion`) and links to another running version's Logs.
 A running Agent with no selected version also rereads the version list, so a newer deployment's failure shows. With no Agent change it rereads at most once a minute; an unchanged list keeps the version chooser.
+A reread that a newer Agent state overtakes, such as this page's Stop, is dropped (2998).
 The view repeats the recovery card's failure line without its code (`deployment-recovery.mts:show`), in place, until a later deployment succeeds.
+For a version the reader cannot read, the view also says in place that a stop was requested or that the version is no longer selected for service (`detail.mts:servingChange`, 3012).
 Follow leaves loaded rows and unchanged statuses alone; its first line replaces an empty-tail status.
 Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
@@ -231,6 +233,14 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 ## Changelog
 
+- 2026-10-31 18:30: Mask values after literal escapes and percent-encoded separators. (3053, 3055)
+- 2026-10-31 17:30: Mask values after spacing controls and quoted keys. (3051, 3052)
+- 2026-10-31 16:00: Show a line break inside a message as one space, not joined words. (3048)
+- 2026-10-30 21:30: Say a stop in Logs of an unreadable version; keep the view in place. (3012)
+- 2026-10-30 20:30: Reread the Agent in Logs after a fresh status refusal. (3010)
+- 2026-10-30 20:00: Reread the Agent in Logs whose status denial is remembered. (3005)
+- 2026-10-30 18:15: Reread the Agent on refocus and in Logs of an unreadable version. (3000)
+- 2026-10-30 17:20: Drop a Logs serving reread that a newer Agent state overtook (2998). (bughunt-1030h - 93acaf8ac6)
 - 2026-10-30: Repeat a failed deployment's line in the Logs view. (2993)
 - 2026-10-30: Bound the version list reread; show a redeploy after a failed one. (2988)
 - 2026-10-30 16:00: Show a newer deployment's failure when the Agent runs with no selected version. (fix-dogfood-r60)

@@ -1,3 +1,7 @@
+---
+tags: [nolimit]
+---
+
 # Development OCC API reference
 
 <!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->
@@ -1767,6 +1771,7 @@ Get the singleton Installation
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
+| `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.openclaw` | `object` | No | — |
@@ -1886,6 +1891,7 @@ Example request
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
+| `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
 | `data.capabilities.openclaw` | `object` | No | — |
@@ -2558,7 +2564,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`](#get-namespacesnamespaceidagentsagentidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`](#get-namespacesnamespaceidagentsagentidpluginscapabilities) | Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes`](#get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes) | Review resolved repository scope before explicitly approving it |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approvals`](#get-namespacesnamespaceidagentsagentidrepositoryapprovals) | Read attributable repository approvals and removed generations for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove`](#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove) | Remove repository approval independently of configuration or runtime cleanup |
@@ -3386,6 +3392,7 @@ Create a new Agent and queue first-time provisioning
 | `initialWorkspaceFiles.SOUL.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.USER.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `nativeAdmin` | `boolean` | No | Opt in to native admin UI access on this Agent's exact OCE HTTPS origin before its first deployment. Requires native admin access enabled on the Installation. Defaults to false. |
 | `pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
@@ -5483,6 +5490,7 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.credentialSlots[].sources` | `array<object>` | Yes | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.discoveryCredential` | `"required" or "none"` | Yes | — |
 | `data.driver` | `PluginDriverIdentity` | Yes | — |
 | `data.driver.id` | `string` | Yes | min length: 1 |
@@ -5539,7 +5547,7 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsagentidpluginsdetails"></span>
 
-Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants
+Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential
 
 **Operation ID:** `discoverSavedAgentPluginDetails`
 
@@ -5564,13 +5572,7 @@ Read plugin details for an active Agent; caller needs Agent read/update. Curated
 
 **Content type:** `application/json`
 
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `credentialSource` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `credentialSource.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `credentialSource.kind` | `"credential_source"` | Yes | — |
-| `credentialSource.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `pluginId` | `string` | Yes | min length: 1; max length: 256 |
+Schema: `object or object`.
 
 Example request
 ```json

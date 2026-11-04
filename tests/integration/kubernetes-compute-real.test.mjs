@@ -469,7 +469,8 @@ test(
       };
       const missingChannelBindingValues = {
         ...baseValues,
-        plugins: { allow: ["slack"], entries: { slack: { enabled: true } } },
+        // A Dedicated Codex Gateway runs the codex plugin, so an allowlist must name it too.
+        plugins: { allow: ["codex", "slack"], entries: { slack: { enabled: true } } },
         channels: {
           slack: {
             enabled: true,

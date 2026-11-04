@@ -1,34 +1,53 @@
 # Recover a partial production upgrade
 
-Preserve original [upgrade](production-upgrade.md) evidence privately, including Secrets.
+Resume from the original checkout and private
+[upgrade evidence directory](production-upgrade.md). Directory aliases share its
+lock; a different directory identity stops resume before live access.
 
-A pre-window `--preflight-only` rehearsal leaves writers serving without
-a production freeze. Do not use `--resume`. Settle cleanup using original evidence. Later deployment uses fresh evidence and
-repeats checks.
+For a runtime upgrade, also keep the original private dispatch journal. It is
+`<evidence-directory>.dispatch-state`, beside the resolved evidence directory. Keep the current journal separate from evidence
+backups. A missing or invalid journal stops runtime resume before live access.
+If the journal may have been restored, stop and reconcile from OCC history and
+audit records before starting another run.
 
-For unfinished real deployments, keep the applicable freeze and single operator.
-Before `prepared`, the helper has not stopped serving writers or changed the Helm
-release. Reconcile, then restart with fresh evidence. After `prepared`, reconcile the original
-process, live release, migration, rollout and dispatch. When eligible, resume with
-original evidence, arguments, protected paths, kubeconfig contents, OCC URL,
-scripts, flow and chart, adding `--resume`. Keep candidate flags and files semantically unchanged. The helper rechecks image pair and eligible nodes,
-reads live Secret and Helm state, and accepts only recorded baseline or candidate
-before continuing the frozen fleet.
+`--preflight-only` leaves writers serving without a freeze. It cannot resume;
+reconcile its resources before deploying with fresh evidence and checks.
 
-For verified completed upgrades, clean up only. Do not rerun Helm, Agent rollout,
-Doctor or `--resume`, or reinstate the freeze. `prepared` survives success.
+Keep one operator and the applicable freeze for unfinished deployments. Before
+`prepared`, writers and Helm are unchanged: reconcile, then use fresh evidence.
+Afterward, reconcile processes, release, migration, rollout and dispatch, then
+add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
+OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
+The helper rechecks the pair, nodes and live state against baseline or candidate.
+
+After verified completion, clean up only: no Helm, Agent rollout, Doctor,
+`--resume` or renewed freeze. The helper writes `completed` after its final
+verification and evidence capture. Any `completed` entry makes `--resume` stop
+before cluster or OCC access. Keep the marker with the original evidence; use a
+new evidence directory for a new upgrade.
+
+If the final command output was lost, inspect the completion marker and retained
+evidence before deciding to resume. If writing the marker failed, reconcile the
+live state first: its absence does not prove the upgrade is unfinished.
+`prepared` survives success and alone is not a reason to resume. Older runs may
+have completed without a `completed` marker.
+
+## Correct unusable comparison inputs
+
+`Cannot compare upgrade YAML` requires readable YAML mappings (including candidates)
+without empty documents and writable evidence. Correct inputs before retrying;
+this does not establish drift.
 
 ## Clean up preflight resources
 
-The release owner coordinates one upgrade operator for all cleanup. Do not
-initiate a production freeze solely for cleanup.
+The release owner coordinates one cleanup operator; cleanup alone needs no freeze.
 
-Preflight cleanup is best effort. Leftovers can outlast startup, preparation or
-upgrade success despite earlier warnings. On interruption, preserve evidence and
-`.upgrade-lock` (retained on `SIGHUP`, `SIGINT`, `SIGTERM`). Before manual cleanup,
-lock removal or retry, confirm the original helper and local children stopped;
-reconcile accepted external operations and temporary resources. Only then remove
-the original empty `.upgrade-lock`. It protects only this evidence directory.
+Preflight cleanup is best effort; leftovers can outlast success.
+Preserve evidence and `.upgrade-lock` after interruption (`SIGHUP`, `SIGINT`,
+`SIGTERM`). Before cleanup, unlocking or retrying, confirm the helper and children
+stopped and reconcile accepted operations and temporary resources. Only then
+restore a moved original directory to its original path and remove its empty
+`.upgrade-lock`.
 
 Each successfully acknowledged and recorded create retains
 `preflight-<slot>-identity.json`, with slots `networkpolicy`, `secret`, `api`,
@@ -85,59 +104,50 @@ helper keeps or returns OCC to zero replicas before retrying the candidate Helm
 release. Prefer a reviewed forward fix; neither Helm rollback nor the helper
 reverses committed migrations.
 
-For an unknown Agent dispatch, the helper saves an Agent readback and stops
-without replaying it. Inspect the exact Agent's authorized version history,
-deployment status, and audit records, and allow any in-flight request to finish.
-An unchanged selected version alone does not prove rejection, and a filtered
-version list does not prove absence. If you can identify the accepted version,
-record a private `dispatch/<same-prefix-as-intent>.json` containing its `id`;
-the helper checks that exact deployment's status on resume. If evidence proves
-the request was not accepted, deploy that Agent once with the ordinary OCC CLI
-and save its successful JSON response under that name. Preserve the `.intent`,
-error, and readback evidence. If the result is still uncertain, stop and
-investigate rather than submitting another request. For a known failed version,
-inspect its failure and explicitly deploy an authorized replacement before
-recording that replacement's response; preserve the original response separately.
-Each deployment snapshots current drafts.
+After an unknown Agent dispatch, requests in the same batch may still finish.
+Before resuming, inspect the Agent's revision history, status and audit records.
+A read showing the earlier revision cannot establish rejection. If you cannot
+confirm an accepted revision, or the journal is incomplete, preserve all records
+and contact the release owner. The helper cannot resume those attempts.
 
-For an accepted version, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
-Agent IDs, `DISPATCH_PREFIX` to the matching evidence path without `.intent` or
-`.json`, and `REVISION_ID` to the independently confirmed version. Verify the exact Agent and deployment before recording it:
+If you can attribute a revision to the interrupted request, set
+`OCC_NAMESPACE`, `OCC_AGENT` and `REVISION_ID` to the confirmed IDs. Set
+`DISPATCH_PREFIX` to the private evidence path `dispatch/<namespace>--<agent>`.
+Keep the intent, errors and partial responses.
 
 ```bash
-if test -z "$REVISION_ID"; then
-  printf '%s\n' 'Set REVISION_ID to the confirmed revision; do not resume.' >&2
-elif test -e "$DISPATCH_PREFIX.json"; then
-  if jq -e --arg id "$REVISION_ID" '.id == $id' "$DISPATCH_PREFIX.json" > /dev/null; then
-    printf '%s\n' "Deployment $REVISION_ID is already recorded in $DISPATCH_PREFIX.json."
-  else
-    printf '%s\n' "$DISPATCH_PREFIX.json does not record $REVISION_ID; inspect it and do not resume." >&2
-  fi
-elif occ --output json --namespace "$OCC_NAMESPACE" agent deployment-status "$OCC_AGENT" "$REVISION_ID" > "$DISPATCH_PREFIX.confirmed-status.json" &&
+umask 077
+if test -n "$REVISION_ID" && test ! -e "$DISPATCH_PREFIX.json" && test ! -L "$DISPATCH_PREFIX.json" &&
+  occ --output json --namespace "$OCC_NAMESPACE" agent deployment-status "$OCC_AGENT" "$REVISION_ID" > "$DISPATCH_PREFIX.confirmed-status.json" &&
   jq -e --arg namespace "$OCC_NAMESPACE" --arg agent "$OCC_AGENT" --arg revision "$REVISION_ID" \
     '.namespaceId == $namespace and .agentId == $agent and .deploymentId == $revision' "$DISPATCH_PREFIX.confirmed-status.json" &&
-  jq -n --arg id "$REVISION_ID" '{id: $id}' > "$DISPATCH_PREFIX.json.tmp"; then
-  mv "$DISPATCH_PREFIX.json.tmp" "$DISPATCH_PREFIX.json"
+  response=$(mktemp "$DISPATCH_PREFIX.XXXXXXXX.tmp") &&
+  jq -n --arg id "$REVISION_ID" '{id: $id}' > "$response"; then
+  mv "$response" "$DISPATCH_PREFIX.json"
 else
-  printf '%s\n' 'Deployment could not be confirmed; do not resume.' >&2
+  printf '%s\n' 'No response recorded. Inspect the receipt and deployment status before resuming.' >&2
 fi
 ```
 
-Keep the shell's `umask 077`. If the status read is denied or does not identify
-the confirmed deployment, do not create the response file. The block never
-overwrites an existing response file: a rerun reports it when it records the
-same ID, and otherwise says to inspect it. The helper
-rechecks its status on resume; it does not verify how you identified an
-accepted request.
+For a failed revision, inspect the failure and correct the drafts before an
+authorized manual deploy. Keep the earlier receipt and new response separately.
+Verify in revision history that the replacement follows the failed revision
+selected in the journal. Write
+`{"id":"<replacement ID>","replacesDeploymentId":"<current journaled ID>"}`
+to a private temporary file beside the receipt, then rename it to
+`$DISPATCH_PREFIX.json`. Resume checks both deployments before recording the
+replacement. A restored receipt for a superseded revision stays in place for
+inspection. Resume uses the journal's current revision.
 
 If the candidate API and worker refuse to start because of
 [split-layout Gateway storage](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations),
 `--resume` cannot succeed. Keep both namespaces and their storage, and return to
 the previous controller image after the check below.
 
-Before selecting an older controller or runtime image, verify it can read all
-state written by the candidate and restore compatible data if required. Never
-delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
+Before selecting an older image, verify it can read candidate state.
+[Restore the retained candidate database](upgrade-baseline.md#restore-the-retained-candidate-database) if needed.
+Preserve Agents, versions, PVCs and the bootstrap volume.
+After return, [check the original conversation](production-handoff.md#check-conversation-continuity).
 
 For stalled ReplicaSet creation, check [namespace object capacity](upgrade-checklist.md#check-replicaset-capacity).
 

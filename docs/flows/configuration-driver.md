@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-29
-last_updated_session: authoring-run/74db2351-f5c1-4733-a3dc-a1ca653b29cf
+updated: 2026-11-04
+last_updated_session: authoring-run/06bc63c9-f110-4607-a058-a816a61dd579
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -37,6 +37,10 @@ outside this flow's scope.
   accept `POST /namespaces/:namespaceId/configurations` and
   `GET`, `PATCH`, or `DELETE` of
   `/namespaces/:namespaceId/configurations/:configurationId`.
+- First deployment: `apps/controller/src/http/agents.ts:createAgentHandlers` dispatches
+  `deployAgentFirst` and `recoverAgentFirstDeployment` to OCC. Both require exact
+  Agent `deploy` and reviewed Configuration `read`; fresh admission also runs
+  ordinary deployment checks.
 - Assumptions: one persisted Installation, a selected IAM Driver, exact
   Namespace placement, an authorized principal, available PostgreSQL state,
   and the permissions required by the selected Configuration Driver. The
@@ -174,6 +178,17 @@ or alter OCC's metadata transaction and compensation boundary.
 
 ## Debugging and Verification
 
+The in-process HTTP control in `tests/integration/occ-api.test.mjs` listens on loopback
+and uses the real Slack validator with a synthetic sender. Enabled Slack admits one
+revision, work item, and audit event; GET and matching POST recover the same minimal
+receipt without extra calls. Ordinary and disabled-Slack controls remain. Additional
+cases cover exact Secret checks, draft/Driver drift, late dependency failure,
+revocation, and the canonical generation boundary.
+
+The separate `tests/integration/postgres-platform-state.test.mjs` control checks
+persisted recovery through a reopened adapter, reconcile counts, and one distinct
+successful deploy audit row. Its sender is synthetic. The HTTP fixture does not test PostgreSQL persistence.
+
 Run focused Configuration conformance and integration checks:
 
 ```bash
@@ -218,6 +233,17 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 07:41: Trace guarded first admission and receipt recovery in the persistence chapter, including locked rechecks and verification boundaries. (authoring-run/06bc63c9-f110-4607-a058-a816a61dd579 - 6371064e)
+
+- 2026-11-01 07:20: Configuration and Secret writes send no Kubernetes call after 12 seconds; slow clusters fail them with `503` or a read's error. (fix-3106, finding 3106)
+- 2026-10-31: Writes, Agent save and deployment refuse a `gateway.auth.password` object OpenClaw cannot read on every Compute (no provider, other keys, a provider or allowlist that cannot serve it); Docker and Kubernetes Compute use the same reader, and a stored row still reads and deletes. (fix-3061, findings 3061-3063)
+- 2026-10-31: Writes, Agent save and deployment also refuse a `secrets.defaults` alias OpenClaw's configuration check refuses, before the password rule; SSH Compute reads the password with the same reader and renders a readable custom-provider reference as written. (fix-3064, findings 3064, 3065)
+- 2026-10-31: With no model selected, the provider catalog refusal names the model setting instead of the row rule. (fix-3023)
+
+- 2026-10-31: Writes also refuse model and runtime settings that conflict (entry primary, selectable models, runtime policies and IDs, Codex provider), with deployment's text and order; drafts without a model or runtime still save. (fix-3020, finding 3020)
+
+- 2026-10-31: Writes refuse a provider model entry that no primary or fallback selects, with deployment's text; a stored row that keeps one is refused on its next write. (fix-3019, finding 3019)
 
 - 2026-10-29: Establish the temporary file mode before replacing a filesystem Configuration. (authoring-run/74db2351-f5c1-4733-a3dc-a1ca653b29cf)
 

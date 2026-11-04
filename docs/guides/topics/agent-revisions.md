@@ -79,49 +79,48 @@ occ --namespace NAMESPACE_ID agent deploy-first AGENT_ID \
   --configuration CONFIGURATION_ID --generation 1 --key review-1
 ```
 
-This calls `POST /namespaces/:namespaceId/agents/:agentId/deploy-first` with
-`expectedConfigurationId`, `expectedGeneration`, and `key`. Fresh admission requires
-no revision history, stopped desired state, and the exact saved Configuration binding
-and generation. Other deployment requirements still apply. A conflict creates no
-revision. Ordinary bodyless `deploy` continues to admit later versions.
+Use the Configuration ID and generation you reviewed; `1` above is an example.
+The key must start with a letter or digit and contain 1–128 ASCII letters, digits, `.`,
+`_`, `~`, or `-`. Write the generation as decimal digits from `1` through
+`9007199254740991`, without leading zeros.
+Keep the nonsecret key with those values, the Namespace and Agent IDs, and the
+caller identity. Fresh admission requires a stopped Agent with no revision history
+and the same saved Configuration binding and generation. The
+[deployment reference](../../reference/agents/deployment.md#guarded-first-deployment)
+defines permissions and receipt behavior.
 
-The key is nonsecret, has 1–128 ASCII characters, starts with a letter or digit, and
-otherwise permits letters, digits, `.`, `_`, `~`, and `-`. Keep it with the reviewed
-Configuration ID and generation. It belongs to this Installation, caller, Namespace,
-Agent, and operation. Older servers reject the named route; clients do not fall back.
-
-If the reply is lost, run:
+If the reply is lost or its outcome is uncertain, recover with the same caller and
+all the original values. Do not substitute the Agent's current Configuration or a
+new key:
 
 ```sh
 occ --namespace NAMESPACE_ID agent recover-first-deployment AGENT_ID \
   --configuration CONFIGURATION_ID --generation 1 --key review-1
 ```
 
-Recovery uses the bodyless
-`GET /namespaces/:namespaceId/agents/:agentId/deploy-first/:key/:expectedConfigurationId/:expectedGeneration`.
-It requires current exact Agent `deploy` and reviewed Configuration `read` authority.
-It returns only the original revision ID, owning IDs, Configuration generation, and
-admission time. It does not queue work, create credentials, or grant access. Recovery
-still works after an intentional redeploy or a change to the Agent's Configuration.
-Responses use `Cache-Control: no-store`, including a missing receipt (`null`).
-A miss cannot prove an in-flight request failed and does not authorize a resend.
-GET generations and the CLI `--generation` flag use decimal digits from `1` through
-`9007199254740991`, without leading zeros or hexadecimal notation. A larger value is invalid.
+A matching receipt identifies the original Agent revision. Check that revision's
+deployment status as described above; a receipt proves admission, not workload
+readiness. Recovery does not start or repeat deployment work and still works after
+a later deployment or a change to the Agent's Configuration.
 
-Enabled Slack uses the same credential validation as ordinary deployment. After an
-authorized receipt miss, fresh preparation can read bound Secrets and contact the
-provider. Genuinely concurrent fresh requests can repeat this preparation, even
-though only one revision can commit. An early miss requires only the receipt
-permissions; it does not prove that fresh admission is authorized or will succeed.
-A matching committed receipt needs only current Agent `deploy` and reviewed
-Configuration `read`, with no Secret, provider, model, or work calls. An initially
-fresh contender may already have prepared credentials before a matching winner
-commits. Once it observes the matching receipt under the Agent lock, it performs
-no additional fresh work.
+A missing receipt (`null`) does not prove that an in-flight request failed. Do not
+resend, change the key, or use ordinary `deploy` to resolve that uncertainty. Repeat
+the read-only recovery with the original values and inspect deployment status when
+a receipt becomes available.
 
-Registered Drivers are trusted application code. Custom Channel Drivers use the
-same authorized credential reader; there is no separate first-deployment allowlist.
-See the [admission flow](../../flows/agent-deployment-diagnostics.md#guarded-first-admission).
+After a first-deployment conflict, recover the original request before choosing a
+new action:
+
+- If the binding or generation changed, review the current Configuration and the
+  Agent's binding before deciding whether to deploy it.
+- If revision history exists, inspect it and the deployment status. Use ordinary
+  `deploy` only when you deliberately want a later version.
+- If the Agent is no longer stopped, inspect its deployment status before proceeding.
+
+An empty revision list is not proof of failure: it can hide versions you lack
+permission to read. Ask an administrator to inspect the result if receipt recovery
+or status access is denied. See the [admission flow](../../flows/configuration-driver/persistence-and-revisions.md#guarded-first-admission)
+for the concurrency and persistence boundaries.
 
 <span id="inspect-an-earlier-revision" class="anchor-alias"></span>
 

@@ -37,7 +37,7 @@ import {
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
-import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
+import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
 import {
   agentCreateDenied,
   askAdministratorTo,
@@ -54,7 +54,12 @@ import {
 } from "./secret-picker.mjs";
 import { workspaceFileProblem } from "./workspace.mjs";
 import { namespaceNameProblem } from "../namespaces.mjs";
-import { createPresetFields } from "./presets.mjs";
+import {
+  createPresetFields,
+  presetVariableLabels,
+  type PresetReturn,
+  refusedPresetVariables,
+} from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
@@ -87,7 +92,10 @@ type CreateRequest = (
 ) => Promise<unknown>;
 type CredentialReference = SecretReference | CredentialSourceReference;
 type Repositories = ReturnType<typeof createRepositoryFields>;
-type CredentialRegistration = Pick<CredentialSourceMetadata, "name" | "secrets" | "type">;
+type CredentialRegistration = Pick<
+  CredentialSourceMetadata,
+  "name" | "secrets" | "type" | "config"
+>;
 type RegisteredCredential = Pick<CredentialSourceMetadata, "id" | "state">;
 type SavedAgent = Pick<Agent, "id" | "name" | "configurationId">;
 type SavedConfiguration = Pick<Configuration, "id" | "secretBindings">;
@@ -147,6 +155,7 @@ export interface CreateAgentDraft {
   rendered: PresetLaunchSettings;
   presetOptions: PresetOptions;
   touched: boolean;
+  nativeAdmin: boolean;
   inputs: Record<string, string>;
   edited: boolean;
   manualModel: boolean;
@@ -336,12 +345,31 @@ function credentialRegistrationResult(
     return null;
   }
   const { id, state } = source;
+  const config = responseFields(source.config);
+  const configMatches =
+    source.config !== null &&
+    typeof source.config === "object" &&
+    !Array.isArray(source.config) &&
+    Object.keys(config).length === Object.keys(expected.config).length &&
+    Object.entries(expected.config).every(([name, value]) => {
+      const actual = config[name];
+      if (actual === value) {
+        return true;
+      }
+      // Drivers can canonicalize URLs during registration; compare their parsed destination.
+      return (
+        typeof actual === "string" &&
+        URL.canParse(value) &&
+        URL.canParse(actual) &&
+        new URL(value).href.replace(/\/$/, "") === new URL(actual).href.replace(/\/$/, "")
+      );
+    });
   if (
     typeof id !== "string" ||
     !id.trim() ||
     source.namespaceId !== namespaceId ||
     source.type !== expected.type ||
-    !sameValue(source.config, {}) ||
+    !configMatches ||
     !sameValue(source.secrets, expected.secrets) ||
     !sameValue(source.ref, { kind: "credential_source", namespaceId, id }) ||
     (state !== "ready" && state !== "registering" && state !== "deleting")
@@ -665,7 +693,11 @@ async function finishProvisioningAttempt({
   });
 }
 
-export function renderCreateAgent(context: CreateAgentContext, restored?: unknown) {
+export function renderCreateAgent(
+  context: CreateAgentContext,
+  restored?: unknown,
+  returning?: PresetReturn,
+) {
   // This scoped draft is written only by captureDraft below.
   const draft = restored as CreateAgentDraft | undefined;
   context.setTitle("Create Agent");
@@ -719,6 +751,7 @@ export function renderCreateAgent(context: CreateAgentContext, restored?: unknow
   const presets = createPresetFields(
     { ...context, secretsOperateDenied: operateAnswer.read },
     startForm,
+    returning,
   );
   context.view.replaceChildren(
     // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
@@ -1043,6 +1076,10 @@ function renderAgentForm(
   const authMethodField = field("Authentication method", authMethod);
   const credentialLabel = element("label", { for: apiKey.id }, "API key");
   const credentialHelp = element("p", { className: "hint", id: "provider-credential-help" });
+  const sourceConfigurationFields = element("div", { className: "form-fields" });
+  const sourceConfigurationInputs = new Map<string, HTMLInputElement>();
+  let renderedSourceType: CredentialSourceType | null | undefined;
+
   apiKey.setAttribute("aria-describedby", credentialHelp.id);
   let manualModel = !useModelChoices;
   let pendingModelSettings = draft.pendingModelSettings;
@@ -1818,6 +1855,7 @@ function renderAgentForm(
   // A draft kept after a refused Create resumes the resources that attempt saved (finding 1934).
   let savedCredentialSource = draft.savedCredentialSource;
   let credentialRegistration: CredentialRegistration | null = null;
+  let credentialRegistrationRejected = false;
   let failedCredentialSource: RegisteredCredential | null = null;
   let provisioningRequestId = createClientRequestId();
   // The API admitted (or may have admitted) a job under provisioningRequestId. Create Agent
@@ -1899,6 +1937,49 @@ function renderAgentForm(
       renderCreateAgent(context);
     }
   });
+  // A refusal of a Configuration setting the Preset's variables filled names those variables, and
+  // this action reopens the Preset with its variables kept and those fields marked (finding 3122).
+  // It shows while Start over is enabled: nothing this form saved would be left behind.
+  let refusedVariables: Pick<PresetReturn, "variables" | "refusal"> | undefined;
+  const changePresetVariables = button(
+    "Change Preset variables",
+    () => {
+      const presetDraft = presetOptions.presetDraft;
+      if (!refusedVariables || !presetDraft || startOver.disabled) {
+        return;
+      }
+      if (
+        !(changedHere || edited) ||
+        window.confirm("Discard the changes on this form and go back to the Preset?")
+      ) {
+        context.drafts.forget("channels");
+        renderCreateAgent(context, undefined, { draft: presetDraft, ...refusedVariables });
+      }
+    },
+    { tone: "secondary" },
+  );
+  function offerPresetVariableChange(serverMessage: string | undefined) {
+    // The Configuration JSON as Create sent it, against the values the Preset rendered.
+    const variables = refusedPresetVariables(serverMessage, presetOptions.settingVariables, {
+      submitted: parseObject(configuration),
+      rendered: rendered.configuration?.values,
+    });
+    refusedVariables =
+      serverMessage && variables.length ? { variables, refusal: serverMessage } : undefined;
+    if (!refusedVariables) {
+      return;
+    }
+    const labels = presetVariableLabels(variables);
+    setText(changePresetVariables, `Change ${labels}`);
+    // The variable follows the refusal, before its request ID.
+    const text = feedback.textContent ?? "";
+    const requestId = text.lastIndexOf(" Request ID: ");
+    const at = requestId === -1 ? text.length : requestId;
+    feedback.textContent = `${text.slice(0, at)} The Preset ${variables.length > 1 ? "variables" : "variable"} ${labels} filled this setting.${text.slice(at)}`;
+    if (presetOptions.presetDraft) {
+      feedback.append(" ", changePresetVariables);
+    }
+  }
   const retryProvisioning = button("Retry provisioning request", () => {
     if (!provisioningAttempt || pending) {
       return;
@@ -1928,8 +2009,15 @@ function renderAgentForm(
         // Reuse the frozen, unique Source name: an earlier request that commits
         // later conflicts before gateway effects, rather than registering a copy.
         outcomeUnknown = false;
-        feedback.textContent =
-          "No credential registration is visible. Select Create Agent to retry the same registration.";
+        if (credentialRegistrationRejected) {
+          credentialRegistration = null;
+          credentialRegistrationRejected = false;
+          feedback.textContent =
+            "No credential registration exists. Correct the source configuration and try again.";
+        } else {
+          feedback.textContent =
+            "No credential registration is visible. Select Create Agent to retry the same registration.";
+        }
       } else if (source.state === "ready") {
         failedCredentialSource = null;
         savedCredentialSource = source;
@@ -2081,6 +2169,20 @@ function renderAgentForm(
     removeCredentialRegistration,
     submit,
   );
+  const nativeAdmin = element("input", {
+    type: "checkbox",
+    id: "native-admin",
+    "aria-describedby": "native-admin-help",
+  });
+  nativeAdmin.checked = draft.nativeAdmin ?? false;
+  let nativeAdminAvailable = false;
+  const nativeAdminHelp = element("p", { id: "native-admin-help", className: "hint" });
+  const nativeAdminField = element(
+    "div",
+    { className: "field" },
+    element("label", {}, nativeAdmin, " Enable Native admin UI"),
+    nativeAdminHelp,
+  );
   const channelEditor = element("div", { className: "create-channels" });
   // The intro names repository access only where the Installation offers it (finding 2423).
   const introText = (repositoryAccess: boolean) =>
@@ -2095,6 +2197,7 @@ function renderAgentForm(
     ...(presetBadge ? [presetBadge] : []),
     field("Agent name", name, "Unique within this Namespace."),
     authSection,
+    nativeAdminField,
     capabilityStatus,
     retryCapabilityDiscovery,
     element(
@@ -2195,8 +2298,11 @@ function renderAgentForm(
   // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
   // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.
   let touched = Boolean(draft.touched);
+  // Whether the reader changed this form itself, not only the Preset variables before it.
+  let changedHere = false;
   const markTouched = (event: Event) => {
     touched ||= event.isTrusted;
+    changedHere ||= event.isTrusted;
   };
   for (const node of [form, channelEditor]) {
     node.addEventListener("input", markTouched);
@@ -2207,6 +2313,7 @@ function renderAgentForm(
   const isTouched = () => touched || edited;
   const captureDraft = (): CreateAgentDraft => ({
     touched: isTouched(),
+    nativeAdmin: nativeAdmin.checked,
     rendered,
     presetOptions,
     // Keep raw editor text, including invalid JSON. Password controls are deliberately excluded.
@@ -2649,6 +2756,22 @@ function renderAgentForm(
     for (const node of actions.querySelectorAll("button")) {
       node.disabled = pending;
     }
+    nativeAdmin.disabled ||=
+      Boolean(savedConfiguration) || !nativeAdminAvailable || !shouldProvision();
+    let nativeAdminHint =
+      "Chat with this Agent through its OCE URL after deployment. Requires Agent administer permission; enables native administration and trusted-proxy device approval.";
+    if (!capabilityDiscoveryDone) {
+      nativeAdminHint = "Native admin UI availability depends on installation capabilities.";
+    } else if (!nativeAdminAvailable) {
+      nativeAdminHint =
+        "Native admin UI access is not enabled on this installation. Ask an Installation administrator to enable it.";
+    } else if (!shouldProvision()) {
+      nativeAdminHint = "Native admin UI setup requires Dedicated provisioning.";
+    }
+    setText(nativeAdminHelp, nativeAdminHint);
+    if (!planLocked && capabilityDiscoveryDone && (!nativeAdminAvailable || !shouldProvision())) {
+      nativeAdmin.checked = false;
+    }
     updatePluginDiscovery();
     pluginFields.setDisabled(planLocked);
     channelEditor.toggleAttribute("inert", planLocked || saved);
@@ -2915,6 +3038,37 @@ function renderAgentForm(
         authSection.append(credentialHelp);
       }
     }
+    const sourceType = credentialSourceTypes !== undefined && !usesOAuth ? modelSourceType() : null;
+    if (sourceType !== renderedSourceType) {
+      renderedSourceType = sourceType;
+      sourceConfigurationFields.replaceChildren();
+      sourceConfigurationInputs.clear();
+      for (const setting of sourceType?.config ?? []) {
+        const input = element("input", { id: `model-source-${setting.name}`, type: "text" });
+        input.required = setting.required;
+        sourceConfigurationInputs.set(setting.name, input);
+        const label = setting.name.replaceAll("_", " ").replace(/\burl\b/gi, "URL");
+        const wrapper = field(label.charAt(0).toUpperCase() + label.slice(1), input);
+        if (setting.description) {
+          const help = element(
+            "p",
+            { className: "hint", id: `${input.id}-help` },
+            setting.description,
+          );
+          input.setAttribute("aria-describedby", help.id);
+          wrapper.append(help);
+        }
+        sourceConfigurationFields.append(wrapper);
+      }
+    }
+    sourceConfigurationFields.hidden = sourceConfigurationInputs.size === 0;
+    for (const input of sourceConfigurationInputs.values()) {
+      input.disabled =
+        pending || outcomeUnknown || Boolean(savedCredentialSource || credentialRegistration);
+    }
+    if (sourceConfigurationFields.parentElement !== authSection) {
+      authSection.append(sourceConfigurationFields);
+    }
     apiKey.required = Boolean(passwordAuth && !usesOAuth);
     apiKey.disabled ||= Boolean(savedSecret || binding || usesOAuth || (!passwordAuth && !usesPat));
     startOver.disabled =
@@ -2922,6 +3076,8 @@ function renderAgentForm(
       outcomeUnknown ||
       saved ||
       Boolean(savedSecret || savedCredentialSource || credentialRegistration);
+    // Shown only while it can act, so no unavailable action sits in the refusal.
+    changePresetVariables.hidden = startOver.disabled;
     if (useModelChoices) {
       choiceField.hidden = manualModel;
       modelField.hidden = !manualModel;
@@ -3064,6 +3220,7 @@ function renderAgentForm(
       if (!defaultApprovers.hidden) {
         defaultApprovers.refreshNames();
       }
+      nativeAdminAvailable = installation.capabilities?.nativeAdmin === true;
       nativeWorkersAvailable = installation.capabilities?.nativeWorkers !== undefined;
       const openclawModes = installation.capabilities?.openclaw?.executionModes;
       openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
@@ -3073,6 +3230,8 @@ function renderAgentForm(
       dedicatedSettingRefusal =
         typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
       credentialSourceTypes = installation.capabilities?.credentialSources?.types;
+      // Drivers that offer no device login refuse every start (finding 2991).
+      oauthLogin.setOffered(deviceLoginOffered(installation.capabilities));
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
         []) {
@@ -3314,6 +3473,9 @@ function renderAgentForm(
         );
       } else {
         feedback.textContent = refusedInConfiguration ? "" : feedbackText;
+        if (!refusedInConfiguration && !terminal && !outcomeUnknown) {
+          offerPresetVariableChange(error.serverMessage);
+        }
       }
       if (
         terminal?.job.revisionId &&
@@ -3602,6 +3764,9 @@ function renderAgentForm(
           feedback.textContent = refusedInConfiguration
             ? ""
             : withRequestId(detail, failure.requestId);
+          if (!refusedInConfiguration && !nameTaken) {
+            offerPresetVariableChange(failure.serverMessage);
+          }
           // While the pressed control is still disabled, as after a save.
           focusFeedbackLine(feedback);
           if (nameTaken) {
@@ -3663,9 +3828,15 @@ function renderAgentForm(
           credentialRegistration ??= {
             name: `${body.name.slice(0, 150)} model ${provisioningRequestId}`,
             type: type.type,
+            config: Object.fromEntries(
+              [...sourceConfigurationInputs]
+                .filter(([, input]) => input.value.trim() !== "")
+                .map(([name, input]) => [name, input.value]),
+            ),
             secrets: { [field]: secret },
           };
           mutationStarted = true;
+          credentialRegistrationRejected = false;
           const result = await request(`${namespacePath(namespaceId)}/credential-sources`, {
             method: "POST",
             expectedStatus: 201,
@@ -3690,6 +3861,7 @@ function renderAgentForm(
       if (shouldProvision()) {
         const plan = {
           requestId: provisioningRequestId,
+          ...(nativeAdmin.checked && nativeAdminAvailable ? { nativeAdmin: true } : {}),
           ...body,
           harnessAuth,
           configuration: {
@@ -3864,6 +4036,11 @@ function renderAgentForm(
         // when they next open (finding 2469), as the Agent page does after a refused save.
         operateAnswer.reset();
       }
+      if (credentialRegistration && error.status === 400) {
+        // Keep uncertain writes frozen. A definitive validation refusal can be edited only
+        // after the source list confirms that no registration survived cleanup.
+        credentialRegistrationRejected = true;
+      }
       const knownRejection = [400, 403, 404, 409, 429].includes(error.status ?? 0);
       outcomeUnknown = mutationStarted && !knownRejection && error.status !== 401;
       if (creatingSecret && (outcomeUnknown || !context.isCurrent() || error.status === 401)) {
@@ -3953,6 +4130,9 @@ function renderAgentForm(
           : (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
             guidance +
             (error.requestId ? ` ${requestIdText(error.requestId)}` : "");
+      if (!refusedInConfiguration && !confirmedSecretConflict && !savedAgent) {
+        offerPresetVariableChange(error.serverMessage);
+      }
       focusFeedbackLine(confirmedSecretConflict ? secretConflictRecovery : feedback);
       // A create that raced another Agent to the name (the preflight checked it).
       if (!savedAgent && error.status === 409 && error.serverMessage === AGENT_NAME_CONFLICT) {
