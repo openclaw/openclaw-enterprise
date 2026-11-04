@@ -215,11 +215,24 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
     // Exercise the served Console component with a held synthetic catalog update.
     await page.evaluate(async () => {
       const modulePath = "/console/agents/plugin-fields.mjs";
-      const {
-        createPluginFields,
-      }: typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs") = await import(
-        modulePath
-      );
+      const module: unknown = await import(modulePath);
+      function isPluginFieldsModule(
+        value: unknown,
+      ): value is Pick<
+        typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs"),
+        "createPluginFields"
+      > {
+        return (
+          typeof value === "object" &&
+          value !== null &&
+          "createPluginFields" in value &&
+          typeof value.createPluginFields === "function"
+        );
+      }
+      if (!isPluginFieldsModule(module)) {
+        throw new Error("Expected createPluginFields from " + modulePath);
+      }
+      const { createPluginFields } = module;
       const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
       const beta = { id: "beta", name: "Beta", tools: [] };
       const catalog: PluginFieldCatalog = {
@@ -275,11 +288,24 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await page.locator(settledView).waitFor();
   await page.evaluate(async () => {
     const modulePath = "/console/agents/plugin-fields.mjs";
-    const {
-      createPluginFields,
-    }: typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs") = await import(
-      modulePath
-    );
+    const module: unknown = await import(modulePath);
+    function isPluginFieldsModule(
+      value: unknown,
+    ): value is Pick<
+      typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs"),
+      "createPluginFields"
+    > {
+      return (
+        typeof value === "object" &&
+        value !== null &&
+        "createPluginFields" in value &&
+        typeof value.createPluginFields === "function"
+      );
+    }
+    if (!isPluginFieldsModule(module)) {
+      throw new Error("Expected createPluginFields from " + modulePath);
+    }
+    const { createPluginFields } = module;
     const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
     const beta = { id: "beta", name: "Beta", tools: [] };
     const catalog: PluginFieldCatalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
@@ -542,7 +568,7 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   assert.equal(await createAction.getAttribute("aria-disabled"), "true");
   // The spare token is listed disabled with the reason, and a forced click chooses nothing, so
   // no search is made with it.
-  const deniedSpare: Locator = await operateDeniedSecretOption(
+  const deniedSpare = await operateDeniedSecretOption(
     page,
     "Slack bot token Secret for people search",
     spare,
@@ -1036,11 +1062,24 @@ test("No Slack approvers does not ask the operator to select hidden people", asy
   await page.locator(settledView).waitFor();
   const hints = await page.evaluate(async () => {
     const modulePath = "/console/agents/slack-approvers.mjs";
-    const {
-      createSlackApproverField,
-    }: typeof import("../../apps/controller/src/console/agents/slack-approvers.mjs") = await import(
-      modulePath
-    );
+    const module: unknown = await import(modulePath);
+    function isSlackApproversModule(
+      value: unknown,
+    ): value is Pick<
+      typeof import("../../apps/controller/src/console/agents/slack-approvers.mjs"),
+      "createSlackApproverField"
+    > {
+      return (
+        typeof value === "object" &&
+        value !== null &&
+        "createSlackApproverField" in value &&
+        typeof value.createSlackApproverField === "function"
+      );
+    }
+    if (!isSlackApproversModule(module)) {
+      throw new Error("Expected createSlackApproverField from " + modulePath);
+    }
+    const { createSlackApproverField } = module;
     let value: PluginApprovers | undefined = [];
     const field = createSlackApproverField({
       context: {
