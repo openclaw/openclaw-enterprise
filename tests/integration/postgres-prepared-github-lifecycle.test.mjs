@@ -40,7 +40,8 @@ test(
       tokenLifetimeMs: 9 * 60_000,
       tokenResponse: (packet) => (invalidScope ? { ...packet, repositories: [] } : packet),
     });
-    const { gh, f, lifecycle, issuer, secretValue, createOwner, registerSource } = prepared;
+    const { gh, f, lifecycle, issuer, secretValue, createOwner, registerSource, registration } =
+      prepared;
     let { source } = prepared;
     const signal = new AbortController().signal;
     const readWindow = () => ({ signal, deadlineAt: new Date(Date.now() + 20_000).toISOString() });
@@ -802,6 +803,28 @@ test(
         );
       });
     }
+    // A prepared issuer Secret authorized for another origin is refused at admission, before any
+    // enrollment or issuer call, so a key bound to one host cannot sign material for another.
+    const tokensBeforeForeign = gh.issuesOfTokens.length;
+    const foreignIssuer = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
+      body: {
+        name: "foreign-issuer-key",
+        value: secretValue,
+        authorizedEndpoint: "https://other.example.test/v1",
+      },
+    });
+    assert.equal(foreignIssuer.status, 201, JSON.stringify(foreignIssuer.body));
+    const foreign = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
+      body: {
+        ...registration,
+        name: "foreign-issuer-source",
+        secrets: { private_key: foreignIssuer.data.ref },
+      },
+    });
+    assert.equal(foreign.status, 400, JSON.stringify(foreign.body));
+    assert.match(foreign.body.error.message, /does not authorize this issuer origin/);
+    assert.equal(gh.issuesOfTokens.length, tokensBeforeForeign, "refusal issued no provider token");
+
     assert.deepEqual(gh.errors, []);
   },
 );
