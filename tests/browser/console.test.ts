@@ -183,18 +183,19 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
 });
 
 // Relative luminance of the page and of one control's surface, and body text contrast.
-const appearance = (page, control) =>
+const appearance = (page: Page, control: string) =>
   page.evaluate((selector) => {
-    const luminance = (color) => {
+    const luminance = (color: string) => {
       const channels = color
-        .match(/[\d.]+/g)
+        .match(/[\d.]+/g)!
         .slice(0, 3)
         .map(Number);
-      const [r, g, b] = channels.map((value) => {
-        const c = value / 255;
-        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-      });
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      return channels
+        .map((value) => {
+          const c = value / 255;
+          return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+        })
+        .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i]!, 0);
     };
     const root = globalThis.getComputedStyle(globalThis.document.documentElement);
     const background = luminance(root.backgroundColor);
@@ -204,7 +205,7 @@ const appearance = (page, control) =>
     return {
       background,
       contrast: (light + 0.05) / (dark + 0.05),
-      control: luminance(globalThis.getComputedStyle(element).backgroundColor),
+      control: luminance(globalThis.getComputedStyle(element!).backgroundColor),
     };
   }, control);
 

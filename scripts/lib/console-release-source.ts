@@ -175,6 +175,8 @@ function presentedTheme(html: string): ConsoleTheme | undefined {
     logoUrl,
     ...(faviconUrl === undefined ? {} : { faviconUrl }),
     ...(appleTouchIconUrl === undefined ? {} : { appleTouchIconUrl }),
+    // A color theme marks the root; the byte comparison below rejects a marker in any other place.
+    hasColors: /^<!doctype html>\s*<html[^>]* data-theme-colors>/i.test(html),
     assets: new Map(),
   };
 }
