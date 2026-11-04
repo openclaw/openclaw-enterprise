@@ -47,11 +47,20 @@ simulated API state; they do not prove persistence or live runtime behavior.
    is a terminal result and can expand the details. In **Deployment activity
    unavailable**, fold the error and press **Refresh deployment**: the repeated
    error is revealed again.
+   In **Diagnostics focus when deployment completes**, open the preview in its
+   own tab. Fold **Deployment details** and Tab to **Run diagnostics for this
+   version**. Scroll up until the focused button sits fully inside the lower
+   edge of the viewport. After the delayed poll reports **Completed**, the
+   details open and the same button stays visible and focused. Check desktop and
+   phone widths. At phone width, reload and repeat. This time, scroll to the top
+   after tabbing to the button. The details still open and the reader stays at
+   the top.
    These stories simulate responses. The real Controller browser regression in
    `tests/browser/console-deployment-activity.test.ts` additionally checks queued →
-   503 → queued, queued → running, a final 403/404, and a delayed success delivered
-   after refusal. Run it for the actual controls and response envelopes; Storybook
-   is not proof of those Controller responses.
+   503 → queued, queued → running, terminal completion with the diagnostics
+   button focused, a final 403/404, and a delayed success delivered after refusal.
+   Run it for the actual controls and response envelopes. Storybook simulates
+   those Controller responses.
 
 9. Open **Rejected credential, binding editor cannot deploy**
    (`credentialRejectedBindingEditor`). Recovery must offer **Open Credentials**

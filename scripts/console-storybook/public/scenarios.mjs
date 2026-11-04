@@ -6119,6 +6119,30 @@ export const scenarios = {
       "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
     ],
   },
+  deploymentCompletionFocus: {
+    group: "Pages/Agent detail",
+    name: "Diagnostics focus when deployment completes",
+    path: `${candidateVersion}&tab=deployment`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // Give the reader time to position the focused button before the terminal poll answers.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        delayMs: 12000,
+      },
+    ],
+    description:
+      "The automatic poll records a simulated completion and opens Deployment details. The focused diagnostics button stays in view if it was visible before the update.",
+    steps: [
+      "Collapse Deployment details, then Tab to Run diagnostics for this version. Scroll up just enough to put the entire focused button near the bottom edge of the viewport.",
+      "Wait for the recorded status to read Completed. The details open and the same button stays focused and fully in view. Repeat at desktop and phone widths.",
+      "At phone width, reload the preview and repeat, this time scrolling all the way to the top without changing focus. The details open on completion and the reader stays at the top with the focused button still offscreen.",
+    ],
+  },
   deploymentCompletesRereadFails: {
     group: "Pages/Agent detail",
     name: "New version completes, Agent reread fails",
