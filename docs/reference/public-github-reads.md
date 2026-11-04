@@ -190,6 +190,19 @@ Use the skill's managed GET command for API reads:
 node "$GIT_EXEC_PATH/transport.mjs" --api-get '/repos/OWNER/REPOSITORY/contents'
 ```
 
+For lists, use `--api-get-metadata` with the same relative route. On success it
+returns JSON `{status, link, body}`: `status` is the HTTP status, `link` is the
+reader's relative pagination Link or `null`, and `body` is the decoded JSON.
+Follow the target with `rel="next"` through this same mode until no next relation
+remains. A failed command or an unfinished next link means the listing is
+incomplete. Body-only `--api-get` does not expose pagination.
+
+Metadata mode accepts at most 16 KiB of response headers, including informational
+responses, and an 8 KiB Link. It rejects malformed, duplicate or cross-resource
+links; each relative target retains the 2048-character route limit. Other headers
+are discarded. Non-success, invalid JSON or invalid metadata emits no success
+envelope or body. Neither mode automatically paginates or follows redirects.
+
 The helper fixes the reader origin, authorization and proxy route. It combines
 reader trust with the current tool CA files for every Git/API operation. Do not
 replace this with a static curl CA selection: it can omit Codex's later

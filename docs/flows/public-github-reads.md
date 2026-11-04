@@ -145,6 +145,13 @@ managed skill invokes it without supplying an origin, proxy, credentials or curl
 options. The helper uses configured authorization, ignores curl configuration,
 refuses redirects and buffers responses within the reader's 12 MiB/24-second
 limits. Its capability header goes through child stdin, never a temporary file.
+The fixed `--api-get-metadata` mode returns `{status, link, body}` only after a
+successful response. `responseMetadata` discards informational/proxy headers and
+exposes only the final status and bounded relative Link alongside parsed JSON.
+Headers are limited to 16 KiB and Link to 8 KiB; malformed, duplicate or
+cross-resource continuation fails without output. The Agent follows relative
+next links through the same helper and reports interrupted listings as incomplete.
+Body-only `--api-get` remains unchanged.
 
 `apps/controller/src/drivers/repo/github/public-read/server.ts:createPublicGithubReadServer`
 authenticates before quota admission, deduplication or provider requests. API and
@@ -199,6 +206,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 10:45: Preserve bounded pagination metadata in managed API reads (review correction; authoring-run/91dbe88d-f8ca-4112-959d-27f83555e7bb - f1f0005b41eef72c206f96ea7ebff9a3aa763352)
 
 - 2026-11-04 10:18: Compose startup and current tool trust for both TLS legs and shared Git/API callers (accompanying correction; authoring-run/91dbe88d-f8ca-4112-959d-27f83555e7bb - 2370e9e3ea36dc1ff5930c0f3538693c6c1aa0ad)
 

@@ -271,6 +271,7 @@ async function materialFixture(t) {
     endpoint,
     requests,
     apiRequests,
+    api,
     materialPath,
     capabilityPath,
     baseEnv,
@@ -388,6 +389,97 @@ test("managed Git and API compose current tool trust and retain startup proxy ro
       false,
     );
   }
+});
+
+test("managed API metadata follows real reader pagination without exposing other headers", async (t) => {
+  const fixture = await materialFixture(t);
+  const env = await fixture.install();
+  const pages = [];
+  fixture.api.removeAllListeners("request");
+  fixture.api.on("request", (req, res) => {
+    if (req.url === "/repos/example/project") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ full_name: "example/project", private: false }));
+      return;
+    }
+    const page = new URL(req.url, "https://api.github.com").searchParams.get("page");
+    pages.push(page);
+    res.writeHead(200, {
+      "content-type": "application/json",
+      ...(page === "1"
+        ? {
+            link: '<https://api.github.com/repos/example/project/pulls?page=2&per_page=1>; rel="next"',
+          }
+        : {}),
+    });
+    res.end(JSON.stringify([{ number: Number(page), title: "page-" + page }]));
+  });
+  const read = async (route) =>
+    JSON.parse(
+      (
+        await execute(
+          process.execPath,
+          [path.join(env.GIT_EXEC_PATH, "transport.mjs"), "--api-get-metadata", route],
+          { env, timeout: 30_000 },
+        )
+      ).stdout,
+    );
+  const first = await read("/repos/example/project/pulls?page=1&per_page=1");
+  assert.deepEqual(first, {
+    status: 200,
+    link: '</repos/example/project/pulls?page=2&per_page=1>; rel="next"',
+    body: [{ number: 1, title: "page-1" }],
+  });
+  const second = await read(first.link.match(/^<([^>]+)>; rel="next"$/)[1]);
+  assert.deepEqual(second, { status: 200, link: null, body: [{ number: 2, title: "page-2" }] });
+  assert.deepEqual(pages, ["1", "2"]);
+  // The client metadata boundary also refuses malformed or excessive headers
+  // from a trusted TLS peer, without printing its body or unrelated secrets.
+  fixture.reader.removeAllListeners("request");
+  let headers = { "x-unrelated": fixture.token };
+  let status = 200;
+  fixture.reader.on("request", (_req, res) => {
+    res.writeEarlyHints({ link: '</style.css>; rel="preload"' });
+    res.writeHead(status, headers);
+    res.end(JSON.stringify({ title: "must-not-escape-on-refusal" }));
+  });
+  const success = await read("/repos/example/project/pulls");
+  assert.deepEqual(success, {
+    status: 200,
+    link: null,
+    body: { title: "must-not-escape-on-refusal" },
+  });
+  for (const link of [
+    '<https://unrelated.invalid/>; rel="next"',
+    '</repos/example/other/pulls?page=2>; rel="next"',
+    '</repos/example/project/pulls?page=2>; rel="next", </repos/example/project/pulls?page=3>; rel="next"',
+    "malformed",
+    "x".repeat(8193),
+  ]) {
+    headers = { link, "x-unrelated": fixture.token };
+    await assert.rejects(
+      read("/repos/example/project/pulls"),
+      (error) => error.code !== 0 && error.stdout === "" && !error.stderr.includes(fixture.token),
+    );
+  }
+  headers = { "x-unrelated": "x".repeat(17 * 1024) };
+  await assert.rejects(
+    read("/repos/example/project/pulls"),
+    (error) => error.code !== 0 && error.stdout === "",
+  );
+  headers = {
+    link: '</repos/example/project/pulls?page=2>; rel="next"',
+    "x-unrelated": fixture.token,
+  };
+  status = 503;
+  await assert.rejects(
+    read("/repos/example/project/pulls"),
+    (error) => error.code === 22 && error.stdout === "" && !error.stderr.includes(fixture.token),
+  );
+  assert.equal(
+    (await readdir(fixture.directory)).some((entry) => entry.startsWith("oce-public-trust-")),
+    false,
+  );
 });
 
 test("managed API refuses unsafe routes, TLS peers, redirects and capabilities without provider contact", async (t) => {

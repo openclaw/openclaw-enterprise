@@ -49,8 +49,10 @@ model or repository credentials.
 actual launcher and Git/API helper with verified loopback TLS. Consecutive peer
 roots introduced after installation prove current-tool trust composition;
 wrong-hostname/unrelated roots, malformed trust, redirects and denied capabilities
-remain failures. Cancellation checks remove private operation bundles. These host
-checks do not prove Codex's interception or its upstream store: require the stock
+remain failures. Cancellation checks remove private operation bundles. The tests
+also follow a real reader's two-page list through the fixed metadata mode,
+reject malformed/oversized continuation data and suppress unrelated headers.
+These host checks do not prove Codex's interception or its upstream store: require the stock
 Linux native clone/API/fetch test and installed Agent qualification separately.
 The OpenShell QA's raw receive-pack request uses the current tool CA bundle only
 to prove the reader's exact HTTP refusal; it is not the managed API caller.

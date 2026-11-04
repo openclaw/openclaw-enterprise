@@ -131,13 +131,66 @@ function authorization(config) {
   );
 }
 
-function runChild(binary, args, env, input) {
+function responseMetadata(bytes, route) {
+  let offset = 0;
+  while (true) {
+    const end = bytes.indexOf("\r\n\r\n", offset);
+    if (end === -1) {
+      if (bytes.length > 16 * 1024) {
+        throw new Error("API response headers exceed their bound.");
+      }
+      return undefined;
+    }
+    if (end + 4 > 16 * 1024) {
+      throw new Error("API response headers exceed their bound.");
+    }
+    const [statusLine, ...lines] = bytes.subarray(offset, end).toString("latin1").split("\r\n");
+    if (lines.some((line) => /^[ \t]/.test(line))) {
+      throw new Error("Folded API response metadata is unsupported.");
+    }
+    const status = /^HTTP\/(?:1\.[01]|2|3) (\d{3})(?: .*)?$/.exec(statusLine)?.[1];
+    if (!status) {
+      throw new Error("Invalid API response status.");
+    }
+    offset = end + 4;
+    if (Number(status) < 200) {
+      continue;
+    }
+    const links = lines.filter((line) => /^link:/i.test(line));
+    if (links.length > 1) {
+      throw new Error("Ambiguous API pagination metadata.");
+    }
+    const link = links.length ? links[0].slice(5).trim() : null;
+    if (link !== null) {
+      if (!link || link.length > 8192) {
+        throw new Error("API pagination metadata exceeds its bound.");
+      }
+      const relations = new Set();
+      for (const entry of link.split(/,\s*/)) {
+        const match = /^<([^>]+)>;\s*rel="(next|prev|first|last)"$/.exec(entry);
+        if (!match || relations.has(match[2])) {
+          throw new Error("Invalid API pagination metadata.");
+        }
+        validateApiRoute(match[1]);
+        if (match[1].split("?")[0] !== route.split("?")[0]) {
+          throw new Error("API pagination changed its resource.");
+        }
+        relations.add(match[2]);
+      }
+    }
+    return { status: Number(status), link, offset };
+  }
+}
+
+function runChild(binary, args, env, input, metadataRoute) {
   const child = spawn(binary, args, {
     env,
     stdio: input === undefined ? "inherit" : ["pipe", "pipe", "inherit"],
   });
   const chunks = [];
   let responseSize = 0;
+  let metadata;
+  let invalidResponse = false;
   if (input !== undefined) {
     // A child that refuses before reading headers can close stdin early; its
     // error/close result below remains the authority for operation failure.
@@ -145,10 +198,21 @@ function runChild(binary, args, env, input) {
     child.stdin.end(input);
     child.stdout.on("data", (chunk) => {
       responseSize += chunk.length;
-      if (responseSize > 12 * 1024 * 1024 + 4) {
-        child.kill("SIGTERM");
-      } else {
+      try {
+        const headerAllowance = metadataRoute === undefined ? 0 : 16 * 1024;
+        if (responseSize > 12 * 1024 * 1024 + headerAllowance + 4) {
+          throw new Error("API response exceeds its bound.");
+        }
         chunks.push(chunk);
+        if (metadataRoute !== undefined && metadata === undefined) {
+          metadata = responseMetadata(Buffer.concat(chunks), metadataRoute);
+        }
+        if (metadata !== undefined && responseSize - metadata.offset > 12 * 1024 * 1024 + 4) {
+          throw new Error("API body exceeds its bound.");
+        }
+      } catch {
+        invalidResponse = true;
+        child.kill("SIGTERM");
       }
     });
   }
@@ -164,13 +228,33 @@ function runChild(binary, args, env, input) {
     process.off("SIGTERM", term);
     process.off("SIGINT", interrupt);
     cleanupTrust();
-    if (signal) {
+    if (invalidResponse) {
+      process.stderr.write("The managed public API read refused the response.\n");
+      process.exitCode = 1;
+    } else if (signal) {
       process.kill(process.pid, signal);
     } else if (input !== undefined && code === 0) {
       const response = Buffer.concat(chunks);
-      if (/^\n2\d\d$/.test(response.subarray(-4).toString("ascii"))) {
-        process.stdout.write(response.subarray(0, -4));
-      } else {
+      try {
+        const status = response.subarray(-4).toString("ascii");
+        if (!/^\n2\d\d$/.test(status)) {
+          throw new Error("Unsuccessful API response.");
+        }
+        if (metadataRoute === undefined) {
+          process.stdout.write(response.subarray(0, -4));
+        } else {
+          if (metadata === undefined || metadata.status !== Number(status)) {
+            throw new Error("Invalid API response metadata.");
+          }
+          process.stdout.write(
+            JSON.stringify({
+              status: metadata.status,
+              link: metadata.link,
+              body: JSON.parse(response.subarray(metadata.offset, -4).toString("utf8")),
+            }) + "\n",
+          );
+        }
+      } catch {
         process.stderr.write("The managed public API read refused the response.\n");
         process.exitCode = 1;
       }
@@ -180,7 +264,7 @@ function runChild(binary, args, env, input) {
   });
 }
 
-function apiGet(route) {
+function validateApiRoute(route) {
   // Origin-form only; the reader validates supported resources and query fields.
   // Reject dot/encoded path segments before URL normalization can change them.
   if (typeof route !== "string" || route.length > 2048 || /[^\x21-\x7e]|[\\#]/.test(route)) {
@@ -196,6 +280,10 @@ function apiGet(route) {
   ) {
     throw new Error("A reader-relative API route is required.");
   }
+}
+
+function apiGet(route, metadata = false) {
+  validateApiRoute(route);
   const config = configuration(process.env.OCE_PUBLIC_GITHUB_READ_CONFIG);
   const token = authorization(config);
   const ca = operationTrust(config);
@@ -227,11 +315,13 @@ function apiGet(route) {
       "@-",
       "--write-out",
       "\n%{http_code}",
+      ...(metadata ? ["--include", "--suppress-connect-headers"] : []),
       "--url",
       config.endpoint + route,
     ],
     env,
     "Authorization: Bearer " + token + "\n",
+    metadata ? route : undefined,
   );
 }
 
@@ -536,6 +626,8 @@ try {
     remoteHelper(process.argv[3], process.argv[4]);
   } else if (process.argv[2] === "--api-get" && process.argv.length === 4) {
     apiGet(process.argv[3]);
+  } else if (process.argv[2] === "--api-get-metadata" && process.argv.length === 4) {
+    apiGet(process.argv[3], true);
   } else {
     throw new Error("Unsupported managed Git invocation.");
   }
