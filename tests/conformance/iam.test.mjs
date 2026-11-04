@@ -271,59 +271,6 @@ test("managed memory policy binds provisioned humans and local services to only 
   );
 });
 
-test("managed memory policy accepts an untargeted Namespace binding for create permissions", async () => {
-  const platform = new InMemoryPlatformState({ iamIdentities: identities });
-  const native = managedNamespaceDriver(platform, () => identities);
-  await platform.transact(async (unit) => {
-    await createInstallationNamespaces(unit);
-    await native.createNamespaceRole(
-      { policy: unit.iamPolicy },
-      {
-        id: "namespace-agent-author",
-        namespaceId: "namespace-a",
-        permissions: [
-          { action: "read", resourceKind: "namespace" },
-          { action: "create", resourceKind: "agent" },
-          { action: "read", resourceKind: "agent" },
-        ],
-      },
-    );
-    const binding = await native.createNamespaceAccessBinding(
-      { policy: unit.iamPolicy },
-      {
-        id: "namespace-agent-author-binding",
-        namespaceId: "namespace-a",
-        subjectKind: "identity",
-        subjectId: "principal-unbound",
-        roleId: "namespace-agent-author",
-      },
-    );
-    assert.equal(binding.resourceKind, undefined);
-    assert.equal(binding.resourceId, undefined);
-  });
-
-  assert.equal(
-    (
-      await native.authorize({
-        principalId: "principal-unbound",
-        action: "create",
-        resource: agentResource("namespace-a"),
-      })
-    ).allowed,
-    true,
-  );
-  assert.equal(
-    (
-      await native.authorize({
-        principalId: "principal-unbound",
-        action: "create",
-        resource: agentResource("agent-b", "namespace-b"),
-      })
-    ).allowed,
-    false,
-  );
-});
-
 test("managed memory policy resolves identities enrolled after construction with the exact subject rule", async () => {
   const enrolled = [];
   const bindable = new Set(["principal-late", "service-late-a"]);
@@ -705,46 +652,6 @@ test("the IAM Driver resolves only explicitly provisioned issuer and subject ide
   ]) {
     assert.equal(await driver.lookupIdentity(lookup), undefined);
   }
-});
-
-test("the IAM Driver resolves a human Principal by immutable ID and rejects services", async () => {
-  const driver = createDriver();
-
-  assert.equal(
-    (await driver.lookupIdentity({ principalId: "principal-reader-a", namespaceId: "namespace-a" }))
-      ?.kind,
-    "principal",
-  );
-  assert.equal(
-    await driver.lookupIdentity({
-      principalId: "service-principal-reader-a",
-      namespaceId: "namespace-a",
-    }),
-    undefined,
-  );
-  assert.equal(
-    (await driver.lookupIdentity({ principalId: "principal-reader-a", namespaceId: "namespace-b" }))
-      ?.id,
-    "principal-reader-a",
-  );
-  assert.equal(
-    await driver.lookupIdentity({
-      principalId: "principal-not-provisioned",
-      namespaceId: "namespace-a",
-    }),
-    undefined,
-  );
-  assert.equal(
-    await driver.lookupIdentity({
-      principalId: "principal-reader-a",
-      namespaceId: "namespace-a",
-      unsupported: true,
-    }),
-    undefined,
-  );
-  const inheritedLookup = Object.create({ principalId: "principal-reader-a" });
-  inheritedLookup.namespaceId = "namespace-a";
-  assert.equal(await driver.lookupIdentity(inheritedLookup), undefined);
 });
 
 test("ordinary service principals keep explicitly scoped platform grants", async () => {

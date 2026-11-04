@@ -1,8 +1,9 @@
-// The one place that words who grants access and what to ask for (findings 2539, 2578). An
-// Installation administrator assigns the Agent Author Role or grants exact-resource access
-// through Namespace IAM policy. Other create operations remain administrator-owned. Grants use
-// the permissions cheat sheet's words and name the action the API checks for that request
-// (docs/reference/cheatsheets/permissions.md).
+// The one place that words who grants access and what to ask for (findings 2539, 2578). People
+// receive exact-resource grants through Namespace IAM policy, which only Installation
+// administration may write (findings 1920, 2259, 2260), so every reason sends the reader to an
+// Installation administrator, in these words. Grants use the permissions cheat sheet's words and
+// name the action the API checks for that request (docs/reference/cheatsheets/permissions.md).
+// The API's own named denials end the same way ("Ask an Installation administrator to grant it.").
 
 // The ask clause inside a sentence, such as "Refresh, or ask an Installation administrator."
 export const ASK_INSTALLATION_ADMINISTRATOR = "ask an Installation administrator";
@@ -26,17 +27,16 @@ export const notIncluded = (task: string, grant: string) =>
 export const actionRefused = (action: string, task: string, grant: string) =>
   `${action} was refused: ${notIncluded(task, grant).replace(/^Your/, "your")}`;
 
-// Namespace create is checked on the Installation and remains administrator-owned. The managed
-// Agent Author Role can grant create for Agents, Configurations, Secrets, and credential sources.
-const agentAuthorCreates = (kinds: string, where: string, step: string) =>
-  `Your access does not include creating ${kinds} ${where}. Ask an Installation administrator to assign you the Agent Author Role in this Namespace or ${step}.`;
+// Create is checked on the parent (the Installation for a Namespace, otherwise the Namespace), and
+// Namespace IAM Roles cannot grant people create (docs/guides/topics/iam.md), so the reason names
+// who can create instead of a grant to ask for (findings 2496, 2508).
 const onlyAdministratorCreates = (kinds: string, where: string, step: string) =>
   `Your access does not include creating ${kinds} ${where}. Only an Installation administrator can create ${kinds}: ask one to ${step}.`;
 
-export const AGENT_CREATE_DENIED = agentAuthorCreates(
+export const AGENT_CREATE_DENIED = onlyAdministratorCreates(
   "Agents",
   "in this Namespace",
-  "create the Agent and give you access to edit and deploy it",
+  "create it and to give you access to edit and deploy it",
 );
 // An Installation administrator may still be refused Agent create: a deny Restriction overrides
 // every grant in its Namespace, administration included, and administration cannot lift it. The
@@ -49,10 +49,10 @@ export const agentCreateDenied = (
   permissions?: { installation?: { administer?: boolean } } | null,
 ) =>
   permissions?.installation?.administer === true ? AGENT_CREATE_RESTRICTED : AGENT_CREATE_DENIED;
-export const SECRET_CREATE_DENIED = agentAuthorCreates(
+export const SECRET_CREATE_DENIED = onlyAdministratorCreates(
   "Secrets",
   "in this Namespace",
-  "create the Secret and give you Secret read and operate on it",
+  "create it and to give you Secret read and operate on it",
 );
 export const NAMESPACE_CREATE_DENIED = onlyAdministratorCreates(
   "Namespaces",
@@ -109,6 +109,9 @@ const IF_NEEDED_VERSION_READ = `If you need it, ${ASK_INSTALLATION_ADMINISTRATOR
 export const VERSION_UNAVAILABLE = `This version does not exist or your access does not include it. ${IF_NEEDED_VERSION_READ}`;
 export const requestedVersionUnavailable = (version: string) =>
   `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. ${IF_NEEDED_VERSION_READ}`;
+// A version the page showed as selected for service exists, so once a stop or another version
+// takes its place it is not named as one that may not exist, nor by its raw ID (finding 3000).
+export const FORMER_CURRENT_VERSION_UNREADABLE = `You cannot read the version that was selected for service, so this page shows no progress or outcome for it. ${IF_NEEDED_VERSION_READ}`;
 // A version this tab's own Deploy created exists: the API accepted it. A deployer without read on
 // it is told that, not that it may not exist (finding D751).
 export const deployAcceptedVersionUnreadable = (version: string) =>
@@ -274,9 +277,9 @@ export const WORKSPACE_SAVE_REFUSED = actionRefused(
   "saving this Agent's workspace files",
   "Agent operate on it",
 );
-// POST /configurations authorizes Configuration create and Secret operate on each bound Secret;
-// the managed Agent Author Role grants both in its Namespace.
-export const CONFIGURATION_CREATE_REFUSED = `Create was refused: your access does not include creating this Agent's Configuration. That needs Configuration create in this Namespace and Secret operate on each Secret it binds. Ask an Installation administrator to assign you the Agent Author Role in this Namespace or create this Agent.`;
+// POST /configurations authorizes Configuration create, which no Namespace Role grants, plus
+// Secret operate on each Secret it binds: only an Installation administrator can create it.
+export const CONFIGURATION_CREATE_REFUSED = `Create was refused: your access does not include creating this Agent's Configuration. That needs Configuration create in this Namespace, which only an Installation administrator holds, plus Secret operate on each Secret it binds. ${askAdministratorTo("create this Agent")}`;
 // The editing setting authorizes Installation administer and Agent administer, which no Namespace
 // Role grants, so the reason names who can change it instead of a grant.
 export const POLICY_EDITING_SETTING_REFUSED =

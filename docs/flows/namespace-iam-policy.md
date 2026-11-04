@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-10-29
-last_updated_session: "authoring-run/263f6d06-b03f-40ef-baa6-9563f7b9163a"
+updated: 2026-11-04
+last_updated_session: "authoring-run/c8796acb-decf-43ea-bd64-ec100c7c2069"
 ---
 
 # Namespace IAM Policy Flow
@@ -9,10 +9,11 @@ last_updated_session: "authoring-run/263f6d06-b03f-40ef-baa6-9563f7b9163a"
 ## Overview
 
 Namespace IAM policy management begins when an authenticated caller uses the OCC
-API or CLI to list, create, read, or delete a Namespace Role or AccessBinding,
-or to list, create, or read a Namespace ServicePrincipal. The managed Agent
-Author preset adds one Namespace-wide binding for a human Principal. OCC checks
-the preset and subject, then commits the policy change with its audit event.
+API or CLI to list, create, read, or delete a Namespace Role or exact
+AccessBinding, or to list, create, or read a Namespace ServicePrincipal. OCC authorizes the administrator, validates that the policy entry
+belongs to the requested Namespace, and delegates the policy mutation to the
+selected IAM Driver. The flow stops after the policy and audit event commit
+together in the platform state transaction.
 
 ## Entry Points
 
@@ -33,20 +34,20 @@ graph TD
   C -->|read| D["Controller asks selected IAM Driver to read Namespace policy"]
   C -->|create/delete| S{"Human-session caller?"}
   S -->|yes| L{"Assigning session current?"}
-  L -->|yes, held through transaction| N{"Binding scope?"}
+  L -->|yes, held through transaction| E["Controller validates Role, subject, and exact target"]
   L -->|revoked or expired| X["Roll back and deny"]
-  S -->|no| N
-  N -->|exact resource| E["Controller validates Role and target"]
-  N -->|Namespace| P["Controller requires managed Agent Author Role and human Principal"]
+  S -->|no| E
   E --> T{"IAM Driver joins transaction?"}
-  P --> T
-  P -->|invalid Role or subject| X
   T -->|yes| F["Selected IAM Driver mutates platform IAM policy"]
   T -->|no| U["Reject with 503 before policy write"]
   F --> G["Controller appends audit event in the same transaction"]
   D --> H["API returns policy metadata"]
   G -->|COMMIT validates held session| H
   G -->|held session expired| X
+  M["Agent or Configuration edit; worker completion"] --> R["Retain draft, active and unfinished revision sources"]
+  R --> K{"Unused OCC-generated binding?"}
+  K -->|yes| F
+  K -->|no| H
 ```
 
 ## Execution Trace
@@ -100,36 +101,25 @@ issues and revokes its keys.
 
 `packages/occ/src/index.ts:createIAMAccessBinding`
 
-Role creation accepts only nonempty, duplicate-free Permissions for Namespace
-resource kinds; `namespace` Permissions support only `read`. Custom Roles cannot
-grant `create`, because create operations authorize against the Namespace
-collection. The managed `agent-author` preset supplies one fixed permission set
-and canonical Role ID. OCC creates it idempotently and refuses a conflicting
-Role with that ID. For an AccessBinding with `scope: "namespace"`, OCC requires
-that Role, checks that its permission set is unchanged, and resolves `subjectId`
-to a human Principal in the selected IAM Driver. ServicePrincipals and cross-
-Namespace identities are refused. Other bindings retain exact resource targets;
-OCC verifies the target exists and the caller can read it before creating the
-binding. `assertAccessBindingRoleApplies` refuses a Role that has no Permission
-for the target kind.
-
-Agent and Configuration writes reconcile generated credential grants through
-`packages/occ/src/index.ts:ensureAgentOperateGrants`. Both this path and worker
-activation cleanup use
-`packages/occ/src/ports/agent-credential-revisions.ts:retainedAgentCredentialRevisions`
-to retain credentials referenced by the active revision or queued and claimed
-deployment work, as well as the current draft. A draft edit cannot withdraw a
-grant from a deployment still in progress. Once that work is terminal, the next
-mutation or activation reconciliation can remove its unused generated grants.
-Independently managed bindings remain unchanged.
+Role creation accepts only nonempty, duplicate-free permissions for Namespace
+resource kinds; `namespace` permissions support only `read`. `iamRolePermissions`
+also refuses action/kind pairs outside `SUPPORTED_PERMISSION_ACTIONS` (contracts),
+because no operation checks them, and then any `create` Permission, because `create`
+is checked on the Namespace and this API binds only exact resources
+(`NAMESPACE_POLICY_CREATE_REASON`). AccessBinding creation accepts identity subjects and exact
+targets in the same Namespace, including the Namespace itself when the target
+ID matches the path Namespace. OCC verifies the target resource exists and that
+the caller can read it before asking the IAM Driver to create the binding.
+`assertAccessBindingRoleApplies` then refuses, with `400`, a Role that has no
+Permission for the target's kind, or a `create` Permission stored before Role
+creation refused them, because evaluation would drop those grants.
 
 ### 4. The IAM Driver persists or reads policy
 
 `packages/iam/src/index.ts:NativeIAMDriver`
 
 The native IAM Driver implements Namespace policy methods against the
-platform-provided policy repository. `lookupIdentity({ principalId, namespaceId })`
-resolves a human Principal for managed-role assignment. Before a policy write, OCC requires the
+platform-provided policy repository. Before a policy write, OCC requires the
 selected Driver's `namespacePolicyTransaction: "platform-unit-of-work"`
 declaration. An unsupported Driver returns `503` before its mutation method is
 called; reads do not require that declaration. The native Driver rejects missing Roles, cross-Namespace
@@ -166,13 +156,17 @@ indexes each snapshot once (identities by id, issuer and subject; bindings by
 subject; Restrictions by action and kind). Nothing outlives the
 unit: the next request reads the policy again.
 
+`packages/occ/src/index.ts:OpenClawController.updateAgent` checks Agent `update`
+again after locking the Namespace. Namespace IAM writes take the same lock.
+If a binding withdrawal commits first and the caller has no other applicable
+`update` grant, the Agent save returns `403` and leaves the draft unchanged.
+
 ### 5. Platform state commits policy and audit together
 
 `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
 
 The PostgreSQL state implementation writes Roles and AccessBindings through the
-same unit of work used by the API audit append. A Namespace-scoped binding stores
-both resource columns as `NULL`; exact bindings store both target columns. Holding a session issues an
+same unit of work used by the API audit append. Holding a session issues an
 unchanged-row UPDATE that locks it without extending its lifetime or changing
 authentication metadata. This queues the deferred
 `occ.require_held_authentication_session` constraint for server-side COMMIT
@@ -206,6 +200,37 @@ for an original transaction. Its SQL supplier is unregistered, and the
 Namespace routes above do not use it. It does not protect these routes until the
 selected account, session, and policy writers join the same protocol.
 
+### 6. Reconcile generated Agent credential grants
+
+`packages/occ/src/agent-credential-grants.ts:removeUnusedAgentCredentialGrants`
+owns credential-grant cleanup. It runs in the caller's transaction, with the
+Namespace lock held. It selects only the existing provisioning binding ID,
+Agent ServicePrincipal, exact resource, and generated operate Role together;
+other bindings remain independently administered.
+
+`packages/occ/src/index.ts:OpenClawController.updateConfiguration` runs cleanup
+for each Agent using the edited Configuration.
+`packages/occ/src/index.ts:OpenClawController.updateAgent` runs it after saving
+the draft. The shared function retains draft Configuration bindings, Harness
+authentication sources, and Agent credential sources. It also loads the active
+revision and each revision whose reconcile work is queued or claimed, retaining
+their saved sources. Missing retained data refuses the transaction.
+An active pointer can precede predecessor retirement. Until that active revision's
+reconcile work succeeds, cleanup keeps existing generated grants, including when
+retirement failed. A successful reconciliation or Stop permits another cleanup.
+
+`apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision` runs
+the same cleanup after activation and predecessor retirement. Stop and terminal
+revision completion also reconcile grants, after their queue transition, so
+finished work no longer retains a source by itself. The active revision remains
+a consumer until its pointer is cleared or replaced.
+
+The selected IAM Driver must support transactional deletion when unused generated
+bindings exist. Each successful deletion appends its actor-attributed audit event
+in the same transaction. A refused deletion or audit failure rolls back the
+policy and state change. The [IAM reference](../reference/drivers/iam.md#generated-agent-credential-grants)
+owns the supported lifetime and revocation limits.
+
 ## Debugging and Verification
 
 - `node --test tests/integration/occ-api.test.mjs` checks the HTTP contract and
@@ -215,6 +240,12 @@ selected account, session, and policy writers join the same protocol.
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.mjs` checks
   PostgreSQL persistence, audit atomicity, and deletion behavior with real state.
+- The Secret-backed cases in `tests/integration/postgres-agent-provisioning.test.mjs`
+  exercise real API admission, PostgreSQL queue claims, draft edits, and worker
+  activation. They prove queued, claimed, and active revision retention, generated
+  grant removal, retention while predecessor retirement waits, and preservation
+  of an administrator binding. Compute and Secret
+  delivery use test Drivers; this is not live model or Kubernetes proof.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.mjs`
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
@@ -236,7 +267,6 @@ selected account, session, and policy writers join the same protocol.
 ## Related docs
 
 - [Identity and access management](../reference/authorization.md)
-- [Console Agent creation](platform-console/agent-creation.md)
 - [Agents](../reference/agents.md)
 - [API reference](../reference/api.md)
 
@@ -246,9 +276,8 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
-- 2026-10-29 16:08: Retain credential grants for queued and claimed Agent deployments in mutation and activation cleanup. (authoring-run/263f6d06-b03f-40ef-baa6-9563f7b9163a - e309381e526ffeff48f4327413dda8b1a5d4dc9e)
-
-- 2026-10-29 10:06: Document the fixed Agent Author Role, human Principal assignment and untargeted Namespace binding. (authoring-run/32233c9b-0a2e-4472-ae28-676de3a66fcd - 3b9f76e11c3a7ffb5997de61c1e448370c521a92)
+- 2026-11-04 17:36: Share generated credential-grant retention and cleanup across draft mutations and worker completion; accompanying local changes. (authoring-run/c8796acb-decf-43ea-bd64-ec100c7c2069 - e109c87191cf950096002751af2a7a2bef4d7f38)
+- 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)
 - 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)

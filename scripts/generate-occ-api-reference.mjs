@@ -181,26 +181,10 @@ function schemaRows(schema, document, parent = "") {
   return rows;
 }
 
-function schemaTable(schema, document, { alternatives = false } = {}) {
+function schemaTable(schema, document) {
   const resolvedSchema = resolveSchema(schema, document);
-  if (alternatives && resolvedSchema.anyOf) {
-    const common =
-      schemaRows(resolvedSchema, document).length > 0
-        ? [schemaTable(resolvedSchema, document)]
-        : [];
-    return [
-      ...common,
-      ...resolvedSchema.anyOf.map(
-        (alternative, index) =>
-          `**Alternative ${index + 1}:**\n\n${schemaTable(alternative, document, { alternatives: true })}`,
-      ),
-    ].join("\n\n");
-  }
   const rows = schemaRows(resolvedSchema, document);
   if (rows.length === 0) {
-    if (resolvedSchema.required?.length > 0) {
-      return `Required fields: ${resolvedSchema.required.map((field) => `\`${field}\``).join(", ")}.`;
-    }
     return `Schema: \`${schemaType(schema, document)}\`.`;
   }
 
@@ -285,7 +269,7 @@ function operationReference(path, method, operation, document, { headingLevel = 
     for (const [contentType, content] of Object.entries(operation.requestBody.content ?? {})) {
       sections.push(
         `**Content type:** \`${contentType}\``,
-        schemaTable(content.schema, document, { alternatives: true }),
+        schemaTable(content.schema, document),
         ...renderedExamples(content, contentType),
       );
     }
@@ -500,6 +484,7 @@ function referencePage(document, groups, entries) {
     .filter((section) => section.startsWith("## "))
     .map((heading) => heading.slice(3));
   const page = [
+    "---\ntags: [nolimit]\n---",
     `# ${document.info.title} reference`,
     generatedComment(),
     ...introduction(document),

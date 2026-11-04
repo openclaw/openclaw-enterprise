@@ -1,3 +1,7 @@
+---
+tags: [nolimit]
+---
+
 # CI configuration and testing
 
 ## Overview
@@ -32,6 +36,102 @@ lanes, including Checks and Conformance 2 to type-check TypeScript tests.
 Other changes run all ordinary lanes. `CI Required` currently blocks
 merge on `main`. These workflows do not gate each Agent/platform deployment.
 
+## Qualify a published release for staging
+
+Run [Staging Release Qualification](../../.github/workflows/staging-qualification.yml)
+with the trusted `main` workflow. Supply `installation`, the full `source_sha`,
+`publication_run_id`, and its exact `publication_attempt`. The publication must be
+a successful manual Enterprise Containers run for that source on `main`.
+The [Enterprise Containers publisher](../release/containers.md#source-visibility)
+issues receipts only for public GitHub Container Registry (GHCR) packages.
+Private and internal packages are ineligible even if the package names match or
+the qualification token has read access.
+Runs for the same installation share a concurrency group and do not cancel an
+active qualification.
+
+Configure the `staging-qualification` environment with `STAGING_INSTALLATION`,
+`GHCR_CONTROLLER_IMAGE`, and `GHCR_RUNTIME_IMAGE`.
+The installation input must equal the configured ID. Use an ID of 1–63 lowercase
+letters, digits, or hyphens, starting with a letter. GHCR values are explicit
+`ghcr.io/openclaw/` repositories without tags or digests. Restrict this environment
+to `main`. The qualification job authenticates the two image pulls with its
+workflow token, which has `packages: read`. The job uses a disposable runner-local
+k3d fixture and needs no staging cluster configuration or provider credentials.
+
+The [workflow command](../../scripts/ci/staging-qualification.ts) checks the
+trusted checkout against the workflow SHA, protected same-repository `main`,
+local workflow ancestry in `main`, and release ancestry in the workflow commit.
+It requires the exact successful Enterprise Containers run and attempt, a
+successful image publication job for that source, and one unexpired publication
+artifact. Dispatch IDs must be positive safe decimal integers. Source IDs must
+be full lowercase Git SHAs.
+
+The named artifact download retains an archive. Before reading it, the command
+repeats producer checks and compares its size and SHA-256 with GitHub metadata.
+The archive directory must contain exactly one regular file, at most 1 MiB.
+The command passes the verified archive bytes to Python 3's standard ZIP decoder
+on the runner. It reads only `publication.json`, at most 64 KiB, without
+extracting files or passing a GitHub token. The receipt must match a successful
+same-repository `main` push returned by the CI workflow's source-SHA query.
+Only service-derived run IDs and attempts select the exact CI run and job checks.
+The script does not write Actions outputs.
+
+Only the workflow commit is checked out. Setup, dependencies, preparation,
+tests, manifests, and cleanup come from that checkout. Historical Git objects
+supply only the ordinary `deploy/runtime/Dockerfile` blob, at most 64 KiB, as
+inert data. The current 0.164.0 profile requires the current recipe. The reviewed
+0.163.0-alpha.2 profile requires source
+`54bfa7fc1b99e362450beb5f9211e164991fa7b4` and its pinned recipe hash.
+Other recipes, including the October 9 0.160.0 profile, fail before pulls.
+The receipt, recipe, and trusted packaging manifest must agree on the Node base.
+
+After checking GitHub metadata, the command removes GitHub tokens before image
+operations. Git and ZIP decoder subprocesses never receive those tokens. A private
+Docker config supplies GHCR authentication only for the two digest pulls on the
+runner's local Docker socket. The command removes that config before inspection
+or startup. A failed pull reports the reference and access guidance without
+printing subprocess output.
+
+The command verifies each pulled digest, Linux amd64 platform, and source label,
+then passes the exact local image IDs to trusted tests. It rechecks source labels
+before smoke preparation. The selected profile's Codex version controls the real
+seccomp probe and explicit runtime-suite expectations; normal CI retains 0.164.0
+assertions. The runner records the workflow SHA as its test source, while the
+pull receipt records the historical image source separately. No historical host
+code is built or executed. Historical images receive only the existing isolated
+fixture mounts, not the runner workspace, Docker socket, or Actions credentials.
+
+The runner selects the controller and runtime startup files from
+`images-packaging` and `images-runtime-startup`. Missing, failed, or skipped cases
+fail the lane. Preparation, tests, and cleanup must succeed before the command
+writes `staging-qualification.json`. The always-run upload explicitly retains
+`staging-pulled-images.json`, `staging-images-packaging.json`,
+`staging-images-runtime-startup.json`, and `staging-qualification.json` when
+produced. An early preparation failure retains the pull receipt without a
+success receipt or invented suite results.
+
+This is **container startup qualification on amd64**, not an installation or
+rollout. The installed prepared-Git lane builds a separate repository-service
+image and a runtime with a test CA through
+[first-agent-smoke](../../scripts/ci/first-agent-smoke.mjs); the two-image
+publication receipt cannot supply that installation unchanged. Full Integration
+and QA Advisory retain their existing installation and provider requirements.
+This workflow does not promote to production or prove staging readiness,
+installed Agent journeys, or arm64 behavior.
+
+For local command coverage, run:
+
+```sh
+node --test tests/integration/staging-qualification.test.ts
+node scripts/ci/run-tests.mjs audit
+```
+
+The command test uses local Git history and independent GitHub and Docker
+transport fixtures. It checks digest handoff, credential isolation, hostile
+Actions output paths, archive tampering, rejection before pulls, and a real
+preparer failure before any suite. Hosted token permissions, registry pulls,
+container startup, and live installations need separate proof.
+
 <a id="ci-configuration"></a>
 
 ## Configuration
@@ -63,11 +163,19 @@ exactly one custom rule: branch `main`. The advisory `integration-qa-pr` environ
 permits `main` and GitHub's `refs/pull/*/merge` branches. The `full-qa` and `qa-openshell-compose` labels select runs within
 that policy. Full Integration preflight does not govern this environment.
 
-Only `k3d-model`, `openshell`, and credential-free `dev-up-k3d` accept a branch
-dispatch. For the first two, temporarily add the exact reviewed branch to the
-corresponding custom environment policy, preserving `main`; a wildcard alone
-does not authorize it. Remove the exception afterward. `dev-up-k3d`,
-`helper-timeout`, and standalone `logging-collector` need no environment.
+Full Integration rejects tags. Before dispatch, confirm the branch points
+to the reviewed commit; rely on the run only if its `headSha` matches that commit. Four
+lanes accept branches other than `main`.
+For `k3d-model` (`integration-model`) and `openshell` (`integration-openshell`),
+the custom environment policy must allow both `main` and the exact reviewed
+branch. A wildcard alone does not authorize the branch. Remove the temporary
+branch exception afterward.
+
+`dev-up-k3d` and `skipper-prepared-git-installed` accept branches without a
+GitHub environment. The Skipper job uses synthetic, job-local model and Git credentials for the
+[installed private Git fixture](repository-credentials.md#verify-prepared-native-git)
+and a GitHub Actions cache token to build images. `helper-timeout` and standalone
+`logging-collector` also need no environment, but both require `main`.
 
 The table distinguishes secret names from variable names. The common runtime
 image variables are optional `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
@@ -82,7 +190,7 @@ image variables are optional `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
 | `integration-slack`            | Full Integration: Slack Live                                                                 | `OPENAI_API_KEY`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `OCC_TEST_SLACK_SENDER_BOT_TOKEN`                                                 | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_SLACK_PROXY_URL`, `OCC_TEST_SLACK_CHANNEL_ID`.                                                                                                                                                              |
 | `integration-provider-account` | Full Integration: Provider Account                                                           | `OCC_TEST_CHATGPT_ADMIN_KEY_JSON`                                                                                                         | `OCC_TEST_CHATGPT_WORKSPACE_ID`, `OCC_TEST_OPENAI_MODEL`, common runtime images.                                                                                                                                                                                      |
 | `integration-openshell`        | Full Integration: OpenShell                                                                  | `CODEX_ACCESS_TOKEN`                                                                                                                      | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`, `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`, `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`, `OCC_TEST_OPENSHELL_SECRET_PROJECTION` (default `1`).                                                  |
-| `integration-qa-pr`            | QA Matrix Advisory: QA advisory (compose), QA advisory (kubernetes), QA advisory (OpenShell) | `CODEX_ACCESS_TOKEN`                                                                                                                      | `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_OPENAI_MODEL`, and Calendar settings below. Code on `main` and selected trusted PRs receives these credentials.                                                                                                                  |
+| `integration-qa-pr`            | QA Matrix Advisory: QA advisory (compose), QA advisory (kubernetes), QA advisory (OpenShell) | `CODEX_ACCESS_TOKEN`, `OPENAI_API_KEY`                                                                                                    | `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_OPENAI_MODEL`, and Calendar settings below. Code on `main` and selected trusted PRs receives these credentials.                                                                                                                  |
 | `integration-qa`               | Full Integration: Shipped Installation QA Matrix                                             | `OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_SENDER_TOKEN`, plus repository fixture secrets below | `OCC_TEST_QA_OPENAI_MODEL`, `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_QA_SLACK_CHANNEL_ID`, Calendar settings, `REPOSITORY_UPSTREAM_CIDRS_JSON`.                                                                                                                           |
 
 `NODE_BASE_IMAGE` is a separate variable consumed by older Full Integration
@@ -110,6 +218,11 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 <a id="local-runner-overrides"></a>
 
 ### Setting Overrides
+
+For lanes that accept optional Kubernetes runtime images, set both
+`OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` to
+immutable references, or omit both to build from source. Supplying only one fails
+preparation before state or resources are created.
 
 These process environment variables are optional. Keep the same directory and
 slot for First Agent `images` and `run`; only a distinct slot isolates host-wide names.
@@ -189,12 +302,14 @@ not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
 The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
-and checks its branding through sign-in and the Agent workflow. Its OpenClaw
+and checks its branding through sign-in and the Agent workflow. For Dedicated Agents
+on Kubernetes, it provisions with `nativeAdmin: true`, checks Configuration
+generation 1 and one revision, then exercises native browser chat. Its OpenClaw
 cell also redeploys the same Agent with an explicitly configured provider alias,
 the existing OCC Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
 This stage runs wherever the OpenClaw `model-ui` cell is selected; the Codex-only
-advisory selection does not cover it. Other scenarios
-do not require the theme or an extra API rollout.
+advisory selection does not cover it. Other scenarios do not require the theme or
+an extra API rollout.
 
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
 complete OpenShell lane. Each push has its own concurrency group so a later
@@ -221,7 +336,20 @@ worker and redeployment cases. Its control plane runs in Compose; its workloads
 still use Kubernetes Compute. `full-qa` takes precedence when both labels exist.
 The focused run skips the other advisory jobs, keeps manifest case requirements
 and cleanup, and records `scope: focused`. It cannot satisfy full-lane aggregation.
-Inspect `qa-advisory-compose-openshell` and its attempt-specific artifacts.
+Inspect `qa-advisory-local-first-agent-openshell-real-openshell` and its attempt-specific artifacts.
+
+Full advisory OpenShell runs use one Ubuntu 24.04 runner per file from the
+[OpenShell manifest](../../scripts/ci/test-suites/openshell.json). The files run in
+parallel across separate VMs. Each runner prepares its own Docker resources,
+cluster, kubeconfig, database, images and private state, then runs the selected
+file with its expected cases and cleanup. A failed shard does not cancel the
+others. Each result has `scope: focused`; require every shard to pass before
+claiming full advisory OpenShell coverage. The manual Full Integration lane
+continues to run the full manifest serially.
+
+The credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
+
+Codex timeout diagnostics from `tests/helpers/openshell-kubernetes-real.mjs` report the client phase, pending method names, message and command counts, and whether an action started. They exclude prompts, request identifiers, and payloads. A timeout does not authorize another turn; only the existing final capacity receipt before any action permits a retry.
 
 Ordinary PRs keep the [required CI suites](#ci) and, when selected, First Agent Smoke with a
 simulated model. Full Integration's `Shipped Installation QA Matrix` runs every selected combination.
@@ -234,22 +362,33 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Scenario                | In advisory | Presets         | Checks                                                                                                                                        |
-| ----------------------- | ----------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model-ui`              | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                                                  |
-| `agent-author`          | Yes (Codex) | OpenClaw, Codex | Explicit Namespace Role assignment, Installation and IAM denial, Agent create/update/deploy/stop/delete, runtime logs, and a real model turn. |
-| `console-secrets`       | Yes (Codex) | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation.       |
-| `git-write`             | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                   |
-| `git-push-denied`       | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                                                    |
-| `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                                    |
-| `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                          |
-| `openshell-linear-read` | No          | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                 |
+| Scenario                | In advisory | Presets         | Checks                                                                                                                                  |
+| ----------------------- | ----------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `model-ui`              | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                                            |
+| `console-secrets`       | Yes (Codex) | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation. |
+| `git-write`             | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                             |
+| `git-push-denied`       | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                                              |
+| `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
+| `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                    |
+| `openshell-linear-read` | No          | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                           |
+| `codex-search-config`   | No          | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.         |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+
+`codex-search-config` requires an exclusive explicit scenario selection. It changes
+only its disposable Installation, uses dedicated Codex API-key authentication,
+and needs `OCC_TEST_QA_CODEX_MODEL_BASE_URL`. Supply the model key through
+`OCC_TEST_QA_MODEL_API_KEY` in the consuming test process, or the existing private
+`OCC_TEST_QA_OPENAI_KEY_FILE` input. Environment injection is registered for error
+redaction and excluded from launcher children. Existing file inputs still require
+private regular files and reject symlinks. Set `OCC_TEST_QA_CODEX_MODEL` to an
+available model. The scenario proves generated configuration and native startup;
+it does not prove live web-search results. It is excluded from `all` and advisory
+jobs because its explicit endpoint and API-key inputs differ from account-login QA.
 
 All combinations check startup and authenticated console login. Git alone starts
 the broker. Linear reads use the explicit `openshell-linear-read` scenario,
@@ -313,6 +452,34 @@ following [fixture conventions](fixtures-and-scenarios.md); register inputs in
 the manifest and workflow. Workers own Agents/cleanup; keep dependent steps
 sequential and installation-wide changes outside workers. Preserve failure,
 security and disposal assertions.
+
+### Local k3d quickstart on a fresh runner
+
+Dispatch the [k3d quickstart workflow](../../.github/workflows/k3d-quickstart-e2e.yml) on `main`:
+
+```sh
+gh workflow run k3d-quickstart-e2e.yml --ref main
+```
+
+The workflow creates a fresh local installation, onboards a model-only Agent in the
+Control UI, and reopens the original conversation. It enables Linear and reads
+a known team through the Agent. It then adds Git to the same Agent, pushes one
+empty commit to a unique test branch, verifies the remote commit, and restores
+read-only access. It verifies that the final deployment retains Linear and that
+the Agent recalls the preference from its original conversation.
+
+Configure these inputs at the **repository** level:
+
+| Input                                    | Purpose                                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------------------- |
+| Secret `OCE_QUICKSTART_CODEX_PAT`        | Codex service account with the selected model and an authorized Linear connection |
+| Secret `OCE_TEST_GITHUB_APP_PRIVATE_KEY` | RSA key for the App installed on the test repository                              |
+| Variable `OCE_QUICKSTART_MODEL`          | Model available to the service account                                            |
+| Variable `OCC_TEST_LINEAR_TEAM_ID`       | ID of a team the connected account can read                                       |
+
+Use the workflow result and its sanitized receipt to check the push, read-only
+restoration, tool result and cleanup. If a run ends during a push, check the
+remote ref before retrying. Keep the private operator session on the runner.
 
 <a id="manual-full-integration-lanes"></a>
 
@@ -400,4 +567,5 @@ gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3
 
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
 The 180-minute job budget includes setup/cleanup. Advisory results use
-`qa-advisory-local-installation-dev-up-k3d`; OpenShell uses `qa-advisory-openshell`.
+`qa-advisory-local-installation-dev-up-k3d`; each OpenShell shard uses
+`qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`).

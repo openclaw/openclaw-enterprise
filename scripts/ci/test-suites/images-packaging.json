@@ -18,6 +18,7 @@
   },
   "fileConcurrency": 3,
   "parallelFiles": [
+    "tests/integration/production-upgrade-signal-lock.test.ts",
     "tests/integration/codex-model-probe.test.mjs",
     "tests/integration/production-image-upgrade-recovery.test.mjs",
     "tests/integration/docker-compute-token-retry.test.mjs",
@@ -33,6 +34,9 @@
     "tests/integration/oidc-ca-trust.test.mjs"
   ],
   "files": [
+    {
+      "path": "tests/integration/production-upgrade-signal-lock.test.ts"
+    },
     {
       "path": "tests/integration/container-publication-workflow.test.mjs",
       "expectedTests": [
@@ -78,11 +82,12 @@
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
         "database routing refuses invalid ports before emitting NetworkPolicies",
-        "the production Helm chart renders private least-privilege runtime and ordered bootstrap",
+        "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
         "the plugin request guard installs beside OpenShell without control-plane access",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
-        "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",
+        "default routing refuses missing operator configuration",
+        "private Envoy Gateway routing defaults on with automatic CA and deterministic hostnames",
         "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
         "production peer matchLabels keep the native Kubernetes map contract",
         "Collector exporter ports preserve decimal meaning in Kubernetes YAML",

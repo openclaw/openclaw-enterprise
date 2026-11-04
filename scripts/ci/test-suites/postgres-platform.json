@@ -20,6 +20,7 @@
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
+    "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/workspace-setup-worker.test.mjs",
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
@@ -41,11 +42,13 @@
     "tests/integration/postgres-protected-git-recipient-custody.test.ts",
     "tests/integration/postgres-prepared-standing-removal.test.ts",
     "tests/integration/postgres-prepared-github-git-use.test.mjs",
-    "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+    "tests/integration/postgres-prepared-git-route-selection.test.ts",
+    "tests/integration/postgres-openshell-online-git-journey.test.ts",
     "tests/integration/postgres-openshell-git-routes.test.ts",
     "tests/integration/postgres-openshell-standing-route.test.ts",
     "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
+    "tests/integration/postgres-openshell-standing-repository-set.test.ts",
     "tests/integration/postgres-egress-send-receipts.test.mjs",
     "tests/integration/postgres-protected-credential-free.test.mjs",
     "tests/integration/postgres-standing-approval-api.test.ts",
@@ -55,7 +58,9 @@
     "tests/integration/postgres-standing-expiry-authority.test.ts",
     "tests/integration/credential-proxy-withdrawal.test.ts",
     "tests/integration/credential-proxy-revision-currentness.test.ts",
-    "tests/integration/postgres-egress-policy-transaction.test.ts"
+    "tests/integration/postgres-egress-policy-transaction.test.ts",
+    "tests/integration/postgres-credential-source-revision-owner.test.ts",
+    "tests/integration/postgres-worker-process-shutdown.test.ts"
   ],
   "files": [
     {
@@ -90,7 +95,8 @@
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
         "PostgreSQL platform state satisfies memory adapter ownership, immutability, and atomicity",
         "the PostgreSQL worker reloads exact Namespace restrictions and never dispatches revoked provisioning",
-        "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace"
+        "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",
+        "PostgreSQL guarded first deployment persists one private receipt and one reconcile work"
       ]
     },
     {
@@ -126,6 +132,12 @@
     {
       "path": "tests/integration/postgres-controller-work-targets.test.mjs",
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
+    },
+    {
+      "path": "tests/integration/postgres-agent-update-authority.test.ts",
+      "expectedTests": [
+        "Agent update refuses an exact grant withdrawn while waiting for its Namespace lock"
+      ]
     },
     {
       "path": "tests/integration/postgres-namespace-iam-policy.test.mjs",
@@ -194,7 +206,10 @@
         "Delete before admission cancels provisioning while a worker holds its claim, and finishes without a deployment",
         "failed provisioning keeps the accepted plan reserved until retry or deletion",
         "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan",
-        "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked"
+        "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked",
+        "source provisioning status preserves saved work when its Gateway catalog is unavailable",
+        "source provisioning worker rejects a withdrawn type while failed status remains readable",
+        "native admin opt-in provisions the exact origin in the first version and preserves retry identity"
       ]
     },
     {
@@ -327,21 +342,28 @@
       "path": "tests/integration/postgres-protected-git-recipient-custody.test.ts",
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
-        "changing between repository and installation scope waits for the previous owner to settle its token"
+        "changing between repository and installation scope waits for the previous owner to settle its token",
+        "selected repository set retires after B session across owner restart",
+        "selected repository set retires after B replacement across owner restart",
+        "selected repository set retires after B deadline across owner restart",
+        "selected repository set retires after NULL selection across owner restart",
+        "selected repository set retires after empty selection across owner restart",
+        "only matching terminal OpenShell evidence retires selected custody while OCC admission stays live"
       ]
     },
     {
       "path": "tests/integration/postgres-prepared-standing-removal.test.ts",
       "expectedTests": [
-        "standing removal orders prepared material and request authorization (removal first)",
-        "standing removal orders prepared material and request authorization (use first)",
+        "standing removal orders native request authorization (removal first)",
+        "standing removal orders native request authorization (use first)",
         "an admitted standing prepared broker uses an already-issued send permit and denies the next request"
       ]
     },
     {
       "path": "tests/integration/postgres-prepared-github-git-use.test.mjs",
       "expectedTests": [
-        "OpenShell material delivery reads only an existing live revision token without issuing or authorizing use"
+        "prepared Git use binds durable admission, exact ref, session and one exchange before retirement",
+        "a native revision's token state stays pending until GitHub issues it and quarantined after a refusal"
       ]
     },
     {
@@ -351,9 +373,10 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+      "path": "tests/integration/postgres-openshell-online-git-journey.test.ts",
       "expectedTests": [
-        "OCE signed TLS Git authorization composes with PostgreSQL admission and material withdrawal"
+        "OCE signed TLS Git authorization: stopping the Agent denies a fresh signed Git request",
+        "OCE signed TLS Git authorization: removing the repository binding denies a fresh signed Git request"
       ]
     },
     {
@@ -376,6 +399,7 @@
     {
       "path": "tests/integration/postgres-external-protected-git.test.ts",
       "expectedTests": [
+        "protected Codex artifact admission freezes the acknowledged subset and refuses unsupported or ignored purpose",
         "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
         "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
         "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
@@ -389,6 +413,12 @@
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
         "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-standing-repository-set.test.ts",
+      "expectedTests": [
+        "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C"
       ]
     },
     {
@@ -539,6 +569,21 @@
         "final placement binds the original Credential Proxy method",
         "authorization throw before mint fences a retained callback",
         "authorization throw after mint fences a retained callback"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-credential-source-revision-owner.test.ts",
+      "expectedTests": [
+        "revision insertion owns its snapshot before a source lock wait",
+        "reversed source lists commit in their original order",
+        "direct insertion respects OCC Namespace Agent source lock order",
+        "deleting source refuses waiting insertion and preserves archived bytes"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-process-shutdown.test.ts",
+      "expectedTests": [
+        "worker.mjs exits cleanly on SIGTERM after stopping the worker and its metrics listener"
       ]
     }
   ]

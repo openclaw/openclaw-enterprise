@@ -147,31 +147,50 @@ function outdatedOpenClawDatabases(stateDirectory) {
   return outdated;
 }
 
-function runStateMigrationDoctor(environment) {
+// Runs an OpenClaw command that takes the state directory's owner lock (Doctor,
+// native setup), and keeps the wrapper alive until the command has exited. If the
+// wrapper exited on a stop first, the container would end and the kernel would kill
+// the command (SIGKILL) while it holds the lock. That lock on retained state outlives
+// the Pod, and OpenClaw refuses it from every later PID namespace (finding 3104).
+// forwardStop passes a stop (SIGTERM, SIGINT) to the command, whose own handling
+// cancels its work. Otherwise the command runs to its end: OpenClaw's launcher kills
+// the CLI it respawns about 2 s after forwarding a stop, too soon for native setup to
+// release its lock, while setup itself ends within seconds, inside the Pod's
+// termination grace period. Resolves { status, signal, error } as spawnSync reports a
+// child, and terminating when a stop arrived.
+function runOpenClawStateOwner(args, options, { forwardStop }) {
   return new Promise((resolve) => {
-    const doctor = spawn(
-      process.execPath,
-      ["/app/openclaw.mjs", "doctor", "--fix", "--non-interactive"],
-      { stdio: "inherit", env: { ...environment, OPENCLAW_CONFIG_READONLY: "1" } },
-    );
+    const child = spawn(process.execPath, ["/app/openclaw.mjs", ...args], options);
     let terminating = false;
-    // Doctor's maintenance lease owns termination: let it stop its transaction.
     const stop = (signal) => {
       terminating = true;
-      doctor.kill(signal);
+      if (forwardStop) child.kill(signal);
     };
     const onTerm = () => stop("SIGTERM");
     const onInt = () => stop("SIGINT");
     process.on("SIGTERM", onTerm);
     process.on("SIGINT", onInt);
-    const settle = (outcome) => {
+    const settle = (result) => {
       process.off("SIGTERM", onTerm);
       process.off("SIGINT", onInt);
-      resolve({ outcome, terminating });
+      resolve({ status: null, signal: null, ...result, terminating });
     };
-    doctor.on("error", (error) => settle("error-" + (error?.code ?? "spawn")));
-    doctor.on("exit", (code, signal) => settle(signal ?? "exit-" + code));
+    child.on("error", (error) => settle({ error }));
+    child.on("exit", (status, signal) => settle({ status, signal }));
   });
+}
+
+async function runStateMigrationDoctor(environment) {
+  // Doctor's maintenance lease owns termination: let it stop its transaction.
+  const doctor = await runOpenClawStateOwner(
+    ["doctor", "--fix", "--non-interactive"],
+    { stdio: "inherit", env: { ...environment, OPENCLAW_CONFIG_READONLY: "1" } },
+    { forwardStop: true },
+  );
+  const outcome = doctor.error
+    ? "error-" + (doctor.error.code ?? "spawn")
+    : doctor.signal ?? "exit-" + doctor.status;
+  return { outcome, terminating: doctor.terminating };
 }
 
 // Runs Doctor with the environment OpenClaw itself starts with on stateDirectory.

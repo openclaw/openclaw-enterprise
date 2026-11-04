@@ -1,8 +1,10 @@
 package occdev
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -242,15 +244,45 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 			err != nil || len(source.BuildTimestamp) != 20 || timestamp.Format(time.RFC3339) != source.BuildTimestamp {
 			return "", fmt.Errorf("invalid %s: require a lowercase 40-character commit, 64-character archive SHA-256, and UTC build timestamp YYYY-MM-DDTHH:mm:ssZ", sourcePath)
 		}
-		if err := r.run(ctx, r.engine, "build", "-f", "deploy/runtime/Dockerfile",
-			"--build-arg", "OPENCLAW_COMMIT="+source.Commit,
-			"--build-arg", "OPENCLAW_SOURCE_SHA256="+source.SourceArchiveSHA256,
-			"--build-arg", "OPENCLAW_BUILD_TIMESTAMP="+source.BuildTimestamp,
-			"--tag", image, "."); err != nil {
+		args := []string{"build", "-f", "deploy/runtime/Dockerfile",
+			"--build-arg", "OPENCLAW_COMMIT=" + source.Commit,
+			"--build-arg", "OPENCLAW_SOURCE_SHA256=" + source.SourceArchiveSHA256,
+			"--build-arg", "OPENCLAW_BUILD_TIMESTAMP=" + source.BuildTimestamp}
+		if path := r.env["OCC_DEVELOPMENT_BUILD_CA_FILE"]; path != "" {
+			if err := validateBuildCAFile(path); err != nil {
+				return "", fmt.Errorf("OCC_DEVELOPMENT_BUILD_CA_FILE: %w", err)
+			}
+			args = append(args, "--secret", "id=build-ca,src="+path)
+		}
+		args = append(args, "--tag", image, ".")
+		if err := r.run(ctx, r.engine, args...); err != nil {
 			return "", err
 		}
 	}
 	return r.importDevelopmentImage(ctx, s, image)
+}
+
+// The engine parses --secret as comma-separated fields. Allow distribution CA
+// symlinks and spaces, but reject paths that could change the secret specification.
+func validateBuildCAFile(path string) error {
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, ",\"\r\n") {
+		return fmt.Errorf("use an absolute path without commas, quotes, or line breaks")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("expected a regular file")
+	}
+	bundle, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if bytes.Contains(bundle, []byte("PRIVATE KEY-----")) || !x509.NewCertPool().AppendCertsFromPEM(bundle) {
+		return fmt.Errorf("expected a public PEM certificate bundle without a private key")
+	}
+	return nil
 }
 
 func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState, image string) (result string, resultErr error) {
@@ -292,6 +324,10 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
+	childStaged, err := r.stageDevelopmentPlatformChild(ctx, image, platform, selected)
+	if err != nil {
+		return "", err
+	}
 	// Images are imported concurrently, so each needs its own archive.
 	archive := filepath.Join(s.directory, developmentImportArchive(selected))
 	defer func() {
@@ -299,8 +335,12 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
 		}
 	}()
+	// The staging tag names one complete image once it points at the platform
+	// child, so the archive needs no platform selection. Without a resolved
+	// child, keep the platform filter: it still works where the engine can
+	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" {
+	if r.engine == "docker" && !childStaged {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, selected)
@@ -437,15 +477,6 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
 			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
 		}
-		if s.ProtectedEgress {
-			if s.egressKeyID == "" {
-				return fmt.Errorf("protected egress requires the generated OpenShell JWT key identifier")
-			}
-			config["drivers"].(map[string]any)["credential_proxy"] = developmentEgressConfiguration(s)
-			sandbox := config["drivers"].(map[string]any)["sandbox"].(map[string]any)["configuration"].(map[string]any)
-			gateway := sandbox["gateway"].(map[string]any)
-			gateway["networkPolicyResources"] = append(gateway["networkPolicyResources"].([]any), developmentAuthorityEgressPolicy(s))
-		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
 	data, err := yaml.Marshal(config)
@@ -464,15 +495,16 @@ const (
 // The container engine may run remotely, so the launcher's architecture is not authoritative.
 func openShellCodexBinaries() []string {
 	return []string{
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 	}
 }
 
 // openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
 // Credential Gateway Drivers.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
-	if s.ProtectedEgress {
+	if s.authenticatedOpenShell() {
+		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
 		return map[string]any{
 			"id": "openshell", "type": "openshell",
 			"configuration": map[string]any{
@@ -480,7 +512,7 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 				"rootCertificatePath": "/etc/openclaw/openshell/ca.crt", "requestTimeoutMs": 30000,
 				"auth": map[string]string{"mode": "mtls", "certificatePath": "/etc/openclaw/openshell/tls.crt", "privateKeyPath": "/etc/openclaw/openshell/tls.key"},
 			},
-			"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID, "credential_proxy": developmentEgressDriver},
+			"drivers": drivers,
 		}
 	}
 	endpoint := fmt.Sprintf("http://k3d-%s-server-0:%d", s.Cluster, openShellNodePort)

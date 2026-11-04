@@ -20,17 +20,17 @@ and the [authorization reference](../authorization.md).
 
 ### Identity and authorization operations
 
-The [shared interface](../../../packages/contracts/src/iam.ts) requires two
+The [shared interface](../../../packages/contracts/src/drivers/iam/index.ts) requires two
 methods. Optional `coversIdentityAccess(request)` takes a `principalId` and
 `targetIdentityId` and returns `true` only when the principal already holds
 every grant of the target at the same or a broader scope. OCC requires it before
 issuing or revoking a service key and before changing a human account; a Driver
 without it cannot issue or revoke service keys.
 
-| Method                  | Contract                                                                                                                                                                                                                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lookupIdentity(input)` | Takes either an authenticated `issuer` and `subject`, an immutable `principalId`, or a `servicePrincipalId`, with optional Namespace scope. Returns one provisioned Identity, or `undefined` when no identity can be established. It does not create an account or grant a Role. `principalId` lookup supports managed Namespace-role assignment. |
-| `authorize(request)`    | Takes a `principalId`, exact action, and server-owned resource reference. Returns an allow or deny decision with a reason, selected `driverId`, and evidence.                                                                                                                                                                                     |
+| Method                  | Contract                                                                                                                                                                                                       |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lookupIdentity(input)` | Takes an authenticated `issuer`, `subject`, and optional Namespace scope. Returns one provisioned Identity, or `undefined` when no identity can be established. It does not create an account or grant a Role. |
+| `authorize(request)`    | Takes a `principalId`, exact action, and server-owned resource reference. Returns an allow or deny decision with a reason, selected `driverId`, and evidence.                                                  |
 
 Evidence identifies the contributing identity, Groups, AccessBindings, Roles,
 and Restrictions. OCC uses it to attribute audit records. The worker rejects
@@ -70,9 +70,6 @@ disposal hook.
 
 ### Native IAM behavior
 
-The native Driver resolves an immutable `principalId` only to a human Principal;
-Namespace service identities and Agents cannot receive the managed human-role
-binding. A selected Driver that cannot resolve this lookup refuses the assignment.
 The native Driver reads controller-owned IAM state once per PostgreSQL State unit
 of work, such as one list request, and validates and indexes it once there; a
 lookup or decision outside a unit opens its own. A later unit reads the policy
@@ -84,6 +81,24 @@ use, and requests without an applicable grant. A storage error propagates instea
 of becoming permission. Principal Group membership may contribute a grant.
 
 ## Limits
+
+### Generated Agent credential grants
+
+OCC removes unused credential AccessBindings that guided provisioning generated
+for an Agent. Cleanup retains sources referenced by its draft, active revision,
+or queued or claimed deployment revisions. Agent and Configuration edits, and
+worker completion, use the same retention rule. Independently administered
+bindings remain. Cleanup grants no new access and changes no account sharing.
+Publishing an active revision does not prove its predecessor retired. While that
+revision's reconciliation has not succeeded, cleanup keeps existing generated
+grants. A failed retirement keeps them until successful recovery or Stop.
+
+Each removal records `openclaw.iam.agent_credential_grant_removed` with the
+initiating actor and selected IAM Driver. Policy, audit, and the caller's state
+change commit together; cleanup fails closed if the Driver cannot delete bindings
+in that transaction. Missing retained snapshots or Configuration metadata also
+refuse cleanup. See the [Namespace policy flow](../../flows/namespace-iam-policy.md#6-reconcile-generated-agent-credential-grants)
+for the callers and retention sources.
 
 ### Installed Driver boundary
 
@@ -100,12 +115,12 @@ supported resource actions and Restrictions.
 
 ## Troubleshooting
 
-| Symptom                              | What to check                                                                                                                                    |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| An identity lookup returns no match  | Check its issuer and subject or `principalId`, Namespace scope, and that the identity was provisioned. Signing in does not provision a Role.     |
-| A known identity is denied           | Check the exact action and resource, applicable bindings and Roles, and overriding Restrictions. For a ServicePrincipal, check its own bindings. |
-| Previously queued work is denied     | Check whether the original caller or its grant was revoked. Restore only the intended permission or start a newly authorized operation.          |
-| IAM or policy storage is unavailable | Restore the dependency and retry; never turn an error or malformed decision into an allow.                                                       |
+| Symptom                                      | What to check                                                                                                                                    |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Valid credentials do not resolve an identity | Check the issuer and subject, Namespace scope, and that exactly one matching identity was provisioned. Signing in does not provision a Role.     |
+| A known identity is denied                   | Check the exact action and resource, applicable bindings and Roles, and overriding Restrictions. For a ServicePrincipal, check its own bindings. |
+| Previously queued work is denied             | Check whether the original caller or its grant was revoked. Restore only the intended permission or start a newly authorized operation.          |
+| IAM or policy storage is unavailable         | Restore the dependency and retry; never turn an error or malformed decision into an allow.                                                       |
 
 ## Implementations
 

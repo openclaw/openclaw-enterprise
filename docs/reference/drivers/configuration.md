@@ -19,7 +19,7 @@ development uses filesystem storage. See [Driver selection](selection.md).
 
 ### Operations and ownership
 
-The [shared interface](../../../packages/contracts/src/configuration.ts) requires all five
+The [shared interface](../../../packages/contracts/src/drivers/configuration/index.ts) requires all five
 core methods. Optional value validation supports Preset admission.
 
 | Method                        | Contract                                                                                                        |

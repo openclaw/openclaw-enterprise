@@ -27,12 +27,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-codex-full-access-profile.patch",
-    sha256: "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
-  },
-  {
-    file: "stock-codex-0.163.0-alpha.2-dependency-pin.patch",
-    sha256: "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
-    field: "codexDependencyPinPatchSha256",
+    sha256: "37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
@@ -50,6 +45,14 @@ const appliedPatches = [
   {
     file: "openclaw-google-worker-placeholder.patch",
     sha256: "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+  },
+  {
+    file: "openclaw-linux-private-store-setgid.patch",
+    sha256: "e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c",
+  },
+  {
+    file: "openclaw-plugin-config-startup-report.patch",
+    sha256: "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
   },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);

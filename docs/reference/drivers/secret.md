@@ -21,7 +21,7 @@ Compose without Installation YAML selects no Secret Driver. See
 
 ## Interface
 
-The [shared interface](../../../packages/contracts/src/secret.ts) requires four
+The [shared interface](../../../packages/contracts/src/drivers/secret/index.ts) requires four
 storage and projection methods and optionally supports transient server-side use.
 
 | Method                                    | Contract                                                                                                                                                                        |
@@ -44,7 +44,7 @@ with the Credential Gateway. Other callers include
 Secret-backed plugin discovery, channel credential validation and directory
 lookup, and **experimental** Codex OAuth device login.
 
-For `readCredentialInput`, [`CredentialInputRead`](../../../packages/contracts/src/credential-proxy.ts)
+For `readCredentialInput`, [`CredentialInputRead`](../../../packages/contracts/src/drivers/credential-proxy/index.ts)
 supplies the stored `secret`, `retention: "none"`, and a `lifetime`. Honor its
 `signal` and absolute `deadlineAt` across backend calls and retries. Return a
 `VersionedSecretValue` with `value`, `version`, `authoritativeObservedAt`, and

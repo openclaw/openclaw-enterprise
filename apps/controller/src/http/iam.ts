@@ -71,16 +71,11 @@ export const iamHandlers = {
     transactIAM,
   }) {
     const role = await transactIAM(async (unit) => {
-      const created = await controller.createIAMRole(
-        context.actorId,
-        body?.preset === "agent-author"
-          ? { namespaceId, preset: "agent-author" }
-          : {
-              namespaceId,
-              ...(body?.name === undefined ? {} : { name: body.name as string }),
-              permissions: body?.permissions as never,
-            },
-      );
+      const created = await controller.createIAMRole(context.actorId, {
+        namespaceId,
+        ...(body?.name === undefined ? {} : { name: body.name as string }),
+        permissions: body?.permissions as never,
+      });
       await unit.audit.append(
         mutationEvent(
           { kind: "namespace", id: namespaceId, namespaceId },
@@ -142,12 +137,8 @@ export const iamHandlers = {
         subjectKind: body?.subjectKind as "identity",
         subjectId: body?.subjectId as string,
         roleId: body?.roleId as string,
-        ...(body?.scope === "namespace"
-          ? { scope: "namespace" }
-          : {
-              resourceKind: body?.resourceKind as ResourceKind,
-              resourceId: body?.resourceId as string,
-            }),
+        resourceKind: body?.resourceKind as ResourceKind,
+        resourceId: body?.resourceId as string,
       });
       await unit.audit.append(
         mutationEvent(bindingAuditResource(created, namespaceId), bindingAuditDetails(created)),

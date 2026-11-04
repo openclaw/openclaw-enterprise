@@ -10,10 +10,7 @@ JSON
   occ iam role create --file role.json
 
   Permissions pair an action with a resource kind. See
-  https://docs-enterprise.openclaw.org/reference/authorization/
-
-  For the managed Agent Author Role, an Installation administrator can instead
-  create a Role from {"preset":"agent-author"}.`
+  https://docs-enterprise.openclaw.org/reference/authorization/`
 
 const iamAccessBindingCreateExample = `  cat > binding.json <<'JSON'
   {"subjectKind": "identity", "subjectId": "<principal-id>", "roleId": "<role-id>",
@@ -22,9 +19,7 @@ JSON
   occ iam access-binding create --file binding.json
 
   subjectId is a human Principal or a ServicePrincipal in the Namespace. The Role
-  and exact target must exist in the Namespace. To assign the managed Agent Author
-  Role across the Namespace, use {"subjectKind":"identity","subjectId":"<principal-id>",
-  "roleId":"<agent-author-role-id>","scope":"namespace"}. See
+  and the exact target must exist in the Namespace. See
   https://docs-enterprise.openclaw.org/reference/authorization/`
 
 const configurationCreateExample = `  cat > configuration.json <<'JSON'

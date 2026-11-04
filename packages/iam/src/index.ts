@@ -370,15 +370,18 @@ function managedRole(input: IAMManagedRoleInput): Role {
 }
 
 function managedAccessBinding(input: IAMManagedAccessBindingInput): AccessBinding {
-  assertCondition(typeof input === "object" && input !== null, "managed AccessBinding is invalid");
-  const hasResourceKind = Object.hasOwn(input, "resourceKind");
-  const hasResourceId = Object.hasOwn(input, "resourceId");
   assertCondition(
-    exactOptionalKeys(
-      input,
-      ["id", "namespaceId", "subjectKind", "subjectId", "roleId"],
-      ["resourceKind", "resourceId"],
-    ) && hasResourceKind === hasResourceId,
+    typeof input === "object" &&
+      input !== null &&
+      exactKeys(input, [
+        "id",
+        "namespaceId",
+        "subjectKind",
+        "subjectId",
+        "roleId",
+        "resourceKind",
+        "resourceId",
+      ]),
     "managed AccessBinding input contains unsupported fields",
   );
   assertCondition(isNonEmptyString(input.id), "managed AccessBinding identity is invalid");
@@ -392,25 +395,19 @@ function managedAccessBinding(input: IAMManagedAccessBindingInput): AccessBindin
   );
   assertCondition(isNonEmptyString(input.subjectId), "managed AccessBinding subject is invalid");
   assertCondition(isNonEmptyString(input.roleId), "managed AccessBinding Role is invalid");
-  if (hasResourceKind) {
-    assertCondition(
-      input.resourceKind !== undefined && MANAGED_RESOURCE_KINDS.includes(input.resourceKind),
-      "managed AccessBinding resource kind is invalid",
-    );
-    assertCondition(
-      isNonEmptyString(input.resourceId),
-      "managed AccessBinding resource is invalid",
-    );
-  }
+  assertCondition(
+    MANAGED_RESOURCE_KINDS.includes(input.resourceKind),
+    "managed AccessBinding resource kind is invalid",
+  );
+  assertCondition(isNonEmptyString(input.resourceId), "managed AccessBinding resource is invalid");
   return Object.freeze({
     id: input.id,
     namespaceId: input.namespaceId,
     subjectKind: "identity",
     subjectId: input.subjectId,
     roleId: input.roleId,
-    ...(hasResourceKind
-      ? { resourceKind: input.resourceKind!, resourceId: input.resourceId! }
-      : {}),
+    resourceKind: input.resourceKind,
+    resourceId: input.resourceId,
   });
 }
 
@@ -1132,29 +1129,12 @@ export class NativeIAMDriver implements IAMDriver {
     if (
       typeof input !== "object" ||
       input === null ||
-      (Object.getPrototypeOf(input) !== Object.prototype && Object.getPrototypeOf(input) !== null)
-    ) {
-      return undefined;
-    }
-    const allowedKeys = new Set([
-      "principalId",
-      "servicePrincipalId",
-      "issuer",
-      "subject",
-      "namespaceId",
-    ]);
-    const ownKeys = Object.keys(input);
-    if (ownKeys.some((key) => !allowedKeys.has(key))) {
-      return undefined;
-    }
-    const hasPrincipalId = Object.hasOwn(input, "principalId");
-    const hasServicePrincipalId = Object.hasOwn(input, "servicePrincipalId");
-    const hasExternalIdentity = Object.hasOwn(input, "issuer") || Object.hasOwn(input, "subject");
-    if (
-      [hasPrincipalId, hasServicePrincipalId, hasExternalIdentity].filter(Boolean).length !== 1 ||
-      (hasPrincipalId && !isNonEmptyString(input.principalId)) ||
-      (hasServicePrincipalId && !isNonEmptyString(input.servicePrincipalId)) ||
-      (hasExternalIdentity && (!isNonEmptyString(input.issuer) || !isNonEmptyString(input.subject)))
+      Object.hasOwn(input, "installationId") ||
+      (input.servicePrincipalId === undefined
+        ? !isNonEmptyString(input.issuer) || !isNonEmptyString(input.subject)
+        : !isNonEmptyString(input.servicePrincipalId) ||
+          input.issuer !== undefined ||
+          input.subject !== undefined)
     ) {
       return undefined;
     }
@@ -1172,10 +1152,7 @@ export class NativeIAMDriver implements IAMDriver {
 
     // The candidates are exactly the identities whose id, or issuer and subject, match.
     let candidates: readonly Identity[];
-    if (input.principalId !== undefined) {
-      const identity = policy.identities.get(input.principalId);
-      candidates = identity?.kind === "principal" ? [identity] : [];
-    } else if (input.servicePrincipalId !== undefined) {
+    if (input.servicePrincipalId !== undefined) {
       const identity = policy.identities.get(input.servicePrincipalId);
       candidates = identity?.kind === "service_principal" ? [identity] : [];
     } else {

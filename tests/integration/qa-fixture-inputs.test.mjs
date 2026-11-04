@@ -7,7 +7,13 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { protectedText, registerQaSecret } from "../helpers/qa-secrets.mjs";
+import {
+  protectedText,
+  protectedModelApiKey,
+  registerQaSecret,
+  redactQaError,
+} from "../helpers/qa-secrets.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
@@ -62,8 +68,7 @@ test("QA Agent reads the selected Preset in its Namespace", async (t) => {
 });
 
 test("QA credentials require a private regular file and reject symlink substitution", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "qa-credential-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-credential-");
   const credential = join(directory, "credential");
   await writeFile(credential, " test-only-credential\n", { mode: 0o600 });
   assert.equal(await protectedText(credential, "test credential"), "test-only-credential");
@@ -81,12 +86,37 @@ test("QA credentials require a private regular file and reject symlink substitut
   await assert.rejects(protectedText(credential, "test credential"), /must not be empty/);
 });
 
+test("API-key QA injection stays in the consumer and its errors are redacted", async () => {
+  const secret = "synthetic-environment-model-credential";
+  const env = { OCC_TEST_QA_MODEL_API_KEY: secret };
+  assert.equal(await protectedModelApiKey(env), secret);
+  const failure = redactQaError(new Error("provider rejected " + secret));
+  assert.equal(failure.message, "provider rejected [REDACTED]");
+  await assert.rejects(
+    protectedModelApiKey({ OCC_TEST_QA_MODEL_API_KEY: "  " }),
+    /must not be empty/,
+  );
+  const helper = new URL("../helpers/qa-installation.mjs", import.meta.url).href;
+  const result = execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `
+    import { launcherEnvironment } from ${JSON.stringify(helper)};
+    console.log(Object.hasOwn(launcherEnvironment(), "OCC_TEST_QA_MODEL_API_KEY"));
+  `,
+    ],
+    { encoding: "utf8", env: { ...process.env, OCC_TEST_QA_MODEL_API_KEY: secret } },
+  );
+  assert.equal(result.trim(), "false");
+});
+
 test(
   "parallel QA stages publish complete outcomes, failures and timings",
   { timeout: 30_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "qa-report-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "qa-report-");
     const output = join(directory, "matrix.json");
     const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
     const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
@@ -180,13 +210,18 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     ],
   );
   assert.deepEqual(selected.cells[1].unselected, [
+    "codex-search-config",
     "console-secrets",
-    "agent-author",
     "git-write",
     "git-push-denied",
     "slack",
   ]);
-  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-push-denied", "slack"]);
+  assert.deepEqual(selected.cells[0].notApplicable, [
+    "codex-search-config",
+    "calendar",
+    "git-push-denied",
+    "slack",
+  ]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
@@ -204,20 +239,8 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.deepEqual(calendar.cells[0].scenarios, []);
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, [
-    "model-ui",
-    "console-secrets",
-    "agent-author",
-    "git-write",
-  ]);
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-write"]);
   assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
-  const openclawAgentAuthor = selectQaMatrix({
-    OCC_TEST_QA_INSTALLATION: "kubernetes",
-    OCC_TEST_QA_PRESET: "OpenClaw",
-    OCC_TEST_QA_SCENARIOS: "agent-author",
-  });
-  assert.deepEqual(openclawAgentAuthor.cells[0].scenarios, ["agent-author"]);
-  assert.deepEqual(openclawAgentAuthor.requiredEnv, ["OCC_TEST_QA_OPENAI_KEY_FILE"]);
   const secrets = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "console-secrets",
     OCC_TEST_QA_PRESET: "Codex",
@@ -238,6 +261,32 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(
     sandbox.cells.every((cell) => cell.scenarios.length === 0),
     "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
+  );
+  const searchConfig = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "codex-search-config",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.deepEqual(searchConfig.requiredEnv, [
+    "OCC_TEST_QA_OPENAI_KEY_FILE",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+  ]);
+  assert.equal(searchConfig.browser, false);
+  const injectedSearch = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "codex-search-config",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_MODEL_API_KEY: "synthetic-key",
+  });
+  assert.deepEqual(injectedSearch.requiredEnv, [
+    "OCC_TEST_QA_MODEL_API_KEY",
+    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
+  ]);
+  assert.throws(
+    () =>
+      selectQaMatrix({
+        OCC_TEST_QA_SCENARIOS: "codex-search-config,model-ui",
+      }),
+    /exclusive QA selection/,
   );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
@@ -271,8 +320,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
 test("hosted QA materializes only selected credentials and rejects missing selected inputs", async (t) => {
   const { spawnSync } = await import("node:child_process");
   const script = new URL("../../scripts/ci/qa-matrix-credentials.mjs", import.meta.url);
-  const directory = await mkdtemp(join(tmpdir(), "qa-hosted-inputs-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-hosted-inputs-");
   const githubEnv = join(directory, "github-env");
   const result = spawnSync(process.execPath, [script.pathname], {
     encoding: "utf8",
@@ -426,8 +474,7 @@ test("a failed image build keeps its failed step's output as redacted QA evidenc
 test("the QA command runner records a failed image build step as redacted evidence", async (t) => {
   const { runQaCommand } = await import("../helpers/qa-installation.mjs");
   const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "qa-run-evidence-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-run-evidence-");
   const artifacts = await mkdtemp(join(directory, "artifacts-"));
   registerQaSecret("registered-private-2025");
   const f = {
@@ -709,8 +756,7 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
     ],
   };
   // Through the real report stage, which redacts before it saves the reason.
-  const directory = await mkdtemp(join(tmpdir(), "qa-deploy-timeout-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-deploy-timeout-");
   const reportPath = join(directory, "matrix.json");
   const report = createQaReport(reportPath, {});
   const parent = { test: async (_name, _options, run) => run() };
@@ -1623,8 +1669,7 @@ test(
   async (t) => {
     const { qaSecretVariants } = await import("../helpers/qa-secrets.mjs");
     const value = "synthetic-qa-reporter-secret-2026";
-    const directory = await mkdtemp(join(tmpdir(), "qa-reporter-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "qa-reporter-");
     const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
     const file = join(directory, "redacted.test.mjs");
     await writeFile(
@@ -1917,8 +1962,7 @@ test("native tool evidence reads compressed rows, prompt snapshots and command e
   const { DatabaseSync } = await import("node:sqlite");
   const { zstdCompressSync } = await import("node:zlib");
   const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "oce-tool-evidence-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-tool-evidence-");
   const databasePath = join(directory, "transcript.sqlite");
   const db = new DatabaseSync(databasePath);
   db.exec(`CREATE TABLE session_nodes(session_key TEXT, current_session_id TEXT, entry_json TEXT);

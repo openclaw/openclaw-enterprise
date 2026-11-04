@@ -26,6 +26,7 @@ import {
   dismissOnBackdrop,
   element,
   field,
+  setUnavailable,
   statusBlock,
   validateFields,
   requestIdLine,
@@ -211,9 +212,41 @@ export function renderSecrets(
   // then refused after the dialog is filled in (finding 2365). Gating only: the API still
   // authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.secrets?.create === false;
-  create.disabled = !ready || createDenied;
-  if (createDenied) {
-    create.setAttribute("aria-describedby", "secrets-create-denied");
+  const notReadyNote = ready
+    ? null
+    : statusBlock(
+        "info",
+        null,
+        "Secrets can be created or replaced after this Namespace is ready.",
+        [],
+        {
+          id: "secrets-not-ready",
+        },
+      );
+  const createDeniedNote = createDenied
+    ? element(
+        "p",
+        { className: "muted", role: "status", id: "secrets-create-denied" },
+        SECRET_CREATE_DENIED,
+      )
+    : null;
+  // An unavailable Create Secret stays in the Tab order with the note that says why (finding
+  // 2899).
+  setUnavailable(create, !ready || createDenied, createDeniedNote ?? notReadyNote);
+  const toolbar = element("div", { className: "collection-toolbar" }, search, create);
+  // After the API refuses a create (403), Create Secret says so instead of offering another
+  // attempt it would refuse again, as Create Namespace does. Refresh renders the page anew.
+  function showCreateRefused() {
+    if (!ready || createDenied || create.getAttribute("aria-disabled") === "true") {
+      return;
+    }
+    const note = element(
+      "p",
+      { className: "muted", role: "status", id: "secrets-create-refused" },
+      `${SECRET_CREATE_DENIED} Then select Refresh.`,
+    );
+    toolbar.after(note);
+    setUnavailable(create, true, note);
   }
   context.view.replaceChildren(
     statusBlock(
@@ -223,25 +256,9 @@ export function renderSecrets(
       [],
       { role: null },
     ),
-    ...(!ready
-      ? [
-          statusBlock(
-            "info",
-            null,
-            "Secrets can be created or replaced after this Namespace is ready.",
-          ),
-        ]
-      : []),
-    element("div", { className: "collection-toolbar" }, search, create),
-    ...(createDenied
-      ? [
-          element(
-            "p",
-            { className: "muted", role: "status", id: "secrets-create-denied" },
-            SECRET_CREATE_DENIED,
-          ),
-        ]
-      : []),
+    ...(notReadyNote ? [notReadyNote] : []),
+    toolbar,
+    ...(createDeniedNote ? [createDeniedNote] : []),
     list,
   );
   search.addEventListener("input", renderList);
@@ -390,10 +407,12 @@ export function renderSecrets(
       context.onExpired();
       return;
     }
-    current.feedback.replaceChildren(statusBlock(tone, null, description));
+    const shown = statusBlock(tone, null, description);
+    current.feedback.replaceChildren(shown);
     if (error.requestId) {
       current.feedback.append(requestIdLine(error.requestId));
     }
+    return shown;
   }
 
   async function refreshList() {
@@ -488,13 +507,11 @@ export function renderSecrets(
             }
             const name = detail.agentNames?.get(id);
             if (detail.agentNames && name === undefined) {
-              // The Secret read lists only Agents the caller may read; one the list leaves out
-              // was deleted or changed access since.
+              // These reads are separate; omission does not establish why the Agent is absent.
               return element(
                 "li",
                 {},
-                "An Agent you cannot read ",
-                element("span", { className: "resource-id" }, id),
+                "An Agent from the earlier usage check is no longer listed. Reopen this Secret to check again.",
               );
             }
             const link = element(
@@ -544,44 +561,40 @@ export function renderSecrets(
       );
     }
     const referenced = count > 0 || consumers.unreadable > 0 || consumers.truncated;
-    current.body.append(
-      element(
-        "p",
-        referenced ? { id: "secret-delete-blocked" } : {},
-        referenced
-          ? "Deletion is blocked while references remain. Remove them from their owning resources first."
-          : "No current consumers were found. Deletion checks references again.",
-      ),
+    const references = element(
+      "p",
+      referenced ? { id: "secret-delete-blocked" } : {},
+      referenced
+        ? "Deletion is blocked while references remain. Remove them from their owning resources first."
+        : "No current consumers were found. Deletion checks references again.",
     );
+    current.body.append(references);
     // The read's advisory answer disables what the API would refuse, with the reason, instead of
     // refusing a replacement after the value is typed (finding D761). Gating only: the API still
     // authorizes each write, and an unknown answer keeps the action.
     const replaceDenied = detail.callerPermissions.update === false;
     const deleteDenied = detail.callerPermissions.delete === false;
-    if (replaceDenied) {
-      current.body.append(
-        element("p", { className: "muted", id: "secret-replace-denied" }, SECRET_UPDATE_DENIED),
-      );
-    }
-    if (deleteDenied) {
-      current.body.append(
-        element("p", { className: "muted", id: "secret-delete-denied" }, SECRET_DELETE_DENIED),
-      );
-    }
+    const replaceDeniedNote = replaceDenied
+      ? element("p", { className: "muted", id: "secret-replace-denied" }, SECRET_UPDATE_DENIED)
+      : null;
+    const deleteDeniedNote = deleteDenied
+      ? element("p", { className: "muted", id: "secret-delete-denied" }, SECRET_DELETE_DENIED)
+      : null;
+    current.body.append(...[replaceDeniedNote, deleteDeniedNote].filter((note) => note !== null));
+    // An unavailable action with its reason in the dialog stays in the Tab order, described by
+    // that reason (findings 2899, 2925). Replace value in a Namespace that is not ready has no
+    // reason here, so it stays natively disabled.
     const replace = button("Replace value", () => editValue(detail));
-    replace.disabled = !ready || replaceDenied;
-    if (replaceDenied) {
-      replace.setAttribute("aria-describedby", "secret-replace-denied");
-    }
+    setUnavailable(replace, !ready || replaceDenied, replaceDeniedNote);
     const remove = button("Delete Secret", () => confirmDelete(detail), { tone: "danger" });
-    remove.disabled = referenced || deleteDenied;
-    const deleteReasons = [
-      ...(referenced ? ["secret-delete-blocked"] : []),
-      ...(deleteDenied ? ["secret-delete-denied"] : []),
-    ];
-    if (deleteReasons.length) {
-      remove.setAttribute("aria-describedby", deleteReasons.join(" "));
+    const deleteReasons = [referenced ? references : null, deleteDeniedNote].filter(
+      (note) => note !== null,
+    );
+    // Both reasons describe Delete Secret when both apply; the first decides that it is reachable.
+    if (deleteReasons.length > 1) {
+      remove.setAttribute("aria-describedby", deleteReasons.map((note) => note.id).join(" "));
     }
+    setUnavailable(remove, referenced || deleteDenied, deleteReasons[0]);
     current.actions.append(replace, remove);
   }
 
@@ -713,6 +726,9 @@ export function renderSecrets(
           // Create is checked on the Namespace, which no Namespace Role grants; replace is Secret
           // update on this Secret.
           description = replacing ? SECRET_UPDATE_DENIED : SECRET_CREATE_DENIED;
+          if (!replacing) {
+            showCreateRefused();
+          }
         } else if (nameConflict) {
           // The API names the taken name's rule; the generic conflict keeps the hedge.
           const explained = explainedConflict(cause);
@@ -733,12 +749,13 @@ export function renderSecrets(
           description =
             "This Secret or Namespace is no longer available. Close and Refresh the list.";
         }
-        showError(current, error, description, unknown ? "warning" : "danger");
-        submit.disabled = !canSubmit;
+        const refusal = showError(current, error, description, unknown ? "warning" : "danger");
+        // A dialog that cannot submit again keeps its name, value and submit in the Tab order,
+        // described by the alert that says why (finding 2935); focus moves to Close.
+        for (const control of [name, reveal, value, submit]) {
+          setUnavailable(control, !canSubmit, refusal);
+        }
         submit.textContent = replacing ? "Replace value" : "Create Secret";
-        name.disabled = !canSubmit;
-        value.disabled = !canSubmit;
-        reveal.disabled = !canSubmit;
         if (canSubmit) {
           (nameConflict ? name : value).focus();
         }
@@ -806,10 +823,11 @@ export function renderSecrets(
         } else if (error.status === 404) {
           description = "The Secret is no longer available. Close and Refresh the list.";
         }
-        showError(current, error, description, unknown ? "warning" : "danger");
+        const refusal = showError(current, error, description, unknown ? "warning" : "danger");
         confirm.textContent = "Permanently delete Secret";
-        // A new confirmation starts with a fresh consumer read. This dialog never replays DELETE.
-        confirm.disabled = true;
+        // A new confirmation starts with a fresh consumer read. This dialog never replays DELETE,
+        // and its confirmation stays in the Tab order, described by why (finding 2935).
+        setUnavailable(confirm, true, refusal);
         if (unknown) {
           current.feedback.append(button("Check deletion status", () => void checkDeletion()));
         }

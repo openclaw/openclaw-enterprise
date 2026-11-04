@@ -14,7 +14,7 @@ override grants, and one action never implies another. See
 | `read`       | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                             |
 | `update`     | Change a resource or its credential.                                                                                                                           |
 | `delete`     | Request deletion of the exact resource.                                                                                                                        |
-| `deploy`     | Create a new Agent revision.                                                                                                                                   |
+| `deploy`     | Create an Agent revision or recover its exact first-deployment receipt.                                                                                        |
 | `operate`    | Stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source.              |
 | `administer` | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions. |
 | `read_logs`  | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                     |
@@ -59,10 +59,9 @@ An account created with the Installation administrator `roleId` holds only
 
 A `403 FORBIDDEN` for a grant you lack names it and who grants it, for example
 `Not authorized: this needs Agent deploy on Agent agt_1. Ask an Installation
-administrator to grant it.` The managed Agent Author Role grants supported
-Namespace-wide create permissions for Agents, Configurations, Secrets, and
-credential sources. Other create denials name the Namespace and direct you to
-an Installation administrator. The message names a resource ID only when your request sent it in the path or an ID
+administrator to grant it.` No Role can hold create, so a create denial names
+its Namespace and says only an Installation administrator can create it. The
+message names a resource ID only when your request sent it in the path or an ID
 field, or you can already read that resource, never a binding, Role or
 Restriction. A Secret or credential source that an Agent, Configuration or
 credential source binds is named only when you can also read the record that
@@ -108,6 +107,10 @@ operation was not authorized.`
   also requires `secret:operate` on each Secret it reads.
 - [Withdrawing a credential source](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw)
   from an Agent requires `agent:operate`; the worker rechecks it before revoking.
+- [First-deployment receipt recovery](../agents/deployment.md#guarded-first-deployment)
+  requires current exact Agent `deploy` and reviewed Configuration `read`.
+  It does not grant Agent revision `read`; deployment-status access needs that
+  separate permission.
 - [Create](../api.md#post-namespacesnamespaceidconfigurations) or
   [update a Configuration](../api.md#patch-namespacesnamespaceidconfigurationsconfigurationid)
   with Secret bindings requires `secret:operate` on each bound Secret.
@@ -135,18 +138,17 @@ operation was not authorized.`
 The [Namespace policy API](../authorization.md#manage-namespace-policy) accepts
 the per-kind actions in the table above on `agent`, `agent_revision`,
 `configuration`, `credential_source`, `preset`, `secret`, and `service_account`,
-except `create`, which only the managed Agent Author Role grants at Namespace
-scope for its supported resource kinds.
+except `create`.
 It refuses, with `400 INVALID_REQUEST`, a Role with a combination no operation
 checks, such as `secret:read_logs` or `configuration:deploy`, because it would
 grant nothing, and a Role with any `create` Permission, which no exact-resource
 binding can grant. On `namespace` it accepts only `read`.
 It can bind an existing human Principal or a Namespace-local ServicePrincipal
 to an existing exact resource, including the path Namespace itself. Exact
-Namespace access does not grant access to child resources. The managed Agent
-Author Role is the only Namespace-wide binding this API can create; it grants
-its fixed permissions across matching resources in that Namespace. Existing
-Namespace-wide and Group bindings can still be listed or deleted. The API
-cannot create Installation-wide grants or manage Groups and Restrictions.
+Namespace access does not grant access to child resources.
+It cannot create Installation or Namespace-wide grants, including the collection
+permission needed to create resources. Existing Namespace-wide and Group
+bindings can still be listed or deleted. Groups and Restrictions cannot be
+managed through this API.
 
 Per-Agent policy editing configuration requires Installation and exact-Agent `administer`. See [policy authority](../sandbox-policies.md#authority-and-admission).

@@ -5,6 +5,7 @@ import {
   type AgentRead,
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
+  type FirstDeploymentIntent,
 } from "@openclaw-enterprise/contracts";
 import {
   accessBindingsRemovedWithAgent,
@@ -19,10 +20,17 @@ import {
   type ValidateAgentCreateInput,
 } from "@openclaw-enterprise/occ";
 import type { FastifyRequest } from "fastify";
+import {
+  prepareNativeAdminConfiguration,
+  type NativeAdminAccessConfig,
+} from "../gateway/native-admin.ts";
 import { dependencyUnavailable, failure } from "./errors.ts";
 import type { RequestContext, ResourceHandler, ResourceHandlers } from "./types.ts";
 
 interface AgentHandlerOptions {
+  readonly nativeAdmin: NativeAdminAccessConfig | undefined;
+  readonly publicOrigin: string | undefined;
+  readonly installationId: string;
   readonly resolveHarness: HarnessResolver;
   readonly requireCredentialCsrf: (request: FastifyRequest) => void;
   readonly rejectDeployment: (request: FastifyRequest, context: RequestContext) => Promise<void>;
@@ -237,7 +245,9 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       namespaceId,
       mutationEvent,
     }) {
-      const input = body as Omit<ProvisionAgentInput, "namespaceId">;
+      const { nativeAdmin, ...input } = body as Omit<ProvisionAgentInput, "namespaceId"> & {
+        nativeAdmin?: boolean;
+      };
       validateWorkspaceSetup(input);
       const provisioned = await controller.provisionAgent(
         context.actorId,
@@ -248,25 +258,40 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
             id: provisioned.provisioning.agentId ?? provisioned.provisioning.workId,
             namespaceId,
           }),
+        nativeAdmin === true
+          ? {
+              key: "native-admin",
+              prepare: (agent, values) => {
+                if (
+                  !options.nativeAdmin?.enabled ||
+                  !options.nativeAdmin.domain ||
+                  !options.publicOrigin
+                ) {
+                  throw failure(
+                    400,
+                    "INVALID_REQUEST",
+                    "Native admin UI access is not enabled on this Installation.",
+                  );
+                }
+                return prepareNativeAdminConfiguration(values, {
+                  agent,
+                  installationId: options.installationId,
+                  publicOrigin: options.publicOrigin,
+                  domain: options.nativeAdmin.domain,
+                });
+              },
+            }
+          : undefined,
       );
       const result = {
         provisioning: clientAgentProvisioning(provisioned.provisioning, namespaceId),
       };
       reply.status(202).send({ data: result, meta: { requestId: request.id } });
     },
-    async createAgent({
-      controller,
-      context,
-      request,
-      reply,
-      body,
-      namespaceId,
-      mutationEvent,
-      transactIAM,
-    }) {
+    async createAgent({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
       const input = body as Omit<CreateAgentInput, "namespaceId">;
       validateWorkspaceSetup(input);
-      const agent = await transactIAM(async (unit) => {
+      const agent = await controller.transact(async (unit) => {
         const created = await controller.createAgent(
           context.actorId,
           { ...input, namespaceId },
@@ -363,9 +388,12 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     }) {
       const agentId = params.agentId!;
       const update = body as Omit<UpdateAgentInput, "namespaceId" | "agentId">;
-      // Agent Author updates can reconcile credential grants as well as change standing
-      // approvals, so the assigning session stays held until every effect commits.
-      const agent = await transactIAM(async (unit) => {
+      // Standing approval changes hold the same session authority as an IAM policy write.
+      const transact =
+        update.repositoryStandingApproval === undefined
+          ? controller.transact.bind(controller)
+          : transactIAM;
+      const agent = await transact(async (unit) => {
         const updated = await controller.updateAgent(
           context.actorId,
           {
@@ -453,6 +481,56 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         return provisioned;
       });
       reply.send({ data: status, meta: { requestId: request.id } });
+    },
+    async deployAgentFirst({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      mutationEvent,
+    }) {
+      try {
+        const receipt = await controller.deployAgentFirst(
+          context.actorId,
+          { namespaceId, agentId: params.agentId! },
+          request.body as FirstDeploymentIntent,
+          options.resolveHarness,
+          (admitted) =>
+            mutationEvent(
+              { kind: "agent_revision", id: admitted.revision.id, namespaceId },
+              undefined,
+              admitted.authorization,
+            ),
+        );
+        reply.status(202).send({ data: receipt, meta: { requestId: request.id } });
+      } catch (error) {
+        if (error instanceof NamespaceNotReadyError) {
+          await options.rejectDeployment(request, context);
+        }
+        throw error;
+      }
+    },
+    async recoverAgentFirstDeployment({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+    }) {
+      reply.header("cache-control", "no-store");
+      const receipt = await controller.recoverAgentFirstDeployment(
+        context.actorId,
+        { namespaceId, agentId: params.agentId! },
+        {
+          key: params.key!,
+          expectedConfigurationId: params.expectedConfigurationId!,
+          expectedGeneration: Number(params.expectedGeneration),
+        },
+      );
+      reply.status(200).send({ data: receipt, meta: { requestId: request.id } });
     },
     async deployAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;

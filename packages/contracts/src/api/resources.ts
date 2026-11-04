@@ -258,6 +258,7 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
                 releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
                 id: Type.String(),
                 label: Type.String(),
+                toolDiscovery: Type.Optional(Type.Literal(true)),
                 sources: Type.Array(
                   Type.Object(
                     { id: CredentialSourceId, name: Type.String() },
@@ -315,6 +316,7 @@ const CredentialSourceCatalogSchema = Type.Object(
 
 const InstallationCapabilitiesSchema = Type.Object(
   {
+    nativeAdmin: Type.Optional(Type.Literal(true)),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },
@@ -750,10 +752,6 @@ export const AgentCallerPermissionsResponse = Type.Object(
           description:
             "Whether the selected IAM Driver allows Agent update now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
         }),
-        agentAuthor: Type.Boolean({
-          description:
-            "Whether the managed Agent Author Role contributes to update access for this Agent. When true, OCC reconciles exact credential grants for this Agent's ServicePrincipal during Agent and Configuration updates.",
-        }),
         deploy: Type.Boolean({
           description:
             "Whether the selected IAM Driver allows Agent deploy now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
@@ -861,10 +859,6 @@ export const NamespaceCallerPermissionsResponse = Type.Object(
             create: Type.Boolean({
               description:
                 "Whether the selected IAM Driver allows Agent creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
-            }),
-            agentAuthor: Type.Boolean({
-              description:
-                "Whether the Agent Author Role contributes to Agent creation in this Namespace now. When true, OCC creates exact credential grants for the Agent ServicePrincipal in the Agent mutation transaction. Advisory only: Restrictions or a later authorization decision can still prevent the operation.",
             }),
           },
           { additionalProperties: false },
@@ -1381,6 +1375,29 @@ export const AgentRevisionSchema = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     repositoryCredentials: Type.Optional(RepositoryRevisionStateSchema),
     createdAt: Timestamp,
+  },
+  { additionalProperties: false },
+);
+
+export const FirstDeploymentReceiptSchema = Type.Object(
+  {
+    revisionId: RevisionId,
+    namespaceId: NamespaceId,
+    agentId: AgentId,
+    configurationId: ConfigurationId,
+    configurationGeneration: ConfigurationGeneration,
+    createdAt: Timestamp,
+  },
+  { additionalProperties: false },
+);
+export const FirstDeploymentReceiptResponse = Type.Object(
+  { data: FirstDeploymentReceiptSchema, meta: Meta },
+  { additionalProperties: false },
+);
+export const FirstDeploymentRecoveryResponse = Type.Object(
+  {
+    data: Type.Union([FirstDeploymentReceiptSchema, Type.Null()]),
+    meta: Meta,
   },
   { additionalProperties: false },
 );

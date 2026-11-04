@@ -3,18 +3,13 @@ import test from "node:test";
 import type { AuditEvent, Namespace } from "../../packages/contracts/src/index.ts";
 
 import { assertApiError } from "../helpers/api-error.mjs";
-import {
-  authorizationDenials,
-  createConsoleAppFixture,
-  grantMember,
-} from "../helpers/console-app.mjs";
+import { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 
 type RemainingResource = { kind: string; count: number; ids: string[] };
 
 test("Namespace deletion reports authorized blockers through the Agent workflow without bypassing IAM", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Deletion blockers", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Deletion blockers");
   const agent = await fixture.createAgent(namespace.id, "Remaining Agent");
   const member = await fixture.createNamespaceMember("namespace-deleter", namespace.id, [
     ["read", "namespace"],
@@ -91,9 +86,7 @@ test("Namespace deletion reports authorized blockers through the Agent workflow 
 });
 
 test("empty Namespace deletion is admitted, audited and remains observable until lifecycle cleanup finishes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Deletion completion", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Deletion completion");
   const path = `/namespaces/${namespace.id}`;
   const member = await fixture.createNamespaceMember("empty-namespace-deleter", namespace.id, [
     ["read", "namespace"],

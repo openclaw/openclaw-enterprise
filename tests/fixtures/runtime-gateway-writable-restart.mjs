@@ -15,6 +15,7 @@ import {
   runDocker,
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 // An owned Docker volume models the native-admin copy's Pod-local lifetime.
 // The production init script copies once; restarting the actual Gateway
@@ -243,7 +244,8 @@ export async function runWritableGatewayRestart(t) {
     let polls = 0;
     let probeFailures = 0;
     let lastProbeError;
-    while (Date.now() < deadline) {
+    // The deadline is checked after each poll, so the last poll happens at or past it.
+    for (;;) {
       polls += 1;
       try {
         last = await state(name);
@@ -261,6 +263,9 @@ export async function runWritableGatewayRestart(t) {
             { cause: error },
           );
         }
+      }
+      if (Date.now() >= deadline) {
+        break;
       }
       await delay(250);
     }
@@ -361,15 +366,14 @@ export async function runWritableGatewayRestart(t) {
     'c.plugins.entries.codex.config.codexPlugins.plugins.linear.name="Native bridge edit"',
   );
   await runDocker(["restart", "--time", "350", first.containerName], { timeout: 360_000 });
-  const deadline = Date.now() + 30_000;
-  let stopped;
-  do {
-    stopped = JSON.parse((await runDocker(["inspect", first.containerName])).stdout)[0];
-    if (!stopped.State.Running) {
-      break;
-    }
-    await delay(250);
-  } while (Date.now() < deadline);
+  const stopped = await waitFor(
+    "the Gateway to stop (an explicitly edited bridge must retain refusal)",
+    async () => {
+      const observed = JSON.parse((await runDocker(["inspect", first.containerName])).stdout)[0];
+      return observed.State.Running ? undefined : observed;
+    },
+    { timeoutMs: 30_000, intervalMs: 250 },
+  );
   assert.equal(stopped.State.Running, false, "an explicitly edited bridge must retain refusal");
   assert.equal(stopped.State.ExitCode, 1);
   const replacement = await startPodCopy("home-2");
@@ -377,11 +381,12 @@ export async function runWritableGatewayRestart(t) {
   assert.equal(fresh.prefix, undefined, "a fresh Pod-local copy restores the admitted snapshot");
   assert.equal(fresh.bridge.plugins.linear.enabled, false);
   // Polls the wrapper's own status port until it publishes a held failure; a hold keeps
-  // the container running.
+  // the container running. The deadline is checked after each poll, so the last poll
+  // happens at or past it.
   async function waitHeld(name, label) {
     const heldDeadline = Date.now() + 60_000;
     let observedHold;
-    while (Date.now() < heldDeadline) {
+    for (;;) {
       const observed = JSON.parse((await runDocker(["inspect", name])).stdout)[0];
       assert.equal(observed.State.Running, true, `${label} holds instead of exiting`);
       try {
@@ -399,25 +404,19 @@ export async function runWritableGatewayRestart(t) {
       } catch {
         observedHold = undefined;
       }
-      if (observedHold?.failure !== undefined) {
+      if (observedHold?.failure !== undefined || Date.now() >= heldDeadline) {
         return observedHold;
       }
       await delay(250);
     }
-    return observedHold;
   }
   async function killContainer(name) {
     await runDocker(["kill", name]);
-    const killDeadline = Date.now() + 30_000;
-    let observed;
-    do {
-      observed = JSON.parse((await runDocker(["inspect", name])).stdout)[0];
-      if (!observed.State.Running) {
-        return;
-      }
-      await delay(250);
-    } while (Date.now() < killDeadline);
-    assert.fail(`${name} still runs 30 s after docker kill`);
+    await waitUntil(
+      `${name} to stop after docker kill`,
+      async () => !JSON.parse((await runDocker(["inspect", name])).stdout)[0].State.Running,
+      { timeoutMs: 30_000, intervalMs: 250 },
+    );
   }
   // A Gateway container killed outright (an OOM kill or a crash) leaves the native
   // Gateway's state lock behind. Started again in its Pod, the container has a new PID

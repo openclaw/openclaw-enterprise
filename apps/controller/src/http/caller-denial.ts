@@ -77,8 +77,8 @@ export function callerDenialMessage(
   }
   if (action === "create") {
     // A collection create targets its parent: the Installation for a Namespace, otherwise the
-    // Namespace. Only the managed Agent Author Role can hold the supported Namespace-wide create
-    // permissions; other create operations remain Installation-administrator owned.
+    // Namespace. No Role can hold a create permission, so no grant helps: only an Installation
+    // administrator creates one, as the console's AGENT_CREATE_DENIED says (finding 2581).
     const kinds = pluralKind(kind);
     if (resource.kind === "namespace") {
       return `${NAMED_DENIAL_PREFIX} this needs Namespace create. Only an Installation administrator can create ${kinds}: ask one to create it.`;
@@ -91,14 +91,6 @@ export function callerDenialMessage(
       return `${NAMED_DENIAL_PREFIX} a Restriction in ${namespace} denies ${kind} create, even for Installation administrators. Ask whoever manages IAM Restrictions to lift it, or create the ${kind} in another Namespace.`;
     }
     const where = namespaceId === undefined ? " in this Namespace" : ` in Namespace ${namespaceId}`;
-    if (
-      resource.kind === "agent" ||
-      resource.kind === "configuration" ||
-      resource.kind === "secret" ||
-      resource.kind === "credential_source"
-    ) {
-      return `${NAMED_DENIAL_PREFIX} this needs ${kind} create${where}. Ask an Installation administrator to assign you the Agent Author Role in this Namespace or create ${kinds}.`;
-    }
     return `${NAMED_DENIAL_PREFIX} this needs ${kind} create${where}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
   }
   const id = named(resource.id);

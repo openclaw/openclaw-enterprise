@@ -92,6 +92,7 @@ test(
         request_id: "request-1",
         sandbox_id: "immutable-sandbox-id",
         sandbox: "reusable-name",
+        workspace: "synthetic",
       },
       config: binding,
       target: {
@@ -107,18 +108,23 @@ test(
     assert.deepEqual(await invoke(client, "EvaluateHttpRequest", request, supervisor), {
       decision: 1,
     });
+    assert.ok(Number.isFinite(Date.parse(seen[0].deadlineAt)));
     assert.deepEqual(seen[0], {
       sandboxId: "immutable-sandbox-id",
       bindingId: "binding_0123456789abcdefghijklmn",
       requestId: "request-1",
+      workspace: "synthetic",
       target: {
         reportedScheme: "https",
         host: "api.example.test",
         port: 443,
         method: "GET",
         path: "/v1/status",
-        query: "absent_or_empty",
+        query: "",
       },
+      headers: [],
+      body: new Uint8Array(),
+      deadlineAt: seen[0].deadlineAt,
     });
     // The same unexpired bearer cannot retain an allowance after the grant is withdrawn.
     grant = false;
@@ -129,16 +135,10 @@ test(
     assert.equal(await evaluate(spoofed), 2, "token and sandbox disagree");
     assert.equal(await evaluate({}, gateway), 2, "gateway cannot act as a supervisor");
     for (const changed of [
-      { body: Buffer.from("payload") },
-      { target: { ...request.target, query: "scope=other" } },
-      {
-        target: {
-          ...request.target,
-          path: "/example/project.git/info/refs",
-          query: "service=git-upload-pack",
-        },
-      },
-      { target: { ...request.target, method: "POST" } },
+      { phase: 2 },
+      { context: { request_id: "missing-workspace", sandbox_id: "immutable-sandbox-id" } },
+      { target: { ...request.target, path: "/v1/status?scope=other" } },
+      { headers: [{ name: "Invalid-Header", value: "value" }] },
       { target: { ...request.target, scheme: "http" } },
     ]) {
       assert.equal(await evaluate(changed), 2);
@@ -178,13 +178,17 @@ test(
   async (t) => {
     // Hold every decision until the test settles it. Like a conforming authorizer, honor abort:
     // reject, as fetch does, so a release that runs only on a settled decision leaks.
+    // This Sandbox's authority work ignores abort, as a stuck lookup would.
+    const ignoresAbort = "sandbox-f";
     const decisions = new Map();
     const { server, keys } = await openShellOnlineWire(t, registrationName, {
       budgetMs: 30_000,
       authorize: (request, signal) =>
         new Promise((resolve, reject) => {
           decisions.set(request.requestId, { resolve, reject });
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          if (request.sandboxId !== ignoresAbort) {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          }
         }),
     });
     // The real registered handler, without opening 1,024 network calls.
@@ -212,7 +216,11 @@ test(
       const call = new Call(metadata, {
         phase: 1,
         middleware_name: registrationName,
-        context: { request_id: `request-${requests}`, sandbox_id: sandboxId },
+        context: {
+          request_id: `request-${requests}`,
+          sandbox_id: sandboxId,
+          workspace: "synthetic",
+        },
         // The server's decoder names the set oneof member, as the wire call would.
         config: {
           fields: {
@@ -238,6 +246,11 @@ test(
     const admitted = (call) => call.result === undefined;
     const assertRefused = (call, message) => assert.deepEqual(call.result, denied, message);
     const settled = () => new Promise((resolve) => setImmediate(resolve));
+    const resolveAll = (calls, decision) => {
+      for (const call of calls) {
+        decisions.get(call.id).resolve(decision);
+      }
+    };
     const pool = 1024;
     // A quarter of the pool, like the Credential Proxy's per-Sandbox shares.
     const share = pool / 4;
@@ -322,9 +335,26 @@ test(
     assert.ok(admitted(afterTimeout.at(-1)));
     assertRefused(evaluate("sandbox-a"), "duplicate terminal events");
     await settled();
-    for (const call of [...afterTimeout, other]) {
-      decisions.get(call.id).resolve("deny");
+    resolveAll([...afterTimeout, other], "deny");
+    await settled();
+
+    // The budget answers calls whose authority work ignores abort, but that work keeps its slots
+    // until it settles: the caps bound authority work in flight, not only unanswered calls.
+    const stuck = Array.from({ length: share }, () => evaluate(ignoresAbort));
+    assert.ok(stuck.every(admitted));
+    await settled();
+    t.mock.timers.tick(30_000);
+    await settled();
+    for (const call of stuck) {
+      assert.deepEqual(call.result, denied);
     }
+    assertRefused(evaluate(ignoresAbort), "unsettled authority work keeps its Sandbox slots");
+    resolveAll(stuck, "allow");
+    await settled();
+    const freed = evaluate(ignoresAbort);
+    assert.ok(admitted(freed), "settled authority work returns its Sandbox slots");
+    await settled();
+    resolveAll([freed], "deny");
     await settled();
     t.mock.timers.reset();
   },

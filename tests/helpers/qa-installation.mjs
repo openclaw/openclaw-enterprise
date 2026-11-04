@@ -13,6 +13,7 @@ import { grantQaRepositoryBranch } from "./qa-repository.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
+  protectedModelApiKey,
   registerQaSecret,
   grantQaSecret,
   qaCommandFailureDetail,
@@ -35,48 +36,6 @@ function execute(command, args, options) {
   });
 }
 const repository = resolve(import.meta.dirname, "../..");
-
-async function runQaPolicyFixtureQuery(f, sql, variables) {
-  const values = Object.entries(variables).flatMap(([name, value]) => {
-    if (!/^[a-z_]+$/.test(name) || typeof value !== "string" || !/^[a-zA-Z0-9_-]+$/.test(value)) {
-      throw new Error("Invalid QA policy fixture input.");
-    }
-    return ["--set", `${name}=${value}`];
-  });
-  const psql = [
-    "psql",
-    "-X",
-    "-q",
-    "-t",
-    "-A",
-    "--set",
-    "ON_ERROR_STOP=1",
-    ...values,
-    "--username",
-    "postgres",
-    "--dbname",
-    "openclaw_enterprise",
-  ];
-  if (f.state.deploymentMode === "k3d") {
-    return f.kubectl(
-      "-n",
-      f.state.platformNamespace,
-      "exec",
-      "-i",
-      "statefulset/postgres",
-      "-c",
-      "postgres",
-      "--",
-      ...psql,
-      { input: sql },
-    );
-  }
-  if (f.state.deploymentMode === "compose") {
-    return f.compose("exec", "-T", "postgres", ...psql, { input: sql });
-  }
-  throw new Error("The QA policy fixture requires a Compose or k3d PostgreSQL owner.");
-}
-
 export function launcherEnvironment() {
   // Runtime credentials are delivered later through the Secret API. Never pass
   // the matrix's model, sender, or GitHub observer credentials to the launcher.
@@ -190,11 +149,11 @@ export async function runQaCommand(f, command, args, options = {}) {
 export async function deployQaAgentAndWait(
   f,
   agent,
-  { timeout = 600_000, interval = 1000, now = () => Date.now(), revision } = {},
+  { timeout = 600_000, interval = 1000, now = () => Date.now() } = {},
 ) {
   const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
   agent.stopped = false;
-  agent.revision = revision ?? (await f.api("POST", base + "/deploy"));
+  agent.revision = await f.api("POST", base + "/deploy");
   // A timeout names the deployment's last status and attempt, and how long it had that status
   // (finding 2106: six cells timed out at 600 s with no status).
   let last;
@@ -510,34 +469,13 @@ export async function createQaInstallation(
       return path;
     },
     async kubectl(...args) {
-      const options = typeof args.at(-1) === "object" ? args.pop() : {};
-      return f.run(
-        "kubectl",
-        [
-          "--kubeconfig",
-          join(stateDirectory, "kubeconfig"),
-          "--context",
-          `k3d-${cluster}`,
-          ...args,
-        ],
-        options,
-      );
-    },
-    async seedAgentCreateRestriction(namespaceId, restrictionId) {
-      return runQaPolicyFixtureQuery(
-        f,
-        `INSERT INTO occ.iam_restrictions
-           (id, namespace_id, action, resource_kind, resource_id, effect)
-         VALUES (:'id', :'namespace_id', 'create', 'agent', NULL, 'deny') RETURNING id`,
-        { id: restrictionId, namespace_id: namespaceId },
-      );
-    },
-    async removeAgentCreateRestriction(restrictionId) {
-      return runQaPolicyFixtureQuery(
-        f,
-        "DELETE FROM occ.iam_restrictions WHERE id = :'id' AND action = 'create' AND resource_kind = 'agent' RETURNING id",
-        { id: restrictionId },
-      );
+      return f.run("kubectl", [
+        "--kubeconfig",
+        join(stateDirectory, "kubeconfig"),
+        "--context",
+        `k3d-${cluster}`,
+        ...args,
+      ]);
     },
     async get(kind, name, namespace) {
       return f.resource(kind, name, namespace);
@@ -567,20 +505,15 @@ export async function createQaInstallation(
       return text ? JSON.parse(text).data : undefined;
     },
     async compose(...args) {
-      const options = typeof args.at(-1) === "object" ? args.pop() : {};
-      return f.run(
-        "docker",
-        [
-          "compose",
-          "-p",
-          cluster,
-          "-f",
-          join(stateDirectory, "compose.yaml"),
-          ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
-          ...args,
-        ],
-        options,
-      );
+      return f.run("docker", [
+        "compose",
+        "-p",
+        cluster,
+        "-f",
+        join(stateDirectory, "compose.yaml"),
+        ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
+        ...args,
+      ]);
     },
     async saveInstallation(configuration) {
       await writeFile(join(stateDirectory, "installation.yaml"), dumpYaml(configuration), {
@@ -721,8 +654,8 @@ export async function createQaInstallation(
         },
       };
     },
-    async deployAndWait(agent, options) {
-      return deployQaAgentAndWait(f, agent, options);
+    async deployAndWait(agent) {
+      return deployQaAgentAndWait(f, agent);
     },
     async selectPlugin(agentId, policy) {
       const agent = f.agents.find((value) => value.id === agentId);
@@ -971,7 +904,13 @@ export async function prepareQaPreset(f, presetName) {
   }
 }
 
-export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "") {
+export async function createQaAgent(
+  f,
+  presetName,
+  browserOrigin,
+  nameSuffix = "",
+  { apiKeyAuth = false } = {},
+) {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
   // The Preset list returns summaries; the exact Preset carries the template.
   const selected = f.presets.find((value) => value.name === `Standard ${presetName}`);
@@ -979,10 +918,15 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
   assert.equal(selected.namespaceId, f.namespace.id, "Preset must belong to the QA Namespace");
   const preset = await f.api("GET", `/namespaces/${selected.namespaceId}/presets/${selected.id}`);
   const codex = presetName === "Codex";
-  const credential = await protectedText(
-    process.env[codex ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"],
-    "model credential",
-  );
+  const codexAccountLogin = codex && !apiKeyAuth;
+  const credential = apiKeyAuth
+    ? await protectedModelApiKey()
+    : await protectedText(
+        process.env[
+          codexAccountLogin ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"
+        ],
+        "model credential",
+      );
   const model =
     process.env[codex ? "OCC_TEST_QA_CODEX_MODEL" : "OCC_TEST_QA_OPENAI_MODEL"] || "gpt-6-luna";
   const rendered = renderPresetTemplate(preset.template, {
@@ -1002,29 +946,78 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
     ...(browserOrigin ? { allowedOrigins: [browserOrigin] } : {}),
   };
   values.agents.defaults.skipBootstrap = true;
-  const configuration = await f.api("POST", `/namespaces/${f.namespace.id}/configurations`, {
-    ...rendered.configuration,
-    kind: "agent",
-  });
+  const provisionNativeAdmin =
+    f.controlPlane === "kubernetes" &&
+    rendered.agent.executionMode === "dedicated" &&
+    nameSuffix === "-model-ui";
+  let configuration;
+  let agent;
   const secret = await f.api("POST", `/namespaces/${f.namespace.id}/secrets`, {
     name: `${rendered.agent.name}-model`,
     value: credential,
   });
   const auth = {
-    method: codex ? "codex_pat" : "api_key",
+    method: codexAccountLogin ? "codex_pat" : "api_key",
     source: { kind: "secret", namespaceId: f.namespace.id, id: secret.id },
   };
-  const agent = await f.api("POST", `/namespaces/${f.namespace.id}/agents`, {
-    ...rendered.agent,
-    configurationId: configuration.id,
-    harnessAuth: auth,
-  });
+  if (provisionNativeAdmin) {
+    // Exercise the Console's first-deployment request, without a later Configuration patch.
+    const result = await f.api("POST", `/namespaces/${f.namespace.id}/agents/provision`, {
+      ...rendered.agent,
+      requestId: `req_${randomUUID()}`,
+      nativeAdmin: true,
+      configuration: { ...rendered.configuration, kind: "agent" },
+      harnessAuth: auth,
+    });
+    const progress = await waitFor("native admin initial provisioning", async () => {
+      const current = await f.api("GET", result.provisioning.url);
+      if (current.agentId && !agent) {
+        agent = await f.api("GET", `/namespaces/${f.namespace.id}/agents/${current.agentId}`);
+        Object.assign(agent, { preset: presetName, qaScenario: nameSuffix, harnessAuth: auth });
+        f.agents.push(agent);
+      }
+      assert.notEqual(current.status, "failed", JSON.stringify(current.error));
+      return current.status === "succeeded" ? current : undefined;
+    });
+    Object.assign(
+      agent,
+      await f.api("GET", `/namespaces/${f.namespace.id}/agents/${progress.agentId}`),
+    );
+    configuration = await f.api(
+      "GET",
+      `/namespaces/${f.namespace.id}/configurations/${progress.configurationId}`,
+    );
+    assert.equal(
+      configuration.generation,
+      1,
+      "native admin must work from the first Configuration",
+    );
+    const versions = await f.api(
+      "GET",
+      `/namespaces/${f.namespace.id}/agents/${agent.id}/revisions`,
+    );
+    assert.equal(versions.length, 1, "native admin must not need a second deployment");
+    agent.revision = await f.api(
+      "GET",
+      `/namespaces/${f.namespace.id}/agents/${agent.id}/revisions/${progress.revisionId}`,
+    );
+  } else {
+    configuration = await f.api("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      ...rendered.configuration,
+      kind: "agent",
+    });
+    agent = await f.api("POST", `/namespaces/${f.namespace.id}/agents`, {
+      ...rendered.agent,
+      configurationId: configuration.id,
+      harnessAuth: auth,
+    });
+    f.agents.push(agent);
+  }
   agent.preset = presetName;
   agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
   agent.harnessAuth = auth;
-  f.agents.push(agent);
-  if (f.controlPlane === "kubernetes") {
+  if (f.controlPlane === "kubernetes" && !provisionNativeAdmin) {
     const target = nativeAdminTarget({
       publicOrigin: f.consoleUrl,
       installationId: f.installation.id,
@@ -1053,9 +1046,11 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
       values,
     });
   }
-  await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
-  await f.api("POST", `/namespaces/${f.namespace.id}/agents/${agent.id}/runtime-credentials`, {});
-  await f.deployAndWait(agent);
+  if (!provisionNativeAdmin) {
+    await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
+    await f.api("POST", `/namespaces/${f.namespace.id}/agents/${agent.id}/runtime-credentials`, {});
+    await f.deployAndWait(agent);
+  }
   agent.native = createNativePluginAssertions({
     gatewayUrl: (a) => f.gatewayUrl(a),
     execGateway: (a, args) => f.execRole(a, "gateway", args),
