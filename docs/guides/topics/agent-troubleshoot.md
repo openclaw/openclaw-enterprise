@@ -56,6 +56,13 @@ startup, including on storage that adds setgid. After correcting the startup or
 storage problem, deploy the Agent again. Keep its retained state and shared
 workspace intact. See [writable runtime state](../../reference/drivers/openshell-sandbox.md#writable-runtime-state).
 
+For an OpenShell native Git preview, `repository-git-route` identifies Git
+validation or shim setup failure. `native-worker-startup` identifies later
+worker configuration or connection setup failure, not a Git authorization denial.
+Both hold the released worker unready with `UNAVAILABLE`. Correct the underlying
+configuration, trust-file or storage problem, then deploy again; the one-use
+release is not replayed.
+
 <span id="the-console-says-serving-status-unavailable"></span>
 
 ## Verify runtime health after deployment

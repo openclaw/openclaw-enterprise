@@ -1,6 +1,6 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-29
+updated: "2026-11-04"
 last_updated_session: 01a184cd-7ec2-7fa2-8547-9629c51ad0ba
 ---
 
@@ -97,11 +97,10 @@ credentials use the selected Credential Gateway.
 `scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
 Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
 Before state creation, Kubernetes-only rejects API-port collisions and records
-engine, cluster, namespace, port and key destination. Both verify archives,
-package charts and import digest-pinned OpenShell images. Kubernetes-only
-builds/selects OCE images, imports PostgreSQL and resolves cluster digests.
-
-Both import OCE images first, preventing k3s garbage collection of idle OpenShell images.
+connection settings and key destination. Both verify archives and
+package charts. Kubernetes-only builds/selects OCE images, imports PostgreSQL
+and resolves digests. Both import OCE before digest-pinned OpenShell
+images, preventing k3s collection.
 
 After Agent Sandbox rollout failure, `prepareOpenShell` invokes
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -279,13 +278,15 @@ bounds trust. Native exposure ends once a post-enrollment pass confirms its
 delete, by `withdrawHarnessExposure`, adoption or recreation with
 `workspaceNodeEnrolled`.
 
-After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
-require the recorded release acknowledgment and authenticated WebSocket. Other
-non-`200` responses stay pending or refuse enrollment without an upgrade.
+Codex's HTTP `400`/`404` fallback requires release acknowledgment and
+authenticated WebSocket; other failures never upgrade. Native has no app-server
+socket. Its acknowledgment requires policy, recipient and Sandbox-ID
+checks plus Compute node enrollment. Release precedes probing, migration and
+connection; enrollment never rereads withdrawn exposure.
 
-The Backend reuses clients, retrying setup. Cancellation is checked after
-setup/credential preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations
-may continue, requiring recovery.
+Reused Backend clients retry setup. Cancellation is checked after setup
+and credential preparation; initialization/file reads have no deadline. After
+dispatch, cancellation stops local gRPC, not remote mutations, requiring recovery.
 
 `GetService` separates control URL and advertised workload host/port.
 `harnessEndpoint` returns WebSocket origin and configured

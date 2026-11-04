@@ -1,6 +1,6 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-30"
+updated: "2026-11-04"
 last_updated_session: authoring-run/58b286d1-0e1a-4666-b77e-e8da815c7d88
 ---
 
@@ -114,14 +114,14 @@ Retries reuse it; repository retries require a successful reload and nonempty re
 Failed reloads block creation; obsolete completions cannot change the view. Unknown
 outcomes require stored Agent and Configuration reads.
 
-`packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
-uses `resolveRepositoryBindings` after authorization. Without a repository Driver, save answers
-`409 RESOURCE_CONFLICT`. Inputs contain distinct opaque
-references and optional profiles, never provider tokens or caller-selected grant identities;
-selections keep request order. The
-`apps/controller/src/drivers/repo/github/policy.ts:GitHubRepositoryPolicy.resolve`
-uses local registry policy, defaults omitted legacy profiles to `git-write`, and
-makes no control-socket or GitHub calls.
+`packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections` authorizes
+opaque references, never caller tokens or grant identities. Missing Driver:
+`409 RESOURCE_CONFLICT`; empty selections skip resolution. Local resolution
+preserves order, defaults profiles to `git-write`, and makes no external calls.
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:validateRepositoryCredentials`
+requires protected `repositoryAccess` for dedicated native OpenClaw; otherwise
+save/deploy refuse before work. Proxy profile/preview checks remain deployment gates.
 
 `apps/controller/src/drivers/repo/github/credentials/registry.ts:resolveGitHubRepositoryBinding`
 requires the exact Namespace/reference/profile combination. Its fingerprint binds provider,

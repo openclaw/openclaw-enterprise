@@ -170,27 +170,28 @@ Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enabl
 
 ## Grant access to a GitHub App installation
 
-Use the [GitHub App setup](../../guides/repository-credentials/team-runbook.md#register-and-install-the-github-app)
-for membership and permissions, and the
-[registry reference](../repository-credentials.md#canonical-platform-registry)
-for policy fields. Keep repository scope when it is sufficient. To expose an
-installation scope, set a distinct `installationAccess.repositoryRef`, allow the
-Namespace with `accessMode: installation`, and select that reference with
-`profile: github-installation` in the Agent's `repositoryBindings`, as its only
-binding (Agent save and deploy refuse it next to another). No default profile or
-wildcard selects this scope. The installed sender must positively confirm
-`github_installation` support. With the bundled OpenShell Credential Proxy, that
-needs its `observedHookPreviewWorkspace` setting: without it, deploy answers
-`409 RESOURCE_CONFLICT`, and on a gateway other than 0.1.5, `503`.
+Configure the [GitHub App](../../guides/repository-credentials/team-runbook.md#register-and-install-the-github-app)
+and [registry](../repository-credentials.md#canonical-platform-registry). Prefer repository scope.
+For installation access, set a distinct `installationAccess.repositoryRef`, allow
+the Namespace with `accessMode: installation`, and select that reference with
+`profile: github-installation` as the Agent's only `repositoryBindings` entry.
+Save and deploy reject mixed bindings. No default or wildcard selects this scope.
+The sender must confirm `github_installation` support. The bundled Credential
+Proxy requires `observedHookPreviewWorkspace`; otherwise deploy returns
+`409 RESOURCE_CONFLICT`. A gateway version other than 0.1.5 returns `503`.
 
-Dedicated native OpenClaw does not support this profile. Agent create, update,
-and deployment refuse native repository bindings, including the opt-in preview.
-OCE does not install a native Git credential alias or launcher for installation access.
+Kubernetes Compute also supports dedicated native OpenClaw for this preview.
+Set `kubernetes.userNamespaces: false`, at most one operator workspace
+ServiceAccount, and an existing OpenShell Credential Gateway model source.
+OCE verifies the hook and recipient before startup, then waits for node enrollment.
+Other native delivery profiles remain unsupported.
 
-OCE does not add a ref allowlist to installation scope. GitHub's membership,
-permissions and branch rules set its limit. See
-[operator verification and withdrawal](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal)
-for profile-specific allowed/denied requests and the required model-source choice.
+Both Codex and native OpenClaw can access every repository and API operation
+that the installation permits, regardless of the session's repository. OpenShell
+keeps token bytes outside the Pod; it does not restrict Git to that repository
+or branch. OCE adds no ref allowlist. Direct harness Git bypasses the Gateway's
+repository-bound publication path. Keep installation access disabled if this
+authority is unacceptable. See [verification and withdrawal](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal).
 
 ## Use the admitted repository
 
