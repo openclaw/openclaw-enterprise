@@ -23,7 +23,7 @@
     "tests/browser/console-button-hierarchy.test.ts": 18300,
     "tests/browser/console-codex-oauth.test.mjs": 30300,
     "tests/browser/console-create-agent-member.test.ts": 15000,
-    "tests/browser/console-create-agent-provisioning-400.test.mjs": 55400,
+    "tests/browser/console-create-agent-provisioning-400.test.ts": 55400,
     "tests/browser/console-deployment-activity.test.ts": 47800,
     "tests/browser/console-dialogs.test.ts": 11600,
     "tests/browser/console-disabled-reasons.test.ts": 12400,
