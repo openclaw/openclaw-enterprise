@@ -60,6 +60,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_GATEWAY_CA_PATH` — API-only path to the Gateway-only CA bundle that dedicated Harness nodes trust; empty means none. Unset, node enrollment uses `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.
 - `OCC_EGRESS_AUTHORITY_PORT`, `OCC_OPENSHELL_GIT_PORT` — Chart-set port of its `egressAuthority` and `openshellGit` listeners, or `disabled`. API and worker startup and the upgrade check refuse `CHART_LISTENER_MISMATCH` when the Installation authority uses another port, a host other than `0.0.0.0` or `::`, a disabled listener, or TLS or issuer file paths other than the chart's mounts. Not operator inputs.
 - `OCC_CA_SOURCES`, `OCC_DATABASE_CA_SOURCE` — Chart-set labels (value, Secret and key) that the OIDC CA startup checks print in their errors instead of mount paths. Helm sets them with OIDC CA values; not operator inputs.
+- `OCC_CHART_GATEWAY_ROUTING` — Chart-set private Gateway identity and hostnames. Startup refuses conflicting bundled Kubernetes Compute routing; not an operator input. See [production settings](../settings/production.md).
 
 ## PostgreSQL and migrations
 
