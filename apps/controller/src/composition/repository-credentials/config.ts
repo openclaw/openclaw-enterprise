@@ -15,6 +15,10 @@ import type {
   GitHubStaticTokenOwner,
   GitHubDriverFactory,
 } from "../../drivers/repo/github/credentials/types.ts";
+import type {
+  GitLabDriverFactory,
+  GitLabStaticTokenOwner,
+} from "../../drivers/repo/gitlab/credentials/types.ts";
 import { loadPublicCa } from "./public-ca.ts";
 import { readProtectedFile } from "./protected-file.ts";
 
@@ -49,7 +53,7 @@ export async function loadConfiguration(
   let registryBytes: Buffer | undefined;
   let cert: Buffer | undefined;
   let tlsKey: Buffer | undefined;
-  let owner: GitHubStaticTokenOwner | undefined;
+  let owner: GitHubStaticTokenOwner | GitLabStaticTokenOwner | undefined;
   let upstreamCa: Buffer | undefined;
   try {
     raw = await readProtected(path, 262144);
@@ -69,8 +73,9 @@ export async function loadConfiguration(
       }
       return gateway;
     }
-    let factory: LoadedConfiguration["factory"] &
-      Pick<GitHubDriverFactory, "trustedUpstreamOrigins">;
+    let factory:
+      | (LoadedConfiguration["factory"] & Pick<GitHubDriverFactory, "trustedUpstreamOrigins">)
+      | (LoadedConfiguration["factory"] & Pick<GitLabDriverFactory, "trustedUpstreamOrigins">);
     if (backendInput.kind === "github-prepared-git-registry") {
       if (
         Object.keys(backendInput).some(
@@ -144,6 +149,39 @@ export async function loadConfiguration(
         ...origin,
         ...apiOrigin,
       });
+    } else if (backendInput.kind === "gitlab-token") {
+      const { validateGitLabConfiguration } =
+        await import("../../drivers/repo/gitlab/credentials/config.ts");
+      const configuration = validateGitLabConfiguration(backendInput);
+      if (
+        options.developmentAuthority !== true ||
+        config.sessionPolicy.maximumDurationSeconds > developmentTokenMaximumSeconds ||
+        config.limits.gitPushInputBytes > developmentTokenPushInputBytes
+      ) {
+        throw new Error("invalid-configuration");
+      }
+      const gateway = validateGateway();
+      token = await readProtected(configuration.tokenFile, config.limits.accessTokenBytes + 2);
+      const newline = token.at(-1) !== 0x0a ? 0 : token.at(-2) === 0x0d ? 2 : 1;
+      const length = token.length - newline;
+      if (length < 1 || length > config.limits.accessTokenBytes) {
+        throw new Error("invalid-configuration");
+      }
+      const { createGitLabStaticTokenOwner } =
+        await import("../../drivers/repo/gitlab/credentials/static-token.ts");
+      owner = createGitLabStaticTokenOwner({ token: token.subarray(0, length) });
+      cert = await readProtected(string(gateway.tlsCertFile), 131072, false);
+      tlsKey = await readProtected(string(gateway.tlsKeyFile), 65536);
+      createSecureContext({ cert, key: tlsKey, minVersion: "TLSv1.2" });
+      const { createGitLabDriverFactory } =
+        await import("../../drivers/repo/gitlab/credentials/factory.ts");
+      factory = createGitLabDriverFactory({
+        authority: owner,
+        gatewayOrigin: config.gateway.publicOrigin,
+        limits: config.limits,
+        clock,
+        configuration,
+      });
     } else {
       const { validateGitHubConfiguration } =
         await import("../../drivers/repo/github/credentials/config.ts");
@@ -194,7 +232,12 @@ export async function loadConfiguration(
       ...(upstreamCa === undefined ? {} : { upstreamCa }),
       ...(ownedAuthority?.kind === "github-token"
         ? { authority: "github-token-development" as const, tokenClass: ownedAuthority.tokenClass }
-        : { authority: "github-prepared-git-registry" as const }),
+        : ownedAuthority?.kind === "gitlab-token"
+          ? {
+              authority: "gitlab-token-development" as const,
+              tokenClass: ownedAuthority.tokenClass,
+            }
+          : { authority: "github-prepared-git-registry" as const }),
       close() {
         ownedAuthority?.close();
         ownedCert.fill(0);

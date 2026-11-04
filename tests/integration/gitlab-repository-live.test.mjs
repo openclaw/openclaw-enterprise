@@ -6,13 +6,24 @@ import { GitLabRepositoryClient } from "../../apps/controller/src/drivers/repo/g
 
 const tokenFile = process.env.GITLAB_TEST_TOKEN_FILE;
 const projectPath = process.env.GITLAB_TEST_PROJECT;
+const live = process.env.GITLAB_TEST_LIVE === "1";
+
+function requireLiveAuthorization() {
+  assert.equal(
+    process.env.GITLAB_TEST_AUTHORIZED,
+    "1",
+    "explicit authorization for the disposable GitLab project is required",
+  );
+  assert.ok(tokenFile && projectPath, "the live lane requires a token file and project");
+}
 
 // Real GitLab.com reads only. Writes are exercised by the protected-sender integration once the
 // provider is composed; this case qualifies the provider identity, transport, and read profile.
 test(
   "GitLab.com read profile reaches the configured project over the real API",
-  { skip: tokenFile === undefined || projectPath === undefined },
+  { skip: !live },
   async () => {
+    requireLiveAuthorization();
     const token = (await readFile(tokenFile, "utf8")).trim();
     assert.ok(token.length > 0, "the token file must contain a token");
     const api = new GitLabRepositoryClient({
@@ -45,9 +56,11 @@ const writeBranch = process.env.GITLAB_TEST_WRITE_BRANCH;
 test(
   "GitLab.com write profile opens a draft merge request and never a ready one",
   {
-    skip: tokenFile === undefined || projectPath === undefined || writeBranch === undefined,
+    skip: !live,
   },
   async () => {
+    requireLiveAuthorization();
+    assert.ok(writeBranch, "the live lane requires a preprovisioned source branch");
     const token = (await readFile(tokenFile, "utf8")).trim();
     const api = new GitLabRepositoryClient({
       projectPath: projectPath,

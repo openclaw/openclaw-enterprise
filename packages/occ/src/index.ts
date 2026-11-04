@@ -772,6 +772,8 @@ export interface RuntimeLogReadGrant {
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
 export interface ControllerOptions {
+  readonly backendValidators?:
+    readonly import("@openclaw-enterprise/contracts").BackendDefinitionValidator[] | undefined;
   readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
@@ -2100,7 +2102,7 @@ export class OpenClawController {
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
     this.shouldRecordOperations = options.recordOperations ?? true;
-    this.backends = validateBackendDefinitions(options.backends ?? []);
+    this.backends = validateBackendDefinitions(options.backends ?? [], options.backendValidators);
     this.defaultPresets = immutableCopy(options.defaultPresets ?? []);
     const presetNames = new Set<string>();
     for (const preset of this.defaultPresets) {
@@ -2129,7 +2131,7 @@ export class OpenClawController {
       throw new RangeError(capacity.faults.map((fault) => fault.message).join(" "));
     }
     this.credentialProxyCapacity = capacity.capacity;
-    this.backendMap = backendDefinitionMap(this.backends);
+    this.backendMap = backendDefinitionMap(this.backends, options.backendValidators);
     if (
       options.configuredServiceAccountDriverId !== undefined &&
       !isNonEmptyString(options.configuredServiceAccountDriverId)

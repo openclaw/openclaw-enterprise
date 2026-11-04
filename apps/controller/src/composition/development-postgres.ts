@@ -261,6 +261,7 @@ export async function composePostgresDevelopment(
         refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
         ...(loggingLevel === undefined ? {} : { loggingLevel }),
         ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
+        ...(drivers?.backendValidators && { backendValidators: drivers.backendValidators }),
       },
       drivers?.repositoryAdmission,
     );

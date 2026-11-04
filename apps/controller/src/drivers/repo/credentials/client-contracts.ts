@@ -5,6 +5,8 @@ export interface RepositoryCredentialClientConfiguration {
   readonly canonicalApiHost: string;
   readonly apiHost: string;
   readonly repository: string;
+  /** GitLab API routes use the provider's numeric project identity, not a caller path. */
+  readonly projectId?: string;
   readonly pushRefAllowlist?: readonly string[];
 }
 

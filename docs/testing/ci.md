@@ -514,6 +514,15 @@ itself remains manual.
 | k3d OTEL; Helper Timeout                | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                                           | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)       | No                                                       |
 | Shipped Installation QA Matrix          | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                            | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                     | With `full-qa`; see QA scenarios                         |
 
+### GitLab live lane
+
+`gitlab-repository-live` is an opt-in runner lane with an authorized disposable
+project, protected PAT file, numeric project ID, and source branch as required inputs.
+See [GitLab client checks](repository-credentials.md#gitlab-client-checks).
+Its [manifest](../../scripts/ci/test-suites/gitlab-repository-live.json) registers
+client and Agent-session coverage; it is not dispatched by ordinary PR CI or
+`Full Integration`. The conformance files run in `checks-baseline-1`.
+
 ### Observability Demo
 
 `Demo Observability Smoke` checks the chart, metrics/log ingestion and rendered

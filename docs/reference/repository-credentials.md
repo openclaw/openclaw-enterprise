@@ -1,8 +1,7 @@
 # Repository credentials
 
-A repository binding gives an Agent HTTPS access to a named repository under
-an approved profile. The OpenClaw Control Plane (OCC) saves the grant with the
-Agent revision. To configure a binding, follow the [operator guide](../guides/repository-credentials.md).
+Configure approved HTTPS repository access with the [operator guide](../guides/repository-credentials.md).
+OpenClaw Control Plane (OCC) saves each grant with the Agent revision.
 
 ## Native Git from the Agent to GitHub
 
@@ -93,6 +92,15 @@ older cleanup. Deletion, invalidation and elapsed deadlines do not establish
 disposal or provider revocation. Evidence pruning and durable recovery of lost token material from
 a session are unimplemented. See [sessions and closure](#sessions-and-closure)
 for what the original broker can confirm.
+
+## GitLab development workflow
+
+GitLab.com uses registry-backed Repo policy, the repository credential service,
+and an operator-supplied project PAT. Native Agent sessions can read, push
+approved refs, and create draft merge requests. OpenShell delivery and durable
+operation receipts remain outside this milestone. See the
+[proposal](../../specs/rfcs/0029-gitlab-repository-credentials.md) and
+[checks](../testing/repository-credentials.md#gitlab-client-checks).
 
 ## Configuration
 
@@ -300,11 +308,11 @@ aliases, remotes and worktrees. Git and gh preserve exit codes or return
 
 At startup, Kubernetes copies the client material and prepares its private
 subPath. Preparation checks generation, manifest, session metadata, paths and
-ownership before writing `gitconfig`. It never reads a bearer or opens a session.
+ownership before writing `gitconfig`. It never reads a bearer or opens sessions.
 
 Each HTTPS host maps to one gateway origin and CA policy. Rewrites preserve
 repository casing and an optional final `.git`. Other repositories on that
-host also reach the gateway, but receive no bearer. Separate authentication
+host reach the gateway without a bearer. Separate authentication
 requires a native override. SSH and cross-repository submodules are unsupported.
 
 The generated Git configuration resets helpers, sets `credential.useHttpPath=true`,
@@ -317,21 +325,21 @@ spellings yield no bearer. The broker constructs the canonical upstream path
 for discovery, upload-pack and receive-pack. Endpoint, method, media-type,
 service-query and profile checks still apply.
 
-Select among duplicate bindings with `OCE_REPOSITORY_REF`. The gh launcher also
+Select among duplicate bindings with `OCE_REPOSITORY_REF`. The gh launcher
 propagates `OCE_REPOSITORY_SELECTION` with generation, reference and session
 ID. A pin cannot change the gateway origin. Conflicting or stale pins fail
 remote authentication. The helper checks its prepared generation and original
 deadline before reading the bearer. The gateway can close the session earlier.
-Local Git commands skip the helper and still work. Pins do not freeze arbitrary
-subprocesses. There is no command-wide preflight. Native settings can override these defaults and other helpers can
+Local Git commands skip the helper. Pins do not freeze arbitrary
+subprocesses and have no preflight. Native settings can override these defaults; other helpers can
 retain credentials. OCE's helper ignores `store` and `erase`.
 
 For the API launcher, use GitHub CLI **2.103.2**, `GH_HOST=github.com` and a
-gateway hostname with verified TLS on port 443. Its private `hosts.yml` uses the
-experimental `api_host` setting and stores the gateway bearer in `oauth_token`.
+gateway hostname with verified TLS. Its private `hosts.yml` uses the
+`api_host` setting and stores the gateway bearer in `oauth_token`.
 The launcher admits [selected commands](repository-credentials/access-levels.md#supported-commands)
 and relative API paths. It rejects absolute destinations. Network controls must
-separately enforce egress restrictions.
+enforce egress restrictions.
 
 ### Service limits
 

@@ -1,5 +1,5 @@
-import type { InputVerdict } from "../../../credentials/backend-contracts.ts";
-import { allowsPushRef, decodePushedBranchRef } from "../../../credentials/client-contracts.ts";
+import type { InputVerdict } from "./backend-contracts.ts";
+import { allowsPushRef, decodePushedBranchRef } from "./client-contracts.ts";
 
 // Smart-HTTP receive-pack (protocol v0/v1; v2 has no receive-pack form) sends
 // plaintext pkt-line commands, a flush-pkt, then optional push options and the

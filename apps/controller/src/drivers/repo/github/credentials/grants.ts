@@ -6,7 +6,7 @@ import {
   staticTokenGraphqlPolicy,
 } from "./profiles.ts";
 import type { GitHubTokenConfiguration, GitHubTokenProfile } from "./types.ts";
-import { sameAuthority } from "./driver/state.ts";
+import { sameAuthority } from "../../credentials/driver-state.ts";
 
 type GrantDependencies = Readonly<{
   config: GitHubTokenConfiguration;

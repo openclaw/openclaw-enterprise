@@ -4,12 +4,13 @@ import type {
   PrivateUpstreamRequest,
   RepositoryBackend,
   RequestPlan,
-} from "../../../credentials/backend-contracts.ts";
-import type { GitHubDriverState } from "./state.ts";
+} from "./backend-contracts.ts";
+import type { RepositoryDriverState } from "./driver-state.ts";
 
 type AuthenticationDependencies = Readonly<{
-  state: GitHubDriverState;
+  state: RepositoryDriverState;
   clock: Clock;
+  apiAuthentication: "bearer" | "private-token";
 }>;
 
 function assertAuthenticationAllowed(
@@ -33,19 +34,26 @@ async function sendAuthenticated<T>(
   bytes: Uint8Array,
   plan: RequestPlan,
   send: (request: PrivateUpstreamRequest) => Promise<T>,
+  apiAuthentication: AuthenticationDependencies["apiAuthentication"],
 ): Promise<T> {
   const copy = Buffer.from(bytes);
   const basic = plan.category.startsWith("git-")
     ? Buffer.concat([Buffer.from("x-access-token:"), copy])
     : undefined;
   try {
-    const authorization = basic
-      ? `Basic ${basic.toString("base64")}`
-      : `Bearer ${copy.toString("utf8")}`;
+    const authorization = basic ? `Basic ${basic.toString("base64")}` : undefined;
+    const privateToken =
+      basic === undefined && plan.category === "api" && apiAuthentication === "private-token"
+        ? copy.toString("utf8")
+        : undefined;
     return await send(
       Object.freeze({
         plan,
-        headers: Object.freeze({ ...plan.requestHeaders, authorization }),
+        headers: Object.freeze({
+          ...plan.requestHeaders,
+          ...(authorization === undefined ? {} : { authorization }),
+          ...(privateToken === undefined ? {} : { "private-token": privateToken }),
+        }),
       }),
     );
   } finally {
@@ -65,7 +73,7 @@ export function createCredentialAuthentication(
         throw new Error("authentication-used");
       }
       used = true;
-      return sendAuthenticated(bytes, plan, send);
+      return sendAuthenticated(bytes, plan, send, deps.apiAuthentication);
     };
   };
 }

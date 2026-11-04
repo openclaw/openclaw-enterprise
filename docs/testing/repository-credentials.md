@@ -11,6 +11,32 @@ container, platform, or live-provider boundary. Run commands from the repository
 root with Node.js 24, Git, OpenSSL, Docker, and installed workspace dependencies.
 The controlled tests use disposable fixtures and do not use ambient GitHub credentials.
 
+## GitLab client checks
+
+Run the component checks with `node --test tests/conformance/gitlab-repository-client.test.mjs tests/conformance/gitlab-repository-config.test.mjs`.
+Both files run in `checks-baseline-1`. They cover request restrictions, draft
+confirmation, uncertain response-body outcomes, and Backend validation ownership.
+
+The `gitlab-repository-live` lane registers the client and Agent-session tests.
+It requires these explicit inputs:
+
+| Variable                   | Required input                                                |
+| -------------------------- | ------------------------------------------------------------- |
+| `GITLAB_TEST_LIVE`         | `1` to select the live cases; the lane sets it.               |
+| `GITLAB_TEST_AUTHORIZED`   | `1` to authorize effects on the disposable project.           |
+| `GITLAB_TEST_TOKEN_FILE`   | Protected file containing the project service-account PAT.    |
+| `GITLAB_TEST_PROJECT`      | Canonical GitLab.com project path, such as `example/project`. |
+| `GITLAB_TEST_PROJECT_ID`   | Numeric GitLab project ID.                                    |
+| `GITLAB_TEST_WRITE_BRANCH` | Existing source branch with changes against `main`.           |
+
+With these variables set, run `node --test tests/integration/gitlab-repository-live.test.mjs tests/integration/gitlab-repository-agent.test.mjs`.
+A selected live case fails on missing inputs. With live selection unset, both
+cases skip. The write case creates a draft merge request. The operator must
+remove that test artifact through GitLab after checking it; the client does not
+provide administrative cleanup. Never use a shared production project or print
+PAT contents. The lane is opt-in and is not included in ordinary CI or the
+`Full Integration` workflow.
+
 ## Run controlled tests
 
 ```sh

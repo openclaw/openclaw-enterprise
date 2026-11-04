@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-04"
-last_updated_session: authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195
+last_updated_session: authoring-run/f9763501-e45c-4061-af76-16ded1e6dc1f
 ---
 
 # Agent repository credential flow
@@ -93,6 +93,9 @@ graph TD
 ## Execution Trace
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
+
+GitLab follows the same Backend identity path. Its Repo Driver resolves the
+registry policy, and native composition selects the repository credential service.
 
 `listRepositoryOptions` checks Namespace create or exact Agent update permission
 and Compute availability. Bundled listing uses the bound GitHub catalog;
@@ -290,28 +293,28 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) passes only the selected `ProtectedRepositoryGitAuthority`
+The [worker](../../apps/controller/src/worker.mjs) passes the selected `ProtectedRepositoryGitAuthority`
 to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
 The worker retains maintenance and shutdown. Missing authority or mismatched Drivers stop
 binding before route-store or sender calls.
 Bundled OpenShell connects its route store before binding; a bare Sandbox runs without Git.
 
 If an external binding provides `reconcile`, the worker calls it serially with a 25-second abort
-signal and a one-second delay between calls.
-Close aborts and joins. Independent readback settles the original OCC delivery without
-reinstalling or restoring withdrawn access.
+and one-second delay.
+Close aborts and joins. Independent readback settles delivery without reinstalling
+or restoring withdrawn access.
 
 The worker commits activation and next maintenance together, preserving the actor. Maintenance uses
-30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing known sessions without reminting. Users can deploy during cleanup.
+30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing sessions without reminting; users can deploy during cleanup.
 
-[Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
+[Preview, save and deploy](../../packages/occ/src/index.ts) require repository policy
 permission and current scope for standing approval.
 The
 [worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
 [eligibility](../../packages/occ/src/repository-approval.ts) under Namespace then Agent locks.
 Withdrawal or a changed scope fingerprint raises `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 
-Prepared native Git issues a version's first token only after activation publishes it. The
+Prepared native Git issues the version's first token after activation publishes it. The
 deployment's Work then runs `apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
 (`PreparedRepositoryGitStore.revisionMaterial`): it waits at `REPOSITORY_GIT_MATERIAL_PENDING`
 until each open session has a committed token and fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`
@@ -348,8 +351,7 @@ See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
 for sessions. Cleanup uses its version key for dispatch and audits.
 `PostgresWorkQueue.completeAgentDeletion` calls `occ.finalize_agent_deletion` under the claim
 to detach attempts, delete live rows and audit deletion atomically. Attempts and cleanup
-survive without fabricated disposal. Unresolved provisioning effects defer completion
-without consuming retries.
+survive without fabricated disposal, and unresolved provisioning effects defer completion.
 
 Compute retirement waits for owned Pods to stop before removing material. It preserves Secrets
 referenced by Pods and current Deployments, and limits deletion to exact ownership with UID
@@ -371,11 +373,10 @@ A cleanup that stays pending logs `worker.repository-cleanup-warning` with its
 or `name-one-repository-ref` requires explicit selection. Inspect metadata
 and Pod generation without printing credentials.
 
-The [test guide](../testing/repository-credentials.md) distinguishes lifecycle,
-installed-runtime and live-provider proof. The
-[image volume case](../testing/docker.md#repository-runtime-volume-test-environment)
-checks Docker mounts; Helm checks rendered ingress. Neither proves CNI enforcement.
-Console recordings cover fixture/API behavior, not model, Slack or GitHub execution.
+The [test guide](../testing/repository-credentials.md) distinguishes proof levels.
+The [volume case](../testing/docker.md#repository-runtime-volume-test-environment)
+and Helm checks do not prove CNI enforcement. Console fixtures do not prove
+model, Slack or GitHub execution.
 The registered Driver test pushes two commits to one draft PR at a local provider.
 On the same Agent revision, the shipped Codex client completes a turn before and after Git
 withdrawal. On a team installation, verify that the Agent updates the PR itself, Git is

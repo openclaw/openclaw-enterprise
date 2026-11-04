@@ -7,7 +7,7 @@ import type {
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 import type { GitHubTokenProfile } from "./types.ts";
 import { allowsGraphqlInput, allowsReadOnlyGraphqlInput } from "./graphql-input.ts";
-import { allowsReceivePackInput } from "./routes/receive-pack.ts";
+import { allowsReceivePackInput } from "../../credentials/receive-pack.ts";
 import { createResponsePolicy } from "./response.ts";
 import { createMetadataResponsePolicy } from "./metadata-response.ts";
 import { classifyRoute, nativeGraphqlAccept } from "./routes/classification.ts";

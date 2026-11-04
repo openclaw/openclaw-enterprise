@@ -1,0 +1,135 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+import {
+  appModule,
+  createLoopbackServiceConfiguration,
+  gatewayRequest,
+} from "../fixtures/repository-credentials/service.mjs";
+import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+
+const tokenFile = process.env.GITLAB_TEST_TOKEN_FILE;
+const project = process.env.GITLAB_TEST_PROJECT;
+const projectId = process.env.GITLAB_TEST_PROJECT_ID;
+const writeBranch = process.env.GITLAB_TEST_WRITE_BRANCH;
+const live = process.env.GITLAB_TEST_LIVE === "1";
+
+function requireLiveAuthorization() {
+  assert.equal(
+    process.env.GITLAB_TEST_AUTHORIZED,
+    "1",
+    "explicit authorization for the disposable GitLab project is required",
+  );
+  assert.ok(
+    tokenFile && project && projectId && writeBranch,
+    "the live lane requires GitLab inputs",
+  );
+}
+
+async function startGitLabService(t, limits = {}) {
+  const resources = createTestResourceScope(t);
+  try {
+    const [{ createSystemClock }, { createGitLabStaticTokenOwner }, { createGitLabDriverFactory }] =
+      await Promise.all([
+        appModule("drivers/repo/credentials/clock"),
+        appModule("drivers/repo/gitlab/credentials/static-token"),
+        appModule("drivers/repo/gitlab/credentials/factory"),
+      ]);
+    const clock = createSystemClock();
+    const token = (await readFile(tokenFile, "utf8")).trim();
+    assert.ok(token.length > 0, "the token file must contain a token");
+    const tls = await createTlsMaterial(resources);
+    const config = await createLoopbackServiceConfiguration(resources, limits);
+    const owner = createGitLabStaticTokenOwner({ token: Buffer.from(token) });
+    resources.after(() => owner.close());
+    const factory = createGitLabDriverFactory({
+      configuration: {
+        kind: "gitlab-token",
+        providerInstanceId: "gitlab-live",
+        configVersion: "1",
+        projectId,
+        project,
+        tokenFile,
+        developmentOnly: true,
+        pushRefAllowlist: [],
+        allowGraphql: false,
+        leaseSeconds: 900,
+      },
+      authority: owner,
+      gatewayOrigin: config.gateway.publicOrigin,
+      limits: config.limits,
+      clock,
+    });
+    const started = await startServiceListeners(resources, {
+      config,
+      factory,
+      clock,
+      tls,
+      upstreamOrigins: ["https://gitlab.com"],
+      trustedUpstreamOrigins: new Set(["https://gitlab.com"]),
+    });
+    const opened = started.service.open({ durationSeconds: 900, profile: "git-write" });
+    return { ...started, resources, opened };
+  } catch (error) {
+    await resources.close(error);
+  }
+}
+
+test(
+  "GitLab Agent sessions read, refuse forbidden operations, and stop after authority withdrawal",
+  { skip: !live },
+  async (t) => {
+    requireLiveAuthorization();
+    const fixture = await startGitLabService(t);
+    const allowed = await gatewayRequest(fixture, `/api/v4/projects/${projectId}`);
+    assert.equal(allowed.status, 200);
+    assert.equal(JSON.parse(allowed.body).path_with_namespace, project);
+
+    const forbidden = await gatewayRequest(
+      fixture,
+      `/api/v4/projects/${projectId}/repository/commits?per_page=100`,
+    );
+    assert.equal(forbidden.status, 400);
+    assert.equal(JSON.parse(forbidden.body).error, "unsupported-request");
+
+    fixture.service.close(fixture.opened.session.sessionId);
+    const withdrawn = await gatewayRequest(fixture, `/api/v4/projects/${projectId}`);
+    assert.equal(withdrawn.status, 401);
+    assert.equal(JSON.parse(withdrawn.body).error, "invalid-credential");
+  },
+);
+
+test(
+  "a GitLab Agent draft create with a lost response is not replayed",
+  { skip: !live },
+  async (t) => {
+    requireLiveAuthorization();
+    const title = `Draft: Agent workflow ${Date.now()}`;
+    const uncertain = await startGitLabService(t, { apiResponseBytes: 1 });
+    const result = await gatewayRequest(uncertain, `/api/v4/projects/${projectId}/merge_requests`, {
+      method: "POST",
+      body: {
+        source_branch: writeBranch,
+        target_branch: "main",
+        title,
+        description: "Created by the GitLab Agent workflow proof.",
+      },
+    });
+    assert.notEqual(result.status, 201);
+    uncertain.service.close(uncertain.opened.session.sessionId);
+
+    const verification = await startGitLabService(t);
+    const listed = await gatewayRequest(
+      verification,
+      `/api/v4/projects/${projectId}/merge_requests?state=opened&per_page=100`,
+    );
+    assert.equal(listed.status, 200);
+    const matches = JSON.parse(listed.body).filter((mergeRequest) => mergeRequest.title === title);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0].draft, true);
+    verification.service.close(verification.opened.session.sessionId);
+  },
+);

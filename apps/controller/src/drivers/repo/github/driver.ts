@@ -76,7 +76,7 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
   }
 
   readonly id: string;
-  readonly implementation = "github";
+  readonly implementation: "github" | "gitlab";
   readonly maintenanceIntervalMs = 30_000;
   readonly durableBrokerReceipts = true;
   readonly checkAdmissionReady: (signal: AbortSignal) => Promise<void>;
@@ -86,13 +86,14 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
 
   constructor(
     backend: Backend<RepositoryCredentialControlClient | undefined>,
-    options: { readonly publicCa?: Uint8Array },
+    options: { readonly publicCa?: Uint8Array; readonly implementation?: "github" | "gitlab" },
   ) {
     const id = backend.drivers.repo;
     if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
       throw new Error("Native repository sender requires its exact policy owner identity.");
     }
     this.id = id;
+    this.implementation = options.implementation ?? "github";
     if (!backend.client) {
       throw new Error("Native repository sender requires a broker client.");
     }

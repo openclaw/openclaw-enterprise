@@ -133,7 +133,8 @@
     "tests/integration/github-selected-repositories.test.ts",
     "tests/conformance/gitlab-repository-client.test.mjs",
     "tests/conformance/gitlab-repository-config.test.mjs",
-    "tests/conformance/gitlab-repository-policy.test.mjs"
+    "tests/conformance/gitlab-repository-policy.test.mjs",
+    "tests/conformance/gitlab-repository-credentials.test.mjs"
   ],
   "files": [
     {
@@ -667,6 +668,18 @@
         "selected repository response requires exact IDs, names and permissions and refuses broader credentials",
         "ordinary fresh selections resolve one or N repositories without broadening explicit historical grants"
       ]
+    },
+    {
+      "path": "tests/conformance/gitlab-repository-client.test.mjs"
+    },
+    {
+      "path": "tests/conformance/gitlab-repository-config.test.mjs"
+    },
+    {
+      "path": "tests/conformance/gitlab-repository-policy.test.mjs"
+    },
+    {
+      "path": "tests/conformance/gitlab-repository-credentials.test.mjs"
     }
   ]
 }

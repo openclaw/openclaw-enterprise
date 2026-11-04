@@ -5,7 +5,10 @@ import {
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
 import { githubRepositoryConfiguration } from "../drivers/repo/github/installation.ts";
+import { GitLabRepositoryPolicy } from "../drivers/repo/gitlab/policy.ts";
+import { gitLabBackendDefinitionValidator } from "../drivers/repo/gitlab/backend.ts";
 import type { GitHubRepositoryRegistry } from "../drivers/repo/github/credentials/registry.ts";
+import type { GitLabRepositoryRegistry } from "../drivers/repo/gitlab/credentials/registry.ts";
 import { createOpenShellCapabilities } from "../drivers/egress-proxy/openshell-registration.ts";
 import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
 import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
@@ -37,6 +40,7 @@ import { fileURLToPath } from "node:url";
 import type {
   Backend,
   GitHubRepositoryCredentialBackendDefinition,
+  GitLabRepositoryCredentialBackendDefinition,
   ComputeDriver,
   ConfigurationDriver,
   CredentialGatewayDriver,
@@ -48,6 +52,9 @@ import type {
   OpenShellBackendDefinition,
   Preset,
   BackendSummary,
+  RepositoryBindingRequest,
+  RepositoryCredentialResolution,
+  RepositoryOptions,
   RepositoryPolicyDriver,
   NativeRepositorySender,
   PluginDriver,
@@ -107,7 +114,10 @@ import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
 import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
-import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
+import {
+  loadGitLabRepositoryPolicy,
+  loadRepositoryPolicy,
+} from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
 import {
@@ -218,6 +228,7 @@ export type ServiceAccountDriverFactory = (
 ) => void;
 
 export interface InstallationRuntimeDrivers {
+  readonly backendValidators?: readonly import("@openclaw-enterprise/contracts").BackendDefinitionValidator[];
   readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
   /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
   readonly shadowedDefaultPresets?: readonly ShadowedDefaultPreset[];
@@ -238,15 +249,20 @@ export interface InstallationRuntimeDrivers {
   readonly preparedGitHub?: PostgresPreparedGitHubLifecycle;
   readonly pluginDriver?: PluginDriver;
   readonly repositoryPolicy?: RepositoryPolicyDriver;
-  readonly repositoryAdmission?: Awaited<
-    ReturnType<typeof loadRepositoryPolicy>
-  >["repositoryAdmission"];
+  readonly repositoryAdmission?: Readonly<{
+    policy: RepositoryPolicyDriver & {
+      listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
+      resolveBindings(input: {
+        readonly namespaceId: string;
+        readonly bindings: readonly RepositoryBindingRequest[];
+      }): RepositoryCredentialResolution;
+    };
+    backendId: string;
+  }>;
   readonly nativeRepositorySender?: NativeRepositorySender;
   readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration;
   readonly repositoryTransport?: RepositoryTransportBinding;
-  readonly repositoryRegistry?: Awaited<
-    ReturnType<typeof loadRepositoryPolicy>
-  >["repositoryRegistry"];
+  readonly repositoryRegistry?: GitHubRepositoryRegistry | GitLabRepositoryRegistry;
   readonly repositoryOwner?: Readonly<{
     controlSocket?: string;
     driverId: string;
@@ -505,10 +521,11 @@ function selectGitHubRepositoryDelivery(
 }
 
 /** No key bytes or raw registry cross into generic installed-Driver identity composition. */
-function githubRepositoryAuthorityIdentity(
+function repositoryAuthorityIdentity(
   selection: SelectedDriverConfiguration,
-  backend: GitHubRepositoryCredentialBackendDefinition,
-  registry: GitHubRepositoryRegistry,
+  backend:
+    GitHubRepositoryCredentialBackendDefinition | GitLabRepositoryCredentialBackendDefinition,
+  registry: GitHubRepositoryRegistry | GitLabRepositoryRegistry,
   configuration: ReturnType<typeof installationRepositoryConfiguration>,
 ): string {
   return createHash("sha256")
@@ -530,12 +547,15 @@ function backendConfiguration(
   credentialRefreshId: string | undefined,
   credentialProxyId: string | undefined,
 ): readonly BackendDefinition[] {
-  const backends = validateBackendDefinitions(value ?? []);
+  const backends = validateBackendDefinitions(value ?? [], [gitLabBackendDefinitionValidator]);
   if (serviceAccount !== undefined && !backends.some((backend) => backend.type === "chatgpt")) {
     throw new Error("drivers.service_account requires an owning backend entry with type chatgpt.");
   }
-  if (repoSelection !== undefined && !backends.some((backend) => backend.type === "github")) {
-    throw new Error("repository requires an owning backend entry with type github.");
+  if (
+    repoSelection !== undefined &&
+    !backends.some((backend) => backend.type === "github" || backend.type === "gitlab")
+  ) {
+    throw new Error("repository requires an owning backend entry with type github or gitlab.");
   }
   if (credentialRefreshId !== undefined && credentialGatewayId === undefined) {
     throw new Error("drivers.credential_refresh requires drivers.credential_gateway.");
@@ -569,7 +589,7 @@ function backendConfiguration(
       }
       continue;
     }
-    if (backend.type === "github" || backend.type === "gitlab") {
+    if ("repo" in backend.drivers) {
       if (repoSelection === undefined) {
         throw new Error(`backend[${backend.id}].drivers.repo requires repository.`);
       }
@@ -802,13 +822,17 @@ export async function loadInstallationConfiguration(options: {
     configuration.repository,
     options.mode,
   );
+  const backendEntries = Array.isArray(configuration.backend) ? configuration.backend : [];
+  const repositoryBackendType = backendEntries.some((entry) => asRecord(entry)?.type === "gitlab")
+    ? "gitlab"
+    : "github";
   const repoSelection =
     repositoryConfiguration &&
     (selected(
       repositoryConfiguration.selection,
       "repo",
-      "github",
-      GitHubRepositoryPolicy,
+      repositoryBackendType,
+      repositoryBackendType === "gitlab" ? GitLabRepositoryPolicy : GitHubRepositoryPolicy,
       "repository",
     ) as SelectedDriverConfiguration<Readonly<{ sessionDurationSeconds: number }>>);
   const nativeRepositorySelection = repositoryConfiguration?.nativeSender;
@@ -1212,7 +1236,9 @@ export async function loadInstallationConfiguration(options: {
       ? undefined
       : (options.createOpenShellBackend?.(openShellBackend) ??
         createOpenShellBackend(openShellBackend));
-  const repositoryBackend = backends.find((backend) => backend.type === "github");
+  const repositoryBackend = backends.find(
+    (backend) => backend.type === "github" || backend.type === "gitlab",
+  );
   let repositoryRuntime;
   if (repoSelection !== undefined && repositoryBackend !== undefined) {
     if (repositoryDeliveryMode === "native") {
@@ -1227,13 +1253,19 @@ export async function loadInstallationConfiguration(options: {
           : repoSelection,
       });
     } else {
-      const policy = await loadRepositoryPolicy({
-        backend: repositoryBackend,
-        selection: repoSelection,
-      });
+      const policy =
+        repositoryBackend.type === "gitlab"
+          ? await loadGitLabRepositoryPolicy({
+              backend: repositoryBackend,
+              selection: repoSelection,
+            })
+          : await loadRepositoryPolicy({
+              backend: repositoryBackend,
+              selection: repoSelection,
+            });
       repositoryRuntime = Object.freeze({
         ...policy,
-        authorityIdentity: githubRepositoryAuthorityIdentity(
+        authorityIdentity: repositoryAuthorityIdentity(
           repoSelection,
           repositoryBackend,
           policy.repositoryRegistry,
@@ -1437,6 +1469,7 @@ export async function loadInstallationConfiguration(options: {
   }
   return Object.freeze({
     defaultPresets: Object.freeze(defaultPresets),
+    backendValidators: Object.freeze([gitLabBackendDefinitionValidator]),
     shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
     bundledPresetVersions,
     installation,

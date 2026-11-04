@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { validateGitLabConfiguration } from "../../apps/controller/src/drivers/repo/gitlab/credentials/config.ts";
+import { gitLabBackendDefinitionValidator } from "../../apps/controller/src/drivers/repo/gitlab/backend.ts";
+import { OpenClawController, validateBackendDefinitions } from "../../packages/occ/src/index.ts";
 
 const valid = {
   kind: "gitlab-token",
@@ -67,5 +69,42 @@ test("the GitLab project identity is canonical and numeric in configuration", ()
   assert.throws(
     () => validateGitLabConfiguration({ ...valid, projectId: "001" }),
     /invalid-backend/,
+  );
+});
+
+test("platform Backend admission delegates GitLab configuration to its installed owner", () => {
+  const backend = {
+    id: "gitlab",
+    type: "gitlab",
+    configuration: { registryPath: "/var/lib/openclaw/gitlab-registry.json" },
+    drivers: { repo: "gitlab-repo" },
+  };
+  const validators = [gitLabBackendDefinitionValidator];
+  assert.deepEqual(validateBackendDefinitions([backend], validators), [backend]);
+  assert.throws(() => validateBackendDefinitions([backend]), /installed Backend validator/);
+  assert.throws(
+    () =>
+      validateBackendDefinitions(
+        [{ ...backend, configuration: { origin: "http://127.0.0.1" } }],
+        validators,
+      ),
+    /GitLab Backend/,
+  );
+  assert.throws(
+    () => validateBackendDefinitions([backend, { ...backend, id: "other" }], validators),
+    /multiple Backends/,
+  );
+  assert.throws(
+    () => validateBackendDefinitions([backend], [...validators, ...validators]),
+    /validators must be unique/,
+  );
+  const installation = {
+    id: "installation",
+    name: "installation",
+    createdAt: "2026-11-04T00:00:00Z",
+  };
+  assert.doesNotThrow(
+    () =>
+      new OpenClawController(installation, { backends: [backend], backendValidators: validators }),
   );
 });

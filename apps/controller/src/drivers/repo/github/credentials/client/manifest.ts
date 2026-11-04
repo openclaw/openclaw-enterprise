@@ -52,11 +52,14 @@ function readPublicClient(value: unknown): ClientFiles["client"] {
     "canonicalApiHost",
     "apiHost",
     "repository",
+    "projectId",
     ...(hasPolicy ? ["pushRefAllowlist"] : []),
   ]);
   if (
-    !Object.entries(client).every(
-      ([key, item]) => key === "pushRefAllowlist" || typeof item === "string",
+    !Object.entries(client).every(([key, item]) =>
+      key === "pushRefAllowlist"
+        ? Array.isArray(item)
+        : typeof item === "string" && (key !== "projectId" || /^[1-9][0-9]{0,15}$/.test(item)),
     )
   ) {
     throw new Error("invalid-repository-material");
@@ -75,6 +78,7 @@ function clientsAgree(first: ClientFiles["client"], second: ClientFiles["client"
     first.canonicalApiHost === second.canonicalApiHost &&
     first.apiHost === second.apiHost &&
     first.repository === second.repository &&
+    first.projectId === second.projectId &&
     JSON.stringify(first.pushRefAllowlist) === JSON.stringify(second.pushRefAllowlist)
   );
 }

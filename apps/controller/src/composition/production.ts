@@ -303,6 +303,7 @@ export async function composeProduction(
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         recordOperations: true,
         backends: installation.backend,
+        backendValidators: config.drivers.backendValidators,
         defaultPresets: config.drivers.defaultPresets ?? [],
         bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
         refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,

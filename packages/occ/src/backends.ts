@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import type {
   Driver,
   BackendDefinition,
+  BackendDefinitionValidator,
   DriverCapability,
   OpenShellBackendDefinition,
 } from "@openclaw-enterprise/contracts";
@@ -58,7 +59,11 @@ function backendId(value: unknown, label = "Backend ID"): string {
   return value;
 }
 
-function validateBackendDefinition(value: unknown, index: number): BackendDefinition {
+function validateBackendDefinition(
+  value: unknown,
+  index: number,
+  validators: readonly BackendDefinitionValidator[],
+): BackendDefinition {
   const candidate = asRecord(value);
   if (candidate === undefined) {
     throw new ScopeViolationError(`backend[${index}] must be one object.`);
@@ -69,23 +74,21 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
     }
   }
   const id = backendId(candidate.id, `backend[${index}].id`);
+  const validator = validators.find((entry) => entry.type === candidate.type);
+  if (validator) {
+    return validator.validate(value);
+  }
   if (
     candidate.type !== "chatgpt" &&
     candidate.type !== "github" &&
-    candidate.type !== "gitlab" &&
     candidate.type !== "openshell"
   ) {
-    throw new ScopeViolationError(
-      path(id, "type") + " must be chatgpt, github, gitlab, or openshell.",
-    );
+    throw new ScopeViolationError(path(id, "type") + " requires an installed Backend validator.");
   }
   // Repository bindings still store a GitHub Backend ID under a 200 UTF-16 code unit bound
   // (occ.repository_bindings_are_valid, the repository registry and the binding state), so a
   // GitHub Backend ID must fit that too until those count code points.
-  if (
-    (candidate.type === "github" || candidate.type === "gitlab") &&
-    id.length > BACKEND_ID_MAX_CHARACTERS
-  ) {
+  if (candidate.type === "github" && id.length > BACKEND_ID_MAX_CHARACTERS) {
     throw new ScopeViolationError(
       `backend[${index}].id must fit in ${BACKEND_ID_MAX_CHARACTERS} UTF-16 code units for a repository Backend, because repository bindings store it under that bound.`,
     );
@@ -106,26 +109,6 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
   }
   if (candidate.type === "openshell") {
     return validateOpenShellBackend(id, configuration, drivers);
-  }
-  if (candidate.type === "gitlab") {
-    for (const key of Object.keys(configuration)) {
-      throw new ScopeViolationError(path(id, `configuration.${key}`) + " is unsupported.");
-    }
-    for (const key of Object.keys(drivers)) {
-      if (key !== "repo") {
-        throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
-      }
-    }
-    const repo = drivers.repo;
-    if (!isNonEmptyString(repo)) {
-      throw new ScopeViolationError(path(id, "drivers.repo") + " is required.");
-    }
-    return deepFreeze({
-      id,
-      type: "gitlab",
-      configuration: {},
-      drivers: { repo },
-    });
   }
   if (candidate.type === "github") {
     for (const key of Object.keys(configuration)) {
@@ -474,7 +457,7 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
   if (backend.type === "chatgpt") {
     return [`service_account:${backend.drivers.service_account}`];
   }
-  if (backend.type === "github" || backend.type === "gitlab") {
+  if ("repo" in backend.drivers) {
     return [`repo:${backend.drivers.repo}`];
   }
   return [
@@ -489,11 +472,23 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
   ];
 }
 
-export function validateBackendDefinitions(value: unknown = []): readonly BackendDefinition[] {
+export function validateBackendDefinitions(
+  value: unknown = [],
+  validators: readonly BackendDefinitionValidator[] = [],
+): readonly BackendDefinition[] {
   if (!Array.isArray(value)) {
     throw new ScopeViolationError("backend must be an array.");
   }
-  const backends = value.map((entry, index) => validateBackendDefinition(entry, index));
+  const types = new Set<string>();
+  for (const validator of validators) {
+    if (types.has(validator.type) || ["github", "chatgpt", "openshell"].includes(validator.type)) {
+      throw new ScopeViolationError(
+        "Backend validators must be unique and cannot replace bundled owners.",
+      );
+    }
+    types.add(validator.type);
+  }
+  const backends = value.map((entry, index) => validateBackendDefinition(entry, index, validators));
   const ids = new Set<string>();
   const members = new Set<string>();
   for (const backend of backends) {
@@ -511,10 +506,8 @@ export function validateBackendDefinitions(value: unknown = []): readonly Backen
   if (backends.filter((backend) => backend.type === "chatgpt").length > 1) {
     throw new ScopeViolationError("Only one bundled ChatGPT Backend can be configured.");
   }
-  if (
-    backends.filter((backend) => backend.type === "github" || backend.type === "gitlab").length > 1
-  ) {
-    throw new ScopeViolationError("Only one bundled GitHub Backend can be configured.");
+  if (backends.filter((backend) => "repo" in backend.drivers).length > 1) {
+    throw new ScopeViolationError("Only one repository Backend can be configured.");
   }
   if (backends.filter((backend) => backend.type === "openshell").length > 1) {
     throw new ScopeViolationError("Only one bundled OpenShell Backend can be configured.");
@@ -522,8 +515,13 @@ export function validateBackendDefinitions(value: unknown = []): readonly Backen
   return Object.freeze(backends);
 }
 
-export function backendDefinitionMap(backends: readonly BackendDefinition[]): BackendMap {
-  return new Map(validateBackendDefinitions(backends).map((backend) => [backend.id, backend]));
+export function backendDefinitionMap(
+  backends: readonly BackendDefinition[],
+  validators: readonly BackendDefinitionValidator[] = [],
+): BackendMap {
+  return new Map(
+    validateBackendDefinitions(backends, validators).map((backend) => [backend.id, backend]),
+  );
 }
 
 export function assertConfiguredBackend(
@@ -554,7 +552,7 @@ export function validateSelectedBackendDrivers(
     }
   };
   for (const backend of backends) {
-    if (backend.type === "github" || backend.type === "gitlab") {
+    if ("repo" in backend.drivers) {
       requires("repo", backend.drivers.repo, "repository credential Driver");
     } else if (backend.type === "chatgpt") {
       requires("service_account", backend.drivers.service_account, "ServiceAccount Driver");

@@ -250,7 +250,7 @@ export interface GitHubRepositoryCredentialBackendDefinition {
 export interface GitLabRepositoryCredentialBackendDefinition {
   readonly id: string;
   readonly type: "gitlab";
-  readonly configuration: Record<string, never>;
+  readonly configuration: { readonly registryPath: string };
   readonly drivers: { readonly repo: string };
 }
 
@@ -302,6 +302,12 @@ export type BackendDefinition =
   | GitHubRepositoryCredentialBackendDefinition
   | GitLabRepositoryCredentialBackendDefinition
   | OpenShellBackendDefinition;
+
+/** Installation-selected Backend validation. Provider configuration stays with its owner. */
+export interface BackendDefinitionValidator {
+  readonly type: BackendType;
+  validate(value: unknown): BackendDefinition;
+}
 
 export interface BackendSummary {
   readonly id: string;

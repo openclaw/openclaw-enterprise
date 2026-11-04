@@ -16,7 +16,7 @@ import {
 } from "../../apps/controller/src/drivers/repo/credentials/control.ts";
 import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
 import { createAgentHandler } from "../../apps/controller/src/drivers/repo/credentials/transport/agent.ts";
-import { createGatewayAuthentication } from "../../apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts";
+import { createGatewayAuthentication } from "../../apps/controller/src/drivers/repo/credentials/gateway-authentication.ts";
 import { planDraftPull } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-draft-pull.ts";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
 import {

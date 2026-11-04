@@ -4,6 +4,7 @@ import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
+import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { loadConfiguration } from "../../apps/controller/src/composition/repository-credentials/config.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
@@ -100,7 +101,7 @@ async function startWorkerOwner(loaded: LoadedInstallation) {
     // Startup validates before it touches the database; maintenance stays off.
     pool: {} as Parameters<typeof startPreparedGitHubGitOwner>[0]["pool"],
     startWorker: false,
-    registry: loaded.repositoryRegistry,
+    registry: loaded.repositoryRegistry as GitHubRepositoryRegistry,
   });
 }
 

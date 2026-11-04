@@ -14,6 +14,9 @@ export interface ClientFiles {
 }
 
 function ghHosts(client: RepositoryCredentialClientConfiguration, bearer: string): string {
+  if (client.projectId !== undefined) {
+    return "version: 1\n";
+  }
   return `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(bearer)}\n`;
 }
 
@@ -46,6 +49,13 @@ function validateClient(client: RepositoryCredentialClientConfiguration): void {
   if (Object.hasOwn(client, "pushRefAllowlist")) {
     normalizePushRefAllowlist(client.pushRefAllowlist);
   }
+  const gitLab = client.projectId !== undefined;
+  if (
+    (gitLab && !/^[1-9][0-9]{0,15}$/.test(client.projectId)) ||
+    (!gitLab && Object.hasOwn(client, "projectId"))
+  ) {
+    throw new Error("invalid-client-configuration");
+  }
   const origin = new URL(client.gatewayOrigin);
   const remote = new URL(client.gitRemote);
   if (
@@ -60,13 +70,18 @@ function validateClient(client: RepositoryCredentialClientConfiguration): void {
     remote.password ||
     remote.search ||
     remote.hash ||
-    !/^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\.git$/.test(remote.pathname) ||
+    !(gitLab
+      ? /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+\.git$/.test(remote.pathname)
+      : /^\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\.git$/.test(remote.pathname)) ||
     remote.pathname.includes("..") ||
     !/^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) ||
     !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.apiHost) ||
     !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.canonicalApiHost) ||
     client.apiHost !== origin.hostname ||
-    !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(client.repository) ||
+    !(gitLab
+      ? /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+$/.test(client.repository) &&
+        client.repository.length <= 255
+      : /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(client.repository)) ||
     client.repository.length > 512 ||
     client.repository.includes("..") ||
     client.gitRemote !== `${client.gatewayOrigin}/${client.repository}.git`

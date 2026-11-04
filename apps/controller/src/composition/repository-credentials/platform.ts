@@ -1,6 +1,8 @@
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
+import { readFile } from "node:fs/promises";
 import { loadPublicCa } from "./public-ca.ts";
 import { GitHubNativeRepositorySender } from "../../drivers/repo/github/driver.ts";
+import { GitLabRepositoryPolicy } from "../../drivers/repo/gitlab/policy.ts";
 import { UnixRepositoryCredentialControlClient } from "../../backends/repository-credentials/control-client.ts";
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
 import {
@@ -24,10 +26,37 @@ export async function composeRepositoryAccess(input: RepositoryPolicyInput) {
       publicCaPath?: string;
     }>
   >(GitHubNativeRepositorySender, selection.configuration);
-  const registry = await loadGitHubRepositoryRegistry(
-    definition.configuration.registryPath,
-    definition.id,
-  );
+  let policy;
+  if (definition.type === "github") {
+    const registry = await loadGitHubRepositoryRegistry(
+      definition.configuration.registryPath,
+      definition.id,
+    );
+    policy = composeRepositoryPolicy(
+      repositoryOwner,
+      registry,
+      configuration.sessionDurationSeconds,
+    );
+  } else {
+    const { validateGitLabRepositoryRegistry } =
+      await import("../../drivers/repo/gitlab/credentials/registry.ts");
+    const registry = validateGitLabRepositoryRegistry(
+      JSON.parse(await readFile(definition.configuration.registryPath, "utf8")),
+      definition.id,
+    );
+    const repositoryPolicy = new GitLabRepositoryPolicy(repositoryOwner, registry, {
+      sessionDurationSeconds: configuration.sessionDurationSeconds,
+    });
+    policy = Object.freeze({
+      repositoryRegistry: registry,
+      repositoryOwner,
+      repositoryPolicy,
+      repositoryAdmission: Object.freeze({
+        policy: repositoryPolicy,
+        backendId: repositoryOwner.backendId,
+      }),
+    });
+  }
   if (!configuration.publicCaPath || !configuration.controlSocket) {
     throw new Error("Native Git requires its configured repository broker and public CA.");
   }
@@ -35,11 +64,6 @@ export async function composeRepositoryAccess(input: RepositoryPolicyInput) {
   const client = new UnixRepositoryCredentialControlClient({
     controlSocket: configuration.controlSocket,
   });
-  const policy = composeRepositoryPolicy(
-    repositoryOwner,
-    registry,
-    configuration.sessionDurationSeconds,
-  );
   return Object.freeze({
     ...policy,
     authorityIdentity: undefined,
@@ -54,7 +78,7 @@ export async function composeRepositoryAccess(input: RepositoryPolicyInput) {
         drivers: Object.freeze({ repo: repositoryOwner.driverId }),
         client,
       },
-      { publicCa },
+      { publicCa, implementation: repositoryOwner.implementation },
     ),
   });
 }

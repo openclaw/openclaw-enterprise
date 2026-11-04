@@ -101,7 +101,8 @@ export interface SafeConfigurationSummary {
   readonly gatewayOrigin: string;
   readonly profiles: readonly string[];
   readonly maximumDurationSeconds: number;
-  readonly authority: "github-prepared-git-registry" | "github-token-development";
+  readonly authority:
+    "github-prepared-git-registry" | "github-token-development" | "gitlab-token-development";
   /** Token authority only: the class derived from the token prefix, never its value. */
   readonly tokenClass?: string;
 }

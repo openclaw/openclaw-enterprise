@@ -15,7 +15,7 @@ import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
 import { planDraftPull } from "../repo/github/credentials/prepared-draft-pull.ts";
 import { classifyRoute } from "../repo/github/credentials/routes/classification.ts";
 import { allowsGraphqlInput } from "../repo/github/credentials/graphql-input.ts";
-import { allowsReceivePackInput } from "../repo/github/credentials/routes/receive-pack.ts";
+import { allowsReceivePackInput } from "../repo/credentials/receive-pack.ts";
 import {
   createOpenShellOnlineHttpAuthority,
   type OpenShellOnlineDecision,
