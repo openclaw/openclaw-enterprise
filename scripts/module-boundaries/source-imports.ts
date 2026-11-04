@@ -12,7 +12,8 @@ import type { Value } from "./loader-provenance.ts";
 import { assignedSymbols } from "./source-mutations.ts";
 import { parseDiagnostics } from "./parse-diagnostics.ts";
 import { freezeRecord } from "./freeze-record.ts";
-import { slash, sourceExtension } from "./workspace.mjs";
+import { slash } from "./source-path.ts";
+import { sourceExtension } from "./workspace.mjs";
 
 type Snapshot = {
   root: string;

@@ -4,7 +4,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript-compiler-api";
 import { selectPackageExport } from "./package-exports.mjs";
-import { slash, sourceExtension } from "./workspace.mjs";
+import { slash } from "./source-path.ts";
+import { sourceExtension } from "./workspace.mjs";
 
 const declaration = /\.d\.[cm]?ts$/;
 const emittedExtension = /\.[cm]?js$/;

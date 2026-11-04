@@ -3,7 +3,8 @@ export function freezeRecord<T>(value: T): T {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) {
     return value;
   }
-  for (const child of Object.values(value)) {
+  const children: unknown[] = Object.values(value);
+  for (const child of children) {
     freezeRecord(child);
   }
   return Object.freeze(value);

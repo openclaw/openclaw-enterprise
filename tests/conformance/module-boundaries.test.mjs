@@ -1947,6 +1947,86 @@ describe("module boundaries", { concurrency: true }, () => {
     }
   });
 
+  test("migrated analysis expressions and freeze traversal have concrete types", () => {
+    const configPath = join(repository, "scripts/tsconfig.json");
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    assert.equal(config.error, undefined);
+    const parsed = ts.parseJsonConfigFileContent(
+      config.config,
+      ts.sys,
+      dirname(configPath),
+      undefined,
+      configPath,
+    );
+    assert.deepEqual(parsed.errors, []);
+    const files = [
+      "loader-provenance.ts",
+      "source-mutations.ts",
+      "source-imports.ts",
+      "parse-diagnostics.ts",
+      "freeze-record.ts",
+      "source-path.ts",
+    ].map((name) => join(repository, "scripts/module-boundaries", name));
+    for (const file of files) {
+      assert.ok(parsed.fileNames.includes(file));
+    }
+    const program = ts.createProgram(files, {
+      ...parsed.options,
+      composite: false,
+      incremental: false,
+    });
+    const checker = program.getTypeChecker();
+    for (const file of files) {
+      const source = program.getSourceFile(file);
+      assert.ok(source);
+      function visit(node) {
+        if (
+          ts.isCallExpression(node) ||
+          ts.isPropertyAccessExpression(node) ||
+          ts.isElementAccessExpression(node)
+        ) {
+          const type = checker.getTypeAtLocation(node);
+          assert.equal(
+            type.flags & ts.TypeFlags.Any,
+            0,
+            `${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1} ${node.getText(source)} must not be any`,
+          );
+        }
+        ts.forEachChild(node, visit);
+      }
+      visit(source);
+    }
+    const helper = program.getSourceFile(files[4]);
+    assert.ok(helper);
+    const traversal = [];
+    function find(node) {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        ["children", "child"].includes(node.name.text)
+      ) {
+        traversal.push([
+          node.name.text,
+          checker.typeToString(checker.getTypeAtLocation(node.name)),
+        ]);
+      }
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "freezeRecord"
+      ) {
+        traversal.push(["recursive call", checker.typeToString(checker.getTypeAtLocation(node))]);
+      }
+      ts.forEachChild(node, find);
+    }
+    find(helper);
+    assert.deepEqual(traversal, [
+      ["children", "unknown[]"],
+      ["child", "unknown"],
+      ["recursive call", "unknown"],
+    ]);
+  });
+
   test("scripts configuration checks the enrolled generic freeze implementation", () => {
     const configPath = join(repository, "scripts/tsconfig.json");
     const config = ts.readConfigFile(configPath, ts.sys.readFile);
