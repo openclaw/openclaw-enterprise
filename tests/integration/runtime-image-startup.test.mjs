@@ -2050,10 +2050,14 @@ test(
       dedicatedCodex: true,
     }).plugins.entries.codex.config;
     Object.assign(brokerConfiguration.appServer, {
+      transport: "websocket",
+      url: "ws://127.0.0.1:4500",
       approvalPolicy: "never",
       sandbox: "workspace-write",
       remoteWorkspaceRoot: "/home/node/workspace",
     });
+    // Standard Codex retains this authored base while OCE adds the broker policy.
+    brokerConfiguration.appServer.networkProxy.baseProfile = "workspace";
 
     async function probeNativeThread() {
       const assert = (await import("node:assert/strict")).default;
@@ -2137,6 +2141,7 @@ process.exit(Object.values(report).every(Boolean) ? 0 : 74);
         pluginConfig: payload.brokerConfiguration,
       });
       const threadConfig = await bundled("thread-requests", "buildCodexRuntimeThreadConfig");
+      const buildTurnStartParams = await bundled("dynamic-tools", "buildTurnStartParams");
       assert.ok(options.networkProxy?.configPatch);
       assert.deepEqual(threadPermissions(options), {});
       let shellCalls = 0;
@@ -2290,14 +2295,23 @@ process.exit(Object.values(report).every(Boolean) ? 0 : 74);
             };
             console.error("openclaw-ci-thread-sandbox-provenance=" + JSON.stringify(provenance));
             assert.equal(provenance.cwdMatchesExpectedWorkspace, true);
-            const turn = await client.request("turn/start", {
-              threadId: thread.thread.id,
-              input: [
-                { type: "text", text: "Run the synthetic sandbox probe once.", text_elements: [] },
-              ],
-              approvalPolicy: "never",
-              approvalsReviewer: "user",
-            });
+            const turnParams = await buildTurnStartParams(
+              {
+                prompt: "Run the synthetic sandbox probe once.",
+                hostCapabilities: {},
+                config: {},
+              },
+              {
+                threadId: thread.thread.id,
+                cwd: workspace,
+                appServer: options,
+                // Keep the same native model; exercise the Gateway's actual per-turn
+                // cwd and permission construction, not model-selection behavior.
+                preserveNativeTurnSettings: true,
+              },
+            );
+            assert.equal(turnParams.cwd, workspace);
+            const turn = await client.request("turn/start", turnParams);
             for (;;) {
               if (closing) {
                 throw new Error("native-thread-probe-closed");
