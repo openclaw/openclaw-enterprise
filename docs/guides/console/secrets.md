@@ -1,6 +1,6 @@
 # Manage Secrets in the console
 
-Open **Secrets** in the sidebar and select a Namespace. Search by name or ID,
+Open **Credentials** in the sidebar. The **Secrets** tab opens first. Select a Namespace. Search by name or ID,
 or select **Refresh** to reload metadata. The list contains only Secrets you may
 read. Values are never returned. A ready Namespace is required to create or
 replace a value; ask an administrator for the exact operation permissions.

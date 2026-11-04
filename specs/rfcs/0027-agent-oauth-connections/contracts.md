@@ -80,8 +80,8 @@ within an authorization server. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/
   at the same private reference. An exchange, refresh or revocation that
   authenticates the client resolves its current secret before the request.
 - `removeClient(clientRegistrationId)` removes the private registration once
-  its template versions and saved accounts have been released. OCC retries
-  unfinished creation or deletion after a restart.
+  its template versions and saved accounts have been released. OCC cleans up
+  interrupted creations and deletions after a restart.
 
 Each saved grant records the registration reference. The selected Driver
 supplies its current client authentication for the pinned issuer, client ID
@@ -231,7 +231,7 @@ If the selected route cannot enforce a promised restriction, refuse deployment.
 | ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`              | Administrator checks the provider; reconnect   |
 | Connection template edited after consent                    | Source unchanged; **Reconnect to apply changes** | Owner reconnects; administrator can disconnect |
 | Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use            | Retry withdrawal, or stop the affected Agent   |
-| Provider rejects the current client secret                  | Client authentication fails                     | Admin corrects secret, then refresh retries   |
+| Provider rejects the current client secret                  | Client authentication fails                      | Admin corrects secret, then refresh retries    |
 
 The operator guide documents provider rules. Google requires verification for
 public applications requesting `gmail.readonly`, and External Testing applications

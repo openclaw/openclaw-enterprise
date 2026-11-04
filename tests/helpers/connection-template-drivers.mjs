@@ -45,8 +45,14 @@ function recordingOpenShell() {
     async deleteProvider(workspace, name) {
       providers.delete(key(workspace, name));
     },
-    async updateProviderCredentials(workspace, name, credentials) {
-      Object.assign(providers.get(key(workspace, name)).credentials, credentials);
+    async updateProviderCredentialsConditionally(input, expectedVersion) {
+      const current = providers.get(key(input.workspace, input.name));
+      if (!current || expectedVersion !== current.resourceVersion) {
+        throw new Error("Provider resource version conflict.");
+      }
+      Object.assign(current.credentials, input.credentials);
+      current.resourceVersion = String(Number(current.resourceVersion) + 1);
+      return structuredClone(current);
     },
     async getProviderCredential(workspace, name, credentialKey) {
       return { value: providers.get(key(workspace, name)).credentials[credentialKey] };
