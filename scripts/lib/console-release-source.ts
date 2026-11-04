@@ -133,7 +133,10 @@ function attribute(html: string, prefix: string): string | undefined {
 }
 
 function themeImage(url: string, favicon = false): boolean {
-  const image = /^\/console\/theme\/[a-z\d][a-z\d._-]*\.(png|webp|ico)$/i.exec(url);
+  const prefix = "/console/theme/";
+  const image = url.startsWith(prefix)
+    ? /^[a-z\d][a-z\d._-]*\.(png|webp|ico)$/i.exec(url.slice(prefix.length))
+    : null;
   return (
     image !== null &&
     !url.includes("..") &&

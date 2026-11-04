@@ -86,6 +86,7 @@ async function serveRelease(t: TestContext, release: Release) {
     options: {
       response?: ResponseOverride;
       source?: string;
+      cwd?: string;
       path?: string;
       hostname?: string;
       trust?: boolean;
@@ -96,6 +97,7 @@ async function serveRelease(t: TestContext, release: Release) {
     requests.length = 0;
     const childOptions = {
       encoding: "utf8",
+      cwd: options.cwd,
       env: {
         ...process.env,
         NODE_EXTRA_CA_CERTS: options.trust === false ? undefined : tls.caPath,
@@ -285,6 +287,11 @@ test("console release verification checks served build artifacts", async (t) => 
     },
   );
   await t.test("theme markup must be representable by production theme loading", async () => {
+    await verify("verified", both, {
+      response: {
+        body: renderConsoleThemeShell(stamped, { ...theme, logoUrl: "/console/theme/Brand.PNG" }),
+      },
+    });
     // These fields render as HTML but cannot come from a supported production theme bundle.
     for (const changed of [
       { logoUrl: "https://example.invalid/logo.png" },
@@ -292,6 +299,7 @@ test("console release verification checks served build artifacts", async (t) => 
       { appleTouchIconUrl: "//example.invalid/icon.png" },
       { logoUrl: "/console/theme/../other.png" },
       { logoUrl: "/console/theme/logo.svg" },
+      { logoUrl: "/CONSOLE/THEME/Brand.PNG" },
       { displayName: " " },
       { displayName: "hidden\u200bname" },
     ]) {
@@ -340,6 +348,11 @@ test("console release verification checks served build artifacts", async (t) => 
       });
     },
   );
+  await t.test("an empty source cannot select the caller's checkout", async () => {
+    // An explicit dot selects this repository; an unset quoted variable must not do so.
+    await verify("verified", both, { source: ".", cwd: build.source });
+    await verify("invalid-input", [], { source: "", cwd: build.source });
+  });
   await t.test("missing promised blobs cannot trigger a fetch or an HTTP request", async () => {
     await git(build.source, "config", "uploadpack.allowFilter", "true");
     const partial = join(build.directory, "partial");

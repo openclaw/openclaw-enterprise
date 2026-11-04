@@ -34,7 +34,7 @@ export async function verifyConsoleRelease(
   rawUrl: string,
 ): Promise<VerificationResult> {
   const url = consoleUrl(rawUrl);
-  if (!url || !/^[a-f0-9]{40}$/.test(revision)) {
+  if (source.length === 0 || !url || !/^[a-f0-9]{40}$/.test(revision)) {
     return { result: "invalid-input" };
   }
   const budget = { signal: AbortSignal.timeout(DEADLINE), timeout: OPERATION_TIMEOUT };
