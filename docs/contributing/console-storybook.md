@@ -217,6 +217,8 @@ seven-day release-age policy, independently of root dependencies.
   `public/scenario-groups/settings.mts` and Create Agent scenarios in
   `public/scenario-groups/create-agent.mts`. The asset builder publishes typed
   scenario groups as versioned `.mjs` modules for the preview frames.
+  Edit Credentials scenarios in `public/scenario-groups/credentials.mts`; the
+  catalog keeps their three runs in their original positions.
   Edit Plugins component and Agent detail approver variant previews in
   `public/scenario-groups/plugins.mts`; shared plugin data stays in
   `public/plugin-scenario-data.mts`.
