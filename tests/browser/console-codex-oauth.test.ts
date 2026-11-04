@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { APIResponse, Page, Route } from "playwright";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
-import type { Agent, Driver, HarnessAuthBinding, Namespace } from "@openclaw-enterprise/contracts";
+import type {
+  Agent,
+  CredentialSourceContext,
+  Driver,
+  HarnessAuthBinding,
+  Namespace,
+} from "@openclaw-enterprise/contracts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   createDeviceCredentialDrivers,
@@ -140,6 +146,13 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   let approved = false;
   const providerRequests: string[] = [];
   const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => approved });
+  const privateStates: string[] = [];
+  const startDeviceAuthorization = refresh.startDeviceAuthorization.bind(refresh);
+  t.mock.method(refresh, "startDeviceAuthorization", async (context: CredentialSourceContext) => {
+    const response = await startDeviceAuthorization(context);
+    privateStates.push(response.privateState);
+    return response;
+  });
   assertDeviceDriver(gateway);
   fixture.controller.registerDriver(gateway);
   fixture.controller.selectDriver("credential_gateway", gateway.id);
@@ -468,14 +481,23 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const retainedAgent = jsonObject((await fixture.request("GET", agentPath)).data);
   assert.deepEqual(retainedAgent.harnessAuth, replaced);
   assert.deepEqual(retainedAgent.credentialSources, replacedAgent.credentialSources);
-  assert.doesNotMatch(
-    JSON.stringify(requests),
-    new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`),
-  );
-  assert.doesNotMatch(
-    await page.locator("body").innerText(),
-    new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`),
-  );
+  const serializedRequests = JSON.stringify(requests);
+  assert.doesNotMatch(serializedRequests, new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`));
+  const bodyText = await page.locator("body").innerText();
+  assert.doesNotMatch(bodyText, new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`));
+  assert.ok(privateStates.length > 0, "the Refresh fixture must produce a private handle");
+  for (const privateState of privateStates) {
+    assert.equal(
+      serializedRequests.includes(privateState),
+      false,
+      "browser API requests must not contain a private handle",
+    );
+    assert.equal(
+      bodyText.includes(privateState),
+      false,
+      "visible body text must not contain a private handle",
+    );
+  }
   assert.equal(
     providerRequests.some((url) => url.includes("revoke") || url.includes("whoami")),
     false,
