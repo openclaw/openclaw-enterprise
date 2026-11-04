@@ -65,7 +65,16 @@ No product implementation is composed yet. The provider core landed on `feat/git
 
 - Fixed `https://gitlab.com` origin, canonical project path, profile-scoped operations, draft merge-request creation, and possibly-sent write semantics.
 - Conformance coverage and an opt-in live GitLab.com read/write case.
-- OCE composition, the Repo Driver wiring, the protected sender, Console options, mixed-provider admission, and audit persistence remain for the next milestones.
+- OCE composition, the Repo Driver wiring, the protected sender, Console options, mixed-provider admission, and audit persistence remain for the next milestone, tracked in the composition pull request.
+
+### Composition milestone
+
+- [ ] `gitlab/credentials/routes.ts`: API and git route allowlist; deny merge, approval, admin, and pipeline control before upstream I/O.
+- [ ] `gitlab/credentials/grants.ts` and `driver.ts`: grant resolution and the `RepositoryBackend` acquire/retire lifecycle.
+- [ ] `gitlab/credentials/factory.ts`: the driver factory over the fixed `gitlab.com` upstream.
+- [ ] `gitlab-token` kind in repository-credential composition and the `platform.ts` GitLab branch.
+- [ ] Protected sender session flow, Installation selection, Console options, and the mixed-provider refusal.
+- [ ] Composed proof: allowed effects, forbidden operation refused before GitLab receives it, withdrawal, and uncertain-write recovery.
 
 ## Manual Notes
 
