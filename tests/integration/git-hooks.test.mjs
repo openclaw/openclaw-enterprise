@@ -15,7 +15,10 @@ async function createRepositoryFixture(t, { initializeGit = true } = {}) {
   await mkdir(join(fixtureRoot, "scripts"));
   await mkdir(join(fixtureRoot, ".githooks"));
   for (const filename of ["install-git-hooks.mjs", "install-git-hooks.ts"]) {
-    await copyFile(join(repositoryRoot, "scripts", filename), join(fixtureRoot, "scripts", filename));
+    await copyFile(
+      join(repositoryRoot, "scripts", filename),
+      join(fixtureRoot, "scripts", filename),
+    );
   }
   await copyFile(
     join(repositoryRoot, ".githooks/pre-push"),
