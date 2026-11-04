@@ -51,7 +51,29 @@ jobs:
     outputs:
       # Full QA takes precedence when both labels are present. Main runs stay full.
       openshell-file: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-qa') && 'tests/integration/local-first-agent-openshell-real.test.mjs' || '' }}
+      openshell-matrix: ${{ steps.openshell-matrix.outputs.matrix }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Select OpenShell files
+        id: openshell-matrix
+        env:
+          OPENSHELL_FILE: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-qa') && 'tests/integration/local-first-agent-openshell-real.test.mjs' || '' }}
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { basename } from 'node:path';
+
+          const manifest = JSON.parse(readFileSync('scripts/ci/test-suites/openshell.json', 'utf8'));
+          const selected = process.env.OPENSHELL_FILE;
+          const files = manifest.files.filter(({ path }) => !selected || path === selected);
+          if (files.length === 0 || new Set(files.map(({ path }) => path)).size !== files.length) {
+            throw new Error('OpenShell selection must contain unique manifest files.');
+          }
+          const include = files.map(({ path }) => ({ file: path, shard: basename(path).replace(/\.test\.(mjs|ts)$/, '') }));
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          JS
       - name: Record the commit under test
         run: echo "Running advisory QA for ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
 
@@ -138,13 +160,19 @@ jobs:
         run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"
 
   openshell:
-    name: QA advisory (OpenShell${{ needs.eligibility.outputs.openshell-file != '' && ' Compose' || '' }})
+    name: QA advisory (OpenShell / ${{ matrix.shard }})
     needs: eligibility
-    # OpenShell requires an enabled Landlock LSM, absent on the Blacksmith kernel.
+    # OpenShell requires Landlock, which the Blacksmith kernel does not provide.
+    # Each file gets a separate VM, Docker daemon, prepared cluster and private state.
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: integration-qa-pr
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.eligibility.outputs.openshell-matrix) }}
     env:
+      # The packaged browser has Ubuntu's AppArmor user-namespace permission.
+      OCC_TEST_BROWSER_EXECUTABLE: /usr/bin/google-chrome
       # The registered plugin-install case uses this admitted curated selection.
       OCC_TEST_CODEX_INSTALL_PLUGIN_ID: codex-plugin:linear@openai-curated-remote
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
@@ -173,8 +201,8 @@ jobs:
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: openshell
-          test-file: ${{ needs.eligibility.outputs.openshell-file }}
+          test-file: ${{ matrix.file }}
           profile: full
           node-version: "24.22.1"
-          artifact-prefix: ${{ needs.eligibility.outputs.openshell-file != '' && 'qa-advisory-compose' || 'qa-advisory' }}
+          artifact-prefix: qa-advisory-${{ matrix.shard }}
           job-timeout-minutes: 120

@@ -181,6 +181,12 @@ export type RepositoryCredentialRuntimeBinding = RepositoryCredentialMaterialRef
 export function repositoryGitDeliveryProfile(
   repository: RepositoryRevisionState | undefined,
 ): RepositoryGitDeliveryProfile | undefined {
+  if (
+    repository?.bindings?.length &&
+    repository.bindings.every((b) => b.profile === "github-repository")
+  ) {
+    return "github_repository";
+  }
   if (repository?.bindings?.length !== 1) {
     return undefined;
   }

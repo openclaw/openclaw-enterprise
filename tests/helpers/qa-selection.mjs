@@ -6,6 +6,7 @@ const scenarioPresets = {
   "openshell-linear-read": ["Codex"],
   "sandbox-native-github": ["OpenClaw"],
   "model-ui": ["OpenClaw", "Codex"],
+  "codex-search-config": ["Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
   "git-write": ["OpenClaw", "Codex"],
@@ -29,6 +30,7 @@ export function selectQaMatrix(env = process.env) {
     "plugin-install",
     "openshell-linear-read",
     "sandbox-native-github",
+    "codex-search-config",
   ]);
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
   const scenarios =
@@ -40,6 +42,10 @@ export function selectQaMatrix(env = process.env) {
     "invalid QA scenario selection",
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
+  const codexSearchConfig = scenarios.includes("codex-search-config");
+  if (codexSearchConfig) {
+    assert.equal(scenarios.length, 1, "codex-search-config requires an exclusive QA selection");
+  }
   const presets = preset === "all" ? ["OpenClaw", "Codex"] : [preset];
   const installations = installation === "all" ? ["compose", "kubernetes"] : [installation];
   for (const name of scenarios) {
@@ -73,8 +79,20 @@ export function selectQaMatrix(env = process.env) {
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
   const requiredEnv = activePresets.map((name) =>
-    name === "Codex" ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE",
+    name === "Codex" && !codexSearchConfig
+      ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
+      : "OCC_TEST_QA_OPENAI_KEY_FILE",
   );
+  if (codexSearchConfig) {
+    if (env.OCC_TEST_QA_MODEL_API_KEY !== undefined) {
+      requiredEnv.splice(
+        requiredEnv.indexOf("OCC_TEST_QA_OPENAI_KEY_FILE"),
+        1,
+        "OCC_TEST_QA_MODEL_API_KEY",
+      );
+    }
+    requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
+  }
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");

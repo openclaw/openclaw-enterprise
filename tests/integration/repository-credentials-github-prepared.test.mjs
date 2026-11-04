@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { get } from "node:https";
 import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/origin.ts";
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts";
-import { createGitHubWarmReader } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-reader.ts";
+import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
 import {
@@ -36,8 +36,10 @@ function readRepository(github, material) {
 }
 
 async function setup(t, options = {}) {
+  const { observeDiagnostic, ...githubOptions } = options;
+  const diagnostics = [];
   const clock = createControlledClock();
-  const github = await startGitHubFixture(t, { clock, ...options });
+  const github = await startGitHubFixture(t, { clock, ...githubOptions });
   const admission = {
     issuerAuthority: preparationIssuerAuthority(github.origin, github.tls.ca),
     familyId: "family",
@@ -68,6 +70,10 @@ async function setup(t, options = {}) {
       ca: github.tls.ca,
       renewBeforeMs: 120000,
       minimumValidityMs: 10000,
+      observe(diagnostic) {
+        diagnostics.push(diagnostic);
+        observeDiagnostic?.(diagnostic);
+      },
       async getKey() {
         keyReads++;
         // Secret resolution is downstream of the committed uncertainty marker.
@@ -79,13 +85,14 @@ async function setup(t, options = {}) {
         return key;
       },
     });
-  const reader = createGitHubWarmReader({ readCurrent: store.readCurrent }, clock.wallNow);
+  const reader = createWarmTokenReader({ readCurrent: store.readCurrent }, clock.wallNow);
   const bounds = () => ({
     signal: new AbortController().signal,
     deadlineMonoMs: clock.monotonicNow() + 30000,
   });
   return {
     clock,
+    diagnostics,
     admission,
     database,
     store,
@@ -272,6 +279,12 @@ test("lost transaction receipts never replay issuance and readiness requires com
           fail = () => f.database.failNextCommit(failure);
         }
         assert.equal(await f.run("ambiguous"), "quarantined");
+        assert.equal(
+          f.diagnostics[0].firstFailureStage,
+          phase === "begin" ? "intent" : "publication",
+        );
+        assert.equal(f.diagnostics[0].publication, "unknown");
+        assert.equal(JSON.stringify(f.diagnostics).includes("fixture commit"), false);
         const warm = await f.warm();
         assert.equal(warm.kind, phase === "publish" && failure === "after" ? "warm" : "not_ready");
         // Reconnect an owner to committed storage: no process-local deduplication proof.
@@ -296,6 +309,9 @@ test("lost provider reply and cancellation quarantine issuance; no takeover repl
     "quarantined",
   );
   assert.equal((await f.warm()).kind, "not_ready");
+  assert.equal(f.diagnostics[0].error, "cancelled");
+  assert.equal(f.diagnostics[0].requestEndCalled, true);
+  assert.equal(f.diagnostics[0].outcome, "quarantined");
   await f.store.transact(f.admission.familyId, (row) => {
     row.admission.ownerEpoch++;
   });
@@ -369,7 +385,7 @@ test("warm reader wipes its detached selection when it cannot return it", async 
     await t.test(failure, async () => {
       let selected;
       let selectedLiveBytes;
-      const interrupted = createGitHubWarmReader(
+      const interrupted = createWarmTokenReader(
         {
           async readCurrent(familyId, select) {
             selected = await store.readCurrent(familyId, select);

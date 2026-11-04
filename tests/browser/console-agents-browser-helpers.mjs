@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
@@ -65,6 +65,11 @@ export const AGENT_READ = [
   ["read", "agent_revision"],
   ["read", "configuration"],
 ];
+
+// The Credentials tab's Channel Secrets save outcome (agents/credentials.mts saveOutcomeText). It
+// points to Deploy only once no grant read is still to come and every bound Secret is granted.
+export const CHANNEL_SECRETS_SAVED = "Channel Secret bindings saved.";
+export const CHANNEL_SECRETS_SAVED_DEPLOY = `${CHANNEL_SECRETS_SAVED} Deploy the new version to deliver them.`;
 
 /**
  * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
@@ -168,22 +173,30 @@ export function persistedDeploymentError(code, data) {
 // that read the answer before a revocation would, so the Configuration editor opens and what a
 // test sees is the API's refusal (finding 2421).
 export async function grantStaleConfigurationUpdate(page) {
-  await page.route(/\/agents\/[^/]+\/permissions$/, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...body,
-        data: {
-          ...body.data,
-          configurationUpdate: true,
-          configurationSecretsOperate: true,
-          configurationSecretsOperateDeniedBindings: [],
-        },
+  await page.route(/\/agents\/[^/]+\/permissions$/, (route) =>
+    fulfillPatchedJson(route, (body) => ({
+      ...body,
+      data: {
+        ...body.data,
+        configurationUpdate: true,
+        configurationSecretsOperate: true,
+        configurationSecretsOperateDeniedBindings: [],
       },
-    });
-  });
+    })),
+  );
+}
+
+// Answers a routed request with the real API's answer, its JSON body replaced by what `patch`
+// returns for it (`patch` may change the body it is given and return it). Status and headers
+// stay the server's.
+/**
+ * @param {import("playwright").Route} route
+ * @param {(body: any) => unknown} patch
+ */
+export async function fulfillPatchedJson(route, patch) {
+  const response = await route.fetch();
+  const body = await response.json();
+  await route.fulfill({ response, json: patch(body) });
 }
 
 export function apiRequests(page, origin) {
@@ -459,6 +472,12 @@ export async function selectSecret(scope, label, secret, options = {}) {
 
 // Lists `secret` in the Secret field `label` and returns its option, which carries the reason in
 // its accessible name when the caller may read the Secret but not operate it (finding 2453).
+/**
+ * @param {import("playwright").Page | import("playwright").Locator} scope
+ * @param {string} label
+ * @param {{ name: string }} secret
+ * @returns {Promise<import("playwright").Locator>}
+ */
 export async function operateDeniedSecretOption(scope, label, secret) {
   await scope.getByLabel(label, { exact: true }).fill(secret.name);
   const option = scope.getByRole("option", {
@@ -708,6 +727,15 @@ export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
     }
     throw error;
   }
+}
+
+// A Preset the product ships in deploy/presets, by file name without ".json" ("default-codex",
+// "standard-codex"): for createConsoleAppFixture's defaultPresets or a Preset create. Each call
+// reads the file again, so callers never share one object.
+export async function shippedPreset(name) {
+  return JSON.parse(
+    await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8"),
+  );
 }
 
 export function nativeValues(marker, options = {}) {
@@ -1228,6 +1256,12 @@ export function hasFocus(locator) {
   return locator.evaluate((node) => node === globalThis.document.activeElement);
 }
 
+// The ID of the element that holds focus in the page: "" for one without an ID, null when nothing
+// does.
+export function focusedId(page) {
+  return page.evaluate(() => globalThis.document.activeElement?.id ?? null);
+}
+
 // A natively disabled control is out of the Tab order, so a keyboard reader never reaches it or
 // its reason (findings 2878, 2899). An unavailable control with a reason is aria-disabled
 // instead: Tab reaches it, it is described by the reason, and Enter, Space, a click or (in a
@@ -1330,4 +1364,76 @@ export async function countInvalidEvents(page) {
     );
   });
   return () => page.evaluate(() => globalThis.invalidEvents);
+}
+
+// A Configuration row as a release before a save rule stored it: save refuses `values` with
+// `reason`, and the row is then written through the Configuration Driver, as an older release
+// left it. `configurationDriver` is the fixture's test Configuration Driver.
+export async function storeRefusedConfiguration(
+  fixture,
+  configurationDriver,
+  agent,
+  values,
+  reason,
+) {
+  const configurationPath = `/namespaces/${agent.namespaceId}/configurations/${agent.configurationId}`;
+  const refusedSave = await fixture.request("PATCH", configurationPath, { body: { values } });
+  assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+  assert.equal(refusedSave.body.error.message, reason);
+  const stored = configurationDriver.stored({
+    namespaceId: agent.namespaceId,
+    id: agent.configurationId,
+  });
+  assert.ok(stored);
+  await configurationDriver.update({ ...stored, values });
+}
+
+export const draftActions = (page) => page.locator(".agent-draft-actions");
+export const draftDeployButton = (card) =>
+  card.getByRole("button", { name: "Deploy new version", exact: true });
+export const draftFirstStep = (card) =>
+  card.getByRole("listitem").first().locator(".checklist-detail");
+
+// Agent detail holds Deploy for a stored draft deploy admission refuses: the draft card shows
+// deploy's exact refusal, Deploy is disabled, nothing says ready, and the first step opens with
+// `step` (the step text up to and including its " · " separator).
+export async function expectDeployHeld(card, reason, step, message) {
+  await card.getByText(reason, { exact: true }).waitFor();
+  assert.equal(await draftDeployButton(card).isDisabled(), true, message);
+  assert.equal(await card.getByText("Ready to deploy.").count(), 0, message);
+  assert.ok((await draftFirstStep(card).textContent()).startsWith(step), message);
+}
+
+// Deploy admission refuses the stored draft with the exact text the page shows, before any
+// revision.
+export async function expectDeployRefused(fixture, agent, reason) {
+  const refusedDeploy = await fixture.request(
+    "POST",
+    `/namespaces/${agent.namespaceId}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
+  assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+}
+
+// Following the held step in the Configuration editor: saving `values` makes the draft ready,
+// with Deploy enabled and the first step saved.
+export async function saveConfigurationUntilReady(page, card, values) {
+  const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
+  await edit.scrollIntoViewIfNeeded();
+  await edit.click();
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+  assert.equal(await draftDeployButton(card).isDisabled(), false);
+  assert.match(await draftFirstStep(card).textContent(), /^Saved · Configuration /);
+}
+
+// The page fits the viewport: no horizontal scroll.
+export async function expectNoHorizontalScroll(page) {
+  assert.equal(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    ),
+    true,
+  );
 }

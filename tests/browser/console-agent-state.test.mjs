@@ -2425,7 +2425,7 @@ test("A share after a revoke rereads the policy one list at a time, audited once
 // it sends no policy read and adds no audited refusal.
 async function shareRefusedAfterRevoke(t, name) {
   const opened = await openAsRevocableAdministrator(t, name, "draft");
-  const { fixture, page, revoke, stop, remove } = opened;
+  const { fixture, page, revoke } = opened;
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
   revoke();
@@ -2436,9 +2436,6 @@ async function shareRefusedAfterRevoke(t, name) {
   await panel
     .getByText("Sharing policy requires Installation administration.", { exact: false })
     .waitFor();
-  // The page takes the member's answer: no Stop or Delete.
-  await stop.waitFor({ state: "hidden" });
-  await remove.waitFor({ state: "hidden" });
   await waitForIdleFetches(page);
   return { ...opened, panel, audited };
 }
@@ -2459,9 +2456,6 @@ test("Refresh sharing after administration is granted again rereads access, then
   const sent = requests.length;
   await panel.getByRole("button", { name: "Refresh sharing", exact: true }).click();
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
-  // The page follows the administrator's answer again, without the page's Refresh.
-  await waitForEnabled(stop);
-  await waitForEnabled(remove);
   await waitForIdleFetches(page);
   assert.equal(await accessTab.getAttribute("aria-selected"), "true");
   for (const control of [
@@ -2491,6 +2485,9 @@ test("Refresh sharing after administration is granted again rereads access, then
       .map(({ action }) => action),
     ["openclaw.iam.roles.list"],
   );
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await waitForEnabled(stop);
+  await waitForEnabled(remove);
 });
 
 test("Refresh sharing while still revoked sends no policy read and adds no audited refusal", async (t) => {
@@ -2505,6 +2502,8 @@ test("Refresh sharing while still revoked sends no policy read and adds no audit
   await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   await waitForIdleFetches(page);
   assert.equal(await accessTab.count(), 0);
+  assert.equal(await opened.stop.isVisible(), false);
+  assert.equal(await opened.remove.isVisible(), false);
   const after = requests.slice(sent);
   assert.deepEqual(
     permissionReads(after, opened.namespaceId, opened.permissionsPath),
@@ -2575,6 +2574,7 @@ test("A revoke the Access tab settles takes away administrator controls without 
   reread.release();
   await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
   // She holds Agent read only: no deploy, operate or delete.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.waitFor({ state: "hidden" });
   await remove.waitFor({ state: "hidden" });
   assert.equal(await deploy.isDisabled(), true);
@@ -2865,14 +2865,15 @@ async function openAsRevocableAdministrator(t, name, version = "active") {
   await login(
     page,
     fixture,
-    String(detailUrl(fixture, namespace.id, agent.id, shown, "access")),
+    String(detailUrl(fixture, namespace.id, agent.id, shown, "configuration")),
     account.credentials,
   );
-  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
   const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
   const stop = stopAgentButton(page);
   await waitForEnabled(stop);
   await waitForEnabled(remove);
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.getByText("Current policy loaded.", { exact: true }).waitFor();
   await waitForIdleFetches(page);
   const permissionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
   return {
@@ -3020,6 +3021,7 @@ test("Plugins opened while a newer permission reread is in flight waits for it",
   await waitForIdleFetches(page, { except: permissionsPath });
   newer.release();
   await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.waitFor({ state: "hidden" });
   await waitForIdleFetches(page);
   assert.equal(await remove.isVisible(), false);
@@ -3478,6 +3480,22 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
         "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
     },
     {
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: {
+          component: "agent",
+          check: "model-probe",
+          checkedAt: "2026-10-03T08:00:00.000Z",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "model_not_found" },
+        },
+      }),
+      nextStep: /^The startup model check failed/,
+      cause: "The model provider check reported a failure (model_not_found)",
+      // The banner reads the failed version, even when the operator is viewing the draft.
+      recoveryMessage:
+        "Model openai/gpt-4.1 is unavailable with this credential (model_not_found). Choose a model this account can use in Configuration, then redeploy this Agent.",
+    },
+    {
       // A cause without its own text keeps the kind label and the detail token.
       error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
         runtimeFailure: {
@@ -3541,7 +3559,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       nextStep: /\(Enable gateway password access\), then deploy again\.$/,
     },
   ];
-  for (const [index, { error, nextStep, cause }] of cases.entries()) {
+  for (const [index, { error, nextStep, cause, recoveryMessage }] of cases.entries()) {
     const agent = await fixture.createAgent(namespace.id, `Agent ${index}`, nativeValues("v1"));
     const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     await routeDeploymentStatus(page, fixture, namespace, agent, revision, "failed", error);
@@ -3556,6 +3574,10 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     const activity = await openFailureDetails(page);
     await activity.getByText(`${error.code}: ${error.message}`, { exact: true }).waitFor();
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+    if (recoveryMessage) {
+      await recovery.getByText(recoveryMessage, { exact: false }).waitFor();
+      assert.equal(await recovery.getByRole("link").first().textContent(), "Open Configuration");
+    }
     // A failed or timed-out model check leads as one; a refused gateway CLI does not.
     const lead = error.code.startsWith("RUNTIME_MODEL_PROBE_")
       ? "v1 failed its startup model check"
@@ -3775,11 +3797,11 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     await waitForChosenVersion(page, 1);
     await expectNeutral(c, c.error.code);
     // A neutral record is not a failure, so the version's notice does not call it failed. The
-    // superseded v1 is not current (the hidden v2 is), so it is history.
+    // superseded v1 is not current (the hidden v2 is), so its notice names how it ended.
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     assert.equal(
       (await page.locator(".version-selection-notice").textContent()).split(" ·")[0],
-      c.newerHidden ? "Historical version" : "Current version",
+      c.newerHidden ? "Superseded version" : "Current version",
     );
     // Diagnostics do not ask the reader to resolve a neutral record first.
     await showDeploymentTab(page);

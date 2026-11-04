@@ -61,6 +61,32 @@ function safeMeasurement(message) {
   } catch {
     return undefined;
   }
+  if (isRecord(value) && value.kind === "local-first-agent") {
+    if (
+      ![
+        "setup",
+        "cleanup",
+        "initial-deploy-and-model",
+        "reuse-model",
+        "native-deploy",
+        "native-model",
+        "native-redeploy",
+        "native-resumed-model",
+      ].includes(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
+  }
   if (isRecord(value) && value.kind === "runtime-model-probe") {
     return safeModelProbeMeasurement(value);
   }

@@ -13,12 +13,12 @@ import { describe, test } from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
-import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
+import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
+import { nodeTestSummary } from "../helpers/node-test-summary.ts";
 import {
   assertStderrMatch,
   fixture,
@@ -48,6 +48,59 @@ async function writeState(path, state) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   await chmod(path, 0o600);
 }
+
+test("focused first-Agent preparation leaves installation to Local Setup and refuses another file", async (t) => {
+  const root = await fixture(t);
+  const saved = {
+    CODEX_ACCESS_TOKEN: process.env.CODEX_ACCESS_TOKEN,
+    OCC_HELM_BIN: process.env.OCC_HELM_BIN,
+    OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
+  };
+  // Fail before side effects if generic stack preparation is accidentally restored.
+  process.env.OCC_HELM_BIN = join(root, "unavailable-helm");
+  process.env.CODEX_ACCESS_TOKEN = "synthetic-model-credential";
+  process.env.OCC_TEST_OPENAI_MODEL = "synthetic-model";
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+  for (const file of [
+    "tests/integration/local-first-agent-openshell-real.test.mjs",
+    "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+  ]) {
+    const statePath = join(root, `${file.split("/").at(-1)}.json`);
+    const lane = await prepareLane({ lane: "openshell", statePath, file });
+    const prepared = await prepareFile({ lane: "openshell", statePath, file });
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    assert.deepEqual(state.resources, []);
+    assert.equal(prepared.env.OCC_TEST_DATABASE_URL, undefined);
+    assert.equal(prepared.env.OCC_TEST_KUBERNETES_CONTEXT, undefined);
+    assert.equal(prepared.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");
+    await assert.rejects(
+      prepareFile({
+        lane: "openshell",
+        statePath,
+        file: "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      }),
+      /Selected file must match/,
+    );
+    await prepared.cleanup();
+    await lane.cleanup();
+  }
+  await assert.rejects(
+    prepareLane({
+      lane: "openshell",
+      statePath: join(root, "invalid.json"),
+      file: "tests/integration/not-a-lane-file.test.ts",
+    }),
+    /Selected file must belong/,
+  );
+});
 
 // A ready Compose PostgreSQL server, owned by its own preparation prefix, published on port
 // (a fake server's, when the case runs SQL).
@@ -1062,6 +1115,7 @@ describe("CI preparation", { concurrency }, () => {
     for (const input of [
       ".dockerignore",
       "scripts/ci/prepare.mjs",
+      "scripts/ci/resource-names.ts",
       "scripts/ci/test-suites/images-packaging.json",
       ".github/workflows/ci-image-cache.yml",
     ]) {
@@ -1421,7 +1475,7 @@ await template.cleanup();
     const root = await fixture(t);
     const statePath = join(root, "state.json");
     const orderPath = join(root, "order");
-    const lock = new URL("../../scripts/ci/state-lock.mjs", import.meta.url).href;
+    const lock = new URL("../../scripts/ci/state-lock.ts", import.meta.url).href;
     // Each contender takes the lock `times` times in a row and records its name while
     // holding it for 50 ms.
     const contender = (name, times) =>
@@ -1734,6 +1788,60 @@ for (let index = 0; index < Number(times); index += 1) {
     }
   });
 
+  test("advisory OpenShell shards execute every manifest file once without cancelling siblings", async (t) => {
+    const workflow = loadYaml(
+      await readFile(join(repositoryRoot, ".github/workflows/qa-advisory.yml"), "utf8"),
+    );
+    const selection = workflow.jobs.eligibility.steps.find(
+      (step) => step.id === "openshell-matrix",
+    );
+    const job = workflow.jobs.openshell;
+    const action = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane");
+    const files = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json")).lanes
+      .openshell.files;
+    assert.equal(job["runs-on"], "ubuntu-24.04");
+    assert.equal(job.strategy["fail-fast"], false);
+    assert.equal(job.environment, "integration-qa-pr");
+    assert.equal(
+      job.strategy.matrix,
+      "${{ fromJSON(needs.eligibility.outputs.openshell-matrix) }}",
+    );
+    assert.equal(action.with["test-file"], "${{ matrix.file }}");
+    assert.equal(action.with["artifact-prefix"], "qa-advisory-${{ matrix.shard }}");
+
+    const root = await fixture(t);
+    for (const [index, selected] of [
+      "",
+      files[0].path,
+      "tests/integration/unknown.test.mjs",
+    ].entries()) {
+      const output = join(root, `matrix-${index}`);
+      // Execute the workflow's selector, so a fixed matrix that drops a registered file fails here.
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", selection.run], {
+        cwd: repositoryRoot,
+        env: { ...process.env, OPENSHELL_FILE: selected, GITHUB_OUTPUT: output },
+        encoding: "utf8",
+      });
+      if (index === 2) {
+        assert.notEqual(
+          result.status,
+          0,
+          "An unknown selection must fail, not produce an empty matrix.",
+        );
+        continue;
+      }
+      assert.equal(result.status, 0, result.stderr);
+      const { include } = JSON.parse(
+        (await readFile(output, "utf8")).trim().slice("matrix=".length),
+      );
+      assert.deepEqual(
+        include.map(({ file }) => file),
+        selected ? [selected] : files.map(({ path }) => path),
+      );
+      assert.equal(new Set(include.map(({ shard }) => shard)).size, include.length);
+    }
+  });
+
   test("Kubernetes test helper passes an explicit Codex localhost seccomp profile into runtime config", () => {
     const profile = "openclaw/codex-bwrap.json";
     const configuration = createKubernetesInstallationConfiguration({
@@ -1873,7 +1981,7 @@ for (let index = 0; index < Number(times); index += 1) {
           cluster,
           image: immutableImage,
           // The current runtime must still reject unrelated setup failures before node writes.
-          codexVersion: "0.163.0-alpha.2",
+          codexVersion: "0.164.0",
           execFile: execFileForRuntimeDefaultFailure((command, args) => {
             const commandText = `${command} ${args.join(" ")}`;
             assert.match(commandText, /--namespace/);
@@ -2065,11 +2173,7 @@ for (let index = 0; index < Number(times); index += 1) {
     assert.match(seccomp.profileSha256, /^[a-f0-9]{64}$/);
     assert.equal(
       seccomp.dockerProfilePath,
-      join(
-        clusterDirectory,
-        "docker-seccomp",
-        `codex-0.163.0-alpha.2-${seccomp.profileSha256}.json`,
-      ),
+      join(clusterDirectory, "docker-seccomp", `codex-0.164.0-${seccomp.profileSha256}.json`),
     );
     const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
     assert.deepEqual(JSON.parse(profileData), installedProfile);
@@ -2627,6 +2731,47 @@ if (args[0] === "pull") {
           : /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/,
       );
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+    }
+  });
+
+  test("Kubernetes runtime image overrides require a complete pair before preparation", async (t) => {
+    const root = await fixture(t);
+    for (const selection of ["gateway", "agent", "both", "neither"]) {
+      await t.test(selection, async () => {
+        const statePath = join(root, `${selection}.json`);
+        const partial = selection === "gateway" || selection === "agent";
+        // Partial overrides must fail before state or infrastructure is created.
+        // Complete/default selections reach the existing prepared-state boundary.
+        const result = await runPrepare(
+          [
+            "--lane",
+            "k3d-model",
+            "--state",
+            statePath,
+            ...(partial ? [] : ["--file", "tests/integration/harness-topology-k3d-real.test.mjs"]),
+          ],
+          {
+            OPENAI_API_KEY: "test-openai-key",
+            OCC_TEST_OPENAI_MODEL: "gpt-test",
+            NODE_BASE_IMAGE: nodeBaseImage,
+            OCC_DOCKER_BIN: join(root, "docker-must-not-run"),
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE:
+              selection === "gateway" || selection === "both" ? immutableImage : "",
+            OCC_TEST_KUBERNETES_AGENT_IMAGE:
+              selection === "agent" || selection === "both" ? immutableImage : "",
+            OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "",
+            OCC_TEST_KUBERNETES_CODEX_IMAGE: "",
+          },
+        );
+        assert.equal(result.status, 1);
+        assertStderrMatch(
+          result.stderr,
+          partial
+            ? /OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together/
+            : /requires a prior prepareLane/,
+        );
+        await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+      });
     }
   });
 

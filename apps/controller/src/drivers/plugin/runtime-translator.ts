@@ -1147,6 +1147,11 @@ export function openClawRuntimeArtifact(
   ) as PluginRuntimeResolvedArtifacts;
 }
 
+// The plugins.entries keys Kubernetes Compute renders for OpenClaw catalog selections.
+export function openClawManagedPluginIds(): readonly string[] {
+  return OPENCLAW_PLUGIN_CATALOG.map(({ nativeId }) => nativeId);
+}
+
 export function openClawCatalogEntries(): readonly PluginCatalogEntry[] {
   return pluginRuntimeTranslator.openClawCatalogEntries() as unknown as readonly PluginCatalogEntry[];
 }

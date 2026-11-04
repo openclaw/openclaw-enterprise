@@ -258,6 +258,7 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
                 releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
                 id: Type.String(),
                 label: Type.String(),
+                toolDiscovery: Type.Optional(Type.Literal(true)),
                 sources: Type.Array(
                   Type.Object(
                     { id: CredentialSourceId, name: Type.String() },
@@ -315,6 +316,7 @@ const CredentialSourceCatalogSchema = Type.Object(
 
 const InstallationCapabilitiesSchema = Type.Object(
   {
+    nativeAdmin: Type.Optional(Type.Literal(true)),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },
@@ -1373,6 +1375,29 @@ export const AgentRevisionSchema = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     repositoryCredentials: Type.Optional(RepositoryRevisionStateSchema),
     createdAt: Timestamp,
+  },
+  { additionalProperties: false },
+);
+
+export const FirstDeploymentReceiptSchema = Type.Object(
+  {
+    revisionId: RevisionId,
+    namespaceId: NamespaceId,
+    agentId: AgentId,
+    configurationId: ConfigurationId,
+    configurationGeneration: ConfigurationGeneration,
+    createdAt: Timestamp,
+  },
+  { additionalProperties: false },
+);
+export const FirstDeploymentReceiptResponse = Type.Object(
+  { data: FirstDeploymentReceiptSchema, meta: Meta },
+  { additionalProperties: false },
+);
+export const FirstDeploymentRecoveryResponse = Type.Object(
+  {
+    data: Type.Union([FirstDeploymentReceiptSchema, Type.Null()]),
+    meta: Meta,
   },
   { additionalProperties: false },
 );

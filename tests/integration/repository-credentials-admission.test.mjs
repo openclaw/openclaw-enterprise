@@ -32,7 +32,6 @@ import {
   CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
-  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
 } from "../../packages/occ/src/index.ts";
@@ -51,17 +50,19 @@ import {
   BROKER_PROXY_EMPTY_HOST,
   BROKER_PROXY_LOCAL_BINDING,
   BROKER_PROXY_MODE,
+  callerDenied,
+  CODEX_NEEDS_DEDICATED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_GIT_ALONE,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
-  PREVIEW_GATEWAY_VERSION,
   PROXY_REGISTRATION_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
   REPOSITORY_SETTINGS_MISSING,
+  runtimeIdUnsupported,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
@@ -1087,9 +1088,18 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
 });
 
 test("Repository admission retains unknown Harness and execution-mode rejection", async (t) => {
-  for (const { harness, executionMode, status, code, message, atSave } of [
+  for (const { harness, executionMode, status, code, message, atSave, storedPastSave } of [
     // An unsupported runtime identity is Configuration content, not a missing resource.
-    { harness: "unknown", executionMode: "embedded", status: 400, code: "INVALID_REQUEST" },
+    // Configuration save refuses it (finding 3020), so only a row an older release stored
+    // reaches deployment.
+    {
+      harness: "unknown",
+      executionMode: "embedded",
+      status: 400,
+      code: "INVALID_REQUEST",
+      message: runtimeIdUnsupported('agents.defaults.models["openai/gpt-5.1"]'),
+      storedPastSave: true,
+    },
     // Kubernetes cannot deliver repository credentials to dedicated OpenClaw, so Agent save
     // refuses this Harness/mode pair before deployment admission.
     {
@@ -1097,7 +1107,7 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       executionMode: "dedicated",
       status: 409,
       code: "RESOURCE_CONFLICT",
-      message: /cannot deliver repository credentials to this Harness topology/,
+      message: COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
       atSave: true,
     },
     // A Harness/mode mismatch names the execution mode the Configuration needs, at Agent save
@@ -1107,12 +1117,16 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
       executionMode: "embedded",
       status: 400,
       code: "INVALID_REQUEST",
-      message: /selects the Codex Harness, which needs dedicated execution/,
+      message: CODEX_NEEDS_DEDICATED,
       atSave: true,
     },
   ]) {
     await t.test(`${harness}/${executionMode}`, async (t) => {
-      const f = await fixture(t, { harness });
+      const configurationDriver = createTestConfigurationDriver();
+      const f = await fixture(t, {
+        harness: storedPastSave ? "openclaw" : harness,
+        configurationDriver,
+      });
       if (atSave) {
         const refused = await f.request("POST", f.collection, {
           name: `Repository Agent ${randomUUID()}`,
@@ -1122,19 +1136,26 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
         });
         assert.equal(refused.status, status, JSON.stringify(refused));
         assert.equal(refused.error.code, code);
-        assert.match(refused.error.message, message);
+        assert.equal(refused.error.message, message);
         assert.deepEqual((await f.request("GET", f.collection)).data, []);
         return;
       }
       const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
       await f.prepareDeployment(agent);
+      if (storedPastSave) {
+        // Written past OCC, as an older release's Configuration save stored it.
+        const values = createHarnessConfiguration(harness, "gpt-5.1");
+        delete values.gateway.auth;
+        await configurationDriver.update({
+          ...configurationDriver.stored({ namespaceId: f.namespace.id, id: f.configuration.id }),
+          values,
+        });
+      }
       const path = `${f.collection}/${agent.id}`;
       const denied = await f.request("POST", `${path}/deploy`);
       assert.equal(denied.status, status, JSON.stringify(denied));
       assert.equal(denied.error.code, code);
-      if (message) {
-        assert.match(denied.error.message, message);
-      }
+      assert.equal(denied.error.message, message);
       assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
     });
   }
@@ -1625,7 +1646,10 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
     repositoryBindings: selection,
   });
   assert.equal(hidden.status, 403, JSON.stringify(hidden));
-  assert.match(hidden.error.message, /needs SandboxPolicy read on /);
+  assert.equal(
+    hidden.error.message,
+    callerDenied("SandboxPolicy read", `SandboxPolicy ${granted.data.id}`),
+  );
   assert.doesNotMatch(JSON.stringify(hidden), /git-direct|github\.com/);
   // An Agent with no saved additions has nothing to name, so its binding saves without read.
   const plainBinding = await f.request("PATCH", `${f.collection}/${plain.id}`, {
@@ -1876,20 +1900,24 @@ test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified se
 });
 
 test("Deploy names what installation-wide access needs from the OpenShell Proxy and its gateway", async (t) => {
-  // Finding 2536: without observedHookPreviewWorkspace the OpenShell Credential Proxy cannot
-  // enforce a github-installation binding, an Installation setting no retry changes; with it,
-  // the preview needs gateway 0.1.5, a gateway state an operator changes. Deploy answered both
-  // with a generic 503. Now the setting is a 409 before any gateway read, and the gateway state a
-  // 503 that names it. Neither creates a revision.
+  // Opt-in is an Installation setting (409); missing registration is gateway state (503).
+  // Neither refusal creates a revision or changes with the gateway release label.
   const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
   for (const [label, options, status, code, message, reads] of [
-    ["no preview", {}, 409, "RESOURCE_CONFLICT", CREDENTIAL_PROXY_INSTALLATION_PREVIEW, 0],
     [
-      "preview on another gateway",
-      { preview: true, gatewayVersion: "0.1.6" },
+      "no preview",
+      { gatewayVersion: "0.1.6" },
+      409,
+      "RESOURCE_CONFLICT",
+      CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
+      0,
+    ],
+    [
+      "preview without registration",
+      { preview: true, gatewayVersion: "unknown", registered: false },
       503,
       "DEPENDENCY_UNAVAILABLE",
-      PREVIEW_GATEWAY_VERSION,
+      PROXY_REGISTRATION_UNAVAILABLE,
       1,
     ],
   ]) {
@@ -2080,22 +2108,14 @@ test("Dedicated native OpenClaw applies the OpenShell profile gate before creati
       message: CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
       reads: 0,
     },
-    {
-      name: "installation preview on an unsupported gateway version",
-      bindings: installation,
-      options: { preview: true, gatewayVersion: "0.1.6" },
-      status: 503,
-      code: "DEPENDENCY_UNAVAILABLE",
-      message: PREVIEW_GATEWAY_VERSION,
-      reads: 1,
-    },
     ...["git-read", "git-full"].map((profile) => ({
       name: profile + " is not a protected delivery profile",
       bindings: [{ repositoryRef: "project", profile }],
       options: { preview: true },
       status: 409,
       code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
-      message: RepositoryGitProfileUnsupportedError.description,
+      message:
+        "A Credential Proxy cannot deliver this repository's Git access level. Use `github-repository` or `git-write` for it, or ask an administrator to use native prepared Git without a Sandbox or Proxy, then deploy again.",
       reads: 0,
     })),
     {
@@ -2221,10 +2241,13 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
     { repositoryRef: "project", profile: "git-write" },
     { repositoryRef: "second-project", profile: "git-read" },
   ];
-  for (const [name, bindings] of [
-    ["git-read", [{ repositoryRef: "project", profile: "git-read" }]],
-    ["git-full", [{ repositoryRef: "project", profile: "git-full" }]],
-    ["two bindings", several],
+  // A lone unsupported binding and a mixed selection need different fixes. The mixed one must
+  // point to github-repository, which delivers several repositories, not say they are refused.
+  const lone = /cannot deliver this repository's Git access level/u;
+  for (const [name, bindings, message] of [
+    ["git-read", [{ repositoryRef: "project", profile: "git-read" }], lone],
+    ["git-full", [{ repositoryRef: "project", profile: "git-full" }], lone],
+    ["two bindings", several, /To use more than one repository, .*`github-repository`/u],
   ]) {
     for (const advertised of [false, true]) {
       const label = `${name}${advertised ? " with the execution profile" : ""}`;
@@ -2233,7 +2256,7 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
       });
       assert.equal(response.status, 409, `${label}: ${JSON.stringify(response)}`);
       assert.equal(response.error.code, "REPOSITORY_GIT_PROFILE_UNSUPPORTED", label);
-      assert.equal(response.error.message, RepositoryGitProfileUnsupportedError.description);
+      assert.match(response.error.message, message, label);
       assert.deepEqual(revisions, [], label);
       assert.equal(gatewayReads, 0, `${label}: the refusal needs no gateway read`);
     }

@@ -54,6 +54,19 @@ function nativeOriginForAgent(
   return `${publicUrl.protocol}//${publicUrl.host}`;
 }
 
+function nativeAdminHarnessConfiguration(nativeOrigin) {
+  const configuration = withNativeAdminGateway(
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+    nativeOrigin,
+  );
+  // Preserve read/write device coverage: the machine identity supplies admin.
+  configuration.gateway.auth.trustedProxy.deviceAutoApprove.scopes = [
+    "operator.read",
+    "operator.write",
+  ];
+  return configuration;
+}
+
 function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
   return createReadyComputeDriver("native-admin-compute", {
     // Kubernetes dedicated revisions stop their predecessors before they start.
@@ -200,7 +213,7 @@ async function createLiveNativeAgent(fixture, namespace, name, options = {}) {
   await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
-    withNativeAdminGateway(createHarnessConfiguration("openclaw", "gpt-4.1"), nativeOrigin),
+    nativeAdminHarnessConfiguration(nativeOrigin),
   );
   const revision = await fixture.controller.deployAgent(
     adminPrincipal(fixture).id,
@@ -617,11 +630,42 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   });
   assert.equal(invented.statusCode, 302);
   assert.equal(invented.headers.location, destination.replace(key, inventedKey));
+  // A copied link with a trailing slash is the same page load.
+  const trailing = await injectJson(context.fixture, "GET", "/chat/main/", { headers: navigation });
+  assert.equal(trailing.statusCode, 302);
+  assert.equal(trailing.headers.location, destination);
+
+  // Safari never sends Sec-Fetch-User, and other browsers omit it on navigations without user
+  // activation. Such a page load stays 403 without redirecting, but shows a sign-in link instead of
+  // the JSON refusal.
+  const { "sec-fetch-user": _activation, ...unactivated } = navigation;
+  for (const path of ["/", "/chat/main", "/chat/main/", `/chat/main/${sessionSuffix}`]) {
+    const signIn = await injectJson(context.fixture, "GET", path, { headers: unactivated });
+    assert.equal(signIn.statusCode, 403, path);
+    assert.equal(signIn.headers.location, undefined, path);
+    assert.match(signIn.headers["content-type"], /^text\/html/, path);
+    assert.equal(signIn.headers["cache-control"], "no-store", path);
+    assert.equal(signIn.headers["referrer-policy"], "no-referrer", path);
+    assert.equal(signIn.headers["x-content-type-options"], "nosniff", path);
+    assert.ok(signIn.headers["x-request-id"], path);
+    assert.equal(signIn.headers["set-cookie"], undefined, path);
+    assert.match(
+      signIn.body,
+      new RegExp(`<a href="${publicOrigin}/console/#native-agent=${key}">Sign in</a>`),
+      path,
+    );
+    assert.equal(signIn.body.includes(context.agent.id), false, path);
+  }
 
   for (const [method, path, headers] of [
     ["GET", "/chat/main", { host, accept: "application/json" }],
+    // Link unfurlers send no Fetch Metadata: no redirect and no sign-in page.
     ["GET", "/chat/main", { host, accept: "text/html", "user-agent": "Slackbot-LinkExpanding" }],
-    ["GET", "/chat/main", { ...navigation, "sec-fetch-user": undefined }],
+    [
+      "GET",
+      "/chat/main",
+      { host, accept: "text/html", "user-agent": "Slackbot-LinkExpanding", "sec-fetch-user": "?1" },
+    ],
     ["GET", "/chat/main", { ...navigation, host: `agent-${key}.other.${nativeDomain}` }],
     ["GET", "/chat/main", { ...navigation, "sec-fetch-dest": "iframe" }],
     ["GET", "/chat/main", { ...navigation, "sec-fetch-mode": "cors" }],
@@ -642,9 +686,13 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
     assert.equal(denied.json().error.code, "FORBIDDEN");
   }
   const limited = await createReadOperateSession(context);
-  for (const path of ["/", "/chat/main"]) {
+  for (const [path, headers] of [
+    ["/", navigation],
+    ["/chat/main", navigation],
+    ["/chat/main", unactivated],
+  ]) {
     const unauthorized = await injectJson(context.fixture, "GET", path, {
-      headers: { ...navigation, cookie: limited.cookie },
+      headers: { ...headers, cookie: limited.cookie },
     });
     assert.equal(unauthorized.statusCode, 403);
     assert.equal(unauthorized.headers.location, undefined);

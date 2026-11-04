@@ -1,3 +1,5 @@
+import type { Static } from "typebox";
+import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
 import type {
@@ -75,6 +77,7 @@ export type {
   PreparedGitHubEgressSource,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseResponse,
   PreparedGitHubPullScope,
   PreparedGitHubPullProjection,
@@ -120,6 +123,7 @@ export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandb
 import type { SandboxPolicySnapshot } from "./sandbox-policy.ts";
 
 export type {
+  ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxPolicySnapshot,
@@ -296,6 +300,8 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
+  /** The API offers native admin configuration during Agent provisioning. */
+  readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
@@ -614,12 +620,14 @@ export function revisionCredentialSourceSnapshot(
   );
 }
 
-export type HarnessAuthBinding =
-  | { readonly method: "api_key"; readonly source: SecretReference }
-  | { readonly method: "codex_pat"; readonly source: SecretReference }
-  | { readonly method: "codex_pat"; readonly source: ServiceAccountReference }
-  | { readonly method: "credential_source"; readonly sourceId: string }
-  | { readonly method: "runtime" };
+// Expand source alternatives so callers can still Extract a binding by source.kind.
+type ReadonlyAuthBinding<Binding> = Binding extends { source: infer Source }
+  ? Source extends unknown
+    ? { readonly [Key in keyof Binding]: Key extends "source" ? Readonly<Source> : Binding[Key] }
+    : never
+  : Readonly<Binding>;
+
+export type HarnessAuthBinding = ReadonlyAuthBinding<Static<typeof HarnessAuthBindingSchema>>;
 
 /** Private admission metadata. Public APIs expose only HarnessAuthBinding. */
 export type HarnessAuthSnapshot =
@@ -738,6 +746,7 @@ export interface AgentPluginCredentialSlot {
   readonly releaseSha256: string;
   readonly id: string;
   readonly label: string;
+  readonly toolDiscovery?: true;
   readonly sources: readonly { readonly id: string; readonly name: string }[];
 }
 
@@ -1103,6 +1112,16 @@ export interface AgentRevision extends Scope {
   readonly createdAt: string;
 }
 
+/** Minimal immutable admission receipt; contains no snapshot or caller intent. */
+export interface FirstDeploymentReceipt {
+  readonly revisionId: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly configurationId: string;
+  readonly configurationGeneration: number;
+  readonly createdAt: string;
+}
+
 export type AgentRevisionMetadata = Pick<
   AgentRevision,
   "id" | "namespaceId" | "agentId" | "revision" | "backendId" | "createdAt"
@@ -1446,7 +1465,7 @@ export type {
 
 export type JSONSchema = Readonly<Record<string, unknown>>;
 
-export { normalizeSecretBindings } from "./secret-bindings.ts";
+export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
 export * from "./api/resources.ts";
@@ -1504,6 +1523,7 @@ export type {
   ProtectedRepositoryGitAuthority,
   RepositoryGitBinding,
   ProtectedRepositoryGitMaterial,
+  ProtectedGitHubRepositoryMaterial,
   ProtectedGitHubInstallationMaterial,
   GitHubInstallationSendDecision,
   GitHubInstallationSendPermit,

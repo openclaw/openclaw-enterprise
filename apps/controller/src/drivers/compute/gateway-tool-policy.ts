@@ -4,8 +4,8 @@ import type {
   OpenClawConfigurationValue,
 } from "@openclaw-enterprise/contracts";
 
-// Concrete reviewed tools/actions. Plugin selection and ordinary tool grants do
-// not extend this list. Keep native Codex capability policy separate.
+// Reviewed Gateway tools and actions. Dedicated deployments can add reviewed
+// managed plugin tools. Ordinary tool grants remain subject to this policy.
 const GATEWAY_TOOL_BASELINE = {
   allow: [
     "sessions",
@@ -171,6 +171,7 @@ export function managedGatewayConfiguration(
   codex = false,
   createError: SettingError = (setting, requirement) =>
     new Error(`Configuration setting ${setting} ${requirement}.`),
+  managedPluginTools: readonly string[] = [],
 ): OpenClawConfigurationDocument {
   const object = (value: unknown, path: string): Record<string, unknown> => {
     if (value === undefined) {
@@ -245,15 +246,22 @@ export function managedGatewayConfiguration(
     "gateway_exec",
     "gateway_process",
   ];
-  if (approved.allow.some((tool) => administrativeTools.includes(tool))) {
+  const reviewedPluginTools = names(managedPluginTools, "tools.gatewayPolicy.allow", true);
+  if (
+    [...approved.allow, ...reviewedPluginTools].some((tool) => administrativeTools.includes(tool))
+  ) {
     throw createError("tools.gatewayPolicy.allow", "must not grant Gateway administrative tools");
   }
   const effective = object(configuration.tools ?? undefined, "tools").gatewayPolicy;
   const existing = effective === undefined ? undefined : parsePolicy(effective);
+  const admittedAllow =
+    supplied === undefined
+      ? [...new Set([...approved.allow, ...reviewedPluginTools])]
+      : approved.allow;
   const allow =
     existing === undefined
-      ? approved.allow
-      : approved.allow.filter((tool) => existing.allow.includes(tool));
+      ? admittedAllow
+      : admittedAllow.filter((tool) => existing.allow.includes(tool));
   const actions: Record<string, string[]> = {};
   for (const tool of allow) {
     const requested = approved.actions[tool];
@@ -282,6 +290,16 @@ export function managedGatewayConfiguration(
   const next: Record<string, OpenClawConfigurationDocument[string]> =
     structuredClone(configuration);
   const tools = object(next.tools ?? undefined, "tools");
+  const pluginGrants = reviewedPluginTools.filter((tool) => allow.includes(tool));
+  if (pluginGrants.length && (tools.alsoAllow === undefined || Array.isArray(tools.alsoAllow))) {
+    // Native allow and alsoAllow are mutually exclusive. Extend the configured
+    // form without changing the operator's deny list.
+    if (Array.isArray(tools.allow) && tools.allow.length > 0) {
+      tools.allow = [...new Set([...tools.allow, ...pluginGrants])];
+    } else {
+      tools.alsoAllow = [...new Set([...(tools.alsoAllow ?? []), ...pluginGrants])];
+    }
+  }
   tools.gatewayPolicy = {
     allow,
     actions,
@@ -417,30 +435,75 @@ function gatewayStateLockRefusal(stdout) {
   }
   return undefined;
 }
-function configureManagedGatewayTools(admitted) {
-  let lockRefusal;
+// The settings the tool policy step composes (managedGatewayConfiguration). A validation issue
+// on one of them, or on an object that names one of them as a key it refuses, is a refusal of
+// the step itself, as is an issue OpenClaw ties to no setting.
+const GATEWAY_TOOL_POLICY_SETTINGS = [
+  "tools.gatewayPolicy",
+  "agents.defaults.modelSelectionScope",
+  "cron.triggers.enabled",
+  "plugins.entries.codex.config.codexDynamicToolsExclude",
+];
+function concernsGatewayToolPolicy(issue) {
+  const path = issue?.path;
+  if (typeof path !== "string" || path === "" || path === "<root>") return true;
+  return GATEWAY_TOOL_POLICY_SETTINGS.some((setting) => {
+    if (path === setting || path.startsWith(setting + ".")) return true;
+    if (!setting.startsWith(path + ".")) return false;
+    const key = setting.slice(path.length + 1).split(".")[0];
+    return typeof issue.message !== "string" || issue.message.includes('"' + key + '"');
+  });
+}
+// A validation report whose issues all lie outside the tool policy: the Agent's own
+// configuration is invalid, such as a plugin entry that fails its schema (finding 3045).
+// It is held as check gateway-config with the log line an embedded Gateway's hold writes
+// (finding 3043). The wrapper provides invalidOpenClawConfigurationLine.
+class GatewayConfigurationError extends Error {
+  constructor(issues) {
+    super(invalidOpenClawConfigurationLine("The OpenClaw Gateway did not start", issues));
+  }
+}
+function invalidGatewayConfiguration(stdout) {
+  let report;
   try {
-    const config = managedGatewayConfiguration(readOpenClawConfig(), admitted, Boolean(process.env.APP_SERVER_URL));
+    report = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  if (report?.valid !== false || !Array.isArray(report.issues) || report.issues.length === 0) return undefined;
+  return report.issues.some(concernsGatewayToolPolicy) ? undefined : new GatewayConfigurationError(report.issues);
+}
+function configureManagedGatewayTools(admitted, managedPluginTools) {
+  let refusal;
+  try {
+    const config = managedGatewayConfiguration(
+      readOpenClawConfig(), admitted, Boolean(process.env.APP_SERVER_URL), undefined, managedPluginTools,
+    );
     writeOpenClawConfig(config);
     const validation = pluginSpawnSync("node", ["/app/openclaw.mjs", "config", "validate", "--json"], {
       env: { ...process.env, OPENCLAW_CONFIG_READONLY: "1" },
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
     });
     if (validation.error === undefined && validation.status !== 0) {
-      lockRefusal = gatewayStateLockRefusal(validation.stdout);
+      const lockRefusal = gatewayStateLockRefusal(validation.stdout);
+      refusal = lockRefusal === undefined
+        ? invalidGatewayConfiguration(validation.stdout) : new GatewayStateLockError(lockRefusal);
     }
     if (validation.error !== undefined || validation.status !== 0 || JSON.parse(validation.stdout)?.valid !== true) {
       throw new GatewayToolPolicyError();
     }
   } catch {
-    throw lockRefusal === undefined ? new GatewayToolPolicyError() : new GatewayStateLockError(lockRefusal);
+    throw refusal ?? new GatewayToolPolicyError();
   }
 }
-// Holds either refusal of the tool policy step: the policy itself, or the Gateway state lock
-// that kept OpenClaw from reading the configuration it validates.
+// Holds each refusal of the tool policy step: the policy itself, the Gateway state lock that
+// kept OpenClaw from reading the configuration it validates, or an invalid setting outside
+// the policy.
 function holdGatewayToolPolicyFailure(error) {
   if (error instanceof GatewayStateLockError) {
     publishRuntimeFailure("gateway-state-lock", "UNAVAILABLE");
+  } else if (error instanceof GatewayConfigurationError) {
+    publishRuntimeFailure("gateway-config", "UNAVAILABLE");
   } else if (error instanceof GatewayToolPolicyError) {
     publishRuntimeFailure("gateway-tool-policy", "INCOMPATIBLE_RESPONSE");
   } else {

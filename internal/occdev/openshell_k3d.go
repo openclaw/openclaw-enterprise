@@ -57,8 +57,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if len(opts.ComposeArgs) != 0 {
 		return fmt.Errorf("the Kubernetes-only profile does not accept Compose options")
 	}
-	protectedEgress, err := r.protectedEgressSelection("kubernetes", sandboxDriver)
-	if err != nil {
+	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
 	databaseName, err := r.selectedDevelopmentDatabase("kubernetes")
@@ -95,15 +94,12 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err != nil {
 		return err
 	}
-	browserPort := 0
-	if sandboxDriver == "none" {
-		browserPort, err = positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
-		if err != nil {
-			return err
-		}
-		if browserPort == apiPort || browserPort == kubernetesPort {
-			return fmt.Errorf("browser, development API, and Kubernetes API ports must differ")
-		}
+	browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
+	if err != nil {
+		return err
+	}
+	if browserPort == apiPort || browserPort == kubernetesPort {
+		return fmt.Errorf("browser, development API, and Kubernetes API ports must differ")
 	}
 	if signIn == developmentSignInKeycloak && (browserPort == developmentKeycloakHostPort || apiPort == developmentKeycloakHostPort || kubernetesPort == developmentKeycloakHostPort) {
 		return fmt.Errorf("port 443 is reserved for Keycloak; browser, development API, and Kubernetes API ports must use other ports")
@@ -120,9 +116,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		SandboxNetworkPolicies:      networkPolicies,
 		SandboxNetworkPolicyCeiling: ceiling,
 		Version:                     3,
-		ProtectedEgress:             protectedEgress,
 		DatabaseName:                databaseName,
-		OpenShellHostGatewayIP:      r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"],
 		Repository:                  opts.Repository,
 		ComputeDriver:               "kubernetes",
 		SandboxDriver:               sandboxDriver,
@@ -138,6 +132,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
+	}
+	if sandboxDriver == "openshell" {
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
+		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
+		state.NativeAdminDomain = agentDomain
 	}
 	if signIn == developmentSignInKeycloak {
 		if err := checkDevelopmentKeycloakHostPort(fmt.Sprintf("127.0.0.1:%d", developmentKeycloakHostPort)); err != nil {
@@ -162,11 +161,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	for _, name := range required {
 		if _, err := exec.LookPath(name); err != nil {
 			return fmt.Errorf("%s is required on PATH", name)
-		}
-	}
-	if state.ProtectedEgress {
-		if err := r.checkProtectedOpenShellChart(ctx, state, openShellImages); err != nil {
-			return err
 		}
 	}
 	if err := r.selectImageEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
@@ -451,7 +445,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	return nil
 }
 
-// Install the interdependent platform releases before their final readiness gate.
+// Install the authenticated Gateway before the ordinary OCE release.
 // The caller owns cluster rollback, including a partially installed release.
 type developmentPlatformInputs struct {
 	openShell                                    *openShellDevelopmentAssets
@@ -463,11 +457,6 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
 		return err
 	}
-	if state.ProtectedEgress {
-		if err := r.prepareDevelopmentEgress(ctx, state); err != nil {
-			return err
-		}
-	}
 	if state.SandboxDriver == "openshell" {
 		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
 		if err := r.installOpenShellGateway(ctx, state, inputs.openShell, state.PlatformNamespace, timeout); err != nil {
@@ -475,11 +464,6 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 		}
 	} else {
 		fmt.Fprintf(r.opts.Out, "Installing OCE in Namespace %s...\n", state.PlatformNamespace)
-	}
-	if state.ProtectedEgress {
-		if err := r.readDevelopmentEgressKeyID(ctx, state); err != nil {
-			return err
-		}
 	}
 	statusProxySource, err := r.developmentStatusProxySource(ctx, state)
 	if err != nil {
@@ -807,18 +791,18 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		return err
 	}
 	values := map[string]any{
-		"images":       map[string]string{"controller": controllerImage},
-		"installation": map[string]string{"name": "Kubernetes development"},
-		"auth":         map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
-		"bootstrap":    map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
-		"database":     map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
-		"cluster":      map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
-		"api":          map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
-		"resources":    resources,
+		"images":         map[string]string{"controller": controllerImage},
+		"installation":   map[string]string{"name": "Kubernetes development"},
+		"auth":           map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
+		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
+		"database":       map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
+		"cluster":        map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
+		"api":            map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
+		"resources":      resources,
+		"gatewayRouting": map[string]any{"enabled": routing},
 	}
-	if state.ProtectedEgress {
+	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
-		values["egressAuthority"] = developmentEgressChartValues(state)
 	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
@@ -829,8 +813,6 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "gateway-api-key", gatewaySecret); err != nil {
 			return err
 		}
-		// Private Agent routing does not imply a published HTTPS Console. The
-		// OpenShell profile signs in through the loopback HTTP API instead.
 		if state.BrowserPort != 0 {
 			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
 			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
@@ -849,10 +831,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 				return err
 			}
 			values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
-			// OpenShell-owned Harnesses do not serve the native admin UI.
-			if state.SandboxDriver == "none" {
-				values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
-			}
+			values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
 		}
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 		if hostname := developmentRoutingHostname(state); hostname != "" {
@@ -867,26 +846,10 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := exclusiveWrite(valuesPath, valuesData, 0600); err != nil {
 		return err
 	}
-	// The protected Gateway needs the API's authority to become ready. Keep
-	// the worker from claiming bootstrap work until its access and Gateway are
-	// in place. Override only this release, not the saved steady-state values.
-	install := []string{"--install"}
-	if state.ProtectedEgress {
-		install = append(install, "--set", "worker.replicaCount=0")
-	}
-	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, install...); err != nil {
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, "--install"); err != nil {
 		return err
 	}
-	if err := r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout); err != nil {
-		return err
-	}
-	if !state.ProtectedEgress {
-		return nil
-	}
-	if err := r.waitProtectedOpenShell(ctx, state, timeout); err != nil {
-		return fmt.Errorf("wait for protected OpenShell Gateway rollout before starting worker: %w", err)
-	}
-	return r.helmUpgrade(ctx, state, valuesPath, timeout, "--set", "worker.replicaCount=1")
+	return r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout)
 }
 
 // helmUpgrade installs or upgrades the chart from one complete values file.

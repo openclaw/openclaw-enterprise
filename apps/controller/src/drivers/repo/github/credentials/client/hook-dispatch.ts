@@ -14,11 +14,7 @@ import {
   type RuntimeRepositoryBinding,
   type RuntimeRepositoryManifest,
 } from "./manifest.ts";
-import {
-  hasGitPushDestination,
-  isUnrelatedPushDestination,
-  selectGitPushDestination,
-} from "./targets.ts";
+import { isUnrelatedPushDestination, selectGitPushDestination } from "./targets.ts";
 
 function gitOutput(args: readonly string[], absent = false): string | undefined {
   const result = spawnSync("/usr/bin/git", args, {
@@ -73,7 +69,6 @@ async function checkPush(destination: string, input: Buffer): Promise<true | str
   const directory = setting("session");
   let manifest: RuntimeRepositoryManifest;
   let expectedGeneration: string | undefined;
-  let pinned: RuntimeRepositoryBinding | undefined;
   try {
     if (directory) {
       const configuration = await readClientConfiguration(directory);
@@ -104,17 +99,15 @@ async function checkPush(destination: string, input: Buffer): Promise<true | str
     }
     throw error;
   }
-  // An unrelated destination must not be rejected by an inherited pin.
-  if (!hasGitPushDestination(manifest, destination)) {
-    return true;
-  }
-  if (!directory) {
+  const binding = selectGitPushDestination(manifest, destination, () => {
+    if (directory) {
+      return undefined;
+    }
     if (manifest.generation !== expectedGeneration) {
       throw new Error("invalid-repository-selection");
     }
-    pinned = inheritedRepositoryBinding(manifest, process.env);
-  }
-  const binding = selectGitPushDestination(manifest, destination, pinned);
+    return inheritedRepositoryBinding(manifest, process.env);
+  });
   if (!binding || binding.client.pushRefAllowlist === undefined) {
     return true;
   }

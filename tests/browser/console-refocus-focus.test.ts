@@ -8,6 +8,7 @@ import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import {
   AGENT_READ,
   apiRequests,
+  denyRevisionRead,
   detailUrl,
   fileBrowser,
   grantMember,
@@ -20,9 +21,12 @@ import {
   secretOptionLabel,
   selectSecret,
   settledView,
+  trackSettledFetches,
   waitForEnabled,
+  waitForIdleFetches,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
+import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   focusedLabel,
   fulfillMethod,
@@ -31,14 +35,133 @@ import {
   refocusHeld,
   tagView,
   viewTag,
+  waitForFocusedLabel,
 } from "./console-refocus-helpers.mjs";
+import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { within } from "../helpers/wait-for.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { deleteRefused } from "../helpers/refusal-text.mjs";
+import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
+
+test("a pending sign-in keeps keyboard focus without taking it back after a refusal", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  for (const attempt of ["password", "provider", "move", "late OIDC"] as const) {
+    const provider = attempt === "provider";
+    const lateDiscovery = attempt === "late OIDC";
+    const { page } = await newPage(t, fixture, {
+      browser,
+      context: { viewport: provider ? { width: 390, height: 844 } : { width: 1440, height: 900 } },
+    });
+    const outsideOrigins: string[] = [];
+    await page.route("**/*", (route) => {
+      const origin = new URL(route.request().url()).origin;
+      if (origin === fixture.origin) {
+        return route.fallback();
+      }
+      outsideOrigins.push(origin);
+      return route.abort();
+    });
+    // Only discovery is simulated. The local Controller refuses GitHub start with no provider
+    // configured, and it rejects the wrong password through the real sign-in route.
+    await page.route("**/api/auth/providers", (route) =>
+      route.fulfill({ json: { data: { password: true, github: true }, meta: {} } }),
+    );
+    const discovery = lateDiscovery
+      ? await holdRequests(t, page, `${fixture.origin}/api/auth/providers`, {
+          once: true,
+          method: "GET",
+          fulfill: {
+            json: {
+              data: {
+                password: true,
+                github: true,
+                oidc: true,
+                oidcSignIn: {
+                  label: "Example SSO",
+                  authorizationUrl: "https://sso.example.invalid/authorize",
+                },
+              },
+              meta: {},
+            },
+          },
+        })
+      : null;
+    await page.goto(`${fixture.origin}/console/login`);
+    const submit = page.getByRole("button", { name: "Sign in", exact: true });
+    const github = page.getByRole("button", { name: "Continue with GitHub", exact: true });
+    const password = page.getByLabel("Password", { exact: true });
+    if (discovery) {
+      await discovery.requested;
+    } else {
+      await github.waitFor();
+    }
+    await page.getByLabel("Email", { exact: true }).fill("synthetic@example.invalid");
+    await password.fill("not-the-password");
+    await page.keyboard.press("Tab");
+    if (provider) {
+      await page.keyboard.press("Tab");
+    }
+    const trigger = provider ? github : submit;
+    const sibling = provider ? submit : github;
+    assert.equal(await hasFocus(trigger), true, `${attempt}: keyboard reaches the control`);
+
+    const path = provider ? "/api/auth/providers/github/start" : "/api/auth/sign-in/email";
+    const url = `${fixture.origin}${path}`;
+    const requests = apiRequests(page, fixture.origin);
+    const held = await holdRequests(t, page, url, {
+      once: true,
+      method: "POST",
+      afterServer: true,
+    });
+    const answered = responseTo(page, "POST", url);
+    await page.keyboard.press("Enter");
+    const upstream = await held.requested;
+    assert.ok(upstream, "the real Controller must answer before the hold");
+    const expectedStatus = provider ? 403 : 401;
+    assert.equal(upstream.status(), expectedStatus);
+    assert.equal(await hasFocus(trigger), true, `${attempt}: focus stays during the request`);
+    const oidc = page.getByRole("button", { name: "Continue with Example SSO", exact: true });
+    if (discovery) {
+      // Discovery can add a provider while a password request is already pending.
+      discovery.release();
+      await oidc.waitFor();
+      assert.notEqual(await oidc.getAttribute("disabled"), null);
+      assert.equal(await hasFocus(trigger), true);
+    }
+    assert.equal(await trigger.getAttribute("aria-disabled"), "true");
+    assert.notEqual(await sibling.getAttribute("disabled"), null);
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Space");
+    if (attempt === "move") {
+      await page.keyboard.press("Shift+Tab");
+      assert.equal(await hasFocus(password), true);
+    }
+
+    held.release();
+    assert.equal((await answered).status(), expectedStatus);
+    const refusal = provider
+      ? "GitHub sign-in is unavailable. Try again or use your password."
+      : "Could not sign in. Check your email and password.";
+    await page.getByText(refusal, { exact: true }).waitFor();
+    assert.equal(await hasFocus(attempt === "move" ? password : trigger), true);
+    assert.equal(await trigger.isEnabled(), true);
+    assert.equal(await sibling.isEnabled(), true);
+    if (discovery) {
+      assert.equal(await oidc.isEnabled(), true);
+    }
+    assert.equal(
+      requests.filter((request) => request.method === "POST" && request.path === path).length,
+      1,
+    );
+    assert.deepEqual(outsideOrigins, []);
+    await page.close();
+  }
+});
 
 // A navigation that holds the shown page keeps focus on its heading (findings 1626, 1636), but a
 // refocus recheck does not: the list stays inert while we check access, then the reader can
@@ -209,13 +332,12 @@ test("refocusing an Agents list that rebuilds keeps focus on the row's icon", as
     .getByRole("button", { name: "Delete Regranted Row", exact: true });
   await waitForEnabled(remove);
   await remove.click();
-  await page
-    .getByRole("dialog", { name: "Delete Regranted Row?" })
-    .getByRole("button", { name: "Permanently delete Agent", exact: true })
-    .click();
+  await confirmAgentAction(page, "Delete Regranted Row?", "Delete");
   const alert = page.getByRole("alert").filter({ hasText: deleteRefused("Regranted Row") });
   await alert.waitFor();
-  assert.equal(await hasFocus(remove), true);
+  // Focus returns to Delete in the confirmation's close event, a task after the alert renders
+  // (finding 3112).
+  await waitForFocusedLabel(page, "Delete Regranted Row");
   assert.equal(await remove.getAttribute("aria-disabled"), "true");
   await tagView(page);
   grantMember(fixture, member, [["delete", "agent"]]);
@@ -294,13 +416,10 @@ test("refocusing after a refused row's Agent was deleted elsewhere drops the ref
   const stop = view.getByRole("button", { name: "Stop Removed Row", exact: true });
   await waitForEnabled(stop);
   await stop.click();
-  await page
-    .getByRole("dialog", { name: "Stop Removed Row?" })
-    .getByRole("button", { name: "Stop Agent", exact: true })
-    .click();
+  await confirmAgentAction(page, "Stop Removed Row?", "Stop");
   const alert = page.getByRole("alert").filter({ hasText: message });
   await alert.waitFor();
-  assert.equal(await hasFocus(stop), true);
+  await waitForFocusedLabel(page, "Stop Removed Row");
   // Another session deletes the Agent, and its deletion completes.
   const { state } = kept;
   assert.ok(state, "the fixture's State");
@@ -409,11 +528,25 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     holdSession();
     t.after(() => releaseSession());
     let sessionReads = 0;
+    const readWaiters = new Map<number, () => void>();
     await page.route("**/api/auth/session", async (route) => {
       sessionReads += 1;
+      readWaiters.get(sessionReads)?.();
       await sessionHeld;
       await route.fallback();
     });
+    // The page holds its view inert as the recheck starts, before the recheck's session read
+    // leaves the browser and reaches the route above. So the held view does not prove the read
+    // was counted yet (finding 3119): wait for the read itself, then check it was the only one.
+    const sessionReadsReach = async (count: number, message: string) => {
+      if (sessionReads < count) {
+        await within(
+          new Promise<void>((resolve) => readWaiters.set(count, resolve)),
+          () => `${message} (session reads so far: ${sessionReads})`,
+        );
+      }
+      assert.equal(sessionReads, count, message);
+    };
     const focusIn = () =>
       page.evaluate(() => {
         const active = globalThis.document.activeElement;
@@ -449,7 +582,7 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     // A refocus that no Tab started is the reader coming back: it rechecks and holds the page.
     await refocus(page);
     await page.locator(heldView).waitFor();
-    assert.equal(sessionReads, 1);
+    await sessionReadsReach(1, "a refocus no Tab started rechecks");
     releaseSession();
     await page.locator(settledView).waitFor();
 
@@ -461,7 +594,7 @@ for (const view of ["Agent page", "Create Agent"] as const) {
     await page.evaluate(() => globalThis.dispatchEvent(new Event("blur")));
     await refocus(page);
     await page.locator(heldView).waitFor();
-    assert.equal(sessionReads, 2, "a return from a blur no Tab started rechecks");
+    await sessionReadsReach(2, "a return from a blur no Tab started rechecks");
     releaseSession();
     await page.locator(settledView).waitFor();
 
@@ -473,12 +606,125 @@ for (const view of ["Agent page", "Create Agent"] as const) {
       await new Promise((resolve) => setTimeout(resolve, 10_500));
       await page.keyboard.press("Tab");
       await page.locator(heldView).waitFor();
-      assert.equal(sessionReads, 3, "a return after the lap window rechecks");
+      await sessionReadsReach(3, "a return after the lap window rechecks");
       releaseSession();
       await page.locator(settledView).waitFor();
     }
+    // Each stage's exact count can absorb a late duplicate read from the stage before it, and
+    // the last stage has no stage after it: once the last recheck has settled, no further
+    // session read has been sent (finding 3120).
+    assert.equal(
+      sessionReads,
+      view === "Agent page" ? 3 : 2,
+      "the last recheck sends no duplicate session read",
+    );
   });
 }
+
+test("a session reply missing its binding blocks private reads until Retry", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Session binding");
+  const agentName = "Session binding Agent";
+  await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
+  const { page } = await newPage(t, fixture, { browser });
+  const agentLink = page.getByRole("link", { name: agentName, exact: true });
+  const account = page.locator(".account-toggle");
+  const sessionPath = "/api/auth/session";
+  const agentsPath = `/namespaces/${namespace.id}/agents`;
+  const requests = apiRequests(page, fixture.origin);
+  let genuineBinding: string | undefined;
+  await page.route(
+    `**${sessionPath}`,
+    async (route) => {
+      const actual = await route.fetch();
+      assert.equal(actual.status(), 200);
+      const payload: unknown = await actual.json();
+      assert.ok(payload !== null && typeof payload === "object" && "data" in payload);
+      const data = payload.data;
+      assert.ok(data !== null && typeof data === "object" && "sessionKey" in data);
+      const { sessionKey, ...withoutBinding } = data;
+      assert.ok(typeof sessionKey === "string" && sessionKey.length > 0);
+      genuineBinding = sessionKey;
+      await route.fulfill({
+        response: actual,
+        json: { ...payload, data: withoutBinding },
+      });
+    },
+    { times: 1 },
+  );
+
+  // Sign in through the fixture on a fresh tab. Only the first Console session read is malformed.
+  const firstSession = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === sessionPath,
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  assert.equal((await firstSession).status(), 200);
+  await page.getByRole("heading", { name: "Session unavailable", exact: true }).waitFor();
+  assert.equal(await account.count(), 0);
+  assert.equal(await agentLink.count(), 0);
+  assert.equal(
+    requests.some(({ path }) => path.startsWith("/namespaces") || path === "/observability"),
+    false,
+    "malformed admission sends no private reads",
+  );
+
+  const recoveredSession = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === sessionPath,
+  );
+  const namespaceRead = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === "/namespaces",
+  );
+  const agentRead = page.waitForResponse((result) => new URL(result.url()).pathname === agentsPath);
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  assert.equal((await recoveredSession).status(), 200);
+  for (const read of [await namespaceRead, await agentRead]) {
+    assert.equal(read.status(), 200);
+    assert.ok(
+      genuineBinding && read.request().headers()["x-occ-session-key"] === genuineBinding,
+      "Retry pins the genuine session binding before requesting private data",
+    );
+  }
+  await agentLink.waitFor();
+  assert.ok((await account.innerText()).includes(fixture.credentials.email));
+});
+
+test("recovery-only discovery keeps focus on the empty sign-in form", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  const providersPath = "/api/auth/providers";
+  const discovery = await holdRequests(t, page, `**${providersPath}`, {
+    method: "GET",
+    once: true,
+    fulfill: {
+      status: 200,
+      json: {
+        data: { github: true, google: false, password: false, sessionBinding: true },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      },
+    },
+  });
+  const response = responseTo(page, "GET", `${fixture.origin}${providersPath}`);
+  await page.goto(`${fixture.origin}/console/login`);
+  await discovery.requested;
+  const email = page.getByLabel("Email", { exact: true });
+  await email.waitFor();
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(email), true);
+  assert.equal(await email.inputValue(), "");
+
+  discovery.release();
+  assert.equal((await response).status(), 200);
+  await page.getByRole("button", { name: "Continue with GitHub", exact: true }).waitFor();
+  assert.equal(await hasFocus(email), true);
+  await page.getByText("Use the recovery account's email.", { exact: true }).waitFor();
+  await page.keyboard.type("recovery@example.com");
+  assert.equal(await email.inputValue(), "recovery@example.com");
+  assert.equal(
+    requests.some(({ method, path }) => method === "POST" && path === "/api/auth/sign-in/email"),
+    false,
+  );
+});
 
 // Initial admission allows Agent metadata without Configuration read. Refocus must preserve
 // that same partial view instead of replacing the accessible Agent with a page-wide denial.
@@ -525,6 +771,52 @@ test("mounted Agent refocus preserves a stable Configuration denial", async (t) 
   }
 });
 
+test("mounted Agent refocus cannot infer revision omission from a malformed page", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revision refocus");
+  const agent = await fixture.createAgent(namespace.id, "Revision Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  denyRevisionRead(fixture, namespace, active.revision);
+
+  const { page } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id).href);
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
+  const tabs = page.locator(".agent-tabs");
+  await tabs.waitFor();
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+
+  // The real view has already admitted the Agent with a restricted active revision. A malformed
+  // terminal list during refocus cannot prove that this version is still omitted.
+  const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  const requests = apiRequests(page, fixture.origin);
+  const list = await holdRequests(t, page, `**${revisionsPath}`, {
+    once: true,
+    method: "GET",
+    fulfill: {
+      status: 200,
+      json: { data: [null], meta: { requestId: "req_test_revision_refocus", nextCursor: null } },
+    },
+  });
+  const response = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === revisionsPath,
+  );
+  await refocus(page);
+  await list.requested;
+  list.release();
+  assert.equal((await response).status(), 200);
+
+  await page.getByRole("heading", { name: "Request unavailable", exact: true }).waitFor();
+  assert.equal(await tabs.count(), 0);
+  const snapshotPath = `${revisionsPath}/${active.revision.id}`;
+  assert.equal(
+    requests.some((request) => request.path.split("?")[0] === snapshotPath),
+    false,
+    "the malformed page never triggers a read of the restricted revision",
+  );
+});
+
 for (const revoked of ["configuration", "agent"] as const) {
   test(`Credentials preflight scrubs bindings when ${revoked} read is revoked`, async (t) => {
     const { fixture, namespace } = await createReadyConsoleNamespace(
@@ -549,28 +841,8 @@ for (const revoked of ["configuration", "agent"] as const) {
     const agent = await fixture.createAgent(
       namespace.id,
       "Credential refocus Agent",
-      nativeValues("binding-review", {
-        harnessId: "codex",
-        channels: {
-          slack: {
-            enabled: true,
-            mode: "socket",
-            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-            dmPolicy: "allowlist",
-            groupPolicy: "allowlist",
-            allowFrom: ["U123"],
-            channels: { C123: { requireMention: true } },
-          },
-        },
-      }),
-      {
-        executionMode: "dedicated",
-        secretBindings: {
-          SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
-          SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
-        },
-      },
+      slackAgentValues("binding-review"),
+      slackTokenBindings(appSecret, botSecret),
     );
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);

@@ -125,7 +125,7 @@ export async function startRefusedCandidate(
         throw new RepositoryGitSenderUnqualifiedError();
       }
       if (refuse === "undeliverable" && candidatePasses > 1 && refusing()) {
-        throw new RepositoryGitProfileUnsupportedError();
+        throw new RepositoryGitProfileUnsupportedError(1);
       }
       if (refuse === "retried" && candidatePasses > 1) {
         throw new Error("Kubernetes API temporarily unavailable");

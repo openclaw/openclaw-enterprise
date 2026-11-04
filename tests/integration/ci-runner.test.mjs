@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -619,6 +619,27 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
 
   const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
   delete manifest.lanes.lane.requiredEnv;
+  manifest.lanes.lane.files[0].requiredEnv = ["CI_RUNNER_FILE_INPUT"];
+  await writeJson(join(root, "manifest.json"), manifest);
+  const missingFileEnv = run(root, [
+    "run",
+    "lane",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/lane.jsonl",
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(missingFileEnv.status, 1);
+  summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(
+    summary.issues.map((entry) => [entry.code, entry.env]),
+    [["missing-env", "CI_RUNNER_FILE_INPUT"]],
+  );
+  delete manifest.lanes.lane.files[0].requiredEnv;
   await writeJson(join(root, "manifest.json"), manifest);
   const selected = run(root, [
     "run",
@@ -642,6 +663,12 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
   ]);
+  const suiteSkip = summary.issues.find((entry) => entry.name === "skipped suite");
+  assert.equal(suiteSkip.file, "tests/integration/skips.test.mjs");
+  assert.equal(suiteSkip.source.file, suiteSkip.file);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.line) && suiteSkip.source.line > 0);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.column) && suiteSkip.source.column > 0);
+  assert.equal(suiteSkip.source.nesting, 0);
   // Every issue is named in the job log, which keeps every attempt.
   for (const line of [
     "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
@@ -650,6 +677,48 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected suite did not run its tests: skipped suite",
   ]) {
     assert.ok(selected.stderr.split("\n").includes(line), line);
+  }
+
+  // Filesystem traversal follows the symlink before '..'; lexical normalization
+  // instead points at the unrelated in-tree helper and must not supply a source.
+  const external = await temporaryDirectory(t, "ci-runner-source-");
+  await mkdir(join(external, "deep"));
+  await symlink(join(external, "deep"), join(root, "link"), "dir");
+  await writeFile(join(root, "helper.mjs"), "// Not the source of the skipped suite.\n");
+  await writeFile(
+    join(external, "helper.mjs"),
+    'describe("external skipped suite", { skip: true }, () => {});\n',
+  );
+  for (const filename of [`${root}/link/../helper.mjs`, "link/../helper.mjs"]) {
+    await writeFile(
+      join(root, "tests/integration/skips.test.mjs"),
+      [
+        'import { readFileSync } from "node:fs";',
+        'import { describe } from "node:test";',
+        'import { runInNewContext } from "node:vm";',
+        `const filename = ${JSON.stringify(filename)};`,
+        'runInNewContext(readFileSync(filename, "utf8"), { describe }, { filename });',
+      ].join("\n"),
+    );
+    const escaped = run(root, [
+      "run",
+      "lane",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/lane.jsonl",
+      "--results",
+      resultsPath,
+    ]);
+    const escapedSummary = JSON.parse(await readFile(resultsPath, "utf8"));
+    const escapedSkip = escapedSummary.issues.find(
+      (entry) => entry.name === "external skipped suite",
+    );
+    assert.equal(escaped.status, 1);
+    assert.equal(escapedSkip.code, "unexpected-skip");
+    assert.equal(escapedSkip.source, undefined, filename);
   }
 });
 
@@ -4883,14 +4952,16 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
 test("aggregate accepts a lane as a singleton target and rejects tampered result evidence", async (t) => {
   const root = await fixture(t);
   const sha = currentSha();
+  const file = "tests/integration/model.test.mjs";
+  const name = "real model case";
   await writeJson(join(root, "manifest.json"), {
     version: 1,
     lanes: {
       "docker-model": {
         files: [
           {
-            path: "tests/integration/model.test.mjs",
-            expectedTests: ["real model case"],
+            path: file,
+            expectedTests: [name],
           },
         ],
       },
@@ -4909,7 +4980,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     files: [],
   });
 
-  const tampered = run(root, [
+  const aggregateArgs = [
     "aggregate",
     "docker-model",
     "--manifest",
@@ -4918,7 +4989,8 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     root,
     "--results-dir",
     "results",
-  ]);
+  ];
+  const tampered = run(root, aggregateArgs);
   assert.equal(tampered.status, 1);
   let summary = JSON.parse(tampered.stdout);
   assert.deepEqual(
@@ -4926,33 +4998,32 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     ["missing-lane-evidence"],
   );
 
-  await writeJson(join(root, "results/docker-model.json"), {
-    version: 1,
-    command: "run",
-    sourceSha: sha,
-    lane: "docker-model",
-    status: "passed",
-    exitCode: 0,
-    files: [
-      {
-        path: "tests/integration/model.test.mjs",
-        status: "passed",
-        counts: { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 },
-        tests: [{ name: "real model case", status: "passed" }],
-      },
-    ],
-  });
-
-  const passed = run(root, [
-    "aggregate",
+  // Produce full evidence with a required case and an optional nested case.
+  await writeFile(
+    join(root, file),
+    [
+      'import test from "node:test";',
+      'await test("real model case", async (t) => {',
+      '  await t.test("optional nested case", () => {});',
+      "});",
+      "",
+    ].join("\n"),
+  );
+  const produced = run(root, [
+    "run",
     "docker-model",
     "--manifest",
     "manifest.json",
     "--root",
     root,
-    "--results-dir",
-    "results",
+    "--state",
+    "state/docker-model.json",
+    "--results",
+    "results/docker-model.json",
   ]);
+  assert.equal(produced.status, 0, produced.stderr);
+
+  const passed = run(root, aggregateArgs);
   assert.equal(passed.status, 0, passed.stderr);
   summary = JSON.parse(passed.stdout);
   assert.equal(summary.status, "passed");
@@ -4960,6 +5031,71 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     summary.lanes.map((entry) => entry.lane),
     ["docker-model"],
   );
+
+  const resultPath = join(root, "results/docker-model.json");
+  const evidence = JSON.parse(await readFile(resultPath, "utf8"));
+  assert.equal(evidence.scope, "full");
+  const fileEvidence = evidence.files[0];
+  const required = fileEvidence.tests.find((testCase) => testCase.name === name);
+  const optional = fileEvidence.tests.find((testCase) => testCase.name === "optional nested case");
+  assert.equal(required?.status, "passed");
+  assert.equal(optional?.status, "passed");
+
+  const skipped = { ...required, status: "skipped" };
+  const unpassed = (status) => ({
+    code: "expected-test-not-passed",
+    message: `expected test did not pass: ${name}`,
+    file,
+    name,
+    status,
+  });
+  const marker = "untrusted-case-status-marker";
+  const invalidStatuses = [
+    ["string", marker],
+    ["object", { text: marker }],
+    ["array", [marker]],
+  ];
+
+  // Keep the passing rollups and vary the individual case evidence.
+  for (const [label, cases, issues] of [
+    ["required skip", [skipped], [unpassed("skipped")]],
+    ["skip before duplicate pass", [skipped, required], [unpassed("skipped")]],
+    ["pass before duplicate skip", [required, skipped], [unpassed("skipped")]],
+    ["both duplicates pass", [required, required], []],
+    ["missing status before duplicate pass", [{ name }, required], [unpassed("invalid")]],
+    ...invalidStatuses.map(([type, status]) => [
+      `invalid ${type} status`,
+      [{ ...required, status }],
+      [unpassed("invalid")],
+    ]),
+    [
+      "null row in valid JSON",
+      [required, null],
+      [
+        {
+          code: "invalid-test-evidence",
+          message: "test evidence contains an invalid case entry",
+          file,
+        },
+      ],
+    ],
+  ]) {
+    await t.test(label, async () => {
+      await writeJson(resultPath, {
+        ...evidence,
+        files: [{ ...fileEvidence, tests: [optional, ...cases] }],
+      });
+      const result = run(root, aggregateArgs);
+      assert.ok(
+        !result.stdout.includes(marker) && !result.stderr.includes(marker),
+        "aggregate printed untrusted case status",
+      );
+      assert.equal(result.status, issues.length === 0 ? 0 : 1, result.stdout);
+      const aggregate = JSON.parse(result.stdout);
+      assert.equal(aggregate.status, issues.length === 0 ? "passed" : "failed");
+      assert.deepEqual(aggregate.issues, issues);
+    });
+  }
 });
 
 test("aggregate fails when a supplied non-lane need failed even if lane artifacts pass", async (t) => {
@@ -5030,6 +5166,32 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       'import test from "node:test";',
       'test("measures", (t) => {',
       ...[
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: 1234,
+          transcript: "secretauthvalue-transcript",
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "secretauthvalue-stage",
+          outcome: "passed",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "secretauthvalue-outcome",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: "secretauthvalue-time",
+        }),
+
         measurement({
           kind: "kubelet-volume-refresh",
           volume: "secret",
@@ -5166,6 +5328,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(summary.files[0].measurements, [
+    { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
     {
       kind: "kubelet-volume-refresh",
       volume: "secret",
