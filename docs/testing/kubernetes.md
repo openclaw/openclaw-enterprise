@@ -80,10 +80,10 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
   node --test tests/integration/production-network-access.test.mjs
 ```
 
-This needs no database or model credential. It checks the chart's actual
-NetworkPolicies with reachable controls. It does not prove controller startup,
-database authentication, provider behavior, or a production Helm installation.
-Policies for other releases are outside the chart's selectors.
+No database or model credential is required. The suite checks rendered chart and
+quickstart NetworkPolicies with reachable allowed/denied controls. It does not prove
+controller startup, database authentication, provider behavior, or a production Helm
+installation. Other releases remain outside the selectors.
 
 ## Kubernetes model turns and Secrets
 

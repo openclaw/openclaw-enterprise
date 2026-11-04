@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   createKubernetesClient,
   kubectlArguments,
+  kubernetesHash,
   validateExplicitK3dLoopbackContext,
 } from "./kubernetes-real.mjs";
 import { kubectlGetJson } from "./kubernetes-api-read.mjs";
@@ -226,11 +228,13 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       ),
     );
   let envoyEnabled = false;
-  async function controls(names) {
-    for (const source of ["operator", "api"]) {
-      const selected = names.filter(
-        (name) => (envoyEnabled && name === "envoy" ? "api" : "operator") === source,
-      );
+  async function controls(names, controlSource) {
+    for (const source of controlSource ? [controlSource] : ["operator", "api"]) {
+      const selected = controlSource
+        ? names
+        : names.filter(
+            (name) => (envoyEnabled && name === "envoy" ? "api" : "operator") === source,
+          );
       if (!selected.length) {
         continue;
       }
@@ -245,7 +249,171 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     }
   }
 
+  let managementTenants;
   return {
+    async installOpenShellManagement(tenantIndex) {
+      if (!managementTenants) {
+        // The public quickstart fixes these names. Never adopt a namespace from another run.
+        const system = "oce-system";
+        const envoy = "envoy-gateway-system";
+        for (const name of [system, envoy]) {
+          await kubectl("create", "namespace", name);
+          ownedNamespaces.push(name);
+        }
+        const api = baseline.find(
+          (object) =>
+            object?.kind === "Service" && object.metadata.name === "openclaw-enterprise-api",
+        );
+        assert.ok(api, "the chart must provide the public quickstart API Service");
+        const supervisor = {
+          "openshell.ai/managed-by": "openshell",
+          "openshell.ai/boundary-role": "supervisor",
+        };
+        const management = {
+          "app.kubernetes.io/name": "openshell",
+          "app.kubernetes.io/instance": "openshell-gateway",
+        };
+        const service = (name, space, labels, port, targetPort = port) => ({
+          apiVersion: "v1",
+          kind: "Service",
+          metadata: { name, namespace: space },
+          spec: { selector: labels, ports: [{ port, targetPort, protocol: "TCP" }] },
+        });
+        const policy = (name, space, spec) => ({
+          apiVersion: "networking.k8s.io/v1",
+          kind: "NetworkPolicy",
+          metadata: { name, namespace: space },
+          spec,
+        });
+        const resources = [
+          service("openshell-gateway", system, management, 8080),
+          service("openclaw-enterprise-api", system, api.spec.selector, 8080),
+          service("occ-gateway-362888b35fce", envoy, { app: "quickstart-proxy" }, 443, 10443),
+          service("envoy-gateway", envoy, { app: "quickstart-envoy-controller" }, 18000),
+        ];
+        const managementSources = {
+          management: { namespace: system, labels: management },
+          managementinitialization: { namespace: system, labels: sources.initialization.labels },
+          ordinary: { namespace, labels: { app: "ordinary-tenant" } },
+          foreignsupervisor: { namespace: envoyNamespace, labels: supervisor },
+        };
+        for (const component of ["api", "worker"]) {
+          const labels = sources[component].labels;
+          managementSources[`management${component}`] = { namespace: system, labels };
+          // cluster-installation.md supplies this source-side prerequisite; the renderer
+          // under test must supply ingress. It must not be masked by a fixture ingress grant.
+          resources.push(
+            policy(`management-${component}-egress`, system, {
+              podSelector: { matchLabels: labels },
+              policyTypes: ["Egress"],
+              egress: [
+                {
+                  to: [{ podSelector: { matchLabels: management } }],
+                  ports: [{ protocol: "TCP", port: 8080 }],
+                },
+              ],
+            }),
+          );
+        }
+        // An additive source grant must not bypass the destination's port restriction.
+        // This probe-only grant makes the worker's 8081 denial test ingress itself.
+        resources.push(
+          policy("verify-management-ingress-port", system, {
+            podSelector: { matchLabels: managementSources.managementworker.labels },
+            policyTypes: ["Egress"],
+            egress: [
+              {
+                to: [{ podSelector: { matchLabels: management } }],
+                ports: [{ protocol: "TCP", port: 8081 }],
+              },
+            ],
+          }),
+        );
+        managementTenants = [];
+        for (const [index, space] of [namespace, destinations].entries()) {
+          const id = `ns_${randomUUID()}`;
+          const agent = `agt_${randomUUID()}`;
+          const labels = {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise",
+            "openclaw.dev/agent": agent,
+            "openclaw.dev/workload-role": "gateway",
+          };
+          await kubectl("label", "namespace", space, `openclaw.dev/namespace=${id}`);
+          managementTenants.push({ namespace: space, id, agent });
+          managementSources[`supervisor${index}`] = { namespace: space, labels: supervisor };
+          managementSources[`gateway${index}`] = { namespace: space, labels };
+          resources.push(
+            service(`gateway-${kubernetesHash(agent)}`, space, labels, 8080),
+            policy("allow-dns", space, {
+              podSelector: { matchLabels: { "openclaw.dev/network-profile": "broad-egress-v1" } },
+              policyTypes: ["Egress"],
+              egress: [
+                {
+                  to: [
+                    {
+                      namespaceSelector: {
+                        matchLabels: { "kubernetes.io/metadata.name": "kube-system" },
+                      },
+                    },
+                  ],
+                  ports: [
+                    { protocol: "UDP", port: 53 },
+                    { protocol: "TCP", port: 53 },
+                  ],
+                },
+              ],
+            }),
+          );
+        }
+        await Promise.all([
+          pod("quickstart-proxy", envoy, { app: "quickstart-proxy" }, 10443),
+          pod("quickstart-envoy-controller", envoy, { app: "quickstart-envoy-controller" }, 18000),
+          ...Object.entries(managementSources).map(async ([name, source]) => {
+            sources[name] = source;
+            const host = await pod(name, source.namespace, source.labels, 8080);
+            if (name === "management") {
+              targets.management = { host, port: 8080 };
+              targets.managementWrongPort = { host, port: 8081 };
+            }
+          }),
+        ]);
+        // Prove every source reaches both real listeners before adding policies. The
+        // existing suite's policies must not make a later denial pass accidentally.
+        await Promise.all(
+          Object.keys(managementSources).map((source) =>
+            controls(["management", "managementWrongPort"], source),
+          ),
+        );
+        await apply(resources);
+      }
+      const tenant = managementTenants[tenantIndex];
+      const { stdout } = await execute(
+        "python3",
+        [
+          fileURLToPath(
+            new URL(
+              "../../docs/snippets/openshell-quickstart/kubernetes/service-policies.py",
+              import.meta.url,
+            ),
+          ),
+          "--tenant",
+          tenant.namespace,
+          "--namespace-id",
+          tenant.id,
+          "--agent-id",
+          tenant.agent,
+        ],
+        {
+          env: {
+            ...process.env,
+            KUBECONFIG: selection.kubeconfigPath,
+            CONTEXT: selection.kubernetesContext,
+          },
+          timeout: 30_000,
+        },
+      );
+      await apply(JSON.parse(stdout).items);
+    },
     async installPublicReaderRevisions() {
       const address = "10.43.0.19";
       const peer = { namespace: destinations, podLabels: { app: "public-reader" }, address };
@@ -350,9 +518,9 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       );
       envoyEnabled = phase === "optional";
     },
-    async verify({ source, allow = [], deny = [] }) {
+    async verify({ source, allow = [], deny = [], controlSource }) {
       const names = [...allow, ...deny];
-      await controls(names);
+      await controls(names, controlSource);
       let consecutive = 0;
       let last;
       await waitFor(
@@ -376,7 +544,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
         t.diagnostic(`${source}: last connection results ${JSON.stringify(last)}`);
         throw error;
       });
-      await controls(names);
+      await controls(names, controlSource);
       t.diagnostic(`${source}: allow [${allow.join(", ")}]; deny [${deny.join(", ")}]`);
     },
   };

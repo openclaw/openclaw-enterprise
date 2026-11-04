@@ -94,5 +94,49 @@ test(
       });
       await access.verify({ source: "oldreader", deny: ["publicReader", "publicReaderWrongPort"] });
     });
+
+    await t.test(
+      "the public OpenShell quickstart preserves scoped management access across tenants",
+      async () => {
+        // Real listeners, Services, renderer output and CNI enforce this boundary. These
+        // probes do not run OpenShell, an Agent lifecycle, or a model turn.
+        await access.installOpenShellManagement(0);
+        const ports = {
+          allow: ["management"],
+          deny: ["managementWrongPort"],
+          controlSource: "management",
+        };
+        // Observe isolation before checking grants so policy propagation cannot make
+        // an unrestricted connection look like a successful renderer allowance. The
+        // same-release initialization Pod must not inherit the API/worker grant.
+        for (const source of [
+          "ordinary",
+          "foreignsupervisor",
+          "supervisor1",
+          "managementinitialization",
+        ]) {
+          await access.verify({
+            source,
+            deny: ["management", "managementWrongPort"],
+            controlSource: "management",
+          });
+        }
+        for (const source of ["supervisor0", "gateway0", "managementapi", "managementworker"]) {
+          await access.verify({ source, ...ports });
+        }
+
+        // Wait for the second tenant's grant before rechecking the first. An overwritten
+        // policy must not pass while the CNI still serves the previous policy.
+        await access.installOpenShellManagement(1);
+        for (const source of ["supervisor1", "gateway1", "supervisor0", "gateway0"]) {
+          await access.verify({ source, ...ports });
+        }
+        await access.verify({
+          source: "foreignsupervisor",
+          deny: ["management"],
+          controlSource: "management",
+        });
+      },
+    );
   },
 );
