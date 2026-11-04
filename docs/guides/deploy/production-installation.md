@@ -425,13 +425,15 @@ binds, reports `Prepared bootstrap volume claim ... with UID/GID 1000 mode 0700.
 and retains failed Pods. If policy forbids the Pod, have the storage administrator
 prepare the same root state.
 
-[Prepare to record the initialization Job UID](production-handoff.md#record-the-initialization-job-for-handoff), then install once:
+Exclude competing installs, upgrades and Job replacements. Use the CLI matching this chart's
+source revision. [Keep the receipt for handoff](production-handoff.md#record-the-initialization-job-for-handoff), then install once:
 
 ```bash
-helm install oce deploy/helm/openclaw-enterprise \
-  --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
-  --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
-  --wait --timeout 5m
+INSTALL_RECEIPT_DIRECTORY="$OCC_INPUT_DIRECTORY/install-receipt"
+occ installation install --release oce --chart deploy/helm/openclaw-enterprise \
+  --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  --kube-namespace openclaw-system --values "$OCC_INPUT_DIRECTORY/values.yaml" \
+  --receipt "$INSTALL_RECEIPT_DIRECTORY" --wait-timeout 5m
 ```
 
 After a lost response or refused release name, [resume this installation](production-handoff.md#resume-an-installation-in-progress).
@@ -439,8 +441,9 @@ Do not retry or switch to upgrade. An unused release name does not prove the dat
 
 For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
-verify its receipt, then use `oci://ghcr.io/openclaw/charts/openclaw-enterprise`
-with `--version "$OCE_VERSION"`.
+verify its publication receipt, pull the exact chart version locally, and pass
+that local chart archive to `--chart`. The installer freezes local chart files;
+it does not resolve a mutable remote chart reference.
 
 Helm owns migration and bootstrap ordering through its initialization hook.
 Readiness covers the API and worker probes, not authenticated API access, Agent
