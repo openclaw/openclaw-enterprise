@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { cp, mkdir, copyFile, rm, readFile, writeFile, readdir } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
@@ -46,14 +47,30 @@ for (const [name, file] of [
 
 // Version the entire static module graph so an existing rehearsal browser cannot
 // mix cached Console/preset modules with a newly built Storybook manager.
+const fixtureSource = new URL("./public/", import.meta.url);
 const fixtureAssets = new URL("./dist/assets/storybook-fixtures/", import.meta.url);
 await rm(fixtureAssets, { recursive: true, force: true });
-await cp(new URL("./public/", import.meta.url), fixtureAssets, { recursive: true });
+await cp(fixtureSource, fixtureAssets, {
+  recursive: true,
+  filter: (path) => !path.endsWith(".mts"),
+});
+for (const path of await readdir(fixtureSource, { recursive: true })) {
+  if (!path.endsWith(".mts")) {
+    continue;
+  }
+  const source = await readFile(new URL(`./${path}`, fixtureSource), "utf8");
+  const output = new URL(`./${path.replace(/\.mts$/, ".mjs")}`, fixtureAssets);
+  // A generated module must never replace an authored fixture at the same URL.
+  await writeFile(output, stripTypeScriptTypes(source), { flag: "wx" });
+}
 // Use the production loader and shell renderer; only resource/API state is simulated.
 const theme = await loadConsoleTheme(
   process.env.OCC_CONSOLE_THEME_DIR ??
     fileURLToPath(new URL("../../deploy/examples/console-theme/", import.meta.url)),
 );
+if (theme === undefined) {
+  throw new Error("Storybook requires a Console theme.");
+}
 const frame = await readFile(new URL("frame.html", fixtureAssets), "utf8");
 await mkdir(new URL("theme/", assets), { recursive: true });
 for (const path of theme.assets.keys()) {
@@ -68,25 +85,32 @@ await writeFile(
     displayName: "Example Agents for the shared research and engineering workspace",
   }),
 );
-const files = (await readdir(new URL("./dist/assets/", import.meta.url), { recursive: true }))
+const assetRoot = new URL("./dist/assets/", import.meta.url);
+const paths = (await readdir(assetRoot, { recursive: true }))
   .filter((path) => /\.(mjs|html|css)$/.test(path))
   .sort();
-const contents = await Promise.all(
-  files.map((path) => readFile(new URL(`./dist/assets/${path}`, import.meta.url), "utf8")),
+const files = await Promise.all(
+  paths.map(async (path) => ({
+    path,
+    content: await readFile(new URL(`./${path}`, assetRoot), "utf8"),
+  })),
 );
 const hash = createHash("sha256");
-files.forEach((path, index) => hash.update(path).update(contents[index]));
+for (const { path, content } of files) {
+  hash.update(path).update(content);
+}
 const version = hash.digest("hex").slice(0, 16);
-for (const [index, path] of files.entries()) {
-  let content = contents[index];
+for (const file of files) {
+  const { path } = file;
+  let { content } = file;
   if (path.endsWith(".mjs") && !path.endsWith("-preset.mjs")) {
     content = content.replace(
-      /((?:from\s*|import\s*\(\s*|import\s*)["'])([./][^"']+\.mjs)(["'])/g,
-      `$1$2?v=${version}$3`,
+      /((?:from\s*|import\s*\(\s*|import\s*)["'])([./][^"']+)\.m[jt]s(["'])/g,
+      `$1$2.mjs?v=${version}$3`,
     );
   } else if (path.endsWith(".html")) {
     content = content.replace(/((?:src|href)="[^"?]+\.(?:mjs|css))"/g, `$1?v=${version}"`);
   }
-  await writeFile(new URL(`./dist/assets/${path}`, import.meta.url), content);
+  await writeFile(new URL(`./${path}`, assetRoot), content);
 }
 await writeFile(new URL("./dist/asset-version.json", import.meta.url), JSON.stringify(version));

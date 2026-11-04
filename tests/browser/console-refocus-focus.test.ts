@@ -8,6 +8,7 @@ import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import {
   AGENT_READ,
   apiRequests,
+  denyRevisionRead,
   detailUrl,
   fileBrowser,
   grantMember,
@@ -20,10 +21,12 @@ import {
   secretOptionLabel,
   selectSecret,
   settledView,
+  trackSettledFetches,
   waitForEnabled,
+  waitForIdleFetches,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
-import { confirmAgentAction } from "./console-action-helpers.mjs";
+import { confirmAgentAction } from "./console-action-helpers.ts";
 import {
   focusedLabel,
   fulfillMethod,
@@ -38,7 +41,7 @@ import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs"
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { within } from "../helpers/wait-for.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { deleteRefused } from "../helpers/refusal-text.mjs";
+import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // Every test opens its own context in one Chromium per file.
@@ -502,6 +505,72 @@ for (const view of ["Agent page", "Create Agent"] as const) {
   });
 }
 
+test("a session reply missing its binding blocks private reads until Retry", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Session binding");
+  const agentName = "Session binding Agent";
+  await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
+  const { page } = await newPage(t, fixture, { browser });
+  const agentLink = page.getByRole("link", { name: agentName, exact: true });
+  const account = page.locator(".account-toggle");
+  const sessionPath = "/api/auth/session";
+  const agentsPath = `/namespaces/${namespace.id}/agents`;
+  const requests = apiRequests(page, fixture.origin);
+  let genuineBinding: string | undefined;
+  await page.route(
+    `**${sessionPath}`,
+    async (route) => {
+      const actual = await route.fetch();
+      assert.equal(actual.status(), 200);
+      const payload: unknown = await actual.json();
+      assert.ok(payload !== null && typeof payload === "object" && "data" in payload);
+      const data = payload.data;
+      assert.ok(data !== null && typeof data === "object" && "sessionKey" in data);
+      const { sessionKey, ...withoutBinding } = data;
+      assert.ok(typeof sessionKey === "string" && sessionKey.length > 0);
+      genuineBinding = sessionKey;
+      await route.fulfill({
+        response: actual,
+        json: { ...payload, data: withoutBinding },
+      });
+    },
+    { times: 1 },
+  );
+
+  // Sign in through the fixture on a fresh tab. Only the first Console session read is malformed.
+  const firstSession = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === sessionPath,
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  assert.equal((await firstSession).status(), 200);
+  await page.getByRole("heading", { name: "Session unavailable", exact: true }).waitFor();
+  assert.equal(await account.count(), 0);
+  assert.equal(await agentLink.count(), 0);
+  assert.equal(
+    requests.some(({ path }) => path.startsWith("/namespaces") || path === "/observability"),
+    false,
+    "malformed admission sends no private reads",
+  );
+
+  const recoveredSession = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === sessionPath,
+  );
+  const namespaceRead = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === "/namespaces",
+  );
+  const agentRead = page.waitForResponse((result) => new URL(result.url()).pathname === agentsPath);
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  assert.equal((await recoveredSession).status(), 200);
+  for (const read of [await namespaceRead, await agentRead]) {
+    assert.equal(read.status(), 200);
+    assert.ok(
+      genuineBinding && read.request().headers()["x-occ-session-key"] === genuineBinding,
+      "Retry pins the genuine session binding before requesting private data",
+    );
+  }
+  await agentLink.waitFor();
+  assert.ok((await account.innerText()).includes(fixture.credentials.email));
+});
+
 // Initial admission allows Agent metadata without Configuration read. Refocus must preserve
 // that same partial view instead of replacing the accessible Agent with a page-wide denial.
 test("mounted Agent refocus preserves a stable Configuration denial", async (t) => {
@@ -545,6 +614,52 @@ test("mounted Agent refocus preserves a stable Configuration denial", async (t) 
       true,
     );
   }
+});
+
+test("mounted Agent refocus cannot infer revision omission from a malformed page", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Revision refocus");
+  const agent = await fixture.createAgent(namespace.id, "Revision Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  denyRevisionRead(fixture, namespace, active.revision);
+
+  const { page } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id).href);
+  await page.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
+  const tabs = page.locator(".agent-tabs");
+  await tabs.waitFor();
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+
+  // The real view has already admitted the Agent with a restricted active revision. A malformed
+  // terminal list during refocus cannot prove that this version is still omitted.
+  const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  const requests = apiRequests(page, fixture.origin);
+  const list = await holdRequests(t, page, `**${revisionsPath}`, {
+    once: true,
+    method: "GET",
+    fulfill: {
+      status: 200,
+      json: { data: [null], meta: { requestId: "req_test_revision_refocus", nextCursor: null } },
+    },
+  });
+  const response = page.waitForResponse(
+    (result) => new URL(result.url()).pathname === revisionsPath,
+  );
+  await refocus(page);
+  await list.requested;
+  list.release();
+  assert.equal((await response).status(), 200);
+
+  await page.getByRole("heading", { name: "Request unavailable", exact: true }).waitFor();
+  assert.equal(await tabs.count(), 0);
+  const snapshotPath = `${revisionsPath}/${active.revision.id}`;
+  assert.equal(
+    requests.some((request) => request.path.split("?")[0] === snapshotPath),
+    false,
+    "the malformed page never triggers a read of the restricted revision",
+  );
 });
 
 for (const revoked of ["configuration", "agent"] as const) {

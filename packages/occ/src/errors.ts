@@ -1384,6 +1384,9 @@ export class CredentialSourceRegistrationConfigError extends ScopeViolationError
  */
 export class StoredCredentialSourceConfigError extends ResourceStateConflictError {
   static message(field: string): string {
+    if (field === "base_url") {
+      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.";
+    }
     return `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
   }
 

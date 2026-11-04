@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRequire } from "node:module";
+import type { Locator, Page } from "playwright";
+
+import {
+  NamespaceListResponse,
+  NamespaceSchema,
+  type NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
+import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -23,14 +32,33 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 
+const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
+const {
+  Check,
+}: {
+  Check: {
+    (schema: typeof NamespaceListResponse, value: unknown): value is NamespaceListResponse;
+    (schema: typeof NamespaceSchema, value: unknown): value is NamespaceWire;
+  };
+} = require("typebox/value");
+
+async function readNamespaces(fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>) {
+  const listed = await fixture.request("GET", "/namespaces");
+  assert.equal(listed.status, 200);
+  const body: unknown = listed.body;
+  assert.ok(Check(NamespaceListResponse, body), "expected a Namespace list from the controller");
+  return body.data;
+}
+
 const browser = fileBrowser();
 const REFUSED = `${CONSOLE_NAMESPACE_CREATE_DENIED} Then select Refresh.`;
-const isPrimary = (locator) =>
+const isPrimary = (locator: Locator) =>
   locator.evaluate((node) => node.classList.contains("button--primary"));
-const creates = (requests) => pathRequests(requests, "POST", "/namespaces");
+const creates = (requests: ReturnType<typeof apiRequests>) =>
+  pathRequests(requests, "POST", "/namespaces");
 // After the dialog closes and the list reloads, focus is on the new Create Namespace button
 // (finding 2045). Bounded, so a lost focus fails here rather than at the test timeout.
-const focusReturnsToOpener = (page) =>
+const focusReturnsToOpener = (page: Page) =>
   page.waitForFunction(
     () => {
       const active = globalThis.document.activeElement;
@@ -85,7 +113,7 @@ test("create a Namespace from the console, then open its Agent workflow", async 
   assert.equal(await dialog.getByRole("button", { name: "Cancel" }).isDisabled(), true);
   // requestSubmit() fires submit even with the button disabled, so only the pending guard
   // stops a second write here.
-  await dialog.locator("form").evaluate((form) => {
+  await dialog.locator("form").evaluate((form: HTMLFormElement) => {
     form.requestSubmit();
     form.requestSubmit();
   });
@@ -95,16 +123,18 @@ test("create a Namespace from the console, then open its Agent workflow", async 
 
   dialog = page.getByRole("dialog", { name: "Namespace created", exact: true });
   await dialog.getByText(/Provisioning is in progress/).waitFor();
+  const [createRequest] = creates(requests);
   assert.equal(creates(requests).length, 1);
-  assert.deepEqual(creates(requests)[0].body, { name: "Support team" });
-  const listed = await fixture.request("GET", "/namespaces");
-  const created = listed.data.find((item) => item.name === "Support team");
+  assert.ok(createRequest);
+  assert.deepEqual(createRequest.body, { name: "Support team" });
+  const created = (await readNamespaces(fixture)).find((item) => item.name === "Support team");
+  assert.ok(created);
   assert.equal(created.status, "provisioning");
   assert.ok(
     fixture.auditSink
       .list()
       .some(
-        (event) =>
+        (event: AuditEvent) =>
           event.action === "openclaw.namespaces.create" &&
           event.resource.id === created.id &&
           event.actorId,
@@ -208,12 +238,12 @@ test("the Namespace name is checked at the field with the API's own rule", async
   await name.fill("Tab\tteam");
   await dialog.getByText("Remove tabs, line breaks and other control characters").waitFor();
   assert.equal(await name.getAttribute("aria-invalid"), "true");
-  assert.match(await describedError(), /Remove tabs/);
+  assert.match((await describedError()) ?? "", /Remove tabs/);
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
   // Clearing the name replaces the shown error with the required one.
   await name.fill("");
   await dialog.getByText("Namespace name is required.").waitFor();
-  assert.match(await describedError(), /is required/);
+  assert.match((await describedError()) ?? "", /is required/);
 
   // The API counts characters (code points), and a longer name is refused, not cut.
   const tooLong = "n".repeat(201);
@@ -237,7 +267,7 @@ test("the Namespace name is checked at the field with the API's own rule", async
     () =>
       globalThis.document.getElementById("namespace-name")?.getAttribute("aria-invalid") === "true",
   );
-  assert.match(await describedError(), /operation contract.*\/name/);
+  assert.match((await describedError()) ?? "", /operation contract.*\/name/);
   assert.equal(await dialog.getByText(/Request ID/).count(), 0);
   assert.equal(await name.isEnabled(), true);
   assert.equal(await name.evaluate((node) => node === node.ownerDocument.activeElement), true);
@@ -337,9 +367,7 @@ test("a creator who cannot read Namespaces is told so instead of offered Open Ag
     description: /Your access does not include viewing this Namespace/,
   });
   assert.equal(await done.evaluate((node) => node === node.ownerDocument.activeElement), true);
-  assert.ok(
-    (await fixture.request("GET", "/namespaces")).data.some((item) => item.name === "Creator team"),
-  );
+  assert.ok((await readNamespaces(fixture)).some((item) => item.name === "Creator team"));
   await done.click();
   await page.getByRole("heading", { name: NO_READABLE_NAMESPACES, exact: true }).waitFor();
   await focusReturnsToOpener(page);
@@ -424,16 +452,14 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), REFUSED);
   assert.equal(creates(requests).length, 2);
   assert.equal(
-    (await fixture.request("GET", "/namespaces")).data.some(
-      (item) => item.name === "Forbidden team",
-    ),
+    (await readNamespaces(fixture)).some((item) => item.name === "Forbidden team"),
     false,
   );
   assert.ok(authorizationDenials(fixture.auditSink, "openclaw.namespaces.create").length > 0);
 });
 
 // Creates a Namespace through the open page's dialog and returns its error alert, if any.
-async function submitCreate(page, name) {
+async function submitCreate(page: Page, name: string) {
   await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
   await dialog.getByLabel("Namespace name").fill(name);
@@ -447,11 +473,13 @@ async function submitCreate(page, name) {
 test("a Refresh after an administrator grants Namespace create offers creation again", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const team = await fixture.createNamespace("Alpha team", { ready: true });
+  const team: unknown = await fixture.createNamespace("Alpha team", { ready: true });
+  assert.ok(Check(NamespaceSchema, team), "expected the fixture's Alpha team Namespace");
   const member = await fixture.createAccountWithPolicy("namespace-reader", (principal) =>
     grantRole(fixture.policy, principal.id, {
       id: "role-namespace-reader",
       namespaceId: team.id,
+      resource: undefined,
       permissions: { namespace: ["read"], agent: ["read"] },
     }),
   );
@@ -472,6 +500,8 @@ test("a Refresh after an administrator grants Namespace create offers creation a
 
   grantRole(fixture.policy, member.principal.id, {
     id: "role-namespace-creator",
+    namespaceId: undefined,
+    resource: undefined,
     permissions: { namespace: ["create"] },
   });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -484,9 +514,7 @@ test("a Refresh after an administrator grants Namespace create offers creation a
   assert.equal(await opener.getAttribute("aria-describedby"), null);
   await submitCreate(page, "Granted team");
   await page.getByRole("dialog", { name: "Namespace created", exact: true }).waitFor();
-  assert.ok(
-    (await fixture.request("GET", "/namespaces")).data.some((item) => item.name === "Granted team"),
-  );
+  assert.ok((await readNamespaces(fixture)).some((item) => item.name === "Granted team"));
 });
 
 // An unknown administrator answer (the probe failed, not refused) keeps Create Namespace the

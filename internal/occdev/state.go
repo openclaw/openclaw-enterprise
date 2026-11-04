@@ -55,7 +55,6 @@ type developmentState struct {
 	// killed before its own detach ran.
 	ImageRegistryContainer string `json:"imageRegistryContainer,omitempty"`
 	ImageRegistryNetwork   string `json:"imageRegistryNetwork,omitempty"`
-	egressKeyID            string
 	directory              string
 }
 

@@ -1,5 +1,5 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";

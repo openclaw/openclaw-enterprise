@@ -219,6 +219,11 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 
 ### Setting Overrides
 
+For lanes that accept optional Kubernetes runtime images, set both
+`OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` to
+immutable references, or omit both to build from source. Supplying only one fails
+preparation before state or resources are created.
+
 These process environment variables are optional. Keep the same directory and
 slot for First Agent `images` and `run`; only a distinct slot isolates host-wide names.
 
