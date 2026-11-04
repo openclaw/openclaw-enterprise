@@ -7,11 +7,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { startPluginRequestGuard } from "../../apps/controller/src/plugin-request-guard.ts";
 import {
-  managedGoogleInstall,
   managedPluginMiddleware,
   managedPluginMiddlewareAudience,
   managedPluginMiddlewareImplementation,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import {

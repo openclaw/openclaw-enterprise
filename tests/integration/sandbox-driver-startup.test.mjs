@@ -1,7 +1,5 @@
-import {
-  managedGoogleInstall,
-  managedMcpInstalls,
-} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.mjs";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
@@ -1228,7 +1226,7 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   delete revision.sandboxPolicy;
   await provision();
   assert.ok(created.spec.providers.includes(openShellProviderName(sourceId)));
-  assert.equal(created.spec.environment.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV, "GOG_ACCESS_TOKEN");
+  assert.equal(created.spec.environment.OPENCLAW_MANAGED_CREDENTIAL_ENV, "GOG_ACCESS_TOKEN");
   assert.equal(created.spec.environment.GOG_ACCESS_TOKEN, undefined);
   const guard = created.spec.policy.network_middlewares[registration];
   assert.equal(guard.config.fields.binding_id.stringValue, managedGoogleInstall.releaseSha256);
@@ -1291,7 +1289,7 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   await provision();
   assert.ok(created.spec.providers.includes(other.ref));
   assert.ok(!created.spec.providers.includes(openShellProviderName(sourceId)));
-  assert.equal(created.spec.environment.OPENCLAW_MANAGED_GOOGLE_CREDENTIAL_ENV, undefined);
+  assert.equal(created.spec.environment.OPENCLAW_MANAGED_CREDENTIAL_ENV, undefined);
   assert.equal(created.spec.policy.network_middlewares?.[registration], undefined);
   assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
 });

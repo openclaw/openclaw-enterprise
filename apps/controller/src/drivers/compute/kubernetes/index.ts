@@ -1,11 +1,3 @@
-import {
-  modelProviderBaseUrl,
-  modelProviderReferenceSetting,
-  MODEL_PROVIDER_REFERENCE_REQUIREMENT,
-  modelProviderConfiguration,
-  requireModelSourceDestination,
-  type ModelProviderConfiguration,
-} from "../model-provider.ts";
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
@@ -199,7 +191,8 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { managedInstalls, requireManagedCredentialRuntime } from "../../plugin/managed-catalog.ts";
+import { managedInstalls, managedMcpCredentialBinding } from "../../plugin/managed-catalog.ts";
+import { requireManagedCredentialRuntime } from "../../plugin/managed-runtime.ts";
 import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
@@ -227,6 +220,14 @@ import {
 import { managedGatewayConfiguration, validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
+import {
+  modelProviderBaseUrl,
+  modelProviderReferenceSetting,
+  MODEL_PROVIDER_REFERENCE_REQUIREMENT,
+  modelProviderConfiguration,
+  requireModelSourceDestination,
+  type ModelProviderConfiguration,
+} from "../model-provider.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
 import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
 import {
@@ -272,6 +273,7 @@ import {
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
+  MANAGED_PLUGIN_ENVIRONMENT,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   NATIVE_WORKER_ENTRYPOINT,
@@ -16170,20 +16172,26 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
       }
     }
-    // The native worker consumes only the image release digest. Its Sandbox needs no plugin files.
+    // The managed release is in the image. The two processes receive only its
+    // identity and the reviewed tool selection, never the account's bearer.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
-      for (const install of managedInstalls) {
-        const selection = pluginRuntime.runtime.selections[install.id];
-        if (!selection) {
-          continue;
-        }
-        const prefix = `OPENCLAW_MANAGED_${install.runtimeName.toUpperCase()}`;
-        if (role === "gateway") {
-          variables.push({ name: prefix + "_PLUGIN_ID", value: install.id });
-        }
-        if (selection.enabled) {
-          variables.push({ name: prefix + "_RELEASE_SHA256", value: install.releaseSha256 });
-        }
+      const { selections } = pluginRuntime.runtime;
+      const install = managedInstalls.find(({ id }) => Object.hasOwn(selections, id));
+      if (install && (selections[install.id]?.enabled || role === "gateway")) {
+        const selection = selections[install.id]!;
+        const binding =
+          install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
+        variables.push({
+          name: MANAGED_PLUGIN_ENVIRONMENT,
+          value: JSON.stringify({
+            kind: install.kind,
+            packageName: install.packageName,
+            slotId: Object.keys(install.credentials)[0],
+            ...(role === "gateway" && { id: install.id }),
+            ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
+            ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
+          }),
+        });
       }
     }
     const needsPluginRuntime =
