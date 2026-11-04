@@ -49,7 +49,7 @@ Client ID Metadata Documents (CIMD) are deferred. Supporting CIMD would require
 a stable HTTPS document the issuer can fetch, listing the installation's exact
 callback URI.
 
-At setup, the template version records the resolved client, server URL, resource,
+At setup, the template version records any selected client, server URL, resource,
 issuer, approved endpoints, and at least one scope approved from the challenge
 and resource metadata.
 
@@ -72,7 +72,7 @@ OCE manages client registrations through the Driver. It keys each registration
 by the trusted `issuer` and `clientId` pair because client IDs are unique only
 within an authorization server. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)
 
-- `registerClient({ issuer, clientId }, clientSecret?)` stores the resolved client
+- `registerClient({ issuer, clientId, tokenUrl, tokenEndpointAuthMethod }, clientSecret?)` stores the resolved client
   and any secret in the Driver's protected store. A public MCP client can omit the secret.
   Templates with the same pair share the returned `clientRegistrationId`. The
   same `clientId` at another issuer gets a separate registration.
@@ -89,6 +89,43 @@ available across replicas and restarts. The Token Service can use the exact
 registration and secret version bound to the source for refresh. OCC stores
 the registration reference. Client secrets and refresh grants stay out of the
 worker's OpenShell attachment.
+
+### Client authentication and account custody
+
+The Credential Refresh Driver supports independently registered clients. It
+advertises the authentication methods it implements and accepts a registration
+with a method and the corresponding write-only material. A public client has
+method `none`. Confidential clients may use `client_secret_basic` or
+`client_secret_post`. A method requiring a signing key is offered only by a
+Driver that implements signing. The registration pins the destination that may
+receive its credentials. Browser start, exchange and renewal use the resolved
+client and the same protected resource when resource indicators apply.
+
+Connecting an account commits the grant in Token Service custody. The Token
+Service records the requested scopes and the scopes the provider granted.
+An omitted scope in a successful response means the requested scopes. The
+account can remain saved without a runtime provider. The protected sender
+obtains prepared material for an authorized consumer with a compatible
+destination. Local delivery names are properties of that binding.
+
+### Named plugin accounts
+
+A Plugin Driver describes each account by stable slot ID, label, accepted
+issuers, and trusted recipient requirements. It can supply multiple slots,
+including slots accepting the same issuer. Local variable aliases for one
+slot share a single selection. The Driver interprets its own selection
+policy and reports its selected slot-to-source bindings to OCC. It validates
+and projects delivery for the selected release and consumer.
+
+The enablement modal lists Namespace accounts the caller may use and filters
+them by issuer. A saved grant that covers the approved target can be assigned
+when the caller saves the Agent draft. OCC atomically grants that Agent access
+and saves the exact slot assignment. A grant for another resource requires
+explicit authorization for this target before the sender can use a token.
+Generic slot eligibility does not require a list of tool scopes. OCC enforces
+Agent tool and request policy before sending. The resource server enforces
+its scopes and may request additional consent. Installation-wide and Namespace
+authority still bound all listing and use.
 
 ### OIDC account identity
 
