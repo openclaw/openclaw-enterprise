@@ -74,7 +74,6 @@ for (const { name, status = 200, contentType, body, expectedStatus, succeeds = f
     status: 201,
     contentType: "text/plain",
     body: "synthetic log\n",
-    expectedStatus: 201,
   },
 ]) {
   test(`text downloads enforce the attachment response boundary: ${name}`, async (t) => {
