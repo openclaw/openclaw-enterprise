@@ -274,6 +274,52 @@ test("dedicated OpenClaw admits one managed package and validates Slack's review
   );
 });
 
+test("Google offers OAuth only for a compatible template and can bind the resulting saved account", () => {
+  const driver = new OCCPluginDriver();
+  const googleId = "occ-plugin:google@1.0.0";
+  const selections = { [googleId]: { enabled: true } };
+  const scope = "https://www.googleapis.com/auth/gmail.readonly";
+  const host = "gmail.googleapis.com";
+  const slot = driver.credentials.connectionSlot(selections, googleId, "account");
+  assert.ok(slot);
+  const template = {
+    issuer: "https://accounts.google.com",
+    tokenUrl: "https://oauth2.googleapis.com/token",
+    endpoint: { host, port: 443, path: "/**" },
+    scopes: [scope],
+    envVar: "GOG_ACCESS_TOKEN",
+  };
+  assert.equal(slot.acceptsTemplate(template), true);
+  for (const mismatch of [
+    { issuer: "https://other.example" },
+    { tokenUrl: "https://other.example/token" },
+    { scopes: ["openid"] },
+    { envVar: "OTHER_TOKEN" },
+    { endpoint: { ...template.endpoint, host: "other.example" } },
+  ]) {
+    assert.equal(slot.acceptsTemplate({ ...template, ...mismatch }), false);
+  }
+  const source = {
+    id: "cs_google",
+    state: "ready",
+    type: "oauth2-refresh-token",
+    ownerCapability: "credential_gateway",
+    config: { token_url: template.tokenUrl, env_var: template.envVar, host, path: "/**", scope },
+  };
+  const bound = { [googleId]: slot.bind(source) };
+  driver.validatePolicies(bound);
+  driver.credentials.validate(bound, [source]);
+  assert.equal(bound[googleId].driverPolicy.credentials.account, source.id);
+  assert.throws(() => slot.bind({ ...source, state: "registering" }), /cannot fill/);
+  // A bound Google account already occupies the worker placeholder.
+  assert.equal(driver.credentials.connectionSlot(bound, googleId, "account"), undefined);
+  const slackId = "occ-plugin:slack@1.0.0";
+  assert.equal(
+    driver.credentials.connectionSlot({ [slackId]: { enabled: true } }, slackId, "account"),
+    undefined,
+  );
+});
+
 test("OpenClaw plugin startup translation renders native install and enablement", () => {
   const enabled = openClawRuntimeArtifact(occSelection());
   assert.deepEqual(enabled.installs, [

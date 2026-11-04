@@ -42,6 +42,8 @@ export function createPlatformReadView(
       "findTokenCustody",
       "listDueConnectionTokens",
       "findSavedConnection",
+      "hasPendingConnectionWithdrawals",
+      "listAgentConnections",
       "listNamespaceConnections",
       "listRevokingConnections",
     ]),

@@ -30,7 +30,8 @@
     {
       "path": "tests/integration/postgres-saved-oauth-connections.test.ts",
       "expectedTests": [
-        "OAuth consent saves the account for its owner and refreshes it through the Token Service"
+        "OAuth consent saves the account for its owner and refreshes it through the Token Service",
+        "Plugin consent attaches its saved account only while the Agent still permits the requested binding"
       ]
     }
   ]

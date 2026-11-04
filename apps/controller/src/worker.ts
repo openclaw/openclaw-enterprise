@@ -3400,6 +3400,7 @@ export class ControllerWorker {
         const pendingWithdrawals: {
           readonly withdrawal: Readonly<CredentialWithdrawal>;
           readonly source: Readonly<CredentialSource>;
+          readonly retiringAccount: boolean;
         }[] = [];
         for (const sourceId of revisionCredentialSourceIds(found)) {
           const withdrawal = await view.credentialSources.findCredentialWithdrawal(
@@ -3413,7 +3414,15 @@ export class ControllerWorker {
           );
           // A source's deletion removes its withdrawals, so it has nothing left to revoke.
           if (withdrawal?.state === "pending" && source !== undefined) {
-            pendingWithdrawals.push({ withdrawal, source });
+            const retiring =
+              source.state === "deleting"
+                ? await view.savedConnections.findSavedConnection(source.namespaceId, source.id)
+                : undefined;
+            pendingWithdrawals.push({
+              withdrawal,
+              source,
+              retiringAccount: retiring?.revocationRequestedBy !== undefined,
+            });
           }
         }
         return { revision: found, pending: pendingWithdrawals };
@@ -3436,17 +3445,14 @@ export class ControllerWorker {
         });
         return;
       }
-      // Requests for different sources share this claim, so each withdrawal's own requester
-      // must still operate the Agent before its source is detached. The claim actor's
-      // authority never stands in for another requester's.
+      // The completed account's durable, exact-source disconnect intent authorizes
+      // its own withdrawal across Agents. Every other requester still needs Agent operate.
       const allowed: typeof pending = [];
       for (const entry of pending) {
-        const denial = await this.authorizeAgentAction(
-          claim,
-          agent,
-          "operate",
-          entry.withdrawal.requestedBy,
-        );
+        const requester = entry.withdrawal.requestedBy;
+        const denial = entry.retiringAccount
+          ? undefined
+          : await this.authorizeAgentAction(claim, agent, "operate", requester);
         if (denial === undefined) {
           allowed.push(entry);
         } else {
@@ -5278,18 +5284,59 @@ export class ControllerWorker {
     // revision can attach. A withdrawn source, pending or revoked, never attaches again
     // (`resolveRevisionSecretContext`), so a grant removed from it must not fail maintenance
     // before maintenance re-queues the withdrawal itself.
-    const withdrawnSourceIds = new Set(
-      (
-        await this.state.read((view) =>
-          view.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id),
-        )
-      ).map(({ credentialSourceId }) => credentialSourceId),
-    );
-    for (const sourceId of revisionCredentialSourceIds(revision)) {
-      if (withdrawnSourceIds.has(sourceId)) {
+    const sourceIds = revisionCredentialSourceIds(revision);
+    const { withdrawn, connections } = await this.state.read(async (view) => {
+      const withdrawals = await view.credentialSources.listCredentialWithdrawals(
+        revision.namespaceId,
+        revision.id,
+      );
+      // Browser connections are refresh-token sources. Other types keep their existing
+      // caller and Agent authorization without reading any account metadata.
+      const snapshots = revision.credentialSources ?? [];
+      const oauthIds = new Set(
+        snapshots
+          .filter((snapshot) => snapshot.sourceType === "oauth2-refresh-token")
+          .map((snapshot) => snapshot.sourceId),
+      );
+      if (
+        revision.harnessAuth.method === "credential_source" &&
+        revision.harnessAuth.sourceType === "oauth2-refresh-token"
+      ) {
+        oauthIds.add(revision.harnessAuth.sourceId);
+      }
+      const connections = new Map<string, boolean>();
+      if (oauthIds.size > 0) {
+        const attached = new Set(
+          (await view.savedConnections.listAgentConnections(agent.namespaceId, agent.id)).map(
+            ({ credentialSourceId }) => credentialSourceId,
+          ),
+        );
+        for (const id of oauthIds) {
+          const source = await view.credentialSources.findCredentialSource(
+            revision.namespaceId,
+            id,
+          );
+          if (source?.config.oauth_owner === "token_service") {
+            connections.set(id, attached.has(id) && source.state === "ready");
+          }
+        }
+      }
+      return {
+        withdrawn: new Set(withdrawals.map((item) => item.credentialSourceId)),
+        connections,
+      };
+    });
+    for (const sourceId of sourceIds) {
+      if (withdrawn.has(sourceId)) {
         continue;
       }
-      for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
+      if (connections.get(sourceId) === false) {
+        return { outcome: "permanent", code: "CONNECTION_DETACHED" };
+      }
+      const principals = connections.has(sourceId)
+        ? [revision.servicePrincipalId]
+        : [claim.actorId, revision.servicePrincipalId];
+      for (const principalId of principals) {
         const sourceAuthorization: AuthorizationRequest = {
           principalId,
           action: "operate",

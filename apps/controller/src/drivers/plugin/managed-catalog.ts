@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
   type CredentialSource,
+  type ConnectionTemplateValues,
   type PluginCatalogEntry,
   type PluginDesiredState,
 } from "@openclaw-enterprise/contracts";
@@ -367,6 +368,42 @@ export function managedMcpSlotAcceptsSource(
 }
 
 export const managedPluginCredentials = {
+  connectionSlot(selections: PluginDesiredState, pluginId: string, slotId: string) {
+    const install = managedCliInstalls.find(({ id }) => id === pluginId);
+    const selection = selections[pluginId];
+    // A second Google account would collide with the existing runtime placeholder.
+    if (
+      !install ||
+      !selection?.enabled ||
+      selection.driverPolicy !== undefined ||
+      !Object.hasOwn(install.credentials, slotId)
+    ) {
+      return undefined;
+    }
+    const slot = install.credentials[slotId]!;
+    const policy = cliCredentialPolicy(install);
+    if (!policy) {
+      return undefined;
+    }
+    return {
+      releaseSha256: install.releaseSha256,
+      credentialSourceId: null,
+      acceptsTemplate: (template: ConnectionTemplateValues) =>
+        policy.acceptsTemplate(slot, template),
+      bind(source: CredentialSource) {
+        if (!policy.accepts(install, slot, source)) {
+          throw new ConfigurationHarnessError("The saved account cannot fill this plugin slot.");
+        }
+        return {
+          ...selection,
+          driverPolicy: {
+            releaseSha256: install.releaseSha256,
+            credentials: { [slotId]: source.id },
+          },
+        };
+      },
+    };
+  },
   mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource) {
     const install = managedMcpInstalls.find(({ id }) => id === pluginId);
     if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {

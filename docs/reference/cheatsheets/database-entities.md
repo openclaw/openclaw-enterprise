@@ -201,6 +201,7 @@ Stores the private, single-use OAuth attempt for the initiating principal and br
 - `namespace_id`
 - `credential_source_id`
 - `private_state`
+- `attachment_intent`
 - `issuer_required`
 - `session_id`
 - `redirect_uri`

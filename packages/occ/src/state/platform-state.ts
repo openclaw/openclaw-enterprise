@@ -418,6 +418,11 @@ export interface SavedConnectionReadRepository {
     limit: number,
     afterSourceId?: string,
   ): Promise<readonly Readonly<SavedConnection>[]>;
+  hasPendingConnectionWithdrawals(namespaceId: string, sourceId: string): Promise<boolean>;
+  listAgentConnections(
+    namespaceId: string,
+    agentId: string,
+  ): Promise<readonly Readonly<SavedConnection>[]>;
   listNamespaceConnections(namespaceId: string): Promise<readonly Readonly<SavedConnection>[]>;
 }
 
@@ -2207,6 +2212,28 @@ function repositories(
         snapshot.savedConnections.set(key, storedCopy({ ...current, revokedAt: at }));
       }
     },
+    hasPendingConnectionWithdrawals: async (namespaceId, sourceId) =>
+      Array.from(snapshot.credentialWithdrawals.values()).some(
+        (withdrawal) =>
+          withdrawal.namespaceId === namespaceId &&
+          withdrawal.credentialSourceId === sourceId &&
+          withdrawal.state === "pending",
+      ),
+    listAgentConnections: async (namespaceId, agentId) => {
+      const agent = snapshot.agents.get(agentKey(namespaceId, agentId));
+      const sourceIds = new Set(agent?.credentialSources?.map(({ sourceId }) => sourceId));
+      return Object.freeze(
+        Array.from(snapshot.savedConnections.values())
+          .filter(
+            (connection) =>
+              connection.revocationRequestedBy === undefined &&
+              connection.namespaceId === namespaceId &&
+              sourceIds.has(connection.credentialSourceId),
+          )
+          .sort((a, b) => a.credentialSourceId.localeCompare(b.credentialSourceId))
+          .map((connection) => immutableCopy(connection)),
+      );
+    },
     listNamespaceConnections: async (namespaceId) =>
       Object.freeze(
         Array.from(snapshot.savedConnections.values())
@@ -2234,6 +2261,21 @@ function repositories(
     createConnectionSession: async (session) => {
       assertInitialized(snapshot);
       assertConnectionScope(session);
+      const intent = session.attachmentIntent;
+      if (
+        intent &&
+        (intent.connectionTemplateId !== session.connectionTemplateId ||
+          intent.connectionTemplateVersion !== session.connectionTemplateVersion ||
+          !/^[a-f0-9]{64}$/.test(intent.releaseSha256) ||
+          !intent.agentId ||
+          !intent.pluginId ||
+          !intent.slotId ||
+          intent.expectedCredentialSourceId === "")
+      ) {
+        throw new ResourceConflictError(
+          "The plugin attachment intent does not match this consent attempt.",
+        );
+      }
       if (snapshot.connectionSessions.has(session.stateHash)) {
         throw new ResourceConflictError("The connection session already exists.");
       }

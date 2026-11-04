@@ -147,8 +147,20 @@ export interface SavedConnection {
   readonly createdAt: string;
 }
 
+/** The saved Agent plugin slot a user chose before leaving for provider consent. */
+export interface ConnectionAttachmentIntent {
+  readonly agentId: string;
+  readonly pluginId: string;
+  readonly slotId: string;
+  readonly releaseSha256: string;
+  readonly expectedCredentialSourceId: string | null;
+  readonly connectionTemplateId: string;
+  readonly connectionTemplateVersion: number;
+}
+
 /** A pending browser authorization, found by the SHA-256 of its `state` and consumed once. */
 export interface ConnectionSession {
+  readonly attachmentIntent?: ConnectionAttachmentIntent;
   readonly stateHash: string;
   readonly namespaceId: string;
   readonly credentialSourceId: string;

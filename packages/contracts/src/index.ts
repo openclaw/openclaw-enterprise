@@ -151,6 +151,7 @@ export type {
   ConnectionTemplate,
   ConnectionTemplateValues,
   ConnectionTemplateVersion,
+  ConnectionAttachmentIntent,
   ConnectionSession,
   SavedConnection,
 } from "./connection-templates.ts";
@@ -767,6 +768,8 @@ export interface AgentPluginCredentialSlot {
   readonly id: string;
   readonly label: string;
   readonly toolDiscovery?: true;
+  /** OCC permits this caller to connect an account to the saved slot. */
+  readonly connectAccount?: true;
   readonly sources: readonly { readonly id: string; readonly name: string }[];
 }
 

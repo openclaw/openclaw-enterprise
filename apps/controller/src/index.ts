@@ -576,6 +576,21 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     resourceKind: operation.resourceKind,
   };
 
+  if (
+    operation.operationId === "startAgentPluginConnection" ||
+    operation.operationId === "listAgentPluginConnectionTemplates"
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "create", resourceKind: "credential_source", scope: "namespace" },
+    ];
+  }
+  if (operation.operationId === "attachAgentConnection") {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "operate", resourceKind: "credential_source", scope: "requested" },
+    ];
+  }
   if (operation.operationId === "disconnectNamespaceConnection") {
     return [{ ...permission, scope: "requested", condition: "unless_consent_owner" }];
   }

@@ -214,6 +214,8 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  pluginId: "occ-plugin:google@1.0.0",
+  slotId: "account",
   connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
@@ -257,6 +259,14 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  startAgentPluginConnection: {
+    connectionTemplateId,
+    connectionTemplateVersion: 1,
+    pluginId: "occ-plugin:google@1.0.0",
+    slotId: "account",
+    expectedCredentialSourceId: null,
+    releaseSha256: "a".repeat(64),
+  },
   startNamespaceConnection: { connectionTemplateId },
   createConnectionTemplate: {
     ...connectionTemplateInput,
@@ -367,6 +377,15 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  listAgentPluginConnectionTemplates: [
+    { id: connectionTemplateId, displayName: "Engineering account", version: 1 },
+  ],
+  startAgentPluginConnection: {
+    credentialSourceId: source.id,
+    authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
+    expiresAt: time,
+  },
+  detachAgentConnection: { withdrawalRequested: false },
   listUsableConnectionTemplates: [connectionTemplate],
   listNamespaceConnections: [savedAccount],
   startNamespaceConnection: {

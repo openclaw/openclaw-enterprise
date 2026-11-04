@@ -31,5 +31,17 @@ fences concurrent rotations and disconnects. OpenShell receives an expiring
 access token for the approved destination. The account owner receives permission
 to use the saved credential source.
 
+When a user chooses **Connect and attach** in an Agent plugin slot, OCC checks
+Agent update permission and asks the Plugin Driver whether the template fits
+the selected release and slot. It records that target and the expected binding
+in the private browser attempt. After saving the account, OCC rechecks the
+Agent, release, slot and current permissions. It grants the Agent access and
+saves the Driver's updated selection in one transaction. If the attachment
+fails, the account remains available for the user to attach later.
+
+A detach removes that Agent's grant and queues withdrawal for its deployed
+revisions. Until the worker finishes, the running revision can retain access.
+The same account can continue serving other authorized Agents.
+
 See [OAuth connection templates](../reference/connection-templates.md) for the
 administrative operations.

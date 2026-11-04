@@ -8,6 +8,101 @@ export const CONNECTION_CALLBACK_PATH = "/oauth/callback";
 
 export function namespaceConnectionHandlers(redirectUri: string | undefined): ResourceHandlers {
   return {
+    async listAgentPluginConnectionTemplates({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+    }) {
+      const data = await controller.listAgentPluginConnectionTemplates(context.actorId, {
+        namespaceId,
+        agentId: params.agentId!,
+        pluginId: params.pluginId!,
+        slotId: params.slotId!,
+      });
+      reply.send({ data, meta: { requestId: request.id } });
+    },
+    async startAgentPluginConnection({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      body,
+      mutationEvent,
+    }) {
+      const { sessionId } = context;
+      if (!sessionId) {
+        throw failure(
+          403,
+          "FORBIDDEN",
+          "Connecting an account requires a signed-in browser session.",
+        );
+      }
+      if (!redirectUri) {
+        throw failure(
+          503,
+          "DEPENDENCY_UNAVAILABLE",
+          "The public OAuth callback origin is unavailable.",
+        );
+      }
+      const data = await controller.startAgentPluginConnection(
+        context.actorId,
+        {
+          namespaceId,
+          agentId: params.agentId!,
+          sessionId,
+          redirectUri,
+          pluginId: body!.pluginId as string,
+          slotId: body!.slotId as string,
+          releaseSha256: body!.releaseSha256 as string,
+          expectedCredentialSourceId: body!.expectedCredentialSourceId as string | null,
+          connectionTemplateId: body!.connectionTemplateId as string,
+          connectionTemplateVersion: body!.connectionTemplateVersion as number,
+        },
+        (id) => mutationEvent({ kind: "credential_source", namespaceId, id }),
+      );
+      reply
+        .header("cache-control", "no-store")
+        .status(201)
+        .send({ data, meta: { requestId: request.id } });
+    },
+    async attachAgentConnection({
+      controller,
+      context,
+      reply,
+      params,
+      namespaceId,
+      mutationEvent,
+    }) {
+      const { agentId, credentialSourceId } = params;
+      await controller.attachAgentConnection(
+        context.actorId,
+        { namespaceId, agentId: agentId!, credentialSourceId: credentialSourceId! },
+        mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
+      );
+      reply.status(204).send();
+    },
+    async detachAgentConnection({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      mutationEvent,
+    }) {
+      const { agentId, credentialSourceId } = params;
+      const result = await controller.detachAgentConnection(
+        context.actorId,
+        { namespaceId, agentId: agentId!, credentialSourceId: credentialSourceId! },
+        mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
+      );
+      reply.send({ data: result, meta: { requestId: request.id } });
+    },
     async listUsableConnectionTemplates({ controller, context, request, reply, namespaceId }) {
       const data = await controller.listUsableConnectionTemplates(context.actorId, namespaceId);
       reply.send({ data, meta: { requestId: request.id } });
@@ -162,17 +257,40 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
           ...(typeof query.code === "string" ? { code: query.code } : {}),
           ...(typeof query.error === "string" ? { error: query.error } : {}),
         },
-        (result) =>
-          dependencies.auditEvent(request, context, {
+        (result, attachedAgentId) => {
+          if (attachedAgentId) {
+            const event = dependencies.auditEvent(request, context, {
+              kind: "agent",
+              namespaceId: result.namespaceId,
+              id: attachedAgentId,
+            });
+            return { ...event, action: "openclaw.agents.connections.attach" };
+          }
+          return dependencies.auditEvent(request, context, {
             kind: "credential_source",
             namespaceId: result.namespaceId,
             id: result.credentialSourceId,
-          }),
+          });
+        },
       );
-      reply.redirect(
-        `/console/?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected`,
-        303,
-      );
+      if (connection.attachment) {
+        const { agentId, outcome } = connection.attachment;
+        const landing = new URLSearchParams({
+          namespace: connection.namespaceId,
+          revision: "draft",
+          tab: "plugins",
+          connection: outcome,
+        });
+        if (outcome === "saved") {
+          landing.set("sourceId", connection.credentialSourceId);
+        }
+        reply.redirect(`/console/agents/${encodeURIComponent(agentId)}?${landing}`, 303);
+      } else {
+        reply.redirect(
+          `/console/?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected`,
+          303,
+        );
+      }
     } catch (error) {
       const reason =
         error instanceof BrowserAuthorizationError && /^[a-z][a-z0-9_]{0,63}$/.test(error.code)

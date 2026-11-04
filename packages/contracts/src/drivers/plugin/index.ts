@@ -2,12 +2,14 @@ import type { Driver } from "../index.ts";
 import type {
   Agent,
   AgentPluginCredentialSlot,
+  ConnectionTemplateValues,
   CredentialSource,
   Namespace,
   OpenClawConfigurationDocument,
   PluginApprovers,
   PluginCatalogEntry,
   PluginCatalogPage,
+  PluginDesiredSelection,
   PluginDesiredState,
   PluginPolicyCapabilities,
   RevisionHarnessDescriptor,
@@ -33,6 +35,19 @@ export interface PluginDriver extends Driver {
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
     choices(sources: readonly CredentialSource[]): readonly AgentPluginCredentialSlot[];
+    /** A saved slot that can accept an account from a compatible browser OAuth template. */
+    connectionSlot?(
+      selections: PluginDesiredState,
+      pluginId: string,
+      slotId: string,
+    ):
+      | {
+          readonly releaseSha256: string;
+          readonly credentialSourceId: string | null;
+          acceptsTemplate(template: ConnectionTemplateValues): boolean;
+          bind(source: CredentialSource): PluginDesiredSelection;
+        }
+      | undefined;
     /** Returns a reviewed MCP discovery target only for a compatible slot and source. */
     mcpToolDiscovery?(
       pluginId: string,

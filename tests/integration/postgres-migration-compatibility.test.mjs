@@ -1999,6 +1999,7 @@ test(
       [65, "preAgentDeployIntent"],
       [66, "preConnectionTemplates"],
       [67, "preSavedConnections"],
+      [68, "preConnectionAttachmentIntent"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

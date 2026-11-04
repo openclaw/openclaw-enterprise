@@ -1,4 +1,4 @@
-import type { CredentialSource } from "@openclaw-enterprise/contracts";
+import type { CredentialSource, ConnectionTemplateValues } from "@openclaw-enterprise/contracts";
 import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
 import {
   eligibleGoogleOperations,
@@ -16,6 +16,20 @@ function sourceScope(source: CredentialSource) {
   });
 }
 
+function acceptsRoute(
+  slot: ManagedCredentialSlot,
+  tokenUrl: string | undefined,
+  envVar: string | undefined,
+  scope: ReturnType<typeof googleRequestScope>,
+): boolean {
+  return (
+    tokenUrl === slot.tokenEndpoint &&
+    envVar === slot.delivery.env &&
+    scope !== undefined &&
+    eligibleGoogleOperations(scope).length > 0
+  );
+}
+
 /** Google scopes and routes are connector semantics, independent of catalog presentation. */
 export const googleWorkspaceCredentialPolicy = {
   packageName: "oce-google-workspace",
@@ -25,17 +39,24 @@ export const googleWorkspaceCredentialPolicy = {
     source: CredentialSource,
   ): boolean {
     const config = source.config;
-    const scope = sourceScope(source);
     return (
       source.state === "ready" &&
       source.ownerCapability === "credential_gateway" &&
       source.egress === undefined &&
       source.type === "oauth2-refresh-token" &&
-      config.token_url === slot.tokenEndpoint &&
-      config.env_var === slot.delivery.env &&
       (config.binary === undefined || config.binary === install.binaryPath) &&
-      scope !== undefined &&
-      eligibleGoogleOperations(scope).length > 0
+      acceptsRoute(slot, config.token_url, config.env_var, sourceScope(source))
+    );
+  },
+  acceptsTemplate(slot: ManagedCredentialSlot, template: ConnectionTemplateValues) {
+    return (
+      template.issuer === slot.issuer &&
+      acceptsRoute(
+        slot,
+        template.tokenUrl,
+        template.envVar,
+        googleRequestScope({ ...template.endpoint, scopes: template.scopes }),
+      )
     );
   },
   conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {

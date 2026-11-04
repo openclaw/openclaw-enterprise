@@ -69,3 +69,15 @@ refresh grant.
 Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
 disconnect the account. OCC records the request before retiring the credential
 and the worker can finish an interrupted disconnect.
+
+## Give an Agent access
+
+With permission to update the Agent and operate the saved source, use
+`POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`.
+The account stays in its Namespace and its owner can grant other Agents access.
+
+To withdraw access, clear any plugin or Harness binding that uses the source,
+then use `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`.
+The worker removes access from deployed revisions. Other Agents retain their grants.
+For an empty Google Workspace slot, the Console can also [connect and attach
+an account](../guides/topics/plugins-configure.md#use-the-console) in one visit.
