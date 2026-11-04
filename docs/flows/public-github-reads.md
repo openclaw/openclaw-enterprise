@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-04"
-last_updated_session: authoring-run/bfe7275c-8f39-483b-98a4-680042d905b7
+last_updated_session: authoring-run/8b8f9ff8-9b16-4565-95de-0868a92b35d5
 ---
 
 # Public GitHub read flow
@@ -55,6 +55,11 @@ guard continues to reject reserved identity keys. Omitted or empty selection gra
 nothing; a covering authored deny also withholds the service. OCC saves the
 nonsecret descriptor under `AgentRevision.compute.serviceAccess`. A selected
 Sandbox must acknowledge the exact descriptor in `SandboxPolicySnapshot`.
+`packages/occ/src/state/postgres-state.ts:revisionFromRow` reloads both saved
+objects unchanged. The PostgreSQL snapshot constraint validates the generic
+service shape, unique IDs and Compute owner, and requires any Sandbox service
+acknowledgement to equal the saved Compute services. Old revisions without
+services remain ungranted.
 Protected execution uses `admitProtectedNetworkPolicy`; both paired OpenShell
 compilers consume the frozen facts, rather than importing new Installation rules.
 
@@ -170,6 +175,10 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 08:23: Preserve generic service snapshots through PostgreSQL admission and reload (authoring-run/8b8f9ff8-9b16-4565-95de-0868a92b35d5 - 8207d68072a390cf615fc2170fe89c8b90c3758e)
+
+- 2026-11-04 07:13: Preserve public-service launch facts inside shared model-provider admission (accompanying merge; authoring-run/c6923421-fc77-433e-b0ce-8fb4632fded1 - 35de595e06a0acfe556772fa3eb898f606dc8051)
 
 - 2026-11-04 06:24: Project generated public Git material through the ordinary native read-only profile (accompanying correction; authoring-run/bfe7275c-8f39-483b-98a4-680042d905b7 - f3bcd113bd01ca1c510228b4acb1caaf7d1b70e4)
 

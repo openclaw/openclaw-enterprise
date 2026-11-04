@@ -1080,6 +1080,8 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
             typeof service.configuration !== "object" ||
             Array.isArray(service.configuration),
         ))) ||
+    (revision.sandboxPolicy !== undefined &&
+      !isDeepStrictEqual(revision.sandboxPolicy.serviceAccess, revision.compute.serviceAccess)) ||
     (revision.compute.admission !== undefined &&
       (typeof revision.compute.admission !== "string" ||
         !/^[\x20-\x7e]{1,1024}$/.test(revision.compute.admission))) ||

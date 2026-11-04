@@ -474,7 +474,10 @@
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
-        "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
+        "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it",
+        "PostgreSQL reload preserves ordinary Compute service access",
+        "PostgreSQL reload preserves protected Compute service access",
+        "PostgreSQL reload preserves compute-only Compute service access"
       ]
     },
     {

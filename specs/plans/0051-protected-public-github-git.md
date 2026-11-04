@@ -101,6 +101,8 @@ Task 4 remains in progress. CI registration covers controlled Git reads/transpor
 
 The instrumented local run reproduced a startup refusal before Agent creation: the new Compute reader `installationId` field conflicts with the existing recursive startup-file guard. An offline probe in the selected controller image confirmed it. The correction supplies OCC's runtime identity through generic admission context and removes it from Compute startup inputs. The guard remains intact. Full installed proof is still pending.
 
+PostgreSQL admission and reload now preserve generic Compute service descriptors and exact Sandbox acknowledgement. Real database regression cases cover ordinary and protected selected-reader admission, malformed snapshot refusal, and legacy revisions without service grants. This persistence proof does not qualify an installed Agent.
+
 ## Manual Notes
 
 ## Changelog

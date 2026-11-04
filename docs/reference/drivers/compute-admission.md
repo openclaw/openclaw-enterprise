@@ -30,6 +30,9 @@ Return nonsecret `ComputeServiceAccess` descriptors with unique IDs, the selecte
 Compute identity, endpoint and opaque Driver configuration. OCC freezes them
 under `AgentRevision.compute.serviceAccess`; a selected Sandbox must acknowledge
 them exactly under `SandboxPolicySnapshot.serviceAccess` before effects.
+PostgreSQL preserves both snapshots and rejects unknown descriptor fields,
+duplicate IDs, invalid values and changed Compute owners. Reload uses the saved
+services; revisions without them receive no service grant.
 Kubernetes Compute freezes that runtime ID in its public-reader descriptor and
 checks the registry owner label and rows against it. Its startup peer accepts
 no Installation ID; operator Helm/bootstrap input only initializes registry ownership.
