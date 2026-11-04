@@ -1,4 +1,4 @@
-import { HARNESS_GIT_PROBE_PATH_PATTERN } from "../compute/harness-egress-enrollment.ts";
+import { HARNESS_GIT_PROBE_PREFIX } from "../compute/harness-egress-enrollment.ts";
 import type { InstalledGitMaterial } from "../repo/github/credentials/prepared-repository-git.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { Server } from "@grpc/grpc-js";
@@ -557,11 +557,7 @@ export function createOpenShellOnlineGitAuthority(
     ...options,
     async authorize(request, signal) {
       const { sandboxId, bindingId, requestId, workspace } = request;
-      if (
-        options.previewDenial &&
-        (request.target.path.startsWith("/oce-observe-request/") ||
-          HARNESS_GIT_PROBE_PATH_PATTERN.test(request.target.path))
-      ) {
+      if (options.previewDenial && HARNESS_GIT_PROBE_PREFIX.test(request.target.path)) {
         return { reasonCode: options.previewDenial(request) ?? "preview_challenge_refused" };
       }
       const binding = await options.lookupBinding(

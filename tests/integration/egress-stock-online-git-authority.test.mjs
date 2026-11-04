@@ -1088,9 +1088,11 @@ test(
           assert.equal(requests, 1);
           assert.equal((await send(probePath)).status, 409);
           assert.equal(requests, 1, "replay must not issue another HTTPS request");
-          // Even a signed supervisor cannot reuse a consumed nonce or substitute another repository.
+          // Malformed, replayed and substituted challenges stay on the denial path before binding lookup.
           for (const path of [
             probePath,
+            probePath.replace(/[0-9a-f]{32}\.git/, "bad-nonce.git"),
+            probePath.replace("/info/refs", "/git-upload-pack"),
             "/other/project.git/oce-observe-request/" + "0".repeat(32) + ".git/info/refs",
           ]) {
             const q = request(path);

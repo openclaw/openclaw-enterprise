@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-04
-last_updated_session: authoring-run/8e4a06a2-463e-437c-9f6b-11ea7548f898
+last_updated_session: authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -335,8 +335,8 @@ arms one-use denial: `git-write` probes
 `/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`;
 installation-shaped providers, including `github-repository`, probe
 `/oce-observe-request/<nonce>.git/info/refs`. Both use `service=git-upload-pack`.
-The HTTPS launcher sends no credentials. Before credential lookup, the authority
-checks startup, request and scope; only the matching refusal qualifies.
+The HTTPS launcher sends no credentials. The authority sends every request under either
+probe prefix to the denial handler before binding lookup. Only the exact challenge qualifies.
 Observation alone cannot release the Harness.
 
 `attachmentStatus`/`GetSandboxProviderStatus` retries pending/missing status;
@@ -400,6 +400,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 03:07: Refuse malformed repository probes before binding lookup. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - 05d56a9176b8e2785a4968fdd7d381a7d5c5e263)
 
 - 2026-11-04 01:57: Keep the held Git denial probe within its provider endpoint in the accompanying Driver fix. (authoring-run/8e4a06a2-463e-437c-9f6b-11ea7548f898 - fdca6e74421067adc66dce4f141d153af0355f68)
 
