@@ -187,6 +187,10 @@ test("an individual Agent keeps its fallback heading through a failed read and k
     "Recovered Agent",
   );
   const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const waitForAgentRead = (): ReturnType<Page["waitForResponse"]> =>
+    page.waitForResponse(
+      (response) => response.url() === agentUrl && response.request().method() === "GET",
+    );
   const requests = apiRequests(page, fixture.origin);
   // Hold only the exact Agent read; the Controller still handles session and Namespace access.
   const first = await holdRequests(t, page, agentUrl, {
@@ -200,7 +204,7 @@ test("an individual Agent keeps its fallback heading through a failed read and k
   assert.equal(await heading.textContent(), "Agent details");
   assert.equal(await page.getByRole("heading", { name: agent.name, exact: true }).count(), 0);
 
-  const failed = page.waitForResponse(agentUrl);
+  const failed = waitForAgentRead();
   first.release();
   assert.equal((await failed).status(), 503);
   await page.getByText("Request unavailable", { exact: true }).waitFor();
@@ -213,7 +217,7 @@ test("an individual Agent keeps its fallback heading through a failed read and k
   await retry.requested;
   await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "H1");
   assert.equal(await heading.textContent(), "Agent details");
-  const recovered = page.waitForResponse(agentUrl);
+  const recovered = waitForAgentRead();
   retry.release();
   assert.equal((await recovered).status(), 200);
   await page.getByRole("heading", { level: 1, name: agent.name, exact: true }).waitFor();
