@@ -887,32 +887,37 @@
                     "label": "Find and Run Lanes"
                   },
                   {
-                    "page": "testing/ci/required-checks",
-                    "label": "Required Checks"
-                  },
-                  {
-                    "page": "testing/ci/first-agent-smoke",
-                    "label": "First Agent Smoke"
-                  },
-                  {
-                    "page": "testing/ci/qa-advisory",
-                    "label": "QA Matrix Advisory"
-                  },
-                  {
-                    "page": "testing/ci/full-integration",
-                    "label": "Full Integration"
-                  },
-                  {
-                    "page": "testing/ci/observability-demo",
-                    "label": "Observability Demo"
-                  },
-                  {
-                    "page": "testing/ci/staging-qualification",
-                    "label": "Staging Qualification"
-                  },
-                  {
-                    "page": "testing/ci/k3d-quickstart",
-                    "label": "Local k3d Quickstart"
+                    "group": "Tests",
+                    "pages": [
+                      {
+                        "page": "testing/ci/required-checks",
+                        "label": "Required Checks"
+                      },
+                      {
+                        "page": "testing/ci/first-agent-smoke",
+                        "label": "First Agent Smoke"
+                      },
+                      {
+                        "page": "testing/ci/qa-advisory",
+                        "label": "QA Matrix Advisory"
+                      },
+                      {
+                        "page": "testing/ci/full-integration",
+                        "label": "Full Integration"
+                      },
+                      {
+                        "page": "testing/ci/observability-demo",
+                        "label": "Observability Demo"
+                      },
+                      {
+                        "page": "testing/ci/staging-qualification",
+                        "label": "Staging Qualification"
+                      },
+                      {
+                        "page": "testing/ci/k3d-quickstart",
+                        "label": "Local k3d Quickstart"
+                      }
+                    ]
                   }
                 ]
               }

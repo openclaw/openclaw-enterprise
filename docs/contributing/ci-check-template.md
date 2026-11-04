@@ -58,7 +58,7 @@ scenarios, and workflow-specific results; do not repeat those details in the ind
 Keep setup and credentials in their existing suite guide. Link shared
 [CI configuration](../testing/ci/configuration.md) and
 [cleanup](../testing/ci/run-lanes.md#results-and-cleanup) instead of copying them.
-Link the page from the overview table and register it once under **Testing & CI → CI**.
+Link the page from the overview table and register it once under **Testing & CI → CI → Tests**.
 Preserve old anchors with short pointers when moving existing descriptions.
 
 Keep expected behavior separate from an execution report: a passing PR does not
