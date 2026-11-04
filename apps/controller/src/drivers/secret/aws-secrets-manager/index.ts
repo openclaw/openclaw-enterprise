@@ -24,6 +24,7 @@ import {
   type VersionedSecretValue,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ScopeViolationError } from "@openclaw-enterprise/occ";
+import { currentMutationDeadline } from "../../../admission/mutation-deadline.ts";
 import {
   currentComputeAbortSignal,
   withComputeOperationDeadline,
@@ -220,7 +221,14 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
     mutation = false,
   ): Promise<T> {
     const parent = currentComputeAbortSignal();
-    const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...(parent ? [parent] : [])]);
+    const deadline = Math.min(Date.now() + 30_000, currentMutationDeadline() ?? Infinity);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new DependencyUnavailableError(
+        "AWS Secret operation failed; no mutation was submitted.",
+      );
+    }
+    const signal = AbortSignal.any([AbortSignal.timeout(remaining), ...(parent ? [parent] : [])]);
     let submitted = false;
     let abort: (() => void) | undefined;
     try {
@@ -234,6 +242,10 @@ export class AwsSecretsManagerSecretDriver implements SecretDriver {
       submitted = mutation;
       const result = await Promise.race([operation(signal), cancelled]);
       signal.throwIfAborted();
+      // The event loop can deliver a response before it runs an overdue abort timer.
+      if (Date.now() >= deadline) {
+        throw new Error("AWS request deadline elapsed.");
+      }
       return result;
     } catch {
       // Do not expose AWS diagnostics, values, or credentials. Never recover by name.

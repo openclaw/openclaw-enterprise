@@ -290,6 +290,11 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
+  assert.equal(full.awsDiscovery, false);
+  const aws = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "aws-secret-discovery" });
+  assert.ok(aws.cells.every((cell) => cell.scenarios.length === 0));
+  assert.ok(!aws.requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE"));
+  assert.throws(() => validateQaInputs(aws, {}), /OCC_TEST_QA_AWS_DISCOVERY_ORIGIN/);
   assert.ok(full.repository);
   const isolated = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "git-write",

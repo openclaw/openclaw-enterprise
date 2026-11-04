@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "aws-secret-discovery": ["Codex"],
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
@@ -12,6 +13,15 @@ const scenarioPresets = {
   "git-push-denied": ["Codex"],
   slack: ["Codex"],
 };
+
+// These scenarios own their installation or use one prepared by the operator.
+const separateInstallations = [
+  "sandbox-policy",
+  "plugin-install",
+  "openshell-linear-read",
+  "aws-secret-discovery",
+];
+const optInScenarios = [...separateInstallations, "codex-search-config"];
 
 // One selection contract serves local execution and hosted credential setup.
 // Dependencies (installation, preset, Agent and cleanup) are always included.
@@ -27,15 +37,7 @@ export function selectQaMatrix(env = process.env) {
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
   const scenarios =
     input === "all"
-      ? allScenarios.filter(
-          (name) =>
-            ![
-              "sandbox-policy",
-              "plugin-install",
-              "openshell-linear-read",
-              "codex-search-config",
-            ].includes(name),
-        )
+      ? allScenarios.filter((name) => !optInScenarios.includes(name))
       : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
@@ -61,19 +63,17 @@ export function selectQaMatrix(env = process.env) {
       preset: name,
       scenarios: scenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          scenarioPresets[scenario].includes(name),
+          !separateInstallations.includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          !separateInstallations.includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          !scenarioPresets[scenario].includes(name),
+          !separateInstallations.includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
   );
@@ -100,6 +100,18 @@ export function selectQaMatrix(env = process.env) {
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const awsDiscovery = scenarios.includes("aws-secret-discovery");
+  if (awsDiscovery) {
+    assert.equal(scenarios.length, 1, "Select aws-secret-discovery on its own");
+    assert.notEqual(installation, "compose", "Use the prepared Kubernetes installation");
+    requiredEnv.push(
+      "OCC_TEST_QA_AWS_DISCOVERY_ORIGIN",
+      "OCC_TEST_QA_AWS_DISCOVERY_KEY_FILE",
+      "OCC_TEST_QA_AWS_DISCOVERY_NAMESPACE_ID",
+      "OCC_TEST_QA_AWS_DISCOVERY_AGENT_ID",
+      "OCC_TEST_QA_AWS_DISCOVERY_PLUGIN_ID",
+    );
+  }
   if (linearRead) {
     assert.notEqual(installation, "compose", "OpenShell Linear reads require Kubernetes setup");
     if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
@@ -146,13 +158,17 @@ export function selectQaMatrix(env = process.env) {
     sandboxPolicy,
     pluginInstall,
     linearRead,
+    awsDiscovery,
     cells,
     scenarios,
     requiredEnv,
     repository,
     browser: activeScenarios.some((name) => ["model-ui", "console-secrets"].includes(name)),
     scope:
-      installation === "all" && preset === "all" && scenarios.length === allScenarios.length - 4
+      installation === "all" &&
+      preset === "all" &&
+      optInScenarios.every((name) => !scenarios.includes(name)) &&
+      scenarios.length === allScenarios.length - optInScenarios.length
         ? "full"
         : "partial:selected",
   };

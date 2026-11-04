@@ -437,16 +437,17 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Scenario                | In advisory | Presets         | Checks                                                                                                                                  |
-| ----------------------- | ----------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `model-ui`              | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                                            |
-| `console-secrets`       | Yes (Codex) | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation. |
-| `git-write`             | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                             |
-| `git-push-denied`       | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                                              |
-| `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                              |
-| `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                    |
-| `openshell-linear-read` | No          | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                           |
-| `codex-search-config`   | No          | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.         |
+| Scenario                | In advisory | Presets         | Checks                                                                                                                                                                                   |
+| ----------------------- | ----------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model-ui`              | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                                                                                             |
+| `console-secrets`       | Yes (Codex) | OpenClaw, Codex | Console Secret lifecycle and Agent draft references; Namespace deletion refusal names the deployed Agent and scopes cleanup navigation.                                                  |
+| `git-write`             | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                              |
+| `git-push-denied`       | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                               |
+| `calendar`              | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                                                                               |
+| `slack`                 | No          | Codex           | Threaded reply and new root message.                                                                                                                                                     |
+| `aws-secret-discovery`  | No          | Codex           | Hosted plugin details for a saved Agent on a prepared Kubernetes installation with AWS Secret storage. See [setup and proof](plugins.md#saved-agent-discovery-with-aws-secrets-manager). |
+| `openshell-linear-read` | No          | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                            |
+| `codex-search-config`   | No          | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                          |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
@@ -465,7 +466,7 @@ available model. The scenario proves generated configuration and native startup;
 it does not prove live web-search results. It is excluded from `all` and advisory
 jobs because its explicit endpoint and API-key inputs differ from account-login QA.
 
-All combinations check startup and authenticated console login. Git alone starts
+Scenarios that create an installation check startup and authenticated console login. Git alone starts
 the broker. Linear reads use the explicit `openshell-linear-read` scenario,
 which boots a separate shipped OpenShell stack and requires a connected Codex
 identity plus the read fixture described in [OpenShell testing](openshell.md#linear-tool-use-qualification).

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-10-29"
-last_updated_session: "authoring-run/9757ef0b-8f07-4e22-8913-5c4db71a4b97"
+updated: "2026-11-04"
+last_updated_session: "authoring-run/1c3f9403-5e44-4bb1-b837-3f2e2fa9093a"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -109,29 +109,18 @@ the budget; a create that was not sent stored nothing and gets no cleanup read.
 
 `apps/controller/src/drivers/secret/aws-secrets-manager/index.ts:AwsSecretsManagerSecretDriver.create`
 
-The AWS selection captures credentials and qualifies their account with STS before
-sending material to the pinned regional HTTPS endpoint. Both calls use the same signing
-identity. Credential acquisition rejects on cancellation or deadline without
-awaiting the provider; late credentials cannot advance to STS or creation.
-After ownership checks, update and delete resolve and validate signing credentials
-before mutation. Each mutation uses a fixed credential snapshot
-and a pinned regional client, so provider refresh cannot fail inside the mutating send.
-Provider, STS, and read-only failures report no submitted mutation. Once a
-mutation is submitted, failures through response and post-create ownership/version
-verification require reconciliation, without returning a reference.
-Resource names and creation tokens derive from the
-OCC Secret ID; unknown effects are not automatically replayed. A separate HTTP
-create request generates a new ID; unknown outcomes still require operator
-reconciliation. The Driver stores tagged material under a Namespace-specific
-prefix and returns an encoded complete-ARN binding in OCC's reference format.
-`owned` verifies that binding and live tags before operations. Updates use
-`PutSecretValue`; trusted reads use an exact VersionId with `AWSCURRENT` and
-recheck ownership/version before returning. Deletion schedules 30-day recovery.
-Missing resources, replacements, stale reads, and ambiguous failures fail closed;
-there is no name fallback, automatic cleanup, or CAS. The
-[AWS reference](../reference/drivers/secret.md#aws-secrets-manager) owns IAM and
-recovery requirements. This path ends at storage or trusted server-side use;
-existing Compute does not project AWS material into workloads.
+The AWS Driver verifies the account with STS and uses the same credentials to
+create the tagged Secret. It checks the ARN, tags and current version before
+returning a reference to OCC. Each step observes the HTTP write deadline.
+A failed create after submission requires reconciliation. A new API request
+allocates a new Secret ID.
+
+For saved-Agent hosted plugin discovery, OCC calls `withValue`. The Driver
+checks ownership, reads `AWSCURRENT` by version ID and checks ownership and
+version again. OCC rechecks the binding and grants before passing the value
+to the Plugin Driver. This server-side path ends before workload projection.
+See [AWS Secret storage](../reference/drivers/aws-secrets-manager.md) for
+IAM, updates and recoverable deletion.
 
 ### 3. Bind a source, then admit references
 
@@ -345,6 +334,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 23:02: Trace AWS writes under the HTTP deadline and saved-Agent discovery. (authoring-run/1c3f9403-5e44-4bb1-b837-3f2e2fa9093a - d7a2560b8b0fa2cc38b0056cc68f65ceb6f48d0e)
 
 - 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
 

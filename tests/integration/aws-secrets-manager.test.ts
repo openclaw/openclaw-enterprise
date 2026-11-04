@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { withMutationDeadline } from "../../apps/controller/src/admission/mutation-deadline.ts";
 import { withComputeOperationDeadline } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import type { Secret } from "../../packages/contracts/src/index.ts";
 import { AwsSecretsManagerSecretDriver } from "../../apps/controller/src/drivers/secret/aws-secrets-manager/index.ts";
@@ -139,7 +140,7 @@ function backend(configuration = options, selection: { id?: string } = {}) {
   };
 }
 
-async function installedAwsSecretsManager(t: TestContext) {
+async function awsFixtureFromInstallation(t: TestContext) {
   const configuration = createInstallationDriverConfiguration();
   const config = {
     ...configuration,
@@ -169,8 +170,8 @@ async function stored(b: ReturnType<typeof backend>): Promise<Secret> {
   };
 }
 
-test("production Installation selects the AWS adapter and OCC authorizes its lifecycle", async (t) => {
-  const b = await installedAwsSecretsManager(t);
+test("Installation selects AWS and OCC authorizes the Secret lifecycle against a simulated service", async (t) => {
+  const b = await awsFixtureFromInstallation(t);
   const { config, driver } = b;
   assert.equal("compareAndSwap" in driver, false);
   const iamState = principalIAMState(["owner", "denied"], "aws-secrets");
@@ -532,6 +533,30 @@ test("account qualification refuses wrong or unavailable STS identity before any
     });
   }
   assert.equal(b.calls.length, 0);
+});
+
+test("an expired API write budget prevents a create after a slow STS response", async (t) => {
+  const b = backend();
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const deadline = Date.now() + 12_000;
+  let identityCalls = 0;
+  const driver = new AwsSecretsManagerSecretDriver(options, {
+    ...b.injection,
+    identityClient: {
+      send: async () => {
+        identityCalls++;
+        t.mock.timers.setTime(deadline + 1);
+        return { Account: options.accountId };
+      },
+    },
+  });
+  const identity = { id: `sec_${randomUUID()}`, namespaceId: `ns_${randomUUID()}`, name: "key" };
+  await assert.rejects(
+    withMutationDeadline(deadline, () => driver.create(identity, "synthetic-value")),
+    { name: "DependencyUnavailableError", message: /no mutation was submitted/ },
+  );
+  assert.equal(identityCalls, 1);
+  assert.deepEqual(b.calls, []);
 });
 
 for (const cancellation of ["abort", "deadline"] as const) {
@@ -971,8 +996,8 @@ for (const mutation of ["PutSecretValue", "DeleteSecret"] as const) {
   }
 }
 
-test("Saved Agent discovery with installation-selected AWS Secret recovers after Get is denied", async (t) => {
-  const aws = await installedAwsSecretsManager(t);
+test("saved Agent discovery recovers after a simulated AWS GetSecretValue denial", async (t) => {
+  const aws = await awsFixtureFromInstallation(t);
   const app = await createConsoleAppFixture(t, { secretDriver: aws.driver });
   const fixture = await setUpPluginDiscovery(app);
   const { agent, secret, path } = await createSavedAgent(fixture);

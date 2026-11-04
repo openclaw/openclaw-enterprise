@@ -15,6 +15,41 @@ Run Agent plugin tests for API, Driver, persistence, and runtime behavior from t
 
 The discovery fixture uses simulated provider responses. These checks do not prove a live provider or native runtime.
 
+### Saved-Agent discovery with AWS Secrets Manager
+
+Use a disposable, already installed controller built from the candidate. Select
+[the AWS Secret Driver](../reference/drivers/aws-secrets-manager.md) and
+`codex-plugin` with `catalogSource: hosted`. In a ready Namespace, use the
+Secret API to store an authorized Service Accounts credential. Bind that Secret
+as the `codex_pat` source of a saved dedicated Agent. Grant the Agent's
+ServicePrincipal and the caller `operate` on the exact Secret. The caller also
+needs Agent `read` and `update`, Installation `read`, and Installation
+`administer` to inspect the selected Drivers.
+
+Forward the installed API to loopback. Set these inputs for the test process:
+
+| Input                                    | Value                                                                             |
+| ---------------------------------------- | --------------------------------------------------------------------------------- |
+| `OCC_TEST_QA_AWS_DISCOVERY_ORIGIN`       | Forwarded API origin, such as `http://127.0.0.1:18080`, without a trailing slash. |
+| `OCC_TEST_QA_AWS_DISCOVERY_KEY_FILE`     | Private regular file containing the authorized OCC service key.                   |
+| `OCC_TEST_QA_AWS_DISCOVERY_NAMESPACE_ID` | Saved Agent's Namespace ID.                                                       |
+| `OCC_TEST_QA_AWS_DISCOVERY_AGENT_ID`     | Saved Agent's ID.                                                                 |
+| `OCC_TEST_QA_AWS_DISCOVERY_PLUGIN_ID`    | Remote ID of a known entry available to the hosted account.                       |
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes OCC_TEST_QA_PRESET=Codex \
+  OCC_TEST_QA_SCENARIOS=aws-secret-discovery node --test tests/integration/qa-matrix-real.test.mjs
+```
+
+The scenario checks the selected Drivers and Agent binding, then requests one
+plugin's details without supplying a credential. Expect the selected entry and
+an OCC request ID. Retain the installed image digest, test time and matching
+AWS audit evidence of the controller's `GetSecretValue` on the bound ARN. This
+checks a server-side Agent operation. Workload projection, model execution,
+protected sender dispatch and IAM denial after a tag change require separate
+evidence. The scenario leaves the prepared installation and its resources in
+place for their owner to clean up.
+
 ### Kubernetes status transport
 
 Prepare a [disposable Kubernetes fixture](kubernetes.md), a worker node, and a migrated `openclaw_k8s_*` database. Set `OCC_TEST_KUBERNETES_KUBECONFIG`, `OCC_TEST_KUBERNETES_CONTEXT`, `OCC_TEST_KUBERNETES_IMAGE`, `OCC_TEST_DATABASE_URL`, and `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS` to the comma-separated API-server proxy source CIDRs from the [networking reference](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
