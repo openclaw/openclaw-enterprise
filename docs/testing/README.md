@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Testing and CI
 
 ## Overview

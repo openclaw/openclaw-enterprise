@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Configure CI
 
 Set Actions variables/secrets under **Settings → Secrets and variables → Actions**

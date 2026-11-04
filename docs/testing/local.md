@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Local, browser, and metrics tests
 
 ## Overview

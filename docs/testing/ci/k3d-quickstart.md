@@ -1,5 +1,6 @@
 ---
 kind: reference/ci
+tags: [human_verified]
 ---
 
 # Check the local k3d quickstart

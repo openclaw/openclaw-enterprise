@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Verify protected static inference
 
 New local protected static-inference launches are retired. The launcher rejects

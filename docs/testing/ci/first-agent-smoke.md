@@ -1,5 +1,6 @@
 ---
 kind: reference/ci
+tags: [human_verified]
 ---
 
 # First Agent Smoke

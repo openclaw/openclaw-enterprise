@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # CI
 
 Choose a test workflow for its scenarios, prerequisites, run procedure, and expected

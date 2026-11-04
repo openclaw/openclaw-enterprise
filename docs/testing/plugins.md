@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Agent plugin testing
 
 ## Overview

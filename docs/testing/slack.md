@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Slack and ChatGPT service-account tests
 
 ## Overview

@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # What the OpenShell Sandbox suite proves
 
 These are the checks in `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`.

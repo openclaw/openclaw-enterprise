@@ -1,5 +1,6 @@
 ---
 doc-schema-version: 1
+tags: [human_verified]
 ---
 
 # Repository credential tests
