@@ -11,6 +11,9 @@
     "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo",
     "paths": {
       "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"],
+      "/console/agents/plugin-fields.mjs": [
+        "../apps/controller/src/console/agents/plugin-fields.mts"
+      ],
       "/console/default-codex-preset.mjs": [
         "../scripts/console-storybook/default-codex-preset.d.mts"
       ],

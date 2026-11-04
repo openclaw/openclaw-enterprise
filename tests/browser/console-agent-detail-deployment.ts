@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { Route, Response as PlaywrightResponse } from "playwright";
-import type { PluginFieldsOptions } from "../../apps/controller/src/console/agents/plugin-fields.mts";
+import type {
+  CatalogEntry,
+  PluginFieldCatalog,
+  PluginFieldsOptions,
+} from "/console/agents/plugin-fields.mjs";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import {
   CodexPluginDriver,
@@ -78,6 +82,20 @@ import {
   OPENCLAW_SANDBOX_SETTINGS,
   openClawSandboxRefusal,
 } from "../helpers/admitted-configuration.mjs";
+
+type PluginScopeFixture = {
+  fields: ReturnType<typeof import("/console/agents/plugin-fields.mjs").createPluginFields>;
+  catalog: PluginFieldCatalog & { entries: [CatalogEntry, CatalogEntry] };
+  loads: Parameters<NonNullable<PluginFieldsOptions["onLoadPlugins"]>>[];
+  cancellations(): number;
+};
+
+declare global {
+  interface Window {
+    diagnosticsAnnouncements?: string[];
+    pluginScopeFixture?: PluginScopeFixture;
+  }
+}
 
 type WireRevision = Awaited<
   ReturnType<Awaited<ReturnType<typeof createConsoleAppFixture>>["deployAgent"]>
@@ -375,12 +393,12 @@ test("Agent detail separates the current version, viewed version, and latest dep
       return false;
     };
     const announcements: string[] = [];
-    Reflect.set(globalThis, "diagnosticsAnnouncements", announcements);
+    globalThis.window.diagnosticsAnnouncements = announcements;
     const observed = globalThis.document.querySelector(".version-diagnostics");
     if (!observed) {
       throw new Error("Missing diagnostics panel");
     }
-    new globalThis.MutationObserver((records) => {
+    new globalThis.MutationObserver((records: MutationRecord[]) => {
       for (const record of records) {
         const nodes = record.type === "characterData" ? [record.target] : [...record.addedNodes];
         for (const node of nodes) {
@@ -415,7 +433,13 @@ test("Agent detail separates the current version, viewed version, and latest dep
     assert.equal(pathRequests(requests, "GET", recordPath).length, recordReads + 1);
     assert.equal(await hasFocus(waiting), true);
     assert.deepEqual(
-      await page.evaluate((): unknown => Reflect.get(globalThis, "diagnosticsAnnouncements")),
+      await page.evaluate(() => {
+        const announcements = globalThis.window.diagnosticsAnnouncements;
+        if (!announcements) {
+          throw new Error("Missing diagnostics announcements");
+        }
+        return announcements;
+      }),
       ["Waiting for diagnostic results…"],
     );
     assert.equal(await runDiagnostics.isDisabled(), true);
@@ -2710,27 +2734,31 @@ test("Plugin picker clears tab memory when its catalog or credential scope is re
   // Exercise the same component API used by discovery.reset(), without real
   // credentials or a second implementation of catalog/request handling.
   await page.evaluate(async () => {
-    const moduleUrl = "/console/agents/plugin-fields.mjs";
-    const module: unknown = await import(moduleUrl);
-    if (
-      typeof module !== "object" ||
-      module === null ||
-      !("createPluginFields" in module) ||
-      typeof module.createPluginFields !== "function"
-    ) {
-      throw new Error("Missing createPluginFields export");
-    }
+    const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
     const input = globalThis.document.createElement("textarea");
     input.id = "scope-plugin-selections";
     input.value = JSON.stringify({ calendar: { enabled: true }, documents: { enabled: true } });
-    const entries = [
-      { id: "calendar", name: "Calendar", tools: [{ id: "read", name: "Read events" }] },
-      { id: "documents", name: "Documents", tools: [{ id: "read", name: "Read documents" }] },
+    const entries: [CatalogEntry, CatalogEntry] = [
+      {
+        id: "calendar",
+        name: "Calendar",
+        tools: [{ id: "read", name: "Read events", ownerId: "calendar" }],
+      },
+      {
+        id: "documents",
+        name: "Documents",
+        tools: [{ id: "read", name: "Read documents", ownerId: "documents" }],
+      },
     ];
-    const catalog = { status: "ready", canLoad: true, entries, knownEntries: entries };
+    const catalog: PluginScopeFixture["catalog"] = {
+      status: "ready",
+      canLoad: true,
+      entries,
+      knownEntries: entries,
+    };
     const loads: Parameters<NonNullable<PluginFieldsOptions["onLoadPlugins"]>>[] = [];
     let cancellations = 0;
-    const options = {
+    const options: PluginFieldsOptions = {
       input,
       catalog,
       onLoadPlugins: (...args: Parameters<NonNullable<PluginFieldsOptions["onLoadPlugins"]>>) =>
@@ -2739,23 +2767,15 @@ test("Plugin picker clears tab memory when its catalog or credential scope is re
         cancellations += 1;
       },
     };
-    const fields: unknown = Reflect.apply(module.createPluginFields, undefined, [options]);
-    if (
-      typeof fields !== "object" ||
-      fields === null ||
-      !("section" in fields) ||
-      !(fields.section instanceof HTMLElement)
-    ) {
-      throw new Error("Invalid plugin fields section");
-    }
+    const fields = createPluginFields(options);
     fields.section.id = "scope-plugin-picker";
     globalThis.document.body.append(fields.section);
-    Reflect.set(globalThis, "pluginScopeFixture", {
+    globalThis.window.pluginScopeFixture = {
       fields,
       catalog,
       loads,
       cancellations: () => cancellations,
-    });
+    };
   });
   const picker = page.locator("#scope-plugin-picker");
   await picker.getByRole("button", { name: "Configure plugins", exact: true }).click();
@@ -2770,34 +2790,12 @@ test("Plugin picker clears tab memory when its catalog or credential scope is re
   await dialog.getByRole("searchbox", { name: "Filter tools" }).fill("documents");
   await dialog.getByRole("searchbox", { name: "Filter configured plugins" }).fill("documents");
   await page.evaluate(() => {
-    const fixture: unknown = Reflect.get(globalThis, "pluginScopeFixture");
-    if (
-      typeof fixture !== "object" ||
-      fixture === null ||
-      !("fields" in fixture) ||
-      !("catalog" in fixture)
-    ) {
+    const fixture = globalThis.window.pluginScopeFixture;
+    if (!fixture) {
       throw new Error("Missing plugin scope fixture");
     }
     const { fields, catalog } = fixture;
-    if (
-      typeof fields !== "object" ||
-      fields === null ||
-      !("setCatalog" in fields) ||
-      typeof fields.setCatalog !== "function"
-    ) {
-      throw new Error("Missing setCatalog");
-    }
-    if (
-      typeof catalog !== "object" ||
-      catalog === null ||
-      !("entries" in catalog) ||
-      !Array.isArray(catalog.entries)
-    ) {
-      throw new Error("Missing catalog entries");
-    }
-    const entry: unknown = catalog.entries[1];
-    Reflect.apply(fields.setCatalog, fields, [{ ...catalog, entries: [entry] }]);
+    fields.setCatalog({ ...catalog, entries: [catalog.entries[1]] });
   });
   await dialog.getByRole("button", { name: "Available plugins", exact: true }).click();
   assert.equal(await dialog.getByRole("heading", { name: "Calendar", exact: true }).count(), 0);
@@ -2805,8 +2803,8 @@ test("Plugin picker clears tab memory when its catalog or credential scope is re
   await dialog.getByRole("searchbox", { name: "Search plugins" }).fill("new query");
   assert.deepEqual(
     await page.evaluate(() => {
-      const fixture: unknown = Reflect.get(globalThis, "pluginScopeFixture");
-      if (typeof fixture !== "object" || fixture === null || !("loads" in fixture)) {
+      const fixture = globalThis.window.pluginScopeFixture;
+      if (!fixture) {
         throw new Error("Missing plugin loads");
       }
       return fixture.loads;
@@ -2824,36 +2822,20 @@ test("Plugin picker clears tab memory when its catalog or credential scope is re
   );
   assert.equal(
     await page.evaluate(() => {
-      const fixture: unknown = Reflect.get(globalThis, "pluginScopeFixture");
-      if (
-        typeof fixture !== "object" ||
-        fixture === null ||
-        !("cancellations" in fixture) ||
-        typeof fixture.cancellations !== "function"
-      ) {
+      const fixture = globalThis.window.pluginScopeFixture;
+      if (!fixture) {
         throw new Error("Missing cancellation counter");
       }
-      const count: unknown = Reflect.apply(fixture.cancellations, fixture, []);
-      return count;
+      return fixture.cancellations();
     }),
     2,
   );
   await page.evaluate(() => {
-    const fixture: unknown = Reflect.get(globalThis, "pluginScopeFixture");
-    if (typeof fixture !== "object" || fixture === null || !("fields" in fixture)) {
+    const fixture = globalThis.window.pluginScopeFixture;
+    if (!fixture) {
       throw new Error("Missing plugin fields");
     }
-    const fields = fixture.fields;
-    if (
-      typeof fields !== "object" ||
-      fields === null ||
-      !("resetSearch" in fields) ||
-      typeof fields.resetSearch !== "function"
-    ) {
-      throw new Error("Missing resetSearch");
-    }
-    const result: unknown = Reflect.apply(fields.resetSearch, fields, []);
-    return result;
+    return fixture.fields.resetSearch();
   });
   assert.equal(
     await dialog.getByRole("searchbox", { name: "Filter configured plugins" }).inputValue(),
