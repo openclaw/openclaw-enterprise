@@ -1786,6 +1786,15 @@ test(
       GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
       "expected a policy-qualified runtime",
     );
+    // Staging runs this trusted checkout against the reviewed October 30 image.
+    // Its source and bridge hashes stay fixed when the current runtime pin advances.
+    const expectedSource = historicalCodex
+      ? {
+          commit: "554f0b886bde6c089578c49967227f8b50d1cf16",
+          sourceArchiveSha256: "1532c8e1baf84ecae6080aee6d15003afd2458aeaaeaa30b0504818b000c82d9",
+          buildTimestamp: "2026-10-28T22:17:21Z",
+        }
+      : source;
     const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
     const codexExecutableSource = AGENT_RUNTIME_ENTRYPOINT.match(
       /^function codexExecutable\(\) \{\n[\s\S]*?\n\}\n/m,
@@ -1817,13 +1826,25 @@ if (${historicalCodex}) {
 } else {
   assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
 }
-assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "6b8d49759513caf93231af7335e82025f56c778e92d79a2c5cbfce7f1fbb80b3");
+assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${JSON.stringify(
+      historicalCodex
+        ? "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804"
+        : "6b8d49759513caf93231af7335e82025f56c778e92d79a2c5cbfce7f1fbb80b3",
+    )});
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
   "openclaw-codex-full-access-profile.patch": "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-  "openclaw-control-ui-browser-reconnect.patch": "7ada72afd102ab0776b4b31a783191d2453558b6e932f1660d6294cb51cfe669",
-  "openclaw-terminated-gateway-namespace.patch": "7903bcd6b97c77ea340ea721737962afd4a6a3f68c905bec9f3ff3b04ccb0d97",
+  "openclaw-control-ui-browser-reconnect.patch": ${JSON.stringify(
+    historicalCodex
+      ? "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947"
+      : "7ada72afd102ab0776b4b31a783191d2453558b6e932f1660d6294cb51cfe669",
+  )},
+  "openclaw-terminated-gateway-namespace.patch": ${JSON.stringify(
+    historicalCodex
+      ? "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b"
+      : "7903bcd6b97c77ea340ea721737962afd4a6a3f68c905bec9f3ff3b04ccb0d97",
+  )},
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   ...(${historicalCodex} ? {
     "stock-codex-0.163.0-alpha.2-dependency-pin.patch": "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
@@ -2017,7 +2038,7 @@ const deadline = setTimeout(() => {
       "-e",
       script,
       JSON.stringify(defaultPluginPolicy),
-      JSON.stringify(source),
+      JSON.stringify(expectedSource),
     ]);
     assert.match(stdout, /shared-reviewed-codex-ready/);
   },
