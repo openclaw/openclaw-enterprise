@@ -226,8 +226,9 @@ export interface ComputePreflightResult {
 }
 
 export interface ComputeDriver extends Driver {
-  /** Select services from the original source Configuration before Sandbox normalization. */
+  /** Select services from original Configuration before Sandbox normalization, using OCC runtime identity. */
   admitServiceAccess?(input: {
+    readonly installationId: string;
     readonly configuration: Readonly<OpenClawConfigurationDocument>;
     readonly harness: Readonly<RevisionHarnessDescriptor>;
   }): readonly ComputeServiceAccess[];

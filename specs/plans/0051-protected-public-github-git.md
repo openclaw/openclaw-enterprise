@@ -78,7 +78,7 @@ Compute creates one owned revision Secret with a random capability, and publishe
 - [x] Implement Compute service contribution, owned capability and registry lifecycle, lease refresh and withdrawal acknowledgement. Extend runtime projection for ordinary and protected Harnesses. Protect secret material from descriptions/logs.
 - [x] Add supervisor-only reader egress for protected execution; keep ordinary selected Harness egress. Deliver trust and authorization registry through Helm/profile inputs, with explicit all/list Installation scope and required verified TLS. Approve both GitHub Git and API destination CIDRs.
 - [x] Run transport, Compute lifecycle, chart/profile and runtime-file checks. Commit with sign-off.
-- [ ] Correct the runtime Installation identity handoff and prove full startup-file loading with the reader enabled; startup inputs must not contain the reserved ID field.
+- [x] Correct the runtime Installation identity handoff and prove full startup-file loading with the reader enabled; startup inputs must not contain the reserved ID field.
 
 ## Task 4: Local deployment proof, QA registration and current docs
 

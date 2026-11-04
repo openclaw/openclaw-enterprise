@@ -344,7 +344,7 @@
     {
       "path": "tests/integration/profile-public-github-read.test.mjs",
       "expectedTests": [
-        "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer"
+        "Codex profile pairs authenticated HTTPS public GitHub reader and the revision's exact network peer"
       ]
     },
     {

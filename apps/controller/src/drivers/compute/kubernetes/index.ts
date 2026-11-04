@@ -536,7 +536,6 @@ export interface KubernetesComputeDriverOptions {
     /** Private ClusterIP of the credential-free reader in this execution cluster. */
     readonly publicGithubRead?: KubernetesWorkloadPeer & {
       readonly address: string;
-      readonly installationId?: string;
       readonly authorizationConfigMapName?: string;
       readonly caBundle?: string;
     };
@@ -3479,12 +3478,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             properties: {
               ...WORKLOAD_PEER_SCHEMA.properties,
               address: { type: "string", minLength: 1 },
-              installationId: {
-                type: "string",
-                minLength: 1,
-                maxLength: 128,
-                pattern: "^[a-zA-Z0-9_-]+$",
-              },
               authorizationConfigMapName: { type: "string", minLength: 1 },
               caBundle: { type: "string", minLength: 1, maxLength: 65536 },
             },
@@ -14351,13 +14344,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   admitServiceAccess(input: {
+    readonly installationId: string;
     readonly configuration: Readonly<OpenClawConfigurationDocument>;
     readonly harness: Readonly<RevisionHarnessDescriptor>;
   }): readonly ComputeServiceAccess[] {
     const reader = this.options.network.publicGithubRead;
     if (
       !reader?.authorizationConfigMapName ||
-      !reader.installationId ||
+      typeof input.installationId !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(input.installationId) ||
       !reader.caBundle ||
       !this.options.runtime ||
       input.harness.id !== "codex" ||
@@ -14399,7 +14394,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           policy: structuredClone(policy),
           peer: { namespace: reader.namespace, podLabels: { ...reader.podLabels } },
           authorizationConfigMapName: reader.authorizationConfigMapName,
-          installationId: reader.installationId,
+          installationId: input.installationId,
           caBundle: reader.caBundle,
         },
       },
@@ -14420,7 +14415,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       selected.length !== 1 ||
       !reader?.authorizationConfigMapName ||
       !reader.caBundle ||
-      !reader.installationId ||
       revision.harness.id !== "codex" ||
       revision.harness.mode !== "dedicated" ||
       service.driverId !== this.id ||
@@ -14431,7 +14425,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         podLabels: reader.podLabels,
       }) ||
       service.configuration.authorizationConfigMapName !== reader.authorizationConfigMapName ||
-      service.configuration.installationId !== reader.installationId ||
+      typeof service.configuration.installationId !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(service.configuration.installationId) ||
       service.configuration.caBundle !== reader.caBundle
     ) {
       throw new ConfigurationFailure("The admitted public GitHub reader service is unavailable.");

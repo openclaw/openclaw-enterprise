@@ -1736,6 +1736,7 @@ async function protectedOpenShellComposition(
     installationAccess = false,
     preview = false,
     gatewayVersion = "0.1.5",
+    configurationValues,
   } = {},
 ) {
   class ProtectedGitComputeDriver extends OpenShellGitComputeDriver {
@@ -1763,6 +1764,7 @@ async function protectedOpenShellComposition(
       .map(({ repositoryRef }) => repositoryRef)
       .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
     installationAccess,
+    configurationValues,
   });
   const sandbox = repositorySandbox(f.registry);
   const registration = "oce-prepared-git";
@@ -2375,6 +2377,59 @@ test("protected Agent admission requires exact protected-network acknowledgement
   assert.equal(oldRevision.sandboxPolicy.serviceAccess, undefined);
   assert.deepEqual(frozen.sandboxPolicy.serviceAccess, [service]);
 });
+
+for (const protectedExecution of [false, true]) {
+  test(`${protectedExecution ? "protected" : "ordinary"} Agent deployment binds the real reader descriptor to OCC runtime identity`, async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const reader = {
+      namespace: "reader",
+      podLabels: { app: "reader" },
+      address: "10.96.0.55",
+      authorizationConfigMapName: "reader-authorizations",
+      caBundle: tls.caBundle,
+    };
+    const values = createHarnessConfiguration("codex", "gpt-5.1");
+    values.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
+    // Authored plugin data must never choose the Installation owning the service.
+    values.plugins.entries.codex.config.installationId = "ins_authored";
+    const f = protectedExecution
+      ? await protectedOpenShellComposition(t, { advertised: true, configurationValues: values })
+      : await fixture(t, { repositories: false, harness: "codex", configurationValues: values });
+    const compute = f.compute;
+    compute.options.network.publicGithubRead = reader;
+    const agent = await f.createAgent({ executionMode: "dedicated" });
+    await f.prepareDeployment(agent);
+    const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
+    assert.equal(deployed.status, 202, JSON.stringify(deployed));
+    const revision = await f.state.read((view) =>
+      view.revisions.findRevision(f.namespace.id, agent.id, deployed.data.id),
+    );
+    assert.equal(revision.compute.serviceAccess?.length, 1);
+    assert.equal(revision.compute.serviceAccess[0].configuration.installationId, f.installation.id);
+    assert.equal(
+      revision.executionAdmission.mode,
+      protectedExecution ? "protected" : "unprotected",
+    );
+    if (protectedExecution) {
+      assert.deepEqual(revision.sandboxPolicy.serviceAccess, revision.compute.serviceAccess);
+    } else {
+      assert.equal(revision.sandboxPolicy, undefined);
+    }
+    assert.equal(
+      compute.pluginRuntimeSnapshot(revision).runtime.publicGithubRead.endpoint,
+      "https://10.96.0.55:8080",
+    );
+    // Persisted identity is covered by the exact admission fingerprint even without a Sandbox.
+    const changed = structuredClone(revision);
+    changed.compute.serviceAccess[0].configuration.installationId = "ins_other";
+    assert.throws(
+      () => compute.pluginRuntimeSnapshot(changed),
+      /exact Compute admission|not acknowledged/,
+    );
+    delete changed.compute.serviceAccess[0].configuration.installationId;
+    assert.throws(() => compute.pluginRuntimeSnapshot(changed), /reader service is unavailable/);
+  });
+}
 
 test("Compute-only ordinary Agent revisions freeze service facts without requiring a Sandbox", async (t) => {
   const compute = kubernetesCompute();

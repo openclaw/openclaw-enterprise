@@ -1,5 +1,6 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -3009,12 +3010,15 @@ test("public Git read admission freezes the authored Agent scope and exact servi
   const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
   const reader = f.driver.options.network.publicGithubRead;
   Object.assign(reader, {
-    installationId: "installation-test",
     authorizationConfigMapName: "public-github-authorizations",
     caBundle: "public-ca",
   });
   const source = structuredClone(f.revision.configuration);
-  const input = { configuration: source, harness: f.revision.harness };
+  const input = {
+    installationId: "installation-test",
+    configuration: source,
+    harness: f.revision.harness,
+  };
   assert.deepEqual(
     f.driver.admitServiceAccess(input),
     [],
@@ -3062,12 +3066,12 @@ test("admitted public Git runtime carries only nonsecret configuration and a dis
   const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
   const originalLauncher = f.driver.pluginRuntimeSnapshot(f.revision).entrypoint;
   Object.assign(f.driver.options.network.publicGithubRead, {
-    installationId: "installation-test",
     authorizationConfigMapName: "public-github-authorizations",
     caBundle: "public-ca",
   });
   f.revision.configuration.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
   const services = f.driver.admitServiceAccess({
+    installationId: "installation-test",
     configuration: f.revision.configuration,
     harness: f.revision.harness,
   });
@@ -3111,12 +3115,12 @@ for (const operation of ["stopRevision", "retireRevision"]) {
     // Resume the owned runtime with its service admission, after its external
     // authorization registry has disappeared. Shutdown must still fence it.
     Object.assign(f.driver.options.network.publicGithubRead, {
-      installationId: "installation-test",
       authorizationConfigMapName: "unavailable-authorizations",
       caBundle: "public-ca",
     });
     f.revision.configuration.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
     f.revision.compute.serviceAccess = f.driver.admitServiceAccess({
+      installationId: "installation-test",
       configuration: f.revision.configuration,
       harness: f.revision.harness,
     });
@@ -3134,12 +3138,12 @@ test("service maintenance fences the owned runtime when its admitted reader peer
   delete f.revision.repositoryCredentials;
   await f.driver.prepareRevision(f.revision, f.context());
   Object.assign(f.driver.options.network.publicGithubRead, {
-    installationId: "installation-test",
     authorizationConfigMapName: "unavailable-authorizations",
     caBundle: "public-ca",
   });
   f.revision.configuration.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
   f.revision.compute.serviceAccess = f.driver.admitServiceAccess({
+    installationId: "installation-test",
     configuration: f.revision.configuration,
     harness: f.revision.harness,
   });
@@ -3151,6 +3155,71 @@ test("service maintenance fences the owned runtime when its admitted reader peer
   );
   assert.equal(
     f.deployments().filter((deployment) => deployment.metadata.name.startsWith("agent-")).length,
+    0,
+  );
+});
+
+test("reader service maintenance enforces the frozen runtime identity at registry ownership boundaries", async () => {
+  const installationId = "ins_runtime_owner";
+  const reader = {
+    ...publicReader,
+    authorizationConfigMapName: "authorizations",
+    caBundle: "public-ca",
+  };
+  const f = await fixture("dedicated", undefined, { publicGithubRead: reader });
+  f.revision.configuration.plugins.entries.codex.config.publicGithubRead = { mode: "all" };
+  f.revision.compute.serviceAccess = f.driver.admitServiceAccess({
+    installationId,
+    configuration: f.revision.configuration,
+    harness: f.revision.harness,
+  });
+  assert.equal(f.revision.compute.serviceAccess.length, 1);
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  const registry = {
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: {
+      name: "authorizations",
+      namespace: reader.namespace,
+      resourceVersion: "1",
+      labels: {
+        "openclaw.dev/public-read-installation": createHash("sha256")
+          .update("ins_foreign")
+          .digest("hex")
+          .slice(0, 32),
+      },
+    },
+    data: { "authorizations.json": "{}\n" },
+  };
+  f.save(registry);
+  // The real Compute maintenance path constructs its store from frozen runtime context.
+  // A controlled Kubernetes API boundary suffices: both refusals precede HTTPS observation.
+  await assert.rejects(
+    f.driver.maintainServiceAccess(f.revision, new AbortController().signal),
+    /registry is unavailable or foreign/,
+  );
+  registry.metadata.labels["openclaw.dev/public-read-installation"] = createHash("sha256")
+    .update(installationId)
+    .digest("hex")
+    .slice(0, 32);
+  registry.data["authorizations.json"] = JSON.stringify({
+    [f.revision.id]: {
+      installationId: "ins_foreign",
+      namespaceId: f.revision.namespaceId,
+      agentId: f.revision.agentId,
+      revisionId: f.revision.id,
+      tokenSha256: "a".repeat(64),
+      policy: { mode: "all" },
+      validUntil: new Date(Date.now() + 60_000).toISOString(),
+    },
+  });
+  f.save(registry);
+  await assert.rejects(
+    f.driver.maintainServiceAccess(f.revision, new AbortController().signal),
+    /belongs to a different Agent/,
+  );
+  assert.equal(
+    f.calls.filter(({ operation, kind }) => operation === "write" && kind === "ConfigMap").length,
     0,
   );
 });

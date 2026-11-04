@@ -6,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { chartTooling, helmTemplate } from "../helpers/production-chart.mjs";
@@ -148,6 +149,39 @@ async function readerInput(overrides = {}) {
   });
 }
 
+test("reader profile startup loads without an authored Installation identity", async () => {
+  const input = await readerInput();
+  const output = render("codex", input);
+  // Exercise the production composition loader, including its recursive safe-file guard,
+  // schema validation and Driver construction; this does not start a controller or cluster.
+  const loaded = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: join(output.directory, "installation.yaml") },
+  });
+  assert.equal(loaded.computeDriver.implementation, "occ/kubernetes");
+  assert.equal(
+    loaded.installation.drivers.compute.configuration.network.publicGithubRead.installationId,
+    undefined,
+  );
+  assert.equal(
+    loadYaml(output.values).publicGithubRead.installationId,
+    input.publicGithubRead.installationId,
+  );
+  for (const key of ["installationId", "installation_id"]) {
+    const injected = loadYaml(output.installation);
+    injected.drivers.compute.configuration.network.publicGithubRead[key] = "ins_untrusted";
+    const path = join(output.directory, `injected-${key}.yaml`);
+    writeFileSync(path, JSON.stringify(injected));
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      /must not contain an Installation ID/,
+    );
+  }
+});
+
 test(
   "Codex profile pairs authenticated HTTPS public GitHub reader and the revision's exact network peer",
   { skip: helmSkip },
@@ -184,8 +218,9 @@ test(
       mode: "repositories",
       repositories: [],
     });
+    assert.equal(compute.network.publicGithubRead.installationId, undefined);
     assert.equal(
-      compute.network.publicGithubRead.installationId,
+      loadYaml(output.values).publicGithubRead.installationId,
       input.publicGithubRead.installationId,
     );
     assert.equal(
@@ -605,4 +640,5 @@ test("reader fixture waits for a current ready endpoint owned by its Service", a
   assert.equal(sliceReads, observations.length);
   assert.deepEqual(reader.peer.podLabels, selector);
   assert.equal(reader.peer.address, "10.43.0.19");
+  assert.equal(reader.peer.installationId, undefined);
 });

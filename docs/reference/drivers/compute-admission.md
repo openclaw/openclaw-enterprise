@@ -22,12 +22,17 @@ value, in at most 256 characters. Agent provisioning also calls
 
 ## Service admission
 
-`admitServiceAccess({configuration, harness})` reads the original Driver-owned
-Configuration before Sandbox normalization. Omission selects no services.
+`admitServiceAccess({installationId, configuration, harness})` reads the original
+Driver-owned Configuration before Sandbox normalization. OCC supplies the
+readonly `installationId` from its authoritative runtime Installation; authored
+Configuration and startup YAML cannot choose it. Omission selects no services.
 Return nonsecret `ComputeServiceAccess` descriptors with unique IDs, the selected
 Compute identity, endpoint and opaque Driver configuration. OCC freezes them
 under `AgentRevision.compute.serviceAccess`; a selected Sandbox must acknowledge
 them exactly under `SandboxPolicySnapshot.serviceAccess` before effects.
+Kubernetes Compute freezes that runtime ID in its public-reader descriptor and
+checks the registry owner label and rows against it. Its startup peer accepts
+no Installation ID; operator Helm/bootstrap input only initializes registry ownership.
 Protected execution requires `admitProtectedNetworkPolicy` and both paired
 compilers must validate the frozen authority. Private `serviceAccessMaterials`
 are delivered separately through the provider's existing credential mechanism;

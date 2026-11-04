@@ -2248,7 +2248,6 @@ function buildRendered(profile, parsed, diagnostics) {
     installation.drivers.compute.configuration.network.publicGithubRead = {
       namespace,
       address: clusterIP,
-      installationId,
       authorizationConfigMapName,
       caBundle,
       podLabels: {

@@ -35,7 +35,11 @@ actual Installation ID from `occ installation get`. In the `codex`
 Reserve `clusterIP` in the cluster's Service range. Use approved IPv4 CIDRs for
 **both `github.com` Git traffic and `api.github.com` API traffic**. Use an enforcing
 NetworkPolicy implementation. The profile produces matching Helm values and
-`drivers.compute.configuration.network.publicGithubRead` settings. The renderer
+`drivers.compute.configuration.network.publicGithubRead` peer and trust settings.
+The actual Installation ID is an operator input for the Helm registry owner label;
+the renderer omits it from `installation.yaml`. OCC supplies its runtime identity
+at Agent admission, and Compute freezes it in the service descriptor. Startup
+YAML rejects Installation IDs at any depth. The renderer
 reads `caBundleFile` relative to the input file; it accepts public PEM certificates
 up to 65 KiB and refuses private keys. It does not read a TLS private key.
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { fileTemporaryDirectory } from "./temporary-directory.mjs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { selfSigned } from "./certificates.mjs";
 import { parseProductionChart, renderProductionChart } from "./production-chart.mjs";
 
@@ -35,9 +37,13 @@ export async function installPublicGithubReadFixture({
   const address = allocated.spec.clusterIP;
   const tlsSecretName = `${name}-tls`;
   const authorizationConfigMapName = `${name}-authorizations`;
-  const tls = await selfSigned(fileTemporaryDirectory("oce-reader-k3d-tls-"), {
-    subjectAltName: `IP:${address}`,
-  });
+  const tlsDirectory = await mkdtemp(join(tmpdir(), "oce-reader-k3d-tls-"));
+  let tls;
+  try {
+    tls = await selfSigned(tlsDirectory, { subjectAltName: `IP:${address}` });
+  } finally {
+    await rm(tlsDirectory, { recursive: true, force: true });
+  }
   let upstreamCidrs = ["192.0.2.1/32"];
   if (liveGithub) {
     const response = await fetch("https://api.github.com/meta", {
@@ -240,7 +246,6 @@ export async function installPublicGithubReadFixture({
       namespace,
       podLabels: liveService.spec.selector,
       address,
-      installationId,
       authorizationConfigMapName,
       caBundle: tls.cert,
     },

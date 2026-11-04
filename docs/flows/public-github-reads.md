@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-03"
-last_updated_session: authoring-run/36a8f335-4206-49ad-bc39-1ec044ec81d9
+last_updated_session: authoring-run/7e419797-9505-47d1-836b-b0af838ed449
 ---
 
 # Public GitHub read flow
@@ -46,15 +46,22 @@ graph TD
 ### 1. Compose a private Service and an eligible Agent revision
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:admitServiceAccess` reads the original Driver-owned
-Configuration before Sandbox normalization. Omitted or empty selection grants
+Configuration before Sandbox normalization.
+`packages/occ/src/index.ts:checkedComputeServiceAccess` supplies the authoritative
+runtime Installation ID alongside Configuration and Harness; Compute freezes it
+in the descriptor. The profile renderer keeps the operator ID only in Helm
+values for registry ownership, never in startup YAML. The recursive startup
+guard continues to reject reserved identity keys. Omitted or empty selection grants
 nothing; a covering authored deny also withholds the service. OCC saves the
 nonsecret descriptor under `AgentRevision.compute.serviceAccess`. A selected
 Sandbox must acknowledge the exact descriptor in `SandboxPolicySnapshot`.
 Protected execution uses `admitProtectedNetworkPolicy`; both paired OpenShell
 compilers consume the frozen facts, rather than importing new Installation rules.
 
-`publicGithubReadService` checks the saved endpoint, peer, Installation identity,
-registry and public CA against current configuration. The `public-github-read:v2`
+`publicGithubReadService` requires a valid frozen Installation identity and checks
+the endpoint, peer, registry and public CA against current configuration. The
+authorization store checks its owner label and rows against the frozen identity.
+The `public-github-read:v2`
 admission digest selects a distinct launcher; rebuilding an older revision does
 not implicitly enable it. Existing `v1` ordinary API-reader revisions retain
 their earlier admission and ownership checks.
@@ -155,6 +162,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 23:48: Pass runtime Installation identity through generic admission context; omit it from startup YAML (accompanying correction; authoring-run/7e419797-9505-47d1-836b-b0af838ed449 - f6928cf0ee5cfec351f78dedcba02f0c1a9ecfa2)
 
 - 2026-11-03 18:09: Describe scoped API and Git reads, transport isolation, leased authorization and withdrawal (accompanying implementation; authoring-run/36a8f335-4206-49ad-bc39-1ec044ec81d9 - 83a17289139a58b8adcb605e8b484c47b257dcdb)
 
