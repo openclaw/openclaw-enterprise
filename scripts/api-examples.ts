@@ -224,6 +224,13 @@ const discovered = {
 };
 
 const savedAccount = {
+  issuer: oauthClient.issuer,
+  tokenUrl: oauthClient.tokenUrl,
+  oauthClientId,
+  clientId: oauthClient.clientId,
+  recipient: connectionTemplateInput.recipient,
+  requestedScopes: connectionTemplateInput.scopes,
+  grantedScopes: connectionTemplateInput.scopes,
   namespaceId,
   credentialSourceId: source.id,
   ownerPrincipalId: userId,

@@ -562,8 +562,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     context: CredentialSourceContext,
   ): Promise<OpenShellProviderResponse | undefined> {
     if (
-      context.source.ownerCapability !== "credential_refresh" ||
-      context.source.driverId !== this.id ||
+      context.source.driverId !== this.backend.drivers.credential_gateway ||
       context.source.namespaceId !== context.namespace.id
     ) {
       throw new ScopeViolationError("The credential source is not owned by this gateway.");

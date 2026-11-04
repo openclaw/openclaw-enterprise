@@ -2561,12 +2561,28 @@ Example response
 {
   "data": [
     {
+      "clientId": "example-client",
       "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
       "connectionTemplateVersion": 1,
       "createdAt": "2026-10-01T12:00:00.000Z",
       "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "grantedScopes": [
+        "profile.read"
+      ],
+      "issuer": "https://accounts.example.com",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "ownerPrincipalId": "user-docs-admin"
+      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "ownerPrincipalId": "user-docs-admin",
+      "recipient": {
+        "access": "read-only",
+        "host": "api.example.com",
+        "path": "/profile",
+        "port": 443
+      },
+      "requestedScopes": [
+        "profile.read"
+      ],
+      "tokenUrl": "https://accounts.example.com/token"
     }
   ],
   "meta": {
