@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
-updated: "2026-11-03"
-last_updated_session: authoring-run/7e419797-9505-47d1-836b-b0af838ed449
+updated: "2026-11-04"
+last_updated_session: authoring-run/bfe7275c-8f39-483b-98a4-680042d905b7
 ---
 
 # Public GitHub read flow
@@ -92,6 +92,14 @@ injection for a private issuer; Harness trust alone does not configure it.
 Compute's NetworkPolicy grants reader egress to the selected ordinary Harness or
 the exact trusted supervisor peer; a protected workload receives no direct grant.
 
+The admitted launcher places helper source, combined public CA, transport config
+and Git wrappers below `$HOME/.oce-public-git`, in private generated children.
+It rejects symlinked, foreign-owned or nonprivate material parents. The Gateway's
+runtime translator grants read-only access to that exact parent in ordinary
+Codex's limited filesystem profile; temporary files outside the profile are not
+runtime dependencies. OpenShell keeps its existing outer boundary and uses its
+relocated HOME. No capability value is written under this parent.
+
 ### 3. Route ordinary Git URLs and enforce public scope
 
 `apps/controller/src/drivers/repo/github/public-read/transport.mjs` installs a
@@ -162,6 +170,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 06:24: Project generated public Git material through the ordinary native read-only profile (accompanying correction; authoring-run/bfe7275c-8f39-483b-98a4-680042d905b7 - f3bcd113bd01ca1c510228b4acb1caaf7d1b70e4)
 
 - 2026-11-03 23:48: Pass runtime Installation identity through generic admission context; omit it from startup YAML (accompanying correction; authoring-run/7e419797-9505-47d1-836b-b0af838ed449 - f6928cf0ee5cfec351f78dedcba02f0c1a9ecfa2)
 

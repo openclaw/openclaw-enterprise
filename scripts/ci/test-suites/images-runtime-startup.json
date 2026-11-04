@@ -33,7 +33,7 @@
     {
       "path": "tests/integration/runtime-image-public-github-read.test.mjs",
       "expectedTests": [
-        "stock Codex reads the projected public GitHub skill and returns a provider-only pull title"
+        "stock Codex reads public API and clones/fetches ordinary Git URLs through projected material"
       ]
     },
     {

@@ -79,7 +79,17 @@ const reviewedImports = {
   "drivers/repo/github/public-read/git.ts": { "node:https": ["request"] },
   "drivers/repo/github/public-read/transport.mjs": {
     "node:child_process": ["spawn", "spawnSync"],
-    "node:fs": ["chmodSync", "mkdtempSync", "readFileSync", "realpathSync", "writeFileSync"],
+    // Private nonsecret HOME subtree: refuse symlinks and foreign ownership
+    // before generating material projected read-only to the native sandbox.
+    "node:fs": [
+      "chmodSync",
+      "lstatSync",
+      "mkdirSync",
+      "mkdtempSync",
+      "readFileSync",
+      "realpathSync",
+      "writeFileSync",
+    ],
   },
   // The image draft helper uses only its selected broker, session bearer and operator-projected public CA.
   "drivers/repo/github/credentials/client/draft-pr.ts": {
@@ -349,6 +359,7 @@ const rawGlobals = new Set([
 const reviewedProcessMembers = {
   "drivers/repo/github/public-read/server.ts": ["env"],
   "drivers/repo/github/public-read/transport.mjs": [
+    "getuid",
     "argv",
     "env",
     "execPath",

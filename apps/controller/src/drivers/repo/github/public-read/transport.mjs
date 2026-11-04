@@ -1,5 +1,13 @@
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,7 +75,7 @@ function capability(value, allowPlaceholder = false) {
 
 const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
 
-function install(configPath) {
+function install(configPath, directory, script = fileURLToPath(import.meta.url)) {
   configuration(configPath);
   if (process.env.GIT_EXEC_PATH) {
     throw new Error("Managed public Git cannot replace a configured GIT_EXEC_PATH.");
@@ -78,9 +86,8 @@ function install(configPath) {
     throw new Error("The image Git helper directory is unavailable.");
   }
   const helper = realpathSync(join(original, "git-remote-https"));
-  const directory = mkdtempSync(join(tmpdir(), "oce-public-git-"));
+  directory ??= mkdtempSync(join(tmpdir(), "oce-public-git-"));
   chmodSync(directory, 0o700);
-  const script = fileURLToPath(import.meta.url);
   writeFileSync(
     join(directory, "git-remote-https"),
     `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(script)} --remote-helper "$@"\n`,
@@ -263,7 +270,33 @@ function installMaterial(materialPath) {
   ) {
     throw new Error("Invalid public reader material.");
   }
-  const directory = mkdtempSync(join(tmpdir(), "oce-public-git-material-"));
+  // This exact nonsecret subtree is projected read-only by the native translator.
+  // HOME follows the selected provider, including OpenShell's relocated home.
+  const home = process.env.HOME;
+  if (!isAbsolute(home ?? "")) {
+    throw new Error("Public Git requires a private runtime home.");
+  }
+  const homeStat = lstatSync(home);
+  if (
+    !homeStat.isDirectory() ||
+    homeStat.uid !== process.getuid() ||
+    (homeStat.mode & 0o022) !== 0
+  ) {
+    throw new Error("Public Git requires an owned runtime home.");
+  }
+  const root = join(home, ".oce-public-git");
+  try {
+    mkdirSync(root, { mode: 0o700 });
+  } catch (error) {
+    if (error.code !== "EEXIST") {
+      throw error;
+    }
+  }
+  const stat = lstatSync(root);
+  if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o700) {
+    throw new Error("Public Git material must have a private owned directory.");
+  }
+  const directory = mkdtempSync(join(root, "material-"));
   chmodSync(directory, 0o700);
   let ca = material.caBundle;
   for (const file of new Set(
@@ -294,8 +327,10 @@ function installMaterial(materialPath) {
     }),
     { mode: 0o400 },
   );
+  const script = join(directory, "transport.mjs");
+  writeFileSync(script, readFileSync(fileURLToPath(import.meta.url)), { mode: 0o400 });
   return {
-    ...install(configPath),
+    ...install(configPath, directory, script),
     OCE_PUBLIC_GITHUB_READ_CA_FILE: caPath,
     OCE_PUBLIC_GITHUB_READ_CAPABILITY: token,
   };

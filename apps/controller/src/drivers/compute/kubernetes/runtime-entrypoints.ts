@@ -5599,13 +5599,26 @@ function publicGithubReadEntrypoint(entrypoint: string): string {
   const setup = `
 if (pluginRuntime?.manifest?.publicGithubRead?.endpoint) {
   const publicFs = require("node:fs");
-  const publicDirectory = publicFs.mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "oce-public-git-runtime-"));
+  const publicPath = require("node:path");
+  const publicHome = process.env.HOME;
+  if (!publicPath.isAbsolute(publicHome || "")) throw new Error("Public Git requires a private runtime home.");
+  const publicHomeStat = publicFs.lstatSync(publicHome);
+  if (!publicHomeStat.isDirectory() || publicHomeStat.uid !== process.getuid() || (publicHomeStat.mode & 0o022) !== 0) throw new Error("Public Git requires an owned runtime home.");
+  const publicRoot = publicPath.join(publicHome, ".oce-public-git");
+  try { publicFs.mkdirSync(publicRoot, {mode:0o700}); } catch (error) { if (error.code !== "EEXIST") throw error; }
+  const publicStat = publicFs.lstatSync(publicRoot);
+  if (!publicStat.isDirectory() || publicStat.uid !== process.getuid() || (publicStat.mode & 0o777) !== 0o700) throw new Error("Public Git material must have a private owned directory.");
+  const publicDirectory = publicFs.mkdtempSync(publicPath.join(publicRoot, "bootstrap-"));
   publicFs.chmodSync(publicDirectory, 0o700);
   const publicHelper = publicDirectory + "/transport.mjs";
   publicFs.writeFileSync(publicHelper, ${JSON.stringify(helper)}, {mode:0o400});
-  const publicSetup = spawnSync(process.execPath, [publicHelper, "--install-material", process.env.OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE], {encoding:"utf8"});
-  if (publicSetup.status !== 0) throw new Error("Public Git transport initialization failed.");
-  Object.assign(process.env, JSON.parse(publicSetup.stdout));
+  try {
+    const publicSetup = spawnSync(process.execPath, [publicHelper, "--install-material", process.env.OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE], {encoding:"utf8"});
+    if (publicSetup.status !== 0) throw new Error("Public Git transport initialization failed.");
+    Object.assign(process.env, JSON.parse(publicSetup.stdout));
+  } finally {
+    publicFs.rmSync(publicDirectory, {recursive:true, force:true});
+  }
 }
 `;
   return entrypoint.replace(

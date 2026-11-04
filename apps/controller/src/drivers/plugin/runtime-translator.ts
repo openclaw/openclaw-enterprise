@@ -893,7 +893,11 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       readOnlyPaths:
         publicGithubRead === undefined
           ? readOnlyPaths
-          : [...readOnlyPaths, publicGithubRead.skillPath],
+          : [
+              ...readOnlyPaths,
+              publicGithubRead.skillPath,
+              ...(publicGithubRead.endpoint ? ["/home/node/.oce-public-git"] : []),
+            ],
     };
     return {
       ...pluginApprovalOverlay("codex", selections, pluginApprovers),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import https from "node:https";
@@ -9,6 +9,10 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.mjs";
@@ -25,6 +29,21 @@ const helper = fileURLToPath(
     import.meta.url,
   ),
 );
+
+// Execute the production launcher's inserted setup with real files and children.
+// This also audits the embedded source copy, not just the standalone installer.
+const insertion = 'const pluginRuntime = readPluginRuntime("codex");';
+const setupOffset = AGENT_RUNTIME_ENTRYPOINT.indexOf(insertion) + insertion.length;
+const materialSetup = PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.slice(
+  setupOffset,
+  PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT.length - (AGENT_RUNTIME_ENTRYPOINT.length - setupOffset),
+);
+const materialProgram = `const {spawnSync} = require("node:child_process");
+const material = JSON.parse(require("node:fs").readFileSync(process.env.OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE, "utf8"));
+const pluginRuntime = {manifest:{publicGithubRead:material}};
+${materialSetup}
+console.log(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+  key.startsWith("OCE_PUBLIC_GITHUB_") || key === "GIT_EXEC_PATH" || key === "PATH"))));`;
 
 test("managed Git transport clones and fetches ordinary URLs while the reader enforces revision scope", async (t) => {
   const directory = await temporaryDirectory(t, "public-github-transport-");
@@ -200,6 +219,7 @@ async function materialFixture(t) {
   const baseEnv = {
     ...process.env,
     TMPDIR: directory,
+    HOME: directory,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0",
@@ -214,8 +234,13 @@ async function materialFixture(t) {
     }
   }
   const install = async (overrides = {}) => {
-    const result = await execute(process.execPath, [helper, "--install-material", materialPath], {
-      env: { ...baseEnv, OCE_PUBLIC_GITHUB_READ_CAPABILITY_FILE: capabilityPath, ...overrides },
+    const result = await execute(process.execPath, ["-e", materialProgram], {
+      env: {
+        ...baseEnv,
+        OCE_PUBLIC_GITHUB_READ_MATERIAL_FILE: materialPath,
+        OCE_PUBLIC_GITHUB_READ_CAPABILITY_FILE: capabilityPath,
+        ...overrides,
+      },
     });
     return { ...baseEnv, ...overrides, ...JSON.parse(result.stdout) };
   };
@@ -251,6 +276,21 @@ test("launcher material installs real capabilities, inherited trust, and protect
     url,
   );
   // The merged trust must also serve callers using the inherited GitHub CA.
+  // The limited native filesystem grants only this nonsecret subtree. Every
+  // runtime dependency must be inside it, independent of the outer TMPDIR.
+  const materialRoot = path.join(directory, ".oce-public-git");
+  for (const file of [
+    env.OCE_PUBLIC_GITHUB_READ_CA_FILE,
+    env.OCE_PUBLIC_GITHUB_READ_CONFIG,
+    env.GIT_EXEC_PATH,
+  ]) {
+    assert.ok(file.startsWith(materialRoot + path.sep), file);
+  }
+  const wrapper = await readFile(path.join(env.GIT_EXEC_PATH, "git-remote-https"), "utf8");
+  assert.ok(
+    wrapper.includes(path.join(path.dirname(env.OCE_PUBLIC_GITHUB_READ_CONFIG), "transport.mjs")),
+  );
+  assert.equal((await lstat(materialRoot)).mode & 0o777, 0o700);
   const combined = await readFile(env.OCE_PUBLIC_GITHUB_READ_CA_FILE, "utf8");
   assert.ok(combined.includes(provider.cert));
   assert.ok(combined.includes(fixture.serviceTls.cert));
@@ -286,6 +326,24 @@ test("launcher material installs real capabilities, inherited trust, and protect
       ).includes(placeholder),
     );
   }
+});
+
+test("material installation refuses redirected or shared private-home parents", async (t) => {
+  const fixture = await materialFixture(t);
+  const elsewhere = path.join(fixture.directory, "elsewhere");
+  await mkdir(elsewhere);
+  const linkedHome = path.join(fixture.directory, "linked-home");
+  await mkdir(linkedHome);
+  await symlink(elsewhere, path.join(linkedHome, ".oce-public-git"));
+  await assert.rejects(fixture.install({ HOME: linkedHome }), { code: 1 });
+  assert.deepEqual(await readdir(elsewhere), []);
+  const sharedHome = path.join(fixture.directory, "shared-home");
+  await mkdir(sharedHome);
+  const sharedRoot = path.join(sharedHome, ".oce-public-git");
+  await mkdir(sharedRoot);
+  await chmod(sharedRoot, 0o755);
+  await assert.rejects(fixture.install({ HOME: sharedHome }), { code: 1 });
+  assert.deepEqual(await readdir(sharedRoot), []);
 });
 
 test("public Git ignores credential-bearing inherited Git config regardless of scope or command-line precedence", async (t) => {

@@ -3092,6 +3092,15 @@ test("admitted public Git runtime carries only nonsecret configuration and a dis
     authenticatedRepositories: [],
   });
   assert.ok(files.some(({ name }) => name === "public-github-read.md"));
+  // The Gateway translates independently of the Harness that generates these
+  // children; both must agree on the narrow native read-only parent.
+  const translated = runOpenClawRuntimeHelper({ manifest: snapshot.runtime }, [], {
+    baseConfig: f.revision.configuration,
+  });
+  const native = JSON.parse(translated.files.get("/home/node/.openclaw/openclaw.json"));
+  const paths = native.plugins.entries.codex.config.appServer.networkProxy.readOnlyPaths;
+  assert.ok(paths.includes("/home/node/.oce-public-git"));
+  assert.ok(!paths.includes("/tmp") && !paths.includes("/home/node"));
   assert.equal(
     JSON.stringify(files).includes("capability"),
     false,
