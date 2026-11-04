@@ -13,7 +13,7 @@ apply_service_peers() {
 }
 delete_service_peers() {
   local record
-  for record in "$RUN_DIR"/service-peers.*.json; do
+  for record in "$RUN_DIR/agent-service-peers.json" "$RUN_DIR/protected-service-peers.json" "$RUN_DIR"/service-peers.*.json; do
     [[ -f $record ]] || continue
     kube delete -f "$record" --ignore-not-found || return 1
   done
