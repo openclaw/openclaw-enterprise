@@ -9,6 +9,10 @@ import assert from "node:assert/strict";
 //   summary above shows its outcome (finding 2163);
 // - any other first record, and every later change, opens them.
 
+/**
+ * @param {import("playwright").Page} page
+ * @returns {import("playwright").Locator}
+ */
 export const deploymentActivity = (page) => page.locator(".deployment-status");
 
 const deploymentDetails = (page) => page.locator(".deployment-status > details");
@@ -51,7 +55,12 @@ export async function openFailureDetails(page) {
 // - unset, for the page's first record: they may be folded, because that record can land after
 //   the page showed; the summary must then show the same outcome, and the details are opened
 //   for the record's evidence.
-/** @param {{folded?: boolean, reveal?: boolean}} [options] */
+/**
+ * @param {import("playwright").Page} page
+ * @param {string} label
+ * @param {{folded?: boolean, reveal?: boolean}} [options]
+ * @returns {Promise<import("playwright").Locator>}
+ */
 export async function expectDeploymentOutcome(page, label, options = {}) {
   const { folded, reveal = true } = options;
   if (reveal) {
@@ -83,6 +92,11 @@ export async function expectDeploymentOutcome(page, label, options = {}) {
 }
 
 // Waits until the viewed version's own deployment record shows `label`.
+/**
+ * @param {import("playwright").Page} page
+ * @param {string} label
+ * @returns {Promise<import("playwright").Locator>}
+ */
 export async function expectVersionRecord(page, label) {
   await showDeploymentTab(page);
   const record = page.locator(".version-deployment-record");

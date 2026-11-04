@@ -695,7 +695,9 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
     await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     agents.push(agent);
   }
-  const agentPath = `/namespaces/${namespace.id}/agents/${agents[2].id}`;
+  const thirdAgent = agents[2];
+  assert.ok(thirdAgent);
+  const agentPath = `/namespaces/${namespace.id}/agents/${thirdAgent.id}`;
   const { page } = await newPage(t, fixture, { browser });
   // The owner holds delete; this Delete is refused for another reason, as a stale row's was.
   await fulfillMethod(
