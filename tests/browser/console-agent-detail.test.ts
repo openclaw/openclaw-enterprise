@@ -1,7 +1,26 @@
 import "./console-agent-detail-deployment.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Locator, Page, Route, Request } from "playwright";
+import type { TSchema } from "typebox";
+import { IsSchema } from "typebox/schema";
+import { Check } from "typebox/value";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import type { ControllerWorkspaceFileReadRequest } from "../../apps/controller/src/gateway/contracts.ts";
+import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import {
+  AgentResponse,
+  AgentRevisionResponse,
+  AgentRevisionListResponse,
+  AgentCallerPermissionsResponse,
+  AgentSecretPermissionsResponse,
+  ConfigurationResponse,
+  SecretResponse,
+  SecretDetailResponse,
+  SecretListResponse,
+  IAMAccessBindingListResponse,
+} from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -91,6 +110,51 @@ import {
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
+type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+
+function wireBody<T extends TSchema>(fixture: ConsoleFixture, schema: T, value: unknown) {
+  const schemas = Object.fromEntries(
+    Object.entries(fixture.app.getSchemas()).map(([id, entry]): [string, TSchema] => {
+      assert.ok(IsSchema(entry));
+      return [id, entry];
+    }),
+  );
+  assert.ok(Check(schemas, schema, value), "Expected the controller response schema");
+  return value;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function object(value: unknown): Record<string, unknown> {
+  assert.ok(isObject(value));
+  return value;
+}
+
+function bindingSource(configuration: ConfigurationResponse["data"], key: string) {
+  const binding = configuration.secretBindings?.[key];
+  assert.ok(binding, `Expected Secret binding ${key}`);
+  return binding.source;
+}
+
+function secretSource(auth: AgentResponse["data"]["harnessAuth"]) {
+  assert.ok(auth && "source" in auth && auth.source.kind === "secret");
+  return auth.source;
+}
+
+function text(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+declare global {
+  interface Window {
+    reloadedText?: (string | null)[];
+    __createStates?: ("disabled" | "enabled")[];
+  }
+}
+
 test("Agent credentials choose existing Secrets for harness authentication", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -129,12 +193,17 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   assert.equal((await saveResponse).status(), 200);
   // The saved source re-renders the picker, which reloads the Secret list before naming it.
   // The old, disabled picker already shows the staged Secret, so wait for the rebuilt form.
-  await page.waitForFunction(
-    () => globalThis.document.querySelector("#harness-auth-method")?.disabled === false,
-  );
+  await page.waitForFunction(() => {
+    const method = globalThis.document.querySelector("#harness-auth-method");
+    return method instanceof HTMLSelectElement && method.disabled === false;
+  });
   await waitForInputValue(page.getByLabel("API key Secret"), secretOptionLabel(replacementSecret));
 
-  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const current = wireBody(
+    fixture,
+    AgentResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+  );
   assert.deepEqual(current.data.harnessAuth, {
     method: "api_key",
     source: replacementSecret.ref,
@@ -143,7 +212,15 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
 
   await page.getByLabel("Authentication source").selectOption("codex_pat");
   const serviceAccountSecret = page.getByLabel("Service account token Secret");
-  assert.equal(await serviceAccountSecret.evaluate((node) => node.value), "");
+  assert.equal(
+    await serviceAccountSecret.evaluate((node) => {
+      if (!(node instanceof HTMLInputElement)) {
+        throw new Error("Expected an input");
+      }
+      return node.value;
+    }),
+    "",
+  );
   await page.getByLabel("Authentication source").selectOption("api_key");
   await waitForInputValue(page.getByLabel("API key Secret"), secretOptionLabel(replacementSecret));
 
@@ -192,8 +269,13 @@ test("Agent credentials bind a Secret typed by its exact name without picking th
   await page.getByText("Choose an existing Secret or create a new one.").waitFor();
   const picker = page.getByLabel("API key Secret", { exact: true });
   const savedSource = async () =>
-    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
-      .harnessAuth.source;
+    secretSource(
+      wireBody(
+        fixture,
+        AgentResponse,
+        (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+      ).data.harnessAuth,
+    );
   // A successful save checks Secret access, then re-renders the tab. Until the new picker has
   // loaded the Secrets again it can only restore "Bound Secret", so wait for that load.
   const save = async () => {
@@ -252,7 +334,7 @@ test("Agent credential Secret picker distinguishes action labels from Secret nam
   const { page } = await newPage(t, fixture);
   await page.route(`**/namespaces/${namespace.id}/secrets`, async (route) => {
     const response = await route.fetch();
-    const body = await response.json();
+    const body = wireBody(fixture, SecretListResponse, await response.json());
     body.data = body.data.filter((secret) => secret.id !== original.id);
     await route.fulfill({ response, json: body });
   });
@@ -271,8 +353,12 @@ test("Agent credential Secret picker distinguishes action labels from Secret nam
   );
   await page.getByRole("button", { name: "Save authentication source" }).click();
   assert.equal((await saved).status(), 200);
-  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-  assert.deepEqual(current.data.harnessAuth.source, bound.ref);
+  const current = wireBody(
+    fixture,
+    AgentResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+  );
+  assert.deepEqual(secretSource(current.data.harnessAuth), bound.ref);
 
   await page.getByLabel("Authentication source").selectOption("codex_pat");
   const token = page.getByLabel("Service account token Secret", { exact: true });
@@ -303,6 +389,8 @@ test("Tab leaves a scrolling Secret list for the next control, and the list keep
       await fixture.createSecret(namespace.id, `Scrolling Secret ${index}`, `value-${index}`),
     );
   }
+  assert.ok(secrets[0]);
+  assert.ok(secrets[8]);
   const agent = await fixture.createAgent(
     namespace.id,
     "Scrolling List Agent",
@@ -362,11 +450,8 @@ for (const listOutcome of ["arrives", "fails"]) {
     await trackSettledFetches(page);
     const secretsPath = `/namespaces/${namespace.id}/secrets`;
     // The API answers the list read; the page sees that answer only after the create.
-    let releaseList;
-    const listGate = new Promise((resolve) => {
-      releaseList = resolve;
-    });
-    t.after(releaseList);
+    const { promise: listGate, resolve: releaseList } = Promise.withResolvers<void>();
+    t.after(() => releaseList());
     let listReads = 0;
     await page.route(`${fixture.origin}${secretsPath}`, async (route) => {
       if (route.request().method() !== "GET") {
@@ -410,12 +495,17 @@ for (const listOutcome of ["arrives", "fails"]) {
     assert.equal(await hasFocus(apiKeySecret), true);
     assert.equal(await apiKeySecret.getAttribute("aria-expanded"), "false");
     assert.deepEqual(await statusTone(staged), { className: "hint", tone: null, role: "status" });
-    const created = (await fixture.request("GET", secretsPath)).data.find(
-      (secret) => secret.name === "Created while loading",
-    );
+    const created = wireBody(
+      fixture,
+      SecretListResponse,
+      (await fixture.request("GET", secretsPath)).body,
+    ).data.find((secret) => secret.name === "Created while loading");
+    assert.ok(created);
     assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(created));
     await apiKeySecret.fill("Created while");
-    await page.getByRole("option", { name: secretOptionLabel(created), exact: true }).waitFor();
+    await page
+      .getByRole("option", { name: text(secretOptionLabel(created)), exact: true })
+      .waitFor();
   });
 }
 
@@ -443,7 +533,7 @@ test("a different Secret in a create response cannot stage a binding or repeat t
     }
     const response = await route.fetch();
     assert.equal(response.status(), 201);
-    const body = await response.json();
+    const body = wireBody(fixture, SecretResponse, await response.json());
     assert.equal(body.data.name, name);
     // The create succeeded. Substitute valid metadata for a different Secret in its reply.
     await route.fulfill({ response, json: { ...body, data: original } });
@@ -462,7 +552,12 @@ test("a different Secret in a create response cannot stage a binding or repeat t
     .waitFor({ timeout: 5_000 });
   assert.equal(await value.inputValue(), "");
   assert.equal(await submit.isDisabled(), true);
-  await submit.evaluate((button) => button.form.requestSubmit());
+  await submit.evaluate((button) => {
+    if (!(button instanceof HTMLButtonElement) || !button.form) {
+      throw new Error("Expected a form button");
+    }
+    button.form.requestSubmit();
+  });
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await waitForInputValue(picker, original.name);
   assert.equal(secretPostRequests(requests, namespace.id).length, 1);
@@ -553,7 +648,15 @@ test("session expiry clears the unsent value in the Secret picker dialog", async
   assert.equal((await refused).status(), 401);
   await page.getByText("Your session has expired").waitFor();
   await dialog.waitFor({ state: "detached" });
-  assert.equal(await input.evaluate((node) => node.value === ""), true);
+  assert.equal(
+    await input.evaluate((node) => {
+      if (!(node instanceof HTMLInputElement) && !(node instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected a Secret value field");
+      }
+      return node.value === "";
+    }),
+    true,
+  );
   assert.equal(secretPostRequests(requests, namespace.id).length, 0);
 });
 
@@ -594,7 +697,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   await page.getByRole("option", { name: keyboardSecret.name, exact: true }).waitFor();
   await apiKeySecret.fill("keyboard");
   const keyboardOption = page.getByRole("option", {
-    name: secretOptionLabel(keyboardSecret),
+    name: text(secretOptionLabel(keyboardSecret)),
     exact: true,
   });
   await apiKeySecret.press("ArrowDown");
@@ -623,7 +726,15 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   await page.getByLabel("Authentication source").selectOption("codex_pat");
   const serviceAccountSecret = page.getByLabel("Service account token Secret", { exact: true });
   await page.getByRole("button", { name: "Save authentication source" }).click();
-  assert.equal(await serviceAccountSecret.evaluate((input) => input.validity.customError), true);
+  assert.equal(
+    await serviceAccountSecret.evaluate((input) => {
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error("Expected an input");
+      }
+      return input.validity.customError;
+    }),
+    true,
+  );
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 
   await serviceAccountSecret.fill("no matching create target");
@@ -661,7 +772,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   // Simulate documented controller conflict responses; duplicate rejection above uses the real route.
   let createStatus = 409;
   let conflictCode = "NAMESPACE_NOT_READY";
-  const failSecretCreate = (route, request) => {
+  const failSecretCreate = (route: Route, request: Request) => {
     if (request.method() !== "POST") {
       return route.fallback();
     }
@@ -721,14 +832,18 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
 
   const distinctName = "Combobox Agent corrected service account token";
   await dialog.getByLabel("Name", { exact: true }).fill(distinctName);
-  const created = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
-      response.request().method() === "POST" &&
-      response.request().postDataJSON()?.name === distinctName,
-  );
+  const created = page.waitForResponse((response) => {
+    if (
+      response.url() !== `${fixture.origin}/namespaces/${namespace.id}/secrets` ||
+      response.request().method() !== "POST"
+    ) {
+      return false;
+    }
+    const body: unknown = response.request().postDataJSON();
+    return isObject(body) && body.name === distinctName;
+  });
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-  const createdSecret = (await (await created).json()).data;
+  const createdSecret = wireBody(fixture, SecretResponse, await (await created).json()).data;
   await dialog.waitFor({ state: "hidden" });
   assert.notEqual(createdSecret.id, duplicateNameSecret.id);
   assert.equal(createdSecret.name, distinctName);
@@ -798,27 +913,36 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
-  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const current = wireBody(
+    fixture,
+    AgentResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+  );
   assert.deepEqual(current.data.harnessAuth, {
     method: "api_key",
     source: replacementSecret.ref,
   });
   assert.deepEqual(
-    accessBindingPostRequests(requests, namespace.id).map(({ body }) => [
-      body.subjectId,
-      body.resourceId,
-    ]),
+    accessBindingPostRequests(requests, namespace.id).map(({ body }) => {
+      const { subjectId, resourceId } = object(body);
+      return [subjectId, resourceId];
+    }),
     [[agent.servicePrincipalId, replacementSecret.id]],
   );
 
   // A denied retry read must retain the prior saved fact, but retire revoked metadata.
   const deniedRead = restrict(fixture.policy, "read", "agent", { resourceId: agent.id });
   requests.length = 0;
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
   const refusedRead = page.waitForResponse(
-    (response) => response.url().endsWith(`/agents/${agent.id}`) && response.status() === 403,
+    (response) => response.url() === agentUrl && response.request().method() === "GET",
   );
   await page.getByRole("button", { name: "Retry credential access" }).click();
-  const requestId = (await (await refusedRead).json()).meta.requestId;
+  const response = await refusedRead;
+  assert.equal(response.status(), 403, "Retry credential access must receive a denied Agent GET");
+  const body: unknown = await response.json();
+  assert.ok(Check(ErrorResponse, body), "Denied Agent GET must return an error envelope");
+  const requestId = body.meta.requestId;
   await page
     .getByText(
       "Authentication source saved. Could not read the Agent before retrying credential access. No access grant was sent.",
@@ -847,11 +971,10 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   // Freshly read saved authentication must still refuse a changed service principal.
   const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
   assert.notEqual(other.servicePrincipalId, agent.servicePrincipalId);
-  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
   await page.route(agentUrl, async (route) => {
     const response = await route.fetch();
     assert.equal(response.status(), 200);
-    const { data, meta } = await response.json();
+    const { data, meta } = wireBody(fixture, AgentResponse, await response.json());
     assert.equal(data.servicePrincipalId, agent.servicePrincipalId);
     await route.fulfill({
       response,
@@ -918,7 +1041,11 @@ test("Agent credentials settle a member's harness Secret save and say who grants
     assert.deepEqual(await statusTone(notice), { className: "hint", tone: null, role: "status" });
     // The Agent saved its new source; no IAM request went out that the API would refuse and
     // audit.
-    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    const saved = wireBody(
+      fixture,
+      AgentResponse,
+      (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+    );
     assert.deepEqual(saved.data.harnessAuth, { method: "api_key", source: replacementSecret.ref });
     assert.deepEqual(
       requests.filter(({ path }) => path.includes("/iam/")),
@@ -976,11 +1103,18 @@ test("Agent credentials settle a member's harness Secret save and say who grants
   await adminPage.getByRole("status").filter({ hasText: "Authentication source saved." }).waitFor();
   await waitForEnabled(adminPage.getByRole("button", { name: "Deploy new version" }));
   assert.equal(await adminPage.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
-  const grants = await fixture.addedAccessBindings(namespace.id);
+  const grants = wireBody(
+    fixture,
+    IAMAccessBindingListResponse.properties.data,
+    await fixture.addedAccessBindings(namespace.id),
+  );
   assert.deepEqual(
     grants
       .filter(({ subjectId }) => subjectId === ungranted.servicePrincipalId)
-      .map(({ resourceKind, resourceId }) => [resourceKind, resourceId]),
+      .map((binding) => [
+        "resourceKind" in binding ? binding.resourceKind : undefined,
+        "resourceId" in binding ? binding.resourceId : undefined,
+      ]),
     [["secret", replacementSecret.id]],
   );
 });
@@ -1171,7 +1305,11 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   );
   assert.equal(interceptedPatches, 1);
   assert.equal(configurationPatchRequests(requests, namespace.id, agent.configurationId).length, 1);
-  const saved = await fixture.request("GET", configurationPath);
+  const saved = wireBody(
+    fixture,
+    ConfigurationResponse,
+    (await fixture.request("GET", configurationPath)).body,
+  );
   assert.equal(saved.data.generation, 2);
   assert.deepEqual(saved.data.values, nextValues);
 
@@ -1197,7 +1335,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
     }
     const response = await route.fetch();
     assert.equal(response.status(), 200);
-    const { data, meta } = await response.json();
+    const { data, meta } = wireBody(fixture, ConfigurationResponse, await response.json());
     assert.equal(data.id, agent.configurationId);
     assert.deepEqual(data.values, otherValues);
     await route.fulfill({ response, json: { data: { ...data, id: `cfg_${randomUUID()}` }, meta } });
@@ -1214,7 +1352,11 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   assert.equal(await unknown.isVisible(), true);
   assert.equal(await save.isDisabled(), true);
   assert.equal(configurationPatchRequests(requests, namespace.id, agent.configurationId).length, 1);
-  const confirmed = await fixture.request("GET", configurationPath);
+  const confirmed = wireBody(
+    fixture,
+    ConfigurationResponse,
+    (await fixture.request("GET", configurationPath)).body,
+  );
   assert.equal(confirmed.data.generation, saved.data.generation + 1);
   assert.deepEqual(confirmed.data.values, otherValues);
 });
@@ -1270,7 +1412,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await dialog.getByRole("button", { name: "Stop Agent" }).click();
   const response = await stopResponse;
   assert.equal(response.status(), 202);
-  const stoppedBody = await response.json();
+  const stoppedBody = wireBody(fixture, AgentResponse, await response.json());
   assert.equal(stoppedBody.data.desiredRuntimeState, "stopped");
   assert.equal(stoppedBody.data.activeRevisionId, active.revision.id);
 
@@ -1301,7 +1443,11 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     ]),
     [["POST", `/namespaces/${namespace.id}/agents/${agent.id}/stop`, null]],
   );
-  const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const stopped = wireBody(
+    fixture,
+    AgentResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+  );
   assert.equal(stopped.data.desiredRuntimeState, "stopped");
   assert.equal(stopped.data.activeRevisionId, active.revision.id);
   assert.deepEqual(stopped.data.harnessAuth, { method: "runtime" });
@@ -1313,9 +1459,10 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     requests.findIndex((request) => request.path.endsWith("/native-admin")) > stopIndex,
     "native admin status must be reread after stop admission",
   );
-  const revisions = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
+  const revisions = wireBody(
+    fixture,
+    AgentRevisionListResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/revisions`)).body,
   );
   assert.deepEqual(
     revisions.data.map((revision) => revision.id),
@@ -1332,6 +1479,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   const cleared = await state.transact((unit) =>
     unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
   );
+  assert.ok(cleared);
   assert.equal(cleared.desiredRuntimeState, "stopped");
   assert.equal(cleared.activeRevisionId, undefined);
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
@@ -1364,7 +1512,11 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await page.getByRole("button", { name: "Open draft", exact: true }).last().click();
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
-  const running = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const running = wireBody(
+    fixture,
+    AgentResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+  );
   assert.equal(running.data.desiredRuntimeState, "running");
   assert.equal(running.data.configurationId, agent.configurationId);
   assert.deepEqual(running.data.harnessAuth, { method: "runtime" });
@@ -1377,7 +1529,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Stop in place", {
     publicOrigin: true,
     workspaceFilesAccess: {
-      async read({ filename }) {
+      async read({ filename }: ControllerWorkspaceFileReadRequest) {
         return { status: "ok", file: { name: filename, content: `Saved ${filename}` } };
       },
     },
@@ -1404,13 +1556,18 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   // Mark the rendered version detail and record any loading state the page shows again.
   await page.evaluate(() => {
     const doc = globalThis.document;
-    doc.querySelector(".agent-version-detail").dataset.stopMarker = "kept";
-    globalThis.reloadedText = [];
+    const detail = doc.querySelector(".agent-version-detail");
+    if (!(detail instanceof HTMLElement)) {
+      throw new Error("Expected version detail");
+    }
+    detail.dataset.stopMarker = "kept";
+    const reloadedText: (string | null)[] = [];
+    globalThis.window.reloadedText = reloadedText;
     new globalThis.MutationObserver((records) => {
       for (const record of records) {
         for (const node of record.addedNodes) {
           if (/Loading (version details|configuration)/.test(node.textContent ?? "")) {
-            globalThis.reloadedText.push(node.textContent);
+            reloadedText.push(node.textContent);
           }
         }
       }
@@ -1421,10 +1578,13 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   assert.ok(scrollBefore > 0);
   const focusedText = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
   const keptInPlace = () =>
-    page.evaluate(() => ({
-      marker: globalThis.document.querySelector(".agent-version-detail")?.dataset.stopMarker,
-      reloadedText: globalThis.reloadedText,
-    }));
+    page.evaluate(() => {
+      const detail = globalThis.document.querySelector(".agent-version-detail");
+      if (detail !== null && !(detail instanceof HTMLElement)) {
+        throw new Error("Expected version detail");
+      }
+      return { marker: detail?.dataset.stopMarker, reloadedText: globalThis.window.reloadedText };
+    });
 
   await stop.click();
   await page
@@ -1519,6 +1679,7 @@ test("Refresh stop status switches to deletion recovery when another actor start
   const deleting = await state.transact((unit) =>
     unit.agents.transitionAgentStatus(namespace.id, agent.id, "active", "deleting"),
   );
+  assert.ok(deleting);
   assert.equal(deleting.status, "deleting");
   await refreshStop.click();
   await page.getByText(/Deletion was requested\./).waitFor();
@@ -1666,7 +1827,11 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
   assert.equal(interceptedStops, 1);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
-  const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const stopped = wireBody(
+    fixture,
+    AgentResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+  );
   assert.equal(stopped.data.desiredRuntimeState, "stopped");
 
   // A read for a different Agent cannot unlock another destructive request either.
@@ -1701,7 +1866,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
     async (route) => {
       const response = await route.fetch();
       assert.equal(response.status(), 200);
-      const { data, meta } = await response.json();
+      const { data, meta } = wireBody(fixture, AgentResponse, await response.json());
       const { desiredRuntimeState, ...rest } = data;
       assert.equal(rest.id, agent.id);
       assert.equal(rest.namespaceId, namespace.id);
@@ -1802,7 +1967,11 @@ test("an uncertain Stop the API never received reads back as still requested to 
     .getByRole("button", { name: "Stop Agent" })
     .click();
   await stopRegion.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
-  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const current = wireBody(
+    fixture,
+    AgentResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+  );
   assert.equal(current.data.desiredRuntimeState, "running");
   await stopRegion.getByRole("button", { name: "Refresh stop status", exact: true }).click();
   const notice = stopRegion.getByText("The Agent is still requested to run.", { exact: true });
@@ -1859,7 +2028,11 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
     await page.getByRole("button", { name: "Stop Agent" }).getAttribute("aria-disabled"),
     "true",
   );
-  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const current = wireBody(
+    fixture,
+    AgentResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+  );
   assert.equal(current.data.desiredRuntimeState, "running");
   assert.equal(current.data.activeRevisionId, active.revision.id);
 });
@@ -1919,8 +2092,10 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
   // The summary is a probe, not an attempted operation: no write was sent and nothing was
   // audited as a denial for the summary or the gated operations.
   assert.equal(nonAuthWriteRequests(requests).length, 0);
-  const deniedActions = fixture.auditSink
-    .list()
+  const auditSink: unknown = fixture.auditSink;
+  assert.ok(auditSink instanceof InMemoryAuditSink);
+  const auditEvents = auditSink.list();
+  const deniedActions = auditEvents
     .filter((event) => event.kind === "authorization_denial")
     .map((event) => event.action);
   for (const action of [
@@ -1938,12 +2113,17 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
 // the page build and the view is held back while it loads, so neither a missing zone nor a
 // pending view counts: a row is judged by the hidden flag its component sets, the zone by
 // whether it renders.
-async function waitForDangerZoneRows(page, rows) {
+async function waitForDangerZoneRows(page: Page, rows: { stop: boolean; delete: boolean }) {
   await page.waitForFunction(({ stop, delete: remove }) => {
     const zone = globalThis.document.querySelector("section.danger-zone");
     const stopRow = zone?.querySelector("section.stop-note");
     const deleteRow = zone?.querySelector("section.deletion-note");
-    if (!stopRow || !deleteRow || zone.closest(".agent-detail-pending")) {
+    if (
+      !zone ||
+      !(stopRow instanceof HTMLElement) ||
+      !(deleteRow instanceof HTMLElement) ||
+      zone.closest(".agent-detail-pending")
+    ) {
       return false;
     }
     return (
@@ -2028,6 +2208,8 @@ for (const viewport of [
         region.getByRole("heading", { name: row.name, exact: true }).boundingBox(),
         action.boundingBox(),
       ]);
+      assert.ok(title);
+      assert.ok(button);
       if (viewport.width >= 1440) {
         // Title and sentence at the left, the button at the right of the same row.
         assert.ok(button.x > title.x + title.width, `${row.name} button beside its text`);
@@ -2036,7 +2218,7 @@ for (const viewport of [
         assert.ok(button.y > title.y + title.height, `${row.name} button under its text`);
       }
       // The row's button is outlined; only the confirmation's is filled.
-      const paint = (locator) =>
+      const paint = (locator: Locator) =>
         locator.evaluate((node) => {
           const style = globalThis.getComputedStyle(node);
           return { color: style.color, border: style.borderTopColor, fill: style.backgroundColor };
@@ -2171,8 +2353,8 @@ for (const viewport of [
     // A full load has no recent input to excuse a shift.
     await page.addInitScript(recordLayoutShifts);
     await page.addInitScript(() => {
-      const states = [];
-      globalThis.__createStates = states;
+      const states: ("disabled" | "enabled")[] = [];
+      globalThis.window.__createStates = states;
       new globalThis.MutationObserver(() => {
         const create = [...globalThis.document.querySelectorAll("button")].find(
           (node) => node.textContent === "Create Agent",
@@ -2190,7 +2372,7 @@ for (const viewport of [
     await note.waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
-    assert.deepEqual(await page.evaluate(() => globalThis.__createStates), ["disabled"]);
+    assert.deepEqual(await page.evaluate(() => globalThis.window.__createStates), ["disabled"]);
     const { shifts } = await takeLayoutShifts(page);
     // Headless Chromium reports a body entry when the page gets shorter; the list must not move.
     const listShifts = shifts.filter((entry) =>
@@ -2276,7 +2458,7 @@ test("a version editor without Agent update can recover a failed deployment from
   firstPermissions.release();
   const response = await summary;
   assert.equal(response.status(), 200);
-  assert.deepEqual((await response.json()).data, {
+  assert.deepEqual(wireBody(fixture, AgentCallerPermissionsResponse, await response.json()).data, {
     update: false,
     deploy: true,
     operate: false,
@@ -2327,7 +2509,10 @@ test("a version editor without Agent update can recover a failed deployment from
   await page.getByRole("button", { name: "Save Configuration" }).click();
   const saved = await saving;
   assert.equal(saved.status(), 200);
-  assert.deepEqual((await saved.json()).data.values, nativeValues("edited"));
+  assert.deepEqual(
+    wireBody(fixture, ConfigurationResponse, await saved.json()).data.values,
+    nativeValues("edited"),
+  );
   await permission.requested;
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
   assert.equal(
@@ -2337,7 +2522,11 @@ test("a version editor without Agent update can recover a failed deployment from
   const restoreGrants = revokeMemberGrant(fixture, "version-editor", ["update", "configuration"]);
   const reread = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   permission.release();
-  assert.equal((await (await reread).json()).data.configurationUpdate, false);
+  assert.equal(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await reread).json()).data
+      .configurationUpdate,
+    false,
+  );
   // The reread applies to recovery: the Configuration is now read-only, so this deployer is
   // offered the draft to read and deploy.
   await recovery
@@ -2354,7 +2543,10 @@ test("a version editor without Agent update can recover a failed deployment from
   await page.getByRole("button", { name: "Deploy new version" }).click();
   const deployed = await deploying;
   assert.equal(deployed.status(), 202);
-  assert.equal((await deployed.json()).data.agentId, agent.id);
+  assert.equal(
+    wireBody(fixture, AgentRevisionResponse, await deployed.json()).data.agentId,
+    agent.id,
+  );
   assert.equal(pathRequests(requests, "PATCH", path).length, 0);
 });
 
@@ -2402,20 +2594,23 @@ test("a reader without update views the version draft read-only", async (t) => {
     detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
     reader.credentials,
   );
-  assert.deepEqual((await (await permissions).json()).data, {
-    update: false,
-    deploy: false,
-    operate: false,
-    delete: false,
-    administer: false,
-    configurationUpdate: false,
-    configurationRead: true,
-    configurationSecretsOperate: false,
-    configurationSecretsOperateDeniedBindings: [],
-    agentSourcesOperate: false,
-    sandboxPolicyRead: false,
-    readLogs: false,
-  });
+  assert.deepEqual(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await permissions).json()).data,
+    {
+      update: false,
+      deploy: false,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: false,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+      readLogs: false,
+    },
+  );
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   await page.getByText("View native Configuration", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
@@ -2548,20 +2743,23 @@ test("an Agent editor without Configuration update sees the Configuration read-o
     detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
     member.credentials,
   );
-  assert.deepEqual((await (await permissions).json()).data, {
-    update: true,
-    deploy: false,
-    operate: false,
-    delete: false,
-    administer: false,
-    configurationUpdate: false,
-    configurationRead: true,
-    configurationSecretsOperate: false,
-    configurationSecretsOperateDeniedBindings: [],
-    agentSourcesOperate: true,
-    sandboxPolicyRead: false,
-    readLogs: false,
-  });
+  assert.deepEqual(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await permissions).json()).data,
+    {
+      update: true,
+      deploy: false,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: false,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: [],
+      agentSourcesOperate: true,
+      sandboxPolicyRead: false,
+      readLogs: false,
+    },
+  );
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
   // The draft stays a new version (this member can change the Agent's own settings), but its
@@ -2617,20 +2815,23 @@ test("an editor without operate on a bound Secret views the version draft read-o
     detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
     member.credentials,
   );
-  assert.deepEqual((await (await permissions).json()).data, {
-    update: true,
-    deploy: false,
-    operate: false,
-    delete: false,
-    administer: false,
-    configurationUpdate: true,
-    configurationRead: true,
-    configurationSecretsOperate: false,
-    configurationSecretsOperateDeniedBindings: ["EXTERNAL_API_TOKEN"],
-    agentSourcesOperate: false,
-    sandboxPolicyRead: false,
-    readLogs: false,
-  });
+  assert.deepEqual(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await permissions).json()).data,
+    {
+      update: true,
+      deploy: false,
+      operate: false,
+      delete: false,
+      administer: false,
+      configurationUpdate: true,
+      configurationRead: true,
+      configurationSecretsOperate: false,
+      configurationSecretsOperateDeniedBindings: ["EXTERNAL_API_TOKEN"],
+      agentSourcesOperate: false,
+      sandboxPolicyRead: false,
+      readLogs: false,
+    },
+  );
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   assert.equal(await page.getByText(/New version\. Changes affect/).count(), 0);
   const entry = versionChooser(page).locator('option[value="draft"]');
@@ -2686,7 +2887,11 @@ test("a deployer without update keeps the draft checklist", async (t) => {
     detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
     deployer.credentials,
   );
-  const answer = (await (await permissions).json()).data;
+  const answer = wireBody(
+    fixture,
+    AgentCallerPermissionsResponse,
+    await (await permissions).json(),
+  ).data;
   assert.equal(answer.deploy, true);
   assert.equal(answer.update, false);
   assert.equal(answer.configurationUpdate, false);
@@ -2740,7 +2945,11 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   await page.getByRole("button", { name: "Set up credentials", exact: true }).waitFor();
   const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   firstPermissions.release();
-  assert.equal((await (await answer).json()).data.configurationUpdate, false);
+  assert.equal(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await answer).json()).data
+      .configurationUpdate,
+    false,
+  );
   await page.getByText(CHANNELS_READ_ONLY, { exact: true }).waitFor();
   await page.getByText("Read-only with your access.", { exact: true }).waitFor();
   // A reader's card offers no editor's action; Deploy says why it is disabled.
@@ -2771,7 +2980,8 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   // At desktop width the Channel Secrets card is as wide as the Harness authentication card
   // above it (finding 2438).
   await page.setViewportSize({ width: 1440, height: 900 });
-  const width = (locator) => locator.evaluate((node) => node.getBoundingClientRect().width);
+  const width = (locator: Locator) =>
+    locator.evaluate((node) => node.getBoundingClientRect().width);
   assert.equal(
     await width(channelSecrets),
     await width(page.locator("form:has(#harness-auth-method)")),
@@ -2818,7 +3028,11 @@ test("a Configuration editor without Secret operate on a kept bound Secret reads
     detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
     member.credentials,
   );
-  const answer = (await (await permissions).json()).data;
+  const answer = wireBody(
+    fixture,
+    AgentCallerPermissionsResponse,
+    await (await permissions).json(),
+  ).data;
   assert.equal(answer.configurationUpdate, true);
   assert.equal(answer.configurationSecretsOperate, false);
   assert.deepEqual(answer.configurationSecretsOperateDeniedBindings, [
@@ -2855,7 +3069,7 @@ test("a Configuration editor without Secret operate on a kept bound Secret reads
 // token Secret and their own Secret, but not the administrator's bot token Secret, which the
 // draft binds. `agentUpdate` adds Agent update and operate on the model key Secret, so only the
 // bot token Secret refuses Agent-side saves (finding 2470).
-async function replaceSecretFixture(t, label, { agentUpdate = false } = {}) {
+async function replaceSecretFixture(t: TestContext, label: string, { agentUpdate = false } = {}) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(label, { ready: true });
@@ -2879,12 +3093,16 @@ async function replaceSecretFixture(t, label, { agentUpdate = false } = {}) {
     ...AGENT_READ,
     ["update", "configuration"],
     ["read", "secret"],
-    ...(agentUpdate ? [["update", "agent"]] : []),
+    ...(agentUpdate ? [["update", "agent"] as const] : []),
   ]);
   const operated = [app.id, own.id];
   if (agentUpdate) {
-    const { data } = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-    operated.push(data.harnessAuth.source.id);
+    const { data } = wireBody(
+      fixture,
+      AgentResponse,
+      (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).body,
+    );
+    operated.push(secretSource(data.harnessAuth).id);
   }
   grantSecretOperate(fixture, namespace.id, member.principal, operated);
   return {
@@ -2905,16 +3123,22 @@ test("Agent save hints name a denied Harness Secret without making Configuration
     "Harness names",
     { agentUpdate: true },
   );
-  const configuration = await fixture.request("GET", configurationPath);
+  const configuration = wireBody(
+    fixture,
+    ConfigurationResponse,
+    (await fixture.request("GET", configurationPath)).body,
+  );
   grantSecretOperate(fixture, namespace.id, member.principal, [
-    configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id,
+    bindingSource(configuration.data, "SLACK_BOT_TOKEN").id,
   ]);
   const readAgent = await fixture.request("GET", path);
   assert.equal(readAgent.status, 200, JSON.stringify(readAgent.body));
-  const auth = readAgent.data.harnessAuth;
-  const harnessId = auth.source.id;
-  const harnessName = (
-    await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${harnessId}`)
+  const auth = wireBody(fixture, AgentResponse, readAgent.body).data.harnessAuth;
+  const harnessId = secretSource(auth).id;
+  const harnessName = wireBody(
+    fixture,
+    SecretDetailResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${harnessId}`)).body,
   ).data.name;
   const bindingIndex = fixture.policy.bindings.findIndex(
     (binding) => binding.resourceId === harnessId && binding.subjectId === member.principal.id,
@@ -2950,8 +3174,12 @@ for (const heldMetadata of [false, true]) {
   test(`permission refocus replaces denied Secret names${heldMetadata ? " after obsolete metadata completes" : ""}`, async (t) => {
     const { fixture, namespace, agent, member, app, path, configurationPath } =
       await replaceSecretFixture(t, `Rechecked names ${heldMetadata}`, { agentUpdate: true });
-    const configuration = await fixture.request("GET", configurationPath);
-    const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+    const configuration = wireBody(
+      fixture,
+      ConfigurationResponse,
+      (await fixture.request("GET", configurationPath)).body,
+    );
+    const botId = bindingSource(configuration.data, "SLACK_BOT_TOKEN").id;
     const { page } = await newPage(t, fixture);
     const held = heldMetadata
       ? await holdRequests(
@@ -3006,7 +3234,11 @@ for (const heldMetadata of [false, true]) {
       assert.equal(await page.getByText(AGENT_SOURCES_DENIED, { exact: true }).count(), 1);
       recheck.release();
     }
-    assert.equal((await (await permission).json()).data.agentSourcesOperate, false);
+    assert.equal(
+      wireBody(fixture, AgentCallerPermissionsResponse, await (await permission).json()).data
+        .agentSourcesOperate,
+      false,
+    );
     const reason = `${AGENT_SOURCES_DENIED} Missing Secret operate on Admin app token.`;
     await page.getByText(reason, { exact: true }).waitFor();
     await page.getByRole("tab", { name: "Credentials", exact: true }).click();
@@ -3018,8 +3250,12 @@ for (const tab of ["plugins", "credentials"]) {
   test(`late ${tab} Secret names preserve the focused saved view`, async (t) => {
     const { fixture, namespace, agent, member, own, configurationPath } =
       await replaceSecretFixture(t, `Late ${tab} names`, { agentUpdate: true });
-    const configuration = await fixture.request("GET", configurationPath);
-    const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+    const configuration = wireBody(
+      fixture,
+      ConfigurationResponse,
+      (await fixture.request("GET", configurationPath)).body,
+    );
+    const botId = bindingSource(configuration.data, "SLACK_BOT_TOKEN").id;
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     const held = await holdRequests(
@@ -3067,11 +3303,17 @@ for (const tab of ["plugins", "credentials"]) {
 test("late Configuration Secret names preserve an open focused native disclosure", async (t) => {
   const { fixture, namespace, agent, member } = await replaceSecretFixture(t, "Disclosure names");
   const { page } = await newPage(t, fixture);
-  const configuration = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+  const configuration = wireBody(
+    fixture,
+    ConfigurationResponse,
+    (
+      await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      )
+    ).body,
   );
-  const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+  const botId = bindingSource(configuration.data, "SLACK_BOT_TOKEN").id;
   const held = await holdRequests(
     t,
     page,
@@ -3099,7 +3341,15 @@ test("late Configuration Secret names preserve an open focused native disclosure
       { exact: true },
     )
     .waitFor();
-  assert.equal(await summary.evaluate((node) => node.parentElement.open), true);
+  assert.equal(
+    await summary.evaluate((node) => {
+      if (!(node.parentElement instanceof HTMLDetailsElement)) {
+        throw new Error("Expected details parent");
+      }
+      return node.parentElement.open;
+    }),
+    true,
+  );
   assert.equal(await summary.evaluate((node) => node.ownerDocument.activeElement === node), true);
 });
 
@@ -3113,8 +3363,12 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
     "Current bot token",
     "xoxb-current-value",
   );
-  const configuration = await fixture.request("GET", configurationPath);
-  const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+  const configuration = wireBody(
+    fixture,
+    ConfigurationResponse,
+    (await fixture.request("GET", configurationPath)).body,
+  );
+  const botId = bindingSource(configuration.data, "SLACK_BOT_TOKEN").id;
   const { page } = await newPage(t, fixture);
   const held = await holdRequests(
     t,
@@ -3160,6 +3414,9 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
     (node) =>
       new Promise((resolve) => {
         const view = node.ownerDocument.defaultView;
+        if (!view) {
+          throw new Error("Expected document window");
+        }
         view.requestAnimationFrame(() => view.requestAnimationFrame(resolve));
       }),
   );
@@ -3180,8 +3437,12 @@ for (const agentUpdate of [false, true]) {
     );
     assert.notEqual(index, -1);
     fixture.policy.bindings.splice(index, 1);
-    const configuration = await fixture.request("GET", configurationPath);
-    const botId = configuration.data.secretBindings.SLACK_BOT_TOKEN.source.id;
+    const configuration = wireBody(
+      fixture,
+      ConfigurationResponse,
+      (await fixture.request("GET", configurationPath)).body,
+    );
+    const botId = bindingSource(configuration.data, "SLACK_BOT_TOKEN").id;
     const { page } = await newPage(t, fixture);
     // The app token's metadata read finishes after the bot token's.
     const held = await holdRequests(
@@ -3240,7 +3501,11 @@ test("a channel Secrets save may replace a bound Secret the member cannot operat
     detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
     member.credentials,
   );
-  const answer = (await (await permissions).json()).data;
+  const answer = wireBody(
+    fixture,
+    AgentCallerPermissionsResponse,
+    await (await permissions).json(),
+  ).data;
   assert.equal(answer.configurationSecretsOperate, false);
   assert.deepEqual(answer.configurationSecretsOperateDeniedBindings, ["SLACK_BOT_TOKEN"]);
   // The panel stays editable and says which binding a save must replace, so the draft is not
@@ -3286,7 +3551,11 @@ test("a channel Secrets save may replace a bound Secret the member cannot operat
   );
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   assert.equal((await saving).status(), 200);
-  const saved = await fixture.request("GET", configurationPath);
+  const saved = wireBody(
+    fixture,
+    ConfigurationResponse,
+    (await fixture.request("GET", configurationPath)).body,
+  );
   assert.deepEqual(saved.data.secretBindings, {
     SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
     SLACK_BOT_TOKEN: { source: own.ref, delivery: { type: "env" } },
@@ -3352,7 +3621,7 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
     bot.id,
     extra.id,
     other.id,
-    agent.harnessAuth.source.id,
+    secretSource(agent.harnessAuth).id,
   ]);
   const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
@@ -3369,10 +3638,13 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
   const save = page.getByRole("button", { name: "Save channel Secrets" });
   await waitForEnabled(page.getByLabel("Slack bot token", { exact: true }));
   const denied = await operateDeniedSecretOption(page, "Slack bot token", spare);
-  assert.deepEqual((await (await answer).json()).data, {
-    operateDenied: [spare.id],
-    unreadableOperateDenied: 0,
-  });
+  assert.deepEqual(
+    wireBody(fixture, AgentSecretPermissionsResponse, await (await answer).json()).data,
+    {
+      operateDenied: [spare.id],
+      unreadableOperateDenied: 0,
+    },
+  );
   // A forced click skips the disabled check: choosing it still stages nothing.
   await denied.click({ force: true });
   await page.getByLabel("Slack bot token", { exact: true }).press("Enter");
@@ -3435,7 +3707,7 @@ test("Secret fields refuse a readable Secret the editor cannot operate", async (
 
 // An Agent whose harness key is bound, and a member with every write except Secret operate, which
 // it holds on the bound key only. `withSpare` adds a readable Secret the member may not operate.
-async function boundKeyMemberSetup(t, name, { withSpare = false } = {}) {
+async function boundKeyMemberSetup(t: TestContext, name: string, { withSpare = false } = {}) {
   const slug = name.toLowerCase().replaceAll(" ", "-");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -3472,7 +3744,7 @@ test("a Secret created inline that the member cannot operate is not staged", asy
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const answers = [];
+  const answers: number[] = [];
   page.on("response", (response) => {
     if (response.url() === `${fixture.origin}${path}/permissions/secrets`) {
       answers.push(response.status());
@@ -3503,9 +3775,11 @@ test("a Secret created inline that the member cannot operate is not staged", asy
   // The answer was read once when the list opened and again after the create.
   assert.deepEqual(answers, [200, 200]);
   // The new Secret is listed disabled with the reason.
-  const created = (await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data.find(
-    (secret) => secret.name === "Inline new key",
-  );
+  const created = wireBody(
+    fixture,
+    SecretListResponse,
+    (await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).body,
+  ).data.find((secret) => secret.name === "Inline new key");
   assert.ok(created);
   await operateDeniedSecretOption(page, "API key Secret", created);
   await picker.press("Escape");
@@ -3539,6 +3813,7 @@ test("the picker's Create new Secret is disabled when operate covers only some S
   const picker = page.getByLabel("API key Secret", { exact: true });
   await waitForInputValue(picker, bound.name);
   await waitForEnabled(picker);
+  assert.ok(spare);
   await operateDeniedSecretOption(page, "API key Secret", spare);
   const create = await deniedCreateSecretOption(page, "API key Secret", NEW_SECRET_OPERATE_DENIED);
   // A forced click skips the disabled check: choosing the action still opens nothing.
@@ -3614,7 +3889,11 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
     detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
     editor.credentials,
   );
-  assert.equal((await (await permissions).json()).data.configurationUpdate, true);
+  assert.equal(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await permissions).json()).data
+      .configurationUpdate,
+    true,
+  );
   const entry = versionChooser(page).locator('option[value="draft"]');
   await entry.filter({ hasText: "Editable Configuration" }).waitFor({ state: "attached" });
   // Configuration update alone keeps the draft editable, so the notice is not a reader's.
@@ -3649,7 +3928,11 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
   await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
   const answer = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   reread.release();
-  assert.equal((await (await answer).json()).data.configurationUpdate, false);
+  assert.equal(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await answer).json()).data
+      .configurationUpdate,
+    false,
+  );
   await page.getByText(READ_ONLY_DRAFT_NOTICE, { exact: true }).waitFor();
   await entry.filter({ hasText: "Read-only Configuration" }).waitFor({ state: "attached" });
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
@@ -3690,11 +3973,15 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
       await page.goto(url.href);
     }
     const received = await permissions.requested;
+    assert.ok(received);
     // The held answer keeps the page behind its stand-in until the overview's bounded wait runs
     // out; run it out rather than wait for it.
     await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
     assert.deepEqual(
-      { status: received.status(), data: (await received.json()).data },
+      {
+        status: received.status(),
+        data: wireBody(fixture, AgentCallerPermissionsResponse, await received.json()).data,
+      },
       {
         status: 200,
         data: {
@@ -3723,10 +4010,10 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     permissions.release();
     const refusal = dialog.getByText(/Your access does not include/);
     await refusal.waitFor();
-    const reason = (await refusal.textContent()).trim();
+    const reason = text(await refusal.textContent()).trim();
     assert.equal(await confirm.isDisabled(), true);
     assert.equal(
-      await page.evaluate(() => globalThis.document.activeElement.textContent),
+      await page.evaluate(() => globalThis.document.activeElement?.textContent),
       "Cancel",
     );
     // The confirmation stays in the Tab order, described by the refusal, and sends nothing
@@ -3814,7 +4101,11 @@ test("a channel save that rebinds a denied Secret makes the Agent-side tabs edit
     detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
     member.credentials,
   );
-  assert.equal((await (await permissions).json()).data.agentSourcesOperate, false);
+  assert.equal(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await permissions).json()).data
+      .agentSourcesOperate,
+    false,
+  );
   await page.getByText(PLUGINS_READ_ONLY, { exact: true }).waitFor();
   await page
     .getByText(`${AGENT_SOURCES_DENIED} Missing Secret operate on Admin bot token.`, {
@@ -3841,7 +4132,11 @@ test("a channel save that rebinds a denied Secret makes the Agent-side tabs edit
   const reread = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   assert.equal((await saving).status(), 200);
-  assert.equal((await (await reread).json()).data.agentSourcesOperate, true);
+  assert.equal(
+    wireBody(fixture, AgentCallerPermissionsResponse, await (await reread).json()).data
+      .agentSourcesOperate,
+    true,
+  );
   // The authentication source form is updated in place; the panel keeps its saved state.
   await expectNoText(page, AGENT_SOURCES_DENIED, () => waitForEnabled(saveSource));
   await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(app));
@@ -3927,15 +4222,23 @@ test("the Channels drawer and Disable Slack wait until the replace persona rebin
   );
   await dialog.getByRole("button", { name: "Save configuration" }).click();
   assert.equal((await rebinding).status(), 200);
-  const rebound = await fixture.request("GET", configurationPath);
-  assert.equal(rebound.data.secretBindings.SLACK_BOT_TOKEN.source.id, own.id);
-  assert.equal(rebound.data.secretBindings.SLACK_APP_TOKEN.source.id, app.id);
+  const rebound = wireBody(
+    fixture,
+    ConfigurationResponse,
+    (await fixture.request("GET", configurationPath)).body,
+  );
+  assert.equal(bindingSource(rebound.data, "SLACK_BOT_TOKEN").id, own.id);
+  assert.equal(bindingSource(rebound.data, "SLACK_APP_TOKEN").id, app.id);
   await expectNoText(page, DISABLE_KEEPS_BOT_TOKEN, () => waitForEnabled(disable));
   const disabling = page.waitForResponse(
     (r) => r.request().method() === "PATCH" && r.url().endsWith(configurationPath),
   );
   await disable.click();
   assert.equal((await disabling).status(), 200);
-  const saved = await fixture.request("GET", configurationPath);
-  assert.equal(saved.data.values.channels.slack.enabled, false);
+  const saved = wireBody(
+    fixture,
+    ConfigurationResponse,
+    (await fixture.request("GET", configurationPath)).body,
+  );
+  assert.equal(object(object(object(saved.data.values).channels).slack).enabled, false);
 });
