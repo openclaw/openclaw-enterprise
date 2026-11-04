@@ -500,8 +500,19 @@ export async function createQaInstallation(
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(30_000),
       });
-      assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status}`);
       const text = await response.text();
+      let code = "unknown";
+      if (!response.ok) {
+        try {
+          const candidate = JSON.parse(text).error?.code;
+          if (typeof candidate === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(candidate)) {
+            code = redactedQaTail(candidate, f.env, { lines: 1, lineChars: 80 });
+          }
+        } catch {
+          // Do not print an unstructured error body or provider response.
+        }
+      }
+      assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status} (${code})`);
       return text ? JSON.parse(text).data : undefined;
     },
     async compose(...args) {
@@ -1042,9 +1053,12 @@ export async function createQaAgent(
         deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
       },
     };
-    await f.api("PATCH", `/namespaces/${f.namespace.id}/configurations/${configuration.id}`, {
-      values,
-    });
+    // Later provider changes must start from the admitted native-admin configuration.
+    agent.configuration = await f.api(
+      "PATCH",
+      `/namespaces/${f.namespace.id}/configurations/${configuration.id}`,
+      { values },
+    );
   }
   if (!provisionNativeAdmin) {
     await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);

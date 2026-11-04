@@ -1,7 +1,9 @@
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { cleanupRepositoryJourney } from "./repository-remote-cleanup.mjs";
+import { captureChild } from "./child-processes.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { chmod, mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
@@ -115,6 +117,51 @@ export async function prepareQaRepository(f) {
     `refs/heads/${qaRepositoryBranch(f.suffix)}`,
   ]);
   f.repositoryEntry = entry;
+  // Record the runner's DNS view, not cluster reachability. Only these two fixed
+  // provider hostnames are queried; this does not change the approved /32 list.
+  try {
+    const cidrs = JSON.parse(await readFile(join(input, "upstream-cidrs.json"), "utf8"));
+    const hosts = await Promise.all(
+      ["api.github.com", "github.com"].map(async (hostname) => {
+        let deadline;
+        try {
+          const addresses = await Promise.race([
+            lookup(hostname, { family: 4, all: true }),
+            new Promise((_, reject) => {
+              deadline = setTimeout(
+                () =>
+                  reject(
+                    Object.assign(new Error("DNS diagnostic timed out"), { code: "ETIMEOUT" }),
+                  ),
+                3000,
+              );
+            }),
+          ]);
+          return {
+            hostname,
+            addresses: addresses.map(({ address }) => ({
+              address,
+              approved: cidrs.includes(`${address}/32`),
+            })),
+          };
+        } catch (error) {
+          const code = ["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ETIMEOUT"].includes(error.code)
+            ? error.code
+            : "unavailable";
+          return { hostname, error: code };
+        } finally {
+          clearTimeout(deadline);
+        }
+      }),
+    );
+    await f.record("repository-provider-dns", {
+      scope: "runner",
+      approvedEndpoints: cidrs.length,
+      hosts,
+    });
+  } catch {
+    // Optional diagnostics cannot prevent repository setup or replace its failure.
+  }
   if (f.controlPlane === "kubernetes") {
     return;
   }
@@ -215,7 +262,43 @@ export async function prepareQaRepository(f) {
   const broker = (await f.compose("ps", "-a", "-q", "repository-credentials")).trim();
   assert.ok(broker, "Compose must create the real repository broker");
   await waitFor("Compose broker control socket ready", async () => {
-    const state = JSON.parse(await f.run("docker", ["inspect", broker]))[0].State;
+    const container = JSON.parse(await f.run("docker", ["inspect", broker]))[0];
+    const state = container.State;
+    if (!state.Running) {
+      try {
+        let logs = "unavailable";
+        try {
+          const output = await captureChild("docker", ["logs", "--tail", "80", broker], {
+            env: f.env,
+            timeout: 15_000,
+          });
+          logs = redactedQaTail(`${output.stdout}\n${output.stderr}`, qaLogEnv(f), {
+            lines: 40,
+            lineChars: 512,
+          });
+        } catch {
+          // Preserve the startup failure when Docker cannot return its logs.
+        }
+        const ownership = {};
+        for (const name of ["control/private", "inputs/config.json", "registry/registry.json"]) {
+          try {
+            const info = await stat(join(directory, name));
+            ownership[name] = { uid: info.uid, gid: info.gid, mode: info.mode & 0o777 };
+          } catch {
+            ownership[name] = { unavailable: true };
+          }
+        }
+        await f.record("repository-broker-startup-failure", {
+          imageUser: container.Config.User,
+          runnerUid: process.getuid?.(),
+          exitCode: state.ExitCode,
+          ownership,
+          logs,
+        });
+      } catch {
+        // Preserve the original startup failure if evidence cannot be recorded.
+      }
+    }
     assert.ok(state.Running, "the real repository broker exited during startup");
     try {
       return (await stat(join(directory, "control/private/control.sock"))).isSocket();
@@ -961,6 +1044,52 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
   }
   if (f.pendingRepositories.has(agent.id)) {
     f.retained = true;
+  }
+  // Attempt Agent/session and remote branch cleanup first. One worker log read
+  // then retains provider-stage evidence without delaying those obligations.
+  if (workFailure) {
+    try {
+      const kubernetes = f.controlPlane === "kubernetes";
+      const args = kubernetes
+        ? [
+            "--kubeconfig",
+            join(f.stateDirectory, "kubeconfig"),
+            "--context",
+            `k3d-${f.cluster}`,
+            "--namespace",
+            f.state.platformNamespace,
+            "--request-timeout=10s",
+            "logs",
+            "deployment/openclaw-enterprise-worker",
+            "--container",
+            "worker",
+            "--tail=100",
+          ]
+        : [
+            "compose",
+            "-p",
+            f.cluster,
+            "-f",
+            join(f.stateDirectory, "compose.yaml"),
+            "logs",
+            "--no-color",
+            "--tail",
+            "100",
+            "worker-kubernetes",
+          ];
+      const output = await captureChild(kubernetes ? "kubectl" : "docker", args, {
+        env: f.env,
+        timeout: 15_000,
+      });
+      await f.record(`${agent.id}-repository-failure`, {
+        logs: redactedQaTail(`${output.stdout}\n${output.stderr}`, qaLogEnv(f), {
+          lines: 60,
+          lineChars: 1200,
+        }),
+      });
+    } catch {
+      // Diagnostics must not replace the repository failure or its cleanup obligations.
+    }
   }
   if (workFailure && cleanupFailure) {
     throw new AggregateError(

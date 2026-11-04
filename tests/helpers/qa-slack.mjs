@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
 import { protectedText, grantQaSecret } from "./qa-secrets.mjs";
 import { slackApi } from "./harness-topology-k3d-real.mjs";
-import { allMessages, verifySingleSlackDelivery } from "./slack-delivery.mjs";
+import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.mjs";
 import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
 
 export async function prepareQaSlack(f) {
@@ -258,8 +258,7 @@ async function verifyNativeSlackRoot(f, agent, slack, identity) {
     assert.ok(matching.length <= 1, "native outbound root must not be duplicated");
     if (matching.length) {
       reply = matching[0];
-      assert.equal(reply.user, identity.user_id);
-      assert.equal(reply.bot_id, identity.bot_id);
+      assertSlackBotAuthor(reply, identity);
       assert.equal(reply.text.trim(), marker);
       assert.ok(reply.thread_ts === undefined || reply.thread_ts === reply.ts);
       firstSeen ??= Date.now();
