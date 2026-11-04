@@ -1,5 +1,4 @@
-type SignInAction =
-  { click: string } | { selector: string; click: boolean } | { selector: string; value: string };
+import type { StoryAction } from "../../story-action.mts";
 
 type SignInRule = {
   path: `/api/auth/${string}`;
@@ -59,7 +58,7 @@ type SignInScenario = {
   expiredSession?: true;
   steps?: readonly string[];
   gap?: string;
-  actions?: readonly SignInAction[];
+  actions?: readonly StoryAction[];
   rules?: readonly SignInRule[];
 };
 

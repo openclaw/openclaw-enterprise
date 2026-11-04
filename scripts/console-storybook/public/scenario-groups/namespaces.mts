@@ -1,11 +1,7 @@
 import type { NamespaceStatus } from "@openclaw-enterprise/contracts";
 import type { ErrorCode } from "../../../../packages/contracts/src/api/common.ts";
 import type { NamespaceListResponse } from "../../../../packages/contracts/src/api/resources.ts";
-
-type NamespaceAction =
-  | { click: string; focus?: true }
-  | { selector: string; click: true }
-  | { selector: string; value: string };
+import type { StoryAction } from "../../story-action.mts";
 
 type NamespaceRule = { path: "/namespaces" } & (
   | {
@@ -53,7 +49,7 @@ type NamespaceScenario = {
   namespaceDeleteDenied?: true;
   namespaceDeleteRestricted?: true;
   namespaceDeleteOutcome?: "complete" | "blocked" | "forbidden" | "pending" | "unknown" | "stalled";
-  actions?: readonly NamespaceAction[];
+  actions?: readonly StoryAction[];
   rules?: readonly NamespaceRule[];
 };
 

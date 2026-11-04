@@ -226,6 +226,8 @@ seven-day release-age policy, independently of root dependencies.
 - Edit Namespace scenarios in `public/scenario-groups/namespaces.mts`. Imports
   within Storybook's `public/` fixture source use the `.mts` path for a typed
   fixture. Asset preparation rewrites those imports to versioned `.mjs` URLs.
+  When defining actions in a typed scenario group, import the `StoryAction`
+  type from `scripts/console-storybook/story-action.mts`.
 - `*.stories.ts` exports named stories by group. `story.ts` adds instructions,
   UI-gap notices, the preview, and Reset story. The repository's `pnpm typecheck`
   checks these files without installing the separate Storybook dependencies.
