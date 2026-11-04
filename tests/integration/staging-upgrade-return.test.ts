@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:https";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
@@ -365,11 +365,13 @@ test("rehearsal admission binds the direct local Docker port and Kubernetes iden
   const accepted = await bindLocalRehearsalCluster(run, cluster, join(directory, "accepted"));
   assert.equal(accepted.selection.kubernetesContext, context);
   assert.equal(accepted.nodeUID, nodeUID);
-  assert.equal((await stat(accepted.selection.kubeconfigPath)).mode & 0o777, 0o600);
-  assert.equal(
-    await readFile(accepted.selection.kubeconfigPath, "utf8"),
-    "invented dedicated kubeconfig",
-  );
+  const kubeconfig = await open(accepted.selection.kubeconfigPath, "r");
+  try {
+    assert.equal((await kubeconfig.stat()).mode & 0o777, 0o600);
+    assert.equal(await kubeconfig.readFile("utf8"), "invented dedicated kubeconfig");
+  } finally {
+    await kubeconfig.close();
+  }
   await accepted.assertCluster();
   const expectedPodUID = podUID;
   assert.equal(
@@ -1126,9 +1128,14 @@ test(
     });
     const deadline = Date.now() + 5000;
     while (
-      !(await stat(heartbeat).then(
+      !(await readFile(heartbeat).then(
         () => true,
-        () => false,
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") {
+            throw error;
+          }
+          return false;
+        },
       ))
     ) {
       assert.ok(Date.now() < deadline, "the separate-session holder did not start");
