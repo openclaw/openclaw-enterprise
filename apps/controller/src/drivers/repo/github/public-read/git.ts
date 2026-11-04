@@ -139,7 +139,11 @@ export async function streamPublicGithubGit(
       headers["content-encoding"] = "gzip";
     }
   }
-  const upstream = request("https://github.com" + route.target, {
+  const upstream = request({
+    protocol: "https:",
+    hostname: "github.com",
+    port: 443,
+    path: route.target,
     method: req.method,
     headers,
     agent,

@@ -584,8 +584,12 @@ test("public Git refuses inherited client TLS identities instead of disclosing t
   const fixture = await materialFixture(t);
   const env = await fixture.install();
   const peerIdentities = [];
+  const client = await selfSigned(fixture.directory, {
+    name: "client",
+    commonName: "fixture-client",
+  });
   const destination = https.createServer(
-    { ...fixture.serviceTls, requestCert: true, rejectUnauthorized: false },
+    { ...fixture.serviceTls, ca: client.cert, requestCert: true, rejectUnauthorized: true },
     (req, res) => {
       peerIdentities.push(req.socket.getPeerCertificate().subject?.CN);
       res.writeHead(404).end();
@@ -597,10 +601,6 @@ test("public Git refuses inherited client TLS identities instead of disclosing t
   const configPath = path.join(fixture.directory, "client-identity-config.json");
   await writeFile(configPath, JSON.stringify(config));
   const global = path.join(fixture.directory, "client-identity.gitconfig");
-  const client = await selfSigned(fixture.directory, {
-    name: "client",
-    commonName: "fixture-client",
-  });
   await execute(
     "git",
     [
