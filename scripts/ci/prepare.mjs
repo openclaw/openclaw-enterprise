@@ -1246,6 +1246,8 @@ async function buildRuntimeImages(
     revision,
     controllerTarget = "runtime",
     buildConcurrency,
+    registryOutput,
+    cacheController = false,
   } = {},
 ) {
   // Plain BuildKit progress shows each step's cache hit or duration. The warm job
@@ -1343,7 +1345,8 @@ async function buildRuntimeImages(
           .digest("hex")
           .slice(0, 17)
       : state.prefix;
-  const tagBase = `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
+  const tagBase =
+    registryOutput ?? `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
   const openclawSource = runtime ? process.env.OCC_K3D_OPENCLAW_SOURCE : undefined;
   if (controller) {
     assertNodeBaseImage(nodeBaseImage);
@@ -1422,20 +1425,54 @@ async function buildRuntimeImages(
       },
     });
   }
-  // Record every tag before any build starts. The builds are independent, so
-  // they run together and take as long as the slower one instead of their sum.
+  // Registry output reuses compressed cached layers directly, without loading
+  // and recompressing them through the host engine. Compose needs only its
+  // development leaf in the same builder's cache, not a published controller.
   for (const entry of builds) {
-    entry.resource = addResource(state, "image-tag", { name: entry.tag, owner: state.prefix });
-    resources.push(entry.resource);
+    if (registryOutput) {
+      entry.cacheOnly = cacheController && entry.role === "controller";
+      entry.metadataFile = join(dirname(statePath), `first-agent-${entry.role}-build.json`);
+      entry.args = [
+        ...entry.args.slice(0, 2),
+        "--output",
+        entry.cacheOnly ? "type=cacheonly" : "type=image,push=true,registry.insecure=true",
+        "--metadata-file",
+        entry.metadataFile,
+        ...entry.args.slice(2).filter((arg) => arg !== "--load"),
+      ];
+    } else {
+      entry.resource = addResource(state, "image-tag", { name: entry.tag, owner: state.prefix });
+      resources.push(entry.resource);
+    }
   }
   await writeState(statePath, state);
   await prepareTogether(
     builds.map((entry) => async () => {
-      // The warm job builds every step so its export has them all.
-      if (cacheWarm || !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))) {
-        await build(entry.role, entry.args);
+      if (registryOutput) {
+        const result = await laneImageCommand(entry.role, entry.args);
+        firstAgentCacheObservation(
+          state,
+          entry.role,
+          entry.cacheOnly ? "cache-only" : "direct-publish",
+          result.stderr,
+        );
+        if (entry.cacheOnly) {
+          entry.env = {};
+        } else {
+          const metadata = JSON.parse(await readFile(entry.metadataFile, "utf8"));
+          const digest = metadata["containerimage.digest"];
+          const reference = `${entry.tag.slice(0, entry.tag.lastIndexOf(":"))}@${digest}`;
+          assertImmutableImageReference(reference, "first-Agent image export");
+          entry.env = Object.fromEntries(Object.keys(entry.env).map((name) => [name, reference]));
+        }
+        await rm(entry.metadataFile, { force: true });
+      } else {
+        // The warm job builds every step so its export has them all.
+        if (cacheWarm || !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))) {
+          await build(entry.role, entry.args);
+        }
+        await markResourceReady(statePath, state, entry.resource);
       }
-      await markResourceReady(statePath, state, entry.resource);
     }),
     buildConcurrency,
   );
@@ -1460,17 +1497,6 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
   const compose = file === "tests/integration/local-first-agent-openshell-real.test.mjs";
   const nodeBaseImage = effectiveLaneEnv(state.lane, env).NODE_BASE_IMAGE;
   assertNodeBaseImage(nodeBaseImage);
-  const built = await timedPreparation(state.lane, "first-agent-images", () =>
-    buildRuntimeImages(statePath, state, {
-      controller: true,
-      runtime: true,
-      nodeBaseImage,
-      revision,
-      controllerTarget: compose ? "development" : "runtime",
-      // A cold runtime compilation needs most of the standard runner's memory.
-      buildConcurrency: 1,
-    }),
-  );
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
   const registryImage =
     "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
@@ -1478,11 +1504,10 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
   const registry = addResource(state, "first-agent-image-registry", {
     name: ownedName("openclaw-ci-first-images", state.prefix, { maxLength: 63 }),
     port,
-    images: [],
   });
   await writeState(statePath, state);
   await ensureDockerSourceImage(state, registryImage, "first-Agent registry image");
-  await execFile(docker, [
+  const createdRegistry = await execFile(docker, [
     "run",
     "--detach",
     "--name",
@@ -1493,6 +1518,12 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
     `127.0.0.1:${port}:5000`,
     registryImage,
   ]);
+  const containerId = createdRegistry.stdout.trim();
+  if (!/^[a-f0-9]{64}$/.test(containerId)) {
+    throw new Error("Registry creation returned no container identity.");
+  }
+  registry.containerId = containerId;
+  await writeState(statePath, state);
   const registryOrigin = `http://127.0.0.1:${port}`;
   const registryDeadline = Date.now() + 30_000;
   let registryReady = false;
@@ -1511,36 +1542,72 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
   if (!registryReady) {
     throw new Error("First-Agent image registry did not become ready.");
   }
-  const selected = {};
-  for (const [role, source] of Object.entries({
+  const built = await timedPreparation(state.lane, "first-agent-images", () =>
+    buildRuntimeImages(statePath, state, {
+      controller: true,
+      runtime: true,
+      nodeBaseImage,
+      revision,
+      controllerTarget: compose ? "development" : "runtime",
+      registryOutput: `127.0.0.1:${port}/${registry.name}`,
+      cacheController: compose,
+      // These two independent targets already share source/cache dependencies.
+      // Keep the same two-build bound as ordinary image preparation.
+      buildConcurrency: 2,
+    }),
+  );
+  const selected = {
     ...(compose ? {} : { controller: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE }),
     runtime: built.env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
-  })) {
-    const tag = `127.0.0.1:${port}/${registry.name}/${role}:checkout`;
-    const info = JSON.parse((await execFile(docker, ["image", "inspect", source])).stdout)[0];
-    if (info.Config.Labels?.["org.opencontainers.image.revision"] !== revision) {
-      throw new Error("Built first-Agent image does not identify the current checkout.");
+  };
+  for (const reference of Object.values(selected)) {
+    const [name, digest] = reference.split("@");
+    const repository = name.slice(name.indexOf("/") + 1);
+    const readVerified = async (path, expected) => {
+      const response = await fetch(`${registryOrigin}/v2/${repository}/${path}`, {
+        headers: {
+          accept:
+            "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json",
+        },
+        redirect: "error",
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) {
+        throw new Error("First-Agent image metadata is unavailable.");
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (
+        bytes.length > 4 * 1024 * 1024 ||
+        `sha256:${createHash("sha256").update(bytes).digest("hex")}` !== expected
+      ) {
+        throw new Error("First-Agent image metadata does not match its digest.");
+      }
+      return JSON.parse(bytes.toString("utf8"));
+    };
+    const manifest = await readVerified(`manifests/${digest}`, digest);
+    if (
+      ![
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+      ].includes(manifest.mediaType) ||
+      !/^sha256:[a-f0-9]{64}$/.test(manifest.config?.digest ?? "")
+    ) {
+      throw new Error("First-Agent images must select one immutable platform manifest.");
     }
-    registry.images.push({ tag, id: info.Id });
-    await writeState(statePath, state);
-    await execFile(docker, ["tag", source, tag]);
-    await timedPreparation(state.lane, `first-agent-${role}-publish`, () =>
-      execFile(docker, ["push", tag], { timeoutMs: 10 * 60_000 }),
-    );
-    const published = JSON.parse((await execFile(docker, ["image", "inspect", tag])).stdout)[0];
-    const repository = tag.slice(0, tag.lastIndexOf(":"));
-    const reference = published.RepoDigests?.find((value) =>
-      value.startsWith(`${repository}@sha256:`),
-    );
-    assertImmutableImageReference(reference, "first-Agent image");
-    if (published.Id !== info.Id) {
-      throw new Error("Image publication changed the selected image identity.");
+    const config = await readVerified(`blobs/${manifest.config.digest}`, manifest.config.digest);
+    if (
+      config.config?.Labels?.["org.opencontainers.image.revision"] !== revision ||
+      config.os !== "linux" ||
+      config.architecture !== (process.arch === "x64" ? "amd64" : process.arch)
+    ) {
+      throw new Error("First-Agent image does not match the checkout and runner platform.");
     }
-    selected[role] = reference;
   }
   await markResourceReady(statePath, state, registry);
   env.NODE_BASE_IMAGE = nodeBaseImage;
   env.OCC_KUBERNETES_RUNTIME_IMAGE = selected.runtime;
+  env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = selected.runtime;
+  env.OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER = registry.name;
   if (compose) {
     // Compose builds the development target, whose leaf is not in the main
     // runtime-target cache. Reuse this job's measured development build locally.
@@ -1548,7 +1615,7 @@ async function prepareFirstAgentImages(statePath, state, env, file) {
     env.OCC_TEST_LOCAL_FIRST_AGENT_BUILD_REVISION = revision;
   } else {
     env.OCC_DEVELOPMENT_CONTROLLER_IMAGE = selected.controller;
-    env.OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER = registry.name;
+    env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE = selected.controller;
   }
 }
 

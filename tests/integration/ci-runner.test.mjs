@@ -10,6 +10,7 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   collectNativeWorkerFailure,
+  nativeWorkerHistoryEvidence,
   nativeWorkerPlacementObservation,
   nativeWorkerTurnObservation,
 } from "../helpers/local-first-agent-native.mjs";
@@ -6010,5 +6011,61 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
 describe("tests that wait out real runner limits, side by side", { concurrency: true }, () => {
   for (const args of waitingTests) {
     test(...args);
+  }
+});
+
+test("native history proof keeps exact run, explicit success and marker predicates", () => {
+  const prefix = "FIRST_AGENT_NATIVE_TOOL ";
+  const marker = "FIRST_AGENT_NATIVE_expected";
+  const output = prefix + JSON.stringify({ hostname: "private-host", content: "private-value" });
+  const tool = {
+    role: "toolResult",
+    toolName: "exec",
+    isError: false,
+    content: output,
+    __openclaw: { runId: "selected" },
+  };
+  const final = {
+    role: "assistant",
+    stopReason: "stop",
+    content: marker,
+    __openclaw: { runId: "selected" },
+  };
+  for (const [name, messages, toolPresent, finalPresent, flag] of [
+    ["valid", [tool, final], true, true, "false"],
+    [
+      "wrapped",
+      [{ ...tool, content: JSON.stringify({ value: { aggregated: output } }) }, final],
+      true,
+      true,
+      "false",
+    ],
+    ["missing flag", [{ ...tool, isError: undefined }, final], false, true, "absent"],
+    ["error", [{ ...tool, isError: true }, final], false, true, "true"],
+    ["invalid flag", [{ ...tool, isError: 0 }, final], false, true, "other"],
+    ["source echo", [{ ...tool, content: "command: " + output }, final], false, true, "false"],
+    ["wrong run", [{ ...tool, __openclaw: { runId: "other" } }, final], false, true, "none"],
+    ["wrong marker", [tool, { ...final, content: "Done: " + marker }], true, false, "false"],
+    [
+      "tool continuation",
+      [tool, { ...final, content: [{ type: "text", text: marker }, { type: "toolCall" }] }],
+      true,
+      false,
+      "false",
+    ],
+  ]) {
+    const evidence = nativeWorkerHistoryEvidence({
+      messages,
+      runId: "selected",
+      toolPrefix: prefix,
+      marker,
+    });
+    assert.equal(Boolean(evidence.tool), toolPresent, name);
+    assert.equal(Boolean(evidence.final), finalPresent, name);
+    assert.equal(evidence.observation.historyExecErrorFlag, flag, name);
+    assert.doesNotMatch(
+      JSON.stringify(evidence.observation),
+      /private-host|private-value|FIRST_AGENT_NATIVE/,
+    );
   }
 });

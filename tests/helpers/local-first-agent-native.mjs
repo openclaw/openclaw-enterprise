@@ -983,6 +983,108 @@ export function nativeWorkerSessionPlacement(description, sessionId) {
   return description.session.placement;
 }
 
+// Keep exact run, explicit success, standalone tool output and final-marker
+// predicates together. Only the fixed observation is retained in diagnostics.
+export function nativeWorkerHistoryEvidence({ messages: history, runId, toolPrefix, marker }) {
+  if (!Array.isArray(history)) {
+    throw new Error("Invalid native history");
+  }
+  const text = (content) =>
+    typeof content === "string"
+      ? content
+      : (content ?? [])
+          .filter((part) => part?.type === "text" && typeof part.text === "string")
+          .map((part) => part.text)
+          .join("\n");
+  const execOutput = (content) => {
+    const output = text(content);
+    try {
+      const result = JSON.parse(output);
+      if (typeof result?.value?.aggregated === "string") {
+        return result.value.aggregated;
+      }
+    } catch {
+      // Plain exec output is already the recorded tool result.
+    }
+    return output;
+  };
+  const messages = history.filter((message) => message.__openclaw?.runId === runId);
+  const tool = messages.find(
+    (message) =>
+      message.role === "toolResult" &&
+      message.toolName === "exec" &&
+      message.isError === false &&
+      // A failed command can echo the marker in its source. Only a
+      // standalone proof line identifies the command's actual output.
+      execOutput(message.content)
+        .split(/\r?\n/)
+        .some((line) => line.startsWith(toolPrefix)),
+  );
+  const final = messages.find(
+    (message) =>
+      message.role === "assistant" &&
+      text(message.content).trim() === marker &&
+      !["toolUse", "error"].includes(message.stopReason) &&
+      !(
+        Array.isArray(message.content) && message.content.some((part) => part?.type === "toolCall")
+      ),
+  );
+  const exec = messages.filter(
+    (message) => message.role === "toolResult" && message.toolName === "exec",
+  );
+  const errorFlag = (value) => {
+    if (value === false) {
+      return "false";
+    }
+    if (value === true) {
+      return "true";
+    }
+    if (value === undefined) {
+      return "absent";
+    }
+    return "other";
+  };
+  const flags = new Set(exec.map((message) => errorFlag(message.isError)));
+  let flag = "mixed";
+  if (flags.size === 0) {
+    flag = "none";
+  } else if (flags.size === 1) {
+    flag = [...flags][0];
+  }
+  const assistants = messages.filter((message) => message.role === "assistant");
+  return {
+    tool,
+    final,
+    messages,
+    output: tool ? execOutput(tool.content) : undefined,
+    observation: {
+      historyMessageCount: history.length,
+      historyRunMessageCount: messages.length,
+      historyExecCount: exec.length,
+      historyExplicitSuccessCount: exec.filter((message) => message.isError === false).length,
+      historyExecErrorFlag: flag,
+      historyToolPrefixCount: exec.filter((message) =>
+        execOutput(message.content)
+          .split(/\r?\n/)
+          .some((line) => line.startsWith(toolPrefix)),
+      ).length,
+      historyFinalMarkerCount: assistants.filter(
+        (message) => text(message.content).trim() === marker,
+      ).length,
+      historyTerminalAssistantCount: assistants.filter(
+        (message) =>
+          !["toolUse", "error"].includes(message.stopReason) &&
+          !(
+            Array.isArray(message.content) &&
+            message.content.some((part) => part?.type === "toolCall")
+          ),
+      ).length,
+      historyToolProofPresent: Boolean(tool),
+      historyFinalProofPresent: Boolean(final),
+    },
+  };
+}
+
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
 async function nativeWorkerProof({
@@ -1013,6 +1115,8 @@ async function nativeWorkerProof({
   let lastPlacement;
   let runId;
   let outcome;
+  let historyPredicates;
+  let historySignal;
   const proofStarted = performance.now();
   const emit = (data) =>
     process.stdout.write("OCE_NATIVE_FIRST_AGENT_PROOF " + JSON.stringify(data) + "\n");
@@ -1059,8 +1163,8 @@ async function nativeWorkerProof({
     assert.equal(required.inference, "worker");
     assert.ok(required.executionModes.includes("worker-turn"));
     let session = existingSession;
-    collectFailure = (error) =>
-      collectNativeWorkerFailure({
+    collectFailure = async (error) => ({
+      ...(await collectNativeWorkerFailure({
         request: (method, params, options) => client.request(method, params, options),
         session,
         lastPlacement,
@@ -1069,7 +1173,10 @@ async function nativeWorkerProof({
         runId,
         outcome,
         error,
-      });
+      })),
+      ...historyPredicates,
+      historySettleExpired: historySignal?.aborted === true,
+    });
     if (session === undefined) {
       stage = "create";
       const key = `agent:main:first-agent-native-${randomUUID()}`;
@@ -1164,55 +1271,27 @@ async function nativeWorkerProof({
     signal.throwIfAborted();
     stage = "model-outcome";
     assert.equal(outcome.status, "ok");
-    const text = (content) =>
-      typeof content === "string"
-        ? content
-        : (content ?? [])
-            .filter((part) => part?.type === "text" && typeof part.text === "string")
-            .map((part) => part.text)
-            .join("\n");
-    const execOutput = (content) => {
-      const output = text(content);
-      try {
-        const result = JSON.parse(output);
-        if (typeof result?.value?.aggregated === "string") {
-          return result.value.aggregated;
-        }
-      } catch {
-        // Plain exec output is already the recorded tool result.
-      }
-      return output;
-    };
-    while (!signal.aborted) {
+    // The model turn is already terminal. Allow history delivery to settle,
+    // but do not spend the remaining model-execution budget on a missing proof.
+    historySignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+    while (!historySignal.aborted) {
       stage = "model-history";
-      const history = await call("chat.history", { sessionKey: key, limit: 30 });
-      const messages = (history.messages ?? []).filter(
-        (message) => message.__openclaw?.runId === sent.runId,
+      const history = await client.request(
+        "chat.history",
+        { sessionKey: key, limit: 30 },
+        { signal: historySignal, timeoutMs: 30_000 },
       );
-      const tool = messages.find(
-        (message) =>
-          message.role === "toolResult" &&
-          message.toolName === "exec" &&
-          message.isError === false &&
-          // A failed command can echo the marker in its source. Only a
-          // standalone proof line identifies the command's actual output.
-          execOutput(message.content)
-            .split(/\r?\n/)
-            .some((line) => line.startsWith(toolPrefix)),
-      );
-      const final = messages.find(
-        (message) =>
-          message.role === "assistant" &&
-          text(message.content).trim() === marker &&
-          !["toolUse", "error"].includes(message.stopReason) &&
-          !(
-            Array.isArray(message.content) &&
-            message.content.some((part) => part?.type === "toolCall")
-          ),
-      );
+      const evidence = nativeWorkerHistoryEvidence({
+        messages: history.messages,
+        runId: sent.runId,
+        toolPrefix,
+        marker,
+      });
+      historyPredicates = evidence.observation;
+      const { tool, final, messages } = evidence;
       if (tool && final) {
         stage = "exec-proof";
-        const output = execOutput(tool.content);
+        const output = evidence.output;
         const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
         assert.ok(line);
         const proof = JSON.parse(line.slice(toolPrefix.length));
@@ -1249,9 +1328,9 @@ async function nativeWorkerProof({
       assert.ok(
         !messages.some((message) => message.role === "assistant" && message.stopReason === "error"),
       );
-      await delay(500, undefined, { signal });
+      await delay(500, undefined, { signal: historySignal });
     }
-    signal.throwIfAborted();
+    historySignal.throwIfAborted();
   } catch (error) {
     // Dependency/RPC errors can include private headers. Preserve the failing
     // stage, never raw exceptions, keys, transcripts or controller output.
@@ -1289,7 +1368,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"

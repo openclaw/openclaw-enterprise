@@ -647,6 +647,7 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "http-rate-limit",
   ];
   const vocabularies = {
+    historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
     proofError: turnErrors,
@@ -698,6 +699,9 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     }
   }
   for (const field of [
+    "historyToolProofPresent",
+    "historyFinalProofPresent",
+    "historySettleExpired",
     "workspaceReferencePresent",
     "attachedSessionMatches",
     "expectedNodeIdPresent",
@@ -711,6 +715,13 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     }
   }
   for (const field of [
+    "historyMessageCount",
+    "historyRunMessageCount",
+    "historyExecCount",
+    "historyExplicitSuccessCount",
+    "historyToolPrefixCount",
+    "historyFinalMarkerCount",
+    "historyTerminalAssistantCount",
     "attachedSessionCount",
     "nodeCount",
     "connectedNodeCount",

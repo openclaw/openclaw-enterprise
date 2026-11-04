@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-04
-last_updated_session: authoring-run/5728cb52-6c01-4613-a558-c793a649f415
+last_updated_session: authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -240,7 +240,9 @@ Workspace, node identity, sessions and images stay separate. The supervisor prob
 
 `prepareNativeWorkspace` uses a restricted Deployment for the Agent revision to privatize
 writable PVC subpaths, preserving retained entries. Mode and process ownership checks precede
-UID-fenced foreground deletion and writer Pod termination.
+UID-fenced foreground deletion and writer Pod termination. After synchronous preparation,
+the process handles SIGTERM with a successful exit. Kubernetes keeps its normal grace
+period; the Driver still waits until all writer Pods are gone before creating the Sandbox.
 Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
 and the pinned Gateway's default identity, without model credentials, ServiceAccount
 tokens, capabilities, or direct Pod creation. Mode support and admission report
@@ -393,6 +395,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 11:18: Exit native workspace preparation cleanly on SIGTERM after its synchronous writes. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - bb0314249dfee342458615a0d624d3342e8233f6)
 
 - 2026-11-04 09:00: Remove the retired local middleware chart-verification claim. (authoring-run/5728cb52-6c01-4613-a558-c793a649f415 - 384b030ae118b130013f9863873bbeee0a9f4961)
 

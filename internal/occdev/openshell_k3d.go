@@ -543,6 +543,10 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if controller == "" {
 		return nil
 	}
+	return r.validateSelectedDevelopmentImageRevisions(ctx, controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"])
+}
+
+func (r *runner) validateSelectedDevelopmentImageRevisions(ctx context.Context, images ...string) error {
 	checkout, err := r.output(ctx, "git", "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve the checkout revision for selected images: %w", err)
@@ -551,7 +555,7 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if len(revision) != 40 || strings.Trim(revision, "0123456789abcdef") != "" {
 		return fmt.Errorf("the checkout must have a full Git commit revision")
 	}
-	for _, image := range []string{controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"]} {
+	for _, image := range images {
 		label, err := r.developmentImageRevision(ctx, image)
 		if err != nil {
 			return err

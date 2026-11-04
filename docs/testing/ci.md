@@ -344,10 +344,12 @@ parallel across separate VMs. The two first-Agent files provision and clean up
 through Local Setup. Hosted focused preparation restores the main-only BuildKit
 caches and builds current-checkout images, without creating a second cluster,
 database, routing setup, OpenShell installation, or Keycloak instance. The
-Kubernetes case selects the resulting immutable controller/runtime pair and
-pulls it from an owned loopback registry. Compose reuses its separately built
-development target through the same job builder and imports the selected runtime
-through the archive path. Its controller is not published to the registry.
+Kubernetes case selects the resulting immutable controller/runtime pair. The
+builder pushes cached layers directly to an owned loopback registry, without
+loading or recompressing the images in the host engine. Both profiles import the
+runtime from that registry. Compose warms its development target in the same
+builder with cache-only output; its controller is neither loaded during preparation
+nor published to the registry.
 Other files retain their lane preparation. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
@@ -366,7 +368,9 @@ runs and the setup shard retain the source-build installer path.
 
 OpenShell jobs use the guarded hosted disk-capacity check before image work.
 It skips removal when at least 36 GiB is available and preserves the Go and
-Python toolchains. Its receipt records capacity and removal duration.
+Python toolchains. Its receipt records capacity and removal duration. An explicitly
+selected installed browser is validated by a sandboxed launch and page evaluation;
+these jobs do not install an unused Playwright browser alongside it.
 
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, nonce-only reuse, native deployment, native
@@ -393,6 +397,13 @@ deploy request to Pod creation and time from creation to scheduling,
 initialization, running, readiness, and observation. They retain no Pod identity
 or configuration. Pod readiness timing does not replace the model and required
 worker proof.
+
+Native first-Agent proof retains the exact run ID, explicit successful exec flag,
+standalone tool-proof line, and exact final nonce. After a turn is terminal, history
+has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
+report only predicate counts and flags, not marker values, commands or transcripts.
+This settling bound does not reduce the model-execution budget or count a failed
+proof as a performance improvement.
 
 The credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
 

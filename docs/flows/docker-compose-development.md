@@ -177,7 +177,10 @@ resolves the imported digest from containerd, rejects missing or ambiguous
 results, and removes the archive. Tagged builds share this path.
 `internal/occdev/registry_k3d.go:pullDevelopmentImage` pulls digest-pinned
 `OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` images instead; `state.json` records
-the registry attachment for `occ dev down` to detach.
+the registry attachment for `occ dev down` to detach. Kubernetes-only uses its
+owned k3d network; Compose uses its exact recorded Compose network and selects
+only a runtime image with the current checkout label. Both detach after imports
+and on rollback, including recovery after interrupted startup.
 
 ### 5. Prepare the optional OpenShell development profile
 

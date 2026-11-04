@@ -132,7 +132,7 @@ function run(
         for (const line of lines) {
           const timing =
             context &&
-            /^\[occ-dev-timing\] stage=([a-z-]+) elapsed_ms=([0-9]+) failed=(true|false)$/.exec(
+            /^\[occ-dev-timing\] stage=([a-z0-9-]+) elapsed_ms=([0-9]+) failed=(true|false)$/.exec(
               line,
             );
           if (timing) {

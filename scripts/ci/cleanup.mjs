@@ -468,12 +468,7 @@ async function cleanupK3dImage(resource, state) {
 async function cleanupFirstAgentImages(resource, state) {
   assertResourceOwner(resource, state);
   assertOwnedName("openclaw-ci-first-images-", resource.name, "first-Agent registry");
-  if (
-    !Number.isInteger(resource.port) ||
-    resource.port < 1 ||
-    resource.port > 65535 ||
-    !Array.isArray(resource.images)
-  ) {
+  if (!Number.isInteger(resource.port) || resource.port < 1 || resource.port > 65535) {
     throw new Error("Invalid first-Agent image registry receipt.");
   }
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -487,27 +482,12 @@ async function cleanupFirstAgentImages(resource, state) {
       throw error;
     }
   };
-  for (const image of resource.images) {
-    const prefix = `127.0.0.1:${resource.port}/${resource.name}/`;
-    if (
-      ![`${prefix}controller:checkout`, `${prefix}runtime:checkout`].includes(image.tag) ||
-      !/^sha256:[a-f0-9]{64}$/.test(image.id ?? "")
-    ) {
-      throw new Error("Refusing to remove an unowned first-Agent image.");
-    }
-    const current = await inspect("image", image.tag);
-    if (current) {
-      if (current.Id !== image.id) {
-        throw new Error("First-Agent image tag changed ownership.");
-      }
-      await execFile(docker, ["image", "rm", "--force", image.tag]);
-    }
-  }
   const container = await inspect("container", resource.name);
   if (container) {
     if (
       container.Config.Labels?.["openclaw.dev/ci-owner"] !== state.prefix ||
-      !/^[a-f0-9]{64}$/.test(container.Id ?? "")
+      !/^[a-f0-9]{64}$/.test(container.Id ?? "") ||
+      (resource.containerId !== undefined && container.Id !== resource.containerId)
     ) {
       throw new Error("First-Agent registry changed ownership.");
     }

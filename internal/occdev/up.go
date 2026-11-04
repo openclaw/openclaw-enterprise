@@ -144,6 +144,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
 		return err
 	}
+	if err := r.selectComposeDevelopmentImageRegistry(ctx); err != nil {
+		return err
+	}
 	if err := r.checkLegacyNATTable(ctx); err != nil {
 		return err
 	}
@@ -308,8 +311,19 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.writeKubeconfigs(ctx, state); err != nil {
 		return err
 	}
+	if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
+		return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+	}
+	defer func() {
+		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+			result = errors.Join(result, err)
+		}
+	}()
 	reference, err := r.importRuntime(ctx, state)
 	if err != nil {
+		return err
+	}
+	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
 		return err
 	}
 	var openShellAssets *openShellDevelopmentAssets

@@ -105,7 +105,9 @@ runs:
         # removal; a persistent runner would accumulate buildx_buildkit_* containers.
         cleanup: false
         # Ordinary Compose builds must load images from this job's selected builder.
-        driver-opts: ${{ steps.image-mode.outputs.first-agent == 'true' && 'default-load=true' || '' }}
+        driver-opts: |
+          ${{ steps.image-mode.outputs.first-agent == 'true' && 'default-load=true' || '' }}
+          ${{ steps.image-mode.outputs.first-agent == 'true' && 'network=host' || '' }}
     - name: Set up CI tools
       shell: bash
       run: bash scripts/ci/setup-tools.sh "${{ inputs.profile }}"
