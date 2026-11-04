@@ -1,44 +1,20 @@
-# OAuth connection templates
+# OAuth connection templates and clients
 
-An Installation administrator can save the OAuth settings that people will use
-to connect their accounts. A template applies throughout the Installation or to
-one Namespace. It defines the provider, client ID, scopes and destination that
-an administrator has approved. Saving a template does not start provider consent.
+Installation administrators can publish a connection template for the Installation or one Namespace. They can also register an OAuth client in either scope. The administrator who configures the client must approve its exact issuer, token URL and optional revocation URL. A Namespace template can use an Installation client or a client in the same Namespace.
 
-## Configure a template
+## Register a client
 
-Select the OpenShell Credential Gateway and Credential Refresh Drivers. Configure
-the Refresh Driver's `clientWorkspace` to name an operator-controlled OpenShell
-Workspace for client registrations. Keep it separate from Agent workspaces.
+Use `POST /oauth-clients` to register a provider client ID and its token endpoint authentication method. A public client uses `none`. Confidential clients use `client_secret_basic` or `client_secret_post` and require a write-only client secret. The selected Refresh Driver stores each confidential secret. Register the callback URI returned in the response metadata with the provider.
 
-Use `POST /connection-templates` with Installation `administer` permission.
-Include `namespaceId` for a Namespace template. Omit it for an Installation-wide
-template. Scope is fixed at creation. The request includes the HTTPS issuer,
-authorization URL, token URL, client ID, approved scopes, environment variable,
-and allowed destination. The gateway must support the destination and access
-settings. Supply the client secret when registering a new confidential client.
+List clients with `GET /oauth-clients`. Use `POST /oauth-clients/{oauthClientId}/rotate-secret` to stage a new secret. OCC switches to the new secret when the database commits the change and its audit. The worker retries retirement of the old secret. Use `DELETE /oauth-clients/{oauthClientId}` after deleting the templates whose versions reference the client.
 
-Use valid HTTPS URLs without userinfo or fragments. Only the authorization URL
-may include a query. In `authorizationParameters`, use provider options such as
-`prompt`. OCC refuses `response_type`, `client_id`, `redirect_uri`, `scope`,
-`state`, `code_challenge`, and `code_challenge_method` because the OAuth flow sets them.
+## Create a template
 
-The response contains the template ID, its current version and the client
-registration ID. The Refresh Driver holds the client secret. Two templates
-share a registration only when their scope, issuer, and client ID match.
+Use `POST /connection-templates` with one of these setup methods.
 
-## Manage versions and registrations
+- With `mode: manual`, supply the issuer, OAuth URLs, approved scopes, and the permitted API recipient's host, port, path and access. For example, an authorization server at `accounts.example.test` may issue credentials for `mail.example.test`.
+- With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the approved issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
 
-- List templates with `GET /connection-templates` or read one with
-  `GET /connection-templates/{connectionTemplateId}`.
-- Use `PATCH /connection-templates/{connectionTemplateId}` to rename the
-  template or edit its approved settings. Edits to approved settings create a
-  version. A rename keeps the current version.
-- Use `POST /connection-templates/{connectionTemplateId}/rotate-client-secret`
-  to replace the secret for its current registration. Rotation affects each
-  template sharing that registration.
-- Use `DELETE /connection-templates/{connectionTemplateId}` to remove the
-  template. When its last reference goes away, OCC asks the Refresh Driver to
-  remove the registration.
+A template may be saved before a client exists. Associate a compatible `oauthClientId` before using it for consent. Use `PATCH /connection-templates/{connectionTemplateId}` with the full configuration to change its approved values. This creates an immutable version. Changing only `displayName` renames the template. Deleting a template leaves its independently managed client available.
 
-For request and response examples, see the [API reference](api.md#connections).
+See the [API reference](api.md#connections) for request and response fields.

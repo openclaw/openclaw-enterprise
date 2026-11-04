@@ -30,6 +30,7 @@ export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-st
 import {
   connectionValuesChanged,
   validateConnectionTemplateAuthorization,
+  ConnectionTemplateValidationError,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
@@ -156,11 +157,10 @@ import type {
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialProviderDefinition,
-  ConnectionClientRegistration,
+  OAuthClient,
+  McpAuthorizationMetadata,
   ConnectionTemplate,
   ConnectionTemplateValues,
-  ConnectionTemplateVersion,
-  CredentialClientRegistrationContext,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -1014,33 +1014,39 @@ export interface CreateSecretInput {
   readonly value: string;
 }
 
-interface ConnectionTemplateInput {
-  readonly displayName: string;
-  readonly issuer: string;
-  readonly authorizationUrl: string;
-  readonly tokenUrl: string;
-  readonly clientId: string;
+interface ApprovedTemplateSettings {
   readonly scopes: readonly string[];
   readonly authorizationParameters?: Readonly<Record<string, string>>;
-  readonly endpoint: {
-    readonly host: string;
-    readonly port?: number;
-    readonly path?: string;
-    readonly access?: "read-only" | "full";
-  };
-  readonly envVar: string;
+  readonly oauthClientId?: string;
 }
-
-export interface CreateConnectionTemplateInput extends ConnectionTemplateInput {
+type TemplateInput = ApprovedTemplateSettings &
+  (
+    | {
+        readonly mode: "manual";
+        readonly issuer: string;
+        readonly authorizationUrl: string;
+        readonly tokenUrl: string;
+        readonly revocationUrl?: string;
+        readonly recipient: {
+          readonly host: string;
+          readonly port?: number;
+          readonly path?: string;
+          readonly access?: "read-only" | "full";
+        };
+      }
+    | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
+  );
+export type CreateConnectionTemplateInput = TemplateInput & {
   readonly namespaceId?: string;
-  /** Required for a new issuer and client ID in this scope. */
-  readonly clientSecret?: string;
-}
-
-export type UpdateConnectionTemplateInput = Partial<ConnectionTemplateInput> & {
-  readonly clientSecret?: string;
+  readonly displayName: string;
 };
-
+export type UpdateConnectionTemplateInput =
+  { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
+export type CreateOAuthClientInput = Omit<
+  OAuthClient,
+  "id" | "createdAt" | "credentialRefreshDriverId" | "secretRegistrationId"
+> & { readonly clientSecret?: string };
+type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
   readonly namespaceId: string;
   readonly name: string;
@@ -1259,28 +1265,6 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   credential_source: "credentialSources",
   provisioning_request: "provisioningRequests",
 });
-
-function connectionTemplateValues(
-  input: Omit<ConnectionTemplateInput, "displayName">,
-): ConnectionTemplateValues {
-  const values = {
-    issuer: input.issuer,
-    authorizationUrl: input.authorizationUrl,
-    tokenUrl: input.tokenUrl,
-    clientId: input.clientId,
-    scopes: input.scopes,
-    authorizationParameters: input.authorizationParameters ?? {},
-    endpoint: {
-      host: input.endpoint.host,
-      port: input.endpoint.port ?? 443,
-      path: input.endpoint.path ?? "/**",
-      access: input.endpoint.access ?? "full",
-    },
-    envVar: input.envVar,
-  };
-  validateConnectionTemplateAuthorization(values);
-  return values;
-}
 
 /**
  * Revisions other than `active` that may still run with the sources they were admitted with,
@@ -4487,36 +4471,150 @@ export class OpenClawController {
     return template;
   }
 
+  async discoverConnectionTemplate(
+    principalId: string,
+    input: { serverUrl: string; issuer?: string },
+    discover: DiscoverMcp,
+  ) {
+    await this.authorizeTemplateAdministration(principalId);
+    return discover(input.serverUrl, input.issuer);
+  }
+
+  private async effectiveConnectionTemplate(
+    input: TemplateInput,
+    discover: DiscoverMcp,
+  ): Promise<ConnectionTemplateValues> {
+    const settings = {
+      scopes: [...input.scopes],
+      authorizationParameters: input.authorizationParameters ?? {},
+      ...(input.oauthClientId && { oauthClientId: input.oauthClientId }),
+    };
+    let values: ConnectionTemplateValues;
+    if (input.mode === "manual") {
+      const { host, port = 443, path = "/**", access = "full" } = input.recipient;
+      if (
+        !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+          host,
+        ) ||
+        !/^\/[!-~]*$/.test(path) ||
+        /[?#\\]/.test(path)
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "recipient",
+          "Choose a DNS host and HTTPS request path for this account.",
+        );
+      }
+      values = {
+        ...settings,
+        mode: input.mode,
+        issuer: input.issuer,
+        authorizationUrl: input.authorizationUrl,
+        tokenUrl: input.tokenUrl,
+        ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
+        recipient: { host, port, path, access },
+      };
+    } else {
+      const observed = await discover(input.serverUrl, input.issuer);
+      if (observed.issuer !== input.issuer || !observed.authorizationUrl || !observed.tokenUrl) {
+        throw new ConnectionTemplateValidationError(
+          "issuer",
+          "Choose a verified issuer for this MCP server.",
+        );
+      }
+      const offered = [...observed.requestedScopes, ...(observed.resourceScopes ?? [])];
+      const allowed = offered.length ? offered : (observed.supportedScopes ?? []);
+      if (
+        settings.scopes.some(
+          (scope) =>
+            !allowed.includes(scope) ||
+            (observed.supportedScopes && !observed.supportedScopes.includes(scope)),
+        )
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "scopes",
+          "Choose only scopes advertised for this MCP resource.",
+        );
+      }
+      const server = new URL(observed.serverUrl);
+      values = {
+        ...settings,
+        mode: input.mode,
+        issuer: observed.issuer,
+        authorizationUrl: observed.authorizationUrl,
+        tokenUrl: observed.tokenUrl,
+        ...(observed.revocationUrl && { revocationUrl: observed.revocationUrl }),
+        recipient: {
+          host: server.hostname,
+          port: Number(server.port || 443),
+          path: server.pathname,
+          access: "full",
+        },
+        mcp: { serverUrl: observed.serverUrl, resource: observed.resource },
+        observed,
+      };
+    }
+    validateConnectionTemplateAuthorization(values);
+    return values;
+  }
+
+  private async assertTemplateClient(
+    state: PlatformUnitOfWork,
+    values: ConnectionTemplateValues,
+    namespaceId?: string,
+  ) {
+    if (!values.oauthClientId) {
+      return;
+    }
+    const client = await state.connectionTemplates.findOAuthClient(values.oauthClientId);
+    if (
+      !client ||
+      (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
+      client.issuer !== values.issuer ||
+      client.tokenUrl !== values.tokenUrl ||
+      (values.revocationUrl !== undefined && client.revocationUrl !== values.revocationUrl) ||
+      (values.observed &&
+        !(values.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
+          client.tokenEndpointAuthMethod,
+        ))
+    ) {
+      throw new ResourceStateConflictError(
+        "Choose a client approved for this scope, issuer and provider endpoints.",
+      );
+    }
+  }
+
+  private async lockTemplateScope(state: PlatformUnitOfWork, namespaceId?: string) {
+    if (
+      namespaceId !== undefined &&
+      (await this.lockNamespace(state, namespaceId)).status === "deleting"
+    ) {
+      throw new ResourceStateConflictError("The Namespace is being deleted.");
+    }
+  }
+
   async createConnectionTemplate(
     principalId: string,
     input: CreateConnectionTemplateInput,
-    audit?: (templateId: string) => AuditEvent,
+    discover: DiscoverMcp,
+    audit?: (id: string) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ): Promise<Readonly<ConnectionTemplate>> {
+    await this.authorizeTemplateAdministration(principalId);
+    const values = await this.effectiveConnectionTemplate(input, discover);
     return this.mutate(async (state) => {
       await this.authorizeTemplateAdministration(principalId);
-      if (input.namespaceId !== undefined) {
-        const namespace = await this.lockNamespace(state, input.namespaceId);
-        if (namespace.status === "deleting") {
-          throw new ResourceStateConflictError("The Namespace is being deleted.");
-        }
-      }
-      const values = connectionTemplateValues(input);
-      await this.assertConnectionSourceConfig(values);
-      const client = await this.ensureConnectionClient(
-        state,
-        values,
-        input.namespaceId,
-        input.clientSecret,
-      );
+      await this.lockTemplateScope(state, input.namespaceId);
+      await this.assertTemplateClient(state, values, input.namespaceId);
       const templateId = `ctp_${crypto.randomUUID()}`;
       const createdAt = this.timestamp();
       const template = await state.connectionTemplates.createConnectionTemplate({
         id: templateId,
-        ...(input.namespaceId === undefined ? {} : { namespaceId: input.namespaceId }),
         displayName: input.displayName,
+        ...(input.namespaceId && { namespaceId: input.namespaceId }),
         createdAt,
-        current: { ...values, clientRegistrationId: client.id, templateId, version: 1, createdAt },
+        current: { ...values, templateId, version: 1, createdAt },
       });
+      await holdSession?.(state);
       if (audit) {
         await state.audit.append(audit(templateId));
       }
@@ -4526,131 +4624,223 @@ export class OpenClawController {
 
   async updateConnectionTemplate(
     principalId: string,
-    templateId: string,
+    id: string,
     input: UpdateConnectionTemplateInput,
+    discover: DiscoverMcp,
     audit?: AuditEvent,
-  ): Promise<Readonly<ConnectionTemplate>> {
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    // Resolve the exact authorized target before any administrator-selected outbound discovery.
+    await this.getConnectionTemplate(principalId, id);
+    const values =
+      "mode" in input ? await this.effectiveConnectionTemplate(input, discover) : undefined;
     return this.mutate(async (state) => {
       await this.authorizeTemplateAdministration(principalId);
-      const current = await state.connectionTemplates.lockConnectionTemplate(templateId);
+      const current = await state.connectionTemplates.lockConnectionTemplate(id);
       if (!current) {
         throw new ScopeViolationError("The connection template does not exist.");
       }
-      const values = connectionTemplateValues({
-        ...current.current,
-        ...input,
-        endpoint: { ...current.current.endpoint, ...input.endpoint },
-      });
-      let version: ConnectionTemplateVersion | undefined;
-      if (connectionValuesChanged(current.current, values)) {
-        await this.assertConnectionSourceConfig(values);
-        const client = await this.ensureConnectionClient(
-          state,
-          values,
-          current.namespaceId,
-          input.clientSecret,
-        );
-        version = {
-          ...values,
-          clientRegistrationId: client.id,
-          templateId,
-          version: current.current.version + 1,
-          createdAt: this.timestamp(),
-        };
-      } else if (input.clientSecret !== undefined) {
-        throw new ResourceStateConflictError(
-          "Use the rotate operation to change this OAuth client's secret.",
-        );
+      if (values) {
+        await this.assertTemplateClient(state, values, current.namespaceId);
       }
-      const template = await state.connectionTemplates.updateConnectionTemplate(templateId, {
-        ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
-        ...(version === undefined ? {} : { version }),
+      const version =
+        values && connectionValuesChanged(current.current, values)
+          ? {
+              ...values,
+              templateId: id,
+              version: current.current.version + 1,
+              createdAt: this.timestamp(),
+            }
+          : undefined;
+      const updated = await state.connectionTemplates.updateConnectionTemplate(id, {
+        ...(input.displayName !== undefined && { displayName: input.displayName }),
+        ...(version && { version }),
       });
-      if (!template) {
-        throw new ScopeViolationError("The connection template does not exist.");
+      if (!updated) {
+        throw new ResourceStateConflictError("The template changed during the update.");
       }
+      await holdSession?.(state);
       if (audit) {
         await state.audit.append(audit);
       }
-      return template;
-    });
-  }
-
-  async rotateConnectionClientSecret(
-    principalId: string,
-    templateId: string,
-    clientSecret: string,
-    audit?: AuditEvent,
-  ): Promise<Readonly<ConnectionTemplate>> {
-    return this.mutate(async (state) => {
-      await this.authorizeTemplateAdministration(principalId);
-      const template = await state.connectionTemplates.lockConnectionTemplate(templateId);
-      if (!template) {
-        throw new ScopeViolationError("The connection template does not exist.");
-      }
-      if (!isNonEmptyString(clientSecret)) {
-        throw new ScopeViolationError("A nonempty OAuth client secret is required.");
-      }
-      const client = await state.connectionTemplates.findClientRegistrationById(
-        template.current.clientRegistrationId,
-      );
-      if (!client) {
-        throw new DependencyUnavailableError(
-          "The connection template's client registration is missing.",
-        );
-      }
-      const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-      await this.credentialGatewayOperation(() =>
-        driver.rotateClientSecret!(this.clientRegistrationContext(client), clientSecret),
-      );
-      if (audit) {
-        await state.audit.append(audit);
-      }
-      return template;
+      return updated;
     });
   }
 
   async deleteConnectionTemplate(
     principalId: string,
-    templateId: string,
+    id: string,
     audit?: AuditEvent,
-  ): Promise<void> {
-    this.requireIndependentMutation("Connection template deletion");
-    const unused = await this.mutate(async (state) => {
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    await this.mutate(async (state) => {
       await this.authorizeTemplateAdministration(principalId);
-      const template = await state.connectionTemplates.lockConnectionTemplate(templateId);
-      if (!template) {
+      if (!(await state.connectionTemplates.deleteConnectionTemplate(id))) {
         throw new ScopeViolationError("The connection template does not exist.");
       }
-      const registrations = new Set<string>();
-      for (let n = 1; n <= template.current.version; n++) {
-        const version = await state.connectionTemplates.findConnectionTemplateVersion(
-          templateId,
-          n,
-        );
-        if (version) {
-          registrations.add(version.clientRegistrationId);
-        }
-      }
-      await state.connectionTemplates.deleteConnectionTemplate(templateId);
-      const unusedClients = [];
-      for (const id of [...registrations].sort()) {
-        const client = await state.connectionTemplates.findClientRegistrationById(id);
-        if (client && (await state.connectionTemplates.deleteClientRegistration(id))) {
-          const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-          unusedClients.push({ driver, client });
-        }
-      }
+      await holdSession?.(state);
       if (audit) {
         await state.audit.append(audit);
       }
-      return unusedClients;
     });
-    for (const { driver, client } of unused) {
-      // Metadata is committed. A cleanup failure can leave an unreferenced secret, but
-      // callers never reuse the unique registration ID for another client.
-      await driver.removeClient!(this.clientRegistrationContext(client)).catch(() => undefined);
+  }
+
+  async listOAuthClients(principalId: string) {
+    await this.authorizeTemplateAdministration(principalId);
+    return this.read((view) => view.connectionTemplates.listOAuthClients());
+  }
+
+  async createOAuthClient(
+    principalId: string,
+    input: CreateOAuthClientInput,
+    audit?: (id: string) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    return this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      await this.lockTemplateScope(state, input.namespaceId);
+      validateConnectionTemplateAuthorization({
+        ...input,
+        authorizationUrl: input.issuer,
+        authorizationParameters: {},
+      });
+      const { clientSecret, ...registration } = input;
+      if (
+        input.tokenEndpointAuthMethod === "none"
+          ? clientSecret !== undefined
+          : !isNonEmptyString(clientSecret)
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "clientSecret",
+          "Provide a secret only for a confidential OAuth client.",
+        );
+      }
+      const driver = clientSecret
+        ? this.connectionRegistrationDriver()
+        : this.credentialRefreshDriver();
+      const id = `ccr_${crypto.randomUUID()}`;
+      const client: OAuthClient = {
+        ...registration,
+        id,
+        createdAt: this.timestamp(),
+        credentialRefreshDriverId: driver.id,
+        ...(clientSecret && { secretRegistrationId: `ccr_${crypto.randomUUID()}` }),
+      };
+      await state.connectionTemplates.createOAuthClient(client);
+      if (clientSecret && client.secretRegistrationId) {
+        await holdSession?.(state);
+        await this.stageOAuthClientSecret(client, client.secretRegistrationId, clientSecret);
+      }
+      await holdSession?.(state);
+      if (audit) {
+        await state.audit.append(audit(id));
+      }
+      return client;
+    });
+  }
+
+  async rotateOAuthClientSecret(
+    principalId: string,
+    id: string,
+    clientSecret: string,
+    audit?: AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    const client = await this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      const current = await state.connectionTemplates.lockOAuthClient(id);
+      if (!current) {
+        throw new ScopeViolationError("The OAuth client does not exist.");
+      }
+      if (!current.secretRegistrationId) {
+        throw new ResourceStateConflictError("This public client authenticates without a secret.");
+      }
+      await holdSession?.(state);
+      const handle = `ccr_${crypto.randomUUID()}`;
+      await this.stageOAuthClientSecret(current, handle, clientSecret);
+      await state.connectionTemplates.setOAuthClientSecret(id, handle);
+      await state.connectionTemplates.retireOAuthClientSecret({
+        ...current,
+        id: current.secretRegistrationId,
+      });
+      await holdSession?.(state);
+      if (audit) {
+        await state.audit.append(audit);
+      }
+      return { ...current, secretRegistrationId: handle };
+    });
+    return client;
+  }
+
+  async deleteOAuthClient(
+    principalId: string,
+    id: string,
+    audit?: AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    await this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      const current = await state.connectionTemplates.lockOAuthClient(id);
+      if (!current) {
+        throw new ScopeViolationError("The OAuth client does not exist.");
+      }
+      if (!(await state.connectionTemplates.deleteOAuthClient(id))) {
+        throw new ResourceStateConflictError(
+          "A template version still references this OAuth client.",
+        );
+      }
+      if (current.secretRegistrationId) {
+        await state.connectionTemplates.retireOAuthClientSecret({
+          ...current,
+          id: current.secretRegistrationId,
+        });
+      }
+      await holdSession?.(state);
+      if (audit) {
+        await state.audit.append(audit);
+      }
+    });
+  }
+
+  async cleanupRetiredOAuthClientSecrets(): Promise<void> {
+    const retired = await this.read((view) =>
+      view.connectionTemplates.listRetiredOAuthClientSecrets(32),
+    );
+    for (const secret of retired) {
+      try {
+        const driver = this.connectionRegistrationDriver(secret.credentialRefreshDriverId);
+        await driver.removeClient!({
+          registrationId: secret.id,
+          issuer: secret.issuer,
+          clientId: secret.clientId,
+          signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        });
+        await this.mutate((state) =>
+          state.connectionTemplates.forgetRetiredOAuthClientSecret(secret.id),
+        );
+      } catch {
+        // A stalled Driver must not prevent removal of material owned by other registrations.
+        await this.mutate((state) =>
+          state.connectionTemplates.deferRetiredOAuthClientSecret(secret.id),
+        );
+      }
     }
+  }
+
+  private async stageOAuthClientSecret(
+    client: OAuthClient,
+    registrationId: string,
+    secret: string,
+  ) {
+    const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
+    const context = () => ({
+      registrationId,
+      issuer: client.issuer,
+      clientId: client.clientId,
+      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+    });
+    this.registerRollback(() => driver.removeClient!(context()));
+    await this.credentialGatewayOperation(() => driver.registerClient!(context(), secret));
   }
 
   private connectionRegistrationDriver(expectedId?: string): CredentialRefreshDriver {
@@ -4660,103 +4850,13 @@ export class OpenClawController {
         "The selected Refresh Driver does not own this OAuth client.",
       );
     }
-    if (!driver.registerClient || !driver.removeClient || !driver.rotateClientSecret) {
+    if (!driver.registerClient || !driver.removeClient) {
       throw new NotImplementedError(
         "connection_templates",
         "The selected Refresh Driver does not support OAuth client registrations.",
       );
     }
     return driver;
-  }
-
-  private clientRegistrationContext(
-    client: Readonly<ConnectionClientRegistration>,
-  ): CredentialClientRegistrationContext {
-    return {
-      registrationId: client.id,
-      issuer: client.issuer,
-      clientId: client.clientId,
-      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-    };
-  }
-
-  private async ensureConnectionClient(
-    state: PlatformUnitOfWork,
-    values: Readonly<ConnectionTemplateValues>,
-    namespaceId: string | undefined,
-    clientSecret: string | undefined,
-  ): Promise<Readonly<ConnectionClientRegistration>> {
-    const existing = await state.connectionTemplates.findClientRegistration(
-      values.issuer,
-      values.clientId,
-      namespaceId,
-    );
-    if (existing) {
-      if (clientSecret !== undefined) {
-        throw new ResourceStateConflictError(
-          "This OAuth client is already registered in this scope. Rotate its secret instead.",
-        );
-      }
-      this.connectionRegistrationDriver(existing.credentialRefreshDriverId);
-      return existing;
-    }
-    if (!isNonEmptyString(clientSecret)) {
-      throw new ScopeViolationError("A new OAuth client requires its client secret.");
-    }
-    const driver = this.connectionRegistrationDriver();
-    const client = {
-      id: `ccr_${crypto.randomUUID()}`,
-      ...(namespaceId === undefined ? {} : { namespaceId }),
-      issuer: values.issuer,
-      clientId: values.clientId,
-      credentialRefreshDriverId: driver.id,
-      createdAt: this.timestamp(),
-    };
-    // Reserve the scoped issuer/client pair before registering its secret. A confirmed
-    // rollback cleans up this unique registration; an unknown commit outcome retains it.
-    await state.connectionTemplates.createClientRegistration(client);
-    this.registerRollback(() => driver.removeClient!(this.clientRegistrationContext(client)));
-    await this.credentialGatewayOperation(() =>
-      driver.registerClient!(this.clientRegistrationContext(client), clientSecret),
-    );
-    return client;
-  }
-
-  /**
-   * Refuses values the Credential Gateway would refuse at connect time, such as a token host
-   * its gateway cannot reach, so administrators see the error instead of the connecting person.
-   */
-  private async assertConnectionSourceConfig(
-    values: Readonly<ConnectionTemplateValues>,
-  ): Promise<void> {
-    this.assertCredentialGatewaySelected();
-    const gateway = this.credentialGatewayDriver();
-    const config = {
-      host: values.endpoint.host,
-      port: String(values.endpoint.port),
-      path: values.endpoint.path,
-      ...(values.endpoint.access === "read-only" ? { access: values.endpoint.access } : {}),
-      env_var: values.envVar,
-      token_url: values.tokenUrl,
-      client_id: values.clientId,
-      scope: values.scopes.join(" "),
-    };
-    if (values.endpoint.access === "read-only") {
-      const type = await this.credentialSourceType(gateway, "oauth2-refresh-token");
-      if (!type.config.some((field) => field.name === "access")) {
-        throw new CredentialSourceConfigError(
-          "access",
-          "The selected Credential Gateway does not support read-only OAuth connections.",
-        );
-      }
-    }
-    const normalized = gateway.validateSourceConfig({ type: "oauth2-refresh-token", config });
-    if (values.endpoint.access === "read-only" && normalized && normalized.access !== "read-only") {
-      throw new CredentialSourceConfigError(
-        "access",
-        "The selected Credential Gateway cannot enforce read-only access.",
-      );
-    }
   }
 
   async listServiceAccounts(
@@ -12220,6 +12320,11 @@ export class OpenClawController {
       const templates = await state.connectionTemplates.countNamespaceConnectionTemplates(
         namespace.id,
       );
+      const clients = await state.connectionTemplates.countNamespaceOAuthClients(namespace.id);
+      if (clients > 0) {
+        contents.push("OAuth clients");
+        counts["OAuth clients"] = clients;
+      }
       if (templates > 0) {
         contents.push("connection templates");
         counts["connection templates"] = templates;

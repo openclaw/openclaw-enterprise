@@ -1,15 +1,9 @@
 # How OCC saves an OAuth connection template
 
-The controller checks the caller's Installation `administer` permission. For a
-Namespace-scoped template it also checks the Namespace. The selected Credential
-Gateway validates the proposed destination before OCC accepts the settings.
+The administrator selects manual configuration or supplies an MCP server URL. OCC checks Installation administration before discovery. For MCP, the controller reads protected resource metadata over TLS, resolves each metadata host to public addresses and pins those addresses for the request. It contacts only the selected advertised authorization server. OCC stores the metadata it observed with the approved version.
 
-OCC looks up the client registration by scope, issuer, and client ID. When it
-needs a new registration, the selected Refresh Driver stores the client secret
-in its operator Workspace. OCC saves the registration reference, template
-version, and success audit in PostgreSQL. After a confirmed rollback OCC asks
-the Driver to remove the staged client. If the commit acknowledgment is lost,
-OCC keeps the client because a saved version may reference it.
+OCC checks scope and the client's allowed destinations before it references an OAuth client. PostgreSQL commits the template version and its audit together. A template can exist without a client. The Agent plugin release determines the local credential placeholder when the account is used.
 
-See [OAuth connection templates](../reference/connection-templates.md) for the
-administrative operations.
+When an administrator creates or rotates a confidential client, the Refresh Driver stages a secret under a new private handle. OCC commits the active handle and its audit together. The previous handle enters a durable retirement queue. The worker retries removal through the Driver. The public OAuth client ID stays stable across rotation.
+
+See [OAuth connection templates and clients](../reference/connection-templates.md) for the supported operations.

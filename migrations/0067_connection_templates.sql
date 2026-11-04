@@ -1,23 +1,32 @@
 -- Templates are Installation-wide or limited to a Namespace. Each edit of an approved value inserts an
 -- immutable version, so a connection keeps the values its owner approved.
-CREATE TABLE occ.connection_client_registrations (
+CREATE TABLE occ.oauth_clients (
   id text PRIMARY KEY,
   namespace_id text REFERENCES occ.namespaces(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   issuer text COLLATE "C" NOT NULL,
+  display_name text NOT NULL CHECK (length(display_name) BETWEEN 1 AND 200 AND display_name = btrim(display_name)),
+  secret_registration_id text UNIQUE,
+  token_endpoint_auth_method text NOT NULL CHECK (token_endpoint_auth_method IN ('none','client_secret_basic','client_secret_post')),
+  token_url text NOT NULL CHECK (token_url ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'),
+  revocation_url text CHECK (revocation_url ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'),
   client_id text COLLATE "C" NOT NULL,
   credential_refresh_driver_id text COLLATE "C" NOT NULL,
   created_at timestamptz NOT NULL,
-  CONSTRAINT connection_client_registrations_id_format CHECK (
+  CONSTRAINT oauth_clients_id_format CHECK (
     id ~ '^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),
-  CONSTRAINT connection_client_registrations_issuer_https CHECK (
+  CONSTRAINT oauth_clients_issuer_https CHECK (
     issuer ~ '^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$' AND length(issuer) <= 2048
   ),
-  CONSTRAINT connection_client_registrations_client_id_valid CHECK (
+  CONSTRAINT oauth_clients_private_material CHECK (
+    (token_endpoint_auth_method='none' AND secret_registration_id IS NULL) OR
+    (token_endpoint_auth_method<>'none' AND secret_registration_id IS NOT NULL)
+  ),
+  CONSTRAINT oauth_clients_client_id_valid CHECK (
     client_id ~ '^[!-~]+$' AND length(client_id) <= 256
   ),
-  CONSTRAINT connection_client_registrations_pair_unique UNIQUE NULLS NOT DISTINCT (namespace_id, issuer, client_id),
-  CONSTRAINT connection_client_registrations_identity UNIQUE (id, issuer, client_id)
+  CONSTRAINT oauth_clients_pair_unique UNIQUE NULLS NOT DISTINCT (namespace_id, issuer, client_id),
+  CONSTRAINT oauth_clients_identity UNIQUE (id, issuer, token_url)
 );
 --> statement-breakpoint
 CREATE TABLE occ.connection_templates (
@@ -40,10 +49,12 @@ CREATE TABLE occ.connection_template_versions (
   template_id text NOT NULL REFERENCES occ.connection_templates(id)
     ON UPDATE RESTRICT ON DELETE CASCADE,
   version integer NOT NULL,
-  client_registration_id text NOT NULL REFERENCES occ.connection_client_registrations(id)
+  oauth_client_id text REFERENCES occ.oauth_clients(id)
     ON UPDATE RESTRICT ON DELETE RESTRICT,
   issuer text COLLATE "C" NOT NULL,
-  client_id text COLLATE "C" NOT NULL,
+  mode text NOT NULL CHECK (mode IN ('manual','mcp_discovery')),
+  revocation_url text,
+  observed_metadata jsonb,
   authorization_url text COLLATE "C" NOT NULL,
   token_url text COLLATE "C" NOT NULL,
   scopes text[] NOT NULL,
@@ -52,13 +63,13 @@ CREATE TABLE occ.connection_template_versions (
   endpoint_port integer NOT NULL,
   endpoint_path text COLLATE "C" NOT NULL,
   endpoint_access text COLLATE "C" NOT NULL DEFAULT 'full',
-  env_var text COLLATE "C" NOT NULL,
+
   created_at timestamptz NOT NULL,
   PRIMARY KEY (template_id, version),
   CONSTRAINT connection_template_versions_version_positive CHECK (version >= 1),
   CONSTRAINT connection_template_versions_urls_https CHECK (
     authorization_url ~ '^https://[^/?#@[:space:]]+(/[^#[:space:]]*)?$'
-    AND token_url ~ '^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$'
+    AND token_url ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'
     AND length(authorization_url) <= 2048 AND length(token_url) <= 2048
   ),
   CONSTRAINT connection_template_versions_scopes_valid CHECK (
@@ -78,14 +89,18 @@ CREATE TABLE occ.connection_template_versions (
     AND endpoint_access IN ('read-only', 'full')
     AND endpoint_path ~ '^/[!-~]*$' AND length(endpoint_path) <= 512
   ),
-  CONSTRAINT connection_template_versions_env_var_valid CHECK (
-    env_var ~ '^[A-Z_][A-Z0-9_]{0,63}$'
-    AND env_var NOT IN ('OPENAI_API_KEY', 'PATH', 'HOME', 'USER', 'SHELL', 'LANG')
-    AND env_var !~ '^(CODEX_|OCE_|OPENCLAW_|OPENSHELL_)'
+  CONSTRAINT connection_template_versions_discovery CHECK (
+    (mode = 'manual' AND observed_metadata IS NULL) OR
+    (mode = 'mcp_discovery' AND observed_metadata IS NOT NULL
+      AND jsonb_typeof(observed_metadata) = 'object'
+      AND observed_metadata ?& ARRAY['resource','serverUrl','issuer','authorizationUrl','tokenUrl']
+      AND observed_metadata->>'issuer' = issuer
+      AND observed_metadata->>'authorizationUrl' = authorization_url
+      AND observed_metadata->>'tokenUrl' = token_url)
   ),
-  CONSTRAINT connection_template_versions_registration_pair FOREIGN KEY
-    (client_registration_id, issuer, client_id)
-    REFERENCES occ.connection_client_registrations(id, issuer, client_id)
+  CONSTRAINT connection_template_versions_client_issuer FOREIGN KEY
+    (oauth_client_id, issuer, token_url)
+    REFERENCES occ.oauth_clients(id, issuer, token_url)
 );
 --> statement-breakpoint
 ALTER TABLE occ.connection_templates
@@ -113,14 +128,16 @@ CREATE TRIGGER connection_template_version_is_immutable
 BEFORE UPDATE ON occ.connection_template_versions
 FOR EACH ROW EXECUTE FUNCTION occ.reject_row_mutation();
 --> statement-breakpoint
-CREATE TRIGGER connection_client_registration_is_immutable
-BEFORE UPDATE ON occ.connection_client_registrations
-FOR EACH ROW EXECUTE FUNCTION occ.reject_row_mutation();
+-- Existing account snapshots retain their own previously approved client material.
+CREATE TABLE occ.retired_oauth_client_secrets (
+  id text PRIMARY KEY, issuer text NOT NULL, client_id text NOT NULL,
+  credential_refresh_driver_id text NOT NULL, retry_at timestamptz NOT NULL DEFAULT now()
+);
 --> statement-breakpoint
-REVOKE ALL ON occ.connection_client_registrations, occ.connection_templates,
+REVOKE ALL ON occ.oauth_clients, occ.connection_templates,
   occ.connection_template_versions FROM PUBLIC, occ_app;
 --> statement-breakpoint
-GRANT SELECT, INSERT, DELETE ON occ.connection_client_registrations TO occ_app;
+GRANT SELECT, INSERT, DELETE ON occ.oauth_clients TO occ_app;
 --> statement-breakpoint
 GRANT SELECT, INSERT, DELETE ON occ.connection_templates TO occ_app;
 --> statement-breakpoint
@@ -133,9 +150,12 @@ GRANT SELECT, INSERT ON occ.connection_template_versions TO occ_app;
 CREATE FUNCTION occ.check_connection_registration_scope() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-  PERFORM 1 FROM occ.connection_templates AS t, occ.connection_client_registrations AS r
-  WHERE t.id = NEW.template_id AND r.id = NEW.client_registration_id
-    AND r.namespace_id IS NOT DISTINCT FROM t.namespace_id FOR KEY SHARE OF t, r;
+  IF NEW.oauth_client_id IS NULL THEN RETURN NEW; END IF;
+  PERFORM 1 FROM occ.connection_templates AS t, occ.oauth_clients AS r
+  WHERE t.id = NEW.template_id AND r.id = NEW.oauth_client_id
+    AND (r.namespace_id IS NULL OR r.namespace_id = t.namespace_id)
+    AND (NEW.revocation_url IS NULL OR NEW.revocation_url = r.revocation_url)
+    FOR KEY SHARE OF t, r;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'OAuth client registration must belong to the template scope' USING ERRCODE = '23514';
   END IF;
@@ -147,3 +167,8 @@ BEFORE INSERT ON occ.connection_template_versions
 FOR EACH ROW EXECUTE FUNCTION occ.check_connection_registration_scope();
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION occ.guard_connection_template_update(), occ.check_connection_registration_scope() FROM PUBLIC;
+
+--> statement-breakpoint
+GRANT UPDATE (secret_registration_id) ON occ.oauth_clients TO occ_app;
+--> statement-breakpoint
+GRANT SELECT, INSERT, UPDATE (retry_at), DELETE ON occ.retired_oauth_client_secrets TO occ_app;

@@ -10,6 +10,7 @@ import type {
   LeaveGuard,
   TabNavigation,
 } from "./page-context.mjs";
+import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -2336,8 +2337,12 @@ async function loadPage({
       attachDiagnostics(shell.diagnostics);
     }
     if (current.feature === "settings") {
-      shell.view.append(settingsView(session.user));
+      const settings = settingsView(session.user);
+      shell.view.append(settings);
       if (installationAdmin) {
+        settings.append(
+          renderConnectionTemplates({ request: viewRequest, isCurrent: viewIsCurrent }, namespaces),
+        );
         shell.view.append(
           renderInstallationConfigurations({
             request,

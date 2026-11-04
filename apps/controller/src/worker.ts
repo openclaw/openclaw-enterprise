@@ -52,6 +52,7 @@ import type {
   BackendDefinition,
   SandboxDriver,
   SandboxHarnessObservation,
+  CredentialRefreshDriver,
   CredentialGatewayDriver,
   SecretBindings,
   SecretDriver,
@@ -1179,6 +1180,8 @@ export class ControllerWorker {
   private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
   private readonly credentialGateway: CredentialGatewayDriver | undefined;
+  private readonly credentialRefresh: CredentialRefreshDriver | undefined;
+  private nextClientCleanup = 0;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly preparedTokens:
@@ -1329,6 +1332,7 @@ export class ControllerWorker {
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
+    this.credentialRefresh = drivers?.credentialRefreshDriver;
     this.proxyDriver =
       this.protectedDriver?.require("credential_proxy") ??
       drivers?.proxyDriver ??
@@ -1451,6 +1455,7 @@ export class ControllerWorker {
       this.configuration,
       ...(protectedDriver ? [] : [this.sandbox, this.proxyDriver]),
       this.credentialGateway,
+      this.credentialRefresh,
       this.iam,
       this.secretDriver,
       this.repositoryPolicy,
@@ -1534,6 +1539,10 @@ export class ControllerWorker {
         ) {
           this.claimedPassesSinceSweep = 0;
           await this.withdrawPendingHarnessExposure();
+          if (this.credentialRefresh && Date.now() >= this.nextClientCleanup) {
+            this.nextClientCleanup = Date.now() + 30_000;
+            await this.provisioningController?.cleanupRetiredOAuthClientSecrets();
+          }
         }
         const claim = await this.queue.claim();
         this.claimedLastPass = claim !== undefined;

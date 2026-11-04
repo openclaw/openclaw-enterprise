@@ -141,7 +141,9 @@ export {
 } from "./sandbox-policy.ts";
 
 export type {
-  ConnectionClientRegistration,
+  OAuthClient,
+  OAuthClientAuthMethod,
+  McpAuthorizationMetadata,
   ConnectionEndpoint,
   ConnectionTemplate,
   ConnectionTemplateValues,

@@ -151,34 +151,27 @@ Stores the scope and current version of each OAuth connection template.
 
 ### `connection_template_versions`
 
-Pins the provider, approved access and client registration for each version.
+Pins the approved OAuth configuration and access to its API recipient. A discovered version also retains the MCP metadata observed when the administrator saved it.
 
-- `template_id`
-- `version`
-- `client_registration_id`
-- `issuer`
-- `client_id`
-- `authorization_url`
-- `token_url`
-- `scopes`
-- `authorization_parameters`
-- `endpoint_host`
-- `endpoint_port`
-- `endpoint_path`
-- `endpoint_access`
-- `env_var`
+- `template_id`, `version`, `oauth_client_id`, `mode`
+- `issuer`, `authorization_url`, `token_url`, `revocation_url`
+- `scopes`, `authorization_parameters`, `observed_metadata`
+- `endpoint_host`, `endpoint_port`, `endpoint_path`, `endpoint_access`
 - `created_at`
 
-### `connection_client_registrations`
+### `oauth_clients`
 
-Identifies the Refresh Driver registration for a client in one scope.
+Identifies an independently managed OAuth client and its approved credential destinations. Confidential clients point to a private Refresh Driver handle.
 
-- `id`
-- `namespace_id`
-- `issuer`
-- `client_id`
-- `credential_refresh_driver_id`
-- `created_at`
+- `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
+- `token_url`, `revocation_url`, `token_endpoint_auth_method`
+- `credential_refresh_driver_id`, `secret_registration_id`, `created_at`
+
+### `retired_oauth_client_secrets`
+
+Queues removal of private handles superseded by an OAuth client rotation or deletion.
+
+- `id`, `issuer`, `client_id`, `credential_refresh_driver_id`, `retry_at`
 
 ### `credential_sources`
 

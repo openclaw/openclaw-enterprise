@@ -43,6 +43,7 @@ const CONSOLE_ASSETS = new Map([
       "api-client.mts",
       "sign-in-presentation.mts",
       "configuration-fields.mts",
+      "connection-templates.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",
       "request-turns.mts",

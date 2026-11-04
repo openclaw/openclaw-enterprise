@@ -34,8 +34,10 @@ export function createPlatformReadView(
       "listConnectionTemplates",
       "countNamespaceConnectionTemplates",
       "findConnectionTemplateVersion",
-      "findClientRegistration",
-      "findClientRegistrationById",
+      "listRetiredOAuthClientSecrets",
+      "listOAuthClients",
+      "countNamespaceOAuthClients",
+      "findOAuthClient",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",

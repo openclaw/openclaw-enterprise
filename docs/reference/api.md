@@ -83,7 +83,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
-| [Connections](#connections) | 6 operations |
+| [Connections](#connections) | 10 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 6 operations |
 | [Agents](#agents) | 50 operations |
@@ -1715,10 +1715,14 @@ Example response
 | --- | --- |
 | [`GET /connection-templates`](#get-connectiontemplates) | List all Installation-wide and Namespace-scoped connection templates |
 | [`POST /connection-templates`](#post-connectiontemplates) | Create an Installation-wide or Namespace-scoped connection template |
+| [`POST /connection-templates/discover`](#post-connectiontemplatesdiscover) | Read public MCP resource and authorization server metadata |
 | [`DELETE /connection-templates/{connectionTemplateId}`](#delete-connectiontemplatesconnectiontemplateid) | Delete a connection template |
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
 | [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template, or create a version with new approved values |
-| [`POST /connection-templates/{connectionTemplateId}/rotate-client-secret`](#post-connectiontemplatesconnectiontemplateidrotateclientsecret) | Rotate the secret for the template’s OAuth client registration |
+| [`GET /oauth-clients`](#get-oauthclients) | List registered OAuth clients |
+| [`POST /oauth-clients`](#post-oauthclients) | Register a scoped OAuth client |
+| [`DELETE /oauth-clients/{oauthClientId}`](#delete-oauthclientsoauthclientid) | Delete an unused OAuth client |
+| [`POST /oauth-clients/{oauthClientId}/rotate-secret`](#post-oauthclientsoauthclientidrotatesecret) | Rotate an OAuth client secret |
 
 #### `GET /connection-templates`
 
@@ -1750,28 +1754,46 @@ List all Installation-wide and Namespace-scoped connection templates
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<Connection template>` | Yes | — |
+| `data` | `array<OAuth connection template>` | Yes | — |
 | `data[].createdAt` | `string` | Yes | — |
 | `data[].current` | `object` | Yes | — |
 | `data[].current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data[].current.authorizationUrl` | `string` | Yes | — |
-| `data[].current.clientId` | `string` | Yes | — |
-| `data[].current.clientRegistrationId` | `string` | Yes | — |
+| `data[].current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.createdAt` | `string` | Yes | — |
-| `data[].current.endpoint` | `object` | Yes | — |
-| `data[].current.endpoint.access` | `"read-only" or "full"` | Yes | — |
-| `data[].current.endpoint.host` | `string` | Yes | — |
-| `data[].current.endpoint.path` | `string` | Yes | — |
-| `data[].current.endpoint.port` | `integer` | Yes | — |
-| `data[].current.envVar` | `string` | Yes | — |
-| `data[].current.issuer` | `string` | Yes | — |
-| `data[].current.scopes` | `array<string>` | Yes | — |
-| `data[].current.tokenUrl` | `string` | Yes | — |
+| `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.mcp` | `object` | No | — |
+| `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
+| `data[].current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].current.observed` | `object` | No | — |
+| `data[].current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.observed.issuers` | `array<string>` | Yes | — |
+| `data[].current.observed.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.observed.requestedScopes` | `array<string>` | Yes | — |
+| `data[].current.observed.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.observed.resourceScopes` | `array<string>` | No | — |
+| `data[].current.observed.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.observed.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.observed.supportedScopes` | `array<string>` | No | — |
+| `data[].current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
+| `data[].current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.recipient` | `object` | Yes | — |
+| `data[].current.recipient.access` | `"read-only" or "full"` | Yes | — |
+| `data[].current.recipient.host` | `string` | Yes | — |
+| `data[].current.recipient.path` | `string` | Yes | — |
+| `data[].current.recipient.port` | `integer` | Yes | — |
+| `data[].current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `data[].current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
-| `data[].displayName` | `string` | Yes | — |
+| `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 No readable resources
@@ -1793,20 +1815,20 @@ Example response
       "current": {
         "authorizationParameters": {},
         "authorizationUrl": "https://accounts.example.com/authorize",
-        "clientId": "example-client",
-        "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
         "createdAt": "2026-10-01T12:00:00.000Z",
-        "endpoint": {
-          "access": "full",
+        "issuer": "https://accounts.example.com",
+        "mode": "manual",
+        "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+        "recipient": {
+          "access": "read-only",
           "host": "api.example.com",
           "path": "/profile",
           "port": 443
         },
-        "envVar": "EXAMPLE_ACCESS_TOKEN",
-        "issuer": "https://accounts.example.com",
         "scopes": [
           "profile.read"
         ],
+        "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
         "tokenUrl": "https://accounts.example.com/token",
         "version": 1
       },
@@ -1841,40 +1863,23 @@ Create an Installation-wide or Namespace-scoped connection template
 
 **Content type:** `application/json`
 
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `authorizationParameters` | `object<string, string>` | No | — |
-| `authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `clientId` | `string` | Yes | min length: 1; max length: 256 |
-| `clientSecret` | `string` | No | min length: 1; max length: 4096 |
-| `displayName` | `string` | Yes | min length: 1; max length: 200 |
-| `endpoint` | `object` | Yes | — |
-| `endpoint.access` | `"read-only" or "full"` | No | — |
-| `endpoint.host` | `string` | Yes | min length: 1; max length: 253 |
-| `endpoint.path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
-| `endpoint.port` | `integer` | No | minimum: 1; maximum: 65535 |
-| `envVar` | `string` | Yes | pattern: `^[A-Z_][A-Z0-9_]{0,63}$` |
-| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
-| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+Schema: `object or object`.
 
 Example request
 ```json
 {
   "authorizationUrl": "https://accounts.example.com/authorize",
-  "clientId": "example-client",
-  "clientSecret": "example-client-secret",
   "displayName": "Example account",
-  "endpoint": {
-    "access": "full",
+  "issuer": "https://accounts.example.com",
+  "mode": "manual",
+  "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+  "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+  "recipient": {
+    "access": "read-only",
     "host": "api.example.com",
     "path": "/profile",
     "port": 443
   },
-  "envVar": "EXAMPLE_ACCESS_TOKEN",
-  "issuer": "https://accounts.example.com",
-  "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
   "scopes": [
     "profile.read"
   ],
@@ -1901,28 +1906,46 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `Connection template` | Yes | — |
+| `data` | `OAuth connection template` | Yes | — |
 | `data.createdAt` | `string` | Yes | — |
 | `data.current` | `object` | Yes | — |
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data.current.authorizationUrl` | `string` | Yes | — |
-| `data.current.clientId` | `string` | Yes | — |
-| `data.current.clientRegistrationId` | `string` | Yes | — |
+| `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.createdAt` | `string` | Yes | — |
-| `data.current.endpoint` | `object` | Yes | — |
-| `data.current.endpoint.access` | `"read-only" or "full"` | Yes | — |
-| `data.current.endpoint.host` | `string` | Yes | — |
-| `data.current.endpoint.path` | `string` | Yes | — |
-| `data.current.endpoint.port` | `integer` | Yes | — |
-| `data.current.envVar` | `string` | Yes | — |
-| `data.current.issuer` | `string` | Yes | — |
-| `data.current.scopes` | `array<string>` | Yes | — |
-| `data.current.tokenUrl` | `string` | Yes | — |
+| `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.mcp` | `object` | No | — |
+| `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
+| `data.current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.current.observed` | `object` | No | — |
+| `data.current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.issuers` | `array<string>` | Yes | — |
+| `data.current.observed.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.requestedScopes` | `array<string>` | Yes | — |
+| `data.current.observed.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.resourceScopes` | `array<string>` | No | — |
+| `data.current.observed.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.supportedScopes` | `array<string>` | No | — |
+| `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
+| `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.recipient` | `object` | Yes | — |
+| `data.current.recipient.access` | `"read-only" or "full"` | Yes | — |
+| `data.current.recipient.host` | `string` | Yes | — |
+| `data.current.recipient.path` | `string` | Yes | — |
+| `data.current.recipient.port` | `integer` | Yes | — |
+| `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
-| `data.displayName` | `string` | Yes | — |
+| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 Example response
@@ -1933,26 +1956,122 @@ Example response
     "current": {
       "authorizationParameters": {},
       "authorizationUrl": "https://accounts.example.com/authorize",
-      "clientId": "example-client",
-      "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
       "createdAt": "2026-10-01T12:00:00.000Z",
-      "endpoint": {
-        "access": "full",
+      "issuer": "https://accounts.example.com",
+      "mode": "manual",
+      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "recipient": {
+        "access": "read-only",
         "host": "api.example.com",
         "path": "/profile",
         "port": 443
       },
-      "envVar": "EXAMPLE_ACCESS_TOKEN",
-      "issuer": "https://accounts.example.com",
       "scopes": [
         "profile.read"
       ],
+      "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
       "tokenUrl": "https://accounts.example.com/token",
       "version": 1
     },
     "displayName": "Example account",
     "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /connection-templates/discover`
+
+<span id="post-connectiontemplatesdiscover"></span>
+
+Read public MCP resource and authorization server metadata
+
+**Operation ID:** `discoverConnectionTemplate`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+
+Example request
+```json
+{
+  "serverUrl": "https://tools.example.com/mcp"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.issuers` | `array<string>` | Yes | — |
+| `data.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.requestedScopes` | `array<string>` | Yes | — |
+| `data.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.resourceScopes` | `array<string>` | No | — |
+| `data.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.supportedScopes` | `array<string>` | No | — |
+| `data.tokenEndpointAuthMethods` | `array<string>` | No | — |
+| `data.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "authorizationUrl": "https://accounts.example.com/authorize",
+    "issuer": "https://accounts.example.com",
+    "issuers": [
+      "https://accounts.example.com"
+    ],
+    "requestedScopes": [
+      "profile.read"
+    ],
+    "resource": "https://tools.example.com/mcp",
+    "resourceScopes": [
+      "profile.read"
+    ],
+    "serverUrl": "https://tools.example.com/mcp",
+    "tokenEndpointAuthMethods": [
+      "client_secret_basic"
+    ],
+    "tokenUrl": "https://accounts.example.com/token"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -2029,28 +2148,46 @@ Get one connection template
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `Connection template` | Yes | — |
+| `data` | `OAuth connection template` | Yes | — |
 | `data.createdAt` | `string` | Yes | — |
 | `data.current` | `object` | Yes | — |
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data.current.authorizationUrl` | `string` | Yes | — |
-| `data.current.clientId` | `string` | Yes | — |
-| `data.current.clientRegistrationId` | `string` | Yes | — |
+| `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.createdAt` | `string` | Yes | — |
-| `data.current.endpoint` | `object` | Yes | — |
-| `data.current.endpoint.access` | `"read-only" or "full"` | Yes | — |
-| `data.current.endpoint.host` | `string` | Yes | — |
-| `data.current.endpoint.path` | `string` | Yes | — |
-| `data.current.endpoint.port` | `integer` | Yes | — |
-| `data.current.envVar` | `string` | Yes | — |
-| `data.current.issuer` | `string` | Yes | — |
-| `data.current.scopes` | `array<string>` | Yes | — |
-| `data.current.tokenUrl` | `string` | Yes | — |
+| `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.mcp` | `object` | No | — |
+| `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
+| `data.current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.current.observed` | `object` | No | — |
+| `data.current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.issuers` | `array<string>` | Yes | — |
+| `data.current.observed.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.requestedScopes` | `array<string>` | Yes | — |
+| `data.current.observed.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.resourceScopes` | `array<string>` | No | — |
+| `data.current.observed.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.supportedScopes` | `array<string>` | No | — |
+| `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
+| `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.recipient` | `object` | Yes | — |
+| `data.current.recipient.access` | `"read-only" or "full"` | Yes | — |
+| `data.current.recipient.host` | `string` | Yes | — |
+| `data.current.recipient.path` | `string` | Yes | — |
+| `data.current.recipient.port` | `integer` | Yes | — |
+| `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
-| `data.displayName` | `string` | Yes | — |
+| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 Example response
@@ -2061,20 +2198,20 @@ Example response
     "current": {
       "authorizationParameters": {},
       "authorizationUrl": "https://accounts.example.com/authorize",
-      "clientId": "example-client",
-      "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
       "createdAt": "2026-10-01T12:00:00.000Z",
-      "endpoint": {
-        "access": "full",
+      "issuer": "https://accounts.example.com",
+      "mode": "manual",
+      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "recipient": {
+        "access": "read-only",
         "host": "api.example.com",
         "path": "/profile",
         "port": 443
       },
-      "envVar": "EXAMPLE_ACCESS_TOKEN",
-      "issuer": "https://accounts.example.com",
       "scopes": [
         "profile.read"
       ],
+      "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
       "tokenUrl": "https://accounts.example.com/token",
       "version": 1
     },
@@ -2114,22 +2251,7 @@ Rename a connection template, or create a version with new approved values
 
 **Content type:** `application/json`
 
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `authorizationParameters` | `object<string, string>` | No | — |
-| `authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `clientId` | `string` | No | min length: 1; max length: 256 |
-| `clientSecret` | `string` | No | min length: 1; max length: 4096 |
-| `displayName` | `string` | No | min length: 1; max length: 200 |
-| `endpoint` | `object` | No | — |
-| `endpoint.access` | `"read-only" or "full"` | No | — |
-| `endpoint.host` | `string` | Yes | min length: 1; max length: 253 |
-| `endpoint.path` | `string` | No | min length: 1; max length: 512; pattern: `^/` |
-| `endpoint.port` | `integer` | No | minimum: 1; maximum: 65535 |
-| `envVar` | `string` | No | pattern: `^[A-Z_][A-Z0-9_]{0,63}$` |
-| `issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `scopes` | `array<string>` | No | min items: 1; max items: 32 |
-| `tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+Schema: `object or object or object`.
 
 Example request
 ```json
@@ -2157,28 +2279,46 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `Connection template` | Yes | — |
+| `data` | `OAuth connection template` | Yes | — |
 | `data.createdAt` | `string` | Yes | — |
 | `data.current` | `object` | Yes | — |
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data.current.authorizationUrl` | `string` | Yes | — |
-| `data.current.clientId` | `string` | Yes | — |
-| `data.current.clientRegistrationId` | `string` | Yes | — |
+| `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.createdAt` | `string` | Yes | — |
-| `data.current.endpoint` | `object` | Yes | — |
-| `data.current.endpoint.access` | `"read-only" or "full"` | Yes | — |
-| `data.current.endpoint.host` | `string` | Yes | — |
-| `data.current.endpoint.path` | `string` | Yes | — |
-| `data.current.endpoint.port` | `integer` | Yes | — |
-| `data.current.envVar` | `string` | Yes | — |
-| `data.current.issuer` | `string` | Yes | — |
-| `data.current.scopes` | `array<string>` | Yes | — |
-| `data.current.tokenUrl` | `string` | Yes | — |
+| `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.mcp` | `object` | No | — |
+| `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
+| `data.current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.current.observed` | `object` | No | — |
+| `data.current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.issuers` | `array<string>` | Yes | — |
+| `data.current.observed.registrationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.requestedScopes` | `array<string>` | Yes | — |
+| `data.current.observed.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.resourceScopes` | `array<string>` | No | — |
+| `data.current.observed.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.observed.supportedScopes` | `array<string>` | No | — |
+| `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
+| `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.recipient` | `object` | Yes | — |
+| `data.current.recipient.access` | `"read-only" or "full"` | Yes | — |
+| `data.current.recipient.host` | `string` | Yes | — |
+| `data.current.recipient.path` | `string` | Yes | — |
+| `data.current.recipient.port` | `integer` | Yes | — |
+| `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
-| `data.displayName` | `string` | Yes | — |
+| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 Example response
@@ -2189,20 +2329,20 @@ Example response
     "current": {
       "authorizationParameters": {},
       "authorizationUrl": "https://accounts.example.com/authorize",
-      "clientId": "example-client",
-      "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
       "createdAt": "2026-10-01T12:00:00.000Z",
-      "endpoint": {
-        "access": "full",
+      "issuer": "https://accounts.example.com",
+      "mode": "manual",
+      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "recipient": {
+        "access": "read-only",
         "host": "api.example.com",
         "path": "/profile",
         "port": 443
       },
-      "envVar": "EXAMPLE_ACCESS_TOKEN",
-      "issuer": "https://accounts.example.com",
       "scopes": [
         "profile.read"
       ],
+      "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
       "tokenUrl": "https://accounts.example.com/token",
       "version": 1
     },
@@ -2216,13 +2356,184 @@ Example response
 }
 ```
 
-#### `POST /connection-templates/{connectionTemplateId}/rotate-client-secret`
+#### `GET /oauth-clients`
 
-<span id="post-connectiontemplatesconnectiontemplateidrotateclientsecret"></span>
+<span id="get-oauthclients"></span>
 
-Rotate the secret for the template’s OAuth client registration
+List registered OAuth clients
 
-**Operation ID:** `rotateConnectionClientSecret`
+**Operation ID:** `listOAuthClients`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].clientId` | `string` | Yes | min length: 1; max length: 256 |
+| `data[].createdAt` | `string` | Yes | — |
+| `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `data[].id` | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
+| `data[].tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "clientId": "example-client",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "displayName": "Example provider client",
+      "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "issuer": "https://accounts.example.com",
+      "tokenEndpointAuthMethod": "client_secret_basic",
+      "tokenUrl": "https://accounts.example.com/token"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /oauth-clients`
+
+<span id="post-oauthclients"></span>
+
+Register a scoped OAuth client
+
+**Operation ID:** `createOAuthClient`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `clientId` | `string` | Yes | min length: 1; max length: 256 |
+| `clientSecret` | `string` | No | min length: 1; max length: 4096 |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
+| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+
+Example request
+```json
+{
+  "clientId": "example-client",
+  "clientSecret": "example-client-secret",
+  "displayName": "Example provider client",
+  "issuer": "https://accounts.example.com",
+  "tokenEndpointAuthMethod": "client_secret_basic",
+  "tokenUrl": "https://accounts.example.com/token"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.clientId` | `string` | Yes | min length: 1; max length: 256 |
+| `data.createdAt` | `string` | Yes | — |
+| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `data.id` | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
+| `data.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "clientId": "example-client",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "displayName": "Example provider client",
+    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+    "issuer": "https://accounts.example.com",
+    "tokenEndpointAuthMethod": "client_secret_basic",
+    "tokenUrl": "https://accounts.example.com/token"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /oauth-clients/{oauthClientId}`
+
+<span id="delete-oauthclientsoauthclientid"></span>
+
+Delete an unused OAuth client
+
+**Operation ID:** `deleteOAuthClient`
 
 **Permissions:** Requires administer permission on the requested Installation.
 
@@ -2234,7 +2545,42 @@ Rotate the secret for the template’s OAuth client registration
 
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
-| `connectionTemplateId` | path | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ctp_123e4567-e89b-42d3-a456-426614174000" |
+| `oauthClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `POST /oauth-clients/{oauthClientId}/rotate-secret`
+
+<span id="post-oauthclientsoauthclientidrotatesecret"></span>
+
+Rotate an OAuth client secret
+
+**Operation ID:** `rotateOAuthClientSecret`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `oauthClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Request body
 
@@ -2272,58 +2618,31 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `Connection template` | Yes | — |
+| `data` | `object` | Yes | — |
+| `data.clientId` | `string` | Yes | min length: 1; max length: 256 |
 | `data.createdAt` | `string` | Yes | — |
-| `data.current` | `object` | Yes | — |
-| `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
-| `data.current.authorizationUrl` | `string` | Yes | — |
-| `data.current.clientId` | `string` | Yes | — |
-| `data.current.clientRegistrationId` | `string` | Yes | — |
-| `data.current.createdAt` | `string` | Yes | — |
-| `data.current.endpoint` | `object` | Yes | — |
-| `data.current.endpoint.access` | `"read-only" or "full"` | Yes | — |
-| `data.current.endpoint.host` | `string` | Yes | — |
-| `data.current.endpoint.path` | `string` | Yes | — |
-| `data.current.endpoint.port` | `integer` | Yes | — |
-| `data.current.envVar` | `string` | Yes | — |
-| `data.current.issuer` | `string` | Yes | — |
-| `data.current.scopes` | `array<string>` | Yes | — |
-| `data.current.tokenUrl` | `string` | Yes | — |
-| `data.current.version` | `integer` | Yes | minimum: 1 |
-| `data.displayName` | `string` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `data.id` | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
+| `data.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 Example response
 ```json
 {
   "data": {
+    "clientId": "example-client",
     "createdAt": "2026-10-01T12:00:00.000Z",
-    "current": {
-      "authorizationParameters": {},
-      "authorizationUrl": "https://accounts.example.com/authorize",
-      "clientId": "example-client",
-      "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
-      "createdAt": "2026-10-01T12:00:00.000Z",
-      "endpoint": {
-        "access": "full",
-        "host": "api.example.com",
-        "path": "/profile",
-        "port": 443
-      },
-      "envVar": "EXAMPLE_ACCESS_TOKEN",
-      "issuer": "https://accounts.example.com",
-      "scopes": [
-        "profile.read"
-      ],
-      "tokenUrl": "https://accounts.example.com/token",
-      "version": 1
-    },
-    "displayName": "Example account",
-    "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+    "displayName": "Example provider client",
+    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+    "issuer": "https://accounts.example.com",
+    "tokenEndpointAuthMethod": "client_secret_basic",
+    "tokenUrl": "https://accounts.example.com/token"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -11979,7 +12298,7 @@ Reusable schema names are referenced by operation request and response tables.
 | `AgentRuntimeCredentialResponse` | `object` |
 | `SecretResponse` | `object` |
 | `CredentialSourceResponse` | `object` |
-| `Connection template` | `object` |
+| `OAuth connection template` | `object` |
 | `PluginApprovers` | `array<object>` |
 | `PluginToolPolicy` | `object` |
 | `PluginToolDefaults` | `object` |

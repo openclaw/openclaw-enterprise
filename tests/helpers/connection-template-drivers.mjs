@@ -9,6 +9,7 @@ const clientWorkspace = "oce-oauth-clients";
 /** Records the OpenShell RPCs the Drivers send; never mints or substitutes credentials. */
 function recordingOpenShell() {
   const providers = new Map();
+  const createdProviders = [];
   const profiles = new Map();
   const key = (workspace, name) => `${workspace}/${name}`;
   const client = {
@@ -25,6 +26,7 @@ function recordingOpenShell() {
       profiles.delete(key(workspace, id));
     },
     async createProvider(input) {
+      createdProviders.push(input.name);
       const id = key(input.workspace, input.name);
       if (providers.has(id)) {
         throw new OpenShellProviderAlreadyExistsError();
@@ -48,7 +50,7 @@ function recordingOpenShell() {
     },
     close() {},
   };
-  return { client, providers };
+  return { client, providers, createdProviders };
 }
 
 export function selectTemplateDrivers(controller) {
@@ -78,5 +80,5 @@ export function selectTemplateDrivers(controller) {
   controller.selectDriver("credential_gateway", gateway.id);
   controller.registerDriver(refresh);
   controller.selectDriver("credential_refresh", refresh.id);
-  return { providers: openShell.providers, refresh };
+  return { providers: openShell.providers, createdProviders: openShell.createdProviders, refresh };
 }
