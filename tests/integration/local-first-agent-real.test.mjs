@@ -1580,6 +1580,10 @@ test(
       const completion = await readCompletion(initialProvider, initialSetup.setupId);
       assert.equal(completion.completion?.deviceId, initialProvider.expectedNodeId);
       assert.equal(completion.deliveryUncertain, undefined);
+      assert.ok(Number.isSafeInteger(completion.completion.ts) && completion.completion.ts > 0);
+      // Native setup status retains its delivery receipt for 20 minutes. The
+      // durable Agent-owned Secret and device remain authoritative afterward.
+      const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
       const firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
         assertNativeWorkerProofInController(nativeContext, {
           ...proofOptions,
@@ -1636,7 +1640,12 @@ test(
         expiresAtMs: initialSetup.expiresAtMs,
         deviceId: initialSetup.deviceId,
       });
-      assert.deepEqual(await readCompletion(replacementProvider, initialSetup.setupId), completion);
+      const replacementCompletion = await readCompletion(replacementProvider, initialSetup.setupId);
+      if (Date.now() < completionRetainedUntil || Object.keys(replacementCompletion).length > 0) {
+        assert.deepEqual(replacementCompletion, completion);
+      }
+      // An aged-out receipt may be empty; the exact Secret, setup digest,
+      // device, revision, retained files and real model/exec proofs still apply.
       assert.notEqual(replacementProvider.pod.metadata.uid, initialProvider.pod.metadata.uid);
       assert.notEqual(
         replacementProvider.sandbox.metadata.uid,

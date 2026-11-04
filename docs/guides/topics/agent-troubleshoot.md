@@ -65,7 +65,9 @@ For a dedicated Agent, a connected workspace node alone does not establish
 enrollment: OCC must record its device through the setup handoff. If deployment
 stays pending, give the operator the version ID and worker's reason code. Keep
 the node's retained identity and workspace intact; repeated restarts do not prove
-that handoff completed. See [workspace-node enrollment](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+that handoff completed. Unconfirmed credential possession after setup expiry requires the
+[scoped node-Secret recovery](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage);
+do not delete the node identity or workspace. See [workspace-node enrollment](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
 
 A second node runner using the same local profile fails immediately. Keep one
 runner per profile. Its lock remains held until clients, runtime shutdown and

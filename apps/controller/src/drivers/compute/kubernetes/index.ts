@@ -1415,6 +1415,8 @@ function recordedWorkspaceNodeDeviceId(encoded: unknown): string | undefined {
 // The node Secret key naming the revision whose node readiness last saw connected;
 // the device itself is the Agent's (finding 1671).
 const WORKSPACE_NODE_ENROLLED_REVISION_KEY = "enrolledRevisionId";
+// An observed handoff is not proof that the node received its saved credential.
+const WORKSPACE_NODE_RECEIPT_DEVICE_KEY = "setupReceiptDeviceId";
 const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
   ["state", "/home/node/.openclaw/state"],
   // Client migration receipts refer to the retained Gateway database.
@@ -11976,6 +11978,78 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  private async confirmWorkspaceNodeSetup(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    secret: ManagedKubernetesObject<"Secret">,
+    receiptDeviceId: string,
+  ): Promise<{ readonly secret: ManagedKubernetesObject<"Secret">; readonly connected: boolean }> {
+    const recorded = recordedWorkspaceNodeDeviceId(
+      secret.data?.[WORKSPACE_NODE_RECEIPT_DEVICE_KEY],
+    );
+    if (recorded !== undefined && recorded !== receiptDeviceId) {
+      throw new DependencyUnavailableError(
+        "The workspace node setup receipt changed its recorded device identity.",
+      );
+    }
+    if (recorded === undefined) {
+      // A Gateway receipt proves setup consumption, not credential possession.
+      // Persist its device before a probe can fail or status retention can expire.
+      required(secret.metadata.resourceVersion, "Workspace node Secret resource version");
+      const clients = await this.clients(namespace.plane);
+      await this.request(
+        () =>
+          clients.core.replaceNamespacedSecret({
+            name: secret.metadata.name,
+            namespace: namespace.name,
+            body: {
+              apiVersion: "v1",
+              kind: "Secret",
+              metadata: secret.metadata,
+              type: "Opaque",
+              data: {
+                ...secret.data,
+                [WORKSPACE_NODE_RECEIPT_DEVICE_KEY]: Buffer.from(receiptDeviceId, "utf8").toString(
+                  "base64",
+                ),
+              },
+            },
+          }),
+        { mutating: true },
+      );
+      const retained = await this.getOwned(
+        "Secret",
+        secret.metadata.name,
+        namespace,
+        this.workspaceNodeOwnership(revision),
+      );
+      if (
+        retained === undefined ||
+        recordedWorkspaceNodeDeviceId(retained.data?.[WORKSPACE_NODE_RECEIPT_DEVICE_KEY]) !==
+          receiptDeviceId
+      ) {
+        throw new DependencyUnavailableError("The workspace node setup receipt was not retained.");
+      }
+      secret = retained;
+    }
+    const connected = await this.nodeEnrollment!.isConnected(
+      this.getGatewayEndpoint(revision)!,
+      receiptDeviceId,
+      this.operationSignal(),
+    );
+    const expiresAtMs = Number(
+      Buffer.from(secret.data?.expiresAtMs ?? "", "base64").toString("utf8"),
+    );
+    if (!connected && expiresAtMs <= Date.now()) {
+      throw new DependencyUnavailableError(
+        "Workspace node credential possession could not be confirmed before setup expiry. Stop the Agent and wait for shutdown, " +
+          `then delete only its node Secret ${namespace.name}/${secret.metadata.name} and deploy a new revision. ` +
+          "Preserve the node identity and Harness workspace storage.",
+      );
+    }
+    return { secret, connected };
+  }
+
   private async prepareWorkspaceNode(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
@@ -11991,7 +12065,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (!setupFile) {
       await this.reconcileWorkspaceNodeNetworkPolicy(revision, namespace);
     }
-    const existing = await this.getOwned("Secret", name, namespace, ownership);
+    let existing = await this.getOwned("Secret", name, namespace, ownership);
     const decode = (value: string | undefined) =>
       Buffer.from(value ?? "", "base64").toString("utf8");
     const expired =
@@ -11999,7 +12073,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Both delivery modes reconnect with the saved device token after pairing.
     // Setup expiry must not re-enroll a recorded device or restart its workload.
     const paired = recordedWorkspaceNodeDeviceId(existing?.data?.deviceId) !== undefined;
-    if (existing === undefined || (expired && !paired)) {
+    const receiptDeviceId = recordedWorkspaceNodeDeviceId(
+      existing?.data?.[WORKSPACE_NODE_RECEIPT_DEVICE_KEY],
+    );
+    if (existing === undefined || receiptDeviceId !== undefined || (expired && !paired)) {
       const gatewayOwnership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
       const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
       // Plugin initialization can precede the first Gateway. Start the Harness
@@ -12018,13 +12095,28 @@ export class KubernetesComputeDriver implements ComputeDriver {
       // recorded its device. Re-minting would drop that completion, so record
       // the device from the old setup first.
       const observed =
-        existing !== undefined && !paired
-          ? await enrollment.observeSetup(
-              url,
-              required(decode(existing.data?.setupId), "Workspace node setup ID"),
-              this.operationSignal(),
-            )
-          : undefined;
+        receiptDeviceId !== undefined
+          ? { deviceId: receiptDeviceId }
+          : existing !== undefined && !paired
+            ? await enrollment.observeSetup(
+                url,
+                required(decode(existing.data?.setupId), "Workspace node setup ID"),
+                this.operationSignal(),
+              )
+            : undefined;
+      if (existing !== undefined && observed !== undefined) {
+        const confirmation = await this.confirmWorkspaceNodeSetup(
+          revision,
+          namespace,
+          existing,
+          observed.deviceId,
+        );
+        existing = confirmation.secret;
+        if (!confirmation.connected) {
+          const ca = await this.readNodeCa?.();
+          return { name, ...(ca === undefined ? {} : { ca }) };
+        }
+      }
       const setup =
         observed === undefined
           ? await enrollment.createSetup(
@@ -12076,7 +12168,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 metadata: existing.metadata,
                 type: "Opaque",
                 data: {
-                  ...existing.data,
+                  ...Object.fromEntries(
+                    Object.entries(existing.data ?? {}).filter(
+                      ([key]) => key !== WORKSPACE_NODE_RECEIPT_DEVICE_KEY,
+                    ),
+                  ),
                   ...Object.fromEntries(
                     Object.entries(setupData).map(([key, value]) => [
                       key,
@@ -12296,6 +12392,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const enrolledRevisionId = read(WORKSPACE_NODE_ENROLLED_REVISION_KEY);
     return (
       recordedWorkspaceNodeDeviceId(secret?.data?.deviceId) !== undefined &&
+      recordedWorkspaceNodeDeviceId(secret?.data?.[WORKSPACE_NODE_RECEIPT_DEVICE_KEY]) ===
+        undefined &&
       enrolledRevisionId === revision.id
     );
   }
@@ -12311,17 +12409,21 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       return true;
     }
     const name = this.workspaceNodeName(revision);
-    const secret = await this.getOwned(
+    const initialSecret = await this.getOwned(
       "Secret",
       name,
       namespace,
       this.workspaceNodeOwnership(revision),
     );
-    if (secret === undefined) {
+    if (initialSecret === undefined) {
       return false;
     }
+    let secret: ManagedKubernetesObject<"Secret"> = initialSecret;
     const read = (key: string) => Buffer.from(secret.data?.[key] ?? "", "base64").toString("utf8");
     const deviceId = recordedWorkspaceNodeDeviceId(secret.data?.deviceId);
+    const receiptDeviceId = recordedWorkspaceNodeDeviceId(
+      secret.data?.[WORKSPACE_NODE_RECEIPT_DEVICE_KEY],
+    );
     // A file-delivered setup code is readable by every process in the Harness,
     // Codex included. Once the device is recorded the node reconnects with its
     // saved device token, so drop the code; the kubelet then removes the file.
@@ -12356,7 +12458,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         await this.refreshWorkspaceNodeSetup(revision, namespace, `${read("setupId")}:removed`);
       }
     };
-    if (deviceId) {
+    if (deviceId && receiptDeviceId === undefined) {
       const dropping = dropSetupCode && secret.data?.setupCode !== undefined;
       let connected: boolean;
       try {
@@ -12399,16 +12501,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const spentMs = this.workspaceNodePairingSpentMs.get(setupId) ?? 0;
     const waitMs = Math.max(0, Math.min(pairingWaitMs, this.workspaceNodePairingWaitMs - spentMs));
     const started = this.now();
-    let observation: NodeSetupObservation | undefined;
+    let observation: Pick<NodeSetupObservation, "deviceId"> | undefined;
     try {
-      observation = await enrollment.observeSetup(
-        url,
-        setupId,
-        this.operationSignal(),
-        // Another Agent's Work waiting for the serial worker ends the wait:
-        // the pass ends pending and the next one reads the setup again (D221).
-        waitMs > 0 ? { waitMs, stopWaiting: computeWorkWaiting } : undefined,
-      );
+      observation =
+        receiptDeviceId !== undefined
+          ? { deviceId: receiptDeviceId }
+          : await enrollment.observeSetup(
+              url,
+              setupId,
+              this.operationSignal(),
+              // Another Agent's Work waiting for the serial worker ends the wait:
+              // the pass ends pending and the next one reads the setup again (D221).
+              waitMs > 0 ? { waitMs, stopWaiting: computeWorkWaiting } : undefined,
+            );
     } finally {
       if (waitMs > 0) {
         this.recordBudgetSpent(
@@ -12429,23 +12534,31 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
       return false;
     }
+    const confirmation = await this.confirmWorkspaceNodeSetup(
+      revision,
+      namespace,
+      secret,
+      observation.deviceId,
+    );
+    secret = confirmation.secret;
+    if (!confirmation.connected) {
+      return false;
+    }
     await replaceSecret(
       withoutSetupCode({
-        ...secret.data,
+        ...Object.fromEntries(
+          Object.entries(secret.data ?? {}).filter(
+            ([key]) => key !== WORKSPACE_NODE_RECEIPT_DEVICE_KEY,
+          ),
+        ),
         deviceId: Buffer.from(observation.deviceId, "utf8").toString("base64"),
-        ...(observation.connected
-          ? {
-              [WORKSPACE_NODE_ENROLLED_REVISION_KEY]: Buffer.from(revision.id, "utf8").toString(
-                "base64",
-              ),
-            }
-          : {}),
+        [WORKSPACE_NODE_ENROLLED_REVISION_KEY]: Buffer.from(revision.id, "utf8").toString("base64"),
       }),
     );
     // With the device recorded, later passes check its presence, not the setup.
     this.workspaceNodePairingSpentMs.delete(setupId);
     await setupCodeRemoved();
-    return observation.connected;
+    return true;
   }
 
   private sandboxEnvironmentVariables(value: unknown): readonly SandboxEnvironmentVariable[] {

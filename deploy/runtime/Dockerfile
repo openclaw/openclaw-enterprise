@@ -191,7 +191,7 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo 'c60eae944c5495ec9e06ce60821fb66655db41f72e2d3b4f47cac621af2d5945  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '703c239bd3c8a968b0cf5bc39106a8bb2aef62d18a005482b7ea665fc18a5e53  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Run the bridge tests alongside the build using the same patched source.
@@ -215,6 +215,7 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     src/cli/connect-cli.test.ts \
     src/cli/connect-cli.reconnect.test.ts \
     packages/gateway-client/src/client.device-auth.test.ts \
+    packages/gateway-client/src/client.node-invocation.test.ts \
     packages/gateway-client/src/reconnect-policy.test.ts \
     src/node-host/runtime.worker-hosting.test.ts \
     src/node-host/gateway-cloudflare-access.test.ts \

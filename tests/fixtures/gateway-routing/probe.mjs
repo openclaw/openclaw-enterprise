@@ -175,6 +175,7 @@ async function assertNativeNodeRouteAuthentication({
       "dir.list",
       "workspace.memory",
       "workspace.skills",
+      "system.which",
     ],
     deviceIdentity,
     hostDeps: {
@@ -215,11 +216,15 @@ async function assertNativeNodeRouteAuthentication({
       url: nodeUrl,
       native: { ...native, bootstrapToken: payload.bootstrapToken, preferBootstrapToken: true },
       onConnected: async (_client, hello) => {
-        assert.deepEqual(
-          await enrollment.observeSetup(url, setup.setupId, AbortSignal.timeout(15_000)),
-          { deviceId: deviceIdentity.deviceId, connected: true },
-          "Compute must observe the paired identity and its admitted file commands",
+        const receipt = await enrollment.observeSetup(
+          url,
+          setup.setupId,
+          AbortSignal.timeout(15_000),
         );
+        assert.equal(receipt?.deviceId, deviceIdentity.deviceId);
+        // The Gateway confirms its local write asynchronously after hello.
+        // Neither receipt status is itself evidence of node possession.
+        assert.ok(["confirmed", "uncertain"].includes(receipt.delivery));
         return hello;
       },
     });
@@ -236,9 +241,9 @@ async function assertNativeNodeRouteAuthentication({
         deviceToken: hello.auth.deviceToken,
       },
       onConnected: async () => {
-        assert.equal(
-          await enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
-          false,
+        await assert.rejects(
+          enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
+          /missing required commands: file.create/,
           "Compute must not mark a node ready when attachment upload is unavailable",
         );
       },
@@ -249,8 +254,8 @@ async function assertNativeNodeRouteAuthentication({
       onConnected: async (_client, hello) => {
         assert.equal(
           await enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
-          true,
-          "the saved identity is ready after all required file commands return",
+          false,
+          "advertised commands alone do not prove this transport-only client can execute an invocation",
         );
         return hello;
       },

@@ -29,7 +29,19 @@
  [node-host authentication](/cli/node#gateway-auth-for-node-host).
 --- a/docs/cli/node.md
 +++ b/docs/cli/node.md
-@@ -106,6 +106,7 @@
+@@ -87,6 +87,11 @@
+ 
+ Stopping a foreground node also cancels startup. If termination arrives before
+ the Gateway connection is ready, the node drains its prepared resources and exits.
++
++Invocations cannot run before the node verifies its saved credential. Requests
++arriving during that handoff receive `NODE_NOT_READY` after verification, allowing
++bounded Gateway retry. Pending reply identities are bounded; overflowing that
++bound closes the connection rather than retaining command payloads.
+ 
+ Options:
+ 
+@@ -106,6 +111,7 @@
  - `--display-name <name>`: Override the node display name
  - `--session-host`: Host worker sessions for this foreground process without changing the saved worker-hosting preference
  - `--auth-from-env`: Explicitly use environment Gateway credentials instead of the saved paired credential
@@ -37,7 +49,7 @@
  - `--commands <ids>`: Persist an exact comma-separated command allowlist (repeatable); advertise only available matches and their required capabilities. Disables computer use, skills, plugin tools, MCP servers, and worker hosting. Omitting the flag preserves the saved list.
  - `--all-commands`: Advertise the full default command surface and forget any saved `--commands` allowlist. Cannot be combined with `--commands`.
  - `--share-installed-apps`: On macOS, advertise installed applications through `device.apps`
-@@ -140,6 +141,12 @@
+@@ -140,6 +146,12 @@
  override that pairing. A paired service install does not save those ambient
  Gateway credentials in its service environment.
  
@@ -50,7 +62,7 @@
  For an intentional shared-token or password connection, use `--auth-from-env`:
  
  ```bash
-@@ -154,8 +161,8 @@
+@@ -154,8 +166,8 @@
  available paired credential, startup names the selected environment variable
  in a warning without printing its value.
  
@@ -61,7 +73,7 @@
  
  - `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD` are checked first.
  - Otherwise, local config fallback applies: `gateway.auth.token` / `gateway.auth.password`.
-@@ -165,8 +172,8 @@
+@@ -165,8 +177,8 @@
  - Node host auth resolution only honors `OPENCLAW_GATEWAY_*` env vars.
  - A CWD `.env` cannot supply `OPENCLAW_*` variables; those are blocked by workspace dotenv policy.
  
@@ -831,7 +843,7 @@
  }
  
  const storedToken = { token: "synthetic-stored-token", scopes: ["operator.read"] };
-@@ -194,6 +214,881 @@
+@@ -194,6 +214,929 @@
    protocol: PROTOCOL_VERSION,
    auth: { deviceToken: "synthetic-issued-token", role: "operator", scopes: ["operator.read"] },
  };
@@ -1061,7 +1073,7 @@
 +    expect(onConnectError).not.toHaveBeenCalled();
 +  });
 +
-+  it("admits node invocations only after the current hello and receipt verification", async () => {
++  it("refuses pending node invocations after receipt verification without executing them", async () => {
 +    const gate = storageGate();
 +    const cache: { value: DeviceAuthTokenRecord } = { value: savedNodeToken };
 +    const loadDeviceAuthToken = vi.fn<NonNullable<GatewayClientHostDeps["loadDeviceAuthToken"]>>(
@@ -1103,9 +1115,23 @@
 +    socket.receive(invoke("before-receipt-verification"));
 +    expect(onHelloOk).not.toHaveBeenCalled();
 +    expect(onEvent).not.toHaveBeenCalled();
++    expect(socket.send).toHaveBeenCalledOnce();
 +    gate.resolve();
 +    await vi.advanceTimersByTimeAsync(0);
 +    expect(onHelloOk).toHaveBeenCalledOnce();
++    expect(socket.send.mock.calls.slice(1).map(([data]) => JSON.parse(data))).toEqual(
++      ["before-challenge", "before-hello", "before-receipt-verification"].map((id) => ({
++        type: "req",
++        id: expect.any(String),
++        method: "node.invoke.result",
++        params: {
++          id,
++          nodeId: "synthetic-device",
++          ok: false,
++          error: { code: "NODE_NOT_READY", message: expect.stringContaining("retry") },
++        },
++      })),
++    );
 +    const admitted = invoke("after-receipt-verification");
 +    socket.receive(admitted);
 +    expect(onEvent).toHaveBeenCalledExactlyOnceWith(admitted);
@@ -1116,6 +1142,40 @@
 +    replacement.receive(invoke("replacement-before-hello"));
 +    expect(onEvent).toHaveBeenCalledOnce();
 +  });
++
++  it.each(["count", "bytes"])(
++    "retires a generation exceeding the pending reply %s bound",
++    async (bound) => {
++      const { gate, host } = tokenStorage(savedNodeToken);
++      const { socket, onEvent, onHelloOk, onClose } = connect(host, nodeOptions);
++      socket.respond(nodeHello);
++      await vi.advanceTimersByTimeAsync(0);
++      // Neither a flood of requests nor large UTF-8 identities may retain
++      // unbounded memory while the accepted receipt is still being persisted.
++      for (let index = 0; index < (bound === "count" ? 65 : 1); index += 1) {
++        socket.receive({
++          type: "event",
++          event: "node.invoke.request",
++          payload: {
++            id: bound === "count" ? `pending-${index}` : "🦞".repeat(16 * 1024),
++            nodeId: "synthetic-device",
++            command: "terminal.upload",
++            paramsJSON: "{}",
++          },
++        });
++      }
++      expect(onClose).toHaveBeenCalledWith(
++        1013,
++        "node readiness reply limit exceeded",
++        expect.anything(),
++      );
++      gate.resolve();
++      await vi.advanceTimersByTimeAsync(0);
++      expect(onHelloOk).not.toHaveBeenCalled();
++      expect(onEvent).not.toHaveBeenCalled();
++      expect(socket.send).toHaveBeenCalledOnce();
++    },
++  );
 +
 +  it("recovers with the saved node credential and permits reconnect after accepted hello", async () => {
 +    const { gate, host } = tokenStorage(savedNodeToken);
@@ -1713,6 +1773,217 @@
  
  describe("GatewayClient host token storage", () => {
    it("rejects connection authority retired by socket registration and cleans the registration", () => {
+--- /dev/null
++++ b/packages/gateway-client/src/client.node-invocation.test.ts
+@@ -0,0 +1,208 @@
++import { once } from "node:events";
++import { PROTOCOL_VERSION } from "@openclaw/gateway-protocol/version";
++import { expect, it, vi } from "vitest";
++import { createDeferred } from "../../../test/helpers/promise.js";
++import type { DeviceAuthTokenRecord } from "./client.js";
++import {
++  sendChallenge,
++  sendFrame,
++  sendResponse,
++  transportFixture,
++} from "./client.transport.test-support.js";
++import { rawDataToString } from "./websocket-data.js";
++import type { WebSocket } from "./websocket.js";
++
++const { client: createClient, startWebSocketServer } = transportFixture();
++
++it.each([
++  "verified",
++  "store failure",
++  "readback mismatch",
++  "disconnect",
++  "stop",
++  "owner retired",
++  "stop in hello",
++] as const)("settles pending node invocation admission over WebSocket: %s", async (outcome) => {
++  const { server, url } = await startWebSocketServer();
++  const storeGate = createDeferred();
++  const readbackGate = createDeferred();
++  const readbackStarted = createDeferred();
++  const receivedPending = createDeferred();
++  const ready = createDeferred();
++  const closed = createDeferred();
++  const replied = createDeferred();
++  const executed = createDeferred();
++  const onInvoke = vi.fn();
++  const onHello = vi.fn();
++  const replies: unknown[] = [];
++  let saved: DeviceAuthTokenRecord | null = null;
++  let current = true;
++  let connections = 0;
++  let peer: WebSocket | undefined;
++  const hello = {
++    type: "hello-ok",
++    protocol: PROTOCOL_VERSION,
++    server: { version: "test", connId: "node-connection" },
++    features: { methods: [], events: [] },
++    snapshot: { presence: [], health: {}, stateVersion: { presence: 0, health: 0 }, uptimeMs: 0 },
++    policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 60_000 },
++    auth: { deviceToken: "synthetic-issued-node-token", role: "node", scopes: [] },
++  };
++  const invoke = (socket: WebSocket, id: string) =>
++    sendFrame(socket, {
++      type: "event",
++      event: "node.invoke.request",
++      payload: {
++        id,
++        nodeId: "synthetic-device",
++        command: "terminal.upload",
++        paramsJSON: "{}",
++        timeoutMs: 30_000,
++      },
++    });
++  server.on("connection", (socket) => {
++    peer = socket;
++    connections += 1;
++    const first = connections === 1;
++    sendChallenge(socket, { nonce: "synthetic-nonce", ts: Date.now() });
++    socket.on("message", (raw) => {
++      const frame = JSON.parse(rawDataToString(raw)) as {
++        id: string;
++        method: string;
++        params: unknown;
++      };
++      if (frame.method === "connect") {
++        // The real Gateway can register the node and send work immediately after
++        // hello. Do not wait for any client-side persistence callback here.
++        sendResponse(socket, frame.id, hello);
++        if (first) {
++          invoke(socket, "pending-invocation");
++          sendFrame(socket, { type: "event", event: "test.pending-delivered" });
++        }
++        return;
++      }
++      if (frame.method === "node.invoke.result") {
++        replies.push(frame.params);
++        replied.resolve();
++      }
++      sendResponse(socket, frame.id, { ok: true });
++    });
++  });
++  const client = createClient({
++    url,
++    role: "node",
++    mode: "node",
++    clientName: "node-host",
++    bootstrapToken: "synthetic-bootstrap",
++    preferBootstrapToken: true,
++    nodeSetupAuth: { deviceId: "synthetic-device" },
++    deviceIdentity: {
++      deviceId: "synthetic-device",
++      privateKeyPem: "synthetic-key",
++      publicKeyPem: "synthetic-public",
++    },
++    assertConnectionCurrent: () => {
++      if (!current) {
++        throw new Error("connection owner retired");
++      }
++    },
++    hostDeps: {
++      signDevicePayload: () => "synthetic-signature",
++      publicKeyRawBase64UrlFromPem: () => "synthetic-public",
++      loadDeviceAuthToken: () => {
++        if (!saved) {
++          return null;
++        }
++        readbackStarted.resolve();
++        return readbackGate.promise.then(() => (outcome === "readback mismatch" ? null : saved));
++      },
++      storeDeviceAuthToken: async (params) => {
++        await storeGate.promise;
++        if (outcome === "store failure") {
++          throw new Error("synthetic persistence failure");
++        }
++        saved = { token: params.token, scopes: params.scopes };
++      },
++    },
++    onConnectError: receivedPending.reject,
++    onClose: () => closed.resolve(),
++    onHelloOk: () => {
++      onHello();
++      if (outcome === "stop in hello") {
++        client.stop();
++      }
++      ready.resolve();
++    },
++    onEvent: (event) => {
++      if (event.event === "test.pending-delivered") {
++        receivedPending.resolve();
++      } else if (event.event === "node.invoke.request") {
++        onInvoke(event.payload);
++        executed.resolve();
++      }
++    },
++  });
++  client.start();
++  try {
++    await receivedPending.promise;
++    expect(onInvoke).not.toHaveBeenCalled();
++    expect(onHello).not.toHaveBeenCalled();
++    expect(replies).toEqual([]);
++    storeGate.resolve();
++    if (outcome !== "store failure") {
++      await readbackStarted.promise;
++      // A completed write still cannot release replies or execution before
++      // readback verifies that this exact receipt is durable.
++      expect(onHello).not.toHaveBeenCalled();
++      expect(replies).toEqual([]);
++    }
++    if (outcome === "disconnect") {
++      expect(peer).toBeDefined();
++      const peerClosed = once(peer!, "close");
++      peer!.close(1012, "retire pending generation");
++      await Promise.all([closed.promise, peerClosed]);
++    } else if (outcome === "stop") {
++      client.stop();
++    } else if (outcome === "owner retired") {
++      current = false;
++    }
++    readbackGate.resolve();
++    if (outcome === "verified") {
++      await replied.promise;
++      expect(replies).toEqual([
++        {
++          id: "pending-invocation",
++          nodeId: "synthetic-device",
++          ok: false,
++          error: { code: "NODE_NOT_READY", message: expect.stringContaining("retry") },
++        },
++      ]);
++    } else if (outcome === "disconnect") {
++      await ready.promise;
++      // The replacement may accept new work, but cannot inherit an old reply
++      // or execute the old generation's command after storage settles.
++      expect(connections).toBe(2);
++      expect(replies).toEqual([]);
++    } else {
++      if (outcome === "stop in hello" || outcome === "owner retired") {
++        await ready.promise;
++      } else if (outcome === "store failure" || outcome === "readback mismatch") {
++        await closed.promise;
++      }
++      await client.stopAndWait();
++      expect(replies).toEqual([]);
++    }
++    expect(onInvoke).not.toHaveBeenCalled();
++    if (outcome === "verified" || outcome === "disconnect") {
++      invoke(peer!, "fresh-invocation");
++      await executed.promise;
++      expect(onInvoke).toHaveBeenCalledExactlyOnceWith(
++        expect.objectContaining({ id: "fresh-invocation" }),
++      );
++    }
++  } finally {
++    storeGate.resolve();
++    readbackGate.resolve();
++    await client.stopAndWait();
++  }
++});
 --- a/packages/gateway-client/src/client.ts
 +++ b/packages/gateway-client/src/client.ts
 @@ -10,7 +10,12 @@
@@ -1737,20 +2008,29 @@
  import { resolveModelCatalogConnect } from "./model-catalog-connect.js";
  import {
    resolveNodeProtocolClientMetadata,
-@@ -161,6 +167,12 @@
+@@ -146,6 +152,8 @@
+ 
+ const DEFAULT_GATEWAY_CLIENT_URL = "ws://127.0.0.1:18789";
+ const DEFAULT_CLIENT_VERSION = "0.0.0";
++const MAX_PENDING_NODE_INVOCATIONS = 64;
++const MAX_PENDING_NODE_INVOCATION_BYTES = 64 * 1024;
+ export type GatewayReconnectPausedInfo = {
+   code: number;
+   reason: string;
+@@ -160,6 +168,12 @@
+ export { isGatewayProtocolResponseError } from "./protocol-request.js";
  
  class GatewayClientTransportPolicyError extends GatewayWebSocketTransportConfigurationError {}
- 
++
 +type NodeDeviceAuthBinding = {
 +  deviceId: string;
 +  deviceToken?: string;
 +  savedGateway?: { scope: string; tlsFingerprint?: string };
 +};
-+
+ 
  export type GatewayClientOptions = GatewayWebSocketTargetOptions &
    NonNullable<ConnectParams["auth"]> & {
-     origin?: string;
-@@ -179,6 +191,12 @@
+@@ -179,6 +193,12 @@
      requestTimeoutMs?: number;
      /** Prefer one setup credential for the first successful device-auth exchange. */
      preferBootstrapToken?: boolean;
@@ -1763,13 +2043,15 @@
      instanceId?: string;
      clientName?: GatewayClientName;
      clientDisplayName?: string;
-@@ -236,10 +254,14 @@
+@@ -236,10 +256,16 @@
    private opts: GatewayClientOptions;
    private deps: Required<GatewayClientHostDeps>;
    private stopped = false;
 +  private stopRequested = false;
 +  private setupTerminalPauseNotified = false;
 +  private nodeHelloAccepted = false;
++  private pendingNodeInvocations: Array<{ id: string; nodeId: string }> = [];
++  private pendingNodeInvocationBytes = 0;
    private useLegacyNodeProtocolEnvelope = false;
    private nodeProtocolTransitionPending = false;
    private pendingDeviceTokenRetry = false;
@@ -1778,7 +2060,7 @@
    private approvalRuntimeTokenCompatibilityDisabled = false;
    private approvalRuntimeTokenRetryBudgetUsed = false;
    // Track last tick to detect silent stalls.
-@@ -249,7 +271,11 @@
+@@ -249,7 +275,11 @@
    private readonly requestTimeoutMs: number;
    private pendingStop: PendingStop | null = null;
    private readonly deviceAuth: GatewayClientDeviceAuth;
@@ -1791,7 +2073,7 @@
    private transportValidated = false;
    private suppressedTransientPreHelloCleanCloses = 0;
  
-@@ -259,6 +285,20 @@
+@@ -259,6 +289,20 @@
      this.deviceAuth = new GatewayClientDeviceAuth(this.deps);
      this.opts = {
        ...opts,
@@ -1812,7 +2094,7 @@
        deviceIdentity:
          opts.deviceIdentity === null
            ? undefined
-@@ -294,6 +334,31 @@
+@@ -294,6 +338,31 @@
          const assemble = (storedAuth: DeviceAuthTokenRecord | null) => {
            authority.assertCurrent();
            const signedAtMs = challengeTs ?? Date.now();
@@ -1844,7 +2126,7 @@
            // Auth selection is intentionally centralized: retry decisions depend on
            // whether a token was explicit, cached, or compatibility-derived.
            const selectedAuth = selectGatewayConnectAuth({
-@@ -322,11 +387,41 @@
+@@ -322,11 +391,41 @@
              usingStoredDeviceToken,
            } = selectedAuth;
  
@@ -1887,7 +2169,7 @@
            const scopes = resolveGatewayConnectScopes({
              requestedScopes: this.opts.scopes,
              usingStoredDeviceToken,
-@@ -439,7 +534,13 @@
+@@ -439,7 +538,13 @@
              usingStoredDeviceToken,
            };
  
@@ -1902,7 +2184,7 @@
            return assembled;
          };
          const storedAuth = this.opts.deviceIdentity
-@@ -462,17 +563,70 @@
+@@ -462,17 +567,70 @@
          } else {
            this.logError(msg);
          }
@@ -1975,7 +2257,7 @@
            }
            if (this.opts.preferBootstrapToken) {
              // This accepted receipt redeems setup auth even when its transport has retired.
-@@ -481,6 +635,37 @@
+@@ -481,6 +639,37 @@
              this.opts.password = undefined;
              this.opts.preferBootstrapToken = false;
            }
@@ -2013,7 +2295,7 @@
          };
          let stored: MaybePromise<void> = undefined;
          if (authInfo?.deviceToken && this.opts.deviceIdentity) {
-@@ -504,6 +689,13 @@
+@@ -504,6 +693,13 @@
              persisted,
              (error) => {
                assembled.persistenceFailed = true;
@@ -2027,12 +2309,38 @@
                const reported = this.notifyConnectError(error);
                this.logError(
                  `gateway device token persistence failed: ${formatGatewayClientErrorForLog(error)}`,
-@@ -550,30 +742,60 @@
+@@ -550,30 +746,85 @@
          return stored instanceof Promise ? stored.then(complete) : complete();
        },
        onHello: (hello) => {
+-        this.opts.onHelloOk?.(hello);
++        const socket = this.ws;
++        const pending = this.pendingNodeInvocations;
++        this.resetNodeInvocationAdmission();
 +        this.nodeHelloAccepted = true;
-         this.opts.onHelloOk?.(hello);
++        try {
++          this.opts.onHelloOk?.(hello);
++        } finally {
++          // These commands never reached the runtime. Let the Gateway's existing
++          // readiness retry policy redispatch them within the remaining deadline.
++          for (const invocation of pending) {
++            if (this.ws !== socket || !this.connected) {
++              break;
++            }
++            void this.protocol
++              .request("node.invoke.result", {
++                ...invocation,
++                ok: false,
++                error: {
++                  code: "NODE_NOT_READY",
++                  message: "Node credential verification was pending; retry the invocation",
++                },
++              })
++              .catch((error: unknown) => {
++                this.logDebug(`node readiness reply failed: ${formatGatewayClientErrorForLog(error)}`);
++              });
++          }
++        }
        },
        onConnectFailure: (error, context) => {
          const assembled = context.plan;
@@ -2091,11 +2399,11 @@
        },
        resolveClose: (context) => this.resolveClose(context),
        onClose: (context, decision) => {
-+        this.nodeHelloAccepted = false;
++        this.resetNodeInvocationAdmission();
          clearInterval(this.tickTimer ?? undefined);
          this.tickTimer = null;
          if (decision.notify) {
-@@ -586,7 +808,16 @@
+@@ -586,7 +837,40 @@
          this.notifyReconnectPaused({ code: 1008, reason: error.message, detailCode: null }),
        onParseError: (error) =>
          this.logDebug(`gateway client parse error: ${formatGatewayClientErrorForLog(error)}`),
@@ -2106,6 +2414,30 @@
 +          event.event === "node.invoke.request" &&
 +          !this.nodeHelloAccepted
 +        ) {
++          const payload = event.payload;
++          if (
++            isRecord(payload) &&
++            typeof payload.id === "string" &&
++            payload.id.length > 0 &&
++            typeof payload.nodeId === "string" &&
++            payload.nodeId.length > 0
++          ) {
++            // Retain only reply identities, never executable command bodies. This
++            // also covers hello + invoke frames delivered in the same socket read,
++            // before the hello promise starts credential verification.
++            const invocation = { id: payload.id, nodeId: payload.nodeId };
++            const bytes = Buffer.byteLength(JSON.stringify(invocation), "utf8");
++            if (
++              this.pendingNodeInvocations.length >= MAX_PENDING_NODE_INVOCATIONS ||
++              this.pendingNodeInvocationBytes + bytes > MAX_PENDING_NODE_INVOCATION_BYTES
++            ) {
++              this.resetNodeInvocationAdmission();
++              this.protocol.closeSocket(1013, "node readiness reply limit exceeded");
++              return;
++            }
++            this.pendingNodeInvocations.push(invocation);
++            this.pendingNodeInvocationBytes += bytes;
++          }
 +          return;
 +        }
 +        this.opts.onEvent?.(event);
@@ -2113,11 +2445,11 @@
        onGap: (info) => this.opts.onGap?.(info),
        onRequestTiming: (timing) => this.opts.onRequestTiming?.(timing),
        onActivity: () => {
-@@ -658,7 +889,27 @@
+@@ -658,7 +942,27 @@
    }
  
    private createSocket(handlers: GatewayProtocolSocketHandlers): GatewayProtocolSocket {
-+    this.nodeHelloAccepted = false;
++    this.resetNodeInvocationAdmission();
      const url = this.opts.url ?? DEFAULT_GATEWAY_CLIENT_URL;
 +    const setupPolicy = this.opts.nodeSetupAuth;
 +    // Reject a changed retained binding before HTTP Upgrade can disclose edge
@@ -2141,15 +2473,29 @@
      const configuredEdgeAuthHeaders = this.opts.edgeAuthHeaders;
      const edgeAuthHeaders =
        configuredEdgeAuthHeaders && Object.keys(configuredEdgeAuthHeaders).length > 0
-@@ -815,6 +1066,7 @@
+@@ -815,6 +1119,8 @@
    }
  
    private beginStop(): Promise<void> | null {
++    this.resetNodeInvocationAdmission();
 +    this.stopRequested = true;
      this.stopped = true;
      this.pendingDeviceTokenRetry = false;
      this.deviceTokenRetryBudgetUsed = false;
-@@ -896,6 +1148,10 @@
+@@ -854,6 +1160,12 @@
+     return null;
+   }
+ 
++  private resetNodeInvocationAdmission(): void {
++    this.nodeHelloAccepted = false;
++    this.pendingNodeInvocations = [];
++    this.pendingNodeInvocationBytes = 0;
++  }
++
+   private resolvePendingStop(ws: WebSocket): void {
+     if (this.pendingStop?.ws !== ws) {
+       return;
+@@ -896,6 +1208,10 @@
      error: GatewayProtocolRequestError,
      assembled: AssembledConnect,
    ) {
@@ -2160,7 +2506,7 @@
      if (this.shouldRetryWithAlternateNodeProtocol(error)) {
        const resetBackoff = !this.nodeProtocolTransitionPending;
        this.useLegacyNodeProtocolEnvelope = !this.useLegacyNodeProtocolEnvelope;
-@@ -911,6 +1167,13 @@
+@@ -911,6 +1227,13 @@
        return { closeCode: 1008, closeReason: "connect retry" };
      }
      this.nodeProtocolTransitionPending = false;
@@ -2174,7 +2520,7 @@
      const detailCode =
        error instanceof GatewayClientRequestError ? readConnectErrorDetailCode(error.details) : null;
      const shouldRetryWithDeviceToken = shouldRetryGatewayWithDeviceToken({
-@@ -919,9 +1182,18 @@
+@@ -919,9 +1242,18 @@
        explicitToken: this.opts.token?.trim() || undefined,
        storedToken: assembled.storedToken,
        trustedEndpoint: this.isTrustedDeviceRetryEndpoint(),
@@ -2193,7 +2539,7 @@
        this.pendingDeviceTokenRetry = true;
        this.deviceTokenRetryBudgetUsed = true;
        this.protocol.resetReconnectBackoff(250);
-@@ -985,6 +1257,36 @@
+@@ -985,6 +1317,36 @@
        context.connectFailure?.error instanceof GatewayClientRequestError
          ? context.connectFailure.error.details
          : undefined;
@@ -2230,7 +2576,7 @@
      if (context.code === 1013 && context.connectFailure?.reconnectDelayMs !== undefined) {
        return {
          retry: true,
-@@ -1016,6 +1318,7 @@
+@@ -1016,6 +1378,7 @@
        shouldPauseGatewayReconnect({
          details,
          deviceTokenRetryPending: this.pendingDeviceTokenRetry,
@@ -2238,7 +2584,7 @@
          tokenMismatchIsTerminal: true,
          protocolMismatchIsTerminal: !this.nodeProtocolTransitionPending,
          clientVersionMismatchIsTerminal: true,
-@@ -1052,10 +1355,25 @@
+@@ -1052,10 +1415,25 @@
      ) {
        return;
      }
@@ -2266,7 +2612,7 @@
      void this.clearDeviceToken(
        this.opts.deviceIdentity.deviceId,
        observation,
-@@ -1112,6 +1430,12 @@
+@@ -1112,6 +1490,12 @@
    }
  
    private notifyReconnectPaused(info: GatewayReconnectPausedInfo): void {
@@ -2279,7 +2625,7 @@
      try {
        this.opts.onReconnectPaused?.(info);
      } catch (err) {
-@@ -1127,6 +1451,40 @@
+@@ -1127,6 +1511,40 @@
      }
      const message = normalizeGatewayErrorText(error.message);
      return message.includes("invalid connect params") && message.includes(field);
@@ -6235,10 +6581,90 @@
 -}
 --- a/src/cli/node-cli/register.test.ts
 +++ b/src/cli/node-cli/register.test.ts
-@@ -110,6 +110,33 @@
-   });
+@@ -1,5 +1,5 @@
+ import { Command } from "commander";
+-import { beforeEach, expect, it, vi } from "vitest";
++import { afterEach, beforeEach, expect, it, vi } from "vitest";
+ import { encodePairingSetupCode } from "../../pairing/setup-code.js";
+ import { registerNodeCli } from "./register.js";
+ 
+@@ -48,6 +48,9 @@
+   vi.clearAllMocks();
+   mocks.loadNodeHostConfig.mockResolvedValue(null);
+ });
++afterEach(() => {
++  vi.unstubAllEnvs();
++});
+ 
+ it.each([
+   ["worker --desktop-sharing", mocks.runNodeHostWorker, [{ desktopSharingEnabled: true }]],
+@@ -58,10 +61,56 @@
+   expect(target).toHaveBeenCalledWith(...expected);
  });
  
+-it("passes exact-device resume to the node owner", async () => {
+-  await run("run --ephemeral --resume-device device-1");
+-  expectHost({ ephemeral: true, resumeDeviceId: "device-1" });
+-});
++it.each([true, false])(
++  "selects mixed saved Access only for exact-device resume (resume=%s)",
++  async (resume) => {
++    const cloudflareAccess = {
++      clientId: { source: "env" as const, provider: "default", id: "CF_ACCESS_CLIENT_ID" },
++      clientSecret: { source: "file" as const, provider: "access", id: "/secret" },
++    };
++    mocks.loadNodeHostConfig.mockResolvedValue({
++      version: 1,
++      nodeId: "saved-node",
++      gateway: {
++        host: "saved.example",
++        port: 443,
++        tls: true,
++        contextPath: "/node",
++        tlsFingerprint: savedPin,
++        cloudflareAccess,
++      },
++    });
++    vi.stubEnv("CF_ACCESS_CLIENT_ID", "saved-access-client");
++    vi.stubEnv("CF_ACCESS_CLIENT_SECRET", undefined);
++    // The provider resumes with these flags; no generated-service marker is needed.
++    await run(
++      resume ? "run --resume-device device-1 --ephemeral" : "run --ephemeral",
++      "--display-name",
++      "Cloud worker",
++    );
++    if (!resume) {
++      expect(runtime.error).toHaveBeenCalledWith(
++        "CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET must be configured together",
++      );
++      expect(mocks.runNodeHost).not.toHaveBeenCalled();
++      return;
++    }
++    expect(runtime.error).not.toHaveBeenCalled();
++    expectHost({
++      ephemeral: true,
++      resumeDeviceId: "device-1",
++      displayName: "Cloud worker",
++      gatewayHost: "saved.example",
++      gatewayPort: 443,
++      gatewayTls: true,
++      gatewayContextPath: "/node",
++      gatewayTlsFingerprint: savedPin,
++      gatewayCloudflareAccess: cloudflareAccess,
++      gatewayCloudflareAccessFromSaved: true,
++      gatewayCandidates: undefined,
++    });
++  },
++);
+ 
+ it.each([
+   "--commands fixture.read,fixture.list install",
+@@ -108,6 +157,33 @@
+     gatewayBootstrapExpiresAtMs: 1,
+     preferGatewayBootstrapToken: false,
+   });
++});
++
 +it("selects setup renewal without losing expired saved-token reconnect", async () => {
 +  await run("run --pair-or-reconnect", expiredCode);
 +  expect(runtime.error).not.toHaveBeenCalled();
@@ -6264,12 +6690,10 @@
 +it("rejects forced environment auth with setup renewal", async () => {
 +  await expect(run("run --pair-or-reconnect", expiredCode, "--auth-from-env")).rejects.toThrow();
 +  expect(mocks.runNodeHost).not.toHaveBeenCalled();
-+});
-+
+ });
+ 
  it("lets explicit gateway flags override --pair values", async () => {
-   const code = encodePairingSetupCode(pairingPayload);
-   await run(
-@@ -168,3 +195,46 @@
+@@ -168,3 +244,46 @@
      ...(!changed ? { gatewayHost: "10.0.0.2", gatewayPort: 19001 } : {}),
    });
  });
@@ -6362,7 +6786,7 @@
      )
      .addOption(new Option("--parent-stdin").hideHelp())
      .option("--share-installed-apps", "Share installed macOS applications with the Gateway")
-@@ -80,12 +93,13 @@
+@@ -80,21 +93,35 @@
        let pair;
        let gatewayOptions;
        try {
@@ -6380,9 +6804,15 @@
 +              })
 +            : undefined;
          const existing = await loadNodeHostConfig();
-         gatewayOptions = resolveNodeGatewayOptions(opts, existing, pair);
+-        gatewayOptions = resolveNodeGatewayOptions(opts, existing, pair);
++        // Same-device resume selects only the saved binding, including mixed
++        // Access references. The runner revalidates it under profile custody.
++        gatewayOptions =
++          opts.resumeDevice !== undefined
++            ? resolveNodeGatewayOptions({}, existing, undefined, {})
++            : resolveNodeGatewayOptions(opts, existing, pair);
        } catch (error) {
-@@ -93,8 +107,16 @@
+         defaultRuntime.error(error instanceof Error ? error.message : String(error));
          defaultRuntime.exit(1);
          return;
        }
@@ -6401,7 +6831,7 @@
        if (port === null) {
          defaultRuntime.error(formatInvalidPortOption("--port"));
          defaultRuntime.exit(1);
-@@ -107,16 +129,29 @@
+@@ -107,16 +134,29 @@
        }
        const { runNodeHost } = await import("../../node-host/runner.js");
        await runNodeHost({
@@ -6432,7 +6862,7 @@
          ...(opts.ephemeral === true || opts.sessionHost === true ? { forceWorkerRuns: true } : {}),
          ...(opts.ephemeral === true ? { ephemeral: true } : {}),
          nodeId: opts.nodeId,
-@@ -124,6 +159,7 @@
+@@ -124,6 +164,7 @@
          installedAppsSharing: opts.shareInstalledApps,
          desktopSharingEnabled: opts.desktopSharing,
          gatewayAuthFromEnv: opts.authFromEnv,
@@ -8346,10 +8776,33 @@
      options: GatewayClientOptions;
 --- a/src/node-host/runner.test.ts
 +++ b/src/node-host/runner.test.ts
-@@ -119,6 +119,61 @@
+@@ -1,3 +1,5 @@
++import fs from "node:fs";
++import path from "node:path";
+ import { PassThrough } from "node:stream";
+ import { setImmediate } from "node:timers/promises";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+@@ -7,6 +9,7 @@
+ } from "../../packages/gateway-client/src/connect-auth.js";
+ import { ConnectErrorDetailCodes } from "../../packages/gateway-protocol/src/connect-error-details.js";
+ import { createDeferred } from "../../test/helpers/promise.js";
++import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+ import * as oneShotExit from "../cli/one-shot-exit.js";
+ import { getConfigResolutionFacts, setConfigResolutionFacts } from "../config/resolution-facts.js";
+ import { GatewayClientRequestError, type GatewayClientOptions } from "../gateway/client.js";
+@@ -35,6 +38,7 @@
+   privateKeyPem: "private-key-test",
+ };
+ const pairedToken = { role: "node", token: "paired-node-token", scopes: [], updatedAtMs: 1 };
++const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+ const connectAuth = (storedToken: string | undefined = "paired-node-token") =>
+   buildGatewayConnectAuth(selectGatewayConnectAuth({ ...lastCapturedOptions(), storedToken }));
+ const remoteConfig = (
+@@ -118,6 +122,61 @@
+     vi.restoreAllMocks();
      vi.unstubAllEnvs();
    });
- 
++
 +  it.each([
 +    { currentHost: "gateway-a.example", expectsCurrentAccess: true },
 +    { currentHost: "gateway-b.example", expectsCurrentAccess: false },
@@ -8404,11 +8857,10 @@
 +      );
 +    },
 +  );
-+
+ 
    it("retains managed state admission while an external signal closes the runtime", async () => {
      mocks.useFakeRuntime = true;
-     const statePath = resolveOpenClawStateSqlitePath();
-@@ -166,44 +221,49 @@
+@@ -166,44 +225,49 @@
      }
    });
  
@@ -8496,7 +8948,7 @@
  
    it("routes invoke input, cancellation, and connection close to the runtime", async () => {
      mocks.useFakeRuntime = true;
-@@ -235,6 +295,137 @@
+@@ -235,6 +299,137 @@
        expect(mocks.activeRuntime.cancel).toHaveBeenCalledWith("invoke-1");
        expect(mocks.activeRuntime.cancelAll).toHaveBeenCalledOnce();
      });
@@ -8634,11 +9086,11 @@
    });
  
    it("strips remote credentials before resolving local node-host auth", async () => {
-@@ -319,6 +510,114 @@
-       await expect(loadResumableNodeHostGateway()).resolves.toBeUndefined();
+@@ -320,14 +515,163 @@
        expect(mocks.configureNodeHost).not.toHaveBeenCalled();
      });
-+
+ 
+-    it("resumes only the saved device and configuration without shared authentication", async () => {
 +    it.each(["/node", "/different"])(
 +      "captures saved Gateway authorization independently of selected path %s",
 +      async (contextPath) => {
@@ -8746,10 +9198,61 @@
 +        expect(mocks.capturedGatewayClients).toHaveLength(0);
 +      },
 +    );
- 
-     it("resumes only the saved device and configuration without shared authentication", async () => {
++
++    it("resumes the saved device and mixed Access binding without rewriting configuration", async () => {
++      const secretPath = path.join(tempDirs.make("node-resume-access-"), "access.json");
++      fs.writeFileSync(secretPath, JSON.stringify({ secret: "saved-access-secret" }), {
++        mode: 0o600,
++      });
++      const tlsFingerprint = "ab".repeat(32);
++      mocks.loadNodeHostConfig.mockResolvedValue({
++        version: 1,
++        nodeId: "node-test",
++        displayName: "Saved worker",
++        gateway: {
++          ...gateway,
++          tlsFingerprint,
++          cloudflareAccess: {
++            clientId: { source: "env", provider: "default", id: "CF_ACCESS_CLIENT_ID" },
++            clientSecret: { source: "file", provider: "access", id: "/secret" },
++          },
++        },
++      });
++      mocks.getRuntimeConfig.mockReturnValue({
++        secrets: {
++          providers: { access: { source: "file", path: secretPath, mode: "json" } },
++        },
++      });
        mocks.loadDeviceIdentityIfPresent.mockResolvedValue(deviceIdentity);
-@@ -377,34 +676,38 @@
+       vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", "synthetic-shared-token");
+-      await expectStartupTimeout({ ...runOptions, resumeDeviceId: deviceIdentity.deviceId });
++      vi.stubEnv("CF_ACCESS_CLIENT_ID", "saved-access-client");
++      vi.stubEnv("CF_ACCESS_CLIENT_SECRET", undefined);
++      // The runner owns the saved binding even if pre-custody CLI options differ.
++      // Access materialization reads the real file; transport and persistence remain captured.
++      await expectStartupTimeout({
++        ...runOptions,
++        gatewayHost: "other.example",
++        gatewayContextPath: "/other",
++        ephemeral: true,
++        resumeDeviceId: deviceIdentity.deviceId,
++        displayName: "Cloud worker",
++      });
+       expect(mocks.configureNodeHost).not.toHaveBeenCalled();
+       expect(mocks.resolveGatewayCredentialsWithSecretInputs).not.toHaveBeenCalled();
+       expect(lastCapturedOptions()).toMatchObject({
++        url: "wss://paired.example:443/node",
++        tlsFingerprint,
++        edgeAuthHeaders: {
++          "CF-Access-Client-Id": "saved-access-client",
++          "CF-Access-Client-Secret": "saved-access-secret",
++        },
+         deviceIdentity,
++        clientDisplayName: "Saved worker",
+         token: undefined,
+         password: undefined,
+       });
+@@ -377,34 +721,38 @@
          mocks.loadDeviceIdentityIfPresent.mockResolvedValue(deviceIdentity);
        });
  
@@ -8812,7 +9315,7 @@
          ["missing gateway", () => mocks.loadNodeHostConfig.mockResolvedValue(null), {}],
          [
            "mixed gateway scopes",
-@@ -413,6 +716,7 @@
+@@ -413,6 +761,7 @@
              gatewayCandidates: [gateway, { ...gateway, contextPath: "/other-node" }],
            },
          ],
@@ -8820,7 +9323,7 @@
          ["forced pairing", () => {}, { preferGatewayBootstrapToken: true }],
        ])(
          "rejects expired pairing with %s before changing state",
-@@ -422,15 +726,58 @@
+@@ -422,15 +771,58 @@
              "Pairing setup code has expired.",
            );
            expect(mocks.configureNodeHost).not.toHaveBeenCalled();
@@ -8828,8 +9331,8 @@
            expect(mocks.capturedGatewayClients).toHaveLength(0);
          },
        );
-     });
- 
++    });
++
 +    it.each([
 +      { label: "disappears", replacement: null },
 +      { label: "changes", replacement: { ...pairedToken, token: "replacement-node-token" } },
@@ -8869,8 +9372,8 @@
 +      expect(mocks.configureNodeHost).not.toHaveBeenCalled();
 +      expect(mocks.capturedGatewayClients).toHaveLength(0);
 +      expect(mocks.resolveGatewayCredentialsWithSecretInputs).not.toHaveBeenCalled();
-+    });
-+
+     });
+ 
      it("restarts a paired service without inheriting ambient credentials", async () => {
        vi.stubEnv("OPENCLAW_GATEWAY_TOKEN", "unrelated-gateway-token");
        vi.stubEnv("OPENCLAW_GATEWAY_PASSWORD", "unrelated-gateway-password");
@@ -8880,7 +9383,7 @@
  
        expect(connectAuth()).toMatchObject({
          deviceToken: "paired-node-token",
-@@ -439,6 +786,7 @@
+@@ -439,6 +831,7 @@
        });
        expect(mocks.resolveGatewayCredentialsWithSecretInputs).not.toHaveBeenCalled();
        expect(lastCapturedOptions()?.deviceToken).toBeUndefined();
@@ -8888,7 +9391,7 @@
      });
  
      it("uses explicitly requested environment auth instead of the paired token", async () => {
-@@ -467,57 +815,64 @@
+@@ -467,57 +860,64 @@
      });
    });
  
@@ -12176,14 +12679,18 @@
    /** Watch availability; node shutdown awaits the returned cleanup callback. */
 --- a/test/node-host-launcher.test.ts
 +++ b/test/node-host-launcher.test.ts
-@@ -1,5 +1,5 @@
+@@ -1,8 +1,9 @@
  import assert from "node:assert/strict";
 -import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 +import { spawn, type ChildProcess } from "node:child_process";
  import { once } from "node:events";
  import fs from "node:fs/promises";
  import path from "node:path";
-@@ -12,7 +12,7 @@
++import { finished } from "node:stream/promises";
+ import { pathToFileURL } from "node:url";
+ import { build as esbuild } from "esbuild";
+ import { afterEach, beforeAll, describe, expect, it } from "vitest";
+@@ -12,7 +13,7 @@
  import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
  
  const temporary = useAutoCleanupTempDirTracker(afterEach);
@@ -12192,7 +12699,7 @@
  let bootstrapSource: string;
  let launcherClientSource: string;
  
-@@ -79,6 +79,7 @@
+@@ -79,6 +80,7 @@
  import fs from 'node:fs';
  import {
    getManagedNodeHostStatePath,
@@ -12200,7 +12707,7 @@
    isNodeHostLauncherChild,
    notifyNodeHostLauncherReady,
    requestNodeHostLauncherBootstrap,
-@@ -89,6 +90,13 @@
+@@ -89,6 +91,13 @@
  const report = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
  const ready = () => notifyNodeHostLauncherReady(version);
  const restart = () => requestNodeHostLauncherRestart({ runtimeRoot: process.env.TEST_RUNTIME_ROOT, version: process.env.TEST_VERSION });
@@ -12214,7 +12721,47 @@
  async function restartAndExit(failureLabel, successCode = 0, failureCode = 2) {
    try {
      await restart();
-@@ -339,15 +347,18 @@
+@@ -239,11 +248,17 @@
+     child.stdout.on("data", (chunk: Buffer) => {
+       output += chunk.toString();
+     });
+-    const closed = once(child, "close");
++    // A parent-initiated IPC disconnect can omit ChildProcess's close event.
++    // Wait for termination and both output pipes so failure diagnostics are complete.
++    const completed = Promise.all([
++      once(child, "exit"),
++      finished(child.stdout, { cleanup: true }),
++      finished(child.stderr, { cleanup: true }),
++    ]).then(([exit]) => exit);
+     try {
+       const ready = await Promise.race([
+         once(child, "message").then(([message]) => message),
+-        closed.then(([code]) => ({ exitedBeforeHandoff: code })),
++        completed.then(([code]) => ({ exitedBeforeHandoff: code })),
+       ]);
+       expect(ready, stderr).toEqual({
+         type: "openclaw.node.resume-ready",
+@@ -255,14 +270,17 @@
+       } else {
+         child.disconnect();
+       }
+-      const [code] = await closed;
++      const [code] = await completed;
+       expect(code).toBe(handoff === "commit" ? 0 : 1);
+       expect(output).toBe(handoff === "commit" ? '{"entered":true}\n' : "");
++      if (handoff === "disconnect") {
++        expect(stderr).toContain("Saved node resume owner disconnected before handoff.");
++      }
+     } finally {
+       if (child.exitCode === null && child.signalCode === null) {
+         child.kill("SIGKILL");
+       }
+-      await closed;
++      await completed;
+     }
+   },
+ );
+@@ -339,15 +357,18 @@
    it("runs the stored node service command through a live launcher parent", async () => {
      const f = await fixture(`
  await ready();
@@ -12234,7 +12781,7 @@
        runtime: "node",
        runtimePath: process.execPath,
      });
-@@ -363,22 +374,83 @@
+@@ -363,22 +384,83 @@
      expect(child).toMatchObject({
        parentPid: service.child.pid,
        launcherChild: true,
@@ -12327,7 +12874,7 @@
  ${requestUpdate}
  `);
      const candidate = await f.release(`
-@@ -404,7 +476,15 @@
+@@ -404,7 +486,15 @@
      const lines = jsonLines(result.stdout);
      expect(lines[0]).toMatchObject({ ok: true });
      expect(lines[1]).toMatchObject({
@@ -12344,7 +12891,7 @@
        cwd: f.base,
        state: f.state,
        disconnectedState: null,
-@@ -413,6 +493,147 @@
+@@ -413,6 +503,147 @@
      expect(lines[1].first).toBe(lines[1].second);
      await expectSelection(f.current, candidate.prefix);
      await expectMissing(f.lock);
@@ -12492,7 +13039,7 @@
    });
  
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
-@@ -498,7 +719,7 @@
+@@ -498,7 +729,7 @@
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -12501,7 +13048,7 @@
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -516,6 +737,7 @@
+@@ -516,6 +747,7 @@
          version,
          state: f.state,
          argv: ["node", "run"],

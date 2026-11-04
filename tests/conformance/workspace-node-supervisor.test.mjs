@@ -462,7 +462,7 @@ test(
       "node",
       "run",
       "--commands",
-      "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills",
+      "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills,system.which",
     ]);
 
     // Missing and unparsable projections must not replay the earlier setup into
@@ -953,6 +953,12 @@ test(
       "{",
       JSON.stringify({ ...payload, bootstrapToken: "" }),
       JSON.stringify({ ...payload, url: "https://gateway.example.test/node" }),
+      // Native rejects a TLS pin over plaintext; do not retire its healthy child first.
+      JSON.stringify({
+        ...payload,
+        url: "ws://gateway.example.test/node",
+        tlsFingerprint: "ab".repeat(32),
+      }),
       JSON.stringify({
         ...payload,
         url: "wss:gateway.example.test/node",
@@ -1184,6 +1190,12 @@ test(
         { bootstrapToken: "bootstrap" },
         { ...payload, expiresAtMs: "invalid" },
         { ...payload, expiresAtMs: undefined },
+        // A valid pin still requires TLS before the replacement can retire this node.
+        {
+          ...nativeSetup("plaintext-pinned-bootstrap"),
+          url: "ws://gateway.example.test/node",
+          tlsFingerprint: "ab".repeat(32),
+        },
         {
           ...payload,
           url: "wss:gateway.example.test/node",

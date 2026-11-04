@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout } from "node:timers/promises";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
+const require = createRequire("/app/package.json");
+const { WebSocket, WebSocketServer } = require("ws");
 const cli = "/app/openclaw.mjs";
 const commands = [
   "file.fetch",
@@ -15,6 +20,7 @@ const commands = [
   "dir.list",
   "workspace.memory",
   "workspace.skills",
+  "system.which",
 ].sort();
 const state = "/home/node/workspace-node";
 const home = "/home/node/workspace-node-home";
@@ -72,15 +78,99 @@ async function call(method, params = {}) {
   slowestCallMs = Math.max(slowestCallMs, Date.now() - startedAt);
   return JSON.parse(stdout);
 }
-let setup = await call("device.pair.setupCode", {
-  publicUrl: "ws://127.0.0.1:8080",
-  bootstrapProfile: "node",
-  includeQr: false,
-});
+let setup;
 let child;
 let childLog = "";
+let lostHelloDeviceId;
+const rejectedDeviceIds = [];
+const upstreamSockets = new Set();
+// The proxy changes only delivery: the native node signs its own connect and
+// the real Gateway consumes the setup and issues the credential-bearing hello.
+const proxy = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+proxy.on("connection", (downstream) => {
+  const upstream = new WebSocket("ws://127.0.0.1:8080");
+  upstreamSockets.add(upstream);
+  let deviceId;
+  let connectId;
+  const pending = [];
+  const close = () => {
+    downstream.terminate();
+    upstream.terminate();
+  };
+  downstream.on("error", close);
+  upstream.on("error", close);
+  downstream.on("close", () => upstream.terminate());
+  upstream.on("close", () => {
+    upstreamSockets.delete(upstream);
+    downstream.terminate();
+  });
+  upstream.on("open", () => {
+    for (const bytes of pending) {
+      upstream.send(bytes, { binary: false });
+    }
+    pending.length = 0;
+  });
+  downstream.on("message", (bytes) => {
+    const frame = JSON.parse(bytes.toString());
+    if (frame.type === "req" && frame.method === "connect") {
+      deviceId = frame.params.device?.id;
+      connectId = frame.id;
+    }
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.send(bytes, { binary: false });
+    } else if (upstream.readyState === WebSocket.CONNECTING) {
+      pending.push(bytes);
+    }
+  });
+  upstream.on("message", (bytes) => {
+    const frame = JSON.parse(bytes.toString());
+    if (frame.type === "res" && frame.id === connectId) {
+      if (!lostHelloDeviceId && frame.ok && frame.payload?.auth?.deviceToken) {
+        lostHelloDeviceId = deviceId;
+        // Keep the transport open until setupStatus is read: dropping this
+        // frame must not race a successful Gateway write against a TCP reset.
+        return;
+      }
+      if (!frame.ok) {
+        rejectedDeviceIds.push(deviceId);
+      }
+    }
+    if (downstream.readyState === WebSocket.OPEN) {
+      downstream.send(bytes, { binary: false });
+    }
+  });
+});
+await once(proxy, "listening");
+const setupGatewayUrl = `ws://127.0.0.1:${proxy.address().port}`;
+async function waitForTransportObservation(observed, step) {
+  while (!observed()) {
+    remainingMs(step);
+    if (child.exitCode !== null) {
+      throw new Error(`Node exited before ${step}: ${childLog}`);
+    }
+    await setTimeout(100);
+  }
+}
+function readSavedNodeCredentials() {
+  const db = new DatabaseSync(`${state}/client/credentials.sqlite`, { readOnly: true });
+  try {
+    return {
+      deviceId: db
+        .prepare("SELECT device_id FROM device_identities WHERE identity_key = 'primary'")
+        .get()?.device_id,
+      tokenCount: db
+        .prepare("SELECT count(*) AS count FROM device_auth_tokens WHERE role = 'node'")
+        .get().count,
+      originTokenCount: db
+        .prepare("SELECT count(*) AS count FROM gateway_origin_device_tokens WHERE role = 'node'")
+        .get().count,
+    };
+  } finally {
+    db.close();
+  }
+}
 async function stop() {
-  if (!child || child.exitCode !== null) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
     return;
   }
   const exited = once(child, "exit");
@@ -178,14 +268,73 @@ function start() {
   });
 }
 try {
+  setup = await call("device.pair.setupCode", {
+    publicUrl: setupGatewayUrl,
+    bootstrapProfile: "node",
+    includeQr: false,
+  });
+  await publishSetup();
+  start();
+  await waitForTransportObservation(() => lostHelloDeviceId, "the dropped credential hello");
+  // A successful Gateway socket write is not a receipt from the node: the
+  // proxy discarded this hello, but native setupStatus still reports completion.
+  await waitForConfirmedSetup(lostHelloDeviceId);
+  const possessionProbe = (nodeId) =>
+    call("node.invoke", {
+      nodeId,
+      command: "system.which",
+      params: { bins: [] },
+      timeoutMs: 1_000,
+      idempotencyKey: randomUUID(),
+    });
+  // A registered node whose hello was lost cannot answer after durable token
+  // acceptance. Metadata and server-side completion alone are insufficient.
+  await assert.rejects(possessionProbe(lostHelloDeviceId));
+  await stop();
+  await waitForDisconnect(lostHelloDeviceId);
+  const missingCredentials = {
+    deviceId: lostHelloDeviceId,
+    tokenCount: 0,
+    originTokenCount: 0,
+  };
+  assert.deepEqual(readSavedNodeCredentials(), missingCredentials);
+
+  // Retrying the consumed setup with the retained identity cannot manufacture
+  // the lost token. Require a real connect rejection after this process restart.
+  rejectedDeviceIds.length = 0;
+  start();
+  await waitForTransportObservation(
+    () => rejectedDeviceIds.includes(lostHelloDeviceId),
+    "same-device consumed-setup rejection",
+  );
+  await stop();
+  await waitForDisconnect(lostHelloDeviceId);
+  assert.deepEqual(readSavedNodeCredentials(), missingCredentials);
+
+  // This is the runtime portion of operator recovery: stop the consumer before
+  // replacing its setup projection, retaining its identity and workspace. The
+  // controller's stop/delete-Secret/redeploy authorization is outside this proof.
+  setup = await call("device.pair.setupCode", {
+    publicUrl: setupGatewayUrl,
+    bootstrapProfile: "node",
+    includeQr: false,
+  });
   // The production supervisor must enroll the packaged node with its restricted grant.
   await publishSetup();
   start();
-  const nodeId = await waitForNode();
+  const nodeId = await waitForNode(lostHelloDeviceId);
   const completion = await waitForConfirmedSetup(nodeId);
   assert.equal(completion.access, "node");
+  const possession = await possessionProbe(nodeId);
+  assert.equal(possession.ok, true);
+  assert.equal(possession.nodeId, nodeId);
+  assert.equal(possession.command, "system.which");
+  assert.deepEqual(possession.payload, { bins: {} });
   await stop();
   await waitForDisconnect(nodeId);
+  const savedCredentials = readSavedNodeCredentials();
+  assert.equal(savedCredentials.deviceId, nodeId);
+  assert.equal(savedCredentials.tokenCount, 1);
   // Replay the already-redeemed setup code with the same durable node state.
   // Success requires saved-device authentication, not a fresh bootstrap grant.
   start();
@@ -196,7 +345,7 @@ try {
   // Publish a replacement while the old node remains healthy. The supervisor
   // must notice the file and renew enrollment without losing the native identity.
   setup = await call("device.pair.setupCode", {
-    publicUrl: "ws://127.0.0.1:8080",
+    publicUrl: setupGatewayUrl,
     bootstrapProfile: "node",
     includeQr: false,
   });
@@ -218,7 +367,7 @@ try {
 
   // Provider projections must also refresh a running node, not only its next start.
   setup = await call("device.pair.setupCode", {
-    publicUrl: "ws://127.0.0.1:8080",
+    publicUrl: setupGatewayUrl,
     bootstrapProfile: "node",
     includeQr: false,
   });
@@ -242,9 +391,25 @@ try {
       sameIdentityAfterRestart: true,
       sameIdentityAfterReplacementSetup: true,
       stableCompletionPerSetup: true,
+      lostHelloConfirmedWithoutSavedToken: true,
+      consumedSetupRetryRejected: true,
+      sameIdentityAfterPairingRecovery: true,
+      possessionEstablishedAfterRecovery: true,
       slowestCallMs,
     }),
   );
 } finally {
-  await stop();
+  try {
+    await stop();
+  } finally {
+    for (const socket of proxy.clients) {
+      socket.terminate();
+    }
+    for (const socket of upstreamSockets) {
+      socket.terminate();
+    }
+    await new Promise((resolve, reject) =>
+      proxy.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 }

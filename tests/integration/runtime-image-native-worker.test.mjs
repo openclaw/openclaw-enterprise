@@ -462,7 +462,7 @@ process.exit(r.status);`,
   );
 
   test(
-    "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
+    "runtime image recovers a lost workspace node hello and reconnects with saved credentials",
     imageTestOptions,
     async (t) => {
       // The Kubernetes entrypoint admits the workspace command grant before pairing.
@@ -477,7 +477,8 @@ process.exit(r.status);`,
         "utf8",
       );
       // Only the unrelated Codex sibling is inert. Native setup, the node, Gateway,
-      // and the exported production supervisor all execute without interception.
+      // and the production supervisor execute their real logic; the fixture's
+      // transport proxy drops one credential-bearing hello before node delivery.
       const supervisor = `
 const cp = require("node:child_process");
 const originalSpawn = cp.spawn;
@@ -501,7 +502,7 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
       );
       // The fixture bounds every CLI call and wait by one deadline 10 s inside this
       // exec timeout, so a hung call fails with its own name.
-      const execTimeoutMs = 240_000 * imageSmokeTimeoutMultiplier;
+      const execTimeoutMs = 360_000 * imageSmokeTimeoutMultiplier;
       const { stdout } = await runDocker(
         [
           "exec",
@@ -517,7 +518,11 @@ ${AGENT_WITH_NODE_ENTRYPOINT}`;
       assert.equal(result.sameIdentityAfterRestart, true);
       assert.equal(result.sameIdentityAfterReplacementSetup, true);
       assert.equal(result.stableCompletionPerSetup, true);
-      assert.equal(result.commands.length, 7);
+      assert.equal(result.lostHelloConfirmedWithoutSavedToken, true);
+      assert.equal(result.consumedSetupRetryRejected, true);
+      assert.equal(result.sameIdentityAfterPairingRecovery, true);
+      assert.equal(result.possessionEstablishedAfterRecovery, true);
+      assert.equal(result.commands.length, 8);
       t.diagnostic(`slowest gateway call: ${result.slowestCallMs} ms`);
     },
   );

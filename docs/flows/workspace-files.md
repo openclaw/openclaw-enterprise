@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
 updated: 2026-11-04
-last_updated_session: authoring-run/689059e8-4902-4d70-b7c0-56353dcc9ca3
+last_updated_session: authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728
 ---
 
 # Agent Workspace Files Flow
@@ -200,16 +200,15 @@ owns route ownership across preparation, activation, stop and retirement.
 `prepareWorkspaceNode` uses
 `gateway/node-enrollment-client.ts:createGatewayNodeEnrollment` after Gateway
 readiness. An Agent-owned Secret per Harness kind stores setup and device identity.
-Preparation reuses recorded devices or recovers setup completion before renewing
-an expired code. `workspaceNodeEnrolled` requires the current revision's enrollment
-marker, set only after connection; recording a disconnected device does not
-suffice. [Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
-owns delivery and `--pair-or-reconnect` authentication rules. Dedicated native
-provisioning requires a Sandbox; unpaired expired setup waits for Gateway before
-calling its provider.
+Preparation reuses verified devices or retains setup receipts before renewal.
+`confirmWorkspaceNodeSetup` persists `setupReceiptDeviceId` before a fallible
+`system.which { bins: [] }` probe. Only an authenticated response promotes
+`deviceId`; expired status cannot authorize new credentials. Readiness records
+the current revision after proof. [Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+owns authentication and recovery. Native provisioning requires a Sandbox;
+unpaired expired setup waits for Gateway.
 
-- Before pairing, Gateway admits `file.fetch`, `file.stat`, `file.write`,
-  `file.create`, `dir.list`, `workspace.memory`, and `workspace.skills` for readiness,
+- Gateway admits file, workspace and `system.which` commands before pairing,
   preserving explicit denies.
 - `addNodeEnrollmentState` retains Agent-scoped identity until Agent deletion in
   the Harness PVC's `/home/node/.openclaw-node` (`0700`, nonroot initializer).
@@ -217,13 +216,13 @@ calling its provider.
   preserving edits, then supervises Codex and node under `tini`. Setup failure
   holds; stop waits for setup. Codex starts on managed PATH; node awaits complete
   setup. Neither receives OCC's key.
-- That supervisor and `NATIVE_WORKER_ENTRYPOINT` poll setup files every second.
-  Changed complete content stops
-  only the node or `connect` group: TERM, then KILL after five seconds. Replacement
-  awaits child exit, preserving identity. Equivalent, missing, unreadable or
-  malformed files do not trigger restarts. Outside renewal, native exit ends its
-  wrapper; operator stop cancels renewal with eight-second grace.
-  Environment-delivered setup remains a startup snapshot.
+- Both supervisors poll setup files. Validated changes replace only the node
+  group after exit; malformed inputs preserve it. Operator stop cancels renewal.
+  [Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+  defines timing and validation.
+- The native renewal bridge returns bounded `NODE_NOT_READY` responses for
+  invocations received before credential verification, permitting Gateway retry
+  without premature execution.
 - With the status proxy, a Codex Gateway hot-loads `file-transfer` from an
   Agent-owned ConfigMap, replacing Codex's plugin runtime. Activation requires
   OpenClaw's report and an active plugin. The wrapper polls `plugins.list` through
@@ -373,6 +372,8 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 23:20: Require credential possession before enrollment. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
 
 - 2026-11-04 10:02: Document setup renewal with retained identity. (authoring-run/689059e8-4902-4d70-b7c0-56353dcc9ca3 - b927adfdaef17693496f076bfedf36afe0fccf7d)
 

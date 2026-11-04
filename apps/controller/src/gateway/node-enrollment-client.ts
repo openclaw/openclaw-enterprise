@@ -5,6 +5,7 @@ import {
   type GatewayClientOptions,
 } from "@openclaw/gateway-client";
 import { setTimeout as delay } from "node:timers/promises";
+import { randomUUID } from "node:crypto";
 import { TransientDependencyError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
@@ -22,9 +23,10 @@ export interface NodeSetup {
 export interface GatewayNodeEnrollment {
   createSetup(url: string, nodeUrl: string, signal: AbortSignal): Promise<NodeSetup>;
   /**
-   * Reads the setup's completion and whether its node is connected. With
-   * `waitMs`, keeps one connection and re-reads until the node is connected or
-   * the time is up, so a node that pairs a moment later is seen at once.
+   * Reads the setup receipt before any node lookup, so its owner can persist
+   * the consumed setup's identity before probing credential possession. With
+   * `waitMs`, keeps one connection and re-reads until either receipt appears
+   * or the time is up.
    * `stopWaiting` ends the wait early, after at least one reading, when it
    * returns true between readings.
    */
@@ -34,6 +36,7 @@ export interface GatewayNodeEnrollment {
     signal: AbortSignal,
     options?: NodeSetupObserveOptions,
   ): Promise<NodeSetupObservation | undefined>;
+  /** Requires the node's supported commands and a response after its accepted hello. */
   isConnected(url: string, deviceId: string, signal: AbortSignal): Promise<boolean>;
 }
 
@@ -44,7 +47,8 @@ export interface NodeSetupObserveOptions {
 
 export interface NodeSetupObservation {
   readonly deviceId: string;
-  readonly connected: boolean;
+  /** Native delivery status describes the server write, not client credential custody. */
+  readonly delivery: "confirmed" | "uncertain";
 }
 
 type GatewayRequest = (
@@ -56,6 +60,7 @@ type GatewayRequest = (
 // One status read per interval while a caller waits for a node to pair.
 export const NODE_SETUP_POLL_MS = 250;
 const GATEWAY_CONNECT_BUDGET_MS = 10_000;
+const NODE_POSSESSION_PROBE_MS = 1_000;
 
 type GatewayHello = Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0];
 
@@ -184,9 +189,9 @@ export function createGatewayNodeEnrollment(
 }
 
 /**
- * Setup status and node presence over one Gateway connection. Without a wait
- * this is a single read. With one, it re-reads every NODE_SETUP_POLL_MS until
- * the node is connected or `waitMs` has passed, and returns the last reading.
+ * Setup status over one Gateway connection. Without a wait this is a single
+ * read. With one, it re-reads every NODE_SETUP_POLL_MS until
+ * a receipt appears or `waitMs` has passed, and returns the last reading.
  * `stopWaiting`, asked between readings, ends the wait early the same way.
  * Every reading gets the same validation; waiting never relaxes it.
  */
@@ -198,40 +203,36 @@ export async function observeNodeSetup(
   stopWaiting?: () => Promise<boolean>,
 ): Promise<NodeSetupObservation | undefined> {
   const deadline = Date.now() + waitMs;
-  let deviceId: string | undefined;
   for (;;) {
     signal.throwIfAborted();
-    if (deviceId === undefined) {
-      const status = asRecord(await request("device.pair.setupStatus", { setupId }, { signal }));
-      if (status === undefined) {
-        throw new Error("The Gateway returned an invalid setup status.");
-      }
-      // A delivery-uncertain handoff may still have reached the node. Live
-      // presence is observed separately; setup status alone is not readiness.
-      // Validate both present receipts before preferring confirmed completion.
-      // Malformed evidence must not be mistaken for an unredeemed setup.
-      for (const field of ["completion", "deliveryUncertain"] as const) {
-        if (!Object.hasOwn(status, field)) {
-          continue;
-        }
-        const completion = asRecord(status[field]);
-        if (
-          completion === undefined ||
-          completion.setupId !== setupId ||
-          completion.access !== "node" ||
-          !isWorkspaceNodeDeviceId(completion.deviceId)
-        ) {
-          throw new Error("The Gateway returned an invalid node setup completion.");
-        }
-        deviceId ??= completion.deviceId;
-      }
+    const status = asRecord(await request("device.pair.setupStatus", { setupId }, { signal }));
+    signal.throwIfAborted();
+    if (status === undefined) {
+      throw new Error("The Gateway returned an invalid setup status.");
     }
-    const observation =
-      deviceId === undefined
-        ? undefined
-        : { deviceId, connected: await isConnected(request, deviceId, signal) };
+    // Validate both present receipts before preferring confirmed completion.
+    // Even a confirmed server write can precede the client's hello receipt.
+    let observation: NodeSetupObservation | undefined;
+    for (const field of ["completion", "deliveryUncertain"] as const) {
+      if (!Object.hasOwn(status, field)) {
+        continue;
+      }
+      const completion = asRecord(status[field]);
+      if (
+        completion === undefined ||
+        completion.setupId !== setupId ||
+        completion.access !== "node" ||
+        !isWorkspaceNodeDeviceId(completion.deviceId)
+      ) {
+        throw new Error("The Gateway returned an invalid node setup completion.");
+      }
+      observation ??= {
+        deviceId: completion.deviceId,
+        delivery: field === "completion" ? "confirmed" : "uncertain",
+      };
+    }
     if (
-      observation?.connected === true ||
+      observation !== undefined ||
       Date.now() + NODE_SETUP_POLL_MS > deadline ||
       (stopWaiting !== undefined && (await stopWaiting()))
     ) {
@@ -252,23 +253,78 @@ async function isConnected(
   deviceId: string,
   signal: AbortSignal,
 ): Promise<boolean> {
+  signal.throwIfAborted();
   const node = asRecord(await request("node.describe", { nodeId: deviceId }, { signal }));
+  signal.throwIfAborted();
   if (node?.nodeId !== deviceId || typeof node.connected !== "boolean") {
     throw new Error("The Gateway returned an invalid node observation.");
   }
+  if (!node.connected) {
+    return false;
+  }
   const commands = Array.isArray(node.commands) ? node.commands : [];
-  return (
-    node.connected &&
-    [
-      "file.fetch",
-      "file.stat",
-      "file.write",
-      "file.create",
-      "dir.list",
-      "workspace.memory",
-      "workspace.skills",
-    ].every((command) => commands.includes(command))
-  );
+  const missing = [
+    "file.fetch",
+    "file.stat",
+    "file.write",
+    "file.create",
+    "dir.list",
+    "workspace.memory",
+    "workspace.skills",
+    "system.which",
+  ].filter((command) => !commands.includes(command));
+  if (missing.length > 0) {
+    throw new Error(`The workspace node is missing required commands: ${missing.join(", ")}.`);
+  }
+  // Native nodes dispatch only after accepting hello and reading back their
+  // saved credential. An empty lookup proves that round trip without depending
+  // on a workspace path, reading a file, or executing a program.
+  const probeBudget = AbortSignal.timeout(NODE_POSSESSION_PROBE_MS);
+  const probeSignal = AbortSignal.any([signal, probeBudget]);
+  let response: unknown;
+  try {
+    response = await request(
+      "node.invoke",
+      {
+        nodeId: deviceId,
+        command: "system.which",
+        params: { bins: [] },
+        timeoutMs: NODE_POSSESSION_PROBE_MS,
+        idempotencyKey: randomUUID(),
+      },
+      { signal: probeSignal },
+    );
+  } catch (error) {
+    signal.throwIfAborted();
+    if (probeBudget.aborted) {
+      return false;
+    }
+    const details = asRecord(asRecord(error)?.details);
+    const nodeError = asRecord(details?.nodeError);
+    if (
+      error instanceof GatewayClientRequestError &&
+      error.code === "UNAVAILABLE" &&
+      ["TIMEOUT", "NOT_CONNECTED", "DISCONNECTED", "NODE_NOT_READY", "ROUTE_CHANGED"].includes(
+        String(details?.code ?? nodeError?.code),
+      )
+    ) {
+      return false;
+    }
+    throw error;
+  }
+  signal.throwIfAborted();
+  const result = asRecord(response);
+  const bins = asRecord(asRecord(result?.payload)?.bins);
+  if (
+    result?.ok !== true ||
+    result.nodeId !== deviceId ||
+    result.command !== "system.which" ||
+    bins === undefined ||
+    Object.keys(bins).length !== 0
+  ) {
+    throw new Error("The Gateway returned an invalid workspace node possession response.");
+  }
+  return true;
 }
 
 async function withGateway<T>(

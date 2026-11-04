@@ -124,36 +124,38 @@ from the default StorageClass, mounted only by its Harness:
 | `codex-sessions`                             | `/home/node/.codex/sessions`         |
 | `workspace-node-<agent-hash>-<harness-hash>` | `/home/node/.openclaw-node`          |
 
-The nonroot init container creates each subpath as uid 1000 with mode `0700`
-before the kubelet mounts it. Claims from the first release hold root-owned
-`workspace` and `generated-images` directories the kubelet created; the init
-renames such a directory aside, recreates it and moves its entries back. A name
-the new directory already has stays in `.<subpath>.kubelet-created`.
+The nonroot initializer creates each subpath as uid 1000 with mode `0700`.
+For existing root-owned `workspace` and `generated-images` directories, it
+recreates ownership and moves entries back; conflicting names remain in
+`.<subpath>.kubelet-created`.
 
 Node identity survives replacement. Before setup or connection,
 the Harness runs [Gateway](#gateway-storage) Doctor with the node environment
 for older databases; a still-old database holds at `state-migration`.
 
-Setup expires after ten minutes. Preparation preserves recorded devices or recovers
-completion before renewal. `--pair-or-reconnect` permits initial enrollment or
-renewal with the same saved Gateway scope, normalized TLS pin and device.
-Fresh setup comes first; only `AUTH_BOOTSTRAP_TOKEN_INVALID` permits one saved-token
-retry. Expired codes need validated saved credentials; retained tokens without
-bindings, or changed bindings, fail before authentication. Initial enrollment saves each validated endpoint before authentication; renewal
-preserves existing bindings. Readiness requires connection and enrollment recorded for the current Agent revision.
+Setup expires after ten minutes. `--pair-or-reconnect` first tries fresh setup;
+only `AUTH_BOOTSTRAP_TOKEN_INVALID` permits a saved-token retry. Expired codes
+require saved credentials bound to the same device, Gateway scope and TLS pin.
+Initial enrollment saves the endpoint; renewal preserves it.
 
-Modes that allow switching retire the local credential before saving or authenticating
-a changed Gateway scope or TLS pin. Failed switches after retirement require explicit pairing; retirement failure
-blocks switching. Same-binding reconnects preserve
-credentials; all modes preserve identity. Saved Cloudflare Access requires matching
-WebSocket scope and TLS pin.
+Both Gateway receipt types record `setupReceiptDeviceId` before further checks.
+Only an authenticated `system.which` response promotes it to `deviceId`;
+`{ bins: [] }` performs no filesystem lookup or execution. Explicit command denies
+still apply. Registry presence and local hello writes do not prove possession.
+Missing status cannot authorize fresh credentials. If possession remains
+unconfirmed after setup expiry, follow the recovery below. Readiness also records
+the current revision.
+
+Modes permitting endpoint changes retire credentials before switching; failed
+retirement blocks switching. All modes preserve identity. Exact-device resume
+uses saved endpoint and Cloudflare Access settings without ambient overrides or
+configuration writes. Saved Access requires matching WebSocket scope and TLS pin.
 
 Each local profile permits one node runner; [lock recovery](../../../guides/topics/agent-troubleshoot.md#deployment-is-blocked-or-has-no-selected-version)
 never relies on age.
 
-Deployment-backed Codex mounts only `setupCode` from an optional Secret at
-`/run/openclaw-node-setup`. Codex starts before enrollment; the node awaits complete
-setup. Preparation annotates the Pod after Secret writes to refresh kubelet's
+Deployment-backed Codex mounts only `setupCode` at `/run/openclaw-node-setup`.
+Codex starts before enrollment; the node awaits complete setup. Preparation annotates the Pod after Secret writes to refresh kubelet's
 projection in about two seconds instead of one minute; tenant Pod `patch`
 permission is required.
 
@@ -164,7 +166,7 @@ seconds. Later starts use the saved token.
 
 Supervisors poll Codex files and native-worker provider envelopes every second.
 Files and encoded setup are capped at 65,536 bytes each; Gateway URLs require
-`ws://`/`wss://` authority.
+`ws://`/`wss://` authority. A TLS fingerprint requires `wss://`.
 Changed complete setup replaces only the node or `connect` process group: TERM,
 then KILL after five seconds, awaiting child exit. Equivalent, missing, unreadable
 or malformed projections do not trigger restarts. Initial incomplete envelopes
@@ -177,11 +179,11 @@ expired setup only from the same owned Secret with a recorded device; native
 code validates token, identity, scope and pin. Unpaired expired setup waits
 for Gateway before provider provisioning.
 
-Delete the node Secret only for confirmed pairing loss, not missing exposure.
-For pairing loss in a native Sandbox with withdrawn diagnostics,
-[stop the Agent](../../agents/deployment.md#stop-and-resume), wait for shutdown,
-then delete the Secret and deploy a new revision. Preserve node identity and the
-Harness PVC.
+For pairing loss or unconfirmed credential possession after setup expiry,
+[stop the Agent](../../agents/deployment.md#stop-and-resume) and wait for shutdown.
+Delete only the Agent-owned node Secret named in the failure, then deploy a new
+revision. Preserve node identity and the Harness PVC. Missing diagnostic exposure
+alone does not justify deleting credentials.
 Older per-revision installations enroll an Agent device at first replacement;
 retiring earlier revisions deletes their node Secrets.
 Gateway history stays on its private claim; resuming the original Codex thread

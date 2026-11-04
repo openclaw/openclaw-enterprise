@@ -3927,6 +3927,17 @@ for (const harnessId of ["codex", "openclaw"]) {
           expected: /workspace node setup TLS fingerprint is invalid/,
         }),
       ),
+      ...[false, true].map((recorded) => ({
+        name: `plaintext URL with a TLS pin ${recorded ? "with" : "without"} a recorded device`,
+        setup: {
+          ...expiredSetup,
+          url: "ws://gateway.example.test/node",
+          tlsFingerprint: "ab".repeat(32),
+          expiresAtMs: recorded ? expiredSetup.expiresAtMs : Date.now() + 600_000,
+        },
+        deviceId: recorded ? recordedDevice : undefined,
+        expected: /workspace node setup TLS fingerprint requires a wss endpoint/,
+      })),
       {
         name: "unbounded expiry with a recorded device",
         setup: { ...expiredSetup, expiresAtMs: null },

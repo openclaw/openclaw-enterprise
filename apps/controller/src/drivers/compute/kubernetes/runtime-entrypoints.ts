@@ -3145,7 +3145,7 @@ function configureGateway(peerStatus) {
     const commands = ((config.gateway ??= {}).nodes ??= {}).commands ??= {};
     commands.allow = [...new Set([
       ...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create",
-      "dir.list", "workspace.memory", "workspace.skills",
+      "dir.list", "workspace.memory", "workspace.skills", "system.which",
       ...(managedMcpGatewayTools.length ? ["mcp.tools.call.v1"] : []),
     ])];
     if (environmentWorkspaceNodeId !== undefined || workspaceNodeBindingPath !== undefined) {
@@ -4526,7 +4526,7 @@ function completeSetupCode(payload) {
     ) return undefined;
     let tlsFingerprint;
     if (payload.tlsFingerprint !== undefined) {
-      if (typeof payload.tlsFingerprint !== "string") return undefined;
+      if (url.protocol !== "wss:" || typeof payload.tlsFingerprint !== "string") return undefined;
       const fingerprint = payload.tlsFingerprint.trim().replace(/^sha256:/iu, "");
       if (!/^[a-f0-9]{64}$/iu.test(fingerprint) && !/^(?:[a-f0-9]{2}:){31}[a-f0-9]{2}$/iu.test(fingerprint)) return undefined;
       tlsFingerprint = fingerprint.replaceAll(":", "").toLowerCase();
@@ -4783,7 +4783,7 @@ delete codexEnv.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeDisplayName = process.env.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeCommands = [
   ...(nodeDisplayName ? ["--display-name", nodeDisplayName] : []),
-  "--commands", "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills",
+  "--commands", "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills,system.which",
 ];
 // The kubelet swaps Secret volume contents atomically, but an empty, truncated
 // or otherwise undecodable code is treated as absent and never started.

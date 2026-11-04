@@ -1093,6 +1093,11 @@ async function harnessRuntimeCredentials(
       "The workspace node setup URL must be an exact ws or wss endpoint without credentials, query, or fragment.",
     );
   }
+  if (payload.tlsFingerprint !== undefined && endpoint.protocol !== "wss:") {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The workspace node setup TLS fingerprint requires a wss endpoint.",
+    );
+  }
   // TODO(openshell-workspace-node-proof-binding): Return the bootstrap token to
   // OpenShell credential storage after OpenClaw can sign a stable public binding
   // instead of the token value that OpenShell rewrites on the WebSocket.

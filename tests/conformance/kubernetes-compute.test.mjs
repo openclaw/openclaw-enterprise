@@ -730,9 +730,12 @@ test("preparation records an expired setup's redeemed device and renews only unr
             setups.push("setup");
             return { setupId: "setup-b", setupCode: "code-b", expiresAtMs: Date.now() + 600_000 };
           },
+          async isConnected() {
+            return true;
+          },
           async observeSetup(_url, setupId) {
             observed.push(setupId);
-            return redeemed ? { deviceId, connected: false } : undefined;
+            return redeemed ? { deviceId, connected: false, delivery: "confirmed" } : undefined;
           },
         },
       },
@@ -759,8 +762,10 @@ test("preparation records an expired setup's redeemed device and renews only unr
           return structuredClone(secret);
         },
         async replaceNamespacedSecret(request) {
+          assert.equal(request.body.metadata.resourceVersion, secret.metadata.resourceVersion);
           writes.push(request.body.metadata.resourceVersion);
           secret = structuredClone(request.body);
+          secret.metadata.resourceVersion = String(Number(secret.metadata.resourceVersion) + 1);
         },
       },
       networking: {
@@ -774,9 +779,9 @@ test("preparation records an expired setup's redeemed device and renews only unr
       name,
     });
     assert.deepEqual(observed, ["setup-a"]);
-    assert.deepEqual(writes, ["3"]);
+    assert.deepEqual(writes, redeemed ? ["3", "4"] : ["3"]);
     assert.equal(setups.length, redeemed ? 0 : 1);
-    assert.deepEqual(secret.metadata, metadata);
+    assert.deepEqual(secret.metadata, { ...metadata, resourceVersion: redeemed ? "5" : "4" });
     const data = Object.fromEntries(
       Object.entries(secret.data).map(([key, value]) => [
         key,
@@ -798,7 +803,7 @@ test("preparation records an expired setup's redeemed device and renews only unr
       name,
     });
     assert.deepEqual(observed, ["setup-a"]);
-    assert.deepEqual(writes, ["3"]);
+    assert.deepEqual(writes, redeemed ? ["3", "4"] : ["3"]);
     assert.equal(setups.length, redeemed ? 0 : 1);
   }
 });
@@ -1069,6 +1074,10 @@ function dedicatedFirstDeployFixture({
     connected: false,
     // A retained setup receipt can name a device that is currently disconnected.
     redeemedDeviceId: undefined,
+    setupDelivery: "confirmed",
+    // Registry presence does not imply a successful authenticated invocation.
+    possessionAvailable: undefined,
+    possessionDevices: [],
     enrollmentAvailable: true,
     // The node OpenClaw reports applied through the wrapper's runtime status,
     // or the reason it has not.
@@ -1123,7 +1132,11 @@ function dedicatedFirstDeployFixture({
           // Like the client: one connection, re-read until connected or the wait ends.
           state.observeWaits.push(options?.waitMs ?? 0);
           if (state.redeemedDeviceId !== undefined) {
-            return { deviceId: state.redeemedDeviceId, connected: state.connected };
+            return {
+              deviceId: state.redeemedDeviceId,
+              connected: state.connected,
+              delivery: state.setupDelivery,
+            };
           }
           if (clock !== undefined && state.stepObservations) {
             // Like the client, poll by poll: read, then ask whether other Work
@@ -1138,7 +1151,9 @@ function dedicatedFirstDeployFixture({
                 clock.now + 250 > deadline ||
                 (options?.stopWaiting !== undefined && (await options.stopWaiting()))
               ) {
-                return state.connected ? { deviceId: "node-1", connected: true } : undefined;
+                return state.connected
+                  ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
+                  : undefined;
               }
               clock.now += 250;
             }
@@ -1155,7 +1170,9 @@ function dedicatedFirstDeployFixture({
             } else if (!state.connected) {
               clock.now = deadline;
             }
-            return state.connected ? { deviceId: "node-1", connected: true } : undefined;
+            return state.connected
+              ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
+              : undefined;
           }
           const deadline = Date.now() + (options?.waitMs ?? 0);
           while (!state.connected && Date.now() < deadline) {
@@ -1165,10 +1182,13 @@ function dedicatedFirstDeployFixture({
             signal.throwIfAborted();
             await new Promise((resolve) => setTimeout(resolve, 2));
           }
-          return state.connected ? { deviceId: "node-1", connected: true } : undefined;
+          return state.connected
+            ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
+            : undefined;
         },
-        async isConnected() {
-          return state.connected;
+        async isConnected(_url, deviceId) {
+          state.possessionDevices.push(deviceId);
+          return state.possessionAvailable ?? state.connected;
         },
       },
     },
@@ -2820,6 +2840,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
     expiresAtMs: String(Date.now() - 60_000),
   });
   recovered.state.redeemedDeviceId = "node-1";
+  recovered.state.possessionAvailable = true;
   assert.equal((await recovered.prepare()).ready, false);
   assert.equal(provisions.length, 0);
   recovered.markReady(recovered.gatewayName);
@@ -2830,6 +2851,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
   assert.equal(recovered.objects.get(recoveredSecretKey).data.enrolledRevisionId, undefined);
   assert.equal(provisions.length, 1);
   assert.equal(provisions[0].workspaceNodeEnrolled, false);
+  recovered.state.possessionAvailable = undefined;
   recovered.state.providerPod = {
     apiVersion: "v1",
     kind: "Pod",
@@ -2861,6 +2883,84 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
   assert.equal(withdrawals.length, 1);
   assert.equal(observations.length, 1);
+
+  for (const { expired, delivery } of [
+    { expired: true, delivery: "confirmed" },
+    { expired: true, delivery: "uncertain" },
+    { expired: false, delivery: "confirmed" },
+    { expired: false, delivery: "uncertain" },
+  ]) {
+    // A Gateway can register a connected node before its credential-bearing
+    // hello reaches the client. Neither preparation nor readiness may promote
+    // that uncertain receipt into an enrolled device.
+    const uncertain = dedicatedFirstDeployFixture({ sandboxDriver, revision: nativeRevision });
+    const uncertainKey = seedNodeSecret(uncertain, {
+      setupId: "setup-uncertain",
+      setupCode: "uncertain-setup-code",
+      expiresAtMs: String(expired ? 1 : Date.now() + 60_000),
+    });
+    uncertain.state.redeemedDeviceId = "uncertain-node";
+    uncertain.state.setupDelivery = delivery;
+    uncertain.state.connected = true;
+    uncertain.state.possessionAvailable = false;
+    assert.equal((await uncertain.prepare()).ready, false);
+    uncertain.markReady(uncertain.gatewayName);
+    if (!expired) {
+      uncertain.state.providerPod = {
+        apiVersion: "v1",
+        kind: "Pod",
+        metadata: {
+          name: "native-harness",
+          namespace: uncertain.namespace,
+          labels: provisions.at(-1).requirements.labels,
+        },
+        status: { conditions: [{ type: "Ready", status: "True" }] },
+      };
+    }
+    if (expired) {
+      await assert.rejects(
+        uncertain.prepare(),
+        /credential possession could not be confirmed.*Stop the Agent/,
+      );
+    } else {
+      assert.equal((await uncertain.prepare()).ready, false);
+    }
+    const retained = structuredClone(uncertain.objects.get(uncertainKey));
+    assert.equal(decode(retained.data.setupReceiptDeviceId), "uncertain-node");
+    assert.equal(retained.data.deviceId, undefined);
+    assert.equal(retained.data.enrolledRevisionId, undefined);
+    assert.equal(decode(retained.data.setupCode), "uncertain-setup-code");
+    assert.equal(uncertain.state.setupCalls, 0);
+
+    // Native status retention can elapse. Its absence must not erase the
+    // persisted handoff or silently issue credentials to another device.
+    uncertain.state.redeemedDeviceId = undefined;
+    uncertain.state.connected = false;
+    if (expired) {
+      await assert.rejects(uncertain.prepare(), /credential possession could not be confirmed/);
+    } else {
+      assert.equal((await uncertain.prepare()).ready, false);
+    }
+    assert.deepEqual(uncertain.objects.get(uncertainKey), retained);
+    assert.equal(uncertain.state.setupCalls, 0);
+    // Later status cannot redirect the stored identity. The probe remains
+    // bound to the original device even after the short-lived receipt is gone.
+    uncertain.state.setupDelivery = "confirmed";
+    uncertain.state.redeemedDeviceId = "another-node";
+    uncertain.state.possessionAvailable = true;
+    await uncertain.prepare();
+    assert.ok(uncertain.state.possessionDevices.every((id) => id === "uncertain-node"));
+    const confirmed = uncertain.objects.get(uncertainKey);
+    assert.equal(confirmed.metadata.uid, retained.metadata.uid);
+    assert.equal(confirmed.data.setupReceiptDeviceId, undefined);
+    assert.equal(decode(confirmed.data.deviceId), "uncertain-node");
+    if (expired) {
+      assert.equal(confirmed.data.enrolledRevisionId, undefined);
+    } else {
+      assert.equal(decode(confirmed.data.enrolledRevisionId), uncertain.revision.id);
+    }
+    assert.equal(uncertain.state.setupCalls, 0);
+  }
 });
 
 // Findings 1669 and 1672: a revision that gets no preparation pass (already active at an
@@ -4535,7 +4635,9 @@ test("dedicated replacement starts a candidate Gateway when the predecessor cann
           ) {
             throw new Error("gateway connection unavailable");
           }
-          return connected ? { deviceId: "node-1", connected: true } : undefined;
+          return connected
+            ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
+            : undefined;
         },
         async isConnected() {
           return connected;
@@ -19785,7 +19887,9 @@ function workspaceSetupFixture(
           return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
         },
         async observeSetup() {
-          return state.ready ? { deviceId: "node-1", connected: true } : undefined;
+          return state.ready
+            ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
+            : undefined;
         },
         async isConnected() {
           return state.ready;
