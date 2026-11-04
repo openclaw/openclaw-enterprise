@@ -116,6 +116,27 @@ The Driver returns `accountEmail` only when that validated ID token contains a
 nonempty `email` string and the boolean claim `email_verified` is `true`.
 When either condition is unmet, the connection can complete without `accountEmail`.
 
+## Plugin credential slots
+
+A saved Agent plugin may offer **Connect and attach to this Agent** for a named
+credential slot. The Plugin Driver can implement
+`credentials.connectionSlot(selections, pluginId, slotId)` for this flow. It
+returns the selected release, the slot's current source ID if bound, and two
+operations. One checks whether a public template version can produce a compatible
+credential. The other binds a completed source to the slot and returns the updated
+plugin selection. The Driver owns its policy format and checks the resulting
+source with the same rules it uses for saved accounts. Without this capability,
+OCC offers only the supported saved-account workflow.
+
+At start, OCC checks template scope, Namespace credential creation authority,
+Agent update authority, selected release, slot, and expected current binding.
+It records that intent with the private attempt. After saving the account and
+granting its owner access, OCC checks current authority and compares the saved
+selection again. It attaches the source and updates that slot in one transaction
+after the ordinary Plugin Driver accepts the completed source. A changed
+selection or lost access leaves the saved account available to its owner. The
+user can retry attachment without repeating provider consent.
+
 ## IAM Driver
 
 This extension describes optional grants on an individual template. The scoped
