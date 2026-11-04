@@ -4191,11 +4191,18 @@ function renderAgentForm(
           credentialRegistration ??= {
             name: `${body.name.slice(0, 150)} model ${provisioningRequestId}`,
             type: type.type,
-            config: Object.fromEntries(
-              [...sourceConfigurationInputs]
-                .filter(([, input]) => input.value.trim() !== "")
-                .map(([name, input]) => [name, input.value]),
-            ),
+            config: {
+              ...Object.fromEntries(
+                [...sourceConfigurationInputs]
+                  .filter(([, input]) => input.value.trim() !== "")
+                  .map(([name, input]) => [name, input.value]),
+              ),
+              // The custom endpoint the creator typed is the authorization for this key; a
+              // separate destination input cannot disagree with the Secret it just created.
+              ...(modelSourceEndpoint() === undefined
+                ? {}
+                : { authorized_base_url: modelSourceEndpoint()! }),
+            },
             secrets: { [field]: secret },
           };
           mutationStarted = true;
