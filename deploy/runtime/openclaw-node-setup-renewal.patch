@@ -12099,6 +12099,21 @@
    /** Watch availability; node shutdown awaits the returned cleanup callback. */
 --- a/test/node-host-launcher.test.ts
 +++ b/test/node-host-launcher.test.ts
+@@ -1,4 +1,4 @@
+-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
++import { spawn, type ChildProcess } from "node:child_process";
+ import { once } from "node:events";
+ import fs from "node:fs/promises";
+ import path from "node:path";
+@@ -11,7 +11,7 @@
+ import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
+ 
+ const temporary = useAutoCleanupTempDirTracker(afterEach);
+-const processes = new Map<ChildProcessWithoutNullStreams, Promise<unknown>>();
++const processes = new Map<ChildProcess, Promise<unknown>>();
+ let bootstrapSource: string;
+ let launcherClientSource: string;
+ 
 @@ -78,6 +78,7 @@
  import fs from 'node:fs';
  import {
@@ -12141,7 +12156,7 @@
        runtime: "node",
        runtimePath: process.execPath,
      });
-@@ -297,22 +308,80 @@
+@@ -297,22 +308,83 @@
      expect(child).toMatchObject({
        parentPid: service.child.pid,
        launcherChild: true,
@@ -12207,6 +12222,11 @@
 +        ],
 +        { cwd: f.base, stdio: ["pipe", "pipe", "pipe", "ipc"] },
 +      );
++      const closed = once(child, "close");
++      processes.set(child, closed);
++      if (!child.stdout || !child.stderr) {
++        throw new Error("The supervisor protocol fixture requires piped child output.");
++      }
 +      let stdout = "";
 +      let stderr = "";
 +      child.stdout.on("data", (chunk: Buffer) => {
@@ -12215,8 +12235,6 @@
 +      child.stderr.on("data", (chunk: Buffer) => {
 +        stderr += chunk.toString();
 +      });
-+      const closed = once(child, "close");
-+      processes.set(child, closed);
 +      const [code] = await closed;
 +      expect(code).not.toBe(0);
 +      expect(stderr).toContain("node launcher supervisor protocol is unsupported");
@@ -12231,7 +12249,7 @@
  ${requestUpdate}
  `);
      const candidate = await f.release(`
-@@ -338,7 +407,15 @@
+@@ -338,7 +410,15 @@
      const lines = jsonLines(result.stdout);
      expect(lines[0]).toMatchObject({ ok: true });
      expect(lines[1]).toMatchObject({
@@ -12248,7 +12266,7 @@
        cwd: f.base,
        state: f.state,
        disconnectedState: null,
-@@ -347,6 +424,147 @@
+@@ -347,6 +427,147 @@
      expect(lines[1].first).toBe(lines[1].second);
      await expectSelection(f.current, candidate.prefix);
      await expectMissing(f.lock);
@@ -12396,7 +12414,7 @@
    });
  
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
-@@ -432,7 +650,7 @@
+@@ -432,7 +653,7 @@
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -12405,7 +12423,7 @@
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -450,6 +668,7 @@
+@@ -450,6 +671,7 @@
          version,
          state: f.state,
          argv: ["node", "run"],
