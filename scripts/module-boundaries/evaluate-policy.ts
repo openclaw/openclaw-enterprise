@@ -100,23 +100,27 @@ export function validatePolicy(policy: unknown): asserts policy is Policy {
     }
   }
   const rootBarrels = field(policy, "rootBarrels");
-  if (rootBarrels !== undefined && !stringArray(rootBarrels, pathValid))
+  if (rootBarrels !== undefined && !stringArray(rootBarrels, pathValid)) {
     throw new Error("Invalid policy field: rootBarrels");
+  }
   const namespaces = field(policy, "workspaceNamespaces");
   if (
     namespaces !== undefined &&
     !stringArray(namespaces, (entry) => typeof entry === "string" && /^@[^/\\\s]+\/$/.test(entry))
-  )
+  ) {
     throw new Error("Invalid policy field: workspaceNamespaces");
+  }
   const limit = field(policy, "diagnosticLimit");
   if (
     limit !== undefined &&
     (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1)
-  )
+  ) {
     throw new Error("Invalid policy diagnostic limit.");
+  }
   const boundaries: unknown = field(policy, "boundaries");
-  if (boundaries !== undefined && !Array.isArray(boundaries))
+  if (boundaries !== undefined && !Array.isArray(boundaries)) {
     throw new Error("Invalid policy field: boundaries");
+  }
   for (const boundary of boundaries ?? []) {
     const rule = field(boundary, "rule");
     const message = field(boundary, "message");
@@ -126,8 +130,9 @@ export function validatePolicy(policy: unknown): asserts policy is Policy {
       !rule.trim() ||
       typeof message !== "string" ||
       !message.trim()
-    )
+    ) {
       throw new Error("Boundaries require a rule and message.");
+    }
     const boundaryFields = new Set([
       "rule",
       "message",
@@ -138,12 +143,17 @@ export function validatePolicy(policy: unknown): asserts policy is Policy {
       "specifiers",
       "kinds",
     ]);
-    if (Object.keys(Object(boundary)).some((key) => !boundaryFields.has(key)))
+    if (Object.keys(Object(boundary)).some((key) => !boundaryFields.has(key))) {
       throw new Error("Unknown boundary field.");
+    }
     for (const name of ["from", "to", "exceptFrom", "exceptTo"]) {
       const value = field(boundary, name);
-      if (name !== "from" && value === undefined) continue;
-      if (!stringArray(value, patternValid)) throw new Error(`Invalid boundary field: ${name}`);
+      if (name !== "from" && value === undefined) {
+        continue;
+      }
+      if (!stringArray(value, patternValid)) {
+        throw new Error(`Invalid boundary field: ${name}`);
+      }
     }
     const specifiers = field(boundary, "specifiers");
     if (
@@ -159,31 +169,37 @@ export function validatePolicy(policy: unknown): asserts policy is Policy {
             (!entry.endsWith("/**") || entry.slice(0, -3).includes("*"))
           ),
       )
-    )
+    ) {
       throw new Error("Invalid boundary field: specifiers");
+    }
     const from = field(boundary, "from");
     const to = field(boundary, "to");
     if (
       !Array.isArray(from) ||
       !from.length ||
       !((Array.isArray(to) && to.length) || (Array.isArray(specifiers) && specifiers.length))
-    )
+    ) {
       throw new Error("Boundaries require source patterns and target paths or specifiers.");
+    }
     const boundaryKinds = field(boundary, "kinds");
     if (
       boundaryKinds !== undefined &&
       !stringArray(boundaryKinds, (kind) => typeof kind === "string" && kinds.has(kind))
-    )
+    ) {
       throw new Error("Invalid boundary field: kinds");
+    }
   }
   for (const [name, entries] of [
     ["packageImports", ["sourcePaths", "internalRoot"]],
     ["cycles", ["runtime", "typeOnly"]],
   ] as const) {
     const value = field(policy, name);
-    if (value === undefined) continue;
-    if (!value || typeof value !== "object" || Array.isArray(value))
+    if (value === undefined) {
+      continue;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new Error(`Invalid policy field: ${name}`);
+    }
     const allowed: readonly string[] = name === "cycles" ? ["error", "report"] : ["allow", "error"];
     for (const key of Object.keys(value)) {
       const item = field(value, key);
@@ -191,8 +207,9 @@ export function validatePolicy(policy: unknown): asserts policy is Policy {
         !entries.some((entry) => entry === key) ||
         typeof item !== "string" ||
         !allowed.includes(item)
-      )
+      ) {
         throw new Error(`Invalid policy field: ${name}.${key}`);
+      }
     }
   }
 }

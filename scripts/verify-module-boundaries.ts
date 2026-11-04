@@ -102,10 +102,16 @@ async function main(args: readonly string[], stdout: Writer, stderr: Writer) {
       ]
     ) {
       const value = args[++index];
-      if (value === undefined) throw new Error(usage);
-      if (argument === "--root") options.root = value;
-      else if (argument === "--policy") options.policy = value;
-      else options.exceptions = value;
+      if (value === undefined) {
+        throw new Error(usage);
+      }
+      if (argument === "--root") {
+        options.root = value;
+      } else if (argument === "--policy") {
+        options.policy = value;
+      } else {
+        options.exceptions = value;
+      }
     } else {
       throw new Error(usage);
     }
