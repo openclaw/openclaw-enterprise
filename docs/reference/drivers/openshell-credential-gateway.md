@@ -296,7 +296,7 @@ The Harness, child processes and administrators have different access:
   OpenShell withholds a static key that has no credential binding. A Sandbox
   policy cannot add a `credential_binding` for a profile that defines endpoints,
   so changing a Sandbox policy cannot move `OPENAI_API_KEY` off
-  the endpoint selected by the source.
+  the authorized shared endpoint.
 - **Commands the Harness runs.** OpenShell matches `binaries` against the
   calling process and its ancestors. A command Codex starts can use an inherited
   placeholder at its authorized shared endpoint. Other hosts return `403 credential_endpoint_mismatch`.

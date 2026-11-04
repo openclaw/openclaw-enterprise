@@ -96,8 +96,9 @@ against workload CPU and memory limits.
 
 The [shared model provider](model-provider.md) owns endpoint selection and
 validation. Credential Sources retain separate destination authorization.
-Only the Harness receives its key. Transport uses the authenticated app server
-and fail-closed HTTP; see [Harness execution](../../harness-execution.md).
+Only the Harness receives its key. For dedicated Codex, transport uses the
+authenticated app server and fail-closed HTTP; see
+[Harness execution](../../harness-execution.md).
 
 ## Private routing
 

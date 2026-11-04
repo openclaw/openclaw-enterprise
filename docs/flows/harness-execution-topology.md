@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-11-03
-last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
+last_updated_session: authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f
 ---
 
 # Harness Execution Topology Flow
@@ -73,6 +73,8 @@ Pinned runtime support is automatic; custom images can declare it at startup.
 An associated
 `access_token` additionally requires dedicated Codex; the frozen account
 contains only its OCC identity, credential kind, and opaque Secret reference.
+`KubernetesComputeDriver.admitRevision` saves the configured OpenAI-compatible
+API-key provider fingerprint in `AgentRevision.compute.admission`.
 
 ### 2. Claim work and realize the approved topology
 
@@ -98,6 +100,11 @@ credentials remain on the host and OCC checks gateway readiness without model
 validation. See the [SSH flow](pr-24-ssh-compute.md).
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`
+
+`prepareRevisionWorkloads` calls `validateExecutionOrWithdrawPublicGithubRead`;
+`validateRevisionExecution` refuses provider changes or removal before Secret
+reads or execution updates. Refusal requires a new deployment. `runtimeAdmission`
+separately reads saved launch facts for cleanup and public-reader withdrawal.
 
 Kubernetes calls `prepareHarnessAuth` once per resolved source, delivering selected
 fields, including ChatGPT account tokens, from canonical tenant storage to versioned
@@ -151,10 +158,9 @@ as provider default. Custom endpoints require `credential_source`; Secret-backed
 keys stay OpenAI-only. Invalid URLs fail admission.
 `apps/controller/src/drivers/credential-gateway/openshell.ts:attachForRevision`
 checks each selected model (`apps/controller/src/drivers/native-openai-catalog.ts:nativeOpenAiModelSelections`,
-the selection Compute renders) against the source destination authorization before
-attachment, and a refusal names the `baseUrl` setting and both hosts. Catalog
-ids match after trimming, as OpenClaw merges such entries, so a second match
-fails. The startup model probe gets only the primary model's entry as rendered
+the selection Compute renders) against the authorized shared endpoint. Conflicting
+model URLs fail before attachment. Catalog ids match after trimming, as OpenClaw
+merges such entries, so a second match fails. The startup model probe gets only the primary model's entry as rendered
 for the worker, with its endpoint and API as the provider defaults, and no other
 provider setting.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
@@ -186,14 +192,14 @@ For API-key inference, `modelProviderConfiguration` in
 `apps/controller/src/drivers/compute/model-provider.ts` translates the shared
 Installation provider for OpenClaw. `pluginRuntimeSnapshot` in
 `apps/controller/src/drivers/compute/kubernetes/index.ts` supplies it to Codex.
-`admitRevision` records a provider fingerprint; recovery rejects changed settings.
-Sources authorize the chosen destination and cannot override it.
+Recovery repeats this check.
+Source authorization cannot override routing.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes Codex's provider and optional standalone-search declaration.
 Protected `providerTools: none` still disables search.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:writeCodexConfigToml`
 writes the generated file into `CODEX_HOME` before native startup. The capability
-therefore belongs to Codex's user configuration, not a workspace override.
+belongs to Codex's user configuration, not a workspace override.
 Native CLI launch passes explicit log and metrics exporter overrides for login,
 the authentication probe and the app-server.
 [Runtime logging](../reference/harness-execution.md#runtime-logging) defines the export defaults.
@@ -229,7 +235,9 @@ waiting for the predecessor. Repair deletes the embedded predecessor's version S
 and ConfigMap copies.
 
 The worker commits `activeRevisionId` by exact compare-and-set before Kubernetes
-activation. `KubernetesComputeDriver.activateRevision` updates the shared Gateway's
+activation. `activateRevisionWorkloads` repeats the provider check for embedded
+and dedicated activation before Secret reads or workload changes.
+`KubernetesComputeDriver.activateRevision` updates the shared Gateway's
 `Recreate` Deployment and Service. Embedded preparation does not validate credentials,
 so cutover can stop the serving Gateway before replacement
 [startup](native-service-account-credential-delivery.md#5-authenticate-during-runtime-startup)
@@ -342,6 +350,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 18:15: Trace provider guards. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
 
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 
