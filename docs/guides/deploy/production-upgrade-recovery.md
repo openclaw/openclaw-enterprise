@@ -34,6 +34,16 @@ live state first: its absence does not prove the upgrade is unfinished.
 `prepared` survives success and alone is not a reason to resume. Older runs may
 have completed without a `completed` marker.
 
+## Correct unusable comparison inputs
+
+`Cannot compare upgrade YAML` means the helper could not validate both inputs
+or write its comparison files. Check that protected and candidate YAML files
+are readable, contain only mappings without empty documents, and that the
+evidence directory is writable. Restore the intended configuration; do not
+change values merely to clear the error. Valid configuration differences receive
+a separate drift diagnostic. Then follow the preparation or resume procedure
+above, preserving the original evidence and dispatch journal.
+
 ## Clean up preflight resources
 
 The release owner coordinates one cleanup operator; cleanup alone needs no freeze.
