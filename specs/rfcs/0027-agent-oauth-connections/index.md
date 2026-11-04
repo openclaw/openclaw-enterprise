@@ -143,11 +143,11 @@ new source. To stop an old version, for example after an endpoint compromise,
 administrators disconnect the affected sources. OCC refuses to delete a connection
 template while any source references one of its versions.
 
-Rotating the client secret is not a consent change. The secret belongs to a client
-registration for one `issuer` and `clientId` pair, so the same client ID at another
-issuer stays independent. Rotation applies to new connections; existing
-connections keep the secret they were configured with until the provider disables
-it ([client registrations](contracts.md#client-registrations)).
+When an administrator rotates the secret for the same OAuth client, the next
+code exchange or token refresh uses its current secret. An existing account
+can refresh its original grant without another consent flow. Its issuer,
+client identity and approved destinations stay pinned to the registration.
+See [client registrations](contracts.md#client-registrations).
 
 ### Ownership and Agent attachments
 

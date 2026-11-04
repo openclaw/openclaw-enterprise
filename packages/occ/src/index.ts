@@ -1052,7 +1052,7 @@ export type UpdateConnectionTemplateInput =
   { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
 export type CreateOAuthClientInput = Omit<
   OAuthClient,
-  "id" | "createdAt" | "credentialRefreshDriverId" | "secretRegistrationId"
+  "id" | "createdAt" | "credentialRefreshDriverId"
 > & { readonly clientSecret?: string };
 type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
@@ -5426,43 +5426,51 @@ export class OpenClawController {
         "Provide a secret only for a confidential OAuth client.",
       );
     }
-    const reservation = clientSecret
-      ? await this.reserveOAuthClientSecret(
-          principalId,
-          async (unit) => {
-            await this.lockTemplateScope(unit, input.namespaceId);
-            return {
-              issuer: input.issuer,
-              clientId: input.clientId,
-              credentialRefreshDriverId: this.connectionRegistrationDriver().id,
-            };
-          },
-          holdSession,
-        )
-      : undefined;
-    return this.mutate(async (state) => {
+    const client: OAuthClient = {
+      ...registration,
+      id: `ccr_${crypto.randomUUID()}`,
+      createdAt: this.timestamp(),
+      credentialRefreshDriverId: clientSecret
+        ? this.connectionRegistrationDriver().id
+        : this.credentialRefreshDriver().id,
+    };
+    await this.mutate(async (state) => {
+      await this.lockTemplateScope(state, client.namespaceId);
       await this.authorizeTemplateAdministration(principalId);
-      await this.lockTemplateScope(state, input.namespaceId);
-      const id = `ccr_${crypto.randomUUID()}`;
-      const client: OAuthClient = {
-        ...registration,
-        id,
-        createdAt: this.timestamp(),
-        credentialRefreshDriverId:
-          reservation?.credentialRefreshDriverId ?? this.credentialRefreshDriver().id,
-        ...(reservation && { secretRegistrationId: reservation.id }),
-      };
-      await state.connectionTemplates.createOAuthClient(client);
-      if (clientSecret && client.secretRegistrationId) {
-        await holdSession?.(state);
-        await this.stageOAuthClientSecret(state, client, client.secretRegistrationId, clientSecret);
-      }
       await holdSession?.(state);
-      if (audit) {
-        await state.audit.append(audit(id));
+      // Reserve the client before private I/O. A crashed creator leaves this hidden row for cleanup.
+      const cleanupAfter = clientSecret
+        ? new Date(this.clock().getTime() + 5 * 60_000).toISOString()
+        : undefined;
+      await state.connectionTemplates.createOAuthClient(client, cleanupAfter);
+      if (!clientSecret && audit) {
+        await state.audit.append(audit(client.id));
       }
-      return client;
     });
+    if (clientSecret) {
+      await this.mutate(async (state) => {
+        const reserved = await state.connectionTemplates.lockOAuthClientForCleanup(
+          client.id,
+          false,
+        );
+        if (!reserved) {
+          throw new ResourceStateConflictError(
+            "The OAuth client reservation expired. Create the client again.",
+          );
+        }
+        await this.authorizeTemplateAdministration(principalId);
+        await holdSession?.(state);
+        const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
+        await this.credentialGatewayOperation(() =>
+          driver.registerClient!(this.oauthClientContext(client), clientSecret),
+        );
+        await state.connectionTemplates.setOAuthClientCleanup(client.id, null);
+        if (audit) {
+          await state.audit.append(audit(client.id));
+        }
+      });
+    }
+    return client;
   }
 
   async rotateOAuthClientSecret(
@@ -5472,49 +5480,47 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    const reservation = await this.reserveOAuthClientSecret(
-      principalId,
-      async (unit) => {
-        const current = await unit.connectionTemplates.findOAuthClient(id);
-        if (!current) {
-          throw new ScopeViolationError("The OAuth client does not exist.");
-        }
-        if (!current.secretRegistrationId) {
-          throw new ResourceStateConflictError(
-            "This public client authenticates without a secret.",
-          );
-        }
-        return current;
-      },
-      holdSession,
-    );
-    const client = await this.mutate(async (state) => {
+    await this.authorizeTemplateAdministration(principalId);
+    const lockClient = async (state: PlatformUnitOfWork) => {
+      const client = await state.connectionTemplates.lockOAuthClient(id);
       await this.authorizeTemplateAdministration(principalId);
-      const current = await state.connectionTemplates.lockOAuthClient(id);
-      if (!current) {
+      await holdSession?.(state);
+      if (!client) {
         throw new ScopeViolationError("The OAuth client does not exist.");
       }
-      if (!current.secretRegistrationId) {
+      if (client.tokenEndpointAuthMethod === "none") {
         throw new ResourceStateConflictError("This public client authenticates without a secret.");
       }
-      await holdSession?.(state);
-      const handle = reservation.id;
-      await this.stageOAuthClientSecret(state, current, handle, clientSecret);
-      await state.connectionTemplates.setOAuthClientSecret(id, handle);
-      await state.connectionTemplates.queueOAuthClientSecretCleanup(
-        {
-          ...current,
-          id: current.secretRegistrationId,
-        },
-        "retired",
-      );
-      await holdSession?.(state);
-      if (audit) {
-        await state.audit.append(audit);
+      return client;
+    };
+    if (audit) {
+      // An in-place Driver write can succeed before SQL records its outcome. Persist the request first.
+      await this.mutate(async (state) => {
+        await lockClient(state);
+        await state.audit.append({
+          ...audit,
+          id: `aud_${crypto.randomUUID()}`,
+          details: { ...audit.details, phase: "requested" },
+        });
+      });
+    }
+    return this.mutate(async (state) => {
+      const client = await lockClient(state);
+      const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
+      if (!driver.rotateClientSecret) {
+        throw new NotImplementedError(
+          "connection_templates",
+          "The selected Refresh Driver does not support OAuth client rotation.",
+        );
       }
-      return { ...current, secretRegistrationId: handle };
+      await this.credentialGatewayOperation(() =>
+        driver.rotateClientSecret!(this.oauthClientContext(client), clientSecret),
+      );
+      if (audit) {
+        await state.audit.append({ ...audit, occurredAt: this.timestamp() });
+      }
+      return client;
     });
-    return client;
   }
 
   async deleteOAuthClient(
@@ -5523,100 +5529,63 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
+    await this.authorizeTemplateAdministration(principalId);
     await this.mutate(async (state) => {
+      const client = await state.connectionTemplates.lockOAuthClient(id);
       await this.authorizeTemplateAdministration(principalId);
-      const current = await state.connectionTemplates.lockOAuthClient(id);
-      if (!current) {
+      await holdSession?.(state);
+      if (!client) {
         throw new ScopeViolationError("The OAuth client does not exist.");
       }
-      if (!(await state.connectionTemplates.deleteOAuthClient(id))) {
+      // Hide confidential clients and retain their stable private reference until removal succeeds.
+      if (
+        !(await state.connectionTemplates.deleteOAuthClient(
+          id,
+          client.tokenEndpointAuthMethod !== "none",
+        ))
+      ) {
         throw new ResourceStateConflictError(
           "A template version still references this OAuth client.",
         );
       }
-      if (current.secretRegistrationId) {
-        await state.connectionTemplates.queueOAuthClientSecretCleanup(
-          {
-            ...current,
-            id: current.secretRegistrationId,
-          },
-          "retired",
-        );
-      }
-      await holdSession?.(state);
       if (audit) {
         await state.audit.append(audit);
       }
     });
   }
 
-  async cleanupRetiredOAuthClientSecrets(): Promise<void> {
-    const retired = await this.read((view) =>
-      view.connectionTemplates.listRetiredOAuthClientSecrets(32),
-    );
-    for (const secret of retired) {
+  async cleanupOAuthClients(): Promise<void> {
+    const ids = await this.read((view) => view.connectionTemplates.listOAuthClientCleanups(32));
+    for (const id of ids) {
       await this.mutate(async (state) => {
-        // A writer may have committed after the initial scan. Lock before removing Driver material.
-        if (!(await state.connectionTemplates.lockOAuthClientSecretCleanup(secret.id, true))) {
+        const client = await state.connectionTemplates.lockOAuthClientForCleanup(id, true);
+        if (!client) {
           return;
         }
         try {
-          const driver = this.connectionRegistrationDriver(secret.credentialRefreshDriverId);
-          await driver.removeClient!({
-            registrationId: secret.id,
-            issuer: secret.issuer,
-            clientId: secret.clientId,
-            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-          });
+          const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
+          await driver.removeClient!(this.oauthClientContext(client));
         } catch {
-          await state.connectionTemplates.deferRetiredOAuthClientSecret(secret.id);
+          await state.connectionTemplates.setOAuthClientCleanup(
+            id,
+            new Date(this.clock().getTime() + 60_000).toISOString(),
+          );
           return;
         }
-        await state.connectionTemplates.forgetRetiredOAuthClientSecret(secret.id);
+        if (!(await state.connectionTemplates.deleteOAuthClient(id))) {
+          throw new ResourceStateConflictError("The OAuth client is still referenced.");
+        }
       });
     }
   }
 
-  private async reserveOAuthClientSecret(
-    principalId: string,
-    owner: (
-      unit: PlatformUnitOfWork,
-    ) => Promise<Pick<OAuthClient, "issuer" | "clientId" | "credentialRefreshDriverId">>,
-    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
-  ) {
-    return this.mutate(async (unit) => {
-      await this.authorizeTemplateAdministration(principalId);
-      const { issuer, clientId, credentialRefreshDriverId } = await owner(unit);
-      await holdSession?.(unit);
-      const ref = { id: `ccr_${crypto.randomUUID()}`, issuer, clientId, credentialRefreshDriverId };
-      // This short transaction commits cleanup authority before a separate one writes private material.
-      await unit.connectionTemplates.queueOAuthClientSecretCleanup(ref, "staging");
-      return ref;
-    });
-  }
-
-  private async stageOAuthClientSecret(
-    state: PlatformUnitOfWork,
-    client: OAuthClient,
-    registrationId: string,
-    secret: string,
-  ) {
-    const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-    const context = () => ({
-      registrationId,
+  private oauthClientContext(client: OAuthClient) {
+    return {
+      registrationId: client.id,
       issuer: client.issuer,
       clientId: client.clientId,
       signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-    });
-    if (!(await state.connectionTemplates.lockOAuthClientSecretCleanup(registrationId, false))) {
-      throw new DependencyUnavailableError(
-        "The staged OAuth client registration expired. Retry the operation.",
-      );
-    }
-    this.registerRollback(() => driver.removeClient!(context()));
-    await this.credentialGatewayOperation(() => driver.registerClient!(context(), secret));
-    // Publication and retirement of this reservation share the owner's transaction.
-    await state.connectionTemplates.forgetRetiredOAuthClientSecret(registrationId);
+    };
   }
 
   private connectionRegistrationDriver(expectedId?: string): CredentialRefreshDriver {

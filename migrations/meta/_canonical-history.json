@@ -536,7 +536,7 @@
       "when": 1787000000067,
       "tag": "0067_connection_templates",
       "breakpoints": true,
-      "sha256": "a13e0da445bdd739d3b43a793475efe76568ac3532017623024b3aff3d39088e"
+      "sha256": "814c5efd6b3b437f27e6899c70a48fae8d57d4800e9eb86ee5b3deb4fa7e78ad"
     },
     {
       "idx": 68,
@@ -595,13 +595,13 @@
       "e4f1ce2a27d8561664fd107679c962b7c67060c658869bf3faa3fc47ce384a0b",
       "048eb30e1c7db94dde5c3ab7731b940b9acbfbed0b41dd20cfc705aebf2850ae"
     ],
-    "531f3ae10170d23b79cefecffdc84fd56841e96d87601c8746bce6a75f4fdc15": [
-      "0e7d80f7b2c4df5118393c43ccbfb1732753f7328fc3ac3f03d3810fbadafc57",
-      "cf43472a83405b8c496a16a43e39777c3130080d543a7f7019d6ad62e0855432"
+    "900bbc9d8447b18665483664d51147945a9238000dc5457e00a126ae07be98c4": [
+      "5280667e0e47a6d07f4ac7476f26c0fa86191b77a02bc6e46a43a83f26949b80",
+      "6dd42916e4f42a29c381fa198ef99b7087064adf1c4257ede3d94cf0220feb5d"
     ],
-    "3bc06bb42a1c76cf8df16575a1a6739bf6de9d72d42af2eb367644232e63e734": [
-      "d2f59ee0d62ba800f8476f4a02f2d8e389b870f1910ab6df2ca33d4340708fc1",
-      "dab23f8923c7ce0744ab79dce8a0a2151fcd88e7f99ab6cfbbe23691ea7a79aa"
+    "6b5a981c86fb1a72d265cc380858a720ee52352df41087f225daf12e53379850": [
+      "5aebb3d5eecd573653819d0034914adee32dcfab88ea455ed4da3ae758b40665",
+      "fd2bf7d633dd7466121f54c293725204d6a86c6efebd37991384dfdd83a43caf"
     ]
   },
   "catalogs": {
@@ -610,7 +610,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "531f3ae10170d23b79cefecffdc84fd56841e96d87601c8746bce6a75f4fdc15",
+    "completed": "6b5a981c86fb1a72d265cc380858a720ee52352df41087f225daf12e53379850",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -648,7 +648,7 @@
     "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
     "preAgentDeployIntent": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40",
     "preConnectionTemplates": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998",
-    "preSavedConnections": "3bc06bb42a1c76cf8df16575a1a6739bf6de9d72d42af2eb367644232e63e734"
+    "preSavedConnections": "900bbc9d8447b18665483664d51147945a9238000dc5457e00a126ae07be98c4"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

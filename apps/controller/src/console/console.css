@@ -2983,6 +2983,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .agent-list-feedback > .status {
   margin: 0 0 var(--space-5);
 }
+.credential-tabs,
 .agent-tabs {
   display: flex;
   overflow-x: auto;
@@ -2991,16 +2992,25 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border-bottom: 1px solid var(--line);
   margin-bottom: var(--space-5);
 }
+.credential-tabs a {
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text);
+  text-decoration: none;
+}
+.credential-tabs a:hover {
+  text-decoration: underline;
+}
+.credential-tabs [aria-current="page"],
+.agent-tabs [aria-selected="true"] {
+  border-bottom: 2px solid var(--accent);
+  color: var(--accent);
+  font-weight: var(--weight-semibold);
+}
 .agent-tabs button {
   flex: 0 0 auto;
   border: 0;
   border-radius: 0;
   background: transparent;
-}
-.agent-tabs [aria-selected="true"] {
-  border-bottom: 2px solid var(--accent);
-  color: var(--accent);
-  font-weight: var(--weight-semibold);
 }
 /* An edge with more tabs past it fades (detail.mts sets the attributes as the strip scrolls).
    A mask reads only alpha, so the opaque stop may be any opaque colour. */

@@ -354,13 +354,8 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
   deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
 }
 
-export type OAuthClientSecretRef = Pick<
-  OAuthClient,
-  "issuer" | "clientId" | "credentialRefreshDriverId"
-> & { readonly id: string };
 export interface ConnectionTemplateReadRepository {
-  listRetiredOAuthClientSecrets(limit: number): Promise<readonly Readonly<OAuthClientSecretRef>[]>;
-
+  listOAuthClientCleanups(limit: number): Promise<readonly string[]>;
   findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
   hasOtherConnectionIssuer(issuer: string): Promise<boolean>;
   countNamespaceConnectionTemplates(namespaceId: string): Promise<number>;
@@ -376,18 +371,18 @@ export interface ConnectionTemplateReadRepository {
 
 export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepository {
   lockOAuthClient(id: string): Promise<Readonly<OAuthClient> | undefined>;
-  setOAuthClientSecret(id: string, handle: string): Promise<void>;
-  queueOAuthClientSecretCleanup(
-    ref: OAuthClientSecretRef,
-    phase: "staging" | "retired",
-  ): Promise<void>;
-  lockOAuthClientSecretCleanup(id: string, dueOnly: boolean): Promise<boolean>;
-  deferRetiredOAuthClientSecret(id: string): Promise<void>;
-  forgetRetiredOAuthClientSecret(id: string): Promise<void>;
+  lockOAuthClientForCleanup(
+    id: string,
+    dueOnly: boolean,
+  ): Promise<Readonly<OAuthClient> | undefined>;
+  setOAuthClientCleanup(id: string, cleanupAfter: string | null): Promise<void>;
   lockConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
-  createOAuthClient(registration: OAuthClient): Promise<Readonly<OAuthClient>>;
+  createOAuthClient(
+    registration: OAuthClient,
+    cleanupAfter?: string,
+  ): Promise<Readonly<OAuthClient>>;
   /** False while a connection template version still names the registration. */
-  deleteOAuthClient(registrationId: string): Promise<boolean>;
+  deleteOAuthClient(registrationId: string, retainForCleanup?: boolean): Promise<boolean>;
   /** Inserts the template and its first version together. */
   createConnectionTemplate(template: ConnectionTemplate): Promise<Readonly<ConnectionTemplate>>;
   /** Renames, or appends `version` as the next version and makes it current. */
@@ -1230,11 +1225,7 @@ interface PlatformSnapshot {
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
-  readonly retiredOAuthClientSecrets: Map<
-    string,
-    Readonly<OAuthClientSecretRef> & { retryAt?: number }
-  >;
-  readonly clientRegistrations: Map<string, Readonly<OAuthClient>>;
+  readonly clientRegistrations: Map<string, Readonly<OAuthClient> & { cleanupAfter?: string }>;
   readonly oauthConnectionTemplateVersions: Map<string, Readonly<OAuthConnectionTemplateVersion>>;
   readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
   readonly savedConnections: Map<string, Readonly<SavedConnection>>;
@@ -1361,7 +1352,6 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
       ]),
     ),
     connectionTemplates: new Map(snapshot.connectionTemplates),
-    retiredOAuthClientSecrets: new Map(snapshot.retiredOAuthClientSecrets),
     clientRegistrations: new Map(snapshot.clientRegistrations),
     oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
@@ -1980,6 +1970,7 @@ function repositories(
     const registration = snapshot.clientRegistrations.get(version.oauthClientId);
     if (
       !registration ||
+      registration.cleanupAfter !== undefined ||
       (registration.namespaceId !== undefined &&
         registration.namespaceId !== template.namespaceId) ||
       registration.issuer !== version.issuer ||
@@ -2015,51 +2006,44 @@ function repositories(
     },
     listOAuthClients: async () =>
       Object.freeze(
-        Array.from(snapshot.clientRegistrations.values(), immutableCopy).sort((a, b) =>
-          a.id.localeCompare(b.id),
-        ),
+        Array.from(snapshot.clientRegistrations.values())
+          .filter((row) => row.cleanupAfter === undefined)
+          .map((row) => immutableCopy(row))
+          .sort((a, b) => a.id.localeCompare(b.id)),
       ),
     countNamespaceOAuthClients: async (namespaceId) =>
       Array.from(snapshot.clientRegistrations.values()).filter(
         (client) => client.namespaceId === namespaceId,
       ).length,
-    findOAuthClient: async (registrationId) => {
-      const found = snapshot.clientRegistrations.get(registrationId);
-      return found === undefined ? undefined : immutableCopy(found);
+    findOAuthClient: async (id) => {
+      const row = snapshot.clientRegistrations.get(id);
+      return row?.cleanupAfter === undefined ? row : undefined;
     },
-    lockOAuthClient: async (id) => snapshot.clientRegistrations.get(id),
-    setOAuthClientSecret: async (id, secretRegistrationId) => {
-      const current = snapshot.clientRegistrations.get(id);
-      if (current) {
-        snapshot.clientRegistrations.set(id, immutableCopy({ ...current, secretRegistrationId }));
+    lockOAuthClient: async (id) => connectionTemplates.findOAuthClient(id),
+    listOAuthClientCleanups: async (limit) =>
+      [...snapshot.clientRegistrations.values()]
+        .filter((row) => row.cleanupAfter && Date.parse(row.cleanupAfter) <= Date.now())
+        .sort((a, b) => a.cleanupAfter!.localeCompare(b.cleanupAfter!))
+        .slice(0, limit)
+        .map((row) => row.id),
+    lockOAuthClientForCleanup: async (id, dueOnly) => {
+      const row = snapshot.clientRegistrations.get(id);
+      return row?.cleanupAfter && (!dueOnly || Date.parse(row.cleanupAfter) <= Date.now())
+        ? row
+        : undefined;
+    },
+    setOAuthClientCleanup: async (id, cleanupAfter) => {
+      const row = snapshot.clientRegistrations.get(id);
+      if (row) {
+        const { cleanupAfter: _old, ...client } = row;
+        snapshot.clientRegistrations.set(
+          id,
+          immutableCopy({ ...client, ...(cleanupAfter && { cleanupAfter }) }),
+        );
       }
-    },
-    listRetiredOAuthClientSecrets: async (limit) =>
-      Array.from(snapshot.retiredOAuthClientSecrets.values())
-        .filter((ref) => !ref.retryAt || ref.retryAt <= Date.now())
-        .slice(0, limit),
-    queueOAuthClientSecretCleanup: async (ref, phase) => {
-      snapshot.retiredOAuthClientSecrets.set(
-        ref.id,
-        immutableCopy({ ...ref, ...(phase === "staging" && { retryAt: Date.now() + 300_000 }) }),
-      );
-    },
-    lockOAuthClientSecretCleanup: async (id, dueOnly) => {
-      const ref = snapshot.retiredOAuthClientSecrets.get(id);
-      return !!ref && (!dueOnly || !ref.retryAt || ref.retryAt <= Date.now());
-    },
-    deferRetiredOAuthClientSecret: async (id) => {
-      const ref = snapshot.retiredOAuthClientSecrets.get(id);
-      if (ref) {
-        snapshot.retiredOAuthClientSecrets.delete(id);
-        snapshot.retiredOAuthClientSecrets.set(id, { ...ref, retryAt: Date.now() + 60_000 });
-      }
-    },
-    forgetRetiredOAuthClientSecret: async (id) => {
-      snapshot.retiredOAuthClientSecrets.delete(id);
     },
     lockConnectionTemplate: findConnectionTemplate,
-    createOAuthClient: async (registration) => {
+    createOAuthClient: async (registration, cleanupAfter) => {
       assertInitialized(snapshot);
       if (
         registration.namespaceId !== undefined &&
@@ -2080,16 +2064,23 @@ function repositories(
         throw new ResourceConflictError("The OAuth client is already registered.");
       }
       const saved = immutableCopy(registration);
-      snapshot.clientRegistrations.set(saved.id, saved);
+      snapshot.clientRegistrations.set(
+        saved.id,
+        immutableCopy({ ...registration, ...(cleanupAfter && { cleanupAfter }) }),
+      );
       return immutableCopy(saved);
     },
-    deleteOAuthClient: async (registrationId) => {
+    deleteOAuthClient: async (registrationId, retainForCleanup) => {
       if (
         Array.from(snapshot.oauthConnectionTemplateVersions.values()).some(
           (version) => version.oauthClientId === registrationId,
         )
       ) {
         return false;
+      }
+      if (retainForCleanup) {
+        await connectionTemplates.setOAuthClientCleanup(registrationId, new Date().toISOString());
+        return snapshot.clientRegistrations.has(registrationId);
       }
       return snapshot.clientRegistrations.delete(registrationId);
     },
@@ -4382,7 +4373,6 @@ export class InMemoryPlatformState implements PlatformStateStore {
     namespaces: new Map(),
     configurations: new Map(),
     connectionTemplates: new Map(),
-    retiredOAuthClientSecrets: new Map(),
     clientRegistrations: new Map(),
     oauthConnectionTemplateVersions: new Map(),
     connectionTokenCustody: new Map(),

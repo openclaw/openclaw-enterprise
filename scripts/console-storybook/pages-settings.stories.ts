@@ -43,8 +43,3 @@ export const SharedModelProvider = {
   ...story("settingsModelProvider"),
   name: "Shared model provider",
 };
-
-export const ConnectionTemplates = story("settingsTemplateCatalog");
-export const ManualOAuthTemplate = story("settingsManualTemplate");
-export const DiscoveredMcpTemplate = story("settingsMcpDiscovery");
-export const McpDiscoveryUnavailable = story("settingsMcpDiscoveryError");

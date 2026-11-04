@@ -285,7 +285,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     }
   }
 
-  /** New connections read the replaced secret; existing connections keep the old one. */
+  /** Replace the client secret that all new exchanges and saved grants use. */
   async rotateClientSecret(
     context: CredentialClientRegistrationContext,
     clientSecret: string,
