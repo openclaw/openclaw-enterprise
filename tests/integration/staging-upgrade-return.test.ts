@@ -29,7 +29,7 @@ import {
 } from "../helpers/staging-upgrade-return.ts";
 
 const controller = (digest: string, config: string, commit: string) => ({
-  reference: `ghcr.io/openclaw/openclaw-enterprise-controller@sha256:${digest.repeat(64)}`,
+  reference: `localhost/oce-rehearsal/controller@sha256:${digest.repeat(64)}`,
   configDigest: `sha256:${config.repeat(64)}`,
   revision: commit.repeat(40),
 });
@@ -41,6 +41,16 @@ test("return rehearsal rejects different manifest references that contain the sa
     () => assertDistinctControllers(previous, controller("4", "2", "6")),
     /platform configs must differ/u,
   );
+  // Local transport must retain the same immutable image contract as deployment.
+  for (const reference of [
+    "localhost/oce-rehearsal/controller:candidate",
+    `localhost/OCE/controller@sha256:${"4".repeat(64)}`,
+  ]) {
+    assert.throws(
+      () => assertDistinctControllers(previous, { ...controller("4", "5", "6"), reference }),
+      /canonical immutable controller image/u,
+    );
+  }
 });
 
 test("return rehearsal refuses image selection in the credentialed TUI lane", async () => {

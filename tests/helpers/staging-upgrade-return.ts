@@ -1,4 +1,5 @@
 import type { Agent } from "@openclaw-enterprise/contracts";
+import { imageReferenceProblem } from "../../packages/occ/src/index.ts";
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -10,7 +11,6 @@ import {
   type RehearsalCustody,
 } from "./production-rehearsal-custody.ts";
 
-const controllerRepository = "ghcr.io/openclaw/openclaw-enterprise-controller";
 const digestPattern = /^sha256:[a-f0-9]{64}$/u;
 const commitPattern = /^[a-f0-9]{40}$/u;
 
@@ -90,18 +90,21 @@ export function returnedAgentSnapshot(value: unknown) {
   };
 }
 
+function assertControllerReference(reference: string | undefined): asserts reference is string {
+  assert.ok(
+    reference &&
+      /@sha256:[a-f0-9]{64}$/u.test(reference) &&
+      imageReferenceProblem(reference) === undefined,
+    "select a canonical immutable controller image reference",
+  );
+}
+
 export function assertDistinctControllers(
   previous: Pick<ControllerImage, "reference" | "configDigest" | "revision">,
   candidate: Pick<ControllerImage, "reference" | "configDigest" | "revision">,
 ) {
   for (const image of [previous, candidate]) {
-    const [repository, digest] = image.reference.split("@");
-    assert.equal(repository, controllerRepository, "select a published OCC controller");
-    assert.ok(
-      digestPattern.test(digest ?? ""),
-      "controller reference must use a lowercase SHA-256 digest",
-    );
-    assert.equal(image.reference, `${controllerRepository}@${digest}`);
+    assertControllerReference(image.reference);
     assert.match(image.configDigest, digestPattern);
     assert.match(image.revision, commitPattern);
   }
@@ -198,11 +201,7 @@ export async function selectRehearsalControllers(run: FixtureRun, env: NodeJS.Pr
     checkout: string | undefined,
     label: string,
   ) => {
-    assert.ok(
-      reference && reference.startsWith(`${controllerRepository}@`),
-      `select the published ${label} controller`,
-    );
-    assert.match(reference.slice(controllerRepository.length + 1), digestPattern);
+    assertControllerReference(reference);
     assert.ok(checkout && isAbsolute(checkout), `select an absolute ${label} source checkout`);
     const revision = (await run("git", ["rev-parse", "HEAD"], { cwd: checkout })).trim();
     assert.match(revision, commitPattern);
