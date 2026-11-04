@@ -100,7 +100,7 @@ enrollment, containment, workspace access, or model execution.
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Build base                                            | `docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a` |
 | OpenClaw commit, archive SHA-256, and build timestamp | [Source manifest](openclaw-source.json)                                                                           |
-| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                 |
+| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
 The source's package version is `2026.10.8`; it does not identify this custom
@@ -346,6 +346,10 @@ Before enabling Slack in an Installation, run the
 [live Slack test](../../docs/testing/slack.md#slack) with the verified image, projected
 credentials, and the required proxy configuration. It must prove a real mention,
 Codex turn, and gateway-authored reply; gateway readiness alone is insufficient.
+
+The runtime includes a Debian-compatible curl security backport for both curl
+and Git. See the [publication flow](../../docs/flows/container-publication.md)
+for its provenance, verification, and scanner limitations.
 
 ## Build provenance
 

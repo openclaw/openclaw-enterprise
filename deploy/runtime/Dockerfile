@@ -10,6 +10,14 @@ FROM ${NODE_BASE_IMAGE} AS node-build-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
+FROM node-build-base AS curl-packages
+COPY deploy/runtime/curl /tmp/curl
+RUN --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    sh /tmp/curl/build.sh
+RUN --network=none sh /tmp/curl/verify.sh
+
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
@@ -322,7 +330,12 @@ WORKDIR /app
 
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 
-RUN apt-get update && apt-get install -y --no-install-recommends tini git ca-certificates curl openssh-client libstdc++6 libgomp1 python3 procps && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
+    apt-get update \
+    && apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb \
+    && mkdir -p /usr/share/doc/curl/oce \
+    && cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/ \
+    && rm -rf /var/lib/apt/lists/*
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.
 # --retry rides out GitHub's transient release-download errors (HTTP 408, 429,
