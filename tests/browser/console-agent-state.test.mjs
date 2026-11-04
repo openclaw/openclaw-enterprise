@@ -3480,6 +3480,22 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
         "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
     },
     {
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: {
+          component: "agent",
+          check: "model-probe",
+          checkedAt: "2026-10-03T08:00:00.000Z",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "model_not_found" },
+        },
+      }),
+      nextStep: /^The startup model check failed/,
+      cause: "The model provider check reported a failure (model_not_found)",
+      // The banner reads the failed version, even when the operator is viewing the draft.
+      recoveryMessage:
+        "Model openai/gpt-4.1 is unavailable with this credential (model_not_found). Choose a model this account can use in Configuration, then redeploy this Agent.",
+    },
+    {
       // A cause without its own text keeps the kind label and the detail token.
       error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
         runtimeFailure: {
@@ -3543,7 +3559,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       nextStep: /\(Enable gateway password access\), then deploy again\.$/,
     },
   ];
-  for (const [index, { error, nextStep, cause }] of cases.entries()) {
+  for (const [index, { error, nextStep, cause, recoveryMessage }] of cases.entries()) {
     const agent = await fixture.createAgent(namespace.id, `Agent ${index}`, nativeValues("v1"));
     const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     await routeDeploymentStatus(page, fixture, namespace, agent, revision, "failed", error);
@@ -3558,6 +3574,10 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     const activity = await openFailureDetails(page);
     await activity.getByText(`${error.code}: ${error.message}`, { exact: true }).waitFor();
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+    if (recoveryMessage) {
+      await recovery.getByText(recoveryMessage, { exact: false }).waitFor();
+      assert.equal(await recovery.getByRole("link").first().textContent(), "Open Configuration");
+    }
     // A failed or timed-out model check leads as one; a refused gateway CLI does not.
     const lead = error.code.startsWith("RUNTIME_MODEL_PROBE_")
       ? "v1 failed its startup model check"

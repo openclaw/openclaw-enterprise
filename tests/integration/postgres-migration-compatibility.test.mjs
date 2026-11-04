@@ -219,6 +219,7 @@ test(
         ["prepared_github_attempts", "prepared_github_attempts_expired_check"],
         ["agent_revisions", "agent_revisions_admitted_snapshot"],
         ["agent_revisions", "agent_revisions_execution_admission"],
+        ["agent_revisions", "agent_revisions_first_deployment_digest"],
         ["repository_session_attempts", "repository_session_attempts_broker_protocol_valid"],
       ]) {
         const create = `CREATE TABLE "occ"."${table}"`;
@@ -1728,13 +1729,14 @@ async function assertUpgradedAuthentication(db) {
 const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 
 // A revision admitted before 0060 carries no execution admission. The upgrade records
-// the unprotected decision it was admitted under; every other stored field stays identical.
+// the unprotected decision it was admitted under. Existing revisions have no first-deployment
+// recovery binding; every other stored revision field stays identical.
 function upgradedCanonicalData(data, prefix) {
   return {
     ...data,
-    // 0066 gives existing Installations the template-user role and preserves binding subjects.
+    // 0067 gives existing Installations the template-user role and preserves binding subjects.
     iam_roles:
-      prefix >= 66 || data.installation.length === 0
+      prefix >= 67 || data.installation.length === 0
         ? data.iam_roles
         : [
             ...data.iam_roles,
@@ -1751,15 +1753,16 @@ function upgradedCanonicalData(data, prefix) {
       value: { namespace_subject_id: null, ...value },
     })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
-      value: Object.hasOwn(value.admitted_spec, "execution_admission")
-        ? value
-        : {
-            ...value,
-            admitted_spec: {
+      value: {
+        ...value,
+        first_deployment_digest: null,
+        admitted_spec: Object.hasOwn(value.admitted_spec, "execution_admission")
+          ? value.admitted_spec
+          : {
               ...value.admitted_spec,
               execution_admission: legacyExecutionAdmission,
             },
-          },
+      },
     })),
   };
 }
@@ -2011,10 +2014,11 @@ test(
       [62, "prePreparedAttemptSettlement"],
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
-      [65, "preInstallationAccessBindings"],
-      [66, "preConnectionTemplates"],
-      [67, "preAgentConnections"],
-      [68, "preConnectionRevocations"],
+      [65, "preAgentDeployIntent"],
+      [66, "preInstallationAccessBindings"],
+      [67, "preConnectionTemplates"],
+      [68, "preAgentConnections"],
+      [69, "preConnectionRevocations"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2039,6 +2043,12 @@ test(
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before, prefix));
+        // Upgrading an existing revision must never invent a recoverable first-deployment intent.
+        const existingBindings = await db.app.query(
+          "SELECT first_deployment_digest FROM occ.agent_revisions",
+        );
+        assert.ok(existingBindings.rows.length > 0);
+        assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
         if (history === "preGatewayManagedMode") {
           await db.app.query(

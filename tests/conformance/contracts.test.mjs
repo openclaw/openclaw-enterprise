@@ -890,18 +890,22 @@ test("every model-probe cause a runtime program publishes is recorded as publish
     ([, list, other]) =>
       [...JSON.parse(`[${list}]`), other].map((detail) => ({ kind: "PROBE_STATUS", detail })),
   );
-  // The Codex check's helper names rate_limit itself, else its caller's token.
+  // The Codex helper can report a rate limit, replace a detail with a provider code,
+  // or keep its caller's token.
   extract(
     /probeFailure\(\s*"PROBE_STATUS",\s*codexRateLimited\(message\) \? "([^"]+)" : detail\)/gu,
     ([, detail]) => [{ kind: "PROBE_STATUS", detail }],
   );
-  extract(/codexProbeStatusFailure\([^"\n]*,\s*"([^"]+)"\)/gu, ([, detail]) => [
+  extract(/if \(summary\.providerCode === "[^"]+"\) detail = "([^"]+)";/gu, ([, detail]) => [
+    { kind: "PROBE_STATUS", detail },
+  ]);
+  extract(/codexProbeStatusFailure\([^"\n]*,\s*"([^"]+)",\s*modelId\)/gu, ([, detail]) => [
     { kind: "PROBE_STATUS", detail },
   ]);
   // A backstop for shapes none of these read. PROCESS_EXIT details are built at run time and
   // pinned by the PROCESS_EXIT tests above.
   for (const call of text.matchAll(
-    /probeFailure\(\s*"(?!PROCESS_EXIT")|codexProbeStatusFailure\((?!message, detail\))/gu,
+    /probeFailure\(\s*"(?!PROCESS_EXIT")|(?<!function )codexProbeStatusFailure\(/gu,
   )) {
     assert.ok(
       read.has(call.index),
@@ -922,6 +926,7 @@ test("every model-probe cause a runtime program publishes is recorded as publish
     "PROBE_STATUS/unexpected-event",
     "PROBE_STATUS/rate_limit",
     "PROBE_STATUS/no_model",
+    "PROBE_STATUS/model_not_found",
     "PROBE_STATUS/other",
     "WRAPPER_ERROR",
   ]) {

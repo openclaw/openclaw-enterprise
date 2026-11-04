@@ -9,7 +9,6 @@ import type {
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
   PreparedGitHubPullResult,
-  RepositoryGitInstallationFence,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
@@ -430,18 +429,6 @@ export async function startPreparedGitHubGitOwner(
     ...(custodySelection.kind === "native-broker" && options.controlSocket !== undefined
       ? { revisionMaterial: (revisionId: string) => store.revisionMaterial(revisionId) }
       : {}),
-    // Worker-only custody transfer to the verified OpenShell provider; never a control RPC.
-    readOpenShellMaterial(
-      revisionId: string,
-      signal: AbortSignal,
-      install?: RepositoryGitInstallationFence,
-    ) {
-      return store.readRecipientMaterial(
-        revisionId,
-        AbortSignal.any([signal, stop.signal]),
-        install,
-      );
-    },
     maintain: () => maintenance.maintain(),
     async close() {
       stop.abort();

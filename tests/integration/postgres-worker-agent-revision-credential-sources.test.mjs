@@ -29,7 +29,7 @@ import {
   withUnavailableIAM,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { gitCommandBodies, gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
-import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
+import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
@@ -3141,10 +3141,10 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         });
         return found ?? (refused && { refused });
       },
-      async approve(request) {
+      async authorizeOnlineRequest(request, installed) {
         assert.equal(request.sessionId, sessionId);
         approved.push(request.operation);
-        return true;
+        return onlineGitAllow(request, installed);
       },
     });
     // Allocate the Agent and independent model grant before starting the short Git clock.

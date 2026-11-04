@@ -11,13 +11,10 @@ import {
   GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
   validateGitHubRepositoryRegistry,
 } from "../../drivers/repo/github/credentials/registry.ts";
-import type { GitHubRepositoryRegistry } from "../../drivers/repo/github/credentials/registry.ts";
 import type {
   GitHubStaticTokenOwner,
   GitHubDriverFactory,
-  GitHubTokenConfiguration,
 } from "../../drivers/repo/github/credentials/types.ts";
-import { createProviderQueue } from "../../drivers/repo/credentials/provider-queue.ts";
 import { loadPublicCa } from "./public-ca.ts";
 import { readProtectedFile } from "./protected-file.ts";
 
@@ -28,16 +25,6 @@ export class RetiredGitHubAuthorityError extends Error {
     );
   }
 }
-
-type SelectedBackend =
-  | {
-      readonly kind: "github-prepared-git-registry";
-      readonly registry: GitHubRepositoryRegistry;
-      readonly socketPath: string;
-      readonly gitOrigin?: string;
-      readonly apiOrigin?: string;
-    }
-  | { readonly kind: "github-token"; readonly configuration: GitHubTokenConfiguration };
 
 /** Development-only static token sessions are capped at eight hours. */
 const developmentTokenMaximumSeconds = 28800;
@@ -69,11 +56,21 @@ export async function loadConfiguration(
     const input: unknown = JSON.parse(raw.toString("utf8"));
     const root = record(input);
     const backendInput = record(root.backend);
-    let selected: SelectedBackend;
     if (backendInput.kind === "github-app" || backendInput.kind === "github-app-registry") {
       throw new RetiredGitHubAuthorityError();
     }
     const config = validateServiceConfig(root);
+    function validateGateway() {
+      const gateway = record(root.gateway);
+      for (const profile of config.sessionPolicy.allowedProfiles) {
+        if (profile !== "git-read" && profile !== "git-write" && profile !== "git-full") {
+          throw new Error("invalid-configuration");
+        }
+      }
+      return gateway;
+    }
+    let factory: LoadedConfiguration["factory"] &
+      Pick<GitHubDriverFactory, "trustedUpstreamOrigins">;
     if (backendInput.kind === "github-prepared-git-registry") {
       if (
         Object.keys(backendInput).some(
@@ -127,15 +124,26 @@ export async function loadConfiguration(
       if (backendInput.gitCaFile !== undefined) {
         upstreamCa = await loadPublicCa(string(backendInput.gitCaFile));
       }
-      selected = {
-        kind: "github-prepared-git-registry",
+      const apiOrigin =
+        backendInput.apiOrigin === undefined ? {} : { apiOrigin: string(backendInput.apiOrigin) };
+      const gateway = validateGateway();
+      cert = await readProtected(string(gateway.tlsCertFile), 131072, false);
+      tlsKey = await readProtected(string(gateway.tlsKeyFile), 65536);
+      createSecureContext({ cert, key: tlsKey, minVersion: "TLSv1.2" });
+      const factoryOptions = {
+        gatewayOrigin: config.gateway.publicOrigin,
+        limits: config.limits,
+        clock,
+      };
+      const { createPreparedGitHubRegistryFactory } =
+        await import("../../drivers/repo/github/credentials/warm-registry-factory.ts");
+      factory = createPreparedGitHubRegistryFactory({
+        ...factoryOptions,
         registry,
         socketPath,
         ...origin,
-        ...(backendInput.apiOrigin === undefined
-          ? {}
-          : { apiOrigin: string(backendInput.apiOrigin) }),
-      };
+        ...apiOrigin,
+      });
     } else {
       const { validateGitHubConfiguration } =
         await import("../../drivers/repo/github/credentials/config.ts");
@@ -148,20 +156,9 @@ export async function loadConfiguration(
       ) {
         throw new Error("invalid-configuration");
       }
-      selected = { kind: "github-token", configuration };
-    }
-    const gateway = record(root.gateway);
-    for (const profile of config.sessionPolicy.allowedProfiles) {
-      if (profile !== "git-read" && profile !== "git-write" && profile !== "git-full") {
-        throw new Error("invalid-configuration");
-      }
-    }
-    if (selected.kind === "github-token") {
+      const gateway = validateGateway();
       // One trailing LF or CRLF (as `gh auth token > file` writes) is not part of the token.
-      token = await readProtected(
-        selected.configuration.tokenFile,
-        config.limits.accessTokenBytes + 2,
-      );
+      token = await readProtected(configuration.tokenFile, config.limits.accessTokenBytes + 2);
       const newline = token.at(-1) !== 0x0a ? 0 : token.at(-2) === 0x0d ? 2 : 1;
       const length = token.length - newline;
       if (length < 1 || length > config.limits.accessTokenBytes) {
@@ -170,42 +167,22 @@ export async function loadConfiguration(
       const { createGitHubStaticTokenOwner } =
         await import("../../drivers/repo/github/credentials/static-token.ts");
       owner = createGitHubStaticTokenOwner({ token: token.subarray(0, length) });
+      cert = await readProtected(string(gateway.tlsCertFile), 131072, false);
+      tlsKey = await readProtected(string(gateway.tlsKeyFile), 65536);
+      createSecureContext({ cert, key: tlsKey, minVersion: "TLSv1.2" });
+      const factoryOptions = {
+        gatewayOrigin: config.gateway.publicOrigin,
+        limits: config.limits,
+        clock,
+      };
+      const { createGitHubDriverFactory } =
+        await import("../../drivers/repo/github/credentials/factory.ts");
+      factory = createGitHubDriverFactory({
+        authority: owner,
+        ...factoryOptions,
+        configuration,
+      });
     }
-    cert = await readProtected(string(gateway.tlsCertFile), 131072, false);
-    tlsKey = await readProtected(string(gateway.tlsKeyFile), 65536);
-    createSecureContext({ cert, key: tlsKey, minVersion: "TLSv1.2" });
-    const factoryOptions = {
-      gatewayOrigin: config.gateway.publicOrigin,
-      limits: config.limits,
-      clock,
-    };
-    let factory: LoadedConfiguration["factory"] &
-      Pick<GitHubDriverFactory, "trustedUpstreamOrigins">;
-    switch (selected.kind) {
-      case "github-prepared-git-registry": {
-        const { createPreparedGitHubRegistryFactory } =
-          await import("../../drivers/repo/github/credentials/warm-registry-factory.ts");
-        factory = createPreparedGitHubRegistryFactory({
-          ...factoryOptions,
-          registry: selected.registry,
-          socketPath: selected.socketPath,
-          ...(selected.gitOrigin === undefined ? {} : { gitOrigin: selected.gitOrigin }),
-          ...(selected.apiOrigin === undefined ? {} : { apiOrigin: selected.apiOrigin }),
-        });
-        break;
-      }
-      case "github-token": {
-        const { createGitHubDriverFactory } =
-          await import("../../drivers/repo/github/credentials/factory.ts");
-        factory = createGitHubDriverFactory({
-          authority: owner!,
-          ...factoryOptions,
-          configuration: selected.configuration,
-        });
-        break;
-      }
-    }
-    const providerQueue = createProviderQueue(config.limits.providerQueue);
     const ownedCert = cert;
     const ownedTlsKey = tlsKey;
     const ownedAuthority = owner;
@@ -213,7 +190,6 @@ export async function loadConfiguration(
       config,
       tls: Object.freeze({ cert: ownedCert, key: ownedTlsKey }),
       factory,
-      providerQueue,
       trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
       ...(upstreamCa === undefined ? {} : { upstreamCa }),
       ...(ownedAuthority?.kind === "github-token"

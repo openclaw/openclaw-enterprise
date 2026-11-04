@@ -4,6 +4,18 @@ Start with the symptom you can observe. When asking an operator for help, give
 them the Namespace, Agent ID, version ID, approximate time, and any request ID
 the console shows. Never include API keys, tokens, or Secret values.
 
+## The configured model is unavailable
+
+Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
+
+For the dedicated Codex quickstart, open **Configuration** → **Edit current Configuration**. In the draft, replace the old model ID in these three places:
+
+- Set `agents.defaults.model` to `codex/<new-id>`.
+- Rename its entry in `agents.defaults.models` to the same prefixed ID. Keep the entry’s Codex runtime settings.
+- Set the corresponding `models.providers.codex.models` entry’s `id` and `name` to the new ID without the prefix.
+
+Save the Configuration and select **Deploy new version** on the same Agent. When deployment succeeds, open **Open Agent UI** and send a prompt to confirm the model replies.
+
 ## The Agent or Namespace is missing
 
 Open **Namespaces** and confirm that you selected the intended Namespace. The

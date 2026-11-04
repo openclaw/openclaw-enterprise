@@ -155,6 +155,7 @@ import type {
   AgentHarnessStatusRead,
   ComputeAgentRevisionBinding,
   AgentRevision,
+  FirstDeploymentReceipt,
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
   AccessBinding,
@@ -1145,6 +1146,29 @@ export interface UpdateConfigurationInput {
 export interface DeployAgentInput {
   readonly namespaceId: string;
   readonly agentId: string;
+}
+
+/** An exact first-admission intent. The key is nonsecret and scoped to the caller and Agent. */
+export interface FirstDeploymentIntent {
+  readonly key: string;
+  readonly expectedConfigurationId: string;
+  readonly expectedGeneration: number;
+}
+
+export type { FirstDeploymentReceipt } from "@openclaw-enterprise/contracts";
+
+interface PreparedDeploymentChannels {
+  readonly configuration: Readonly<Configuration>;
+  readonly configurationDriver: ConfigurationDriver;
+  readonly channel: ChannelDriver | undefined;
+  readonly channelValidator: ChannelDriver["validateCredentials"];
+}
+
+interface FirstDeploymentGuard {
+  readonly digest: string;
+  readonly intent: FirstDeploymentIntent;
+  readonly preparation:
+    { readonly prepared: PreparedDeploymentChannels } | { readonly error: unknown };
 }
 
 export interface DeployAgentAuthorization {
@@ -11698,12 +11722,11 @@ export class OpenClawController {
       input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
-        kind: "agent",
-        id: input.agentId,
-        namespaceId: input.namespaceId,
-      });
+      const target = { kind: "agent", id: input.agentId, namespaceId: input.namespaceId } as const;
+      await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // Namespace IAM writes share this lock. Use the policy after any writer ahead of us.
+      await this.authorize(principalId, "update", target);
       const agent = await state.agents.lockAgent(namespace.id, input.agentId);
       if (!agent) {
         throw new ScopeViolationError(
@@ -11939,6 +11962,201 @@ export class OpenClawController {
     });
   }
 
+  private captureFirstDeploymentRequest(
+    principalId: string,
+    input: DeployAgentInput,
+    intent: FirstDeploymentIntent,
+  ) {
+    // Own only the request scalars, before validation or asynchronous work.
+    const target = { namespaceId: input.namespaceId, agentId: input.agentId };
+    const capturedIntent = intent && {
+      key: intent.key,
+      expectedConfigurationId: intent.expectedConfigurationId,
+      expectedGeneration: intent.expectedGeneration,
+    };
+    if (
+      !capturedIntent ||
+      typeof capturedIntent.key !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(capturedIntent.key) ||
+      !Number.isSafeInteger(capturedIntent.expectedGeneration) ||
+      capturedIntent.expectedGeneration < 1
+    ) {
+      throw new ScopeViolationError("Invalid first-deployment intent.");
+    }
+    if (!isNonEmptyString(target.agentId)) {
+      throw new ScopeViolationError("The exact Agent identity is missing.");
+    }
+    this.configurationIdentity(target.namespaceId, capturedIntent.expectedConfigurationId);
+    const digest = createHash("sha256")
+      .update(
+        JSON.stringify([
+          "agent.deploy-first.v1",
+          this.installation.id,
+          principalId,
+          target.namespaceId,
+          target.agentId,
+          capturedIntent.key,
+          capturedIntent.expectedConfigurationId,
+          capturedIntent.expectedGeneration,
+        ]),
+      )
+      .digest("hex");
+    return { target, intent: capturedIntent, digest };
+  }
+
+  private async authorizeFirstDeploymentReceipt(
+    principalId: string,
+    input: DeployAgentInput,
+    intent: FirstDeploymentIntent,
+  ): Promise<DeployAgentAuthorization> {
+    const authorization = await this.authorize(principalId, "deploy", {
+      kind: "agent",
+      id: input.agentId,
+      namespaceId: input.namespaceId,
+    });
+    await this.authorize(principalId, "read", {
+      kind: "configuration",
+      id: intent.expectedConfigurationId,
+      namespaceId: input.namespaceId,
+    });
+    return authorization;
+  }
+
+  private async lookupFirstDeployment(
+    state: PlatformReadView,
+    principalId: string,
+    input: DeployAgentInput,
+    intent: FirstDeploymentIntent,
+    digest: string,
+  ) {
+    await this.authorizeFirstDeploymentReceipt(principalId, input, intent);
+    await this.exactNamespace(state, input.namespaceId);
+    const agent = await state.agents.findAgent(input.namespaceId, input.agentId);
+    if (!agent) {
+      throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+    }
+    const receipt = await state.revisions.findFirstDeploymentReceipt(
+      input.namespaceId,
+      input.agentId,
+      digest,
+    );
+    return { agent, receipt };
+  }
+
+  async recoverAgentFirstDeployment(
+    principalId: string,
+    input: DeployAgentInput,
+    intent: FirstDeploymentIntent,
+  ): Promise<Readonly<FirstDeploymentReceipt> | null> {
+    const {
+      target,
+      intent: capturedIntent,
+      digest,
+    } = this.captureFirstDeploymentRequest(principalId, input, intent);
+    return this.read(
+      async (state) =>
+        (await this.lookupFirstDeployment(state, principalId, target, capturedIntent, digest))
+          .receipt ?? null,
+    );
+  }
+
+  async deployAgentFirst(
+    principalId: string,
+    input: DeployAgentInput,
+    intent: FirstDeploymentIntent,
+    resolveHarness: HarnessResolver,
+    auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
+  ): Promise<Readonly<FirstDeploymentReceipt>> {
+    if (this.transactionContext.getStore() !== undefined) {
+      throw new ResourceConflictError(
+        "Guarded channel validation must run outside a controller transaction.",
+      );
+    }
+    const {
+      target,
+      intent: capturedIntent,
+      digest,
+    } = this.captureFirstDeploymentRequest(principalId, input, intent);
+    // Receipt, draft, and history must come from the same read snapshot. In
+    // PostgreSQL this is one REPEATABLE READ transaction, before provider I/O.
+    const initial = await this.read(async (state) => {
+      const { agent, receipt } = await this.lookupFirstDeployment(
+        state,
+        principalId,
+        target,
+        capturedIntent,
+        digest,
+      );
+      if (receipt !== undefined) {
+        return { receipt };
+      }
+      if (agent.status !== "active") {
+        throw new AgentDeletingError();
+      }
+      if (agent.configurationId !== capturedIntent.expectedConfigurationId) {
+        throw new ResourceStateConflictError(
+          "The Agent uses a different Configuration. Recover the original first-deployment receipt after an uncertain result, then review the current binding before deploying.",
+        );
+      }
+      if ((await state.revisions.listRevisionMetadata(target.namespaceId, agent.id)).length !== 0) {
+        throw new ResourceStateConflictError(
+          "The Agent already has revision history. Recover the original first-deployment receipt after an uncertain result; use ordinary deploy only for an intentional later revision.",
+        );
+      }
+      if (agent.desiredRuntimeState !== "stopped") {
+        throw new ResourceStateConflictError(
+          "The Agent is not stopped. Recover the original first-deployment receipt after an uncertain result and inspect deployment status before proceeding.",
+        );
+      }
+      const metadata = await state.configurations.findConfiguration(
+        target.namespaceId,
+        capturedIntent.expectedConfigurationId,
+      );
+      if (!metadata || metadata.generation !== capturedIntent.expectedGeneration) {
+        throw new ResourceStateConflictError(
+          "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
+        );
+      }
+      return { metadata };
+    });
+    if (initial.receipt !== undefined) {
+      return initial.receipt;
+    }
+    let preparation: FirstDeploymentGuard["preparation"];
+    try {
+      preparation = {
+        prepared: await this.prepareDeploymentChannels(principalId, target, initial.metadata),
+      };
+    } catch (error) {
+      // A concurrent matching admission wins over a fresh-only preparation failure.
+      // Reauthorize and look up its receipt under the Agent lock before surfacing it.
+      preparation = { error };
+    }
+    const result = await this.admitAgentDeployment(
+      principalId,
+      target,
+      resolveHarness,
+      auditEvent,
+      {
+        digest,
+        intent: capturedIntent,
+        preparation,
+      },
+    );
+    if (!("revision" in result)) {
+      return result;
+    }
+    const { revision } = result;
+    return Object.freeze({
+      revisionId: revision.id,
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      configurationId: revision.configurationId,
+      configurationGeneration: revision.configurationGeneration,
+      createdAt: revision.createdAt,
+    });
+  }
+
   async deployAgent(
     principalId: string,
     input: DeployAgentInput,
@@ -11952,8 +12170,9 @@ export class OpenClawController {
     namespaceId: string,
     configuration: Pick<Configuration, "values" | "secretBindings">,
     driverFailure: () => SecretDriverOwnershipError,
+    driver = this.selections.get("channel")?.driver as ChannelDriver | undefined,
+    authorizeUse?: () => Promise<void>,
   ): Promise<void> {
-    const driver = this.selections.get("channel")?.driver as ChannelDriver | undefined;
     if (driver?.validateCredentials === undefined) {
       return undefined;
     }
@@ -11983,10 +12202,13 @@ export class OpenClawController {
       if (storage.withValue === undefined) {
         throw new ChannelCredentialError("unavailable", path);
       }
+      await authorizeUse?.();
+      await this.authorize(principalId, "operate", source);
       const outcome = await this.secretOperation(() =>
         storage.withValue!(secret, async (value) => {
           // Reauthorize after backend I/O and before sending a credential to its provider.
           try {
+            await authorizeUse?.();
             await this.authorize(principalId, "operate", source);
             await validate(value);
             return undefined;
@@ -12004,6 +12226,22 @@ export class OpenClawController {
         throw outcome.error;
       }
     });
+  }
+
+  private assertPreparedDeploymentDrivers(prepared: PreparedDeploymentChannels): void {
+    const configuration = this.selections.get("configuration");
+    const channel = this.selections.get("channel");
+    if (
+      configuration?.driver !== prepared.configurationDriver ||
+      !this.unchangedDriver(configuration) ||
+      channel?.driver !== prepared.channel ||
+      (channel !== undefined && !this.unchangedDriver(channel)) ||
+      prepared.channel?.validateCredentials !== prepared.channelValidator
+    ) {
+      throw new ResourceStateConflictError(
+        "The selected Drivers changed after guarded validation.",
+      );
+    }
   }
 
   private async validateDeploymentChannels(
@@ -12030,9 +12268,27 @@ export class OpenClawController {
       });
       return state.configurations.findConfiguration(input.namespaceId, agent.configurationId);
     });
+    await this.prepareDeploymentChannels(principalId, input, metadata);
+  }
+
+  private async prepareDeploymentChannels(
+    principalId: string,
+    input: DeployAgentInput,
+    metadata:
+      | Readonly<
+          Pick<
+            Configuration,
+            "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
+          >
+        >
+      | undefined,
+  ): Promise<PreparedDeploymentChannels> {
     if (metadata?.kind !== "agent") {
       throw new ScopeViolationError("The Agent Configuration is unavailable.");
     }
+    const namespaceId = input.namespaceId;
+    const agentId = input.agentId;
+    const configurationId = metadata.id;
     const configurationDriver = this.configurationDriver();
     const configuration = this.exactConfiguration(
       await this.driverOperation(() => configurationDriver.read(metadata)),
@@ -12045,12 +12301,28 @@ export class OpenClawController {
     // would, as provisioning does (findings 2506, 2516).
     this.requireBundledChannelBindings(configuration.values, configuration.secretBindings ?? {});
     await configurationDriver.validate(configuration);
-    return this.validateChannelCredentials(
+    const channel = this.selections.has("channel") ? this.selectedDriver("channel") : undefined;
+    const channelValidator = channel?.validateCredentials;
+    await this.validateChannelCredentials(
       principalId,
-      input.namespaceId,
+      namespaceId,
       configuration,
       () => new SecretBindingDriverError(),
+      channel,
+      async () => {
+        await this.authorize(principalId, "deploy", {
+          kind: "agent",
+          id: agentId,
+          namespaceId,
+        });
+        await this.authorize(principalId, "read", {
+          kind: "configuration",
+          id: configurationId,
+          namespaceId,
+        });
+      },
     );
+    return { configuration, configurationDriver, channel, channelValidator };
   }
 
   async deployAgentWithAuthorization(
@@ -12059,13 +12331,38 @@ export class OpenClawController {
     resolveHarness: HarnessResolver,
     auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
   ): Promise<Readonly<AuthorizedAgentDeployment>> {
+    return this.admitAgentDeployment(principalId, input, resolveHarness, auditEvent);
+  }
+
+  private async admitAgentDeployment(
+    principalId: string,
+    input: DeployAgentInput,
+    resolveHarness: HarnessResolver,
+    auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
+  ): Promise<Readonly<AuthorizedAgentDeployment>>;
+  private async admitAgentDeployment(
+    principalId: string,
+    input: DeployAgentInput,
+    resolveHarness: HarnessResolver,
+    auditEvent: ((result: Readonly<AuthorizedAgentDeployment>) => AuditEvent) | undefined,
+    first: FirstDeploymentGuard,
+  ): Promise<Readonly<AuthorizedAgentDeployment> | Readonly<FirstDeploymentReceipt>>;
+  private async admitAgentDeployment(
+    principalId: string,
+    input: DeployAgentInput,
+    resolveHarness: HarnessResolver,
+    auditEvent?: (result: Readonly<AuthorizedAgentDeployment>) => AuditEvent,
+    first?: FirstDeploymentGuard,
+  ): Promise<Readonly<AuthorizedAgentDeployment> | Readonly<FirstDeploymentReceipt>> {
     if (!isNonEmptyString(input.agentId)) {
       throw new ScopeViolationError("The exact Agent identity is missing.");
     }
-    await this.validateDeploymentChannels(principalId, input);
+    if (first === undefined) {
+      await this.validateDeploymentChannels(principalId, input);
+    }
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      const authorization = await this.authorize(principalId, "deploy", {
+      let authorization = await this.authorize(principalId, "deploy", {
         kind: "agent",
         id: input.agentId,
         namespaceId: input.namespaceId,
@@ -12077,7 +12374,62 @@ export class OpenClawController {
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       }
-      await this.guardAgentProvisioning(state, namespace.id, agent.id, true);
+      if (first === undefined) {
+        await this.guardAgentProvisioning(state, namespace.id, agent.id, true);
+      }
+      const lockedAgent = await state.agents.lockAgent(namespace.id, agent.id);
+      if (!lockedAgent) {
+        throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+      }
+      let prepared: PreparedDeploymentChannels | undefined;
+      if (first !== undefined) {
+        authorization = await this.authorizeFirstDeploymentReceipt(
+          principalId,
+          input,
+          first.intent,
+        );
+        const receipt = await state.revisions.findFirstDeploymentReceipt(
+          namespace.id,
+          lockedAgent.id,
+          first.digest,
+        );
+        if (receipt !== undefined) {
+          return receipt;
+        }
+        if (lockedAgent.status !== "active") {
+          throw new AgentDeletingError();
+        }
+        if ("error" in first.preparation) {
+          throw first.preparation.error;
+        }
+        prepared = first.preparation.prepared;
+        this.assertPreparedDeploymentDrivers(prepared);
+        if (lockedAgent.configurationId !== first.intent.expectedConfigurationId) {
+          throw new ResourceStateConflictError(
+            "The Agent uses a different Configuration. Recover the original first-deployment receipt after an uncertain result, then review the current binding before deploying.",
+          );
+        }
+        if (
+          (await state.revisions.listRevisionMetadata(namespace.id, lockedAgent.id)).length !== 0
+        ) {
+          throw new ResourceStateConflictError(
+            "The Agent already has revision history. Recover the original first-deployment receipt after an uncertain result; use ordinary deploy only for an intentional later revision.",
+          );
+        }
+        if (lockedAgent.desiredRuntimeState !== "stopped") {
+          throw new ResourceStateConflictError(
+            "The Agent is not stopped. Recover the original first-deployment receipt after an uncertain result and inspect deployment status before proceeding.",
+          );
+        }
+        if (
+          prepared.configuration.id !== first.intent.expectedConfigurationId ||
+          prepared.configuration.generation !== first.intent.expectedGeneration
+        ) {
+          throw new ResourceStateConflictError(
+            "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
+          );
+        }
+      }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -12093,8 +12445,7 @@ export class OpenClawController {
       }
       const sandbox = this.sandboxDriver();
 
-      const lockedAgent = await state.agents.lockAgent(namespace.id, agent.id);
-      if (!lockedAgent || !isNonEmptyString(lockedAgent.servicePrincipalId)) {
+      if (!isNonEmptyString(lockedAgent.servicePrincipalId)) {
         throw new ScopeViolationError(
           "The Agent or its service principal does not belong to the exact Namespace.",
         );
@@ -12122,6 +12473,11 @@ export class OpenClawController {
           "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
         );
       }
+      if (prepared !== undefined && metadata.generation !== prepared.configuration.generation) {
+        throw new ResourceStateConflictError(
+          "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
+        );
+      }
       const configurationDriver = this.configurationDriver();
       const configuration = this.exactConfiguration(
         await this.driverOperation(() =>
@@ -12129,6 +12485,14 @@ export class OpenClawController {
         ),
         metadata,
       );
+      if (prepared !== undefined && !isDeepStrictEqual(configuration, prepared.configuration)) {
+        throw new ResourceStateConflictError(
+          "The Configuration changed after credential validation. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
+        );
+      }
+      if (first !== undefined) {
+        await this.guardAgentProvisioning(state, namespace.id, agent.id, true);
+      }
       const configuredHarnessId = resolveConfiguredHarnessId(
         configuration.values,
         this.modelPolicyAgent(lockedAgent.executionMode, resolveHarness),
@@ -12307,10 +12671,12 @@ export class OpenClawController {
           binding.repositoryRef,
         );
         if (approval) {
+          const admission = this.installationRepositoryAdmission;
           const resolved = this.resolveRepositoryBindings(
             namespace.id,
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
+            admission?.policy === this.selections.get("repo")?.driver ? admission : undefined,
           )!;
           const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,
@@ -12501,6 +12867,10 @@ export class OpenClawController {
         throw new ConfigurationHarnessError(GATEWAY_MANAGED_MODE_UNSUPPORTED);
       }
       const computeAdmission = compute.admitRevision?.(freezeAgentRevision(revisionDraft));
+      // Database locks do not freeze process-local selections across awaited Driver calls.
+      if (prepared !== undefined) {
+        this.assertPreparedDeploymentDrivers(prepared);
+      }
       const revision = await state.revisions.createRevision(
         freezeAgentRevision({
           ...revisionDraft,
@@ -12509,6 +12879,7 @@ export class OpenClawController {
             ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
           },
         }),
+        first?.digest,
       );
       const running = await state.agents.transitionAgentDesiredRuntimeState(
         namespace.id,

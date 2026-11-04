@@ -34,7 +34,7 @@ import { fileURLToPath } from "node:url";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { PUBLIC_GITHUB_READ_SKILL } from "../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { createHarnessConfiguration } from "../../tests/helpers/harness-configuration.mjs";
 import { installPublicGithubReadFixture } from "../../tests/helpers/public-github-read-k3d.mjs";
 import {

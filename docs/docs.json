@@ -378,6 +378,10 @@
                             "page": "reference/drivers/kubernetes-compute/configuration",
                             "label": "Configuration"
                           },
+                        {
+                            "page": "reference/drivers/kubernetes-compute/model-provider",
+                            "label": "Model Provider"
+                        },
                           {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
@@ -1090,6 +1094,7 @@
               "guides/deploy/google-gmail-connection",
               "guides/deploy/local-openshell-images",
               "guides/deploy/local-kubernetes-tools",
+              "guides/operate/local-setup-troubleshooting",
               "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",
@@ -1154,6 +1159,7 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/populated-controller-return",
               "testing/slack",
               "testing/plugins",
               "testing/openshell",

@@ -410,7 +410,8 @@ test(
       );
       value["routes"] = routes;
       value["owner"] = {
-        readOpenShellMaterial: peer.prepared.readOpenShellMaterial,
+        readOpenShellMaterial: async () =>
+          assert.fail("an unresolved reservation must not read prepared material"),
         authorizeOnlineRequest: async () =>
           assert.fail("reservation recovery is not a recorded use"),
       };
@@ -450,8 +451,6 @@ test(
       reason: "write_unknown",
     });
     await peer.prepared.maintain();
-    const material = await peer.prepared.readOpenShellMaterial(revision.id, t.signal);
-    assert.ok(!material || "absent" in material);
     for (const value of [first, cold]) {
       assert.equal(
         await value.lookup(

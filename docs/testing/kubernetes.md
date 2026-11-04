@@ -2,12 +2,12 @@
 
 ## Overview
 
-Run Kubernetes installation and runtime tests on a disposable local k3d cluster with enforcing NetworkPolicies. The fixture suite excludes a real gateway and model. The runtime suite includes them.
+Use disposable local k3d with enforcing NetworkPolicies. Fixtures exclude real gateways/models; runtime tests include them.
 
 ## Local Kubernetes installation
 
 Install k3d, kubectl, Helm, `certutil`, and Chromium with sandbox support.
-Use a disposable container engine with enough capacity to build images. The
+Use a disposable container engine with image-build capacity. The
 Keycloak cases need free, bindable loopback port 443 and must not run beside
 the standalone Keycloak lane. From the root of a trusted repository checkout,
 install the dependencies and build the CLI before running:
@@ -25,10 +25,9 @@ state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-
 
 ## Kubernetes HTTP fixture
 
-Install Docker, k3d and `kubectl`, and prepare the dedicated migrated database
-in [PostgreSQL](postgresql.md#other-postgresql-suites). Use Kubernetes 1.35 or
-later. Choose a new cluster name if `oce` exists. These commands do not change
-the default kubeconfig or context.
+Use Kubernetes 1.35+, Docker, k3d, `kubectl`, and a
+[dedicated migrated database](postgresql.md#other-postgresql-suites). Choose a new
+cluster name if `oce` exists. These commands preserve the default kubeconfig and context.
 
 ```sh
 mkdir -m 700 -p /tmp/oce-k3d
@@ -52,9 +51,9 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
     tests/integration/kubernetes-compute-driver-real.test.mjs
 ```
 
-All fixture cases must pass without skips. Missing all cluster selectors skips;
-partial selectors fail. A missing database skips database cases. Run files
-sequentially: they share a database. The suite checks API, worker, Driver, RBAC,
+All fixture cases must pass without skips. Missing selectors skip; partial
+selectors fail. A missing database skips its cases. Run files sequentially
+because they share a database. The suite checks API, worker, Driver, RBAC,
 storage, lifecycle and network isolation, not live OAuth/models, cloud volume
 detach or node fencing.
 
@@ -69,9 +68,23 @@ When finished, delete only the cluster you created:
 k3d cluster delete oce
 ```
 
+### Installation handoff
+
+With Helm, `yq`, the `go.mod` toolchain, and the cluster above:
+
+```sh
+OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
+OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
+  node --test tests/integration/installation-handoff-k3d-real.test.ts
+```
+
+This builds `occ` and checks rendered Jobs, named-read RBAC, and replacement UIDs.
+Suspended Jobs need no database/model credentials; migration/bootstrap and runtime
+remain unproved.
+
 ### Production workload network access
 
-With the fixture cluster and image above, install Helm and `yq`, then run:
+Use an exclusive fixture cluster with `oce-system` and `envoy-gateway-system` available. Install Helm and `yq`, then run:
 
 ```sh
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
@@ -80,10 +93,9 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
   node --test tests/integration/production-network-access.test.mjs
 ```
 
-This needs no database or model credential. It checks the chart's actual
-NetworkPolicies with reachable controls. It does not prove controller startup,
-database authentication, provider behavior, or a production Helm installation.
-Policies for other releases are outside the chart's selectors.
+Live listeners verify chart and quickstart NetworkPolicies, supervisor grant withdrawal,
+and loss of namespace ownership. Selectors exclude other releases.
+No database or model credentials are required.
 
 ## Kubernetes model turns and Secrets
 

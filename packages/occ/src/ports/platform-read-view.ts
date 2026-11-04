@@ -76,6 +76,7 @@ export function createPlatformReadView(
       "listAgentReferences",
     ]),
     revisions: bindRepository(repositories.revisions, lifetime, [
+      "findFirstDeploymentReceipt",
       "findRevision",
       "listRevisions",
       "findRevisionForBrowsing",

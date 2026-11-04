@@ -84,6 +84,10 @@ Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 - `revision_number`
 - `backend_id`
 - `gateway_managed_mode`
+- `first_deployment_digest`: nullable SHA-256 intent digest, permitted only on revision 1;
+  binds the Installation, actor, Namespace, Agent, key, and reviewed Configuration tuple.
+  Private [receipt recovery](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
+  metadata, separate from `admitted_spec` and public revision responses.
 - `admitted_spec`
 - `admitted_at`
 
@@ -296,22 +300,36 @@ Records the person who consented, the approved template version, and the optiona
 - `connection_template_id`
 - `connection_template_version`
 - `created_at`
+- `revocation_requested_by`
+- `revoked_at`
 
 ### `connection_sessions`
 
-Stores pending browser connections by the SHA-256 of their `state`; each is consumed at most once.
+OCC looks up a pending connection by the SHA-256 hash of its OAuth state. Only the initiating user and browser session can complete it.
 
 - `state_hash`
 - `namespace_id`
 - `agent_id`
 - `credential_source_id`
-- `secret_id`
+- `private_state`
+- `issuer_required`
+- `session_id`
+- `redirect_uri`
 - `actor_id`
 - `connection_template_id`
 - `connection_template_version`
 - `created_at`
 - `expires_at`
-- `consumed_at`
+
+### `connection_token_custody`
+
+Records the Token Service’s secret reference for a saved connection, its published access token version, and when refresh is due.
+
+- `namespace_id`
+- `credential_source_id`
+- `secret_ref`
+- `published_version`
+- `next_refresh_at`
 
 ### `credential_source_secrets`
 
