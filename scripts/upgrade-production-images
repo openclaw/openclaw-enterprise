@@ -20,6 +20,7 @@ image fields are selected only by the image flags. A controller-only upgrade
 does not deploy Agent revisions. A runtime upgrade restarts OCC on its current image,
 then redeploys every Agent that was running when the command began. Resume with
 the same arguments and evidence directory after inspecting any unknown outcomes.
+Completed upgrades cannot be resumed; retain their completed evidence marker.
 Keep the runtime upgrade's sibling <evidence-directory>.dispatch-state journal
 with the operator. Preserve it separately from backups of the evidence directory.
 Use --preflight-only to check the candidate before the maintenance window. It
@@ -603,6 +604,8 @@ print(json.dumps(values, sort_keys=True))
 PYTHON
   )
   [[ "$parameters" == "$original_parameters" ]] || die "resume evidence directory, inputs, kubeconfig, CA, scripts, image rule, chart, or flow changed; use the original evidence directory and investigate before continuing."
+  [[ ! -e "$evidence_dir/completed" && ! -L "$evidence_dir/completed" ]] ||
+    die "a completion marker exists; this upgrade cannot be resumed. Preserve its evidence and investigate if completion was unexpected."
   [[ -f "$evidence_dir/prepared" ]] || die "evidence is not a prepared deployment. Inspect it and any remaining temporary preflight resources, then start with a new evidence directory."
 fi
 
@@ -2080,6 +2083,13 @@ fi
 helm status "$release" "${helm_args[@]}" >"$evidence_dir/after-helm-status.txt"
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
   --output json >"$evidence_dir/after-workloads.json"
+# Record the terminal state only after every required check and evidence read.
+# A lost final console message must not permit another run after the window closes.
+(
+  set -o noclobber
+  : >"$evidence_dir/completed"
+) ||
+  die "could not record upgrade completion; preserve the evidence and investigate before recovery."
 if [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
   printf 'Upgraded controller and runtime images; %s running Agents selected new revisions.\n' "$target_count"
 elif [[ -n "$runtime_image" ]]; then

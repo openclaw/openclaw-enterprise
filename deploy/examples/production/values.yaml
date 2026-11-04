@@ -42,6 +42,8 @@ api:
   # channelDirectoryProxyUrl: http://198.51.100.25:3128
   # Optional; see model discovery in docs/reference/console/create-and-deploy.md.
   modelDiscoveryCidrs: []
+  # Optional MCP plugin discovery HTTPS hosts; see docs/guides/topics/plugins-configure.md.
+  pluginDiscoveryCidrs: []
   # Optional: trust client-address headers from ingress-nginx, an AWS ALB, or a
   # generic proxy. See docs/reference/settings/production.md.
   # trustedProxy:

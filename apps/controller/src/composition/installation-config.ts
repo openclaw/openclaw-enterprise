@@ -20,6 +20,7 @@ import {
   chartListeners,
   InstallationFieldError,
   type InstallationFieldDetail,
+  requireChartGatewayRouting,
   requireChartListener,
 } from "./installation-fields.ts";
 import {
@@ -1021,6 +1022,12 @@ export async function loadInstallationConfiguration(options: {
     computePackage?.implementation ?? (sshCompute ? "occ/ssh" : "occ/kubernetes"),
     computePackage?.module ?? (sshCompute ? SshComputeDriver : KubernetesComputeDriver),
   );
+  if (kubernetesCompute) {
+    requireChartGatewayRouting(
+      (compute.configuration as unknown as KubernetesComputeDriverOptions).gatewayRouting,
+      environment,
+    );
+  }
   const secret = selected(
     secretSelection,
     "secret",

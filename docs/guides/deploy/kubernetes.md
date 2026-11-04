@@ -1,8 +1,9 @@
 # Deploy on standard Kubernetes
 
 Prepare an existing Kubernetes cluster for OpenClaw Enterprise (OCE), then run
-[the shared Helm installation](production-installation.md). For AWS managed
-Kubernetes, use the [Amazon EKS guide](eks-openshell-setup.md).
+[the custom Helm installation](production-installation.md). To install with
+OpenShell and use the shared first-Agent session, follow
+[Kubernetes setup](kubernetes-setup.md) or the [Amazon EKS guide](eks-openshell-setup.md).
 
 ## Prepare the cluster
 
@@ -112,8 +113,8 @@ that port. With the default 443, the API and worker fail with
 ## Configure the protected copies and install
 
 Continue with [production installation](production-installation.md), retaining
-this shell's context. At its **Configure the Installation** step, edit the copied
-examples for your cluster:
+this shell's context. At its **Configure the Installation** step, set these values
+in the profile input and rerender, or edit the copied manual examples:
 
 - Set `controlPlane.nodeSelector` and
   `drivers.compute.configuration.runtime.gatewayNodeSelector` to the trusted
