@@ -12,8 +12,9 @@
     "tests/browser/console-shell.test.ts",
     "tests/browser/console-json-error-feedback.test.ts",
     "tests/browser/console-agent-detail-2.test.mjs",
+    "tests/browser/console-workspace-editor.test.ts",
     "tests/browser/console-agent-detail.test.mjs",
-    "tests/browser/console-agent-deploy-again.test.mjs",
+    "tests/browser/console-agent-deploy-again.test.ts",
     "tests/browser/console-agent-logs.test.ts",
     "tests/browser/console-agent-repositories.test.ts",
     "tests/integration/repository-credentials-github-prepared.test.mjs",
@@ -43,10 +44,13 @@
       "path": "tests/browser/console-agent-detail.test.mjs"
     },
     {
-      "path": "tests/browser/console-agent-deploy-again.test.mjs"
+      "path": "tests/browser/console-agent-deploy-again.test.ts"
     },
     {
       "path": "tests/browser/console-agent-detail-2.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-workspace-editor.test.ts"
     },
     {
       "path": "tests/browser/console-agent-logs.test.ts"

@@ -12,7 +12,15 @@
     "erasableSyntaxOnly": true,
     "tsBuildInfoFile": "../.build/scripts/tsconfig.tsbuildinfo",
     "paths": {
-      "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"]
+      "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"],
+      "/console/agents/plugin-fields.mjs": [
+        "../apps/controller/src/console/agents/plugin-fields.mts"
+      ],
+      "/console/console.mjs": ["../apps/controller/src/console/console.mts"],
+      "/console/agents/plugin-fields.production.mjs": [
+        "../apps/controller/src/console/agents/plugin-fields.mts"
+      ],
+      "/storybook-fixtures/scenarios.mjs": ["./console-storybook/public/scenarios.mjs"]
     }
   },
   "include": [
@@ -22,6 +30,7 @@
     "docs-site/compute-matrix.ts",
     "module-boundaries/*.ts",
     "console-storybook/prepare-assets.ts",
+    "console-storybook/plugin-fields.storybook-wrapper.mts",
     "console-storybook/public/**/*.mts"
   ],
   "references": [
