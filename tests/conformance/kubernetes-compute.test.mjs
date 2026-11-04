@@ -1040,6 +1040,7 @@ function dedicatedFirstDeployFixture({
   statusProxy = true,
   clock,
   modelEndpoint,
+  harnessAuthorizedEndpoint,
   modelProtocol = "openai-responses",
   standaloneWebSearch,
   sandboxDriver,
@@ -1175,7 +1176,13 @@ function dedicatedFirstDeployFixture({
     },
     ...revisionOverrides,
   });
-  if (modelEndpoint !== undefined && revision.harnessAuth.method === "api_key") {
+  if (harnessAuthorizedEndpoint !== undefined && revision.harnessAuth.method === "api_key") {
+    const endpoint = new URL(harnessAuthorizedEndpoint);
+    revision.harnessAuth = {
+      ...revision.harnessAuth,
+      authorizedEndpoint: endpoint.origin + endpoint.pathname.replace(/\/$/u, ""),
+    };
+  } else if (modelEndpoint !== undefined && revision.harnessAuth.method === "api_key") {
     const endpoint = new URL(modelEndpoint);
     revision.harnessAuth = {
       ...revision.harnessAuth,
@@ -1556,7 +1563,6 @@ test("embedded subagent model rows cannot override the shared provider destinati
     baseUrl: "https://other.example.test/v1",
   });
   const fixture = dedicatedFirstDeployFixture({
-    modelEndpoint: "https://models.example.test/v1",
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
       configuration,
@@ -1582,7 +1588,10 @@ test("shared OpenAI provider leaves a roster-selected Anthropic provider unchang
     models: [{ id: "claude-fixture", name: "Fixture" }],
   };
   const fixture = dedicatedFirstDeployFixture({
+    // The roster selects Anthropic, so the credential authorizes the Anthropic destination;
+    // the Installation keeps its own provider and the shared OpenAI row stays as rendered.
     modelEndpoint: "https://models.example.test/v1",
+    harnessAuthorizedEndpoint: "https://api.anthropic.com",
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
       configuration,
@@ -13652,6 +13661,48 @@ test("endpoint authorization checks every effective embedded model destination",
   );
 });
 
+test("Installation-equal authorization still checks configured alias model rows", () => {
+  const installation = "https://allowed.example.test/v1";
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        modelProvider: { protocol: "openai-responses", baseUrl: installation },
+      },
+    }),
+  );
+  const configuration = {
+    agents: { defaults: { model: "router/provider-model" } },
+    models: {
+      providers: {
+        router: {
+          baseUrl: installation,
+          api: "openai-responses",
+          apiKey: "${OCE_MODEL_API_KEY}",
+          models: [{ id: "provider-model", baseUrl: "https://other.example.test/v1" }],
+        },
+      },
+    },
+  };
+
+  // Matching the Installation endpoint must not exempt a configured alias row from the check.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        { ...apiKeyAuth, authorizedEndpoint: installation },
+        configuration,
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting harnessAuth.authorizedEndpoint must match every effective model destination.",
+    },
+  );
+});
+
 test("endpoint authorization uses the configured Messages adapter", () => {
   const driver = createKubernetesComputeDriver(options());
   const configuration = {
@@ -24122,7 +24173,7 @@ test("an active embedded revision whose stored Gateway tool policy predates the 
   assert.throws(() => driver.validateConfiguration(revision.configuration), refused, "save");
 });
 
-test("custom Codex endpoint authorization is required before provisioning and overrides the Installation fallback", async () => {
+test("custom Codex endpoint authorization is required and does not override Installation routing", async () => {
   const fallback = "https://installation.example.test/v1";
   const missing = dedicatedFirstDeployFixture({ modelEndpoint: fallback });
   delete missing.revision.harnessAuth.authorizedEndpoint;
@@ -24142,12 +24193,10 @@ test("custom Codex endpoint authorization is required before provisioning and ov
   const runtime = [...fixture.objects.values()].find(
     (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
   );
+  // Endpoint metadata authorizes the credential; the Installation model provider still routes.
   assert.deepEqual(JSON.parse(runtime.data["runtime.json"]).modelEndpoint, {
-    baseUrl: selected,
+    baseUrl: fallback,
     modelProvider: "openai-compatible",
+    supportsStandaloneWebSearch: true,
   });
-  assert.equal(
-    runtime.data["config.toml"].includes("supports_standalone_web_search = true"),
-    false,
-  );
 });

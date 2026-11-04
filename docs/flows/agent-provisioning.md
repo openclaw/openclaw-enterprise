@@ -62,9 +62,7 @@ policy through `apps/controller/src/console/agents/harness-auth.mjs:configuredHa
 
 The Slack modal immediately saves new tokens through `POST /namespaces/:namespaceId/secrets`, before an Agent exists, then clears entered values. Apply stages references and environment bindings; Cancel discards selections but retains created Secrets. Model discovery uses an API key or service account token without saving it. Create Agent runs its preflight, then saves it as a Namespace Secret, clears the input, and reuses the reference on retries. Bound Presets retain their credential/provider. A lost Secret-save response requires recovery, not automatic repetition.
 
-Custom Responses selection in `apps/controller/src/console/agents/create.mts:renderCreateAgent`
-clears credentials and model IDs when the endpoint changes. Secret creation records
-`authorizedEndpoint`; the Agent API-key binding carries the same normalized value.
+The Agent API-key binding carries the Secret's normalized `authorizedEndpoint`.
 `packages/occ/src/index.ts:authorizeHarnessAuthSource` compares the binding with
 immutable Secret metadata. Source registration asks
 `CredentialGatewayDriver.describeSourceDestinations` before reading any key.
@@ -73,9 +71,11 @@ The worker repeats the comparison in
 `resolveRevisionCredentialSource`, before Compute receives delivery references.
 Kubernetes Compute validates the provider endpoint during admission and preparation.
 
-A selected Credential Gateway's catalog directs Console to register the model
-Secret before source-backed provisioning. [Console recovery](../reference/console/create-and-deploy.md)
-reuses confirmed sources and safely retries uncertain registration.
+The Console flow that collects the endpoint and endpoint-specific credential is
+documented with the UI follow-up (#4544). A selected Credential Gateway's catalog directs
+Console to register the model Secret before source-backed provisioning.
+[Console recovery](../reference/console/create-and-deploy.md) reuses confirmed sources and
+safely retries uncertain registration.
 Installation discovery preserves catalog metadata.
 
 Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
