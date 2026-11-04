@@ -8,6 +8,7 @@ import { IsSchema } from "typebox/schema";
 import { Check } from "typebox/value";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type { ControllerWorkspaceFileReadRequest } from "../../apps/controller/src/gateway/contracts.ts";
+import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import {
   AgentResponse,
   AgentRevisionResponse,
@@ -932,11 +933,16 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   // A denied retry read must retain the prior saved fact, but retire revoked metadata.
   const deniedRead = restrict(fixture.policy, "read", "agent", { resourceId: agent.id });
   requests.length = 0;
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
   const refusedRead = page.waitForResponse(
-    (response) => response.url().endsWith(`/agents/${agent.id}`) && response.status() === 403,
+    (response) => response.url() === agentUrl && response.request().method() === "GET",
   );
   await page.getByRole("button", { name: "Retry credential access" }).click();
-  const requestId = text(object(object(await (await refusedRead).json()).meta).requestId);
+  const response = await refusedRead;
+  assert.equal(response.status(), 403, "Retry credential access must receive a denied Agent GET");
+  const body: unknown = await response.json();
+  assert.ok(Check(ErrorResponse, body), "Denied Agent GET must return an error envelope");
+  const requestId = body.meta.requestId;
   await page
     .getByText(
       "Authentication source saved. Could not read the Agent before retrying credential access. No access grant was sent.",
@@ -965,7 +971,6 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   // Freshly read saved authentication must still refuse a changed service principal.
   const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
   assert.notEqual(other.servicePrincipalId, agent.servicePrincipalId);
-  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
   await page.route(agentUrl, async (route) => {
     const response = await route.fetch();
     assert.equal(response.status(), 200);
