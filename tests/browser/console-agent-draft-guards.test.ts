@@ -253,8 +253,9 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
     "outside.example.org",
   );
   const unchanged = await fixture.request("GET", base);
-  assert.equal(record(record(unchanged.data).policy).version, 1);
-  assert.deepEqual(record(record(unchanged.data).policy).additions, []);
+  const unchangedPolicy = record(record(unchanged.data).policy);
+  assert.equal(unchangedPolicy.version, 1);
+  assert.deepEqual(unchangedPolicy.additions, []);
 });
 
 // Without a Sandbox Driver that supports per-Agent network policy there is no Sandbox log source
@@ -695,9 +696,10 @@ test("Agent policy proposals save separately or save then apply the newly saved 
   const applied = policyFields(record((await fixture.request("GET", base)).data).policy);
   assert.equal(applied.version, 3);
   assert.equal(record(applied.additions[0]).id, "python-reviewed");
-  assert.equal(record(applied.application).state, "pending");
-  assert.equal(record(applied.application).policyVersion, 3);
-  assert.equal(record(applied.application).revisionId, revision.id);
+  const application = record(applied.application);
+  assert.equal(application.state, "pending");
+  assert.equal(application.policyVersion, 3);
+  assert.equal(application.revisionId, revision.id);
   assert.deepEqual(
     pathRequests(requests, "POST", `${base}/apply`).map(({ body }) => body),
     [{ expectedVersion: 3, revisionId: revision.id }],
@@ -726,7 +728,7 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
     body: { expectedVersion: initial.version, additions: [grant] },
   });
   assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
-  assert.deepEqual(record(accepted.data), { success: true, data: { additions: [grant] } });
+  assert.deepEqual(accepted.data, { success: true, data: { additions: [grant] } });
 
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -755,7 +757,7 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   const previewResponse = await preview;
   assert.equal(previewResponse.status(), 200);
-  assert.deepEqual(record(record(await previewResponse.json()).data), {
+  assert.deepEqual(record(await previewResponse.json()).data, {
     success: true,
     data: { additions: [grant] },
   });
@@ -875,7 +877,7 @@ test("Agent policy under protected execution offers only removal of saved networ
   const previewResponse = await preview;
   t.diagnostic(`Policy preview POST status: ${previewResponse.status()}`);
   assert.equal(previewResponse.status(), 200);
-  assert.deepEqual(record(record(await previewResponse.json()).data), {
+  assert.deepEqual(record(await previewResponse.json()).data, {
     success: true,
     data: { additions: [] },
   });
@@ -889,8 +891,9 @@ test("Agent policy under protected execution offers only removal of saved networ
   assert.equal(pathRequests(requests, "PUT", base).length, 0);
   const unchanged = await fixture.request("GET", base);
   assert.equal(unchanged.status, 200);
-  assert.equal(record(record(unchanged.data).policy).version, 2);
-  assert.deepEqual(record(record(unchanged.data).policy).additions, [delegatedPolicyGrant]);
+  const unchangedPolicy = record(record(unchanged.data).policy);
+  assert.equal(unchangedPolicy.version, 2);
+  assert.deepEqual(unchangedPolicy.additions, [delegatedPolicyGrant]);
   assert.equal(
     await page
       .getByRole("button", { name: "Save and apply to current revision", exact: true })
@@ -912,9 +915,10 @@ test("Agent policy under protected execution offers only removal of saved networ
   const cleared = await fixture.request("GET", base);
   t.diagnostic(`Policy readback GET status: ${cleared.status}`);
   assert.equal(cleared.status, 200);
-  assert.equal(record(record(cleared.data).policy).version, 3);
-  assert.deepEqual(record(record(cleared.data).policy).additions, []);
-  assert.equal(record(record(cleared.data).policy).application, undefined);
+  const clearedPolicy = record(record(cleared.data).policy);
+  assert.equal(clearedPolicy.version, 3);
+  assert.deepEqual(clearedPolicy.additions, []);
+  assert.equal(clearedPolicy.application, undefined);
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
   assert.equal(
     await page.getByRole("button", { name: "Remove saved network rules", exact: true }).count(),
@@ -1800,7 +1804,8 @@ for (const tab of ["configuration", "repositories"]) {
     preflight.release();
     const committed = await deployment.requested;
     assert.ok(committed);
-    assert.equal(committed.status(), 202, JSON.stringify(record(await committed.json())));
+    const committedBody: unknown = await committed.json();
+    assert.equal(committed.status(), 202, JSON.stringify(committedBody));
     await assert.rejects(edit.click({ timeout: 500 }), /Timeout/);
     deployment.release();
     assert.equal((await admitted).status(), 202);
@@ -2205,7 +2210,8 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     }
     const result = await write.requested;
     assert.ok(result);
-    assert.equal(result.status(), 200, JSON.stringify(record(await result.json())));
+    const resultBody: unknown = await result.json();
+    assert.equal(result.status(), 200, JSON.stringify(resultBody));
     assert.equal(
       await deploy.isDisabled(),
       true,

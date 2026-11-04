@@ -257,7 +257,7 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   await page.waitForURL((url) => url.pathname === `/console/agents/${data.id}`);
   assert.equal(data.name, "Kept Agent");
   assert.equal(data.configurationId, configurationId);
-  assert.equal(text(record(record(data.harnessAuth).source).id), secretId);
+  assert.equal(record(record(data.harnessAuth).source).id, secretId);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   // A created Agent leaves no draft behind.
@@ -315,7 +315,7 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
 
   const data = agentFields(await createAgentThroughForm(page, fixture, namespace.id));
   await page.waitForURL((url) => url.pathname === `/console/agents/${data.id}`);
-  assert.equal(text(record(record(data.harnessAuth).source).id), secretId);
+  assert.equal(record(record(data.harnessAuth).source).id, secretId);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
   const access = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
   assert.ok(
