@@ -13,6 +13,7 @@ import {
 } from "../fixtures/repository-credentials/process.mjs";
 import { settled as settle } from "../helpers/child-processes.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { parseGhInvocation } from "../../apps/controller/src/drivers/repo/github/credentials/client/commands.ts";
 import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/credentials/client/environment.ts";
 import {
@@ -365,7 +366,12 @@ describe("repository credential router", { concurrency: true }, () => {
       "https://credentials.example.test:443/example/project.git",
       "https://CREDENTIALS.example.test/example/project.git",
       "https://credentials%2Eexample%2Etest/example/project.git",
-      "https://user:secret@unrelated.example.test/x/y.git",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "secret",
+        host: "unrelated.example.test",
+        pathname: "/x/y.git",
+      }),
       "https://unrelated.example.test\\@credentials.example.test/example/project.git",
       "https://unrelated.example.test:443?@credentials.example.test/example/project.git",
       "https://a@b@credentials.example.test/example/project.git",
