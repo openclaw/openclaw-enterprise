@@ -26,6 +26,12 @@
       "expectedTests": [
         "Helm defaults expose private OCC metrics and operational logs through real collection"
       ]
+    },
+    {
+      "path": "tests/integration/installation-receipt-k3d-real.test.ts",
+      "expectedTests": [
+        "production installation receipts survive interruption before and after Job capture"
+      ]
     }
   ]
 }

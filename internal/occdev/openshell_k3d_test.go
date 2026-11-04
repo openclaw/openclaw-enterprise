@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -106,10 +107,10 @@ const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // The lifecycle is real; all external commands are inert fixtures. HTTP is
 // refused separately because routing downloads do not use the command runner.
-type k3dOrderingTransport struct{ requests int }
+type k3dOrderingTransport struct{ requests atomic.Int32 }
 
 func (transport *k3dOrderingTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	transport.requests++
+	transport.requests.Add(1)
 	return nil, errors.New("fixture routing download refused")
 }
 
@@ -340,12 +341,15 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				}
 				previous = i
 			}
-			wantRequests := 0
+			requests := transport.requests.Load()
 			if scenario == "accepted" || scenario == "OpenShell routing" {
-				wantRequests = 1
-			}
-			if transport.requests != wantRequests {
-				t.Fatalf("routing downloads: got %d, want %d", transport.requests, wantRequests)
+				// A refusal cancels its sibling: either or both independent downloads
+				// can have started. Neither may run before a refused sandbox check.
+				if requests < 1 || requests > 2 {
+					t.Fatalf("routing downloads after acceptance: got %d, want 1 or 2", requests)
+				}
+			} else if requests != 0 {
+				t.Fatalf("routing downloads before acceptance: got %d, want 0", requests)
 			}
 			forbidden := []string{"kubectl apply ", "kubectl create secret ", "helm upgrade "}
 			if scenario == "API failure" {
