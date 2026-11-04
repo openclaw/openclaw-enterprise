@@ -484,6 +484,7 @@ function referencePage(document, groups, entries) {
     .filter((section) => section.startsWith("## "))
     .map((heading) => heading.slice(3));
   const page = [
+    "---\ntags: [nolimit]\n---",
     `# ${document.info.title} reference`,
     generatedComment(),
     ...introduction(document),

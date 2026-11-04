@@ -111,6 +111,36 @@ values when checking manually. Do not replay Helm or delete history or data.
 Follow [upgrade recovery](production-upgrade-recovery.md) and preserve any
 existing helper or rollback owner's control.
 
+### Check Job object capacity
+
+For releases that create Jobs, check capacity before Helm. Reuse the Bash
+`kube` array above with the reviewed context and each namespace that receives
+Jobs. Use these read-only commands.
+
+```bash
+"${kube[@]}" get resourcequota -o yaml
+"${kube[@]}" get jobs.batch
+"${kube[@]}" get events --sort-by=.metadata.creationTimestamp
+```
+
+Apply the quota rules above for failed reads, absent limits, missing or stale
+status, and multiple quotas. For each applicable `count/jobs.batch` quota,
+check `spec.hard`, `status.hard` and `status.used`. Add the release's peak number
+of additional Job objects that can exist at once to `status.used`. The sum must
+fit within `status.hard`. Existing usage includes retained completed and failed
+Jobs. Include new Jobs that remain after completion or failure in the peak.
+Plan without relying on cleanup before creation. For example, a quota with a hard limit of 12
+and a used count of 9 leaves room for 3 Jobs. A release that needs 4 additional
+Jobs at once exceeds that limit. Ask the namespace owner about insufficient
+capacity.
+See Kubernetes [object count quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count).
+
+A successful server dry run of one request reserves no capacity. Diagnose a
+quota refusal from the Kubernetes API's rejection of the Job creation request
+naming `count/jobs.batch`, or a corresponding controller event recording that
+rejection. Observing a full quota alone does not prove a creation request was
+refused. Events can expire, and other admission checks can still reject creation.
+
 ## Record the starting state
 
 Create a private evidence directory and record these values before mutation.
@@ -131,19 +161,30 @@ Create a private evidence directory and record these values before mutation.
 - [ ] PVC names and UIDs, PV names, representative workspace file hashes,
       session counts, and gateway state. Back up volumes when recovery could
       require restoring Agent data.
-- [ ] If recovery needs both PostgreSQL and Agent storage, capture the database
-      and affected volumes at one consistent point. Pause all relevant writers
-      throughout capture, or use storage tooling that guarantees consistency
-      across those stores. A PostgreSQL recovery window spanning two disk
-      snapshots does not prove their contents agree.
-      Before booking downtime, restore the database, Gateway state, and
-      workspaces together on an isolated copy. Before starting restored
-      services, block production traffic and outbound access to production
-      repository, channel, and model providers. A restored worker can otherwise
-      revoke credentials still in use or send live deliveries. Use isolated test
-      endpoints and credentials for checks that need a provider. Through the
-      restored application, verify a known Agent revision, reopen an existing
-      session, and check a known workspace file. Record the recovery time.
+- [ ] When recovery needs data from multiple stores, capture the required stores
+      at one consistent point. Include the selected Configuration Driver's
+      backing store when recovery needs current Configuration values. For the
+      Kubernetes Driver, capture the
+      [Configuration ConfigMaps](../../reference/configuration/kubernetes.md)
+      in their tenant storage namespaces using existing authorized access.
+      Pause all relevant writers throughout capture, or use storage tooling
+      that guarantees consistency across those stores. A PostgreSQL recovery
+      window spanning two disk snapshots does not prove their contents agree.
+      Before booking downtime, restore the database, Gateway state, workspaces,
+      and any required Configuration values together on an isolated copy.
+      Before starting restored services, block production traffic and outbound
+      access to production repository, channel, and model providers. A restored
+      worker can otherwise revoke credentials still in use or send live
+      deliveries. Use isolated test endpoints and credentials for checks that
+      need a provider. If you restored Configuration values, read a known saved
+      Configuration through the restored application by its exact Namespace and
+      Configuration IDs. Compare its generation and a representative nonsecret
+      value with the source baseline. Through the same application, verify a
+      known Agent revision and compare a nonsecret setting with that revision's
+      baseline. PostgreSQL stores the revision's immutable configuration
+      snapshot, which can differ from the current draft. Do not print or record
+      sensitive Configuration or Secret material. Reopen an existing session
+      and check a known workspace file. Record the recovery time.
 - [ ] Authentication origin, cookie domain, auth-secret identity, TLS material,
       bootstrap key storage, service-principal and service-key identities,
       repository registry metadata, broker sessions, and external provider or

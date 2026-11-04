@@ -1,3 +1,7 @@
+---
+tags: [nolimit]
+---
+
 # CI configuration and testing
 
 ## Overview
@@ -31,6 +35,107 @@ Docs-only PRs run static checks in CI. Recognized test-only PRs select affected
 lanes, including Checks and Conformance 2 to type-check TypeScript tests.
 Other changes run all ordinary lanes. `CI Required` currently blocks
 merge on `main`. These workflows do not gate each Agent/platform deployment.
+
+Check the terminal `CI Required` job conclusion; successful recorded steps alone
+do not finish the check. Queued timestamps do not prove runner allocation.
+Separate queue time, execution, and final status publication. Find phase timings
+in the Actions job summary when the owning workflow emits them.
+
+## Qualify a published release for staging
+
+Run [Staging Release Qualification](../../.github/workflows/staging-qualification.yml)
+with the trusted `main` workflow. Supply `installation`, the full `source_sha`,
+`publication_run_id`, and its exact `publication_attempt`. The publication must be
+a successful manual Enterprise Containers run for that source on `main`.
+The [Enterprise Containers publisher](../release/containers.md#source-visibility)
+issues receipts only for public GitHub Container Registry (GHCR) packages.
+Private and internal packages are ineligible even if the package names match or
+the qualification token has read access.
+Runs for the same installation share a concurrency group and do not cancel an
+active qualification.
+
+Configure the `staging-qualification` environment with `STAGING_INSTALLATION`,
+`GHCR_CONTROLLER_IMAGE`, and `GHCR_RUNTIME_IMAGE`.
+The installation input must equal the configured ID. Use an ID of 1–63 lowercase
+letters, digits, or hyphens, starting with a letter. GHCR values are explicit
+`ghcr.io/openclaw/` repositories without tags or digests. Restrict this environment
+to `main`. The qualification job authenticates the two image pulls with its
+workflow token, which has `packages: read`. The job uses a disposable runner-local
+k3d fixture and needs no staging cluster configuration or provider credentials.
+
+The [workflow command](../../scripts/ci/staging-qualification.ts) checks the
+trusted checkout against the workflow SHA, protected same-repository `main`,
+local workflow ancestry in `main`, and release ancestry in the workflow commit.
+It requires the exact successful Enterprise Containers run and attempt, a
+successful image publication job for that source, and one unexpired publication
+artifact. Dispatch IDs must be positive safe decimal integers. Source IDs must
+be full lowercase Git SHAs.
+
+The named artifact download retains an archive. Before reading it, the command
+repeats producer checks and compares its size and SHA-256 with GitHub metadata.
+The archive directory must contain exactly one regular file, at most 1 MiB.
+The command passes the verified archive bytes to Python 3's standard ZIP decoder
+on the runner. It reads only `publication.json`, at most 64 KiB, without
+extracting files or passing a GitHub token. The receipt must match a successful
+same-repository `main` push returned by the CI workflow's source-SHA query.
+Only service-derived run IDs and attempts select the exact CI run and job checks.
+The script does not write Actions outputs.
+
+Only the workflow commit is checked out. Setup, dependencies, preparation,
+tests, manifests, and cleanup come from that checkout. Historical Git objects
+supply only the ordinary `deploy/runtime/Dockerfile` blob, at most 64 KiB, as
+inert data. The current 0.164.0 profile requires the current recipe. The reviewed
+0.163.0-alpha.2 profile requires source
+`54bfa7fc1b99e362450beb5f9211e164991fa7b4` and its pinned recipe hash.
+Other recipes, including the October 9 0.160.0 profile, fail before pulls.
+The receipt, recipe, and trusted packaging manifest must agree on the Node base.
+
+After checking GitHub metadata, the command removes GitHub tokens before image
+operations. Git and ZIP decoder subprocesses never receive those tokens. A private
+Docker config supplies GHCR authentication only for the two digest pulls on the
+runner's local Docker socket. The command removes that config before inspection
+or startup. A failed pull reports the reference and access guidance without
+printing subprocess output.
+
+The command verifies each pulled digest, Linux amd64 platform, and source label,
+then passes the exact local image IDs to trusted tests. It rechecks source labels
+before smoke preparation. The selected profile's Codex version controls the real
+seccomp probe and explicit runtime-suite expectations; normal CI retains 0.164.0
+assertions. The runner records the workflow SHA as its test source, while the
+pull receipt records the historical image source separately. No historical host
+code is built or executed. Historical images receive only the existing isolated
+fixture mounts, not the runner workspace, Docker socket, or Actions credentials.
+
+The runner selects the controller and runtime startup files from
+`images-packaging` and `images-runtime-startup`. Missing, failed, or skipped cases
+fail the lane. Preparation, tests, and cleanup must succeed before the command
+writes `staging-qualification.json`. The always-run upload explicitly retains
+`staging-pulled-images.json`, `staging-images-packaging.json`,
+`staging-images-runtime-startup.json`, and `staging-qualification.json` when
+produced. An early preparation failure retains the pull receipt without a
+success receipt or invented suite results.
+
+This is **container startup qualification on amd64**, not an installation or
+rollout. The installed prepared-Git lane builds a separate repository-service
+image and a runtime with a test CA through
+[first-agent-smoke](../../scripts/ci/first-agent-smoke.mjs); the two-image
+publication receipt cannot supply that installation unchanged. Full Integration
+and QA Advisory retain their existing installation and provider requirements.
+This workflow does not promote to production or prove staging readiness,
+installed Agent journeys, or arm64 behavior.
+
+For local command coverage, run:
+
+```sh
+node --test tests/integration/staging-qualification.test.ts
+node scripts/ci/run-tests.mjs audit
+```
+
+The command test uses local Git history and independent GitHub and Docker
+transport fixtures. It checks digest handoff, credential isolation, hostile
+Actions output paths, archive tampering, rejection before pulls, and a real
+preparer failure before any suite. Hosted token permissions, registry pulls,
+container startup, and live installations need separate proof.
 
 <a id="ci-configuration"></a>
 
@@ -90,7 +195,7 @@ image variables are optional `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
 | `integration-slack`            | Full Integration: Slack Live                                                                 | `OPENAI_API_KEY`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `OCC_TEST_SLACK_SENDER_BOT_TOKEN`                                                 | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_SLACK_PROXY_URL`, `OCC_TEST_SLACK_CHANNEL_ID`.                                                                                                                                                              |
 | `integration-provider-account` | Full Integration: Provider Account                                                           | `OCC_TEST_CHATGPT_ADMIN_KEY_JSON`                                                                                                         | `OCC_TEST_CHATGPT_WORKSPACE_ID`, `OCC_TEST_OPENAI_MODEL`, common runtime images.                                                                                                                                                                                      |
 | `integration-openshell`        | Full Integration: OpenShell                                                                  | `CODEX_ACCESS_TOKEN`                                                                                                                      | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`, `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`, `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`, `OCC_TEST_OPENSHELL_SECRET_PROJECTION` (default `1`).                                                  |
-| `integration-qa-pr`            | QA Matrix Advisory: QA advisory (compose), QA advisory (kubernetes), QA advisory (OpenShell) | `CODEX_ACCESS_TOKEN`                                                                                                                      | `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_OPENAI_MODEL`, and Calendar settings below. Code on `main` and selected trusted PRs receives these credentials.                                                                                                                  |
+| `integration-qa-pr`            | QA Matrix Advisory: QA advisory (compose), QA advisory (kubernetes), QA advisory (OpenShell) | `CODEX_ACCESS_TOKEN`, `OPENAI_API_KEY`                                                                                                    | `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_OPENAI_MODEL`, and Calendar settings below. Code on `main` and selected trusted PRs receives these credentials.                                                                                                                  |
 | `integration-qa`               | Full Integration: Shipped Installation QA Matrix                                             | `OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_SENDER_TOKEN`, plus repository fixture secrets below | `OCC_TEST_QA_OPENAI_MODEL`, `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_QA_SLACK_CHANNEL_ID`, Calendar settings, `REPOSITORY_UPSTREAM_CIDRS_JSON`.                                                                                                                           |
 
 `NODE_BASE_IMAGE` is a separate variable consumed by older Full Integration
@@ -118,6 +223,11 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 <a id="local-runner-overrides"></a>
 
 ### Setting Overrides
+
+For lanes that accept optional Kubernetes runtime images, set both
+`OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` to
+immutable references, or omit both to build from source. Supplying only one fails
+preparation before state or resources are created.
 
 These process environment variables are optional. Keep the same directory and
 slot for First Agent `images` and `run`; only a distinct slot isolates host-wide names.
@@ -197,12 +307,14 @@ not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
 The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
-and checks its branding through sign-in and the Agent workflow. Its OpenClaw
+and checks its branding through sign-in and the Agent workflow. For Dedicated Agents
+on Kubernetes, it provisions with `nativeAdmin: true`, checks Configuration
+generation 1 and one revision, then exercises native browser chat. Its OpenClaw
 cell also redeploys the same Agent with an explicitly configured provider alias,
 the existing OCC Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
 This stage runs wherever the OpenClaw `model-ui` cell is selected; the Codex-only
-advisory selection does not cover it. Other scenarios
-do not require the theme or an extra API rollout.
+advisory selection does not cover it. Other scenarios do not require the theme or
+an extra API rollout.
 
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
 complete OpenShell lane. Each push has its own concurrency group so a later
@@ -229,7 +341,90 @@ worker and redeployment cases. Its control plane runs in Compose; its workloads
 still use Kubernetes Compute. `full-qa` takes precedence when both labels exist.
 The focused run skips the other advisory jobs, keeps manifest case requirements
 and cleanup, and records `scope: focused`. It cannot satisfy full-lane aggregation.
-Inspect `qa-advisory-compose-openshell` and its attempt-specific artifacts.
+Inspect `qa-advisory-local-first-agent-openshell-real-openshell` and its attempt-specific artifacts.
+
+Full advisory OpenShell runs use one Ubuntu 24.04 runner per file from the
+[OpenShell manifest](../../scripts/ci/test-suites/openshell.json). The files run in
+parallel across separate VMs. The two first-Agent files provision and clean up
+through Local Setup. Hosted focused preparation restores the main-only BuildKit
+caches and builds current-checkout images, without creating a second cluster,
+database, routing setup, OpenShell installation, or Keycloak instance. The
+Kubernetes case selects the resulting immutable controller/runtime pair. The
+builder pushes cached layers directly to an owned loopback registry, without
+loading or recompressing the images in the host engine. Both profiles import the
+runtime from that registry. Compose also selects the verified development controller
+by digest through a Compose override that removes inherited builds. All five
+controller-side services share this image; Compose pulls it once instead of
+rebuilding/loading per-service images. Cleanup removes only the recorded owned
+controller reference. This selection is test-only
+(`OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE`); local and setup-shard defaults
+still build the controller from the checkout. With a selected runtime, Docker Compose overlaps
+database/bootstrap work with cluster setup after creating its owned network.
+Kubernetes prepares OpenShell assets after image imports while network probes
+finish. Both profiles join preparation before starting the control plane. Local Setup
+keeps unselected controller/runtime source builds serial. See the [development flow](../flows/docker-compose-development.md#4-start-and-clean-up-kubernetes-development).
+Other files retain their lane preparation. The runner enforces both lane-wide and per-file `requiredEnv`
+inputs, expected cases, and cleanup. A failed shard does not cancel the
+others. Each result has `scope: focused`; require every shard to pass before
+claiming full advisory OpenShell coverage. The manual Full Integration lane
+continues to run the full manifest serially and prepares the shared resources
+needed by its other files. First-Agent files do not request a separate CI database
+in either mode.
+
+Cache credentials are available only to preparation, and the cache is read-only
+for these jobs. A cache miss builds the current source; it does not select an
+older image. The development target shares common controller layers but its leaf
+is not supplied by the main runtime-target cache. Build, image publication,
+installation and cleanup time all count toward the job duration. Report cold
+and warm results separately, including any prerequisite warm/build time. Local
+runs and the setup shard retain the source-build installer path.
+
+OpenShell jobs use the guarded hosted disk-capacity check before image work.
+It skips removal when at least 36 GiB is available and preserves the Go and
+Python toolchains. Its receipt records capacity and removal duration. An explicitly
+selected installed browser is validated by a sandboxed launch and page evaluation;
+these jobs do not install an unused Playwright browser alongside it.
+
+First-Agent stage measurements appear in `files[].measurements`: Local Setup,
+initial deployment and model calls, nonce-only reuse, native deployment, native
+model execution, native redeployment, resumed model execution, and cleanup.
+Each record contains only a fixed stage, outcome, and elapsed milliseconds.
+The parent test duration includes its native subtest; do not add them together.
+After setup, the test verifies the existing default Namespace and overlaps the
+distinct Codex and native Agents. Each keeps its own credentials, Configuration,
+identity, and session proof. Both operations settle before shared mutation and
+denial checks or stack teardown, including cancellation. Capacity samples report
+CPU count, minimum free memory and maximum load while the scenarios run.
+
+First-Agent command profiles summarize the Local Setup CLI timing records for
+setup and cleanup. The CLI times
+real Docker builds, Compose builds/startup, image pulls/exports/imports, cluster
+creation, Helm installation, and Kubernetes readiness commands. Records contain
+fixed categories, counts, elapsed milliseconds, and nonzero exit counts. Retry
+attempts are counted individually; failure handling stays unchanged. Arguments, output, environment values, and
+resource names are excluded. Concurrent or nested commands can overlap, so do
+not sum these durations as wall time. Fixed setup milestones record offsets from
+startup to place these operations on the wall-clock timeline. Native Pod profiles
+report time from the
+deploy request to Pod creation and time from creation to scheduling,
+initialization, running, readiness, and observation. They retain no Pod identity
+or configuration. Pod readiness timing does not replace the model and required
+worker proof.
+
+Native first-Agent proof retains the exact run ID, explicit successful exec flag,
+standalone tool-proof line, and exact final nonce. After a turn is terminal, history
+has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
+report only predicate counts and flags, not marker values, commands or transcripts.
+This settling bound does not reduce the model-execution budget or count a failed
+proof as a performance improvement. Before a turn, placement polling retries only
+a correlated `UNAVAILABLE` response with the pinned Gateway's explicit
+read-generation invalidation message. All other describe rejections fail with
+allowlisted error classification; they are not converted to an assertion that
+loses the cause. The same session identity and active placement remain required.
+
+The credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
+
+Codex timeout diagnostics from `tests/helpers/openshell-kubernetes-real.mjs` report the client phase, pending method names, message and command counts, and whether an action started. They exclude prompts, request identifiers, and payloads. A timeout does not authorize another turn; only the existing final capacity receipt before any action permits a retry.
 
 Ordinary PRs keep the [required CI suites](#ci) and, when selected, First Agent Smoke with a
 simulated model. Full Integration's `Shipped Installation QA Matrix` runs every selected combination.
@@ -333,6 +528,34 @@ the manifest and workflow. Workers own Agents/cleanup; keep dependent steps
 sequential and installation-wide changes outside workers. Preserve failure,
 security and disposal assertions.
 
+### Local k3d quickstart on a fresh runner
+
+Dispatch the [k3d quickstart workflow](../../.github/workflows/k3d-quickstart-e2e.yml) on `main`:
+
+```sh
+gh workflow run k3d-quickstart-e2e.yml --ref main
+```
+
+The workflow creates a fresh local installation, onboards a model-only Agent in the
+Control UI, and reopens the original conversation. It enables Linear and reads
+a known team through the Agent. It then adds Git to the same Agent, pushes one
+empty commit to a unique test branch, verifies the remote commit, and restores
+read-only access. It verifies that the final deployment retains Linear and that
+the Agent recalls the preference from its original conversation.
+
+Configure these inputs at the **repository** level:
+
+| Input                                    | Purpose                                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------------------- |
+| Secret `OCE_QUICKSTART_CODEX_PAT`        | Codex service account with the selected model and an authorized Linear connection |
+| Secret `OCE_TEST_GITHUB_APP_PRIVATE_KEY` | RSA key for the App installed on the test repository                              |
+| Variable `OCE_QUICKSTART_MODEL`          | Model available to the service account                                            |
+| Variable `OCC_TEST_LINEAR_TEAM_ID`       | ID of a team the connected account can read                                       |
+
+Use the workflow result and its sanitized receipt to check the push, read-only
+restoration, tool result and cleanup. If a run ends during a push, check the
+remote ref before retrying. Keep the private operator session on the runner.
+
 <a id="manual-full-integration-lanes"></a>
 
 ### Full Integration
@@ -419,4 +642,5 @@ gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3
 
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
 The 180-minute job budget includes setup/cleanup. Advisory results use
-`qa-advisory-local-installation-dev-up-k3d`; OpenShell uses `qa-advisory-openshell`.
+`qa-advisory-local-installation-dev-up-k3d`; each OpenShell shard uses
+`qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`).

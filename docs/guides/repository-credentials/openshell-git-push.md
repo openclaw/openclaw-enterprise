@@ -1,28 +1,108 @@
+---
+tags: [human_verified]
+---
+
 # Push a Git branch from an OpenShell Agent
 
 Give an existing dedicated Codex Agent access to one GitHub repository. The OCE worker holds the GitHub App signing key and mints short-lived installation tokens. OpenShell authorizes Git requests through the repository Credential Proxy and injects a scoped token. Credential Gateway continues to supply the Codex service-account credential, including the account's authorized Linear connection.
 
-This walkthrough makes two empty commits on one new test branch. Use the same Agent revision for both pushes and verify that the second push used newly minted material. GitHub branch rules still apply.
-
-A k3d run with Codex 0.164.0 verified both pushes on one Agent revision. GitHub recorded the [first empty commit](https://github.com/openclaw/openclaw-enterprise/commit/bbf856d5bae163f6c85cf4aa1f1b70e9cafd7dde) and its [empty child](https://github.com/openclaw/openclaw-enterprise/commit/19140f8f068d020595d3b61d23a65a28bd36fc5a). The Credential Proxy recorded a different material version for the second push after normal worker renewal.
+This walkthrough makes one empty commit on a new test branch and verifies it on GitHub. GitHub branch rules still apply. The optional [renewal verification](openshell-git-renewal.md) adds a second push.
 
 ## Before you start
 
-- **Supervisor trust and network:** Verify approved Supervisor outbound TCP 443 to the Git origin and its public CA trust for that TLS path. Worker GitHub API reachability is a separate prerequisite. A successful model turn does not prove either path. If the network uses a private CA, complete [upstream CA setup](../deploy/local-openshell-images.md#trust-an-upstream-ca-on-local-k3d) before deployment. A failed held request closes that revision; correct trust and deploy a new revision without replaying its challenge.
-- **OCE and OpenShell:** Use a controller, runtime, CLI and Helm chart from the same release supporting the `github-repository` profile, with matching OpenShell 0.1.6 Gateway, supervisor and charts. Select compatible images before starting [Local Setup OCE](../deploy/local-openshell-setup.md). If your published channel lacks the feature, [build the matching image pair](../deploy/production-installation.md#build-and-publish-production-images). The [enrollment guide](openshell-enrollment.md) identifies the required release files. Verify the selected source and publication receipt; a channel name alone does not prove support.
+- **Supervisor trust and network:** Verify approved Supervisor outbound TCP 443 to the Git origin and its public CA trust for that TLS path. Worker GitHub API reachability is a separate prerequisite. A successful model turn does not prove either path. If the network uses a private CA, complete the Supervisor CA configuration in your installation setup before deployment. A failed held request closes that revision; correct trust and deploy a new revision without replaying its challenge.
+- **OCE and OpenShell:** Use a controller, runtime, CLI and Helm chart from the same release supporting the `github-repository` profile, with matching OpenShell 0.1.6 Gateway, supervisor and charts. Select compatible images before starting your selected installation setup. If your published channel lacks the feature, [build the matching image pair](../deploy/production-installation.md#build-and-publish-production-images). Check that the matching checkout includes `deploy/examples/repository-credentials/openshell.registry.json`. See the [enrollment guide](openshell-enrollment.md) for the required release files. Verify the selected source and publication receipt; a channel name alone does not prove support.
 - **GitHub App:** [Install the App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app) on the test repository with **Contents write** and **Metadata read**. Obtain its App ID, installation ID, numeric repository ID and RSA signing key. The worker calls [GitHub's installation token endpoint](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app); the operator does not stage a token file.
-- **Operator:** Use an approved Kubernetes context, access to the Installation's Helm releases, and an authorized GitHub reader (`gh`). For renewal verification, arrange read-only access to the OCE PostgreSQL metadata described in step 5.
-- **Agent:** Use the same Bash session as Setup OCE, or source its private `session.sh`. The Agent needs a ready Gateway-owned `codex-pat` source and provisioned runtime credentials. On a fresh installation, register that model source **before** enabling the repository Credential Proxy. Select [Linear](../integrations/codex-plugins.md) before the Git verification or include its existing selection when you deploy the bound revision.
+- **Operator:** Use an approved Kubernetes context, access to the Installation's Helm releases, and the [GitHub CLI](https://cli.github.com/). Check that `gh auth status` shows your approved reader account.
+- **Agent:** Use the operator session from [Deploy your first Agent](../deploy/deploy-first-agent.md), or source its private `session.sh`. The Agent needs a ready Gateway-owned `codex-pat` source and provisioned runtime credentials. On a fresh installation, register that model source **before** enabling the repository Credential Proxy. Plugins are not required. Preserve any existing plugin selections.
 
 ## 1. Enroll one repository in the Installation
 
-Prepare an isolated installation for this procedure. Changing a shared installation's credential owner can affect existing Agents. Use the [matching installation fragment and registry instructions](openshell-enrollment.md#configure-authorized-repositories) from the **release checkout**. Keep its private Gateway routing and authenticated OpenShell management connection.
+Use the existing isolated installation and the [shared operator session](../deploy/quickstart-session.md). Do not create another installation or Agent. Prepare the inputs below in `INSTALLATION_FILE` and `VALUES_FILE`; perform the rollout after creating the registry ConfigMaps. Changing a shared installation's credential owner can affect existing Agents. Use the [matching installation fragment and registry instructions](openshell-enrollment.md#configure-authorized-repositories) from the **release checkout**. Keep its private Gateway routing and authenticated OpenShell management connection.
 
-1. Set one registry reference (here, `application`), one repository ID, one Namespace ID and `profiles: ["github-repository"]`. Give it `permissions: {"contents":"write","metadata":"read"}`. Choose a session duration longer than the token renewal exercise and within the registry maximum. This profile delegates ref restrictions to GitHub.
-2. Mount the immutable registry ConfigMap in the controller and worker. Mount the App signing key and a persistent 32-byte custody key **only in the worker**. Restrict worker egress to the approved GitHub issuer destinations.
-3. Keep the existing Credential Gateway selection for model authentication. Add `repository.preparedGitHub` and `repository.openShell` from the release fragment. Select the same OpenShell Driver ID for the Sandbox and Credential Proxy. Omit `repository.nativeSender` and Compute's broker configuration.
-4. [Configure the request-phase service](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service) with its serving certificate, Gateway JWT public key and exact trusted-client network policies. Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`, `repositoryCredentials.authority: prepared-git` and `repositoryCredentials.enabled: false`. Start the worker before restarting the OpenShell Gateway.
-5. [Register the middleware](../../reference/repository-credentials/protected-openshell-git.md#register-the-request-phase-service) under `oce-prepared-git` using TLS, the correct JWT issuer/audience, `binding_policy = "allowlist"` and `bindings = ["http_request_pre_credentials"]`. Remove the generated uninspected `source-control` rule. The repository route must be the sole route to GitHub. Do not bind a separate Git token CredentialSource.
+1. Enroll one repository and one OCE Namespace. Replace the example IDs and repository name with your verified values. The registry structure is shown here as YAML; the commands below write the required `registry.json` file.
+
+   ```yaml
+   version: 1
+   backendId: repository-backend
+   providerInstanceId: github-team
+   appId: "123456"
+   githubInstallationId: "789012"
+   maximumDurationSeconds: 86400
+   repositories:
+     - repositoryRef: application
+       repositoryId: "345678"
+       repository: example/project
+       namespaces:
+         - namespaceId: replace-with-occ-namespace-id
+           profiles:
+             - github-repository
+           permissions:
+             contents: write
+             metadata: read
+   ```
+
+   `profiles` selects the allowed access mode; `permissions` sets its GitHub capabilities. See [registry profiles](../../reference/repository-credentials/access-levels.md#registry-profiles). The `github-repository` profile delegates ref restrictions to GitHub.
+
+2. Mount the immutable registry ConfigMap in the controller and worker. Mount the App signing key and a persistent 32-byte custody key **only in the worker**. Merge this fragment into the OCE Helm values, replacing the ConfigMap and Secret names. Set `upstreamCidrs` to the [worker GitHub API ranges](openshell-enrollment.md#allow-the-worker-to-reach-github).
+
+   ```yaml
+   repositoryCredentials:
+     enabled: false
+     authority: prepared-git
+     backendId: repository-backend
+     registryConfigMapName: replace-with-registry-configmap-name
+     appKeySecretName: replace-with-app-key-secret-name
+     preparedCustodySecretName: replace-with-custody-secret-name
+     upstreamCidrs:
+       - replace-with-approved-issuer-cidr
+   ```
+
+3. Merge the [release Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml) into the existing Installation, preserving its Credential Gateway selection for model authentication. The following fields select the session duration and worker key paths:
+
+   ```yaml
+   repository:
+     id: repository-credentials
+     configuration:
+       sessionDurationSeconds: 86400
+     preparedGitHub:
+       custodyKeyPath: /etc/openclaw/prepared-repository/custody.key
+       privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
+     openShell:
+       registrationName: oce-prepared-git
+       # Keep the authority settings from the release fragment.
+   drivers:
+     credential_proxy:
+       id: openshell-sandbox
+       configuration: {}
+   ```
+
+   Choose a session duration long enough for the Git exercise and no greater than the registry's `maximumDurationSeconds`. Replace `openshell-sandbox` with the existing Sandbox Driver ID, and set the existing OpenShell Backend's `drivers.credential_proxy` to that same ID. Omit `repository.nativeSender` and Compute's broker configuration.
+
+4. [Configure the request-phase service](../../reference/repository-credentials/protected-openshell-git.md#prepare-the-request-phase-service) with its serving certificate, Gateway JWT public key and exact trusted-client network policies. Merge these settings into the OCE Helm values alongside the trusted-client selectors from that procedure. Replace the Secret and ConfigMap names with the resources you created.
+
+   ```yaml
+   openshellGit:
+     enabled: true
+     mode: protected
+     port: 8445
+     tlsSecretName: openshell-git-tls
+     issuerPublicKeyConfigMapName: openshell-gateway-public
+     # Add clients from the request-phase service procedure.
+   ```
+
+   Start the worker before restarting the OpenShell Gateway.
+
+5. [Register the middleware](../../reference/repository-credentials/protected-openshell-git.md#register-the-request-phase-service) with TLS and the correct JWT issuer and audience. The Gateway uses TOML; its middleware entry must include:
+
+   ```toml
+   name = "oce-prepared-git"
+   binding_policy = "allowlist"
+   bindings = ["http_request_pre_credentials"]
+   ```
+
+   Keep the endpoint, CA path, audience and timeout from the registration procedure. Remove the generated uninspected `source-control` rule. The repository route must be the sole route to GitHub. Do not bind a separate Git token CredentialSource.
+
 6. Before deployment can start background issuance, complete the [authenticated worker installation check](openshell-enrollment.md#select-repositories-and-deploy). Require verified TLS, HTTP 200 and matching App and installation IDs. Keep the Agent stopped on failure; a later successful read does not settle an earlier uncertain issuance.
 
 For the single-repository registry in step 1, set `APP_ID` and `INSTALLATION_ID` from the App settings. Use a unique, versioned ConfigMap name and keep the registry with the deployment record. Run these commands in the same operator shell:
@@ -41,12 +121,48 @@ jq -n --arg app "${APP_ID:?}" --arg installation "${INSTALLATION_ID:?}" \
       namespaces:[{namespaceId:$ns,profiles:["github-repository"],
         permissions:{metadata:"read",contents:"write"}}]}]}' > "$RUN_DIR/registry.json"
 registry="oce-git-registry-$(date +%s)"
-kubectl --context "$context" -n "$ns" create configmap "$registry" \
+WRITE_REGISTRY="$registry"
+kubectl --context "$CONTEXT" -n "$PLATFORM_NS" create configmap "$registry" \
   --from-file="registry.json=$RUN_DIR/registry.json" --dry-run=client -o json |
-  jq '.immutable=true' | kubectl --context "$context" create -f -
+  jq '.immutable=true' | kubectl --context "$CONTEXT" create -f -
+
+# Keep a separate immutable read-only map for the owner session after the push.
+READ_REGISTRY="$registry-read"
+jq '.repositories[0].namespaces[0].permissions={metadata:"read",contents:"read"}' \
+  "$RUN_DIR/registry.json" > "$RUN_DIR/registry-read.json"
+kubectl --context "$CONTEXT" -n "$PLATFORM_NS" create configmap "$READ_REGISTRY" \
+  --from-file="registry.json=$RUN_DIR/registry-read.json" --dry-run=client -o json |
+  jq '.immutable=true' | kubectl --context "$CONTEXT" create -f -
+printf '%s\n' "$READ_REGISTRY" > "$RUN_DIR/read-registry-name"
 ```
 
-After the worker and Gateway rollouts succeed, the OCE REST API exposes the authorized registry options for the Agent:
+Set `repositoryCredentials.registryConfigMapName` in `VALUES_FILE` to `$WRITE_REGISTRY`. Keep all other values, including the pinned Envoy image, verified proxy peers, browser settings and model Credential Gateway. Stop this Agent before changing its Installation's credential owner:
+
+```bash
+request POST "$base/agents/$agent/stop" > "$RUN_DIR/git-stop.json"
+request GET "$base/agents/$agent" |
+  jq -e '.data.desiredRuntimeState=="stopped" and .data.activeRevisionId==null'
+```
+
+If it is still stopping, repeat only the GET. Then apply the prepared Installation and Helm values:
+
+```bash
+upgrade_installation
+deployment_preflight
+repository_network
+save_session
+```
+
+Complete the Gateway middleware rollout and authenticated worker installation check from steps 5–6 before proceeding. Use `$CONTEXT`, `$PLATFORM_NS` and `$namespace` in those commands. Replace the reference example’s `openclaw-system` in certificate SANs, middleware endpoints and commands with `$PLATFORM_NS`. The Supervisor namespace is `$TENANT_NAMESPACE`. Select the ready worker for the authenticated check:
+
+```bash
+WORKER_POD=$(kube -n "$PLATFORM_NS" get pods \
+  -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=worker" -o json |
+  jq -er '[.items[]|select(.metadata.deletionTimestamp==null and
+    any(.status.containerStatuses[]?;.name=="worker" and .ready))]|select(length==1)|first.metadata.name')
+```
+
+After the worker and Gateway rollouts succeed, verify the authorized registry option:
 
 ```bash
 # GET $base/agents/$agent/repository-options: check that the Namespace allows this reference.
@@ -57,11 +173,13 @@ request GET "$base/agents/$agent/repository-options" |
 
 ## 2. Bind the Agent and deploy once
 
-Use a dedicated test Agent with no prior repository binding or static Git source. Fetch its current draft first. Keep its Configuration, Codex authentication and plugin selections. The API changes the repository binding when you deploy the updated draft.
+For a persistent Agent, keep the read-only registry ConfigMap from enrollment. After the authorized push, [retire the write grant and leave the Agent running](openshell-read-only.md). Set `GIT_SESSION_MODE=disposable` only for a test Agent that should stop when the shell exits.
+
+Use the same dedicated Agent from the deployment guide, with no prior repository binding or static Git source. Fetch its current draft first. Keep its Configuration, Codex authentication and plugin selections. The API changes the repository binding when you deploy the updated draft.
 
 ```bash
 # Run in a dedicated Bash shell with the private session.sh loaded.
-# Register cleanup before this Agent can receive repository write access.
+# The disposable proof stops on exit. The owner workflow restores read access.
 stop_git_test() {
   local rc=${1:-0}
   trap - EXIT
@@ -71,16 +189,36 @@ stop_git_test() {
   fi
   return "$rc"
 }
-trap 'stop_git_test "$?"; exit $?' EXIT
+if [[ ${GIT_SESSION_MODE:-owner} == disposable ]]; then
+  trap 'stop_git_test "$?"; exit $?' EXIT
+fi
 
 # PATCH $base/agents/$agent: replace the test Agent's empty binding list.
 request GET "$base/agents/$agent" |
   jq -e --arg ref "$ref" '.data | select((.repositoryBindings // [] | length)==0) |
     {configurationId,repositoryBindings:[{repositoryRef:$ref,profile:"github-repository"}]}' |
   request PATCH "$base/agents/$agent" --data-binary @- > "$RUN_DIR/git-agent"
-deploy_and_wait
+```
 
-# Record the active revision for both turns. Do not deploy or change grants between pushes.
+<AccordionGroup>
+<Accordion title="Console">
+
+Run `deployment_preflight`, then open this same Agent’s draft. Review the saved changes and select **Deploy new version**. Copy the `revision` ID from its Console URL and run `wait_deployment <deployment-id>` in the operator shell; this prepares the selected cluster’s network rules and waits for that revision. Repository enrollment and binding use the terminal; the Console deploys that saved draft.
+
+</Accordion>
+<Accordion title="CLI">
+
+```bash
+deploy_and_wait
+```
+
+</Accordion>
+</AccordionGroup>
+
+Record the deployed revision for verification:
+
+```bash
+# Keep this revision for the optional renewal proof.
 revision=$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)
 printf 'Agent %s, active revision %s\n' "$agent" "$revision"
 ```
@@ -89,10 +227,17 @@ A ready Agent alone does not prove Git access. Under a finite grant the worker c
 
 ## 3. Push the first empty commit through OpenClaw
 
-Set `repo` to the exact repository in the registry and `BOT_NAME` and `BOT_EMAIL` to the App's verified bot identity. Use the OpenClaw session's `turn` function. The operator's GitHub reader selects and verifies SHAs; native Git inside the Agent performs each push. The managed Git credential helper supplies authentication.
+Keep `repo` as the exact enrolled repository. Resolve `BOT_NAME` and `BOT_EMAIL` from that registry’s App ID below. Use the OpenClaw session's `turn` function. The operator's GitHub reader selects and verifies SHAs; native Git inside the Agent performs each push. The managed Git credential helper supplies authentication.
 
 ```bash
-repo=openclaw/openclaw-enterprise
+# Keep repo and repo_id from the enrolled registry; resolve this App's bot identity.
+app_id=$(kube -n "$PLATFORM_NS" get cm "$WRITE_REGISTRY" -o json |
+  jq -er '.data["registry.json"]|fromjson|.appId|tostring')
+BOT_NAME=$(gh api "apps/${APP_SLUG:?Set the verified App slug}" |
+  jq -er --arg id "$app_id" 'select((.id|tostring)==$id)|.slug+"[bot]"')
+bot_id=$(gh api "users/$(jq -rn --arg login "$BOT_NAME" '$login|@uri')" |
+  jq -er --arg login "$BOT_NAME" 'select(.type=="Bot" and .login==$login)|.id|numbers')
+BOT_EMAIL="${bot_id}+${BOT_NAME}@users.noreply.github.com"
 branch="codex/oce-git-renew-$(date -u +%Y%m%dT%H%M%SZ)-$(openssl rand -hex 5)"
 default_branch=$(gh api "repos/$repo" --jq .default_branch)
 base_sha=$(gh api "repos/$repo/git/ref/heads/$default_branch" --jq .object.sha)
@@ -129,65 +274,76 @@ test "$remote_sha" = "$local_sha"
 printf 'LOCAL_SHA=%s REMOTE_SHA=%s\n' "$local_sha" "$remote_sha"
 SCRIPT
   } > "$RUN_DIR/$phase-prompt"
-  turn "$RUN_DIR/$phase-prompt" > "$RUN_DIR/$phase-result"
+  if [[ ${GIT_TURN_INTERFACE:-cli} == cli ]]; then
+    turn "$RUN_DIR/$phase-prompt" > "$RUN_DIR/$phase-result"
+  fi
 }
+```
+
+<AccordionGroup>
+<Accordion title="Console">
+
+Generate the exact prompt without sending it:
+
+```bash
+GIT_TURN_INTERFACE=console push_turn first "$base_sha"
+cat "$RUN_DIR/first-prompt"
+```
+
+Open this Agent with **Open Agent UI** and paste the generated prompt once. Confirm successful native Git tool output and record its `LOCAL_SHA`. Do not resend an uncertain push.
+
+</Accordion>
+<Accordion title="CLI">
+
+```bash
 push_turn first "$base_sha"
 ```
 
+</Accordion>
+</AccordionGroup>
+
 ## 4. Verify the remote ref
+
+<AccordionGroup>
+<Accordion title="Console">
+
+Open the repository in GitHub. Select the generated branch, inspect the commit, and confirm its SHA matches `LOCAL_SHA` from the successful tool output. Confirm its parent is `base_sha`, it changes no files, and both author and committer match the verified App bot name and email. A chat reply alone does not prove a push. Use the CLI path for the optional renewal proof.
+
+</Accordion>
+<Accordion title="CLI">
 
 ```bash
 verify_push() {
-  local phase=$1 parent=$2 sha tree
+  local phase=$1 parent=$2 sha tree remote_sha commit
   # Read the commit ID from successful native tool output, not from an inferred reply.
   sha=$(jq -er 'select(.outcome.status=="ok") | [.history.messages[] |
     select(.role=="toolResult" and .isError==false and (.toolName=="bash" or .toolName=="exec")) |
     .content[]?.text? | strings | capture("LOCAL_SHA=(?<sha>[0-9a-f]{40})").sha] |
-    unique | select(length==1) | first' "$RUN_DIR/$phase-result")
-  test "$(gh api "repos/$repo/git/ref/heads/$branch" --jq .object.sha)" = "$sha"
-  tree=$(gh api "repos/$repo/git/commits/$parent" --jq .tree.sha)
-  gh api "repos/$repo/commits/$sha" | jq -e --arg p "$parent" --arg t "$tree" \
-    '(.parents|length)==1 and .parents[0].sha==$p and .commit.tree.sha==$t and (.files|length)==0' >/dev/null
+    unique | select(length==1) | first' "$RUN_DIR/$phase-result") || return 1
+  remote_sha=$(gh api "repos/$repo/git/ref/heads/$branch" --jq .object.sha) || return 1
+  test "$remote_sha" = "$sha" || return 1
+  tree=$(gh api "repos/$repo/git/commits/$parent" --jq .tree.sha) || return 1
+  commit=$(gh api "repos/$repo/commits/$sha") || return 1
+  jq -e --arg p "$parent" --arg t "$tree" --arg bot "$BOT_NAME" --arg email "$BOT_EMAIL" \
+    '(.parents|length)==1 and .parents[0].sha==$p and .commit.tree.sha==$t and (.files|length)==0 and
+      .author.login==$bot and .committer.login==$bot and
+      all(.commit.author,.commit.committer; .name==$bot and .email==$email)' \
+    <<<"$commit" >/dev/null || return 1
   printf '%s\n' "$sha"
 }
 first_sha=$(verify_push first "$base_sha")
 printf 'First commit: https://github.com/%s/commit/%s\n' "$repo" "$first_sha"
 ```
 
-## 5. Wait for renewal, then push again
+</Accordion>
+</AccordionGroup>
 
-GitHub issues short-lived tokens. The worker prepares a replacement before expiry. Record the first push's Git authorization receipt using an approved read-only PostgreSQL connection. Set the psql variable `revision` to the active revision from step 2. These queries return identifiers and expiry only.
+## 5. Restore read-only access
 
-```sql
--- Run after each push. Save the result before performing the next push.
-SELECT u.exchange_id, u.material_version, a.provider_expires_at
-FROM occ.prepared_repository_git_uses u
-JOIN occ.repository_session_attempts s ON s.admission_id = u.admission_id
-JOIN occ.prepared_github_attempts a ON a.id = u.attempt_id
-WHERE s.revision_id = :'revision' AND u.operation = 'receive-pack';
-
--- Poll until this revision has a committed current version different from the first receipt.
-SELECT a.material_version, a.provider_expires_at
-FROM occ.prepared_github_attempts a
-JOIN occ.prepared_github_families f ON f.source_id = a.source_id
-WHERE f.source #>> '{session,revisionId}' = :'revision'
-  AND a.state = 'committed' AND a.custody = 'current';
-```
-
-Wait for normal worker renewal. The reference implementation starts renewal roughly ten minutes before the usable cutoff for an hour-long token. Do not rotate a key, edit the database, restart the worker or redeploy to force the transition. Confirm the same revision is active, then make one fast-forward push whose parent is the first commit:
+Save the verified branch and session values before leaving this shell. For Console verification, set `first_sha` to the independently verified commit first:
 
 ```bash
-test "$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)" = "$revision"
-push_turn second "$first_sha"
-second_sha=$(verify_push second "$first_sha")
-test "$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)" = "$revision"
-printf 'Second commit: https://github.com/%s/commit/%s\n' "$repo" "$second_sha"
+save_session
 ```
 
-A proxy receipt records authorization. Verify that GitHub accepted the commit using the remote ref, parent and tree.
-
-Require a second `receive-pack` receipt using the replacement material version, plus both verified GitHub commits. Two pushes with one token do not prove renewal. If Linear is enabled, [repeat the Linear read](../integrations/codex-plugins.md#verify-a-linear-read-through-openclaw) on this revision. If the second push has an uncertain outcome, inspect the remote ref before any retry.
-
-## Withdraw access after the exercise
-
-Run `stop_git_test` after the final verification. On an earlier shell exit, the trap requests the same stop. If the shell was killed or the request failed, source the saved `session.sh` in a new Bash shell. Read `GET $base/agents/$agent` and inspect the deployment state before retrying an uncertain stop. Use the bodyless `POST $base/agents/$agent/stop` to stop a running Agent. Wait for its active revision to clear. Remove any standing approval through its generation-checked removal API. Clear the draft's repository bindings with `PATCH $base/agents/$agent` and its current `configurationId`. Check retirement through the [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle). A stopped workload alone does not confirm external revocation. Keep the test branch for inspection unless its owner requests removal.
+After verifying the push, [restore read-only Git access](openshell-read-only.md) on this same Agent. This is the shared procedure for local k3d, Kubernetes and EKS. Keep the original browser conversation and workspace. Then continue to [Add Plugin](../integrations/codex-plugins.md), or [delete the Agent](../deploy/quickstart-delete-agent.md) when finished.
