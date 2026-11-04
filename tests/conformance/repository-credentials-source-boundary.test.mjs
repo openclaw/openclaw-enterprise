@@ -630,6 +630,12 @@ test("credential source boundary rejects new raw capabilities in the real source
       "drivers/repo/github/public-read/transport.mjs",
     ],
     [
+      "public API platform selection does not admit changing process identity",
+      "process.setuid(0);",
+      /raw process capability setuid/,
+      "drivers/repo/github/public-read/transport.mjs",
+    ],
+    [
       "public tool trust cleanup does not admit arbitrary file mutation capabilities",
       'import { truncateSync } from "node:fs";',
       /unreviewed runtime import from node:fs/,

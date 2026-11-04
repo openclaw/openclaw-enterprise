@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-04"
-last_updated_session: authoring-run/cd9c1598-6e1e-48d1-8f87-5e3a2118ce9d
+last_updated_session: authoring-run/93407fe4-b349-48fd-b3c0-c2d9b3534e5b
 ---
 
 # Public GitHub read flow
@@ -131,15 +131,20 @@ the environment proxy route used by OpenShell. An inherited client TLS identity
 causes refusal before contact. Configuration and public material files contain
 no capability value.
 
-`transport.mjs:operationTrust` composes public certificates at each operation,
+The public Git branch sets an empty `GIT_ASKPASS` as well as disabling terminal
+prompts. Older Git checks askpass before the terminal flag and does not honor
+`credential.interactive`; the explicit empty value also blocks config/SSH fallback.
+Authenticated delegation retains its caller's askpass and credential settings.
+
+`transport.mjs:composeTrust` composes public certificates at each operation,
 including a fresh tool interception CA. Selected CA files are regular files of
 at most 1 MiB each; total input is at most 4 MiB and the deduplicated bundle at
 most 1 MiB. Missing, malformed or oversized trust fails closed. Standard hash
 comments and underlined certificate labels are accepted; keys are rejected.
-The operation selects the existing absolute `OPENCLAW_WORKSPACE_DIR`, supplied by
+For Git and standalone non-Linux API reads, `operationTrust` selects the existing
+absolute `OPENCLAW_WORKSPACE_DIR`, supplied by
 Compute and used by the Harness as its workspace, including OpenShell relocation.
-The restricted native profile admits this root for writes but need not expose
-`/tmp`. A missing or unwritable selected workspace fails without fallback. Only
+A workspace-write native profile admits this root but need not expose `/tmp`. A missing or unwritable selected workspace fails without fallback. Only
 standalone callers without that runtime variable use `os.tmpdir()`; the helper
 never selects its cwd, which Git may move into protected `.git` metadata.
 Each operation creates a unique mode-0700 directory and exclusive mode-0400
@@ -147,6 +152,18 @@ public-CA file in that root. Completion, failure and handled cancellation remove
 only that directory. Concurrent operations remain independent. Uncatchable
 termination can leave public certificates in the workspace; no scavenger removes
 other operations' state. Capabilities never enter these files.
+
+For Linux API reads, `apiGet` passes the validated bundle to `runChild` on an extra
+pipe. The constant `apiTrustCarrier` runs with Python `-I -S -B`, ignores ambient
+Python startup/import settings, and creates a bounded mode-0400 sealed memfd.
+It closes its input, rewinds the CA, and execs fixed `/usr/bin/curl` with the
+inherited descriptor path. Authorization stays on stdin. No directory is created,
+no network executable is added, and no filesystem permission is expanded. Linux
+carrier failure stops the operation without retrying scratch storage. The native
+read-only API path and Git's workspace-write path remain distinct.
+`runChild` bounds API preparation and transfer with one 24-second parent deadline,
+handles early pipe closure, and forwards cancellation. Closing the process's
+anonymous descriptor releases the CA even after uncatchable termination.
 
 `transport.mjs:apiGet` accepts only reader-relative `/repos/` GET routes. The
 managed skill invokes it without supplying an origin, proxy, credentials or curl
@@ -226,6 +243,8 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 18:32: Deliver Linux API trust through a sealed memory file under read-only profiles (accompanying correction; authoring-run/93407fe4-b349-48fd-b3c0-c2d9b3534e5b - 95b6c02bb86f72841f30ee9da14bc9d4ebbc26ff)
 
 - 2026-11-04 15:52: Select admitted runtime workspace for private operation trust files (accompanying correction; authoring-run/cd9c1598-6e1e-48d1-8f87-5e3a2118ce9d - 69e6005ea0f4b05c284b568867e91a455b64929c)
 

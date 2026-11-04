@@ -236,17 +236,74 @@ function responseMetadata(bytes, route) {
   }
 }
 
-function runChild(binary, args, env, input, metadataRoute) {
+// Linux API reads must work in a read-only native profile. This fixed isolated
+// child creates only a sealed anonymous public-CA file, then becomes curl. FD0
+// remains the authorization input; no producer grandchild or filesystem exists.
+const apiTrustCarrier = String.raw`import os, sys
+try:
+    import fcntl
+    fd = os.memfd_create("public-ca", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    size = 0
+    while True:
+        chunk = os.read(3, 65536)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > 1048576:
+            raise ValueError()
+        offset = 0
+        while offset < len(chunk):
+            offset += os.write(fd, chunk[offset:])
+    os.close(3)
+    os.fchmod(fd, 0o400)
+    fcntl.fcntl(fd, fcntl.F_ADD_SEALS,
+                fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.dup2(fd, 3, inheritable=True)
+    os.close(fd)
+    os.execv("/usr/bin/curl", ["curl", *sys.argv[1:]])
+except BaseException:
+    os.write(2, b"The managed public Git transport refused this invocation.\npublic-git-refusal:child-setup:unknown\n")
+    sys.exit(1)
+`;
+
+function runChild(binary, args, env, input, metadataRoute, trustBundle) {
   refusalPhase = "child-dispatch";
   const child = spawn(binary, args, {
     env,
-    stdio: input === undefined ? "inherit" : ["pipe", "pipe", "inherit"],
+    stdio:
+      input === undefined
+        ? "inherit"
+        : trustBundle === undefined
+          ? ["pipe", "pipe", "inherit"]
+          : ["pipe", "pipe", "inherit", "pipe"],
   });
   refusalPhase = "child-setup";
   const chunks = [];
   let responseSize = 0;
   let metadata;
   let invalidResponse = false;
+  let timedOut = false;
+  let carrierFailed = false;
+  let requestedSignal;
+  // Curl's own limit starts after exec. Bound the same API operation across
+  // interpreter startup and CA streaming too, including a child that stalls.
+  const deadline =
+    input === undefined
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGKILL");
+        }, 24_000);
+  deadline?.unref();
+  const trustInput = trustBundle === undefined ? undefined : child.stdio[3];
+  if (trustInput !== undefined) {
+    trustInput.on("error", () => {
+      carrierFailed = true;
+      child.kill("SIGTERM");
+    });
+    trustInput.end(trustBundle);
+  }
   if (input !== undefined) {
     // A child that refuses before reading headers can close stdin early; its
     // error/close result below remains the authority for operation failure.
@@ -272,8 +329,14 @@ function runChild(binary, args, env, input, metadataRoute) {
       }
     });
   }
-  const term = () => child.kill("SIGTERM");
-  const interrupt = () => child.kill("SIGINT");
+  const term = () => {
+    requestedSignal = "SIGTERM";
+    child.kill(requestedSignal);
+  };
+  const interrupt = () => {
+    requestedSignal = "SIGINT";
+    child.kill(requestedSignal);
+  };
   process.on("SIGTERM", term);
   process.on("SIGINT", interrupt);
   child.once("error", () => {
@@ -281,10 +344,22 @@ function runChild(binary, args, env, input, metadataRoute) {
     process.exitCode = 1;
   });
   child.once("close", (code, signal) => {
+    clearTimeout(deadline);
+    trustInput?.destroy();
     process.off("SIGTERM", term);
     process.off("SIGINT", interrupt);
     cleanupTrust();
-    if (invalidResponse) {
+    if (timedOut) {
+      process.stderr.write("The managed public API read timed out.\n");
+      process.exitCode = 28;
+    } else if (requestedSignal !== undefined) {
+      // Cancellation can close the CA pipe too. Preserve the caller's signal
+      // rather than reporting that consequential EPIPE as a carrier failure.
+      process.kill(process.pid, requestedSignal);
+    } else if (carrierFailed) {
+      process.stderr.write("The managed public API trust carrier failed.\n");
+      process.exitCode = 1;
+    } else if (invalidResponse) {
       process.stderr.write("The managed public API read refused the response.\n");
       process.exitCode = 1;
     } else if (signal) {
@@ -343,14 +418,17 @@ function apiGet(route, metadata = false) {
   validateApiRoute(route);
   const config = configuration(process.env.OCE_PUBLIC_GITHUB_READ_CONFIG);
   const token = authorization(config);
-  const ca = operationTrust(config);
+  const trustBundle =
+    process.platform === "linux" ? composeTrust(readTrust(config.caPath, 1024 * 1024)) : undefined;
+  const ca = trustBundle === undefined ? operationTrust(config) : "/proc/self/fd/3";
   const env = { ...process.env };
   const proxy = env.https_proxy ?? env.HTTPS_PROXY ?? env.all_proxy ?? env.ALL_PROXY ?? "";
   // No curl config, redirects, ambient client identity, cookies or caller options.
   // Header input keeps the capability out of argv and temporary files.
   runChild(
-    "curl",
+    trustBundle === undefined ? "curl" : "/usr/bin/python3",
     [
+      ...(trustBundle === undefined ? [] : ["-I", "-S", "-B", "-c", apiTrustCarrier]),
       "-q",
       "--silent",
       "--show-error",
@@ -379,6 +457,7 @@ function apiGet(route, metadata = false) {
     env,
     "Authorization: Bearer " + token + "\n",
     metadata ? route : undefined,
+    trustBundle,
   );
 }
 
@@ -604,6 +683,9 @@ function remoteHelper(remote, originalUrl) {
       [`credential.${url}.username`, ""],
       ["credential.interactive", "false"],
     ]);
+    // Older Git checks askpass before terminal prompting and ignores
+    // credential.interactive. A present empty value also blocks config/SSH fallback.
+    env.GIT_ASKPASS = "";
     env.GIT_TERMINAL_PROMPT = "0";
   }
   runChild(helper, [remote, url], env);

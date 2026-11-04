@@ -132,10 +132,12 @@ async function readerWithPrivateProvider() {
 // OpenClaw permission profile, then give it to Codex command/exec without a model turn.
 async function readWithStockCodex() {
   const assert = (await import("node:assert/strict")).default;
-  const { accessSync, constants, mkdirSync, readdirSync } = await import("node:fs");
+  const { accessSync, constants, mkdirSync, readdirSync, writeFileSync } = await import("node:fs");
   const { spawnSync } = await import("node:child_process");
   const { createRequire } = await import("node:module");
-  const { pluginConfig, skillPath, materialSetup, manifest, mode } = JSON.parse(process.argv[1]);
+  const { pluginConfig, skillPath, materialSetup, manifest, mode, readOnly } = JSON.parse(
+    process.argv[1],
+  );
   new Function("require", "spawnSync", "pluginRuntime", materialSetup)(
     createRequire(import.meta.url),
     spawnSync,
@@ -174,6 +176,12 @@ async function readWithStockCodex() {
   const { resolveProviderIdForAuth } = await import("openclaw/plugin-sdk/provider-auth-aliases");
   const workspace = "/home/node/workspace";
   mkdirSync(workspace, { recursive: true });
+  if (readOnly) {
+    // The interpreter must not import an Agent-controlled module from cwd or
+    // PYTHONPATH. The actual Linux caller's -I selection is the boundary.
+    writeFileSync(workspace + "/fcntl.py", 'raise RuntimeError("synthetic-startup-refusal")\n');
+  }
+  const workspaceBefore = readdirSync(workspace).sort();
   const dist = "/app/node_modules/openclaw/dist/";
   async function bundledFunction(chunk, name) {
     const file = readdirSync(dist).find((file) => file.startsWith(chunk + "-"));
@@ -212,7 +220,7 @@ async function readWithStockCodex() {
   assert.equal(network.enable_socks5_udp, false);
   assert.equal(network.allow_upstream_proxy, false);
   assert.equal(filesystem[":minimal"], "read");
-  assert.equal(filesystem[":project_roots"]["."], "write");
+  assert.equal(filesystem[":project_roots"]["."], readOnly ? "read" : "write");
   assert.notEqual(profileName, ":danger-full-access");
   assert.equal(network.allow_local_binding, false);
   function toml(value) {
@@ -240,6 +248,7 @@ async function readWithStockCodex() {
         CODEX_HOME: "/tmp/public-codex",
         // Match the production Harness root used by managed operation scratch.
         OPENCLAW_WORKSPACE_DIR: workspace,
+        ...(readOnly ? { PYTHONPATH: workspace, PYTHONSTARTUP: workspace + "/fcntl.py" } : {}),
         ...publicEnvironment,
       },
       clearEnv: ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"],
@@ -276,8 +285,17 @@ async function readWithStockCodex() {
       'denied=$(curl -q --silent --connect-timeout 3 --max-time 5 --noproxy "" --proxy "$proxy" --output /dev/null --write-out "%{http_connect}" https://unselected.invalid:8080/ 2>/dev/null || :)',
       'test "$denied" = 403',
     ];
-    const operation =
-      mode === "limited"
+    const operation = readOnly
+      ? [
+          "stage=read-only-workspace",
+          `node -e 'try { require("node:fs").writeFileSync("read-only-write-control", "unexpected"); process.exit(1); } catch (error) { if (!["EROFS", "EACCES", "EPERM"].includes(error.code)) throw error; }'`,
+          "stage=read-only-api-body",
+          'node "$GIT_EXEC_PATH/transport.mjs" --api-get "/repos/example/public-project/pulls/28"',
+          "printf '\\n'",
+          "stage=read-only-api-metadata",
+          'node "$GIT_EXEC_PATH/transport.mjs" --api-get-metadata "/repos/example/public-project/pulls/28"',
+        ]
+      : mode === "limited"
         ? [
             "stage=limited-api-read",
             'node "$GIT_EXEC_PATH/transport.mjs" --api-get "/repos/example/public-project/pulls/28"',
@@ -324,8 +342,15 @@ async function readWithStockCodex() {
       ],
     });
     assert.equal(result.exitCode, 0, result.stderr + result.stdout);
-    const [pull, first, second, remote] = result.stdout.trim().split("\n");
-    console.log(JSON.stringify({ ...JSON.parse(pull), first, second, remote }));
+    if (readOnly) {
+      const [body, metadata] = result.stdout.trim().split("\n").map(JSON.parse);
+      assert.deepEqual(metadata, { status: 200, link: null, body });
+      assert.deepEqual(readdirSync(workspace).sort(), workspaceBefore);
+      console.log(JSON.stringify({ title: body.title, metadata: metadata.status }));
+    } else {
+      const [pull, first, second, remote] = result.stdout.trim().split("\n");
+      console.log(JSON.stringify({ ...JSON.parse(pull), first, second, remote }));
+    }
   } finally {
     client.close();
   }
@@ -407,7 +432,11 @@ test(
 
     // Use the revision's actual ConfigMap producer and Gateway startup translator.
     // No repository binding, broker policy, GitHub credential or model credential is supplied.
-    for (const mode of ["limited", "full"]) {
+    for (const { mode, readOnly } of [
+      { mode: "limited", readOnly: false },
+      { mode: "full", readOnly: false },
+      { mode: "limited", readOnly: true },
+    ]) {
       const proxy = {
         enabled: true,
         mode,
@@ -435,7 +464,18 @@ test(
         [],
         {
           baseConfig: {
-            plugins: { entries: { codex: { config: { appServer: { networkProxy: proxy } } } } },
+            plugins: {
+              entries: {
+                codex: {
+                  config: {
+                    appServer: {
+                      ...(readOnly ? { mode: "guardian", sandbox: "read-only" } : {}),
+                      networkProxy: proxy,
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       );
@@ -479,6 +519,7 @@ test(
         JSON.stringify({
           pluginConfig,
           mode,
+          readOnly,
           skillPath,
           materialSetup,
           manifest: JSON.parse(projection["runtime.json"]),
@@ -486,16 +527,18 @@ test(
       ]);
       assert.deepEqual(
         JSON.parse(proof.stdout),
-        mode === "limited"
-          ? { title: pullTitle }
-          : {
-              title: pullTitle,
-              first: pullTitle + "-first",
-              second: pullTitle + "-second",
-              remote: "https://github.com/Example/Public-Project.git",
-            },
+        readOnly
+          ? { title: pullTitle, metadata: 200 }
+          : mode === "limited"
+            ? { title: pullTitle }
+            : {
+                title: pullTitle,
+                first: pullTitle + "-first",
+                second: pullTitle + "-second",
+                remote: "https://github.com/Example/Public-Project.git",
+              },
       );
-      t.diagnostic("public-read-native-mode:" + mode);
+      t.diagnostic("public-read-native-mode:" + (readOnly ? "limited-read-only-api" : mode));
     }
   },
 );

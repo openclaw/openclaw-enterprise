@@ -623,9 +623,19 @@ test("managed trust fails closed on invalid inputs and removes operation files a
   await assert.rejects(execute(process.execPath, args, { env: { ...env, ...many } }), { code: 1 });
   await clean();
   assert.equal(fixture.requests.length, 0);
-  await assert.rejects(execute(process.execPath, args, { env: { ...env, PATH: "/nonexistent" } }), {
-    code: 1,
-  });
+  await assert.rejects(
+    execute(
+      process.execPath,
+      [script, "--remote-helper", "origin", "https://github.com/example/project.git"],
+      {
+        env: {
+          ...env,
+          OCE_PUBLIC_GITHUB_REAL_HTTP_HELPER: path.join(fixture.directory, "absent-helper"),
+        },
+      },
+    ),
+    { code: 1 },
+  );
   await clean();
   // Concurrent helpers own different private directories in the admitted
   // workspace. Cancelling one must not remove the other's trust bundle.
@@ -641,8 +651,16 @@ test("managed trust fails closed on invalid inputs and removes operation files a
     }
   });
   const children = Array.from({ length: 2 }, () =>
-    spawn(process.execPath, args, { env, stdio: "ignore" }),
+    spawn(
+      process.execPath,
+      [script, "--remote-helper", "origin", "https://github.com/example/project.git"],
+      { env, stdio: ["pipe", "ignore", "ignore"] },
+    ),
   );
+  for (const child of children) {
+    child.stdin.on("error", () => {});
+    child.stdin.end("capabilities\nlist\n");
+  }
   const closed = children.map(
     (child) =>
       new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal }))),
@@ -652,7 +670,7 @@ test("managed trust fails closed on invalid inputs and removes operation files a
     request,
     ...closed.map((completion) =>
       completion.then(() => {
-        throw new Error("API child exited before cancellation");
+        throw new Error("Git child exited before cancellation");
       }),
     ),
   ]);
@@ -725,7 +743,9 @@ test("managed operations use the admitted runtime workspace when ambient tempora
   ]) {
     const operationEnv = { ...env, OPENCLAW_WORKSPACE_DIR };
     for (const operation of [
-      () => execute(process.execPath, args, { env: operationEnv }),
+      ...(process.platform === "linux"
+        ? []
+        : [() => execute(process.execPath, args, { env: operationEnv })]),
       () => fixture.git(operationEnv, "ls-remote", "https://github.com/example/project.git"),
     ]) {
       const failure = await operation().then(
@@ -741,6 +761,118 @@ test("managed operations use the admitted runtime workspace when ambient tempora
   }
   assert.equal(fixture.requests.length, before);
   assert.deepEqual(await readdir(readonly), []);
+});
+
+test("managed API isolates startup, composes large trust, and needs no Linux scratch", async (t) => {
+  const fixture = await materialFixture(t);
+  const env = await fixture.install();
+  const script = path.join(env.GIT_EXEC_PATH, "transport.mjs");
+  const python = path.join(fixture.directory, "python-startup");
+  await mkdir(python);
+  await writeFile(path.join(python, "sitecustomize.py"), "import os; os._exit(93)\n");
+  const roots = [];
+  // Distinct valid public roots survive deduplication and cross the carrier's
+  // read chunk size. Reusing the fixture key avoids needless key generation.
+  for (let batch = 0; batch < 16; batch++) {
+    roots.push(
+      ...(await Promise.all(
+        Array.from({ length: 8 }, (_, offset) =>
+          selfSigned(fixture.directory, {
+            name: "extra-root-" + (batch * 8 + offset),
+            commonName: "root-" + (batch * 8 + offset),
+            keyPem: fixture.serviceTls.key,
+          }),
+        ),
+      )),
+    );
+  }
+  const bundle = roots.map(({ cert }) => cert).join("\n");
+  assert.ok(Buffer.byteLength(bundle) > 65536);
+  assert.ok(Buffer.byteLength(bundle) < 1024 * 1024);
+  const bundlePath = path.join(fixture.directory, "large-public-bundle.pem");
+  await writeFile(bundlePath, bundle);
+  const before = (await readdir(fixture.directory)).sort();
+  for (const root of ["/nonexistent-private-sentinel", "/", "relative-private-sentinel"]) {
+    const context = {
+      ...env,
+      CURL_CA_BUNDLE: bundlePath,
+      PYTHONPATH: python,
+      PYTHONSTARTUP: path.join(python, "sitecustomize.py"),
+      PYTHONINSPECT: "1",
+      ...(process.platform === "linux"
+        ? { OPENCLAW_WORKSPACE_DIR: root, TMPDIR: root, PATH: "/nonexistent" }
+        : {}),
+    };
+    for (const mode of ["--api-get", "--api-get-metadata"]) {
+      const result = await execute(
+        process.execPath,
+        [script, mode, "/repos/example/project/pulls/27"],
+        { env: context, timeout: 30000 },
+      );
+      const response = JSON.parse(result.stdout);
+      assert.equal(
+        mode === "--api-get" ? response.title : response.body.title,
+        "provider-only-pull",
+      );
+      if (mode === "--api-get-metadata") {
+        assert.equal(response.status, 200);
+        assert.equal(response.link, null);
+      }
+      assert.equal(result.stderr, "");
+    }
+  }
+  assert.deepEqual((await readdir(fixture.directory)).sort(), before);
+});
+
+test("managed API cancels and bounds a stalled real response without retaining trust", async (t) => {
+  const fixture = await materialFixture(t);
+  const env = await fixture.install();
+  const script = path.join(env.GIT_EXEC_PATH, "transport.mjs");
+  const args = [script, "--api-get", "/repos/example/project/pulls/27"];
+  const before = (await readdir(fixture.directory)).sort();
+  fixture.reader.removeAllListeners("request");
+  for (const signal of ["SIGTERM", "SIGINT", undefined]) {
+    let arrived;
+    const request = new Promise((resolve) => {
+      arrived = resolve;
+    });
+    fixture.reader.once("request", (_req, _res) => arrived());
+    const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    t.after(() => child.kill("SIGKILL"));
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const closed = new Promise((resolve) =>
+      child.once("close", (code, closedSignal) => resolve({ code, signal: closedSignal })),
+    );
+    await Promise.race([
+      request,
+      closed.then(() => {
+        throw new Error("API child exited before response hold");
+      }),
+    ]);
+    if (process.platform === "linux") {
+      assert.deepEqual((await readdir(fixture.directory)).sort(), before);
+    }
+    if (signal !== undefined) {
+      child.kill(signal);
+    }
+    const result = await closed;
+    assert.equal(stdout, "");
+    if (signal !== undefined) {
+      assert.equal(result.signal, signal);
+    } else {
+      assert.equal(result.code, 28);
+      assert.match(stderr, /The managed public API read timed out/);
+    }
+    assert.ok(!stderr.includes(fixture.token));
+    assert.deepEqual((await readdir(fixture.directory)).sort(), before);
+  }
 });
 
 test("material installation refuses redirected or shared private-home parents", async (t) => {
@@ -924,6 +1056,14 @@ test("trusted exact authenticated bindings delegate ordinary URLs and credential
   const directRequests = [];
   const direct = https.createServer(directTls, (req, res) => {
     directRequests.push({ url: req.url, headers: req.headers });
+    if (
+      req.url.startsWith("/example/material-bound.git/") &&
+      req.headers.authorization !==
+        "Basic " + Buffer.from("fixture-delegate:fixture-delegate").toString("base64")
+    ) {
+      res.writeHead(401, { "www-authenticate": 'Basic realm="authenticated-provider"' }).end();
+      return;
+    }
     if (req.url.includes("/info/refs")) {
       res
         .writeHead(200, { "content-type": "text/plain" })
@@ -991,7 +1131,17 @@ test("trusted exact authenticated bindings delegate ordinary URLs and credential
   assert.ok(directRequests.length > 0);
   assert.equal(directRequests[0].url, "/example/private.git/info/refs?service=git-upload-pack");
   assert.equal(directRequests[0].headers.authorization, "Bearer fixture-authenticated");
-  await fixture.git(boundEnv, "ls-remote", "https://github.com/example/material-bound.git");
+  const askpass = path.join(fixture.directory, "bound-askpass");
+  const marker = path.join(fixture.directory, "bound-askpass-called");
+  await writeFile(askpass, `#!/bin/sh\nprintf invoked > '${marker}'\nprintf fixture-delegate\n`, {
+    mode: 0o700,
+  });
+  await fixture.git(
+    { ...boundEnv, GIT_ASKPASS: askpass },
+    "ls-remote",
+    "https://github.com/example/material-bound.git",
+  );
+  assert.equal(await readFile(marker, "utf8"), "invoked");
   assert.ok(
     directRequests.some((request) => request.url.startsWith("/example/material-bound.git/")),
   );
@@ -1174,7 +1324,9 @@ test("managed refusals report only fixed operation phases and codes before conta
     ],
     [{ CURL_CA_BUNDLE: privatePath + "-absent" }, "trust-input", "ENOENT"],
     [{ CURL_CA_BUNDLE: privatePath }, "trust-composition", "unknown"],
-    [{ TMPDIR: privatePath + "-absent" }, "trust-files", "ENOENT"],
+    ...(process.platform === "linux"
+      ? []
+      : [[{ TMPDIR: privatePath + "-absent" }, "trust-files", "ENOENT"]]),
   ];
   for (const [overrides, phase, code] of cases) {
     const failure = await execute(process.execPath, args, { env: { ...env, ...overrides } }).then(

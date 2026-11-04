@@ -368,6 +368,9 @@ const rawGlobals = new Set([
 const reviewedProcessMembers = {
   "drivers/repo/github/public-read/server.ts": ["env"],
   "drivers/repo/github/public-read/transport.mjs": [
+    // Linux API trust uses fixed isolated Python memfd/sealing then execs curl;
+    // other standalone hosts retain existing scratch. No runtime selector knob.
+    "platform",
     "getuid",
     "argv",
     "env",

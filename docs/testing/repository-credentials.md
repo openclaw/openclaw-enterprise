@@ -59,15 +59,24 @@ failures remain unknown without raw stderr.
 actual launcher and Git/API helper with verified loopback TLS. Consecutive peer
 roots introduced after installation prove current-tool trust composition;
 wrong-hostname/unrelated roots, malformed trust, redirects and denied capabilities
-remain failures. Real API reads and Git clone/fetch also use the admitted runtime
-workspace when ambient temporary roots are missing or read-only. Invalid selected
-workspaces fail without fallback or private diagnostic output; authenticated Git
-delegation does not depend on public scratch. Concurrent cancellation checks
+remain failures. Git clone/fetch uses the admitted runtime workspace when ambient temporary roots
+are missing or read-only. Invalid selected workspaces fail without fallback or
+private diagnostic output; authenticated Git delegation does not depend on public scratch.
+A real reader 401 must not invoke public Git askpass, including on Git 2.39.5;
+a bound provider challenge must still reach its authenticated askpass. Concurrent cancellation checks
 verify private directory/file modes and independent cleanup of public-only bundles.
 The native fixture supplies the same existing workspace variable as production,
 without changing its filesystem grants. These tests do not establish cleanup after
-uncatchable termination; public-CA residue can remain in that case. The tests
-also follow a real reader's two-page list through the fixed metadata mode,
+uncatchable termination; Git or non-Linux API public-CA residue can remain.
+Linux API cases instead ignore unavailable scratch roots and exercise sealed-memory
+trust, Python startup poisoning, large distinct public-root bundles, SIGTERM/SIGINT
+and the 24-second parent deadline. Run these owners on Linux to qualify that branch;
+a macOS host pass covers the retained standalone file path only. The native fixture
+adds a separate Limited read-only API body/metadata control, asserts workspace write
+denial and no residue, and supplies a poisoned Python module path. It retains the
+Limited workspace-write POST-denial and Full workspace-write Git controls: a
+read-only clone failure would not prove POST denial. All native controls still need
+actual Linux execution. The tests also follow a real reader's two-page list through the fixed metadata mode,
 reject malformed/oversized continuation data and suppress unrelated headers.
 These host checks do not prove Codex's interception or its upstream store: require the stock
 Linux native clone/API/fetch test and installed Agent qualification separately.

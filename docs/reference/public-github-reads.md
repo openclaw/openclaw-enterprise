@@ -172,7 +172,9 @@ Use ordinary `https://github.com/OWNER/REPOSITORY.git` clone and fetch URLs.
 Stored remotes stay unchanged. The managed transport delegates bound repositories
 to their authenticated path and does not fall back to direct access after a reader
 denial. The public path supports clone and fetch; SSH and LFS are unsupported.
-The reader refuses writes, redirects and arbitrary destinations.
+The reader refuses writes, redirects and arbitrary destinations. Public reader
+challenges cannot invoke Git askpass; bound repositories retain their authenticated
+credential path.
 Git transfers allow a 4 MiB encoded request body, a 1 GiB response and a 10-minute
 deadline. Cancellation, incomplete transfers and limits fail the Git operation.
 
@@ -229,7 +231,7 @@ optional hash comments or underlined certificate labels, and be at most 1 MiB
 each. Combined input is limited to 4 MiB; the deduplicated bundle to 1 MiB.
 Missing, malformed or oversized trust fails before contact.
 
-Managed operations create a unique private directory in the existing runtime
+Git operations create a unique private directory in the existing runtime
 workspace selected by `OPENCLAW_WORKSPACE_DIR`. This works within the native
 workspace write grant even when `/tmp` is absent. The helper does not use its
 current directory, which Git may move into `.git`. A selected workspace must be
@@ -242,6 +244,18 @@ the child environment/input. Completion, failure and handled cancellation remove
 that operation's directory. Uncatchable termination can leave a public-CA
 residue in the workspace; the helper does not scavenge other operations' files.
 It does not change Git configuration or index state.
+
+Linux API reads use the same validated current trust without workspace or temporary
+files. An isolated image-provided Python process fills a sealed anonymous memory
+file, then becomes the image's curl process. The public CA descriptor survives that
+exec; the authorization header still uses stdin. This permits API GET in an
+explicitly read-only native profile without granting writes. An unavailable or
+denied memory-file primitive fails closed; Linux never retries through disk.
+The API's 24-second parent deadline covers preparation and transfer, including
+child startup and CA streaming. Cancellation and process exit close the memory
+file; no workspace residue remains. Standalone non-Linux API callers retain the
+scratch-file behavior and write requirement described above. Native and protected
+runtime qualification remain separate; see [verification](../testing/repository-credentials.md).
 
 The launcher also supplies reader trust through `CODEX_CA_CERTIFICATE` before
 Codex starts so its proxy can verify the upstream reader. This affects only the
