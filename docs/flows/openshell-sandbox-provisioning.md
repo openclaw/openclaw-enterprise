@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-04
-last_updated_session: authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0
+last_updated_session: authoring-run/5728cb52-6c01-4613-a558-c793a649f415
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -99,8 +99,8 @@ provisioning and the selected Credential Gateway supplies credentials.
 authentication, `oce-system`, imported PostgreSQL and [per-Agent HTTPS](../guides/deploy/local-setup.md).
 Its launcher checks port collisions and records engine, cluster, Namespace,
 ports and key path. Compose runs PostgreSQL/OCC with a k3d-targeting worker.
-`internal/occdev/egress_openshell_chart.go:checkProtectedOpenShellChart` requires
-native TOML pre-credentials bindings and read-only CA mounts.
+The retired local static-inference profile no longer provisions an authority
+or verifies middleware chart configuration.
 
 After Sandbox rollout failure, `prepareOpenShell` calls
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -117,7 +117,7 @@ and operator Workspaces. Gateway ingress admits API, worker, supervisor callback
 and dedicated Agent Gateways; the public quickstart's
 `docs/snippets/openshell-quickstart/kubernetes/service-policies.py` reads live selectors and admits these callers on TCP/8080, retaining each Namespace's
 supervisor policy when another is applied. Tenant callers must still match the namespace ownership label. The quickstart platform helper records each policy set before applying it; uninstall deletes every recorded set. See [local deployment](../guides/deploy/local-kubernetes-development.md)
-and [protected development](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+and the [local protected-profile retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
 policies (maximum 1 MiB) before provisioning; persisted rules augment generated
@@ -393,6 +393,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 09:00: Remove the retired local middleware chart-verification claim. (authoring-run/5728cb52-6c01-4613-a558-c793a649f415 - 384b030ae118b130013f9863873bbeee0a9f4961)
 
 - 2026-11-04 03:20: Record all applied quickstart service policies for removal. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - d64367ecb30d4b56e944b4bfd385496e7e1f3b0f)
 

@@ -41,7 +41,8 @@ changing these selections.
 For a reviewed development candidate, follow
 [local candidate image selection](deploy/local-openshell-images.md), including
 all three immutable OpenShell images, their source commit, and matching charts.
-New local protected static-inference launches are retired. The launcher rejects
+New local protected static-inference launches are retired. The launcher no longer
+provisions the static-inference authority or its middleware. It rejects
 `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
 `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before effects, including with
 Kubernetes/OpenShell. Unset, empty or `0` protected-egress selections retain ordinary

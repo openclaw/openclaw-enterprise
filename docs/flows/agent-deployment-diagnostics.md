@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-14
-last_updated_session: authoring-run/3ffec2d3-d528-40ec-98a6-f91d0ad55db4
+updated: 2026-11-04
+last_updated_session: authoring-run/06bc63c9-f110-4607-a058-a816a61dd579
 ---
 
 # Agent deployment diagnostics flow
@@ -117,6 +117,13 @@ reads `UNRECOGNIZED`. Native Driver errors become `DEPENDENCY_UNAVAILABLE`
 without messages. Stored deployment status, startup evidence, plugin warnings
 and Agent state stay unchanged.
 
+## Guarded first admission
+
+The [Configuration persistence flow](configuration-driver/persistence-and-revisions.md#guarded-first-admission)
+traces first-deployment admission and receipt recovery. That path ends when OCC
+commits an Agent revision and queues reconciliation. Diagnostics observes runtime
+state after admission.
+
 ## Debugging and Verification
 
 - `403` indicates missing exact permission; `404` indicates the path does not
@@ -191,9 +198,13 @@ and Agent state stay unchanged.
 
 ## Changelog
 
+- 2026-11-04 07:41: Move the first-admission trace to the Configuration persistence owner and retain its diagnostics link. (authoring-run/06bc63c9-f110-4607-a058-a816a61dd579 - 6371064e)
+
 - 2026-10-31 15:00: Hold a dedicated Gateway's invalid settings outside its tool policy as check `gateway-config` instead of `gateway-tool-policy`. (fix-3045, finding 3045)
 
 - 2026-10-31 13:00: Hold a Kubernetes Gateway whose configuration OpenClaw refuses at startup as check `gateway-config`. (fix-3043b, finding 3043)
+
+- 2026-10-30 16:53: Document guarded first admission, receipt recovery, and how both controller calls bind authorization to the request captured on entry. (authoring-run/62495070-6f26-49ba-b4b9-e00ac1a9bccd - 460529c7)
 
 - 2026-10-29 15:00: Hold a dedicated Gateway's unverifiable Gateway state lock as check `gateway-state-lock` instead of `gateway-tool-policy`. (fix-2864, finding 2864)
 

@@ -80,7 +80,6 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
         const response = await exchange.issue(
           jwt,
           attempt,
-          () => {},
           assertCurrent,
           (response) => {
             // Capture before transport close: a late/lost response still has a cleanup owner.
