@@ -1,5 +1,6 @@
 import { createConfigurationStore } from "./configuration-store.mts";
-import { createAgentRoutes } from "./create-agent-routes.mts";
+import { candidateDeploymentError } from "./deployment-fixture.mts";
+import { createAgentLifecycle } from "./agent-lifecycle.mts";
 import { installationDriverConfigurations, installationFixture } from "./installation-fixture.mts";
 import { configurationValues } from "./configuration-fixture.mts";
 import { serveChannelDirectory } from "./channel-directory-fixture.mts";
@@ -8,7 +9,6 @@ import { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
-import { candidateDeploymentError, initialDeploymentProgress } from "./deployment-fixture.mts";
 import {
   createFixtureFetch,
   fixtureError as error,
@@ -18,11 +18,7 @@ import swePreset from "/console/swe-preset.mjs";
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
-const currentRevisionId = "rev_00000000-0000-4000-8000-000000000006";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
-const hiddenRevisionId = "rev_00000000-0000-4000-8000-000000000008";
-// v8, deployed from elsewhere after the page loaded (failedRedeployOnReread).
-const redeployRevisionId = "rev_00000000-0000-4000-8000-000000000018";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
 
@@ -53,20 +49,13 @@ export function installFixture(scenario, evidence) {
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
   const configurationStore = createConfigurationStore(scenario, namespaceId, createdAt, nextId);
   const { configs } = configurationStore;
-  const agents = new Map();
-  const revisions = new Map();
-  const deployments = new Map();
   const credentials = new Map();
   const credentialSources = new Map();
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map();
-  const files = new Map();
   const secrets = new Map();
-  const stagedWorkspaceFiles = new Map();
   const roles = [];
   const bindings = [];
-  const deleted = new Set();
-  const clearRevisionOnRead = new Set();
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
@@ -206,236 +195,16 @@ export function installFixture(scenario, evidence) {
       resourceId: harnessCredential.id,
     });
   }
-  let selectedRevisionId = null;
-  if (scenario.candidateSuperseded) {
-    // A newer v8 the viewer cannot read superseded v7 and is now selected.
-    selectedRevisionId = hiddenRevisionId;
-  } else if (scenario.candidateDeploymentStatus) {
-    selectedRevisionId =
-      scenario.candidateDeploymentStatus === "succeeded" || scenario.candidateSelected
-        ? candidateRevisionId
-        : currentRevisionId;
-  } else if (scenario.deployed) {
-    selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
-  }
-  let agentReadCount = 0;
-  let agentListReadCount = 0;
-  let runtimeStatusReads = 0;
-  let runtimeLogReads = 0;
-  const agent = {
-    id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
+  const lifecycle = createAgentLifecycle(scenario, {
     namespaceId,
-    name: scenario.agentName ?? "Research assistant",
-    status: scenario.deleting ? "deleting" : "active",
-    desiredRuntimeState: scenario.stopped ? "stopped" : scenario.deployed ? "running" : "stopped",
-    configurationId: config.id,
-    executionMode: "dedicated",
-    gatewayManagedMode: true,
-    harnessAuth: selectedAuth,
-    credentialSources: structuredClone(
-      scenario.credentialSources ??
-        (selectedAuth?.method === "credential_source" ? [{ sourceId: selectedAuth.sourceId }] : []),
-    ),
-    ...(scenario.agentPlugins ? { plugins: structuredClone(scenario.agentPlugins) } : {}),
-    ...(scenario.agentPluginApprovers !== undefined
-      ? { pluginApprovers: structuredClone(scenario.agentPluginApprovers) }
-      : {}),
-    servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId:
-      scenario.stopNoSelection || scenario.firstDeploymentFailed || scenario.firstDeploymentQueued
-        ? null
-        : selectedRevisionId,
-    ...(scenario.repositoryAccess
-      ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
-      : {}),
-    ...(scenario.repositoryBindings
-      ? { repositoryBindings: structuredClone(scenario.repositoryBindings) }
-      : {}),
-  };
-  for (const [name, content] of Object.entries(scenario.workspaceFiles ?? {})) {
-    files.set(`${agent.id}/${name}`, content);
-  }
-
-  agents.set(agent.id, agent);
-  credentials.set(agent.id, { transportConfigured: scenario.transport !== false });
-  function snapshot(owner, id, revision) {
-    const configuration = configs.get(owner.configurationId);
-    const model = configuration.values.agents?.defaults?.model;
-    const primaryModel = typeof model === "string" ? model : model?.primary;
-    const harnessId =
-      configuration.values.agents?.defaults?.models?.[primaryModel]?.agentRuntime?.id ??
-      (primaryModel?.startsWith("codex/") ? "codex" : "openclaw");
-    return {
-      id,
-      namespaceId,
-      agentId: owner.id,
-      revision,
-      backendId: owner.backendId ?? null,
-      gatewayManagedMode: owner.gatewayManagedMode,
-      configurationId: configuration.id,
-      configurationKind: configuration.kind,
-      configurationGeneration: configuration.generation,
-      createdAt,
-      configuration: structuredClone(configuration.values),
-      secretBindings: structuredClone(configuration.secretBindings),
-      harnessAuth: structuredClone(owner.harnessAuth),
-      credentialSources: structuredClone(owner.credentialSources),
-      ...(owner.pluginApprovers !== undefined
-        ? { pluginApprovers: structuredClone(owner.pluginApprovers) }
-        : {}),
-      ...(owner.plugins
-        ? {
-            plugins: {
-              driver: structuredClone(scenario.pluginCapabilities.driver),
-              plugins: structuredClone(owner.plugins),
-            },
-          }
-        : {}),
-      harness: { id: harnessId, version: "demo", mode: owner.executionMode },
-      compute: { id: "kubernetes-demo", implementation: "kubernetes" },
-      ...(scenario.policyState ? { sandboxDriverId: "sandbox-story" } : {}),
-      servicePrincipalId: owner.servicePrincipalId,
-      ...(owner.repositoryBindings?.length
-        ? {
-            repositoryCredentials: {
-              driver: { id: "github-demo", implementation: "github" },
-              deadlineWallMs: Date.parse(createdAt) + 3600000,
-              bindings: owner.repositoryBindings.map((binding) => ({
-                ...binding,
-                backendId: "github-demo",
-                grant: {
-                  providerInstanceId: "github-demo",
-                  repositoryId: `demo-${binding.repositoryRef}`,
-                  grantId: `demo-${binding.repositoryRef}-${binding.profile}`,
-                },
-              })),
-            },
-          }
-        : {}),
-    };
-  }
-  if (scenario.deployed) {
-    const revisionId = scenario.candidateDeploymentStatus
-      ? currentRevisionId
-      : "rev_00000000-0000-4000-8000-000000000001";
-    const currentRevision = snapshot(agent, revisionId, scenario.candidateDeploymentStatus ? 6 : 1);
-    if (scenario.candidateDeploymentStatus) {
-      currentRevision.createdAt = "2026-09-25T12:00:00.000Z";
-      currentRevision.configurationGeneration = 1;
-      currentRevision.configuration.agents.defaults.model = "codex/gpt-4.1";
-    }
-    revisions.set(revisionId, currentRevision);
-    if (scenario.revisionHistory) {
-      // Earlier deploys of the same Agent, one per day before the current version.
-      currentRevision.revision = scenario.revisionHistory;
-      for (let number = 1; number < scenario.revisionHistory; number += 1) {
-        const older = snapshot(
-          agent,
-          `rev_00000000-0000-4000-8000-${String(100 + number).padStart(12, "0")}`,
-          number,
-        );
-        older.createdAt = new Date(
-          Date.parse(createdAt) - (scenario.revisionHistory - number) * 86_400_000,
-        ).toISOString();
-        revisions.set(older.id, older);
-        // An earlier version whose deployment failed, or that a newer one superseded
-        // (earlierVersionError), before a later one succeeded.
-        if (scenario.earlierFailedVersion === number) {
-          deployments.set(older.id, {
-            deploymentId: older.id,
-            namespaceId,
-            agentId: agent.id,
-            status: "failed",
-            cleanup: null,
-            progress: null,
-            error:
-              scenario.earlierVersionError ?? candidateDeploymentError(scenario, older.createdAt),
-            warnings: [],
-          });
-        }
-      }
-    }
-    deployments.set(revisionId, {
-      deploymentId: revisionId,
-      namespaceId,
-      agentId: agent.id,
-      // A failed or still queued first deployment selects no version for service.
-      status: scenario.firstDeploymentFailed
-        ? "failed"
-        : scenario.firstDeploymentQueued
-          ? "queued"
-          : "succeeded",
-      cleanup: null,
-      progress: null,
-      error: scenario.firstDeploymentFailed
-        ? candidateDeploymentError(scenario, currentRevision.createdAt)
-        : null,
-      warnings: [],
-    });
-    if (scenario.candidateDeploymentStatus) {
-      const candidate = snapshot(agent, candidateRevisionId, 7);
-      candidate.createdAt = "2026-09-26T22:52:53.000Z";
-      revisions.set(candidate.id, candidate);
-      deployments.set(candidate.id, {
-        deploymentId: candidate.id,
-        namespaceId,
-        agentId: agent.id,
-        status: scenario.candidateDeploymentStatus,
-        cleanup: scenario.cleanupStatus
-          ? { status: scenario.cleanupStatus, nextAttemptAt: null }
-          : null,
-        progress: ["queued", "running"].includes(scenario.candidateDeploymentStatus)
-          ? {
-              lastAttempt: scenario.deploymentLastAttempt ?? null,
-              nextAttemptAt:
-                scenario.candidateDeploymentStatus === "queued" ? "2026-09-26T22:53:01.000Z" : null,
-            }
-          : null,
-        error:
-          scenario.candidateDeploymentStatus === "failed"
-            ? candidateDeploymentError(scenario, candidate.createdAt)
-            : null,
-        warnings: scenario.candidateDeploymentWarnings ?? [],
-        // The next status poll records success and selects v7 for service.
-        ...(scenario.candidateActivates ? { reads: 0 } : {}),
-      });
-    }
-  }
-  if (scenario.emptyAgents) {
-    agents.clear();
-  } else {
-    agents.set("agt_00000000-0000-4000-8000-000000000002", {
-      ...agent,
-      id: "agt_00000000-0000-4000-8000-000000000002",
-      name: "Documentation assistant",
-      activeRevisionId: null,
-    });
-  }
-  if (scenario.unreadableAgentConfiguration) {
-    for (const field of ["harnessAuth", "plugins", "pluginApprovers", "repositoryBindings"]) {
-      delete agent[field];
-    }
-    agent.configurationReadError = {
-      code: "SAVED_CONFIGURATION_UNREADABLE",
-      field: scenario.unreadableAgentConfiguration,
-    };
-  }
-  if (scenario.unreadableRevisionConfiguration) {
-    const saved = revisions.get(selectedRevisionId);
-    revisions.set(saved.id, {
-      id: saved.id,
-      namespaceId: saved.namespaceId,
-      agentId: saved.agentId,
-      revision: saved.revision,
-      backendId: saved.backendId,
-      createdAt: saved.createdAt,
-      configurationReadError: {
-        code: "SAVED_CONFIGURATION_UNREADABLE",
-        field: scenario.unreadableRevisionConfiguration,
-      },
-    });
-  }
+    nextId,
+    configs,
+    config,
+    selectedAuth,
+    credentials,
+    deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
+  });
   const preset = {
     id: scenario.swePreset ? "pre_swe_codex" : "pre_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -604,7 +373,7 @@ export function installFixture(scenario, evidence) {
   let sandboxPolicy = {
     id: "sbp_00000000-0000-4000-8000-000000000001",
     namespaceId,
-    agentId: agent.id,
+    agentId: lifecycle.seedAgent().id,
     version: 1,
     additions:
       scenario.policyState === "protected"
@@ -662,19 +431,6 @@ export function installFixture(scenario, evidence) {
           : "SANDBOX_POLICY_CEILING_CHANGED",
     };
   }
-  const serveCreate = createAgentRoutes(scenario, {
-    namespaceId,
-    createdAt,
-    nextId,
-    configs,
-    deployments,
-    credentials,
-    files,
-    stagedWorkspaceFiles,
-    saveAgent: (saved) => agents.set(saved.id, saved),
-    snapshot,
-    saveRevision: (revision) => revisions.set(revision.id, revision),
-  });
   const answer = async (url, method, body) => {
     const path = url.pathname;
     if (path === "/api/auth/providers" && method === "GET") {
@@ -1018,31 +774,20 @@ export function installFixture(scenario, evidence) {
       if (resource === "permissions/secrets" && method === "GET") {
         return response({ operateDenied: scenario.secretOperateDenied ?? [] });
       }
-      if (resource === "agents") {
-        if (method === "GET") {
-          const reread = ++agentListReadCount > 1;
-          // Another person's stop completes after the list's first read: no version is selected.
-          if (scenario.stoppedOnListReread && reread) {
-            for (const listed of agents.values()) {
-              listed.desiredRuntimeState = "stopped";
-              listed.activeRevisionId = null;
-            }
-          }
-          // Another person's deletion of the first Agent started after the list's first read.
-          if (scenario.deletingOnListReread && reread) {
-            agent.status = "deleting";
-          }
-          return response([...agents.values()]);
+      if (
+        resource === "agents" ||
+        resource === "agents/validate" ||
+        resource.startsWith("agents/provision")
+      ) {
+        const reply = await lifecycle.serve(resource, method, body, url);
+        if (reply !== undefined) {
+          return reply;
         }
-      }
-      const createReply = serveCreate(resource, method, body);
-      if (createReply !== undefined) {
-        return createReply;
       }
       const agentMatch = resource.match(/^agents\/([^/]+)(.*)$/);
       if (agentMatch) {
         const [, id, suffix] = agentMatch;
-        const saved = agents.get(id);
+        const saved = lifecycle.lookupAgent(id);
         if (!saved) {
           return error(404);
         }
@@ -1184,7 +929,7 @@ export function installFixture(scenario, evidence) {
             return error(403, "AUTHORIZATION_DENIED");
           }
           policyEditing = body.enabled;
-          return response({ ...agent, sandboxPolicyEditing: policyEditing });
+          return response({ ...lifecycle.seedAgent(), sandboxPolicyEditing: policyEditing });
         }
         if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "PUT") {
           if (scenario.policyState === "ceilingDenied") {
@@ -1362,65 +1107,6 @@ export function installFixture(scenario, evidence) {
         if (suffix === "/plugins/details" && method === "POST" && scenario.pluginDiscovery) {
           return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
         }
-        if (suffix === "") {
-          if (method === "GET") {
-            if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
-              saved.status = "deleting";
-            }
-            // Once the open Logs view has read output, another person stops the Agent and the
-            // stop completes: no version is selected for service (stopElsewhereOnReread).
-            if (scenario.stopElsewhereOnReread && runtimeLogReads > 0 && saved.activeRevisionId) {
-              saved.desiredRuntimeState = "stopped";
-              delete saved.activeRevisionId;
-            }
-            // By the open Logs view's second runtime status poll, another person has deployed v8,
-            // whose startup model check timed out: the Agent runs again with no version selected.
-            if (
-              scenario.failedRedeployOnReread &&
-              runtimeStatusReads > 1 &&
-              !revisions.has(redeployRevisionId)
-            ) {
-              const redeploy = snapshot(saved, redeployRevisionId, 8);
-              redeploy.createdAt = "2026-09-26T23:10:00.000Z";
-              revisions.set(redeploy.id, redeploy);
-              deployments.set(redeploy.id, {
-                deploymentId: redeploy.id,
-                namespaceId,
-                agentId: saved.id,
-                status: "failed",
-                cleanup: null,
-                progress: null,
-                error: {
-                  code: "RUNTIME_MODEL_PROBE_TIMEOUT",
-                  message:
-                    "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
-                },
-                warnings: [],
-              });
-              saved.desiredRuntimeState = "running";
-              // The API omits the field when no version is selected.
-              delete saved.activeRevisionId;
-            }
-            if (deleted.has(id)) {
-              agents.delete(id);
-              return error(404);
-            }
-            if (clearRevisionOnRead.delete(id)) {
-              saved.activeRevisionId = null;
-            }
-            return response(saved);
-          }
-          if (method === "PATCH") {
-            Object.assign(saved, body);
-            return response(saved);
-          }
-          if (method === "DELETE") {
-            saved.status = "deleting";
-            saved.desiredRuntimeState = "stopped";
-            deleted.add(id);
-            return response(saved, 202);
-          }
-        }
         if (suffix === "/permissions" && method === "GET") {
           const allowed = !scenario.readOnlyPermissionSummary;
           return response(
@@ -1443,18 +1129,11 @@ export function installFixture(scenario, evidence) {
         if (suffix === "/permissions/secrets" && method === "GET") {
           return response({ operateDenied: scenario.secretOperateDenied ?? [] });
         }
-        if (suffix === "/stop" && method === "POST") {
-          saved.desiredRuntimeState = "stopped";
-          if (scenario.clearRevisionOnStopReadback) {
-            clearRevisionOnRead.add(id);
-          }
-          return response(saved, 202);
-        }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
             url:
-              (id === agent.id ? scenario.nativeAdminUrl : undefined) ??
+              (id === lifecycle.seedAgent().id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",
           });
         }
@@ -1481,80 +1160,12 @@ export function installFixture(scenario, evidence) {
             return response(credentials.get(id) ?? { transportConfigured: true });
           }
         }
-        if (suffix === "/deploy" && method === "POST") {
-          const lastRevision = Math.max(
-            0,
-            ...[...revisions.values()]
-              .filter((item) => item.agentId === id)
-              .map((item) => item.revision),
-          );
-          const next = snapshot(saved, nextId("rev"), lastRevision + 1);
-          revisions.set(next.id, next);
-          const stagedFiles = stagedWorkspaceFiles.get(id);
-          for (const [filename, content] of Object.entries(stagedFiles ?? {})) {
-            files.set(`${id}/${filename}`, content);
-          }
-          stagedWorkspaceFiles.delete(id);
-          saved.desiredRuntimeState = "running";
-          deployments.set(next.id, {
-            deploymentId: next.id,
-            namespaceId,
-            agentId: id,
-            status: "queued",
-            cleanup: null,
-            progress: initialDeploymentProgress("queued", createdAt),
-            reads: 0,
-            error: null,
-            warnings: [],
-          });
-          return response(next, 202);
-        }
-        if (suffix === "/revisions" && method === "GET") {
-          if (scenario.latestDeploymentReadStatus) {
-            return error(scenario.latestDeploymentReadStatus);
-          }
-          if (scenario.latestDeploymentReadDelay) {
-            await new Promise((resolve) => setTimeout(resolve, scenario.latestDeploymentReadDelay));
-          }
-          // Summaries, newest first, one page at a time; a cursor continues below a revision.
-          const limit = Number(url.searchParams.get("limit") ?? scenario.revisionPageSize ?? 50);
-          const cursor = url.searchParams.get("cursor");
-          const before = cursor ? Number(cursor.slice("v1.".length)) : Infinity;
-          const remaining = [...revisions.values()]
-            .filter((item) => item.agentId === id && item.revision < before)
-            .sort((left, right) => right.revision - left.revision);
-          const page = remaining.slice(0, limit);
-          return response(
-            page.map((item) => ({
-              id: item.id,
-              namespaceId: item.namespaceId,
-              agentId: item.agentId,
-              revision: item.revision,
-              backendId: item.backendId,
-              configurationId: item.configurationId,
-              configurationGeneration: item.configurationGeneration,
-              harness: item.harness,
-              createdAt: item.createdAt,
-              // The API lists each version's deployment outcome and error code (finding 2422).
-              deploymentStatus: deployments.get(item.id)?.status ?? null,
-              deploymentErrorCode: deployments.get(item.id)?.error?.code ?? null,
-            })),
-            200,
-            undefined,
-            { nextCursor: remaining.length > limit ? `v1.${page.at(-1).revision}` : null },
-          );
-        }
-        if (suffix.startsWith("/revisions/") && method === "GET") {
-          return revisions.has(suffix.split("/")[2])
-            ? response(revisions.get(suffix.split("/")[2]))
-            : error(404);
-        }
         if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime") && method === "GET") {
-          runtimeStatusReads += 1;
           const revisionId = suffix.split("/")[2];
-          if (!revisions.has(revisionId)) {
-            return error(404);
+          if (!lifecycle.hasAgentRevision(id, revisionId)) {
+            return error(404, "NOT_FOUND", "The requested platform resource was not found.");
           }
+          lifecycle.recordRuntimeStatusRead();
           if (scenario.bootstrapRuntime) {
             const terminated = (name, reason, exitCode) => ({
               name,
@@ -1767,7 +1378,7 @@ export function installFixture(scenario, evidence) {
           suffix.endsWith("/runtime/logs") &&
           method === "GET"
         ) {
-          runtimeLogReads += 1;
+          lifecycle.recordRuntimeLogRead();
           const revisionId = suffix.split("/")[2];
           if (url.searchParams.get("download") === "true") {
             // Downloads are a text/plain attachment, not a JSON envelope.
@@ -1892,8 +1503,8 @@ export function installFixture(scenario, evidence) {
           method === "POST"
         ) {
           const revisionId = suffix.split("/")[2];
-          if (!revisions.has(revisionId)) {
-            return error(404);
+          if (!lifecycle.hasAgentRevision(id, revisionId)) {
+            return error(404, "NOT_FOUND", "The requested platform resource was not found.");
           }
           if (scenario.diagnosticsState === "noSlack") {
             // The gateway's answer for a version with no Slack channel.
@@ -1962,40 +1573,9 @@ export function installFixture(scenario, evidence) {
                   ],
           });
         }
-        if (suffix.startsWith("/deployments/") && method === "GET") {
-          const deployment = deployments.get(suffix.split("/")[2]);
-          if (!deployment) {
-            return error(404);
-          }
-          if (scenario.cleanupCompletes && deployment.cleanup) {
-            deployment.cleanupReads = (deployment.cleanupReads ?? 0) + 1;
-            if (deployment.cleanupReads >= 3) {
-              deployment.cleanup = { status: "succeeded", nextAttemptAt: null };
-            }
-          }
-          if (deployment.reads !== undefined && ++deployment.reads > 1) {
-            deployment.status = "succeeded";
-            deployment.progress = null;
-            saved.desiredRuntimeState = "running";
-            saved.activeRevisionId = deployment.deploymentId;
-          }
-          const { reads: _reads, cleanupReads: _cleanupReads, ...status } = deployment;
-          return response(status);
-        }
-        if (suffix.startsWith("/workspace/files/")) {
-          const filename = decodeURIComponent(suffix.split("/").at(-1));
-          const key = `${id}/${filename}`;
-          if (method === "PUT") {
-            files.set(key, body.content);
-          }
-          if (["GET", "PUT"].includes(method)) {
-            return response({
-              name: filename,
-              content:
-                files.get(key) ??
-                `# ${filename}\n\nDemo workspace guidance. Edit this text and save to the local fixture.\n`,
-            });
-          }
+        const reply = await lifecycle.serve(resource, method, body, url);
+        if (reply !== undefined) {
+          return reply;
         }
       }
       if (resource === "iam/roles") {
