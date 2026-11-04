@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-04"
-last_updated_session: "authoring-run/6c8eb7c1-4921-456d-bd96-cf1e8303b58b"
+last_updated_session: "authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a"
 ---
 
 # Production Startup Flow
@@ -165,7 +165,9 @@ receipt namespace, release and reader's cluster connection before a named Job re
 `initializationEvidence` checks the marker, captured UID, chart steps, controller
 and terminal status. Missing UID, replacement, refusal or inconclusive status
 leaves the original checkpoint unknown. Doctor reports Helm's recorded outcome
-separately. Plan adds read-only recovery steps.
+separately. Plan adds read-only recovery steps. Both buffer their report, including
+Helm outcome, and check `WriteTo` before returning Job status. Returned write
+errors reach `cmd/occ/main.go:main`, which reports stderr diagnostics and exits `1`.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -375,6 +377,10 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 23:30: Check complete handoff reports, including receipt outcomes. (authoring-run/48787d5f-913a-4fa5-910a-2f9ec35e504a - ce06d47cfb0b4fb29495ad4bc85bb71aa5941975)
+
+- 2026-11-04 23:14: Document report write failures. (authoring-run/58196aeb-45b5-4ea5-850d-e368b48f15f9 - 582236adfbbb392c2247995dde054eef929ca6c1)
 
 - 2026-11-04 23:07: Require the captured UID for original Job completion. (authoring-run/6c8eb7c1-4921-456d-bd96-cf1e8303b58b - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
