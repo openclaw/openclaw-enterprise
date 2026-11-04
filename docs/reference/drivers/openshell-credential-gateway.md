@@ -12,7 +12,7 @@ authentication, admission, and provider-file proof follow the
 
 [Follow a Codex request from placeholder to upstream header](#follow-a-codex-request-through-openshell).
 
-Custom model keys require [endpoint authorization](../console/custom-responses.md). Source endpoints remain immutable.
+Custom model keys require [endpoint authorization](secret.md#interface). Source endpoints remain immutable.
 
 ## Configure the Driver
 

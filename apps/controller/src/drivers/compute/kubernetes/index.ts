@@ -2765,6 +2765,102 @@ function harnessModelAuthentication(
   throw new ConfigurationFailure("Harness authentication requires a compatible model provider.");
 }
 
+function modelAdapter(providerId: string, provider: Record<string, unknown> | undefined): string {
+  return (
+    (typeof provider?.api === "string" ? provider.api : undefined) ??
+    (providerId === "anthropic" ? "anthropic-messages" : "openai-responses")
+  );
+}
+
+function normalizeModelEndpoint(
+  adapter: string,
+  value: string,
+  setting: string,
+  settingError: (setting: string, requirement: string) => Error,
+): string {
+  if (adapter === "anthropic-messages") {
+    let endpoint: URL | undefined;
+    try {
+      endpoint = new URL(value);
+    } catch {
+      endpoint = undefined;
+    }
+    if (
+      endpoint === undefined ||
+      endpoint.protocol !== "https:" ||
+      endpoint.hostname.length === 0 ||
+      endpoint.hostname.includes("*") ||
+      endpoint.port === "0" ||
+      endpoint.username !== "" ||
+      endpoint.password !== "" ||
+      endpoint.pathname.includes("*") ||
+      endpoint.search !== "" ||
+      endpoint.hash !== ""
+    ) {
+      throw settingError(setting, "must be a normalized HTTPS Anthropic Messages endpoint");
+    }
+    return endpoint.origin + endpoint.pathname.replace(/\/$/u, "");
+  }
+  const normalized = normalizeOpenAiBaseUrl(value);
+  if (normalized === undefined || openAiBaseUrlRewritesIpv4(value)) {
+    throw settingError(setting, "must be a normalized HTTPS /v1 endpoint");
+  }
+  return normalized;
+}
+
+function embeddedModelDestinations(
+  configuration: OpenClawConfigurationDocument,
+  providerId: string,
+  settingError: (setting: string, requirement: string) => Error,
+): readonly string[] {
+  const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
+  const providerAdapter = modelAdapter(providerId, provider);
+  const providerSetting = keyedSettingPath("models.providers", providerId);
+  const defaultEndpoint =
+    providerAdapter === "anthropic-messages"
+      ? "https://api.anthropic.com"
+      : providerId === "openai"
+        ? "https://api.openai.com/v1"
+        : undefined;
+  const providerEndpoint =
+    provider?.baseUrl === undefined
+      ? defaultEndpoint
+      : normalizeModelEndpoint(
+          providerAdapter,
+          provider.baseUrl as string,
+          `${providerSetting}.baseUrl`,
+          settingError,
+        );
+  const destinations = providerEndpoint === undefined ? [] : [providerEndpoint];
+  const models = Array.isArray(provider?.models) ? provider.models : [];
+  models.forEach((entry, index) => {
+    const model = asRecord(entry);
+    if (model === undefined) {
+      return;
+    }
+    const adapter = (typeof model.api === "string" ? model.api : undefined) ?? providerAdapter;
+    if (model.baseUrl === undefined) {
+      if (
+        model.api !== undefined &&
+        adapter !== providerAdapter &&
+        providerEndpoint !== undefined
+      ) {
+        destinations.push(providerEndpoint);
+      }
+      return;
+    }
+    destinations.push(
+      normalizeModelEndpoint(
+        adapter,
+        model.baseUrl as string,
+        `${providerSetting}.models.${index}.baseUrl`,
+        settingError,
+      ),
+    );
+  });
+  return destinations;
+}
+
 // Every provider is checked, selected or not: a bare model name or a `/model` switch can still
 // reach one (finding 1291), as the credential header rule assumes. Dedicated Codex makes no
 // model request from its Gateway, so it refuses every apiKey; OpenClaw accepts one only on the
@@ -4776,7 +4872,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (auth.method === "api_key") {
       const endpoint = auth.authorizedEndpoint;
-      const requiresOpenAiEndpointShape = authentication.providerId !== "anthropic";
+      const provider = asRecord(
+        asRecord(asRecord(configuration.models)?.providers)?.[authentication.providerId],
+      );
+      const providerAdapter = modelAdapter(authentication.providerId, provider);
+      const requiresOpenAiEndpointShape = providerAdapter !== "anthropic-messages";
       if (
         endpoint !== undefined &&
         requiresOpenAiEndpointShape &&
@@ -4799,10 +4899,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "must authorize the Installation's custom API-key endpoint",
         );
       }
-      if (embedded) {
-        const provider = asRecord(
-          asRecord(asRecord(configuration.models)?.providers)?.[authentication.providerId],
+      if (native && endpoint !== undefined && endpoint !== "https://api.openai.com/v1") {
+        throw callerSettingError(
+          "harnessAuth.authorizedEndpoint",
+          "must match the Dedicated OpenClaw model endpoint",
         );
+      }
+      if (embedded) {
         const custom = !["openai", "anthropic"].includes(authentication.providerId);
         if (
           custom &&
@@ -4815,36 +4918,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "must match the custom Responses provider endpoint",
           );
         }
-        if (!custom) {
-          const expected =
-            authentication.providerId === "openai"
+        const destinations = embeddedModelDestinations(
+          configuration,
+          authentication.providerId,
+          callerSettingError,
+        );
+        const defaultDestination =
+          providerAdapter === "anthropic-messages"
+            ? "https://api.anthropic.com"
+            : authentication.providerId === "openai"
               ? "https://api.openai.com/v1"
-              : "https://api.anthropic.com";
-          const entries = Array.isArray(provider?.models) ? provider.models : [];
-          if (
-            (endpoint !== undefined && endpoint !== expected) ||
-            (provider?.baseUrl !== undefined && provider.baseUrl !== expected) ||
-            entries.some(
-              (entry) =>
-                asRecord(entry)?.baseUrl !== undefined && asRecord(entry)?.baseUrl !== expected,
-            )
-          ) {
-            throw callerSettingError(
-              "harnessAuth.authorizedEndpoint",
-              "requires an endpoint-authorized custom provider for a different destination",
-            );
-          }
-        }
+              : undefined;
         if (
-          authentication.providerId === "custom" &&
-          Array.isArray(provider?.models) &&
-          provider.models.some(
-            (entry) => asRecord(entry)?.baseUrl !== undefined || asRecord(entry)?.api !== undefined,
+          destinations.length === 0 ||
+          destinations.some((destination) =>
+            endpoint === undefined ? destination !== defaultDestination : destination !== endpoint,
           )
         ) {
           throw callerSettingError(
-            "models.providers.custom.models",
-            "must inherit the authorized endpoint and Responses API",
+            "harnessAuth.authorizedEndpoint",
+            "must match every effective model destination",
           );
         }
       }

@@ -13399,6 +13399,64 @@ test("Anthropic endpoint authorization preserves the canonical Messages endpoint
   );
 });
 
+test("endpoint authorization checks every effective embedded model destination", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const configuration = {
+    agents: { defaults: { model: "router/provider-model" } },
+    models: {
+      providers: {
+        router: {
+          baseUrl: "https://allowed.example.test/v1",
+          api: "openai-responses",
+          apiKey: "${OCE_MODEL_API_KEY}",
+          models: [{ id: "provider-model", baseUrl: "https://other.example.test/v1" }],
+        },
+      },
+    },
+  };
+
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        { ...apiKeyAuth, authorizedEndpoint: "https://allowed.example.test/v1" },
+        configuration,
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting harnessAuth.authorizedEndpoint must match every effective model destination.",
+    },
+  );
+});
+
+test("endpoint authorization uses the configured Messages adapter", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const configuration = {
+    agents: { defaults: { model: "router/claude-sonnet-4-5" } },
+    models: {
+      providers: {
+        router: {
+          baseUrl: "https://api.anthropic.com",
+          api: "anthropic-messages",
+          apiKey: "${OCE_MODEL_API_KEY}",
+          models: [{ id: "claude-sonnet-4-5" }],
+        },
+      },
+    },
+  };
+
+  assert.doesNotThrow(() =>
+    driver.validateHarnessAuth(
+      { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      { ...apiKeyAuth, authorizedEndpoint: "https://api.anthropic.com" },
+      configuration,
+      {},
+    ),
+  );
+});
+
 test("a Preset header name that waits on a variable is checked once filled", () => {
   const driver = createKubernetesComputeDriver(options());
   const binding = "model credentials come from the Agent's Harness authentication binding";
@@ -15863,6 +15921,19 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       apiKeyAuth,
       dedicatedNativeConfiguration,
     ),
+  );
+  assert.throws(
+    () =>
+      production.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        { ...apiKeyAuth, authorizedEndpoint: "https://models.example.test/v1" },
+        dedicatedNativeConfiguration,
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Agent setting harnessAuth.authorizedEndpoint must match the Dedicated OpenClaw model endpoint.",
+    },
   );
   assert.throws(
     () =>
