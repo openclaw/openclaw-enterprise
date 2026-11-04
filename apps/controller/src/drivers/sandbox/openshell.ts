@@ -1795,6 +1795,9 @@ async function prepareNativeWorkspace(
         throw new Error("Private workspace preparation did not complete.");
       }
     }
+    // As PID 1, acknowledge termination after the synchronous writes finish.
+    // Otherwise Kubernetes must wait for the grace period and force-kill us.
+    process.on("SIGTERM", () => process.exit(0));
     fs.writeFileSync("/preparation-status/ready", "ready");
     setInterval(() => {}, 1000);
   }`;

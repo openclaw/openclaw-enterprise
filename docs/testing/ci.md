@@ -36,6 +36,11 @@ lanes, including Checks and Conformance 2 to type-check TypeScript tests.
 Other changes run all ordinary lanes. `CI Required` currently blocks
 merge on `main`. These workflows do not gate each Agent/platform deployment.
 
+Check the terminal `CI Required` job conclusion; successful recorded steps alone
+do not finish the check. Queued timestamps do not prove runner allocation.
+Separate queue time, execution, and final status publication. Find phase timings
+in the Actions job summary when the owning workflow emits them.
+
 ## Qualify a published release for staging
 
 Run [Staging Release Qualification](../../.github/workflows/staging-qualification.yml)
@@ -341,10 +346,24 @@ Inspect `qa-advisory-local-first-agent-openshell-real-openshell` and its attempt
 Full advisory OpenShell runs use one Ubuntu 24.04 runner per file from the
 [OpenShell manifest](../../scripts/ci/test-suites/openshell.json). The files run in
 parallel across separate VMs. The two first-Agent files provision and clean up
-through Local Setup. Their focused lane preparation records selection and state
-without building images or creating a second cluster, database, routing setup,
-OpenShell installation, or Keycloak instance. Other files retain their lane
-preparation. The runner enforces both lane-wide and per-file `requiredEnv`
+through Local Setup. Hosted focused preparation restores the main-only BuildKit
+caches and builds current-checkout images, without creating a second cluster,
+database, routing setup, OpenShell installation, or Keycloak instance. The
+Kubernetes case selects the resulting immutable controller/runtime pair. The
+builder pushes cached layers directly to an owned loopback registry, without
+loading or recompressing the images in the host engine. Both profiles import the
+runtime from that registry. Compose also selects the verified development controller
+by digest through a Compose override that removes inherited builds. All five
+controller-side services share this image; Compose pulls it once instead of
+rebuilding/loading per-service images. Cleanup removes only the recorded owned
+controller reference. This selection is test-only
+(`OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE`); local and setup-shard defaults
+still build the controller from the checkout. With a selected runtime, Docker Compose overlaps
+database/bootstrap work with cluster setup after creating its owned network.
+Kubernetes prepares OpenShell assets after image imports while network probes
+finish. Both profiles join preparation before starting the control plane. Local Setup
+keeps unselected controller/runtime source builds serial. See the [development flow](../flows/docker-compose-development.md#4-start-and-clean-up-kubernetes-development).
+Other files retain their lane preparation. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
 claiming full advisory OpenShell coverage. The manual Full Integration lane
@@ -352,11 +371,56 @@ continues to run the full manifest serially and prepares the shared resources
 needed by its other files. First-Agent files do not request a separate CI database
 in either mode.
 
+Cache credentials are available only to preparation, and the cache is read-only
+for these jobs. A cache miss builds the current source; it does not select an
+older image. The development target shares common controller layers but its leaf
+is not supplied by the main runtime-target cache. Build, image publication,
+installation and cleanup time all count toward the job duration. Report cold
+and warm results separately, including any prerequisite warm/build time. Local
+runs and the setup shard retain the source-build installer path.
+
+OpenShell jobs use the guarded hosted disk-capacity check before image work.
+It skips removal when at least 36 GiB is available and preserves the Go and
+Python toolchains. Its receipt records capacity and removal duration. An explicitly
+selected installed browser is validated by a sandboxed launch and page evaluation;
+these jobs do not install an unused Playwright browser alongside it.
+
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, nonce-only reuse, native deployment, native
 model execution, native redeployment, resumed model execution, and cleanup.
 Each record contains only a fixed stage, outcome, and elapsed milliseconds.
 The parent test duration includes its native subtest; do not add them together.
+After setup, the test verifies the existing default Namespace and overlaps the
+distinct Codex and native Agents. Each keeps its own credentials, Configuration,
+identity, and session proof. Both operations settle before shared mutation and
+denial checks or stack teardown, including cancellation. Capacity samples report
+CPU count, minimum free memory and maximum load while the scenarios run.
+
+First-Agent command profiles summarize the Local Setup CLI timing records for
+setup and cleanup. The CLI times
+real Docker builds, Compose builds/startup, image pulls/exports/imports, cluster
+creation, Helm installation, and Kubernetes readiness commands. Records contain
+fixed categories, counts, elapsed milliseconds, and nonzero exit counts. Retry
+attempts are counted individually; failure handling stays unchanged. Arguments, output, environment values, and
+resource names are excluded. Concurrent or nested commands can overlap, so do
+not sum these durations as wall time. Fixed setup milestones record offsets from
+startup to place these operations on the wall-clock timeline. Native Pod profiles
+report time from the
+deploy request to Pod creation and time from creation to scheduling,
+initialization, running, readiness, and observation. They retain no Pod identity
+or configuration. Pod readiness timing does not replace the model and required
+worker proof.
+
+Native first-Agent proof retains the exact run ID, explicit successful exec flag,
+standalone tool-proof line, and exact final nonce. After a turn is terminal, history
+has 30 seconds to settle; a missing proof remains a failure. Failure diagnostics
+report only predicate counts and flags, not marker values, commands or transcripts.
+This settling bound does not reduce the model-execution budget or count a failed
+proof as a performance improvement. Before a turn, placement polling retries only
+a correlated `UNAVAILABLE` response with the pinned Gateway's explicit
+read-generation invalidation message. All other describe rejections fail with
+allowlisted error classification; they are not converted to an assertion that
+loses the cause. The same session identity and active placement remain required.
 
 The credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
 

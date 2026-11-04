@@ -611,12 +611,13 @@
  
 --- a/node-host-launcher.mjs
 +++ b/node-host-launcher.mjs
-@@ -21,8 +21,12 @@
+@@ -21,9 +21,13 @@
  
  const CHILD_ARGUMENT = "--openclaw-node-host-child";
  const MANAGED_CHILD_ARGUMENT = "--openclaw-node-host-managed-child";
 +const PROTOCOL_ARGUMENT = "--openclaw-node-host-protocol=1";
 +const ACCEPTED_RESTART_ARGUMENT = "--openclaw-node-host-accepted-restart";
+ const RESUME_CHILD_ARGUMENT = "--openclaw-node-host-resume-child";
  const CHILD_MARKER = Symbol.for("openclaw.node-host.launcher-child");
  const MANAGED_STATE_MARKER = Symbol.for("openclaw.node-host.managed-state-path");
 +const ACCEPTED_RESTART_MARKER = Symbol.for("openclaw.node-host.accepted-restart");
@@ -624,7 +625,7 @@
  const RESTART_INTERVAL_MS = 12 * 60 * 60 * 1_000;
  const READY_TIMEOUT_MS = 5 * 60 * 1_000;
  const ROOT_VALUE_FLAGS = new Set(["--profile", "--log-level", "--container"]);
-@@ -288,8 +292,18 @@
+@@ -345,8 +349,18 @@
          "The private managed node launcher argument requires an absolute state database path.",
        );
      }
@@ -644,7 +645,7 @@
      if (managedStatePath) {
        process[MANAGED_STATE_MARKER] = managedStatePath;
      }
-@@ -363,6 +377,7 @@
+@@ -420,6 +434,7 @@
    let restartArgs = process.argv.slice(2);
    let childExecArgv = process.execArgv;
    let childEnv = process.env;
@@ -652,7 +653,7 @@
    let pending;
    let lastAcceptedRestartAt;
    let releaseActivation;
-@@ -415,8 +430,11 @@
+@@ -472,8 +487,11 @@
        }
        const selected = candidate ?? active;
        const childArguments = selected.runtimeRoot
@@ -666,7 +667,7 @@
        let ready = false;
        let candidateFailed = false;
        let bootstrap;
-@@ -428,8 +446,23 @@
+@@ -485,8 +503,23 @@
            execArgv: childExecArgv,
            args: [...childArguments, ...restartArgs],
          });
@@ -691,7 +692,7 @@
            stdio: ["inherit", "inherit", "inherit", "ipc"],
          });
          if (candidate) {
-@@ -474,9 +507,30 @@
+@@ -531,9 +564,30 @@
                message.argv.every((arg) => typeof arg === "string") &&
                message.argv[0] === "node" &&
                message.argv[1] === "run" &&
@@ -2353,18 +2354,20 @@
    const advice = readConnectErrorRecoveryAdvice(params.errorDetails);
 --- a/packages/gateway-client/src/protocol-client.ts
 +++ b/packages/gateway-client/src/protocol-client.ts
-@@ -418,7 +418,7 @@
+@@ -420,8 +420,8 @@
            return;
          }
          this.helloReceived = true;
+-        this.requests.maxPayloadBytes = hello.policy?.maxPayload;
 -        this.requests.setSuspensionPhase(hello.snapshot?.suspension?.phase);
++        this.requests.maxPayloadBytes = hello?.policy?.maxPayload;
 +        this.requests.setSuspensionPhase(hello?.snapshot?.suspension?.phase);
          this.clearHandshakeTimer();
          this.connectFailure = undefined;
          this.reconnectSupervisor.reset();
 --- a/packages/gateway-client/src/reconnect-policy.ts
 +++ b/packages/gateway-client/src/reconnect-policy.ts
-@@ -25,6 +25,7 @@
+@@ -29,6 +29,7 @@
  export function shouldPauseGatewayReconnect(params: {
    details?: unknown;
    deviceTokenRetryPending?: boolean;
@@ -2372,7 +2375,7 @@
    tokenMismatchIsTerminal?: boolean;
    protocolMismatchIsTerminal?: boolean;
    clientVersionMismatchIsTerminal?: boolean;
-@@ -43,6 +44,9 @@
+@@ -47,6 +48,9 @@
    if (code === ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH) {
      return params.tokenMismatchIsTerminal === true && !params.deviceTokenRetryPending;
    }
@@ -2396,9 +2399,9 @@
 +  type ResponseFrame,
 +} from "./schema/frames.js";
  export { GATEWAY_SERVER_CAPS } from "./server-capabilities.js";
+ export { MAX_PREAUTH_PAYLOAD_BYTES } from "./payload-limits.js";
  export type {
-   ConnectParams,
-@@ -49,3 +55,9 @@
+@@ -50,3 +56,9 @@
    }
    return value.error === undefined || isGatewayErrorShape(value.error);
  }
@@ -4948,7 +4951,7 @@
      { name: "manual service", token: true, wrongGateway: false, args: ["--service"] },
 --- a/src/cli/connect-cli.test.ts
 +++ b/src/cli/connect-cli.test.ts
-@@ -52,6 +52,16 @@
+@@ -54,6 +54,16 @@
    tlsFingerprint: "ab".repeat(32),
  };
  
@@ -4965,7 +4968,7 @@
  function setupCode(): string {
    return encodePairingSetupCode(payload);
  }
-@@ -74,20 +84,6 @@
+@@ -76,20 +86,6 @@
    expect(mocks.runNodeDaemonInstall).not.toHaveBeenCalled();
  }
  
@@ -4986,7 +4989,7 @@
  function expectBootstrap() {
    expect(mocks.runNodeHost).toHaveBeenCalledWith(
      expect.objectContaining({ stopAfterFirstConnect: true }),
-@@ -106,9 +102,12 @@
+@@ -108,9 +104,12 @@
  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
  
  describe("connect cli", () => {
@@ -5000,7 +5003,7 @@
      mocks.runNodeDaemonInstall.mockResolvedValue(undefined);
      mocks.mutateConfigFileWithRetry.mockResolvedValue(undefined);
      mocks.runtime.exit.mockImplementation(() => {});
-@@ -148,6 +147,9 @@
+@@ -150,6 +149,9 @@
        ],
        gatewayBootstrapToken: "bootstrap-token",
        preferGatewayBootstrapToken: true,
@@ -5010,7 +5013,7 @@
        displayName: "Build Node",
      });
      expect(release).toHaveBeenCalledOnce();
-@@ -303,6 +305,7 @@
+@@ -360,6 +362,7 @@
        nodeHost: { skills: { enabled: false }, workerRuns: { enabled: true } },
      });
      expect(mocks.runNodeDaemonInstall).toHaveBeenCalledWith({
@@ -5018,7 +5021,7 @@
        displayName: "Runner Node",
        force: true,
      });
-@@ -333,6 +336,16 @@
+@@ -390,6 +393,16 @@
      expect(mocks.runNodeDaemonInstall).not.toHaveBeenCalled();
    });
  
@@ -5035,7 +5038,7 @@
    it("refuses plain HTTP join URLs for non-loopback gateways", async () => {
      await runConnect([`http://gateway.example/j/${"a".repeat(22)}`]);
  
-@@ -340,31 +353,141 @@
+@@ -397,31 +410,141 @@
      expect(mocks.fetchWithSsrFGuard).not.toHaveBeenCalled();
    });
  
@@ -5224,7 +5227,7 @@
  } from "../node-host/gateway-cloudflare-access.js";
  import { loadResumableNodeHostGateway, runNodeHost } from "../node-host/runner.js";
  import { isDevicePairingJoinCode } from "../pairing/join-code.js";
-@@ -40,6 +41,7 @@
+@@ -41,6 +42,7 @@
  type ConnectCommandOptions = {
    service?: boolean;
    ephemeral?: boolean;
@@ -5232,7 +5235,7 @@
    sessionHost?: boolean;
    targetFile?: string;
    displayName?: string;
-@@ -224,6 +226,11 @@
+@@ -233,6 +235,11 @@
      .option("--service", "Install and run the node host as an OS service", false)
      .option("--ephemeral", "Run as an environment-managed disposable session host", false)
      .option(
@@ -5244,7 +5247,7 @@
        "--session-host",
        "Host worker sessions (process-scoped unless installed as a service)",
        false,
-@@ -247,6 +254,9 @@
+@@ -256,6 +263,9 @@
      )
      .action(async (target: string | undefined, opts: ConnectCommandOptions) => {
        try {
@@ -5254,9 +5257,9 @@
          if (opts.ephemeral && opts.sessionHost) {
            throw new Error("--ephemeral cannot be combined with --session-host.");
          }
-@@ -259,15 +269,10 @@
-         }
+@@ -269,15 +279,10 @@
          const joinTarget = parseJoinTarget(resolvedTarget);
+         const signal = joinTarget ? getAsyncWorkSignal() : undefined;
          const saved = await loadNodeHostConfig();
 -        let initialCloudflareAccess: NodeHostCloudflareAccessConfig | undefined;
 -        if (joinTarget) {
@@ -5274,9 +5277,9 @@
          if (initialCloudflareAccess && joinTarget?.protocol !== "https:") {
            throw new Error("Cloudflare Access credentials require an HTTPS join URL.");
          }
-@@ -282,19 +287,22 @@
-           ? await fetchJoinPayload(joinTarget, joinCredentials)
-           : decodePairingSetupCode(resolvedTarget, { allowExpired: opts.ephemeral === true });
+@@ -295,19 +300,22 @@
+           return;
+         }
          const pair = resolveNodePairGatewayPayload(payload);
 -        const cloudflareAccess =
 -          initialCloudflareAccess ??
@@ -5307,7 +5310,7 @@
          });
          const forceWorkerRuns =
            opts.ephemeral === true || (opts.sessionHost === true && !opts.service);
-@@ -308,13 +316,15 @@
+@@ -321,13 +329,15 @@
              ? { gatewayCloudflareAccess: gatewayCandidates[0].cloudflareAccess }
              : {}),
            gatewayCandidates,
@@ -5325,7 +5328,7 @@
            ...(forceWorkerRuns ? { forceWorkerRuns: true } : {}),
            ...(opts.ephemeral === true ? { ephemeral: true } : {}),
            displayName: opts.displayName,
-@@ -329,7 +339,12 @@
+@@ -342,7 +352,12 @@
  
          // The first hello stores durable device auth and the winning endpoint before
          // installation, so the service never persists the one-shot bootstrap bearer.
@@ -5339,7 +5342,7 @@
          if (opts.sessionHost) {
            await mutateConfigFileWithRetry({
              writeOptions: {
-@@ -345,6 +360,7 @@
+@@ -358,6 +373,7 @@
            });
          }
          await runNodeDaemonInstall({
@@ -6232,7 +6235,7 @@
 -}
 --- a/src/cli/node-cli/register.test.ts
 +++ b/src/cli/node-cli/register.test.ts
-@@ -105,6 +105,33 @@
+@@ -110,6 +110,33 @@
    });
  });
  
@@ -6266,7 +6269,7 @@
  it("lets explicit gateway flags override --pair values", async () => {
    const code = encodePairingSetupCode(pairingPayload);
    await run(
-@@ -163,3 +190,46 @@
+@@ -168,3 +195,46 @@
      ...(!changed ? { gatewayHost: "10.0.0.2", gatewayPort: 19001 } : {}),
    });
  });
@@ -6323,7 +6326,7 @@
  import { defaultRuntime, writeRuntimeJson } from "../../runtime.js";
  import { inheritOptionFromParent } from "../command-options.js";
  import { formatInvalidPortOption } from "../error-format.js";
- import { ExpectedCliError } from "../failure-output.js";
+ import { ExpectedCliError } from "../expected-cli-error.js";
  import { formatHelpExamples } from "../help-format.js";
  import { addNodeCommandOptions, createNodeWorkerCommand } from "./command-options.js";
 -import { resolveNodeGatewayOptions, resolveNodePairGatewayOptions } from "./gateway-options.js";
@@ -6346,20 +6349,20 @@
        ),
    )
      .option("--session-host", "Host worker sessions for this foreground process")
-@@ -70,6 +77,12 @@
+@@ -72,6 +79,12 @@
+     .option(
        "--auth-from-env",
        "Use environment Gateway credentials instead of the paired device token",
-     )
++    )
 +    .addOption(
 +      new Option(
 +        "--require-device-auth",
 +        "Require the saved device credential for this Gateway",
 +      ).conflicts(["pair", "pairIfNeeded", "pairOrReconnect", "authFromEnv"]),
-+    )
+     )
      .addOption(new Option("--parent-stdin").hideHelp())
      .option("--share-installed-apps", "Share installed macOS applications with the Gateway")
-     .option("--no-share-installed-apps", "Disable installed application sharing")
-@@ -77,12 +90,13 @@
+@@ -80,12 +93,13 @@
        let pair;
        let gatewayOptions;
        try {
@@ -6379,7 +6382,7 @@
          const existing = await loadNodeHostConfig();
          gatewayOptions = resolveNodeGatewayOptions(opts, existing, pair);
        } catch (error) {
-@@ -90,8 +104,16 @@
+@@ -93,8 +107,16 @@
          defaultRuntime.exit(1);
          return;
        }
@@ -6398,7 +6401,7 @@
        if (port === null) {
          defaultRuntime.error(formatInvalidPortOption("--port"));
          defaultRuntime.exit(1);
-@@ -104,16 +126,29 @@
+@@ -107,16 +129,29 @@
        }
        const { runNodeHost } = await import("../../node-host/runner.js");
        await runNodeHost({
@@ -6429,14 +6432,14 @@
          ...(opts.ephemeral === true || opts.sessionHost === true ? { forceWorkerRuns: true } : {}),
          ...(opts.ephemeral === true ? { ephemeral: true } : {}),
          nodeId: opts.nodeId,
-@@ -121,6 +156,7 @@
+@@ -124,6 +159,7 @@
          installedAppsSharing: opts.shareInstalledApps,
          desktopSharingEnabled: opts.desktopSharing,
          gatewayAuthFromEnv: opts.authFromEnv,
 +        requireDeviceAuth: opts.requireDeviceAuth,
+         resumeDeviceId: opts.resumeDevice,
          parentStdin: opts.parentStdin,
          commands: opts.commands ?? inheritOptionFromParent<string[]>(command, "commands"),
-         allCommands: opts.allCommands ?? inheritOptionFromParent<boolean>(command, "allCommands"),
 --- a/src/commands/doctor-node-services.test.ts
 +++ b/src/commands/doctor-node-services.test.ts
 @@ -33,7 +33,7 @@
@@ -6456,7 +6459,7 @@
  import {
    expandEnvNormalizationKeys,
    normalizeZaiEnv,
-@@ -613,6 +614,11 @@
+@@ -617,6 +618,11 @@
    const before = { ...env };
    const previousOwnedEnv = resolveAppliedConfigEnvOwnership(env);
    const entries = collectConfigRuntimeEnvVars(cfg);
@@ -6893,7 +6896,7 @@
  import {
    listKnownProviderAuthEnvVarNamesCore,
    listKnownProviderAuthEnvVarNamesAsync,
-@@ -257,6 +258,7 @@
+@@ -259,6 +260,7 @@
    const parsed = readDotEnvFile({
      filePath,
      entryFilter: (key) =>
@@ -6901,7 +6904,7 @@
        !shouldBlockWorkspaceStaticDotEnvKey(key) &&
        !getProviderAuthBlockedKeys().has(key.toUpperCase()),
    });
-@@ -279,7 +281,9 @@
+@@ -281,7 +283,9 @@
  ): Promise<void> {
    const parsed = await readDotEnvFileAsync({
      filePath,
@@ -6959,7 +6962,7 @@
 +}
 --- a/src/node-host/connection.test.ts
 +++ b/src/node-host/connection.test.ts
-@@ -156,6 +156,7 @@
+@@ -157,6 +157,7 @@
      nativeInferenceEnabled,
      ...(deviceFoldersEnabled ? { deviceFoldersEnabled: true as const } : {}),
      initialInventory: { skills: [], pluginTools: [] },
@@ -8252,7 +8255,7 @@
      configureNodeHost: vi.fn(async (params: Parameters<typeof configureNodeHost>[0]) => {
        mocks.capturedConfiguredGatewayConfigs.push(params.gateway);
        return {
-@@ -114,16 +127,13 @@
+@@ -115,16 +128,13 @@
  vi.mock("../infra/device-auth-store.js", async (importOriginal) => ({
    ...(await importOriginal<typeof import("../infra/device-auth-store.js")>()),
    loadDeviceAuthTokenReadOnly: mocks.loadDeviceAuthTokenReadOnly,
@@ -8271,7 +8274,7 @@
  }));
  
  vi.mock("../infra/machine-name.js", () => ({
-@@ -148,23 +158,25 @@
+@@ -149,23 +159,25 @@
  
  // mock-isolation: Synthetic node-host capabilities avoid real plugin discovery and lifecycle effects.
  vi.mock("./plugin-node-host.js", () => ({
@@ -8307,7 +8310,7 @@
  }));
  
  // mock-isolation: runner fixtures own MCP descriptors and shutdown without starting live clients.
-@@ -203,6 +215,7 @@
+@@ -204,6 +216,7 @@
          nativeInferenceEnabled: false,
          workerHostingDisabledReason: mocks.fakeRuntimeWorkerHostingDisabledReason,
          initialInventory: { skills: [], pluginTools: [] },
@@ -8315,7 +8318,7 @@
          start: (params) => {
            mocks.runnerCapacityChanged = params.onRunnerCapacityChanged;
            return mocks.activeRuntime;
-@@ -262,7 +275,16 @@
+@@ -263,7 +276,16 @@
    mocks.startGatewayClientWhenEventLoopReady.mockReset().mockResolvedValue(mocks.readiness(false));
    mocks.loadNodeHostConfig.mockReset().mockResolvedValue(null);
    mocks.loadDeviceAuthTokenReadOnly.mockReset().mockResolvedValue(null);
@@ -8332,7 +8335,7 @@
    mocks.getRuntimeConfig.mockReturnValue({ gateway: { handshakeTimeoutMs: 1_000 } });
  }
  
-@@ -270,7 +292,7 @@
+@@ -271,7 +293,7 @@
  
  export async function withReadyNodeHost(
    runTest: (host: {
@@ -8493,7 +8496,7 @@
  
    it("routes invoke input, cancellation, and connection close to the runtime", async () => {
      mocks.useFakeRuntime = true;
-@@ -229,6 +289,137 @@
+@@ -235,6 +295,137 @@
        expect(mocks.activeRuntime.cancel).toHaveBeenCalledWith("invoke-1");
        expect(mocks.activeRuntime.cancelAll).toHaveBeenCalledOnce();
      });
@@ -8631,10 +8634,11 @@
    });
  
    it("strips remote credentials before resolving local node-host auth", async () => {
-@@ -314,6 +505,114 @@
+@@ -319,6 +510,114 @@
+       await expect(loadResumableNodeHostGateway()).resolves.toBeUndefined();
        expect(mocks.configureNodeHost).not.toHaveBeenCalled();
      });
- 
++
 +    it.each(["/node", "/different"])(
 +      "captures saved Gateway authorization independently of selected path %s",
 +      async (contextPath) => {
@@ -8742,11 +8746,10 @@
 +        expect(mocks.capturedGatewayClients).toHaveLength(0);
 +      },
 +    );
-+
-     describe("expired fallback setup codes", () => {
-       const expiredOptions = {
-         ...runOptions,
-@@ -326,34 +625,38 @@
+ 
+     it("resumes only the saved device and configuration without shared authentication", async () => {
+       mocks.loadDeviceIdentityIfPresent.mockResolvedValue(deviceIdentity);
+@@ -377,34 +676,38 @@
          mocks.loadDeviceIdentityIfPresent.mockResolvedValue(deviceIdentity);
        });
  
@@ -8809,7 +8812,7 @@
          ["missing gateway", () => mocks.loadNodeHostConfig.mockResolvedValue(null), {}],
          [
            "mixed gateway scopes",
-@@ -362,6 +665,7 @@
+@@ -413,6 +716,7 @@
              gatewayCandidates: [gateway, { ...gateway, contextPath: "/other-node" }],
            },
          ],
@@ -8817,7 +8820,7 @@
          ["forced pairing", () => {}, { preferGatewayBootstrapToken: true }],
        ])(
          "rejects expired pairing with %s before changing state",
-@@ -371,15 +675,58 @@
+@@ -422,15 +726,58 @@
              "Pairing setup code has expired.",
            );
            expect(mocks.configureNodeHost).not.toHaveBeenCalled();
@@ -8877,7 +8880,7 @@
  
        expect(connectAuth()).toMatchObject({
          deviceToken: "paired-node-token",
-@@ -388,6 +735,7 @@
+@@ -439,6 +786,7 @@
        });
        expect(mocks.resolveGatewayCredentialsWithSecretInputs).not.toHaveBeenCalled();
        expect(lastCapturedOptions()?.deviceToken).toBeUndefined();
@@ -8885,7 +8888,7 @@
      });
  
      it("uses explicitly requested environment auth instead of the paired token", async () => {
-@@ -416,57 +764,64 @@
+@@ -467,57 +815,64 @@
      });
    });
  
@@ -9085,7 +9088,7 @@
    /** Stop cleanly after the first authenticated hello (used before service install). */
    stopAfterFirstConnect?: boolean;
    /** Host worker sessions for this process even when durable node config is disabled. */
-@@ -83,6 +108,7 @@
+@@ -85,6 +110,7 @@
  const NODE_HOST_EXIT_ON_RECONNECT_PAUSE_CODES: ReadonlySet<string> = new Set([
    ConnectErrorDetailCodes.AUTH_TOKEN_MISSING,
    ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH,
@@ -9093,7 +9096,7 @@
    ConnectErrorDetailCodes.AUTH_BOOTSTRAP_TOKEN_INVALID,
    ConnectErrorDetailCodes.AUTH_PASSWORD_MISSING,
    ConnectErrorDetailCodes.AUTH_PASSWORD_MISMATCH,
-@@ -149,6 +175,37 @@
+@@ -151,6 +177,37 @@
    return nextConfig;
  }
  
@@ -9131,7 +9134,7 @@
  /**
   * The saved Gateway endpoint when a node credential exists to reconnect without a setup code.
   * Node tokens are not bound to an endpoint, so callers must present the reconnect as conditional.
-@@ -168,9 +225,53 @@
+@@ -170,9 +227,53 @@
      : undefined;
  }
  
@@ -9186,7 +9189,7 @@
      return;
    }
    const { initializeSqliteRuntimeCapabilities } = await import("../infra/bun-sqlite-library.js");
-@@ -190,7 +291,37 @@
+@@ -192,7 +293,20 @@
        "node auto-update unavailable: this process bypasses the node launcher. Run openclaw doctor --fix to repair the installed node service, or start openclaw node run through the package CLI.",
      );
    }
@@ -9203,8 +9206,28 @@
 +  }
    const savedConfig = await loadNodeHostConfig();
 +  workSignal?.throwIfAborted();
++  // Recovery keeps the saved pairing under this runner's profile custody.
+   const resuming = opts.resumeDeviceId !== undefined;
+   const resumeConfig = resuming ? savedConfig : undefined;
+   const resumeIdentity = resuming ? await loadDeviceIdentityIfPresentAsync() : undefined;
+@@ -201,8 +315,9 @@
+     (!resumeConfig?.gateway ||
+       !resumeIdentity ||
+       resumeIdentity.deviceId !== opts.resumeDeviceId ||
+-      opts.gatewayBootstrapToken ||
++      opts.gatewayBootstrapToken !== undefined ||
+       opts.gatewayAuthFromEnv ||
++      opts.pairOrReconnect ||
+       !(await canReuseNodeHostDeviceToken({
+         savedGateway: resumeConfig.gateway,
+         gatewayCandidates: [resumeConfig.gateway],
+@@ -210,6 +325,24 @@
+       })))
+   ) {
+     throw new Error("Saved node pairing is missing or changed; same-device resume refused");
++  }
 +  const savedFingerprint = normalizeSavedNodeHostTlsFingerprint(savedConfig?.gateway);
-+  if (opts.gatewayOverrides) {
++  if (!resuming && opts.gatewayOverrides) {
 +    const selected = resolveNodeGatewayOptions(opts.gatewayOverrides, savedConfig);
 +    if (selected.port === null) {
 +      throw new Error("Invalid Gateway port.");
@@ -9220,15 +9243,14 @@
 +      gatewayCloudflareAccessFromSaved: selected.cloudflareAccessFromSaved,
 +      gatewayCandidates: selected.gatewayCandidates,
 +    };
-+  }
-   const plannedGateway: NodeHostGatewayConfig = {
+   }
+   const plannedGateway: NodeHostGatewayConfig = resumeConfig?.gateway ?? {
      host: opts.gatewayHost,
-     port: opts.gatewayPort,
-@@ -199,24 +330,59 @@
+@@ -219,24 +352,62 @@
      contextPath: opts.gatewayContextPath,
      cloudflareAccess: opts.gatewayCloudflareAccess,
    };
-+  if (opts.gatewayCloudflareAccessFromSaved && !opts.gatewayOverrides) {
++  if (!resuming && opts.gatewayCloudflareAccessFromSaved && !opts.gatewayOverrides) {
 +    const inheritedAccess = (candidate: NodeHostGatewayConfig) =>
 +      nodeHostCloudflareAccessConfigFromEnv(process.env) ??
 +      (savedConfig?.gateway &&
@@ -9249,11 +9271,15 @@
 +    };
 +  }
    let gatewayBootstrapToken = opts.gatewayBootstrapToken;
+-  let reuseDeviceTokenOnly = Boolean(resumeConfig);
 +  // Capture the saved pairing before preparing this connection attempt.
 +  // A setup for a different Gateway must not authorize fallback to its predecessor's token.
-+  const savedIdentity = await loadDeviceIdentityIfPresentAsync();
++  const savedIdentity = resumeIdentity ?? (await loadDeviceIdentityIfPresentAsync());
 +  const savedNodeToken =
-+    (opts.pairOrReconnect || opts.requireDeviceAuth || opts.gatewayBootstrapToken !== undefined) &&
++    (resuming ||
++      opts.pairOrReconnect ||
++      opts.requireDeviceAuth ||
++      opts.gatewayBootstrapToken !== undefined) &&
 +    savedIdentity
 +      ? await loadDeviceAuthTokenReadOnly({ deviceId: savedIdentity.deviceId, role: "node" })
 +      : null;
@@ -9263,7 +9289,7 @@
 +        tlsFingerprint: savedFingerprint || undefined,
 +      }
 +    : undefined;
-   let reuseDeviceTokenOnly = false;
++  let reuseDeviceTokenOnly = resuming;
    if (
      gatewayBootstrapToken &&
      opts.gatewayBootstrapExpiresAtMs !== undefined &&
@@ -9288,33 +9314,37 @@
        }))
      ) {
        throw new Error("Pairing setup code has expired.");
-@@ -225,360 +391,497 @@
+@@ -245,54 +416,65 @@
      gatewayBootstrapToken = undefined;
      reuseDeviceTokenOnly = true;
    }
 -  const fallbackDisplayName = await getMachineDisplayName();
--  const config = await configureNodeHost({
--    nodeId: opts.nodeId,
--    displayName: opts.displayName,
--    fallbackDisplayName,
--    gateway: plannedGateway,
--    installedAppsSharing: opts.installedAppsSharing,
--    commands: opts.commands,
--    allCommands: opts.allCommands,
--  });
+-  const config =
+-    resumeConfig ??
+-    (await configureNodeHost({
+-      nodeId: opts.nodeId,
+-      displayName: opts.displayName,
+-      fallbackDisplayName,
+-      gateway: plannedGateway,
+-      installedAppsSharing: opts.installedAppsSharing,
+-      commands: opts.commands,
+-      allCommands: opts.allCommands,
+-    }));
 -  const nodeId = config.nodeId;
 -  const displayName = config.displayName ?? fallbackDisplayName;
 -  const gateway = config.gateway ?? plannedGateway;
--  const gatewayCandidates = opts.gatewayCandidates?.length
-+  let gatewayCandidates = opts.gatewayCandidates?.length
-     ? opts.gatewayCandidates.map((candidate, index) =>
--        index === 0 && gateway.cloudflareAccess && !candidate.cloudflareAccess
--          ? { ...candidate, cloudflareAccess: gateway.cloudflareAccess }
-+        index === 0 && plannedGateway.cloudflareAccess && !candidate.cloudflareAccess
-+          ? { ...candidate, cloudflareAccess: plannedGateway.cloudflareAccess }
-           : candidate,
-       )
--    : [gateway];
+-  const gatewayCandidates =
+-    !resumeConfig && opts.gatewayCandidates?.length
++  let gatewayCandidates =
++    !resuming && opts.gatewayCandidates?.length
+       ? opts.gatewayCandidates.map((candidate, index) =>
+-          index === 0 && gateway.cloudflareAccess && !candidate.cloudflareAccess
+-            ? { ...candidate, cloudflareAccess: gateway.cloudflareAccess }
++          index === 0 && plannedGateway.cloudflareAccess && !candidate.cloudflareAccess
++            ? { ...candidate, cloudflareAccess: plannedGateway.cloudflareAccess }
+             : candidate,
+         )
+-      : [gateway];
 -
 -  const plaintextAccessCandidate = gatewayCandidates.find(
 -    (candidate) => candidate.cloudflareAccess && candidate.tls !== true,
@@ -9333,7 +9363,7 @@
 -        }),
 -    ),
 -  );
-+    : [plannedGateway];
++      : [plannedGateway];
 +
 +  if (opts.pairOrReconnect && !reuseDeviceTokenOnly && savedDeviceGateway) {
 +    const savedCandidate = gatewayCandidates.find(
@@ -9346,7 +9376,7 @@
 +    }
 +  }
 +  if (
-+    opts.requireDeviceAuth &&
++    (resuming || opts.requireDeviceAuth) &&
 +    (!savedIdentity ||
 +      !savedNodeToken?.token.trim() ||
 +      !(await canReuseNodeHostDeviceToken({
@@ -9386,11 +9416,13 @@
 +  const firstGateway = gatewayCandidates[0]!;
 +  const firstEnrollment = opts.pairOrReconnect && !savedConfig?.gateway && !savedNodeToken;
 +  await prepareTransport(firstGateway);
-+  const effectivePolicy = resolveNodeHostPolicy(opts, savedConfig ?? undefined);
++  // Resume retains the saved command and installed-app sharing policy.
++  const effectivePolicy = resolveNodeHostPolicy(resuming ? {} : opts, savedConfig ?? undefined);
    const preparedRuntime = await prepareNodeHostRuntime({
      config: cfg,
      env: process.env,
-     enableAgentRuns: true,
+@@ -300,318 +482,443 @@
+     receivesLocalMcpPolicy: true,
      forceWorkerRuns: opts.forceWorkerRuns,
      ephemeral: opts.ephemeral,
 -    installedAppsSharingEnabled: config.installedAppsSharing,
@@ -9400,7 +9432,7 @@
 +    commands: effectivePolicy.commands,
    });
 -  logInfo(`node-host: advertised commands: ${preparedRuntime.manifest.commands.join(", ")}`);
--  const deviceIdentity = await loadOrCreateDeviceIdentityAsync();
+-  const deviceIdentity = resumeIdentity ?? (await loadOrCreateDeviceIdentityAsync());
 -  const { token, password } =
 -    gatewayBootstrapToken || reuseDeviceTokenOnly
 -      ? {}
@@ -9411,7 +9443,7 @@
 -          gatewayCandidates,
 -          deviceId: deviceIdentity.deviceId,
 +  try {
-+    if (!opts.pairOrReconnect) {
++    if (!resuming && !opts.pairOrReconnect) {
 +      await retireChangedGatewayCredential({
 +        previous: savedConfig?.gateway,
 +        next: firstGateway,
@@ -9421,23 +9453,25 @@
 +    }
 +    workSignal?.throwIfAborted();
 +    const fallbackDisplayName = await getMachineDisplayName();
-+    const config = await configureNodeHost({
-+      nodeId: opts.nodeId,
-+      displayName: opts.displayName,
-+      fallbackDisplayName,
-+      // First enrollment has no predecessor grant. Persist its validated target
-+      // before authentication so a durable receipt always has a resumable binding.
-+      gateway:
-+        opts.pairOrReconnect && !firstEnrollment ? (savedConfig?.gateway ?? {}) : firstGateway,
-+      installedAppsSharing: opts.installedAppsSharing,
-+      commands: opts.commands,
-+      allCommands: opts.allCommands,
-+    });
++    const config =
++      resumeConfig ??
++      (await configureNodeHost({
++        nodeId: opts.nodeId,
++        displayName: opts.displayName,
++        fallbackDisplayName,
++        // First enrollment has no predecessor grant. Persist its validated target
++        // before authentication so a durable receipt always has a resumable binding.
++        gateway:
++          opts.pairOrReconnect && !firstEnrollment ? (savedConfig?.gateway ?? {}) : firstGateway,
++        installedAppsSharing: opts.installedAppsSharing,
++        commands: opts.commands,
++        allCommands: opts.allCommands,
++      }));
 +    const nodeId = config.nodeId;
 +    const displayName = config.displayName ?? fallbackDisplayName;
 +    let configuredGateway = config.gateway;
 +    logInfo(`node-host: advertised commands: ${preparedRuntime.manifest.commands.join(", ")}`);
-+    const deviceIdentity = await loadOrCreateDeviceIdentityAsync();
++    const deviceIdentity = resumeIdentity ?? (await loadOrCreateDeviceIdentityAsync());
 +    if (savedIdentity && savedIdentity.deviceId !== deviceIdentity.deviceId) {
 +      throw new Error("Node identity changed during pairing; retry the pairing command.");
 +    }
@@ -9471,7 +9505,7 @@
 +        prepare: async (candidate, signal) => {
 +          await prepareTransport(candidate);
 +          signal.throwIfAborted();
-+          if (opts.pairOrReconnect && !firstEnrollment) {
++          if (resuming || (opts.pairOrReconnect && !firstEnrollment)) {
 +            return;
 +          }
 +          await retireChangedGatewayCredential({
@@ -9502,9 +9536,10 @@
 +        bootstrapToken: gatewayBootstrapToken,
 +        bootstrapExpiresAtMs: opts.gatewayBootstrapExpiresAtMs,
 +        preferBootstrapToken: opts.preferGatewayBootstrapToken,
++        // Resume uses the same exact-binding checks as required device reconnects.
 +        nodeDeviceAuth:
 +          !opts.pairOrReconnect &&
-+          (opts.requireDeviceAuth || opts.gatewayBootstrapToken !== undefined)
++          (resuming || opts.requireDeviceAuth || opts.gatewayBootstrapToken !== undefined)
 +            ? {
 +                deviceId: savedIdentity?.deviceId ?? deviceIdentity.deviceId,
 +                deviceToken: savedNodeToken?.token,
@@ -9546,6 +9581,12 @@
 +            evt.payload.decision === "approved"
 +          ) {
 +            activeRuntime.refreshRunnerInventory();
++          }
++          return;
++        }
++        if (evt.event === "node.worker.localMcpPolicy") {
++          if (isRecord(evt.payload) && typeof evt.payload.allowed === "boolean") {
++            activeRuntime.setLocalMcpAllowed(evt.payload.allowed);
 +          }
 +          return;
 +        }
@@ -9605,14 +9646,7 @@
 -  let autoUpdateStart: Promise<void> | undefined;
 -  let autoUpdater: { stop: () => Promise<void> } | undefined;
 -  const persistWinningGateway = (winningGateway: NodeHostGatewayConfig) => {
--    void configureNodeHost({
--      nodeId,
--      displayName,
--      fallbackDisplayName,
--      gateway: winningGateway,
--      installedAppsSharing: config.installedAppsSharing,
--    }).catch((error: unknown) => {
--      writeStderrLine(`node host gateway endpoint persistence failed: ${String(error)}`);
+-    if (resumeConfig) {
 +        void announceLauncherReady(
 +          url,
 +          tlsFingerprint,
@@ -9676,43 +9710,7 @@
 +        activeRuntime.disconnect();
 +        writeStderrLine(`node host gateway closed (${code}): ${reason}`);
 +      },
-     });
--  };
--
--  const client = createNodeHostGatewayCandidateConnection({
--    candidates: gatewayCandidates,
--    cloudflareAccessByCandidate,
--    clientOptions: {
--      token: token || undefined,
--      bootstrapToken: gatewayBootstrapToken,
--      preferBootstrapToken: opts.preferGatewayBootstrapToken,
--      password: password || undefined,
--      instanceId: nodeId,
--      clientName: GATEWAY_CLIENT_NAMES.NODE_HOST,
--      clientDisplayName: displayName,
--      clientVersion: VERSION,
--      ...resolveNodeHostGatewayPlatformIdentity(process.platform),
--      mode: GATEWAY_CLIENT_MODES.NODE,
--      role: "node",
--      scopes: [],
--      // Pair the built-in MCP command family up front. Server inventory is
--      // restart-scoped availability, not a capability upgrade requiring re-pairing.
--      caps: preparedRuntime.manifest.caps,
--      commands: preparedRuntime.manifest.commands,
--      computerUse: preparedRuntime.manifest.computerUse,
--      pathEnv: preparedRuntime.manifest.pathEnv,
--      permissions: undefined,
--      deviceIdentity,
--    },
--    onEvent: (evt) => {
--      if (evt.event === "node.pair.resolved") {
--        if (
--          isRecord(evt.payload) &&
--          evt.payload.nodeId === deviceIdentity.deviceId &&
--          evt.payload.decision === "approved"
--        ) {
--          activeRuntime.refreshRunnerInventory();
--        }
++    });
 +    const activeRuntime = startNodeHostConnection({
 +      prepared: preparedRuntime,
 +      client,
@@ -9727,13 +9725,8 @@
 +      cloudflareAccessConfig?: NodeHostCloudflareAccessConfig,
 +    ) {
 +      if (!isNodeHostLauncherChild() || opts.ephemeral || autoUpdateAbort.signal.aborted) {
-         return;
-       }
--      if (evt.event === "node.invoke.cancel") {
--        const payload = coerceNodeInvokeCancelPayload(evt.payload);
--        if (payload) {
--          activeRuntime.cancel(payload.invokeId);
--        }
++        return;
++      }
 +      const endpoint = new URL(url);
 +      const args = [
 +        "node",
@@ -9784,13 +9777,8 @@
 +            : null,
 +      });
 +      if (autoUpdateAbort.signal.aborted) {
-         return;
-       }
--      if (evt.event === "node.invoke.input") {
--        const payload = coerceNodeInvokeInputPayload(evt.payload);
--        if (payload) {
--          activeRuntime.handleInput(payload.invokeId, payload.seq, payload.payloadJSON);
--        }
++        return;
++      }
 +      await notifyNodeHostLauncherReady(VERSION);
 +      autoUpdateStart ??= import("./auto-update.js").then(({ startNodeHostAutoUpdate }) => {
 +        if (!autoUpdateAbort.signal.aborted) {
@@ -9842,8 +9830,104 @@
 +    };
 +    const finish = async (exitCode: number) => {
 +      if (stopping) {
-         return;
-       }
++        return;
++      }
++      stopping = true;
++      let finalExitCode = exitCode;
++      try {
++        await stopClientAndMcp();
++      } catch (error) {
++        finalExitCode = 1;
++        writeStderrLine(`node host shutdown failed: ${formatErrorMessage(error)}`);
++      } finally {
++        removeSignalHandlers();
++        process.exitCode = finalExitCode;
++        completedExitCode = finalExitCode;
++        resolveStopped();
++      }
++    };
++    const onSigint = AsyncLocalStorage.bind(() => void finish(130));
++    const onSigterm = AsyncLocalStorage.bind(() => void finish(143));
++    // Startup can outlive CLI cancellation; the outer CLI retains its signal exit code.
++    const onWorkAbort = AsyncLocalStorage.bind(() => void finish(0));
++    process.on("SIGINT", onSigint);
++    process.on("SIGTERM", onSigterm);
++    workSignal?.addEventListener("abort", onWorkAbort, { once: true });
++    if (opts.parentStdin && !isNodeHostLauncherChild()) {
++      stopWatchingParent = watchNodeHostParentStdin(onSigterm);
++    }
++    if (workSignal?.aborted) {
++      await finish(0);
++      assertOneShotCompleted();
+       return;
+     }
+-    void configureNodeHost({
+-      nodeId,
+-      displayName,
+-      fallbackDisplayName,
+-      gateway: winningGateway,
+-      installedAppsSharing: config.installedAppsSharing,
+-    }).catch((error: unknown) => {
+-      writeStderrLine(`node host gateway endpoint persistence failed: ${String(error)}`);
+-    });
+-  };
+-
+-  const client = createNodeHostGatewayCandidateConnection({
+-    candidates: gatewayCandidates,
+-    cloudflareAccessByCandidate,
+-    clientOptions: {
+-      token: token || undefined,
+-      bootstrapToken: gatewayBootstrapToken,
+-      preferBootstrapToken: opts.preferGatewayBootstrapToken,
+-      password: password || undefined,
+-      instanceId: nodeId,
+-      clientName: GATEWAY_CLIENT_NAMES.NODE_HOST,
+-      clientDisplayName: displayName,
+-      clientVersion: VERSION,
+-      ...resolveNodeHostGatewayPlatformIdentity(process.platform),
+-      mode: GATEWAY_CLIENT_MODES.NODE,
+-      role: "node",
+-      scopes: [],
+-      // Pair the built-in MCP command family up front. Server inventory is
+-      // restart-scoped availability, not a capability upgrade requiring re-pairing.
+-      caps: preparedRuntime.manifest.caps,
+-      commands: preparedRuntime.manifest.commands,
+-      computerUse: preparedRuntime.manifest.computerUse,
+-      pathEnv: preparedRuntime.manifest.pathEnv,
+-      permissions: undefined,
+-      deviceIdentity,
+-    },
+-    onEvent: (evt) => {
+-      if (evt.event === "node.pair.resolved") {
+-        if (
+-          isRecord(evt.payload) &&
+-          evt.payload.nodeId === deviceIdentity.deviceId &&
+-          evt.payload.decision === "approved"
+-        ) {
+-          activeRuntime.refreshRunnerInventory();
+-        }
+-        return;
+-      }
+-      if (evt.event === "node.worker.localMcpPolicy") {
+-        if (isRecord(evt.payload) && typeof evt.payload.allowed === "boolean") {
+-          activeRuntime.setLocalMcpAllowed(evt.payload.allowed);
+-        }
+-        return;
+-      }
+-      if (evt.event === "node.invoke.cancel") {
+-        const payload = coerceNodeInvokeCancelPayload(evt.payload);
+-        if (payload) {
+-          activeRuntime.cancel(payload.invokeId);
+-        }
+-        return;
+-      }
+-      if (evt.event === "node.invoke.input") {
+-        const payload = coerceNodeInvokeInputPayload(evt.payload);
+-        if (payload) {
+-          activeRuntime.handleInput(payload.invokeId, payload.seq, payload.payloadJSON);
+-        }
+-        return;
+-      }
 -      if (evt.event !== "node.invoke.request") {
 -        return;
 -      }
@@ -9926,35 +10010,8 @@
 -
 -  async function announceLauncherReady(url: string, tlsFingerprint?: string) {
 -    if (!isNodeHostLauncherChild() || opts.ephemeral || autoUpdateAbort.signal.aborted) {
-+      stopping = true;
-+      let finalExitCode = exitCode;
-+      try {
-+        await stopClientAndMcp();
-+      } catch (error) {
-+        finalExitCode = 1;
-+        writeStderrLine(`node host shutdown failed: ${formatErrorMessage(error)}`);
-+      } finally {
-+        removeSignalHandlers();
-+        process.exitCode = finalExitCode;
-+        completedExitCode = finalExitCode;
-+        resolveStopped();
-+      }
-+    };
-+    const onSigint = AsyncLocalStorage.bind(() => void finish(130));
-+    const onSigterm = AsyncLocalStorage.bind(() => void finish(143));
-+    // Startup can outlive CLI cancellation; the outer CLI retains its signal exit code.
-+    const onWorkAbort = AsyncLocalStorage.bind(() => void finish(0));
-+    process.on("SIGINT", onSigint);
-+    process.on("SIGTERM", onSigterm);
-+    workSignal?.addEventListener("abort", onWorkAbort, { once: true });
-+    if (opts.parentStdin && !isNodeHostLauncherChild()) {
-+      stopWatchingParent = watchNodeHostParentStdin(onSigterm);
-+    }
-+    if (workSignal?.aborted) {
-+      await finish(0);
-+      assertOneShotCompleted();
-       return;
-     }
+-      return;
+-    }
 -    const endpoint = new URL(url);
 -    const args = [
 -      "node",
@@ -10128,8 +10185,7 @@
    isRegisteredNodeHostCommandDuplex: vi.fn((command: string) => command === "test.duplex"),
 --- a/src/node-host/runtime.ts
 +++ b/src/node-host/runtime.ts
-@@ -2,7 +2,7 @@
- import type { CloudflareAccessCredentials } from "../../packages/gateway-client/src/cloudflare-access.js";
+@@ -1,6 +1,6 @@
  import type { OpenClawConfig } from "../config/config.js";
  import { captureRuntimeConfigAsyncReader } from "../config/config.js";
 -import { throwCollectedErrors } from "../infra/error-graph-internal.js";
@@ -10137,7 +10193,7 @@
  import { NODE_CLAUDE_SKILLS_MESSAGE_BYTES } from "../infra/node-claude-skill-protocol.js";
  import {
    NODE_AGENT_CLI_CLAUDE_RUN_COMMAND,
-@@ -43,7 +43,7 @@
+@@ -48,7 +48,7 @@
    isRegisteredNodeHostCommandDuplex,
    listRegisteredNodeHostCapsAndCommands,
    notifyRegisteredNodeHostCommandDisconnect,
@@ -10145,8 +10201,8 @@
 +  createNodeHostCommandAvailabilityWatcher,
  } from "./plugin-node-host.js";
  import {
-   buildNodeHostManifest,
-@@ -137,583 +137,661 @@
+   requireRequestedCommands,
+@@ -146,595 +146,674 @@
    const config = params?.config ?? (await captureRuntimeConfigAsyncReader()());
    const env = params?.env ?? process.env;
    const platform = process.platform;
@@ -10181,9 +10237,20 @@
 -  let workerRunsEnabled =
 -    !commandAllowlist &&
 -    (params?.forceWorkerRuns === true || config.nodeHost?.workerRuns?.enabled === true);
+-  // Provider transport belongs to this dedicated node, not the Gateway or a paired host.
+-  const dedicatedNodeExecution =
+-    workerRunsEnabled &&
+-    params?.ephemeral === true &&
+-    config.nodeHost?.workerRuns?.isolation !== "container";
+-  const managedIdentityTransport = dedicatedNodeExecution
+-    ? captureNodeWorkerManagedIdentityTransport(env)
+-    : undefined;
+-  const platformTrust = dedicatedNodeExecution ? captureNodeWorkerPlatformTrust(env) : undefined;
 -  const workspaceOptions = {
 -    env,
 -    ephemeral: params?.ephemeral,
+-    managedIdentityTransport,
+-    platformTrust,
 -    folders: config.nodeHost?.workerRuns?.folders,
 -  };
 -  let preparedWorkerWorkspace: NodeWorkerWorkspaceRuntime | undefined;
@@ -10230,9 +10297,20 @@
 +    let workerRunsEnabled =
 +      !commandAllowlist &&
 +      (params?.forceWorkerRuns === true || config.nodeHost?.workerRuns?.enabled === true);
++    // Provider transport belongs to this dedicated node, not the Gateway or a paired host.
++    const dedicatedNodeExecution =
++      workerRunsEnabled &&
++      params?.ephemeral === true &&
++      config.nodeHost?.workerRuns?.isolation !== "container";
++    const managedIdentityTransport = dedicatedNodeExecution
++      ? captureNodeWorkerManagedIdentityTransport(env)
++      : undefined;
++    const platformTrust = dedicatedNodeExecution ? captureNodeWorkerPlatformTrust(env) : undefined;
 +    const workspaceOptions = {
 +      env,
 +      ephemeral: params?.ephemeral,
++      managedIdentityTransport,
++      platformTrust,
 +      folders: config.nodeHost?.workerRuns?.folders,
 +    };
 +    let preparedWorkerWorkspace: NodeWorkerWorkspaceRuntime | undefined;
@@ -10338,10 +10416,14 @@
 -          publishContainerCapacity?.(capacity);
 -        },
 -        onProcessesChanged: (binding) => publishProcessChanges?.(binding),
++    const subprocessWorkers =
++      workerRunsEnabled && config.nodeHost?.workerRuns?.isolation !== "container";
++    const localMcpEnabled =
++      params?.receivesLocalMcpPolicy === true &&
++      subprocessWorkers &&
++      listEnabledNodeHostMcpServers(config.nodeHost?.mcp?.servers).length > 0;
 +    const nativeInferenceSnapshot =
-+      workerRunsEnabled &&
-+      platform !== "win32" &&
-+      config.nodeHost?.workerRuns?.isolation !== "container"
++      subprocessWorkers && platform !== "win32"
 +        ? snapshotNodeWorkerNativeInference(config, env, platform)
 +        : undefined;
 +    const skills =
@@ -10371,18 +10453,16 @@
 -      }
 -    } catch (error) {
 -      await disablePreparedWorkerHosting(error);
-+    const manifest = buildManifest(pluginNodeHost);
-+    if (commandAllowlist && manifest.commands.length === 0) {
-+      const requested = [...commandAllowlist].toSorted().join(", ") || "(empty allowlist)";
-+      throw new Error(
-+        `Node command allowlist retained no available commands. Unknown or unavailable ids: ${requested}. Check --commands and enable the plugin that provides each command.`,
-+      );
-     }
+-    }
 -  }
+-  const subprocessWorkers =
+-    workerRunsEnabled && config.nodeHost?.workerRuns?.isolation !== "container";
+-  const localMcpEnabled =
+-    params?.receivesLocalMcpPolicy === true &&
+-    subprocessWorkers &&
+-    listEnabledNodeHostMcpServers(config.nodeHost?.mcp?.servers).length > 0;
 -  const nativeInferenceSnapshot =
--    workerRunsEnabled &&
--    platform !== "win32" &&
--    config.nodeHost?.workerRuns?.isolation !== "container"
+-    subprocessWorkers && platform !== "win32"
 -      ? snapshotNodeWorkerNativeInference(config, env, platform)
 -      : undefined;
 -  const skills =
@@ -10397,14 +10477,8 @@
 -      ephemeral: params?.ephemeral === true,
 -      pathEnv,
 -    });
--  const manifest = buildManifest(pluginNodeHost);
--  if (commandAllowlist && manifest.commands.length === 0) {
--    const requested = [...commandAllowlist].toSorted().join(", ") || "(empty allowlist)";
--    throw new Error(
--      `Node command allowlist retained no available commands. Unknown or unavailable ids: ${requested}. Check --commands and enable the plugin that provides each command.`,
--    );
--  }
--  const initialInventory = createNodeHostInventory(skills, pluginNodeHost.nodePluginTools);
+-  const manifest = requireRequestedCommands(buildManifest(pluginNodeHost), commandAllowlist);
++    const manifest = requireRequestedCommands(buildManifest(pluginNodeHost), commandAllowlist);
 +    const initialInventory = createNodeHostInventory(skills, pluginNodeHost.nodePluginTools);
 +    let preparedRuntimeState: "prepared" | "starting" | "started" | "disposed" = "prepared";
 +    let disposePreparedRuntime = async () => {
@@ -10422,10 +10496,11 @@
 -      ? { deviceFoldersEnabled: true as const }
 -      : {}),
 -    preparedWorkspacesEnabled: workerRunsEnabled && params?.ephemeral === true,
+-    ...(localMcpEnabled ? { localMcpEnabled: true as const } : {}),
 -    nativeInferenceEnabled: workerRunsEnabled && nativeInferenceSnapshot !== undefined,
 -    ...(commandAllowlist ? { restrictedSurface: true as const } : {}),
 -    ...(workerHostingDisabledReason ? { workerHostingDisabledReason } : {}),
--    initialInventory,
+-    initialInventory: createNodeHostInventory(skills, pluginNodeHost.nodePluginTools),
 -    start({
 -      client,
 -      onInventoryChanged,
@@ -10453,6 +10528,8 @@
 -      const workerBundleInstaller = workerRunsEnabled
 -        ? new NodeWorkerBundleInstaller({ env })
 -        : undefined;
+-      let manager: NodeHostMcpManager | undefined;
+-      const localMcpPolicy = localMcpEnabled ? new NodeWorkerMcpPolicy() : undefined;
 -      let workerSupervisor =
 -        preparedContainerSupervisor ??
 -        (workerRunsEnabled
@@ -10460,6 +10537,8 @@
 -              env,
 -              capacity: config.nodeHost?.workerRuns?.capacity,
 -              nativeInferenceSnapshot,
+-              managedIdentityTransport,
+-              platformTrust,
 -              onCapacityChanged: onRunnerCapacityChanged,
 -              onProcessesChanged: publishProcessChanges,
 -              workspace: workerWorkspace,
@@ -10481,6 +10560,7 @@
 +        ? { deviceFoldersEnabled: true as const }
 +        : {}),
 +      preparedWorkspacesEnabled: workerRunsEnabled && params?.ephemeral === true,
++      ...(localMcpEnabled ? { localMcpEnabled: true as const } : {}),
 +      nativeInferenceEnabled: workerRunsEnabled && nativeInferenceSnapshot !== undefined,
 +      ...(commandAllowlist ? { restrictedSurface: true as const } : {}),
 +      ...(workerHostingDisabledReason ? { workerHostingDisabledReason } : {}),
@@ -10550,6 +10630,7 @@
 +        const workerBundleInstaller = workerRunsEnabled
 +          ? new NodeWorkerBundleInstaller({ env })
 +          : undefined;
++        const localMcpPolicy = localMcpEnabled ? new NodeWorkerMcpPolicy() : undefined;
 +        workerSupervisor =
 +          preparedContainerSupervisor ??
 +          (workerRunsEnabled
@@ -10557,6 +10638,8 @@
 +                env,
 +                capacity: config.nodeHost?.workerRuns?.capacity,
 +                nativeInferenceSnapshot,
++                managedIdentityTransport,
++                platformTrust,
 +                onCapacityChanged: onRunnerCapacityChanged,
 +                onProcessesChanged: publishProcessChanges,
 +                workspace: workerWorkspace,
@@ -10626,13 +10709,7 @@
 +        };
 +        let currentPluginNodeHost = pluginNodeHost;
 +        let currentManifest = manifest;
-+        let gatewayConnection:
-+          | {
-+              url: string;
-+              tlsFingerprint?: string;
-+              cloudflareAccess?: CloudflareAccessCredentials;
-+            }
-+          | undefined;
++        let gatewayConnection: NodeWorkerTransferGateway | undefined;
 +        let manager: NodeHostMcpManager | undefined;
 +        let mcpStartupComplete = Boolean(commandAllowlist);
 +        const publishInventory = () =>
@@ -10646,6 +10723,7 @@
 +        startup = commandAllowlist
 +          ? Promise.resolve(undefined)
 +          : startNodeHostMcpManager(config.nodeHost?.mcp?.servers, {
++              ...(config.mcp?.apps?.enabled === true ? { elicitationClient: client } : {}),
 +              signal: mcpAbort.signal,
 +              onDescriptorsChanged: () => {
 +                if (!closing && manager) {
@@ -10694,20 +10772,7 @@
 -      };
 -      let currentPluginNodeHost = pluginNodeHost;
 -      let currentManifest = manifest;
--      let gatewayConnection:
--        | {
--            url: string;
--            tlsFingerprint?: string;
--            cloudflareAccess?: CloudflareAccessCredentials;
-+          const nextPluginNodeHost = resolvePluginNodeHost();
-+          const nextManifest = buildManifest(nextPluginNodeHost);
-+          currentPluginNodeHost = nextPluginNodeHost;
-+          if (!sameNodeHostManifest(currentManifest, nextManifest)) {
-+            currentManifest = nextManifest;
-+            onManifestChanged?.(nextManifest);
-           }
--        | undefined;
--      let manager: NodeHostMcpManager | undefined;
+-      let gatewayConnection: NodeWorkerTransferGateway | undefined;
 -      let mcpStartupComplete = Boolean(commandAllowlist);
 -      const publishInventory = () =>
 -        onInventoryChanged?.(
@@ -10720,6 +10785,7 @@
 -      const startup = commandAllowlist
 -        ? Promise.resolve(undefined)
 -        : startNodeHostMcpManager(config.nodeHost?.mcp?.servers, {
+-            ...(config.mcp?.apps?.enabled === true ? { elicitationClient: client } : {}),
 -            signal: mcpAbort.signal,
 -            onDescriptorsChanged: () => {
 -              if (!closing && manager) {
@@ -10749,6 +10815,13 @@
 -      };
 -      const stopAvailabilityWatch = onManifestChanged
 -        ? watchRegisteredNodeHostCommandAvailability(
++          const nextPluginNodeHost = resolvePluginNodeHost();
++          const nextManifest = buildManifest(nextPluginNodeHost);
++          currentPluginNodeHost = nextPluginNodeHost;
++          if (!sameNodeHostManifest(currentManifest, nextManifest)) {
++            currentManifest = nextManifest;
++            onManifestChanged?.(nextManifest);
++          }
 +          publishInventory();
 +        };
 +        if (onManifestChanged) {
@@ -10796,8 +10869,19 @@
 -          // not release update ownership before the original command settles.
 -          const settled = createDeferredCore();
 -          pendingInvokes.add(settled.promise);
+-          // A queued launch cannot inherit a later generation's MCP permission.
+-          const localMcp = localMcpPolicy?.sessionForCommand(frame.command, manager);
 -          try {
 -            const generation = connectionGeneration;
+-            try {
+-              await disconnectCleanup;
+-            } catch {
+-              if (!closing && generation === connectionGeneration) {
+-                await createNodeInvokeResponder(client, frame).error(
+-                  "UNAVAILABLE",
+-                  "Node disconnect cleanup failed. Reconnect the node to retry cleanup.",
+-                );
+-              }
 +          );
 +          stopAvailabilityWatch = watcher.close;
 +          watcher.start();
@@ -10828,61 +10912,22 @@
 +        return {
 +          async invoke(frame: NodeInvokeRequestPayload) {
 +            if (closing) {
-+              return;
-+            }
-+            if (updatePause.isPaused) {
-+              await createNodeInvokeResponder(client, frame).error(
-+                "UNAVAILABLE",
-+                "node host is updating; retry shortly",
-+              );
-+              return;
-+            }
-+            // Admission precedes the first await; disconnects and duplicate IDs do
-+            // not release update ownership before the original command settles.
-+            const settled = createDeferredCore();
-+            pendingInvokes.add(settled.promise);
-             try {
--              await disconnectCleanup;
--            } catch {
--              if (!closing && generation === connectionGeneration) {
-+              const generation = connectionGeneration;
-+              try {
-+                await disconnectCleanup;
-+              } catch {
-+                if (!closing && generation === connectionGeneration) {
-+                  await createNodeInvokeResponder(client, frame).error(
-+                    "UNAVAILABLE",
-+                    "Node disconnect cleanup failed. Reconnect the node to retry cleanup.",
-+                  );
-+                }
-+                return;
-+              }
-+              if (closing || generation !== connectionGeneration) {
-+                return;
-+              }
-+              // Enforce the declaration locally too: a paired Gateway cannot widen
-+              // an operator-restricted surface by sending a hidden command directly.
-+              if (commandAllowlist && !currentManifest.commands.includes(frame.command)) {
-                 await createNodeInvokeResponder(client, frame).error(
-                   "UNAVAILABLE",
--                  "Node disconnect cleanup failed. Reconnect the node to retry cleanup.",
-+                  "command not advertised by this node",
-                 );
--              }
--              return;
--            }
+               return;
+             }
 -            if (closing || generation !== connectionGeneration) {
 -              return;
 -            }
 -            // Enforce the declaration locally too: a paired Gateway cannot widen
 -            // an operator-restricted surface by sending a hidden command directly.
 -            if (commandAllowlist && !currentManifest.commands.includes(frame.command)) {
--              await createNodeInvokeResponder(client, frame).error(
--                "UNAVAILABLE",
++            if (updatePause.isPaused) {
+               await createNodeInvokeResponder(client, frame).error(
+                 "UNAVAILABLE",
 -                "command not advertised by this node",
--              );
--              return;
--            }
++                "node host is updating; retry shortly",
+               );
+               return;
+             }
 -            const claudeSkills =
 -              frame.command === NODE_AGENT_CLI_CLAUDE_RUN_COMMAND &&
 -              requestsClaudeNodeSkillRuntime(frame.paramsJSON);
@@ -10906,7 +10951,23 @@
 -                    (payload) => Buffer.byteLength(payload, "utf8"),
 -                  ),
 -                  inputFailed: false,
--                }
++            // Admission precedes the first await; disconnects and duplicate IDs do
++            // not release update ownership before the original command settles.
++            const settled = createDeferredCore();
++            pendingInvokes.add(settled.promise);
++            // A queued launch cannot inherit a later generation's MCP permission.
++            const localMcp = localMcpPolicy?.sessionForCommand(frame.command, manager);
++            try {
++              const generation = connectionGeneration;
++              try {
++                await disconnectCleanup;
++              } catch {
++                if (!closing && generation === connectionGeneration) {
++                  await createNodeInvokeResponder(client, frame).error(
++                    "UNAVAILABLE",
++                    "Node disconnect cleanup failed. Reconnect the node to retry cleanup.",
++                  );
+                 }
 -              : undefined;
 -            const active: ActiveNodeInvoke = { controller, ...(input ? { input } : {}) };
 -            // Redelivered IDs must not orphan the original command's process or
@@ -10934,6 +10995,18 @@
 -                      active.framedFailure = error;
 -                      controller.abort(error);
 -                    },
++                return;
++              }
++              if (closing || generation !== connectionGeneration) {
++                return;
++              }
++              // Enforce the declaration locally too: a paired Gateway cannot widen
++              // an operator-restricted surface by sending a hidden command directly.
++              if (commandAllowlist && !currentManifest.commands.includes(frame.command)) {
++                await createNodeInvokeResponder(client, frame).error(
++                  "UNAVAILABLE",
++                  "command not advertised by this node",
++                );
 +                return;
 +              }
 +              const claudeSkills =
@@ -10979,16 +11052,6 @@
                  : undefined;
 -            if (framedIo) {
 -              controller.signal.addEventListener("abort", () => framedIo.close(), { once: true });
--            }
--            let framedInputRegistered = false;
--            const pluginCommandIo: OpenClawPluginNodeHostCommandIo | undefined =
--              input && progress && framedIo
--                ? {
--                    signal: controller.signal,
--                    emitChunk: async (chunk) => await progress.write(chunk),
--                    onInput: (callback) => {
--                      if (activeInvokes.get(frame.id) === active) {
--                        registerNodeInvokeInputHandler(input, callback);
 +              if (duplexCommand) {
 +                progress?.startHeartbeats();
 +              }
@@ -11044,6 +11107,7 @@
 +                  ...(claudePath ? { claudePath } : {}),
 +                  signal: controller.signal,
 +                  pluginCommandIo,
++                  localMcp,
 +                  flushPluginCommandIo: framedIo?.drain,
 +                  canReportAbortedFailure: (error) =>
 +                    controller.signal.aborted &&
@@ -11064,7 +11128,34 @@
 +                  ...(params?.ephemeral === true && !commandAllowlist
 +                    ? {
 +                        workerComputer: { capabilities: () => resolvePluginNodeHost().computerUse },
-                       }
++                      }
++                    : {}),
++                  ...(workerBundleInstaller ? { workerBundleInstaller } : {}),
++                  ...(workerSupervisor ? { workerSupervisor } : {}),
++                  ...(workerWorkspace ? { workerWorkspace } : {}),
++                });
++              } finally {
++                framedIo?.close();
++                progress?.stop();
++                await progress?.flush();
++                if (activeInvokes.get(frame.id) === active) {
++                  activeInvokes.delete(frame.id);
++                }
++              }
++            } finally {
++              pendingInvokes.delete(settled.promise);
++              settled.resolve();
+             }
+-            let framedInputRegistered = false;
+-            const pluginCommandIo: OpenClawPluginNodeHostCommandIo | undefined =
+-              input && progress && framedIo
+-                ? {
+-                    signal: controller.signal,
+-                    emitChunk: async (chunk) => await progress.write(chunk),
+-                    onInput: (callback) => {
+-                      if (activeInvokes.get(frame.id) === active) {
+-                        registerNodeInvokeInputHandler(input, callback);
+-                      }
 -                    },
 -                    frames: {
 -                      send: async (message) => await framedIo.send(message),
@@ -11091,6 +11182,7 @@
 -                ...(claudePath ? { claudePath } : {}),
 -                signal: controller.signal,
 -                pluginCommandIo,
+-                localMcp,
 -                flushPluginCommandIo: framedIo?.drain,
 -                canReportAbortedFailure: (error) =>
 -                  controller.signal.aborted &&
@@ -11115,27 +11207,19 @@
 -                ...(workerSupervisor ? { workerSupervisor } : {}),
 -                ...(workerWorkspace ? { workerWorkspace } : {}),
 -              });
-+                    : {}),
-+                  ...(workerBundleInstaller ? { workerBundleInstaller } : {}),
-+                  ...(workerSupervisor ? { workerSupervisor } : {}),
-+                  ...(workerWorkspace ? { workerWorkspace } : {}),
-+                });
-+              } finally {
-+                framedIo?.close();
-+                progress?.stop();
-+                await progress?.flush();
-+                if (activeInvokes.get(frame.id) === active) {
-+                  activeInvokes.delete(frame.id);
-+                }
-+              }
-             } finally {
+-            } finally {
 -              framedIo?.close();
 -              progress?.stop();
 -              await progress?.flush();
 -              if (activeInvokes.get(frame.id) === active) {
 -                activeInvokes.delete(frame.id);
 -              }
--            }
++          },
++          handleInput(invokeId: string, seq: number, payloadJSON: string) {
++            const input = activeInvokes.get(invokeId)?.input;
++            if (!dispatchNodeInvokeInput(input, seq, payloadJSON)) {
++              logDebug(`node-host: dropped inactive or duplicate input for invoke ${invokeId}`);
+             }
 -          } finally {
 -            pendingInvokes.delete(settled.promise);
 -            settled.resolve();
@@ -11150,8 +11234,10 @@
 -        cancel(invokeId: string) {
 -          activeInvokes.get(invokeId)?.controller.abort();
 -        },
+-        setLocalMcpAllowed: (allowed: boolean) => localMcpPolicy?.setAllowed(allowed),
 -        cancelAll() {
 -          connectionGeneration += 1;
+-          localMcpPolicy?.setAllowed(false);
 -          // Retired refreshes may still finish; their cache must never serve the next connection.
 -          skillBins = new SkillBinsCache(client, pathEnv);
 -          // Close can reenter from an abort listener and must see this cleanup barrier.
@@ -11202,11 +11288,58 @@
 -            if (!wasClosing && initializationRetry) {
 -              clearTimeout(initializationRetry);
 -              initializationRetry = undefined;
--            }
++          },
++          cancel(invokeId: string) {
++            activeInvokes.get(invokeId)?.controller.abort();
++          },
++          setLocalMcpAllowed: (allowed: boolean) => localMcpPolicy?.setAllowed(allowed),
++          cancelAll() {
++            connectionGeneration += 1;
++            localMcpPolicy?.setAllowed(false);
++            // Retired refreshes may still finish; their cache must never serve the next connection.
++            skillBins = new SkillBinsCache(client, pathEnv);
++            // Close can reenter from an abort listener and must see this cleanup barrier.
++            pendingDisconnectCleanups += 1;
++            const idleCleanup = workerSupervisor?.retireIdle();
++            const cleanup = settleNodeHostCleanup([
++              disconnectCleanup.catch(() => {}).then(notifyRegisteredNodeHostCommandDisconnect),
++              idleCleanup,
++            ]).finally(() => {
++              pendingDisconnectCleanups -= 1;
++            });
++            disconnectCleanup = cleanup;
++            // Logging observes the failure; invocation and shutdown retain the rejected result.
++            void cleanup.then(
++              () => {
++                if (disconnectCleanup === cleanup) {
++                  disconnectCleanupFailed = false;
++                }
++              },
++              (error: unknown) => {
++                if (disconnectCleanup === cleanup) {
++                  disconnectCleanupFailed = true;
++                }
++                logDebug(`node-host: disconnect cleanup failed: ${String(error)}`);
++              },
++            );
++            for (const active of activeInvokes.values()) {
++              active.controller.abort();
+             }
 -            if (!wasClosing || disconnectCleanupFailed) {
 -              // cancelAll publishes the cleanup barrier joined below.
 -              void this.cancelAll();
--            }
++            activeInvokes.clear();
++            return cleanup;
++          },
++          tryPauseForUpdate: updatePause.tryPauseForUpdate,
++          resumeAfterUpdate: updatePause.resumeAfterUpdate,
++          updateGatewayConnection(connection?: typeof gatewayConnection) {
++            gatewayConnection = connection;
++          },
++          close(): Promise<void> {
++            if (closePromise) {
++              return closePromise;
+             }
 -            const watcherClose = stopAvailabilityWatch();
 -            // Startup observes this signal before either independent owner is joined.
 -            mcpAbort.abort();
@@ -11239,62 +11372,6 @@
 -      };
 -    },
 -  };
-+              pendingInvokes.delete(settled.promise);
-+              settled.resolve();
-+            }
-+          },
-+          handleInput(invokeId: string, seq: number, payloadJSON: string) {
-+            const input = activeInvokes.get(invokeId)?.input;
-+            if (!dispatchNodeInvokeInput(input, seq, payloadJSON)) {
-+              logDebug(`node-host: dropped inactive or duplicate input for invoke ${invokeId}`);
-+            }
-+          },
-+          cancel(invokeId: string) {
-+            activeInvokes.get(invokeId)?.controller.abort();
-+          },
-+          cancelAll() {
-+            connectionGeneration += 1;
-+            // Retired refreshes may still finish; their cache must never serve the next connection.
-+            skillBins = new SkillBinsCache(client, pathEnv);
-+            // Close can reenter from an abort listener and must see this cleanup barrier.
-+            pendingDisconnectCleanups += 1;
-+            const idleCleanup = workerSupervisor?.retireIdle();
-+            const cleanup = settleNodeHostCleanup([
-+              disconnectCleanup.catch(() => {}).then(notifyRegisteredNodeHostCommandDisconnect),
-+              idleCleanup,
-+            ]).finally(() => {
-+              pendingDisconnectCleanups -= 1;
-+            });
-+            disconnectCleanup = cleanup;
-+            // Logging observes the failure; invocation and shutdown retain the rejected result.
-+            void cleanup.then(
-+              () => {
-+                if (disconnectCleanup === cleanup) {
-+                  disconnectCleanupFailed = false;
-+                }
-+              },
-+              (error: unknown) => {
-+                if (disconnectCleanup === cleanup) {
-+                  disconnectCleanupFailed = true;
-+                }
-+                logDebug(`node-host: disconnect cleanup failed: ${String(error)}`);
-+              },
-+            );
-+            for (const active of activeInvokes.values()) {
-+              active.controller.abort();
-+            }
-+            activeInvokes.clear();
-+            return cleanup;
-+          },
-+          tryPauseForUpdate: updatePause.tryPauseForUpdate,
-+          resumeAfterUpdate: updatePause.resumeAfterUpdate,
-+          updateGatewayConnection(connection?: typeof gatewayConnection) {
-+            gatewayConnection = connection;
-+          },
-+          close(): Promise<void> {
-+            if (closePromise) {
-+              return closePromise;
-+            }
 +            const wasClosing = closing;
 +            closing = true;
 +            // Install the shared completion before abort listeners or cleanup can reenter close.
@@ -11362,7 +11439,7 @@
  }
 --- a/src/node-host/runtime.worker-hosting.test.ts
 +++ b/src/node-host/runtime.worker-hosting.test.ts
-@@ -5,6 +5,7 @@
+@@ -6,6 +6,7 @@
  import type { NodeHostClient } from "./client.js";
  import { NodeWorkerContainerContextMismatchError } from "./node-worker-container-lifecycle.js";
  import { createNodeWorkerSupervisor } from "./node-worker-supervisor.js";
@@ -11370,7 +11447,7 @@
  import { prepareNodeHostRuntime } from "./runtime.js";
  
  const mocks = vi.hoisted(() => ({
-@@ -45,7 +46,7 @@
+@@ -46,7 +47,7 @@
  }));
  vi.mock("./plugin-node-host.js", async (importOriginal) => ({
    ...(await importOriginal<typeof import("./plugin-node-host.js")>()),
@@ -11379,7 +11456,7 @@
    hasRegisteredNodeHostCommandActiveWork: vi.fn(() => false),
    isRegisteredNodeHostCommandDuplex: vi.fn(() => false),
    notifyRegisteredNodeHostCommandDisconnect: vi.fn(async () => undefined),
-@@ -109,6 +110,35 @@
+@@ -110,6 +111,35 @@
  }
  
  describe("node-host worker manifest", () => {
@@ -11412,10 +11489,10 @@
 +    expect(mocks.closeWorkerSupervisor).toHaveBeenCalledOnce();
 +  });
 +
-   it("advertises native inference after unisolated worker hosting is admitted", async () => {
+   it("captures MCP permission when a launch arrives before queued command dispatch", async () => {
      const prepared = await prepareNodeHostRuntime({
        config: {
-@@ -271,35 +301,56 @@
+@@ -329,35 +359,56 @@
      expect(mocks.closeWorkerSupervisor).toHaveBeenCalledOnce();
    });
  
@@ -11503,7 +11580,7 @@
      vi.useFakeTimers();
 --- a/src/node-host/runtime.worker-supervisor.test.ts
 +++ b/src/node-host/runtime.worker-supervisor.test.ts
-@@ -24,11 +24,14 @@
+@@ -33,11 +33,14 @@
  
  // mock-isolation: the supervisor owns real workers here, but no plugin-host services are enabled.
  vi.mock("./plugin-node-host.js", () => ({
@@ -11539,7 +11616,7 @@
          const { sourcePath, raw } = writeSource("identity/device.json", {
 --- a/src/node-host/worker-runtime.test.ts
 +++ b/src/node-host/worker-runtime.test.ts
-@@ -51,12 +51,12 @@
+@@ -54,12 +54,12 @@
    startNodeHostMcpManager: async () => ({ descriptors: [], close: async () => {} }),
  }));
  vi.mock("./plugin-node-host.js", () => ({
@@ -11554,7 +11631,7 @@
  }));
  import { runNodeHostWorker } from "./worker.js";
  
-@@ -150,6 +150,7 @@
+@@ -153,6 +153,7 @@
        workerHostingEnabled,
        workerHostingDisabledReason,
        initialInventory: { skills: [], pluginTools: [] },
@@ -11562,7 +11639,7 @@
        start: fixture.start,
      },
    );
-@@ -267,6 +268,7 @@
+@@ -310,6 +311,7 @@
          env: {},
          platform: "darwin",
        })),
@@ -12080,7 +12157,7 @@
        if (!envelope.executionId) {
 --- a/src/plugins/types.node-host.ts
 +++ b/src/plugins/types.node-host.ts
-@@ -55,8 +55,14 @@
+@@ -70,8 +70,14 @@
    command: string;
    cap?: string;
    dangerous?: boolean;
@@ -12099,13 +12176,14 @@
    /** Watch availability; node shutdown awaits the returned cleanup callback. */
 --- a/test/node-host-launcher.test.ts
 +++ b/test/node-host-launcher.test.ts
-@@ -1,4 +1,4 @@
+@@ -1,5 +1,5 @@
+ import assert from "node:assert/strict";
 -import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 +import { spawn, type ChildProcess } from "node:child_process";
  import { once } from "node:events";
  import fs from "node:fs/promises";
  import path from "node:path";
-@@ -11,7 +11,7 @@
+@@ -12,7 +12,7 @@
  import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
  
  const temporary = useAutoCleanupTempDirTracker(afterEach);
@@ -12114,7 +12192,7 @@
  let bootstrapSource: string;
  let launcherClientSource: string;
  
-@@ -78,6 +78,7 @@
+@@ -79,6 +79,7 @@
  import fs from 'node:fs';
  import {
    getManagedNodeHostStatePath,
@@ -12122,7 +12200,7 @@
    isNodeHostLauncherChild,
    notifyNodeHostLauncherReady,
    requestNodeHostLauncherBootstrap,
-@@ -88,6 +89,13 @@
+@@ -89,6 +90,13 @@
  const report = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
  const ready = () => notifyNodeHostLauncherReady(version);
  const restart = () => requestNodeHostLauncherRestart({ runtimeRoot: process.env.TEST_RUNTIME_ROOT, version: process.env.TEST_VERSION });
@@ -12136,7 +12214,7 @@
  async function restartAndExit(failureLabel, successCode = 0, failureCode = 2) {
    try {
      await restart();
-@@ -273,15 +281,18 @@
+@@ -339,15 +347,18 @@
    it("runs the stored node service command through a live launcher parent", async () => {
      const f = await fixture(`
  await ready();
@@ -12156,7 +12234,7 @@
        runtime: "node",
        runtimePath: process.execPath,
      });
-@@ -297,22 +308,83 @@
+@@ -363,22 +374,83 @@
      expect(child).toMatchObject({
        parentPid: service.child.pid,
        launcherChild: true,
@@ -12249,7 +12327,7 @@
  ${requestUpdate}
  `);
      const candidate = await f.release(`
-@@ -338,7 +410,15 @@
+@@ -404,7 +476,15 @@
      const lines = jsonLines(result.stdout);
      expect(lines[0]).toMatchObject({ ok: true });
      expect(lines[1]).toMatchObject({
@@ -12266,7 +12344,7 @@
        cwd: f.base,
        state: f.state,
        disconnectedState: null,
-@@ -347,6 +427,147 @@
+@@ -413,6 +493,147 @@
      expect(lines[1].first).toBe(lines[1].second);
      await expectSelection(f.current, candidate.prefix);
      await expectMissing(f.lock);
@@ -12414,7 +12492,7 @@
    });
  
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
-@@ -432,7 +653,7 @@
+@@ -498,7 +719,7 @@
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -12423,7 +12501,7 @@
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -450,6 +671,7 @@
+@@ -516,6 +737,7 @@
          version,
          state: f.state,
          argv: ["node", "run"],
@@ -12433,7 +12511,7 @@
      await expectSelection(f.current, previous.prefix);
 --- a/test/vitest/vitest.database-worker-core-paths.mjs
 +++ b/test/vitest/vitest.database-worker-core-paths.mjs
-@@ -923,6 +923,7 @@
+@@ -937,6 +937,7 @@
    "src/cli/plugins-update-command.authority.integration.test.ts",
    "src/cli/plugins-update-command.generation.integration.test.ts",
    "src/cli/plugins-update-command.migrations.integration.test.ts",

@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { APIResponse, Page, Route } from "playwright";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import type {
+  Agent,
+  CredentialSourceContext,
+  Driver,
+  HarnessAuthBinding,
+  Namespace,
+} from "@openclaw-enterprise/contracts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   createDeviceCredentialDrivers,
@@ -21,7 +30,7 @@ import {
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { submitCreateAgent } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace as createUntypedReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
   AGENT_DEVICE_LOGIN_POLL_DENIED,
@@ -30,11 +39,74 @@ import {
   DEVICE_LOGIN_NOT_CONFIGURED,
 } from "../helpers/refusal-text.mjs";
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  assert.ok(isJsonObject(value));
+  return value;
+}
+
+function jsonString(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function responseData(value: unknown): Record<string, unknown> {
+  return jsonObject(jsonObject(value).data);
+}
+
+function assertSourceAuth(
+  value: unknown,
+): asserts value is Extract<HarnessAuthBinding, { method: "credential_source" }> {
+  const auth = jsonObject(value);
+  assert.equal(auth.method, "credential_source");
+  assert.ok(typeof auth.sourceId === "string");
+}
+
+function sourceAuth(value: unknown): Extract<HarnessAuthBinding, { method: "credential_source" }> {
+  assertSourceAuth(value);
+  return value;
+}
+
+function assertResourceIdentity(value: unknown): asserts value is Pick<Namespace | Agent, "id"> {
+  assert.ok(typeof jsonObject(value).id === "string");
+}
+
+function agentIdentity(value: unknown): Pick<Agent, "id"> {
+  assertResourceIdentity(value);
+  return value;
+}
+
+function assertDeviceDriver<T extends { id: string; implementation: string; capability: string }>(
+  driver: T,
+): asserts driver is T & Driver {
+  assert.ok(
+    driver.capability === "credential_gateway" || driver.capability === "credential_refresh",
+  );
+}
+
+async function createReadyConsoleNamespace(
+  t: TestContext,
+  name: string,
+  options?: { provisionedPeople?: string[]; agentProvisioning?: boolean; now?: () => Date },
+) {
+  const ready = await createUntypedReadyConsoleNamespace(t, name, options);
+  const controller: unknown = ready.fixture.controller;
+  assert.ok(controller instanceof OpenClawController);
+  const fixture: Omit<typeof ready.fixture, "controller"> & { controller: OpenClawController } =
+    ready.fixture;
+  const namespace: unknown = ready.namespace;
+  assertResourceIdentity(namespace);
+  return { fixture, namespace };
+}
+
 // The fixture's login asks the Console to poll every 5 s, and the API refuses an earlier poll.
 // Each ready login moves both clocks past that interval instead of waiting it out.
 const DEVICE_POLL_MS = 5_000;
 
-async function signInReady(page, advanceApiClock) {
+async function signInReady(page: Page, advanceApiClock: (ms: number) => void) {
   await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
   // The pending view schedules the poll in the same update that shows this status. A later
   // re-render restarts that timer, and a jump from the current time still covers it.
@@ -53,7 +125,7 @@ async function signInReady(page, advanceApiClock) {
 
 test("Codex OAuth console saves a credential source and reuses it for plugin editing", async (t) => {
   let apiClockAheadMs = 0;
-  const advanceApiClock = (ms) => {
+  const advanceApiClock = (ms: number) => {
     apiClockAheadMs += ms;
   };
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth console", {
@@ -62,16 +134,29 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     now: () => new Date(Date.now() + apiClockAheadMs),
   });
   const installation = await fixture.request("GET", "/installation");
-  assert.deepEqual(installation.data.capabilities.agentProvisioning.executionModes, ["dedicated"]);
+  assert.deepEqual(
+    jsonObject(jsonObject(jsonObject(installation.data).capabilities).agentProvisioning)
+      .executionModes,
+    ["dedicated"],
+  );
   const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const originalFetch = globalThis.fetch;
   let approved = false;
-  const providerRequests = [];
+  const providerRequests: string[] = [];
   const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => approved });
+  const privateStates: string[] = [];
+  const startDeviceAuthorization = refresh.startDeviceAuthorization.bind(refresh);
+  t.mock.method(refresh, "startDeviceAuthorization", async (context: CredentialSourceContext) => {
+    const response = await startDeviceAuthorization(context);
+    privateStates.push(response.privateState);
+    return response;
+  });
+  assertDeviceDriver(gateway);
   fixture.controller.registerDriver(gateway);
   fixture.controller.selectDriver("credential_gateway", gateway.id);
+  assertDeviceDriver(refresh);
   fixture.controller.registerDriver(refresh);
   fixture.controller.selectDriver("credential_refresh", refresh.id);
   const plugin = {
@@ -92,33 +177,39 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   };
   // Only the credential service and hosted catalog HTTP are simulated. Console, Fastify,
   // IAM, OCC source/session persistence and the production Plugin Driver run unchanged.
-  t.mock.method(globalThis, "fetch", async (input, init) => {
-    const url = typeof input === "string" ? input : input.url;
-    if (!url.startsWith("https://auth.openai.com/") && !url.startsWith("https://chatgpt.com/")) {
-      return originalFetch(input, init);
-    }
-    providerRequests.push(url);
-    assert.equal(init.headers.Authorization, `Bearer ${DEVICE_ACCESS_TOKEN}`);
-    assert.equal(init.headers["ChatGPT-Account-ID"], DEVICE_ACCOUNT_ID);
-    if (url.includes("/ps/plugins/list?") || url.includes("/ps/plugins/search?")) {
-      return Response.json({ plugins: [plugin], pagination: { next_page_token: null } });
-    }
-    if (url.includes("/ps/plugins/plugin-oauth-fixture?")) {
-      return Response.json(plugin);
-    }
-    assert.equal(url, "https://chatgpt.com/backend-api/ps/apps/batch");
-    return Response.json({
-      apps: [
-        {
-          id: "connector_calendar",
-          status: "ENABLED",
-          tools: [
-            { name: "search", title: "Search calendar", is_read_only: true, is_enabled: true },
-          ],
-        },
-      ],
-    });
-  });
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      assert.ok(typeof input === "string" || input instanceof Request);
+      const url = typeof input === "string" ? input : input.url;
+      if (!url.startsWith("https://auth.openai.com/") && !url.startsWith("https://chatgpt.com/")) {
+        return originalFetch(input, init);
+      }
+      providerRequests.push(url);
+      const headers = jsonObject(init?.headers);
+      assert.equal(headers.Authorization, `Bearer ${DEVICE_ACCESS_TOKEN}`);
+      assert.equal(headers["ChatGPT-Account-ID"], DEVICE_ACCOUNT_ID);
+      if (url.includes("/ps/plugins/list?") || url.includes("/ps/plugins/search?")) {
+        return Response.json({ plugins: [plugin], pagination: { next_page_token: null } });
+      }
+      if (url.includes("/ps/plugins/plugin-oauth-fixture?")) {
+        return Response.json(plugin);
+      }
+      assert.equal(url, "https://chatgpt.com/backend-api/ps/apps/batch");
+      return Response.json({
+        apps: [
+          {
+            id: "connector_calendar",
+            status: "ENABLED",
+            tools: [
+              { name: "search", title: "Search calendar", is_read_only: true, is_enabled: true },
+            ],
+          },
+        ],
+      });
+    },
+  );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await page.clock.install();
@@ -131,7 +222,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   // one sent early leaves the busy status shown when the clock stops short of the interval.
   await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1_000));
   let polls = 0;
-  let nextPoll = Promise.withResolvers();
+  let nextPoll = Promise.withResolvers<Route>();
   await page.route("**/device-authorizations/*/poll", async (route) => {
     polls += 1;
     nextPoll.resolve(route);
@@ -139,15 +230,16 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const pollStatus = page.locator(".device-login [role='status']");
   const waiting = "Waiting for you to complete sign-in in the other tab…";
   const checking = "Checking Codex login…";
-  async function answerPoll(intervalSeconds) {
+  async function answerPoll(intervalSeconds: number) {
     await page.getByText(checking, { exact: true }).waitFor();
     const route = await nextPoll.promise;
-    nextPoll = Promise.withResolvers();
+    nextPoll = Promise.withResolvers<Route>();
     const response = await route.fetch();
-    const body = await response.json();
-    assert.equal(body.data.status, "pending");
-    assert.equal(body.data.intervalSeconds, 5);
-    body.data.intervalSeconds = intervalSeconds;
+    const body: unknown = await response.json();
+    const data = responseData(body);
+    assert.equal(data.status, "pending");
+    assert.equal(data.intervalSeconds, 5);
+    data.intervalSeconds = intervalSeconds;
     await route.fulfill({ response, json: body });
     await page.getByText(waiting, { exact: true }).waitFor();
   }
@@ -187,6 +279,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     (request) => request.method === "POST" && request.path.endsWith("/device-authorizations"),
   );
   assert.equal(started.length, 2);
+  assert.ok(started[1]);
   assert.deepEqual(started[1].body, { harnessId: "codex" });
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await page.getByRole("button", { name: "Calendar", exact: true }).click();
@@ -196,7 +289,9 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     (request) =>
       request.method === "POST" && request.path === `/namespaces/${namespace.id}/agents/plugins`,
   );
-  assert.equal(discovery.body.credentialSource.kind, "credential_source");
+  assert.ok(discovery);
+  const discoveryBody = jsonObject(discovery.body);
+  assert.equal(jsonObject(discoveryBody.credentialSource).kind, "credential_source");
   await page.getByLabel("Agent name", { exact: true }).fill("OAuth Agent");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
   await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
@@ -204,6 +299,8 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const creation = requests.find(
     (request) => request.method === "POST" && request.path === `/namespaces/${namespace.id}/agents`,
   );
+  assert.ok(creation);
+  const creationBody = jsonObject(creation.body);
   // Even when dedicated provisioning is advertised, source auth uses the supported
   // draft creation path. The durable provisioning API rejects source auth.
   assert.equal(
@@ -212,23 +309,25 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     ),
     false,
   );
-  assert.deepEqual(creation.body.harnessAuth, {
+  assert.deepEqual(creationBody.harnessAuth, {
     method: "credential_source",
-    sourceId: discovery.body.credentialSource.id,
+    sourceId: jsonObject(discoveryBody.credentialSource).id,
   });
-  assert.deepEqual(creation.body.credentialSources, [
-    { sourceId: discovery.body.credentialSource.id },
+  assert.deepEqual(creationBody.credentialSources, [
+    { sourceId: jsonObject(discoveryBody.credentialSource).id },
   ]);
-  assert.ok(creation.body.plugins["codex-plugin:calendar@openai-curated-remote"]);
+  assert.ok(jsonObject(creationBody.plugins)["codex-plugin:calendar@openai-curated-remote"]);
   const agentId = new URL(page.url()).pathname.split("/").at(-1);
   const agentPath = `/namespaces/${namespace.id}/agents/${agentId}`;
-  const originalAuth = (await fixture.request("GET", agentPath)).data.harnessAuth;
-  assert.deepEqual(originalAuth, creation.body.harnessAuth);
+  const originalAuth = sourceAuth(
+    jsonObject((await fixture.request("GET", agentPath)).data).harnessAuth,
+  );
+  assert.deepEqual(originalAuth, creationBody.harnessAuth);
 
   // A later version uses the same saved source. No second login, Secret grant, or
   // authentication mutation is needed merely to configure plugins.
   const loginsBeforeBrowse = gateway.calls.filter(
-    (call) => call.operation === "startDeviceAuthorization",
+    (call: unknown) => jsonObject(call).operation === "startDeviceAuthorization",
   ).length;
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal(
@@ -241,18 +340,26 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const savedDiscovery = requests.find(
     (request) => request.method === "POST" && request.path === `${agentPath}/plugins`,
   );
-  assert.equal(savedDiscovery.body.credentialSource, undefined);
-  assert.deepEqual((await fixture.request("GET", agentPath)).data.harnessAuth, originalAuth);
+  assert.ok(savedDiscovery);
+  const savedDiscoveryBody = jsonObject(savedDiscovery.body);
+  assert.equal(savedDiscoveryBody.credentialSource, undefined);
+  assert.deepEqual(
+    jsonObject((await fixture.request("GET", agentPath)).data).harnessAuth,
+    originalAuth,
+  );
   assert.equal(
-    gateway.calls.filter((call) => call.operation === "startDeviceAuthorization").length,
+    gateway.calls.filter(
+      (call: unknown) => jsonObject(call).operation === "startDeviceAuthorization",
+    ).length,
     loginsBeforeBrowse,
   );
   const sourceGrants = requests.filter(
     (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
   );
   assert.equal(sourceGrants.length, 1);
-  assert.equal(sourceGrants[0].body.resourceKind, "credential_source");
-  assert.equal(sourceGrants[0].body.resourceId, originalAuth.sourceId);
+  assert.ok(sourceGrants[0]);
+  assert.equal(jsonObject(sourceGrants[0].body).resourceKind, "credential_source");
+  assert.equal(jsonObject(sourceGrants[0].body).resourceId, originalAuth.sourceId);
   await page.locator(".plugin-json > summary").click();
   await page.locator("#agent-plugins").fill("{}");
   const pluginsSaved = page.waitForResponse(
@@ -260,7 +367,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   );
   await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
   assert.equal((await pluginsSaved).status(), 200);
-  const edited = (await fixture.request("GET", agentPath)).data;
+  const edited = jsonObject((await fixture.request("GET", agentPath)).data);
   assert.deepEqual(edited.harnessAuth, originalAuth);
   assert.deepEqual(edited.plugins, {});
 
@@ -291,7 +398,10 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "credential_source");
   await signInReady(page, advanceApiClock);
-  assert.deepEqual((await fixture.request("GET", agentPath)).data.harnessAuth, originalAuth);
+  assert.deepEqual(
+    jsonObject((await fixture.request("GET", agentPath)).data).harnessAuth,
+    originalAuth,
+  );
   const saved = page.waitForResponse(
     (response) => response.url().endsWith(agentPath) && response.request().method() === "PATCH",
   );
@@ -299,13 +409,13 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     (response) =>
       response.url().endsWith("/access-bindings") &&
       response.request().method() === "POST" &&
-      response.request().postDataJSON().resourceId !== originalAuth.sourceId,
+      jsonObject(response.request().postDataJSON()).resourceId !== originalAuth.sourceId,
   );
   await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
   assert.equal((await saved).status(), 200);
   assert.equal((await granted).status(), 201);
-  const replacedAgent = (await fixture.request("GET", agentPath)).data;
-  const replaced = replacedAgent.harnessAuth;
+  const replacedAgent = jsonObject((await fixture.request("GET", agentPath)).data);
+  const replaced = sourceAuth(replacedAgent.harnessAuth);
   assert.equal(replaced.method, "credential_source");
   assert.notEqual(replaced.sourceId, originalAuth.sourceId);
   assert.deepEqual(replacedAgent.credentialSources, [
@@ -318,23 +428,24 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   );
   assert.equal(oldSource.status, 200);
   assert.equal(
-    gateway.calls.some((call) => call.operation === "removeSource"),
+    gateway.calls.some((call: unknown) => jsonObject(call).operation === "removeSource"),
     false,
   );
   const replacementGrants = requests.filter(
     (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
   );
   assert.equal(replacementGrants.length, 2);
-  assert.equal(replacementGrants[1].body.resourceKind, "credential_source");
-  assert.equal(replacementGrants[1].body.resourceId, replaced.sourceId);
+  assert.ok(replacementGrants[1]);
+  assert.equal(jsonObject(replacementGrants[1].body).resourceKind, "credential_source");
+  assert.equal(jsonObject(replacementGrants[1].body).resourceId, replaced.sourceId);
   const replacementBrowse = await fixture.request("POST", `${agentPath}/plugins`, { body: {} });
   assert.equal(replacementBrowse.status, 200, JSON.stringify(replacementBrowse.body));
 
   // Clearing a staged selection immediately restores the saved source. A concurrent save
   // must not adopt the cleared source while the session close is still pending.
   await signInReady(page, advanceApiClock);
-  const releaseDiscard = Promise.withResolvers();
-  const slowDiscard = Promise.withResolvers();
+  const releaseDiscard = Promise.withResolvers<void>();
+  const slowDiscard = Promise.withResolvers<number>();
   await page.route("**/device-authorizations/*", async (route) => {
     if (route.request().method() !== "DELETE") {
       await route.fallback();
@@ -345,7 +456,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
     // Console's fetch of it: a response arriving after that abort is never reported to the page,
     // and a request still held at the abort never reaches the server, though a browser that
     // sent it at the click would have delivered it.
-    let response;
+    let response: APIResponse;
     try {
       response = await route.fetch();
     } catch (error) {
@@ -367,17 +478,35 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal((await racedSave).status(), 200);
   releaseDiscard.resolve();
   assert.equal(await slowDiscard.promise, 204);
-  const retainedAgent = (await fixture.request("GET", agentPath)).data;
+  const retainedAgent = jsonObject((await fixture.request("GET", agentPath)).data);
   assert.deepEqual(retainedAgent.harnessAuth, replaced);
   assert.deepEqual(retainedAgent.credentialSources, replacedAgent.credentialSources);
-  assert.doesNotMatch(
-    JSON.stringify(requests),
-    new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`),
+  const legacyCredentialPattern = new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`);
+  const serializedRequests = JSON.stringify(requests);
+  assert.equal(
+    legacyCredentialPattern.test(serializedRequests),
+    false,
+    "browser API requests must not contain a credential marker",
   );
-  assert.doesNotMatch(
-    await page.locator("body").innerText(),
-    new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`),
+  const bodyText = await page.locator("body").innerText();
+  assert.equal(
+    legacyCredentialPattern.test(bodyText),
+    false,
+    "visible body text must not contain a credential marker",
   );
+  assert.ok(privateStates.length > 0, "the Refresh fixture must produce a private handle");
+  for (const privateState of privateStates) {
+    assert.equal(
+      serializedRequests.includes(privateState),
+      false,
+      "browser API requests must not contain a private handle",
+    );
+    assert.equal(
+      bodyText.includes(privateState),
+      false,
+      "visible body text must not contain a private handle",
+    );
+  }
   assert.equal(
     providerRequests.some((url) => url.includes("revoke") || url.includes("whoami")),
     false,
@@ -386,11 +515,13 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
 
 test("saving ChatGPT OAuth before sign-in names the missing step and sends nothing", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth save guard");
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "OAuth save guard",
-    nativeValues("oauth-save-guard", { harnessId: "codex" }),
-    { executionMode: "dedicated" },
+  const agent = agentIdentity(
+    await fixture.createAgent(
+      namespace.id,
+      "OAuth save guard",
+      nativeValues("oauth-save-guard", { harnessId: "codex" }),
+      { executionMode: "dedicated" },
+    ),
   );
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);
@@ -411,7 +542,10 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
     requests.some((request) => request.method === "PATCH" && request.path === agentPath),
     false,
   );
-  assert.equal((await fixture.request("GET", agentPath)).data.harnessAuth.method, "api_key");
+  assert.equal(
+    jsonObject(jsonObject((await fixture.request("GET", agentPath)).data).harnessAuth).method,
+    "api_key",
+  );
 });
 
 // The Installation's capabilities list its Credential Gateway's source types. Without a Codex
@@ -428,15 +562,18 @@ for (const savedAgent of [false, true]) {
       const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
       if (drivers !== "none") {
         const { gateway } = createDeviceCredentialDrivers();
+        assertDeviceDriver(gateway);
         fixture.controller.registerDriver(gateway);
         fixture.controller.selectDriver(gateway.capability, gateway.id);
       }
       const agent = savedAgent
-        ? await fixture.createAgent(
-            namespace.id,
-            "OAuth unavailable",
-            nativeValues("oauth-unavailable", { harnessId: "codex" }),
-            { executionMode: "dedicated" },
+        ? agentIdentity(
+            await fixture.createAgent(
+              namespace.id,
+              "OAuth unavailable",
+              nativeValues("oauth-unavailable", { harnessId: "codex" }),
+              { executionMode: "dedicated" },
+            ),
           )
         : null;
       const { page } = await newPage(t, fixture);
@@ -469,7 +606,10 @@ for (const savedAgent of [false, true]) {
         await start.click();
         const answer = await refused;
         assert.equal(answer.status(), 501);
-        assert.equal((await answer.json()).error.message, DEVICE_LOGIN_NOT_CONFIGURED);
+        assert.equal(
+          jsonObject(jsonObject(await answer.json()).error).message,
+          DEVICE_LOGIN_NOT_CONFIGURED,
+        );
         reason = `ChatGPT sign-in is unavailable for this Installation. ${DEVICE_LOGIN_NOT_CONFIGURED} Choose another authentication method.`;
         await page.getByText(reason, { exact: true }).waitFor();
       }
@@ -502,6 +642,7 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unconfirmed");
   const { gateway, refresh } = createDeviceCredentialDrivers();
   for (const driver of [gateway, refresh]) {
+    assertDeviceDriver(driver);
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
@@ -519,14 +660,15 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
   await page.route(`**${beginPath}`, async (route) => {
     const response = await route.fetch();
     assert.equal(response.status(), 200);
-    const body = await response.json();
-    assert.equal(body.data.status, "pending");
+    const body: unknown = await response.json();
+    const data = responseData(body);
+    assert.equal(data.status, "pending");
     // The real start committed. Lose its session reference only in the reply reaching the page.
-    const sessionId = body.data.session.id;
+    const sessionId = jsonString(jsonObject(data.session).id);
     const session = await fixture.request("GET", `${namespacePath}/secrets/${sessionId}`);
     assert.equal(session.status, 200);
-    assert.equal(session.data.id, sessionId);
-    delete body.data.session;
+    assert.equal(jsonObject(session.data).id, sessionId);
+    delete data.session;
     await route.fulfill({ response, json: body });
   });
   await start.click();
@@ -561,15 +703,18 @@ for (const savedAgent of [false, true]) {
     const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth navigation");
     const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
     for (const driver of [gateway, refresh]) {
+      assertDeviceDriver(driver);
       fixture.controller.registerDriver(driver);
       fixture.controller.selectDriver(driver.capability, driver.id);
     }
     const agent = savedAgent
-      ? await fixture.createAgent(
-          namespace.id,
-          "OAuth navigation",
-          nativeValues("oauth-navigation", { harnessId: "codex" }),
-          { executionMode: "dedicated" },
+      ? agentIdentity(
+          await fixture.createAgent(
+            namespace.id,
+            "OAuth navigation",
+            nativeValues("oauth-navigation", { harnessId: "codex" }),
+            { executionMode: "dedicated" },
+          ),
         )
       : null;
     const { page } = await newPage(t, fixture);
@@ -587,14 +732,14 @@ for (const savedAgent of [false, true]) {
     }
     const methodLabel = agent ? "Authentication source" : "Authentication method";
     await page.getByLabel(methodLabel).selectOption("credential_source");
-    const committed = Promise.withResolvers();
-    const release = Promise.withResolvers();
+    const committed = Promise.withResolvers<string>();
+    const release = Promise.withResolvers<void>();
     t.after(() => release.resolve());
     const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
     await page.route(`**${beginPath}`, async (route) => {
       const response = await route.fetch();
       assert.equal(response.status(), 200);
-      committed.resolve((await response.json()).data.session.id);
+      committed.resolve(jsonString(jsonObject(responseData(await response.json()).session).id));
       await release.promise;
       await route.fulfill({ response }).catch(() => {});
     });
@@ -639,18 +784,21 @@ const WAITING = "Waiting for you to complete sign-in in the other tab…";
 
 // A saved Agent's Credentials tab with ChatGPT OAuth selected, on fixture Gateway and Refresh
 // Drivers whose sign-in stays pending.
-async function openAgentOAuth(t, name) {
+async function openAgentOAuth(t: TestContext, name: string) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const { gateway, refresh } = createDeviceCredentialDrivers({ approve: async () => false });
   for (const driver of [gateway, refresh]) {
+    assertDeviceDriver(driver);
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
-  const agent = await fixture.createAgent(
-    namespace.id,
-    name,
-    nativeValues(name.toLowerCase().replaceAll(" ", "-"), { harnessId: "codex" }),
-    { executionMode: "dedicated" },
+  const agent = agentIdentity(
+    await fixture.createAgent(
+      namespace.id,
+      name,
+      nativeValues(name.toLowerCase().replaceAll(" ", "-"), { harnessId: "codex" }),
+      { executionMode: "dedicated" },
+    ),
   );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -675,9 +823,12 @@ async function openAgentOAuth(t, name) {
 }
 
 // Holds the next start's real API answer at the browser boundary until `release()`.
-async function holdNextStart(t, { page, beginPath }) {
-  const answered = Promise.withResolvers();
-  const release = Promise.withResolvers();
+async function holdNextStart(
+  t: TestContext,
+  { page, beginPath }: { page: Page; beginPath: string },
+) {
+  const answered = Promise.withResolvers<{ status: number; body: unknown }>();
+  const release = Promise.withResolvers<void>();
   t.after(() => release.resolve());
   await page.route(
     `**${beginPath}`,
@@ -692,13 +843,13 @@ async function holdNextStart(t, { page, beginPath }) {
   return { answered: answered.promise, release: () => release.resolve() };
 }
 
-async function showTab(page, name) {
+async function showTab(page: Page, name: string) {
   await page.getByRole("tab", { name, exact: true }).click();
   await page.getByRole("tab", { name, exact: true, selected: true }).waitFor();
 }
 
 // Saves the draft's Configuration from its tab, which rebuilds every other tab from its draft.
-async function saveConfiguration(page, name) {
+async function saveConfiguration(page: Page, name: string) {
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await page
     .getByLabel("Configuration JSON", { exact: true })
@@ -708,7 +859,7 @@ async function saveConfiguration(page, name) {
 }
 
 // The delivered challenge shows: its code, and Cancel login for this known session.
-async function expectChallenge(page, userCode) {
+async function expectChallenge(page: Page, userCode: string) {
   await page.getByText(WAITING, { exact: true }).waitFor();
   assert.equal(await page.locator(".device-login-code").textContent(), userCode);
   assert.equal(
@@ -799,7 +950,7 @@ for (const refused of [false, true]) {
       assert.equal(await oauth.start.isEnabled(), true, "a confirmed refusal blocked a retry");
       await expectNoText(page, /may have started/i);
     } else {
-      await expectChallenge(page, body.data.userCode);
+      await expectChallenge(page, jsonString(responseData(body).userCode));
       assert.equal(await oauth.start.isVisible(), false);
     }
     await settlePageRequests(page);
@@ -824,7 +975,8 @@ for (const before of ["a refused start", "Cancel login"]) {
           (response) => new URL(response.url()).pathname === oauth.beginPath,
         );
         await start.click();
-        const { session } = (await (await first).json()).data;
+        const session = responseData(await (await first).json()).session;
+        assertResourceIdentity(session);
         await page.getByText(WAITING, { exact: true }).waitFor();
         // Let the login poll once (the fixture interval is 5 s): the poll is the tab's write too.
         const polled = await page.waitForResponse(
@@ -865,7 +1017,7 @@ for (const before of ["a refused start", "Cancel login"]) {
         assert.equal(await start.isEnabled(), true);
         await expectNoText(page, /may have started/i);
       } else {
-        await expectChallenge(page, body.data.userCode);
+        await expectChallenge(page, jsonString(responseData(body).userCode));
       }
       await settlePageRequests(page);
       assert.equal(oauth.starts(), 2);
@@ -910,7 +1062,7 @@ for (const replyFirst of [true, false]) {
         await waitForEnabled(oauth.start);
         await expectNoText(page, /may have started/i);
       } else {
-        await expectChallenge(page, body.data.userCode);
+        await expectChallenge(page, jsonString(responseData(body).userCode));
       }
       await settlePageRequests(page);
       assert.equal(oauth.starts(), 1);
@@ -953,6 +1105,7 @@ test("a refused device login start on Create Agent names the create grants it ch
   // Drivers that offer device login, so Sign in is offered and the grants decide.
   const { gateway, refresh } = createDeviceCredentialDrivers();
   for (const driver of [gateway, refresh]) {
+    assertDeviceDriver(driver);
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
@@ -978,6 +1131,7 @@ test("a member's refused Installation read leaves Sign in offered on Create Agen
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth member");
   const { gateway, refresh } = createDeviceCredentialDrivers();
   for (const driver of [gateway, refresh]) {
+    assertDeviceDriver(driver);
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
@@ -1010,17 +1164,20 @@ test("a refused device login on Agent detail names the grants its start, poll an
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth Agent refused");
   const { gateway, refresh } = createDeviceCredentialDrivers();
   for (const driver of [gateway, refresh]) {
+    assertDeviceDriver(driver);
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "OAuth Agent refused",
-    nativeValues("oauth-agent-refused", { harnessId: "codex" }),
-    { executionMode: "dedicated" },
+  const agent = agentIdentity(
+    await fixture.createAgent(
+      namespace.id,
+      "OAuth Agent refused",
+      nativeValues("oauth-agent-refused", { harnessId: "codex" }),
+      { executionMode: "dedicated" },
+    ),
   );
   const loginsPath = `/namespaces/${namespace.id}/agents/${agent.id}/device-authorizations`;
-  const answers = [];
+  const answers: string[] = [];
   const { page } = await newPage(t, fixture);
   page.on("response", (response) => {
     const { pathname } = new URL(response.url());

@@ -1713,7 +1713,7 @@ export function renderAgentSandboxPolicy(
         ),
         button(
           "Add rule",
-          () => {
+          (event) => {
             if (!editable() || !Array.isArray(additions)) {
               return;
             }
@@ -1729,6 +1729,13 @@ export function renderAgentSandboxPolicy(
             reviewSummary = "";
             stagedReview = undefined;
             renderEditor();
+            if (event.detail === 0) {
+              policyPanel
+                .querySelector<HTMLInputElement>(
+                  '[data-configuration-path="/binary"] input:enabled',
+                )
+                ?.focus();
+            }
           },
           { tone: "primary", size: "sm", className: "sandbox-add-rule", disabled: !editable() },
         ),

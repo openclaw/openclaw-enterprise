@@ -30,7 +30,7 @@ import {
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   enterManualModel,
   openAdvancedSettings,
