@@ -71,7 +71,7 @@ k3d cluster delete oce
 
 ### Production workload network access
 
-With the fixture cluster and image above, install Helm and `yq`, then run:
+Use an exclusive fixture cluster with `oce-system` and `envoy-gateway-system` available. Install Helm and `yq`, then run:
 
 ```sh
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
@@ -80,10 +80,9 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
   node --test tests/integration/production-network-access.test.mjs
 ```
 
-This needs no database or model credential. It checks the chart's actual
-NetworkPolicies with reachable controls. It does not prove controller startup,
-database authentication, provider behavior, or a production Helm installation.
-Policies for other releases are outside the chart's selectors.
+Live listeners verify chart and quickstart NetworkPolicies, including supervisor grant
+withdrawal and loss of namespace ownership. Other releases fall outside the selectors.
+This networking fixture requires neither a database nor model credentials.
 
 ## Kubernetes model turns and Secrets
 

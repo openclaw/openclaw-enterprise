@@ -29,6 +29,12 @@ def peer(namespace, labels):
             "podSelector": {"matchLabels": labels}}
 
 
+def tenant_peer(labels):
+    selected = peer(args.tenant, labels)
+    selected["namespaceSelector"]["matchLabels"]["openclaw.dev/namespace"] = args.namespace_id
+    return selected
+
+
 def port(number):
     return {"protocol": "TCP", "port": number}
 
@@ -57,6 +63,17 @@ proxy = {"matchLabels": private["spec"]["selector"]}
 controller = resource(envoy, "service", "envoy-gateway")
 api = resource(system, "service", "openclaw-enterprise-api")
 supervisor = {"matchLabels": {"openshell.ai/boundary-role": "supervisor", "openshell.ai/managed-by": "openshell"}}
+# Agent ingress isolates the management Pods, so preserve their other callers too.
+controller_peer = peer(system, {key: value for key, value in api["spec"]["selector"].items()
+                                if key != "app.kubernetes.io/component"})
+controller_peer["podSelector"]["matchExpressions"] = [
+    {"key": "app.kubernetes.io/component", "operator": "In", "values": ["api", "worker"]}]
+policy(system, "oce-management-from-controller", management_selector, "ingress",
+       [{"from": [controller_peer], "ports": [port(8080)]}])
+# Each tenant retains its own grant when another tenant's policies are applied.
+tenant_suffix = hashlib.sha256(args.namespace_id.encode()).hexdigest()[:12]
+policy(system, "oce-management-from-supervisors-" + tenant_suffix, management_selector, "ingress",
+       [{"from": [tenant_peer(supervisor["matchLabels"])], "ports": [port(8080)]}])
 if hook:
     policy(system, "oce-hook-sender", management_selector, "egress", hook)
 policy(args.tenant, "oce-supervisor-services", supervisor, "egress",
@@ -78,7 +95,7 @@ if args.agent_id:
     labels = gateway["spec"]["selector"]
     if labels.get("openclaw.dev/agent") != args.agent_id:
         raise ValueError("Gateway ownership does not match")
-    gateway_peer = peer(args.tenant, labels)
+    gateway_peer = tenant_peer(labels)
     policy(args.tenant, "oce-gateway-management-" + suffix, gateway_peer["podSelector"],
            "egress", service_edges(system, management, 8080))
     policy(system, "oce-management-from-" + suffix, management_selector, "ingress",
