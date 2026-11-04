@@ -3953,21 +3953,60 @@ function derivedToken(startupId) {
   }
 }
 function checkWebSocket(token) {
-  readinessWaitingFor = "the Codex app-server WebSocket";
+  readinessWaitingFor = "the Codex app-server initialize response";
   const socket = new ReadinessWebSocket("ws://127.0.0.1:" + process.env.APP_SERVER_PORT, {
     headers: { Authorization: "Bearer " + token },
+    perMessageDeflate: false,
+    maxPayload: 65536,
   });
-  const onSocket = (event, listener) => {
-    if (typeof socket.addEventListener === "function") socket.addEventListener(event, listener);
-    else socket.on(event, listener);
-  };
-  onSocket("open", () => {
-    clearTimeout(timeout);
+  let settled = false;
+  function finish(reason) {
+    if (settled) return;
+    settled = true;
+    if (reason !== undefined) {
+      socket.terminate();
+      readinessFail(reason);
+      return;
+    }
+    readinessWaitingFor = "the Codex app-server connection to close";
+    socket.once("close", () => {
+      clearTimeout(timeout);
+      process.exit(0);
+    });
+    socket.send(JSON.stringify({ method: "initialized", params: {} }));
     socket.close();
-    process.exit(0);
+  }
+  socket.on("open", () => {
+    // Initialize only identifies this connection; it creates no thread or model turn.
+    socket.send(JSON.stringify({
+      id: 1,
+      method: "initialize",
+      params: {
+        clientInfo: { name: "openclaw-enterprise-readiness", version: "1.0.0" },
+        capabilities: { experimentalApi: true },
+      },
+    }));
   });
-  onSocket("error", (error) =>
-    readinessFail("Codex app-server WebSocket unavailable: " + readinessErrorCode(error)),
+  socket.on("message", (data) => {
+    let response;
+    try {
+      response = JSON.parse(data.toString("utf8"));
+    } catch {
+      finish("Codex app-server initialize response is invalid");
+      return;
+    }
+    if (response?.id !== 1) return;
+    if (response.error !== undefined) {
+      finish("Codex app-server initialize request failed");
+    } else if (typeof response.result?.userAgent !== "string" || !response.result.userAgent.trim()) {
+      finish("Codex app-server initialize response is invalid");
+    } else {
+      finish();
+    }
+  });
+  socket.on("close", () => finish("Codex app-server closed before initialization"));
+  socket.on("error", (error) =>
+    finish("Codex app-server WebSocket unavailable: " + readinessErrorCode(error)),
   );
 }
 if (

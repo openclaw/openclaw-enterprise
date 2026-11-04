@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-07
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-11-04
+last_updated_session: authoring-run/6114dea2-8894-4987-87db-a3e2db814463
 ---
 
 # Harness Execution Topology Flow
@@ -141,6 +141,16 @@ workspace node is enrolled and observed.
 callbacks to the Agent's route. `AGENT_WITH_NODE_ENTRYPOINT` prepares private
 capability storage and TLS trust; OpenClaw authorizes callbacks. See
 [native hook routing](../reference/gateway-routing.md#native-node-endpoint).
+
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_READINESS_ENTRYPOINT`
+
+Codex readiness uses the resident transport token to initialize a separate
+loopback app-server connection. It requires the matching RPC result with a
+nonempty `userAgent`, then closes that connection. WebSocket upgrade alone is
+insufficient. A rejected, malformed, closed or unanswered initialization stays
+unready within the existing two-second probe budget. This read-only handshake
+creates no thread or model turn and does not change liveness. It verifies local
+RPC service, not Gateway-to-Harness routing or model execution.
 
 Dedicated Codex uses workspace-node name `agent-<agent digest>-workspace`, stable
 across restarts and revisions.
@@ -317,6 +327,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 22:57: Require a successful Codex initialization RPC for Harness readiness. (authoring-run/6114dea2-8894-4987-87db-a3e2db814463 - feec95ba13884c77e1793eb0fbc847420550382f)
 
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 

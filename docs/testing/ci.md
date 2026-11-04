@@ -43,7 +43,11 @@ required workflow or other external enforcement is not established by this
 source. See the [testing flow](../flows/github-actions-testing.md) for details.
 
 The repository credential platform lane proves HTTP, PostgreSQL, Unix control and credential material inside
-Kubernetes; compatible fixture lanes prove NetworkPolicy enforcement. The first
+Kubernetes; compatible fixture lanes prove NetworkPolicy enforcement.
+`runtime-image-codex-readiness.test.mjs` runs the real packaged Codex app-server
+without network access or model credentials. It verifies repeated readiness
+initialization and rejects WebSocket peers that cannot complete the RPC; it
+proves neither model execution nor cluster routing. The first
 runtime startup lane derives the reviewed Codex seccomp profile in an owned k3d
 cluster and requires `OCC_TEST_CODEX_SECCOMP_PROFILE`; the second runs no Codex
 sandbox, so it needs no cluster.

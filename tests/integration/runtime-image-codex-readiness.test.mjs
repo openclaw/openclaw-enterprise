@@ -1,0 +1,137 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import test from "node:test";
+import { promisify } from "node:util";
+import { AGENT_READINESS_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+
+const execute = promisify(execFile);
+const image = process.env.OCC_TEST_RUNTIME_IMAGE;
+const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+
+// Run the production probe against the image's real Codex server, then real
+// WebSocket peers that fail its RPC contract. No provider or model is involved.
+const scenario = String.raw`
+(async () => {
+const assert = require("node:assert/strict");
+const { spawn, execFile } = require("node:child_process");
+const { createHash, randomBytes } = require("node:crypto");
+const { once } = require("node:events");
+const { mkdirSync } = require("node:fs");
+const { connect } = require("node:net");
+const { promisify } = require("node:util");
+const { WebSocketServer } = require("ws");
+const execute = promisify(execFile);
+const token = randomBytes(32).toString("hex");
+const env = { PATH: process.env.PATH, HOME: "/tmp/readiness", CODEX_HOME: "/tmp/readiness/codex", RUST_LOG: "error" };
+mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
+async function probe(port, auth = token) {
+  try {
+    const result = await execute(process.execPath, ["-e", process.env.READINESS_PROGRAM], {
+      env: { ...env, APP_SERVER_PORT: String(port), APP_SERVER_TOKEN: auth }, timeout: 5000,
+    });
+    return { code: 0, output: result.stdout + result.stderr };
+  } catch (error) {
+    assert.equal(typeof error.code, "number", "probe must exit within its own deadline");
+    return { code: error.code, output: error.stdout + error.stderr };
+  }
+}
+const server = spawn("codex", ["-c", 'otel.exporter="none"', "app-server", "--listen", "ws://127.0.0.1:18991",
+  "--ws-auth", "capability-token", "--ws-token-sha256", createHash("sha256").update(token).digest("hex")],
+  { env, stdio: "ignore" });
+const serverExit = once(server, "exit");
+try {
+  const deadline = Date.now() + 10000;
+  for (;;) {
+    assert.equal(server.exitCode, null, "real Codex server must stay alive");
+    const listening = await new Promise(resolve => {
+      const socket = connect(18991, "127.0.0.1");
+      socket.once("connect", () => { socket.destroy(); resolve(true); });
+      socket.once("error", () => resolve(false));
+    });
+    if (listening) break;
+    assert.ok(Date.now() < deadline, "real Codex server must listen");
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  // Each probe opens its own connection; repeated readiness must not create a
+  // thread or depend on another client's initialization state.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.deepEqual(await probe(18991), { code: 0, output: "" });
+  }
+  assert.equal((await probe(18991, "wrong-capability-token")).code, 1);
+} finally {
+  server.kill("SIGTERM");
+  const kill = setTimeout(() => server.kill("SIGKILL"), 2000);
+  await serverExit;
+  clearTimeout(kill);
+}
+const cases = ["silent", "wrong-id", "rejected", "invalid-json", "missing-identity", "closed"];
+for (const mode of cases) {
+  const peer = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(peer, "listening");
+  const requests = [];
+  peer.on("connection", socket => {
+    socket.on("message", data => {
+      const request = JSON.parse(String(data));
+      requests.push(request.method);
+      if (mode === "wrong-id") socket.send(JSON.stringify({ id: request.id + 1, result: { userAgent: "codex/test" } }));
+      if (mode === "rejected") socket.send(JSON.stringify({ id: request.id, error: { code: -32600, message: "private-error-canary" } }));
+      if (mode === "invalid-json") socket.send("private-error-canary");
+      if (mode === "missing-identity") socket.send(JSON.stringify({ id: request.id, result: {} }));
+      if (mode === "closed") socket.close();
+    });
+  });
+  try {
+    const result = await probe(peer.address().port);
+    assert.equal(result.code, 1, mode + " must remain unready after WebSocket upgrade");
+    assert.deepEqual(requests, ["initialize"], "readiness must make no thread or turn request");
+    assert.match(result.output, /Codex app-server/);
+    assert.ok(!result.output.includes("private-error-canary"), "probe output must omit peer content");
+  } finally {
+    for (const client of peer.clients) client.terminate();
+    await new Promise(resolve => peer.close(resolve));
+  }
+}
+console.log(JSON.stringify({ repeatedInitialization: true, rejectedPeers: cases.length }));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+`;
+
+test(
+  "runtime image Codex readiness requires a successful initialization RPC",
+  {
+    skip: image === undefined ? "Set OCC_TEST_RUNTIME_IMAGE to a local runtime image." : false,
+    timeout: 45000,
+  },
+  async (t) => {
+    const name = `oce-codex-readiness-${randomBytes(6).toString("hex")}`;
+    t.after(() => execute(docker, ["rm", "--force", name], { timeout: 10000 }).catch(() => {}));
+    const result = await execute(
+      docker,
+      [
+        "run",
+        "--name",
+        name,
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "1000:1000",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--tmpfs",
+        "/tmp:uid=1000,gid=1000,mode=700",
+        "-e",
+        `READINESS_PROGRAM=${AGENT_READINESS_ENTRYPOINT}`,
+        "--entrypoint",
+        "node",
+        image,
+        "-e",
+        scenario,
+      ],
+      { timeout: 40000, maxBuffer: 65536 },
+    );
+    assert.deepEqual(JSON.parse(result.stdout), { repeatedInitialization: true, rejectedPeers: 6 });
+  },
+);
