@@ -1,5 +1,9 @@
 import type { PluginFieldsOptions } from "../../../apps/controller/src/console/agents/plugin-fields.mts";
-import type { PluginCatalogEntry, PluginCatalogPage } from "@openclaw-enterprise/contracts";
+import type {
+  PluginCatalogEntry,
+  PluginCatalogPage,
+  PluginDesiredState,
+} from "../../../packages/contracts/src/index.ts";
 import type { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
@@ -151,20 +155,18 @@ export const pluginCatalog = {
   ],
 } satisfies NonNullable<PluginFieldsOptions["catalog"]>;
 
-export const pluginSelections = JSON.stringify(
-  {
-    "codex-plugin:calendar@openai-curated-remote": {
-      enabled: true,
-      toolDefaults: { approval: "write_actions", reviewer: "auto" },
-      tools: {
-        "app_calendar/create_event": { approval: "all_actions" },
-        "app_calendar/delete_event": { enabled: false },
-      },
+export const pluginSelectionState = {
+  "codex-plugin:calendar@openai-curated-remote": {
+    enabled: true,
+    toolDefaults: { approval: "write_actions", reviewer: "auto" },
+    tools: {
+      "app_calendar/create_event": { approval: "all_actions" },
+      "app_calendar/delete_event": { enabled: false },
     },
   },
-  null,
-  2,
-);
+} satisfies PluginDesiredState;
+
+export const pluginSelections = JSON.stringify(pluginSelectionState, null, 2);
 
 export const pluginDiscovery = {
   pages: {
