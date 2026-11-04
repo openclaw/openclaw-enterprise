@@ -31,6 +31,7 @@ import {
   PENDING_OAUTH_CONNECTION,
   connectionValuesChanged,
   validateConnectionTemplateAuthorization,
+  ConnectionTemplateValidationError,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
@@ -157,13 +158,13 @@ import type {
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialProviderDefinition,
+  ConnectionTemplateVersion,
   SavedConnection,
   OAuthConnectionGrant,
-  ConnectionClientRegistration,
+  OAuthClient,
+  McpAuthorizationMetadata,
   ConnectionTemplate,
   ConnectionTemplateValues,
-  ConnectionTemplateVersion,
-  CredentialClientRegistrationContext,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -383,6 +384,7 @@ import {
 } from "./backends.ts";
 import {
   InMemoryPlatformState,
+  type ConnectionTokenCustody,
   type PlatformReadView,
   type PlatformOperation,
   type PlatformStateStore,
@@ -594,6 +596,7 @@ export {
   type PlatformAuditSink,
   type PlatformOperation,
   type PlatformOperationRepository,
+  type ConnectionTokenCustody,
   type PlatformReadView,
   type PlatformStateStore,
   type PlatformUnitOfWork,
@@ -1019,33 +1022,39 @@ export interface CreateSecretInput {
   readonly value: string;
 }
 
-interface ConnectionTemplateInput {
-  readonly displayName: string;
-  readonly issuer: string;
-  readonly authorizationUrl: string;
-  readonly tokenUrl: string;
-  readonly clientId: string;
+interface ApprovedTemplateSettings {
   readonly scopes: readonly string[];
   readonly authorizationParameters?: Readonly<Record<string, string>>;
-  readonly endpoint: {
-    readonly host: string;
-    readonly port?: number;
-    readonly path?: string;
-    readonly access?: "read-only" | "full";
-  };
-  readonly envVar: string;
+  readonly oauthClientId?: string;
 }
-
-export interface CreateConnectionTemplateInput extends ConnectionTemplateInput {
+type TemplateInput = ApprovedTemplateSettings &
+  (
+    | {
+        readonly mode: "manual";
+        readonly issuer: string;
+        readonly authorizationUrl: string;
+        readonly tokenUrl: string;
+        readonly revocationUrl?: string;
+        readonly recipient: {
+          readonly host: string;
+          readonly port?: number;
+          readonly path?: string;
+          readonly access?: "read-only" | "full";
+        };
+      }
+    | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
+  );
+export type CreateConnectionTemplateInput = TemplateInput & {
   readonly namespaceId?: string;
-  /** Required for a new issuer and client ID in this scope. */
-  readonly clientSecret?: string;
-}
-
-export type UpdateConnectionTemplateInput = Partial<ConnectionTemplateInput> & {
-  readonly clientSecret?: string;
+  readonly displayName: string;
 };
-
+export type UpdateConnectionTemplateInput =
+  { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
+export type CreateOAuthClientInput = Omit<
+  OAuthClient,
+  "id" | "createdAt" | "credentialRefreshDriverId" | "secretRegistrationId"
+> & { readonly clientSecret?: string };
+type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
   readonly namespaceId: string;
   readonly name: string;
@@ -1061,6 +1070,7 @@ export interface AgentCredentialSourceInput {
 }
 
 export interface StartNamespaceConnectionInput {
+  readonly selectedScopes?:readonly string[];
   readonly sessionId: string;
   readonly namespaceId: string;
   readonly connectionTemplateId: string;
@@ -1286,58 +1296,39 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   provisioning_request: "provisioningRequests",
 });
 
-/** The oauth2-refresh-token source configuration carries exactly the approved values. */
-function connectionSourceConfig(
-  version: Readonly<ConnectionTemplateValues>,
-): Readonly<Record<string, string>> {
-  return Object.freeze({
-    host: version.endpoint.host,
-    port: String(version.endpoint.port),
-    path: version.endpoint.path,
-    ...(version.endpoint.access === "read-only" && { access: version.endpoint.access }),
-    env_var: version.envVar,
-    token_url: version.tokenUrl,
-    client_id: version.clientId,
-    scope: version.scopes.join(" "),
-  });
+function connectionConsentScopes(version:Readonly<ConnectionTemplateVersion>,selection?:readonly string[]):readonly string[]{
+  if(version.mode==="manual"){
+    if(selection!==undefined){throw new ConnectionTemplateValidationError("selectedScopes","This connection template uses fixed scopes.");}
+    return version.scopes;
+  }
+  const required=version.observed?.requestedScopes ?? [];
+  if(!selection?.length || new Set(selection).size!==selection.length || selection.some(scope=>!version.scopes.includes(scope)) || required.some(scope=>!selection.includes(scope))){
+    throw new ConnectionTemplateValidationError("selectedScopes","Choose approved scopes for this MCP account and include the scopes required by the resource.");
+  }
+  return selection;
 }
 
 function browserAuthorizationRequest(
   version: Readonly<ConnectionTemplateVersion>,
+  client: Readonly<OAuthClient>,
   redirectUri: string,
+  selectedScopes:readonly string[],
 ) {
   return {
-    clientRegistrationId: version.clientRegistrationId,
+    oauthClientId: client.id,
     issuer: version.issuer,
-    clientId: version.clientId,
+    clientId: client.clientId,
+    tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
+    ...(client.secretRegistrationId === undefined
+      ? {}
+      : { secretRegistrationId: client.secretRegistrationId }),
     authorizationUrl: version.authorizationUrl,
     tokenUrl: version.tokenUrl,
-    scopes: version.scopes,
+    ...(version.mcp ? { resource: version.mcp.resource } : {}),
+    scopes:selectedScopes,
     authorizationParameters: version.authorizationParameters,
     redirectUri,
   };
-}
-
-function connectionTemplateValues(
-  input: Omit<ConnectionTemplateInput, "displayName">,
-): ConnectionTemplateValues {
-  const values = {
-    issuer: input.issuer,
-    authorizationUrl: input.authorizationUrl,
-    tokenUrl: input.tokenUrl,
-    clientId: input.clientId,
-    scopes: input.scopes,
-    authorizationParameters: input.authorizationParameters ?? {},
-    endpoint: {
-      host: input.endpoint.host,
-      port: input.endpoint.port ?? 443,
-      path: input.endpoint.path ?? "/**",
-      access: input.endpoint.access ?? "full",
-    },
-    envVar: input.envVar,
-  };
-  validateConnectionTemplateAuthorization(values);
-  return values;
 }
 
 /**
@@ -4554,6 +4545,28 @@ export class OpenClawController {
     }
   }
 
+  private async connectionClientForVersion(
+    view: PlatformReadView,
+    namespaceId: string,
+    version: ConnectionTemplateVersion,
+    refreshDriverId: string,
+  ) {
+    const client = version.oauthClientId
+      ? await view.connectionTemplates.findOAuthClient(version.oauthClientId)
+      : undefined;
+    if (
+      !client ||
+      (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
+      client.issuer !== version.issuer ||
+      client.tokenUrl !== version.tokenUrl ||
+      (version.revocationUrl!==undefined && client.revocationUrl!==version.revocationUrl) ||
+      client.credentialRefreshDriverId !== refreshDriverId
+    ) {
+      throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+    }
+    return client;
+  }
+
   async startNamespaceConnection(
     principalId: string,
     input: StartNamespaceConnectionInput,
@@ -4582,7 +4595,8 @@ export class OpenClawController {
         throw new ScopeViolationError("The connection template does not exist.");
       }
       const version = template.current;
-      await this.assertConnectionSourceConfig(version);
+      const selectedScopes=connectionConsentScopes(version,input.selectedScopes);
+      const client = await this.connectionClientForVersion(state, namespaceId, version, refresh.id);
       const createdAt = this.timestamp();
       const expiresAt = new Date(Date.parse(createdAt) + CONNECTION_SESSION_TTL_MS).toISOString();
       // Consent starts with one atomic reservation. There is no grant or worker provider to retire
@@ -4592,17 +4606,22 @@ export class OpenClawController {
         namespaceId,
         name: `Connection ${crypto.randomUUID()}`,
         type: "oauth2-refresh-token",
-        config: { ...connectionSourceConfig(version), oauth_owner: "token_service" },
+        config: {
+          issuer: version.issuer,
+          token_url: version.tokenUrl,
+          client_id: client.clientId,
+          oauth_client_id: client.id,
+        },
         secrets: {},
-        ownerCapability: "credential_gateway",
-        driverId: this.credentialGatewayDriver().id,
+        ownerCapability: "credential_refresh",
+        driverId: refresh.id,
         state: "registering",
         createdAt,
       });
       const started = await this.credentialGatewayOperation(() =>
         refresh.startBrowserAuthorization!(
           { namespace, source, signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) },
-          browserAuthorizationRequest(version, input.redirectUri),
+          browserAuthorizationRequest(version,client,input.redirectUri,selectedScopes),
         ),
       );
       await state.savedConnections.createConnectionSession({
@@ -4611,6 +4630,7 @@ export class OpenClawController {
         credentialSourceId: source.id,
         sessionId: input.sessionId,
         redirectUri: input.redirectUri,
+        selectedScopes,
         privateState: started.privateState,
         issuerRequired: await state.connectionTemplates.hasOtherConnectionIssuer(version.issuer),
         actorId: principalId,
@@ -4667,6 +4687,20 @@ export class OpenClawController {
     const { namespaceId, credentialSourceId } = session;
     let exchangeStarted = false;
     let handoffStarted = false;
+    let approved:
+      | Pick<
+          SavedConnection,
+          | "issuer"
+          | "tokenUrl"
+          | "mcpServerUrl"
+          | "oauthClientId"
+          | "clientId"
+          | "recipient"
+          | "resource"
+          | "requestedScopes"
+          | "grantedScopes"
+        >
+      | undefined;
     try {
       await this.authorizeConnectionCreation(principalId, namespaceId);
       await this.assertConnectionTemplateScope(session.connectionTemplateId, namespaceId);
@@ -4696,14 +4730,34 @@ export class OpenClawController {
       ) {
         throw new BrowserAuthorizationError("issuer_required", "fix_configuration");
       }
-      const { context } = await this.authorizedCredentialSource(
-        principalId,
-        namespaceId,
-        credentialSourceId,
-        PENDING_CONNECTION,
-      );
       const refresh = this.browserConnectionDriver();
-      const request = browserAuthorizationRequest(version, session.redirectUri);
+      const { namespace, source, client } = await this.read(async (view) => {
+        const namespace = await this.exactNamespace(view, namespaceId);
+        const source = await view.credentialSources.findCredentialSource(
+          namespaceId,
+          credentialSourceId,
+        );
+        if (
+          source?.state !== "registering" ||
+          source.ownerCapability !== "credential_refresh" ||
+          source.driverId !== refresh.id
+        ) {
+          throw new BrowserAuthorizationError("invalid_session", "retry");
+        }
+        const client = await this.connectionClientForVersion(
+          view,
+          namespaceId,
+          version,
+          refresh.id,
+        );
+        return { namespace, source, client };
+      });
+      const context = {
+        namespace,
+        source,
+        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      };
+      const request = browserAuthorizationRequest(version,client,session.redirectUri,session.selectedScopes);
       exchangeStarted = true;
       await this.credentialGatewayOperation(() =>
         refresh.completeBrowserAuthorization!(
@@ -4713,6 +4767,19 @@ export class OpenClawController {
           request,
           async (grant) => {
             handoffStarted = true;
+            approved = {
+              issuer: version.issuer,
+              tokenUrl: version.tokenUrl,
+              oauthClientId: client.id,
+              clientId: client.clientId,
+              recipient: version.recipient,
+              ...(version.mcp
+                ? { resource: version.mcp.resource, mcpServerUrl: version.mcp.serverUrl }
+                : {}),
+              requestedScopes: session.selectedScopes,
+              grantedScopes: grant.scope.split(" "),
+            };
+
             await this.acceptConnectionTokens(
               namespaceId,
               credentialSourceId,
@@ -4722,7 +4789,7 @@ export class OpenClawController {
           },
         ),
       );
-      if (!handoffStarted) {
+      if (!approved) {
         throw new DependencyUnavailableError(
           "The Refresh Driver did not hand off the connection grant.",
         );
@@ -4737,6 +4804,7 @@ export class OpenClawController {
       }
       throw error;
     }
+    const receipt = approved;
     try {
       return await this.mutate(async (state) => {
         await this.lockNamespace(state, namespaceId);
@@ -4751,6 +4819,7 @@ export class OpenClawController {
           throw new ResourceStateConflictError("The pending connection changed. Connect again.");
         }
         const connection = await state.savedConnections.createSavedConnection({
+          ...receipt,
           namespaceId,
           credentialSourceId,
           ownerPrincipalId: principalId,
@@ -4909,11 +4978,7 @@ export class OpenClawController {
       return;
     }
     if (pending.account.revokedAt === undefined) {
-      await this.retireCredentialSourceMaterial(
-        pending.namespace,
-        pending.source,
-        this.ownedCredentialGatewayDriver(pending.source),
-      );
+      await this.retireCredentialSourceMaterial(pending.namespace, pending.source, undefined);
     }
     await this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
@@ -4928,11 +4993,7 @@ export class OpenClawController {
           this.timestamp(),
         );
       }
-      if (
-        this.clock().getTime() <
-          Date.parse(pending.source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS ||
-        (await state.credentialSources.hasReferences(namespaceId, sourceId))
-      ) {
+      if (await state.credentialSources.hasReferences(namespaceId, sourceId)) {
         return;
       }
       await state.credentialSources.deleteCredentialSource(namespaceId, sourceId);
@@ -4962,7 +5023,7 @@ export class OpenClawController {
       const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (
         source?.state !== "registering" ||
-        source.config.oauth_owner !== "token_service" ||
+        source.ownerCapability !== "credential_refresh" ||
         (await unit.savedConnections.findTokenCustody(namespaceId, sourceId))
       ) {
         throw new ResourceStateConflictError(
@@ -4992,52 +5053,32 @@ export class OpenClawController {
       if (source?.state !== "registering") {
         throw new ResourceStateConflictError("The connection was retired during consent.");
       }
-      await this.publishConnectionAccessToken(unit, source, signal);
+      await this.recordConnectionTokenSchedule(unit, custody, signal);
     });
   }
 
-  private async publishConnectionAccessToken(
+  private async recordConnectionTokenSchedule(
     unit: PlatformUnitOfWork,
-    source: Readonly<CredentialSource>,
+    custody: ConnectionTokenCustody,
     signal: AbortSignal,
-  ): Promise<void> {
-    const { namespaceId, id: sourceId } = source;
-    const custody = await unit.savedConnections.findTokenCustody(namespaceId, sourceId);
-    if (!custody) {
-      throw new ResourceStateConflictError("The connection has no Token Service grant.");
-    }
-    const token = await this.connectionTokenService().warm(custody, signal);
-    if (!token) {
+  ) {
+    const { schedule } = await this.connectionTokenService().status(custody, signal);
+    if (!schedule) {
       throw new ResourceStateConflictError(
-        "No eligible access token is prepared for this connection.",
+        "No eligible access token is prepared for this account.",
       );
     }
-    if (token.version === custody.publishedVersion) {
-      // Another owner already delivered this version. Preserve any later request to rotate it.
-      return;
-    }
-    const namespace = await this.credentialNamespace(await this.exactNamespace(unit, namespaceId));
-    const gateway = this.ownedCredentialGatewayDriver(source);
-    if (!gateway.publishConnectionToken) {
-      throw new NotImplementedError(
-        "connection_templates",
-        "The selected sender cannot deliver expiring access tokens.",
-      );
-    }
-    const { accessToken, expiresAt } = token;
-    await this.credentialGatewayOperation(() =>
-      gateway.publishConnectionToken!({ namespace, source, signal }, { accessToken, expiresAt }),
-    );
-    await unit.savedConnections.recordTokenSchedule(namespaceId, sourceId, {
-      publishedVersion: token.version,
-      nextRefreshAt: token.nextRefreshAt,
+    await unit.savedConnections.recordTokenSchedule(custody.namespaceId, custody.sourceId, {
+      scheduledVersion: schedule.version,
+      nextRefreshAt: schedule.nextRefreshAt,
+      grantedScopes: schedule.grantedScopes,
     });
   }
 
   async maintainConnectionToken(namespaceId: string, sourceId: string) {
     const custody = await this.read(async (view) => {
       const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
-      if (source?.state !== "ready") {
+      if (source?.state !== "ready" || source.ownerCapability !== "credential_refresh") {
         return undefined;
       }
       return view.savedConnections.findTokenCustody(namespaceId, sourceId);
@@ -5046,56 +5087,35 @@ export class OpenClawController {
       return undefined;
     }
     const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
-    const tokens = this.connectionTokenService();
+    const service = this.connectionTokenService();
     if (!custody.due) {
-      return tokens.status(custody, signal);
+      return service.status(custody, signal);
     }
-    // Either owner may fulfill a forced rotation. A successor waiting for delivery is already renewed.
-    const refreshed = await tokens.renew(custody, signal, custody.publishedVersion);
-    if (refreshed.state === "pending") {
-      return refreshed;
+    const result = await service.renew(custody, signal, custody.scheduledVersion);
+    if (result.state === "pending") {
+      return result;
     }
     await this.mutate(async (unit) => {
       const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (source?.state !== "ready") {
         return;
       }
-      if (refreshed.state === "failed") {
-        const gateway = this.ownedCredentialGatewayDriver(source);
-        if (!gateway.withdrawConnectionToken) {
-          throw new NotImplementedError(
-            "connection_templates",
-            "The selected sender cannot withdraw an access token.",
-          );
-        }
-        const namespace = await this.credentialNamespace(
-          await this.exactNamespace(unit, namespaceId),
-        );
-        await this.credentialGatewayOperation(() =>
-          gateway.withdrawConnectionToken!({ namespace, source, signal }),
-        );
-        // Keep the due time until confirmed withdrawal. A terminal grant requires reconnection.
+      if (result.state === "failed") {
         await unit.savedConnections.recordTokenSchedule(namespaceId, sourceId, "stopped");
       } else {
-        await this.publishConnectionAccessToken(unit, source, signal);
+        await this.recordConnectionTokenSchedule(unit, custody, signal);
       }
     });
-    return refreshed;
+    return result;
   }
 
   private browserConnectionDriver(): CredentialRefreshDriver {
     this.connectionTokenService();
-    const gateway = this.credentialGatewayDriver();
     const secrets = this.secretDriver();
-    if (
-      !gateway.publishConnectionToken ||
-      !gateway.withdrawConnectionToken ||
-      !secrets.withValue ||
-      !secrets.compareAndSwap
-    ) {
+    if (!secrets.withValue || !secrets.compareAndSwap) {
       throw new NotImplementedError(
         "connection_templates",
-        "The selected Drivers cannot store an OAuth grant and deliver expiring access tokens.",
+        "The selected Secret Driver cannot store an OAuth grant.",
       );
     }
     const refresh = this.connectionRegistrationDriver();
@@ -5136,36 +5156,150 @@ export class OpenClawController {
     return template;
   }
 
+  async discoverConnectionTemplate(
+    principalId: string,
+    input: { serverUrl: string; issuer?: string },
+    discover: DiscoverMcp,
+  ) {
+    await this.authorizeTemplateAdministration(principalId);
+    return discover(input.serverUrl, input.issuer);
+  }
+
+  private async effectiveConnectionTemplate(
+    input: TemplateInput,
+    discover: DiscoverMcp,
+  ): Promise<ConnectionTemplateValues> {
+    const settings = {
+      scopes: [...input.scopes],
+      authorizationParameters: input.authorizationParameters ?? {},
+      ...(input.oauthClientId && { oauthClientId: input.oauthClientId }),
+    };
+    let values: ConnectionTemplateValues;
+    if (input.mode === "manual") {
+      const { host, port = 443, path = "/**", access = "full" } = input.recipient;
+      if (
+        !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+          host,
+        ) ||
+        !/^\/[!-~]*$/.test(path) ||
+        /[?#\\]/.test(path)
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "recipient",
+          "Choose a DNS host and HTTPS request path for this account.",
+        );
+      }
+      values = {
+        ...settings,
+        mode: input.mode,
+        issuer: input.issuer,
+        authorizationUrl: input.authorizationUrl,
+        tokenUrl: input.tokenUrl,
+        ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
+        recipient: { host, port, path, access },
+      };
+    } else {
+      const observed = await discover(input.serverUrl, input.issuer);
+      if (observed.issuer !== input.issuer || !observed.authorizationUrl || !observed.tokenUrl) {
+        throw new ConnectionTemplateValidationError(
+          "issuer",
+          "Choose a verified issuer for this MCP server.",
+        );
+      }
+      const offered = [...observed.requestedScopes, ...(observed.resourceScopes ?? [])];
+      const allowed = offered.length ? offered : (observed.supportedScopes ?? []);
+      if (
+        settings.scopes.some(
+          (scope) =>
+            !allowed.includes(scope) ||
+            (observed.supportedScopes && !observed.supportedScopes.includes(scope)),
+        )
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "scopes",
+          "Choose only scopes advertised for this MCP resource.",
+        );
+      }
+      const server = new URL(observed.serverUrl);
+      values = {
+        ...settings,
+        mode: input.mode,
+        issuer: observed.issuer,
+        authorizationUrl: observed.authorizationUrl,
+        tokenUrl: observed.tokenUrl,
+        ...(observed.revocationUrl && { revocationUrl: observed.revocationUrl }),
+        recipient: {
+          host: server.hostname,
+          port: Number(server.port || 443),
+          path: server.pathname,
+          access: "full",
+        },
+        mcp: { serverUrl: observed.serverUrl, resource: observed.resource },
+        observed,
+      };
+    }
+    validateConnectionTemplateAuthorization(values);
+    return values;
+  }
+
+  private async assertTemplateClient(
+    state: PlatformUnitOfWork,
+    values: ConnectionTemplateValues,
+    namespaceId?: string,
+  ) {
+    if (!values.oauthClientId) {
+      return;
+    }
+    const client = await state.connectionTemplates.findOAuthClient(values.oauthClientId);
+    if (
+      !client ||
+      (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
+      client.issuer !== values.issuer ||
+      client.tokenUrl !== values.tokenUrl ||
+      (values.revocationUrl !== undefined && client.revocationUrl !== values.revocationUrl) ||
+      (values.observed &&
+        !(values.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
+          client.tokenEndpointAuthMethod,
+        ))
+    ) {
+      throw new ResourceStateConflictError(
+        "Choose a client approved for this scope, issuer and provider endpoints.",
+      );
+    }
+  }
+
+  private async lockTemplateScope(state: PlatformUnitOfWork, namespaceId?: string) {
+    if (
+      namespaceId !== undefined &&
+      (await this.lockNamespace(state, namespaceId)).status === "deleting"
+    ) {
+      throw new ResourceStateConflictError("The Namespace is being deleted.");
+    }
+  }
+
   async createConnectionTemplate(
     principalId: string,
     input: CreateConnectionTemplateInput,
-    audit?: (templateId: string) => AuditEvent,
+    discover: DiscoverMcp,
+    audit?: (id: string) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ): Promise<Readonly<ConnectionTemplate>> {
+    await this.authorizeTemplateAdministration(principalId);
+    const values = await this.effectiveConnectionTemplate(input, discover);
     return this.mutate(async (state) => {
       await this.authorizeTemplateAdministration(principalId);
-      if (input.namespaceId !== undefined) {
-        const namespace = await this.lockNamespace(state, input.namespaceId);
-        if (namespace.status === "deleting") {
-          throw new ResourceStateConflictError("The Namespace is being deleted.");
-        }
-      }
-      const values = connectionTemplateValues(input);
-      await this.assertConnectionSourceConfig(values);
-      const client = await this.ensureConnectionClient(
-        state,
-        values,
-        input.namespaceId,
-        input.clientSecret,
-      );
+      await this.lockTemplateScope(state, input.namespaceId);
+      await this.assertTemplateClient(state, values, input.namespaceId);
       const templateId = `ctp_${crypto.randomUUID()}`;
       const createdAt = this.timestamp();
       const template = await state.connectionTemplates.createConnectionTemplate({
         id: templateId,
-        ...(input.namespaceId === undefined ? {} : { namespaceId: input.namespaceId }),
         displayName: input.displayName,
+        ...(input.namespaceId && { namespaceId: input.namespaceId }),
         createdAt,
-        current: { ...values, clientRegistrationId: client.id, templateId, version: 1, createdAt },
+        current: { ...values, templateId, version: 1, createdAt },
       });
+      await holdSession?.(state);
       if (audit) {
         await state.audit.append(audit(templateId));
       }
@@ -5175,131 +5309,286 @@ export class OpenClawController {
 
   async updateConnectionTemplate(
     principalId: string,
-    templateId: string,
+    id: string,
     input: UpdateConnectionTemplateInput,
+    discover: DiscoverMcp,
     audit?: AuditEvent,
-  ): Promise<Readonly<ConnectionTemplate>> {
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    // Resolve the exact authorized target before any administrator-selected outbound discovery.
+    await this.getConnectionTemplate(principalId, id);
+    const values =
+      "mode" in input ? await this.effectiveConnectionTemplate(input, discover) : undefined;
     return this.mutate(async (state) => {
       await this.authorizeTemplateAdministration(principalId);
-      const current = await state.connectionTemplates.lockConnectionTemplate(templateId);
+      const current = await state.connectionTemplates.lockConnectionTemplate(id);
       if (!current) {
         throw new ScopeViolationError("The connection template does not exist.");
       }
-      const values = connectionTemplateValues({
-        ...current.current,
-        ...input,
-        endpoint: { ...current.current.endpoint, ...input.endpoint },
-      });
-      let version: ConnectionTemplateVersion | undefined;
-      if (connectionValuesChanged(current.current, values)) {
-        await this.assertConnectionSourceConfig(values);
-        const client = await this.ensureConnectionClient(
-          state,
-          values,
-          current.namespaceId,
-          input.clientSecret,
-        );
-        version = {
-          ...values,
-          clientRegistrationId: client.id,
-          templateId,
-          version: current.current.version + 1,
-          createdAt: this.timestamp(),
-        };
-      } else if (input.clientSecret !== undefined) {
-        throw new ResourceStateConflictError(
-          "Use the rotate operation to change this OAuth client's secret.",
-        );
+      if (values) {
+        await this.assertTemplateClient(state, values, current.namespaceId);
       }
-      const template = await state.connectionTemplates.updateConnectionTemplate(templateId, {
-        ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
-        ...(version === undefined ? {} : { version }),
+      const version =
+        values && connectionValuesChanged(current.current, values)
+          ? {
+              ...values,
+              templateId: id,
+              version: current.current.version + 1,
+              createdAt: this.timestamp(),
+            }
+          : undefined;
+      const updated = await state.connectionTemplates.updateConnectionTemplate(id, {
+        ...(input.displayName !== undefined && { displayName: input.displayName }),
+        ...(version && { version }),
       });
-      if (!template) {
-        throw new ScopeViolationError("The connection template does not exist.");
+      if (!updated) {
+        throw new ResourceStateConflictError("The template changed during the update.");
       }
+      await holdSession?.(state);
       if (audit) {
         await state.audit.append(audit);
       }
-      return template;
-    });
-  }
-
-  async rotateConnectionClientSecret(
-    principalId: string,
-    templateId: string,
-    clientSecret: string,
-    audit?: AuditEvent,
-  ): Promise<Readonly<ConnectionTemplate>> {
-    return this.mutate(async (state) => {
-      await this.authorizeTemplateAdministration(principalId);
-      const template = await state.connectionTemplates.lockConnectionTemplate(templateId);
-      if (!template) {
-        throw new ScopeViolationError("The connection template does not exist.");
-      }
-      if (!isNonEmptyString(clientSecret)) {
-        throw new ScopeViolationError("A nonempty OAuth client secret is required.");
-      }
-      const client = await state.connectionTemplates.findClientRegistrationById(
-        template.current.clientRegistrationId,
-      );
-      if (!client) {
-        throw new DependencyUnavailableError(
-          "The connection template's client registration is missing.",
-        );
-      }
-      const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-      await this.credentialGatewayOperation(() =>
-        driver.rotateClientSecret!(this.clientRegistrationContext(client), clientSecret),
-      );
-      if (audit) {
-        await state.audit.append(audit);
-      }
-      return template;
+      return updated;
     });
   }
 
   async deleteConnectionTemplate(
     principalId: string,
-    templateId: string,
+    id: string,
     audit?: AuditEvent,
-  ): Promise<void> {
-    this.requireIndependentMutation("Connection template deletion");
-    const unused = await this.mutate(async (state) => {
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    await this.mutate(async (state) => {
       await this.authorizeTemplateAdministration(principalId);
-      const template = await state.connectionTemplates.lockConnectionTemplate(templateId);
-      if (!template) {
+      if (!(await state.connectionTemplates.deleteConnectionTemplate(id))) {
         throw new ScopeViolationError("The connection template does not exist.");
       }
-      const registrations = new Set<string>();
-      for (let n = 1; n <= template.current.version; n++) {
-        const version = await state.connectionTemplates.findConnectionTemplateVersion(
-          templateId,
-          n,
-        );
-        if (version) {
-          registrations.add(version.clientRegistrationId);
-        }
-      }
-      await state.connectionTemplates.deleteConnectionTemplate(templateId);
-      const unusedClients = [];
-      for (const id of [...registrations].sort()) {
-        const client = await state.connectionTemplates.findClientRegistrationById(id);
-        if (client && (await state.connectionTemplates.deleteClientRegistration(id))) {
-          const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-          unusedClients.push({ driver, client });
-        }
-      }
+      await holdSession?.(state);
       if (audit) {
         await state.audit.append(audit);
       }
-      return unusedClients;
     });
-    for (const { driver, client } of unused) {
-      // Metadata is committed. A cleanup failure can leave an unreferenced secret, but
-      // callers never reuse the unique registration ID for another client.
-      await driver.removeClient!(this.clientRegistrationContext(client)).catch(() => undefined);
+  }
+
+  async listOAuthClients(principalId: string) {
+    await this.authorizeTemplateAdministration(principalId);
+    return this.read((view) => view.connectionTemplates.listOAuthClients());
+  }
+
+  async createOAuthClient(
+    principalId: string,
+    input: CreateOAuthClientInput,
+    audit?: (id: string) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    await this.authorizeTemplateAdministration(principalId);
+    const { clientSecret, ...registration } = input;
+    validateConnectionTemplateAuthorization({
+      ...input,
+      authorizationUrl: input.issuer,
+      authorizationParameters: {},
+    });
+    if (
+      input.tokenEndpointAuthMethod === "none"
+        ? clientSecret !== undefined
+        : !isNonEmptyString(clientSecret)
+    ) {
+      throw new ConnectionTemplateValidationError(
+        "clientSecret",
+        "Provide a secret only for a confidential OAuth client.",
+      );
     }
+    const reservation = clientSecret
+      ? await this.reserveOAuthClientSecret(
+          principalId,
+          async (unit) => {
+            await this.lockTemplateScope(unit, input.namespaceId);
+            return {
+              issuer: input.issuer,
+              clientId: input.clientId,
+              credentialRefreshDriverId: this.connectionRegistrationDriver().id,
+            };
+          },
+          holdSession,
+        )
+      : undefined;
+    return this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      await this.lockTemplateScope(state, input.namespaceId);
+      const id = `ccr_${crypto.randomUUID()}`;
+      const client: OAuthClient = {
+        ...registration,
+        id,
+        createdAt: this.timestamp(),
+        credentialRefreshDriverId:
+          reservation?.credentialRefreshDriverId ?? this.credentialRefreshDriver().id,
+        ...(reservation && { secretRegistrationId: reservation.id }),
+      };
+      await state.connectionTemplates.createOAuthClient(client);
+      if (clientSecret && client.secretRegistrationId) {
+        await holdSession?.(state);
+        await this.stageOAuthClientSecret(state, client, client.secretRegistrationId, clientSecret);
+      }
+      await holdSession?.(state);
+      if (audit) {
+        await state.audit.append(audit(id));
+      }
+      return client;
+    });
+  }
+
+  async rotateOAuthClientSecret(
+    principalId: string,
+    id: string,
+    clientSecret: string,
+    audit?: AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    const reservation = await this.reserveOAuthClientSecret(
+      principalId,
+      async (unit) => {
+        const current = await unit.connectionTemplates.findOAuthClient(id);
+        if (!current) {
+          throw new ScopeViolationError("The OAuth client does not exist.");
+        }
+        if (!current.secretRegistrationId) {
+          throw new ResourceStateConflictError(
+            "This public client authenticates without a secret.",
+          );
+        }
+        return current;
+      },
+      holdSession,
+    );
+    const client = await this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      const current = await state.connectionTemplates.lockOAuthClient(id);
+      if (!current) {
+        throw new ScopeViolationError("The OAuth client does not exist.");
+      }
+      if (!current.secretRegistrationId) {
+        throw new ResourceStateConflictError("This public client authenticates without a secret.");
+      }
+      await holdSession?.(state);
+      const handle = reservation.id;
+      await this.stageOAuthClientSecret(state, current, handle, clientSecret);
+      await state.connectionTemplates.setOAuthClientSecret(id, handle);
+      await state.connectionTemplates.queueOAuthClientSecretCleanup(
+        {
+          ...current,
+          id: current.secretRegistrationId,
+        },
+        "retired",
+      );
+      await holdSession?.(state);
+      if (audit) {
+        await state.audit.append(audit);
+      }
+      return { ...current, secretRegistrationId: handle };
+    });
+    return client;
+  }
+
+  async deleteOAuthClient(
+    principalId: string,
+    id: string,
+    audit?: AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    await this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      const current = await state.connectionTemplates.lockOAuthClient(id);
+      if (!current) {
+        throw new ScopeViolationError("The OAuth client does not exist.");
+      }
+      if (!(await state.connectionTemplates.deleteOAuthClient(id))) {
+        throw new ResourceStateConflictError(
+          "A template version still references this OAuth client.",
+        );
+      }
+      if (current.secretRegistrationId) {
+        await state.connectionTemplates.queueOAuthClientSecretCleanup(
+          {
+            ...current,
+            id: current.secretRegistrationId,
+          },
+          "retired",
+        );
+      }
+      await holdSession?.(state);
+      if (audit) {
+        await state.audit.append(audit);
+      }
+    });
+  }
+
+  async cleanupRetiredOAuthClientSecrets(): Promise<void> {
+    const retired = await this.read((view) =>
+      view.connectionTemplates.listRetiredOAuthClientSecrets(32),
+    );
+    for (const secret of retired) {
+      await this.mutate(async (state) => {
+        // A writer may have committed after the initial scan. Lock before removing Driver material.
+        if (!(await state.connectionTemplates.lockOAuthClientSecretCleanup(secret.id, true))) {
+          return;
+        }
+        try {
+          const driver = this.connectionRegistrationDriver(secret.credentialRefreshDriverId);
+          await driver.removeClient!({
+            registrationId: secret.id,
+            issuer: secret.issuer,
+            clientId: secret.clientId,
+            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          });
+        } catch {
+          await state.connectionTemplates.deferRetiredOAuthClientSecret(secret.id);
+          return;
+        }
+        await state.connectionTemplates.forgetRetiredOAuthClientSecret(secret.id);
+      });
+    }
+  }
+
+  private async reserveOAuthClientSecret(
+    principalId: string,
+    owner: (
+      unit: PlatformUnitOfWork,
+    ) => Promise<Pick<OAuthClient, "issuer" | "clientId" | "credentialRefreshDriverId">>,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    return this.mutate(async (unit) => {
+      await this.authorizeTemplateAdministration(principalId);
+      const { issuer, clientId, credentialRefreshDriverId } = await owner(unit);
+      await holdSession?.(unit);
+      const ref = { id: `ccr_${crypto.randomUUID()}`, issuer, clientId, credentialRefreshDriverId };
+      // This short transaction commits cleanup authority before a separate one writes private material.
+      await unit.connectionTemplates.queueOAuthClientSecretCleanup(ref, "staging");
+      return ref;
+    });
+  }
+
+  private async stageOAuthClientSecret(
+    state: PlatformUnitOfWork,
+    client: OAuthClient,
+    registrationId: string,
+    secret: string,
+  ) {
+    const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
+    const context = () => ({
+      registrationId,
+      issuer: client.issuer,
+      clientId: client.clientId,
+      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+    });
+    if (!(await state.connectionTemplates.lockOAuthClientSecretCleanup(registrationId, false))) {
+      throw new DependencyUnavailableError(
+        "The staged OAuth client registration expired. Retry the operation.",
+      );
+    }
+    this.registerRollback(() => driver.removeClient!(context()));
+    await this.credentialGatewayOperation(() => driver.registerClient!(context(), secret));
+    // Publication and retirement of this reservation share the owner's transaction.
+    await state.connectionTemplates.forgetRetiredOAuthClientSecret(registrationId);
   }
 
   private connectionRegistrationDriver(expectedId?: string): CredentialRefreshDriver {
@@ -5309,94 +5598,13 @@ export class OpenClawController {
         "The selected Refresh Driver does not own this OAuth client.",
       );
     }
-    if (!driver.registerClient || !driver.removeClient || !driver.rotateClientSecret) {
+    if (!driver.registerClient || !driver.removeClient) {
       throw new NotImplementedError(
         "connection_templates",
         "The selected Refresh Driver does not support OAuth client registrations.",
       );
     }
     return driver;
-  }
-
-  private clientRegistrationContext(
-    client: Readonly<ConnectionClientRegistration>,
-  ): CredentialClientRegistrationContext {
-    return {
-      registrationId: client.id,
-      issuer: client.issuer,
-      clientId: client.clientId,
-      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-    };
-  }
-
-  private async ensureConnectionClient(
-    state: PlatformUnitOfWork,
-    values: Readonly<ConnectionTemplateValues>,
-    namespaceId: string | undefined,
-    clientSecret: string | undefined,
-  ): Promise<Readonly<ConnectionClientRegistration>> {
-    const existing = await state.connectionTemplates.findClientRegistration(
-      values.issuer,
-      values.clientId,
-      namespaceId,
-    );
-    if (existing) {
-      if (clientSecret !== undefined) {
-        throw new ResourceStateConflictError(
-          "This OAuth client is already registered in this scope. Rotate its secret instead.",
-        );
-      }
-      this.connectionRegistrationDriver(existing.credentialRefreshDriverId);
-      return existing;
-    }
-    if (!isNonEmptyString(clientSecret)) {
-      throw new ScopeViolationError("A new OAuth client requires its client secret.");
-    }
-    const driver = this.connectionRegistrationDriver();
-    const client = {
-      id: `ccr_${crypto.randomUUID()}`,
-      ...(namespaceId === undefined ? {} : { namespaceId }),
-      issuer: values.issuer,
-      clientId: values.clientId,
-      credentialRefreshDriverId: driver.id,
-      createdAt: this.timestamp(),
-    };
-    // Reserve the scoped issuer/client pair before registering its secret. A confirmed
-    // rollback cleans up this unique registration; an unknown commit outcome retains it.
-    await state.connectionTemplates.createClientRegistration(client);
-    this.registerRollback(() => driver.removeClient!(this.clientRegistrationContext(client)));
-    await this.credentialGatewayOperation(() =>
-      driver.registerClient!(this.clientRegistrationContext(client), clientSecret),
-    );
-    return client;
-  }
-
-  /**
-   * Refuses values the Credential Gateway would refuse at connect time, such as a token host
-   * its gateway cannot reach, so administrators see the error instead of the connecting person.
-   */
-  private async assertConnectionSourceConfig(
-    values: Readonly<ConnectionTemplateValues>,
-  ): Promise<void> {
-    this.assertCredentialGatewaySelected();
-    const gateway = this.credentialGatewayDriver();
-    const config = connectionSourceConfig(values);
-    if (values.endpoint.access === "read-only") {
-      const type = await this.credentialSourceType(gateway, "oauth2-refresh-token");
-      if (!type.config.some((field) => field.name === "access")) {
-        throw new CredentialSourceConfigError(
-          "access",
-          "The selected Credential Gateway does not support read-only OAuth connections.",
-        );
-      }
-    }
-    const normalized = gateway.validateSourceConfig({ type: "oauth2-refresh-token", config });
-    if (values.endpoint.access === "read-only" && normalized && normalized.access !== "read-only") {
-      throw new CredentialSourceConfigError(
-        "access",
-        "The selected Credential Gateway cannot enforce read-only access.",
-      );
-    }
   }
 
   async listServiceAccounts(
@@ -7871,7 +8079,6 @@ export class OpenClawController {
       });
       const namespace = await this.exactNamespace(state, input.namespaceId);
       // An Installation property, so it is reported before any Namespace or source state.
-      this.assertCredentialSourceOwnerSelected();
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -7890,11 +8097,12 @@ export class OpenClawController {
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be updated.");
       }
-      if (source.config.oauth_owner === "token_service") {
+      if (source.ownerCapability === "credential_refresh") {
         throw new ResourceStateConflictError(
           "Reconnect the account to replace its saved OAuth grant.",
         );
       }
+      this.assertCredentialSourceOwnerSelected();
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         // After the update grant and lookup: the caller may change this source (finding 2536).
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.update);
@@ -8044,7 +8252,6 @@ export class OpenClawController {
       });
       const namespace = await this.exactNamespace(state, input.namespaceId);
       // An Installation property, so it is reported before any Namespace or source state.
-      this.assertCredentialSourceOwnerSelected();
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -8060,7 +8267,7 @@ export class OpenClawController {
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be rotated.");
       }
-      if (source.config.oauth_owner === "token_service") {
+      if (source.ownerCapability === "credential_refresh") {
         if (!ownsTransaction) {
           throw new ResourceConflictError(
             "Connected-account rotation must own its retry transaction.",
@@ -8070,6 +8277,7 @@ export class OpenClawController {
         await state.savedConnections.recordTokenSchedule(namespace.id, source.id, "due");
         return { managedSource: source };
       }
+      this.assertCredentialSourceOwnerSelected();
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.rotate);
       }
@@ -8207,6 +8415,21 @@ export class OpenClawController {
       }
       return { namespace: exact, source: found };
     });
+    if (source.ownerCapability === "credential_refresh") {
+      const custody = await this.read((view) =>
+        view.savedConnections.findTokenCustody(namespaceId, source.id),
+      );
+      const refresh = custody
+        ? await this.connectionTokenService().status(
+            custody,
+            AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          )
+        : { state: "pending" as const };
+      return this.credentialSourceMetadata(source, {
+        state: source.state === "ready" ? refresh.state : "pending",
+        refresh,
+      });
+    }
     if (source.egress !== undefined) {
       try {
         this.credentialSourceOwner(source);
@@ -8238,15 +8461,6 @@ export class OpenClawController {
         signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       };
       status = await gateway.sourceStatus(context);
-      if (source.config.oauth_owner === "token_service") {
-        const custody = await this.read((view) =>
-          view.savedConnections.findTokenCustody(namespace.id, source.id),
-        );
-        const refresh = custody
-          ? await this.connectionTokenService().status(custody, context.signal)
-          : { state: "pending" as const };
-        return this.credentialSourceMetadata(source, { ...status, refresh });
-      }
       const refresh =
         status.state === "ready" || status.state === "pending"
           ? await this.refreshDriverForSource(gateway, source.type)
@@ -8314,7 +8528,6 @@ export class OpenClawController {
               namespaceId,
             });
       // An Installation property, so it is reported before any source lookup.
-      this.assertCredentialSourceOwnerSelected();
       const found = await state.credentialSources.lockCredentialSource(
         locked.id,
         credentialSourceId,
@@ -8324,7 +8537,7 @@ export class OpenClawController {
           "The credential source does not belong to the exact Namespace.",
         );
       }
-      if (found.config.oauth_owner === "token_service") {
+      if (found.ownerCapability === "credential_refresh") {
         const saved = await state.savedConnections.findSavedConnection(
           namespaceId,
           credentialSourceId,
@@ -8343,7 +8556,10 @@ export class OpenClawController {
         // No active revision or pending work holds the source, so only waiting or Agent deletion helps.
         throw new CredentialWithdrawalInProgressError();
       }
-      const owner = this.credentialSourceOwner(found);
+      const owner =
+        found.ownerCapability === "credential_refresh"
+          ? undefined
+          : this.credentialSourceOwner(found);
       const deleting =
         found.state === "deleting"
           ? found
@@ -8354,7 +8570,7 @@ export class OpenClawController {
       return {
         namespace: locked,
         source: deleting,
-        gateway: owner.kind === "gateway" ? owner.driver : undefined,
+        gateway: owner?.kind === "gateway" ? owner.driver : undefined,
       };
     });
     await this.retireCredentialSourceMaterial(namespace, source, gateway);
@@ -8387,6 +8603,18 @@ export class OpenClawController {
     source: Readonly<CredentialSource>,
     gateway: CredentialGatewayDriver | undefined,
   ): Promise<void> {
+    if (source.ownerCapability === "credential_refresh") {
+      const custody = await this.read((view) =>
+        view.savedConnections.findTokenCustody(namespace.id, source.id),
+      );
+      if (custody) {
+        await this.connectionTokenService().retire(
+          custody,
+          AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        );
+      }
+      return;
+    }
     const placed = gateway ? await this.credentialNamespace(namespace) : namespace;
     const context = () => ({
       namespace: placed,
@@ -8399,16 +8627,6 @@ export class OpenClawController {
         AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
       );
     } else if (gateway && source.egress?.adoption !== "credential_free") {
-      if (source.config.oauth_owner === "token_service") {
-        const custody = await this.read((view) =>
-          view.savedConnections.findTokenCustody(namespace.id, source.id),
-        );
-        if (custody) {
-          await this.connectionTokenService().retire(custody, context().signal);
-        }
-        await this.credentialGatewayOperation(() => gateway.removeSource(context()));
-        return;
-      }
       const refresh = await this.refreshDriverForSource(gateway, source.type);
       if (refresh !== undefined) {
         await this.credentialGatewayOperation(() => refresh.removeRefresh(context()));
@@ -9000,22 +9218,16 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     sourceId: string,
-    connection?: typeof PENDING_CONNECTION,
   ) {
-    if (connection !== PENDING_CONNECTION) {
-      await this.authorize(principalId, "operate", {
-        kind: "credential_source",
-        namespaceId,
-        id: sourceId,
-      });
-    }
+    await this.authorize(principalId, "operate", {
+      kind: "credential_source",
+      namespaceId,
+      id: sourceId,
+    });
     const { namespace, source } = await this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
       const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
-      if (
-        namespace.status !== "ready" ||
-        source?.state !== (connection === PENDING_CONNECTION ? "registering" : "ready")
-      ) {
+      if (namespace.status !== "ready" || source?.state !== "ready") {
         throw new ResourceStateConflictError(
           "The credential source is unavailable. Connect again.",
         );
@@ -12942,6 +13154,11 @@ export class OpenClawController {
       const templates = await state.connectionTemplates.countNamespaceConnectionTemplates(
         namespace.id,
       );
+      const clients = await state.connectionTemplates.countNamespaceOAuthClients(namespace.id);
+      if (clients > 0) {
+        contents.push("OAuth clients");
+        counts["OAuth clients"] = clients;
+      }
       if (templates > 0) {
         contents.push("connection templates");
         counts["connection templates"] = templates;
@@ -13892,11 +14109,11 @@ export class OpenClawController {
         // no source (finding 2536); resolving the missing owner answered a 500.
         throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
       }
-      this.credentialSourceOwner(source);
       // TODO(Agent connection attachment): admit a saved account after verifying this Agent's grant.
-      if (source.config.oauth_owner === "token_service") {
+      if (source.ownerCapability === "credential_refresh") {
         throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
       }
+      this.credentialSourceOwner(source);
       sources.push(source);
     }
     this.assertHarnessSourceListed(bindings, harnessAuth);

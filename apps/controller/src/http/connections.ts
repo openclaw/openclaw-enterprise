@@ -40,6 +40,7 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
         {
           namespaceId,
           connectionTemplateId: body!.connectionTemplateId as string,
+          ...(body!.selectedScopes === undefined ? {} : {selectedScopes:body!.selectedScopes as string[]}),
           redirectUri,
           sessionId: context.sessionId,
         },

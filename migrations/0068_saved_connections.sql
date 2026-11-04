@@ -1,7 +1,25 @@
+-- A saved OAuth account belongs to the admitting Refresh Driver and has no sender.
+ALTER TABLE occ.credential_sources DROP CONSTRAINT credential_sources_owner_capability_valid,
+  ADD CONSTRAINT credential_sources_owner_capability_valid CHECK (
+    owner_capability = 'credential_gateway' OR
+    (owner_capability = 'credential_proxy' AND egress IS NOT NULL) OR
+    (owner_capability = 'credential_refresh' AND type = 'oauth2-refresh-token' AND egress IS NULL)
+  );
+--> statement-breakpoint
 -- The saved account records who consented and which template version they approved.
 CREATE TABLE occ.saved_connections (
   namespace_id text NOT NULL,
   credential_source_id text NOT NULL,
+  oauth_client_id text NOT NULL REFERENCES occ.oauth_clients(id) ON DELETE RESTRICT,
+  client_id text NOT NULL,
+  issuer text NOT NULL,
+  recipient jsonb NOT NULL CONSTRAINT saved_connections_recipient_object CHECK (jsonb_typeof(recipient) = 'object'),
+  token_url text NOT NULL,
+  mcp_server_url text,
+  resource text,
+  CONSTRAINT saved_connections_mcp_resource CHECK ((mcp_server_url IS NULL) = (resource IS NULL)),
+  requested_scopes text[] NOT NULL CONSTRAINT saved_connections_requested_scopes CHECK (cardinality(requested_scopes) > 0),
+  granted_scopes text[] NOT NULL CONSTRAINT saved_connections_granted_scopes CHECK (cardinality(granted_scopes) > 0 AND granted_scopes <@ requested_scopes),
   owner_principal_id text NOT NULL REFERENCES occ.iam_identities(id)
     ON UPDATE RESTRICT ON DELETE RESTRICT,
   connection_template_id text NOT NULL,
@@ -31,6 +49,8 @@ CREATE TABLE occ.connection_sessions (
   namespace_id text NOT NULL,
   credential_source_id text NOT NULL,
   private_state text NOT NULL,
+  selected_scopes text[] NOT NULL,
+  CONSTRAINT connection_sessions_selected_scopes_valid CHECK (cardinality(selected_scopes) BETWEEN 1 AND 32 AND array_position(selected_scopes,NULL) IS NULL),
   issuer_required boolean NOT NULL,
   session_id text NOT NULL,
   redirect_uri text NOT NULL,
@@ -64,8 +84,8 @@ WHERE revocation_requested_by IS NOT NULL;
 CREATE FUNCTION occ.guard_saved_connection_update() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
-  IF (to_jsonb(NEW) - ARRAY['revocation_requested_by','revoked_at']) IS DISTINCT FROM
-     (to_jsonb(OLD) - ARRAY['revocation_requested_by','revoked_at'])
+  IF NOT (NEW.granted_scopes <@ OLD.granted_scopes) OR (to_jsonb(NEW) - ARRAY['revocation_requested_by','revoked_at','granted_scopes']) IS DISTINCT FROM
+     (to_jsonb(OLD) - ARRAY['revocation_requested_by','revoked_at','granted_scopes'])
      OR (OLD.revocation_requested_by IS NOT NULL AND NEW.revocation_requested_by IS DISTINCT FROM OLD.revocation_requested_by)
      OR (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at)
      OR (OLD.revocation_requested_by IS NULL AND NEW.revoked_at IS NOT NULL) THEN
@@ -80,14 +100,14 @@ FOR EACH ROW EXECUTE FUNCTION occ.guard_saved_connection_update();
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION occ.guard_saved_connection_update() FROM PUBLIC;
 --> statement-breakpoint
-GRANT UPDATE (revocation_requested_by, revoked_at) ON occ.saved_connections TO occ_app;
+GRANT UPDATE (revocation_requested_by, revoked_at, granted_scopes) ON occ.saved_connections TO occ_app;
 --> statement-breakpoint
 -- Only the Token Service's opaque SecretDriver reference is stored in OCC.
 CREATE TABLE occ.connection_token_custody (
   namespace_id text NOT NULL,
   credential_source_id text NOT NULL,
   secret_ref jsonb NOT NULL,
-  published_version text,
+  scheduled_version text,
   next_refresh_at timestamptz,
   PRIMARY KEY (namespace_id, credential_source_id),
   CONSTRAINT connection_token_custody_source FOREIGN KEY (namespace_id, credential_source_id)
@@ -96,7 +116,7 @@ CREATE TABLE occ.connection_token_custody (
 --> statement-breakpoint
 CREATE INDEX connection_token_refresh_due ON occ.connection_token_custody(next_refresh_at) WHERE next_refresh_at IS NOT NULL;
 --> statement-breakpoint
-GRANT SELECT, INSERT, UPDATE (published_version, next_refresh_at) ON occ.connection_token_custody TO occ_app;
+GRANT SELECT, INSERT, UPDATE (scheduled_version, next_refresh_at) ON occ.connection_token_custody TO occ_app;
 --> statement-breakpoint
 CREATE FUNCTION occ.check_connection_template_use_scope() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$

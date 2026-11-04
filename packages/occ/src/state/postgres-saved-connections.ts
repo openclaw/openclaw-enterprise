@@ -30,6 +30,15 @@ function connectionFromRow(row: Row): Readonly<SavedConnection> {
     namespaceId: text(row, "namespace_id"),
     credentialSourceId: text(row, "credential_source_id"),
     ownerPrincipalId: text(row, "owner_principal_id"),
+    oauthClientId: text(row, "oauth_client_id"),
+    clientId: text(row, "client_id"),
+    tokenUrl: text(row, "token_url"),
+    ...(row.mcp_server_url == null ? {} : { mcpServerUrl: text(row, "mcp_server_url") }),
+    issuer: text(row, "issuer"),
+    recipient: row.recipient as SavedConnection["recipient"],
+    ...(row.resource == null ? {} : { resource: text(row, "resource") }),
+    requestedScopes: row.requested_scopes as string[],
+    grantedScopes: row.granted_scopes as string[],
     ...(row.revocation_requested_by === null
       ? {}
       : { revocationRequestedBy: text(row, "revocation_requested_by") }),
@@ -46,6 +55,7 @@ function sessionFromRow(row: Row): Readonly<ConnectionSession> {
     namespaceId: text(row, "namespace_id"),
     credentialSourceId: text(row, "credential_source_id"),
     privateState: text(row, "private_state"),
+    selectedScopes:row.selected_scopes as string[],
     issuerRequired: row.issuer_required === true,
     sessionId: text(row, "session_id"),
     redirectUri: text(row, "redirect_uri"),
@@ -66,7 +76,7 @@ export function postgresSavedConnections(
     findTokenCustody: async (namespaceId, sourceId) => {
       const [row] = (
         await client.query(
-          `SELECT secret_ref, published_version, next_refresh_at <= now() AS due
+          `SELECT secret_ref, scheduled_version, next_refresh_at <= now() AS due
            FROM occ.connection_token_custody WHERE namespace_id = $1 AND credential_source_id = $2`,
           [namespaceId, sourceId],
         )
@@ -89,9 +99,9 @@ export function postgresSavedConnections(
         sourceId,
         secret,
         due: record.due === true,
-        ...(record.published_version === null
+        ...(record.scheduled_version === null
           ? {}
-          : { publishedVersion: text(record, "published_version") }),
+          : { scheduledVersion: text(record, "scheduled_version") }),
       });
     },
     createTokenCustody: async (custody) => {
@@ -102,22 +112,28 @@ export function postgresSavedConnections(
       );
     },
     recordTokenSchedule: async (namespaceId, sourceId, schedule) => {
-      const published = typeof schedule === "object" ? schedule : undefined;
+      const timing = typeof schedule === "object" ? schedule : undefined;
       const result = await client.query(
         `UPDATE occ.connection_token_custody
-         SET published_version = COALESCE($3, published_version),
+         SET scheduled_version = COALESCE($3, scheduled_version),
              next_refresh_at = CASE WHEN $5 THEN now() ELSE $4::timestamptz END
          WHERE namespace_id = $1 AND credential_source_id = $2`,
         [
           namespaceId,
           sourceId,
-          published?.publishedVersion ?? null,
-          published?.nextRefreshAt ?? null,
+          timing?.scheduledVersion ?? null,
+          timing?.nextRefreshAt ?? null,
           schedule === "due",
         ],
       );
       if (!result.rowCount) {
         invalid();
+      }
+      if (timing) {
+        await client.query(
+          "UPDATE occ.saved_connections SET granted_scopes=$3 WHERE namespace_id=$1 AND credential_source_id=$2 AND granted_scopes IS DISTINCT FROM $3",
+          [namespaceId, sourceId, timing.grantedScopes],
+        );
       }
     },
     listDueConnectionTokens: async (installationId, limit, afterSourceId) =>
@@ -182,8 +198,9 @@ export function postgresSavedConnections(
       await client.query(
         `INSERT INTO occ.saved_connections
          (namespace_id, credential_source_id, owner_principal_id,
-          connection_template_id, connection_template_version, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+          connection_template_id, connection_template_version, created_at,
+          oauth_client_id,client_id,issuer,recipient,resource,requested_scopes,granted_scopes,token_url,mcp_server_url)
+         VALUES ($1, $2, $3, $4, $5, $6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)`,
         [
           connection.namespaceId,
           connection.credentialSourceId,
@@ -191,6 +208,15 @@ export function postgresSavedConnections(
           connection.connectionTemplateId,
           connection.connectionTemplateVersion,
           connection.createdAt,
+          connection.oauthClientId,
+          connection.clientId,
+          connection.issuer,
+          JSON.stringify(connection.recipient),
+          connection.resource ?? null,
+          connection.requestedScopes,
+          connection.grantedScopes,
+          connection.tokenUrl,
+          connection.mcpServerUrl ?? null,
         ],
       );
       return immutableCopy(connection);
@@ -207,8 +233,8 @@ export function postgresSavedConnections(
       await client.query(
         `INSERT INTO occ.connection_sessions
          (state_hash, namespace_id, credential_source_id, private_state, actor_id,
-          session_id, redirect_uri, connection_template_id, connection_template_version, created_at, expires_at, issuer_required)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          session_id, redirect_uri, connection_template_id, connection_template_version, created_at, expires_at, issuer_required,selected_scopes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,$13)`,
         [
           session.stateHash,
           session.namespaceId,
@@ -222,6 +248,7 @@ export function postgresSavedConnections(
           session.createdAt,
           session.expiresAt,
           session.issuerRequired,
+          session.selectedScopes,
         ],
       );
       return immutableCopy(session);

@@ -151,34 +151,27 @@ Stores the scope and current version of each OAuth connection template.
 
 ### `connection_template_versions`
 
-Pins the provider, approved access and client registration for each version.
+Pins the approved OAuth configuration and access to its API recipient. A discovered version also retains the MCP metadata observed when the administrator saved it.
 
-- `template_id`
-- `version`
-- `client_registration_id`
-- `issuer`
-- `client_id`
-- `authorization_url`
-- `token_url`
-- `scopes`
-- `authorization_parameters`
-- `endpoint_host`
-- `endpoint_port`
-- `endpoint_path`
-- `endpoint_access`
-- `env_var`
+- `template_id`, `version`, `oauth_client_id`, `mode`
+- `issuer`, `authorization_url`, `token_url`, `revocation_url`
+- `scopes`, `authorization_parameters`, `observed_metadata`
+- `endpoint_host`, `endpoint_port`, `endpoint_path`, `endpoint_access`
 - `created_at`
 
-### `connection_client_registrations`
+### `oauth_clients`
 
-Identifies the Refresh Driver registration for a client in one scope.
+Identifies an independently managed OAuth client and its approved credential destinations. Confidential clients point to a private Refresh Driver handle.
 
-- `id`
-- `namespace_id`
-- `issuer`
-- `client_id`
-- `credential_refresh_driver_id`
-- `created_at`
+- `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
+- `token_url`, `revocation_url`, `token_endpoint_auth_method`
+- `credential_refresh_driver_id`, `secret_registration_id`, `created_at`
+
+### `retired_oauth_client_secrets`
+
+Queues removal of abandoned secret generations and private handles superseded by rotation or deletion.
+
+- `id`, `issuer`, `client_id`, `credential_refresh_driver_id`, `retry_at`
 
 ### `saved_connections`
 
@@ -187,6 +180,9 @@ Records the Namespace, consenting principal, approved template version and revoc
 - `namespace_id`
 - `credential_source_id`
 - `owner_principal_id`
+- `oauth_client_id`, `client_id`, `issuer`, `token_url`
+- `recipient`, `mcp_server_url`, `resource`
+- `requested_scopes`, `granted_scopes`
 - `connection_template_id`
 - `connection_template_version`
 - `created_at`
@@ -201,6 +197,7 @@ Stores the private, single-use OAuth attempt for the initiating principal and br
 - `namespace_id`
 - `credential_source_id`
 - `private_state`
+- `selected_scopes`
 - `issuer_required`
 - `session_id`
 - `redirect_uri`
@@ -217,7 +214,7 @@ Tracks the Token Service secret reference, the published access token version an
 - `namespace_id`
 - `credential_source_id`
 - `secret_ref`
-- `published_version`
+- `scheduled_version`
 - `next_refresh_at`
 
 ### `credential_sources`
@@ -230,7 +227,7 @@ Records which Credential Gateway or Credential Proxy admitted each source. The c
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway` or `credential_proxy`)
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `credential_refresh` for a saved account)
 - `driver_id`
 - `state`
 - `created_at`

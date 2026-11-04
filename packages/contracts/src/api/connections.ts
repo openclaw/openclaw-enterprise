@@ -3,7 +3,7 @@ import { CredentialSourceId, Meta, NamespaceId } from "./common.ts";
 import { ConnectionTemplateId } from "./connection-templates.ts";
 
 export const StartNamespaceConnectionBody = Type.Object(
-  { connectionTemplateId: ConnectionTemplateId },
+  { connectionTemplateId: ConnectionTemplateId, selectedScopes:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:256}),{minItems:1,maxItems:32,uniqueItems:true})) },
   { additionalProperties: false },
 );
 
@@ -27,6 +27,23 @@ const SavedConnectionSchema = Type.Object(
     namespaceId: NamespaceId,
     credentialSourceId: CredentialSourceId,
     ownerPrincipalId: Type.String(),
+    tokenUrl: Type.String(),
+    mcpServerUrl: Type.Optional(Type.String()),
+    oauthClientId: Type.String(),
+    clientId: Type.String(),
+    issuer: Type.String(),
+    recipient: Type.Object(
+      {
+        host: Type.String(),
+        port: Type.Integer({ minimum: 1, maximum: 65535 }),
+        path: Type.String(),
+        access: Type.Union([Type.Literal("read-only"), Type.Literal("full")]),
+      },
+      { additionalProperties: false },
+    ),
+    resource: Type.Optional(Type.String()),
+    requestedScopes: Type.Array(Type.String()),
+    grantedScopes: Type.Array(Type.String()),
     connectionTemplateId: ConnectionTemplateId,
     connectionTemplateVersion: Type.Integer({ minimum: 1 }),
     createdAt: Type.String(),

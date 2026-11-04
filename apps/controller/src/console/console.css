@@ -360,6 +360,18 @@ p {
      400 ms (finding 1519). Visibility, not opacity: it appears whole, never half-faded. */
   animation: loading-delay 400ms;
 }
+#app > p.startup[role="status"]:has(+ .startup-recovery > button:not([hidden])) {
+  padding-block-end: var(--space-4);
+}
+#app > .startup-recovery {
+  padding: 0 var(--space-8) var(--space-8);
+  color: var(--muted);
+  text-align: center;
+  animation: loading-delay 400ms;
+}
+#app > .startup-recovery > button {
+  margin-bottom: var(--space-4);
+}
 /* A page held on screen, inert, while a navigation's reads run. Past 300 ms it dims and shows
    a progress cursor, so a slow return does not look stuck; opacity and cursor only, so nothing
    moves (finding 1447). A refocus recheck does not set .holding and keeps its look. */
@@ -3198,6 +3210,30 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
+}
+.connection-template-dialog {
+  width: min(46rem, calc(100% - 2 * var(--space-4)));
+}
+.connection-template-fields {
+  min-inline-size: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.connection-template-fields legend {
+  font-weight: 600;
+  margin-block-start: var(--space-4);
+}
+.connection-template-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  border-block-start: 1px solid var(--color-border);
+}
+.connection-template-row > button {
+  margin-inline-start: auto;
 }
 .dialog--drawer {
   --dialog-open-from: translateX(var(--space-6));

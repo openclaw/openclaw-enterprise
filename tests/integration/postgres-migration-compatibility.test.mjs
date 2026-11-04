@@ -2031,33 +2031,33 @@ test(
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
         if (history === "preConnectionTemplates") {
-          // A Namespace's template cannot present another scope's client credentials,
+          // An Installation-wide template cannot present a Namespace client's credentials,
           // even when an application-role writer bypasses OCC.
           const templateId = `ctp_${randomUUID()}`;
           const registrationId = `ccr_${randomUUID()}`;
           await db.app.query("BEGIN");
           try {
             await db.app.query(
-              `INSERT INTO occ.connection_client_registrations
-                 (id, issuer, client_id, credential_refresh_driver_id, created_at)
-               VALUES ($1, 'https://issuer.example.test', 'shared-client', 'refresh', now())`,
-              [registrationId],
+              `INSERT INTO occ.oauth_clients
+                 (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,credential_refresh_driver_id,created_at)
+               VALUES ($1,$2,'Namespace client','https://issuer.example.test','shared-client','https://issuer.example.test/token','none','refresh',now())`,
+              [registrationId, namespaceId],
             );
             await db.app.query(
               `INSERT INTO occ.connection_templates
                  (id, namespace_id, display_name, current_version, created_at)
-               VALUES ($1, $2, 'Namespace client', 1, now())`,
-              [templateId, namespaceId],
+               VALUES ($1, NULL, 'Installation template', 1, now())`,
+              [templateId],
             );
             await assert.rejects(
               db.app.query(
                 `INSERT INTO occ.connection_template_versions
-                   (template_id, version, client_registration_id, issuer, client_id, authorization_url,
+                   (template_id, version, oauth_client_id, issuer, mode, authorization_url,
                     token_url, scopes, authorization_parameters, endpoint_host, endpoint_port,
-                    endpoint_path, endpoint_access, env_var, created_at)
-                 VALUES ($1, 1, $2, 'https://issuer.example.test', 'shared-client',
+                    endpoint_path, endpoint_access, created_at)
+                 VALUES ($1, 1, $2, 'https://issuer.example.test', 'manual',
                     'https://issuer.example.test/auth', 'https://issuer.example.test/token',
-                    ARRAY['read'], '{}', 'api.example.test', 443, '/', 'full', 'TOKEN', now())`,
+                    ARRAY['read'], '{}', 'api.example.test', 443, '/', 'full', now())`,
                 [templateId, registrationId],
               ),
               { code: "23514", message: /registration must belong to the template scope/ },

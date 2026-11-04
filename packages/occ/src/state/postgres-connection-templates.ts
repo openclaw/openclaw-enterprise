@@ -1,6 +1,6 @@
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
-  ConnectionClientRegistration,
+  OAuthClient,
   ConnectionTemplate,
   ConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
@@ -10,9 +10,9 @@ import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 type Row = Record<string, unknown>;
 
-const versionColumns = `v.template_id, v.version, v.client_registration_id, v.issuer, v.client_id,
+const versionColumns = `v.template_id, v.version, v.oauth_client_id, v.issuer, v.mode, v.observed_metadata, v.revocation_url,
   v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.endpoint_host,
-  v.endpoint_port, v.endpoint_path, v.endpoint_access, v.env_var, v.created_at AS version_created_at`;
+  v.endpoint_port, v.endpoint_path, v.endpoint_access, v.created_at AS version_created_at`;
 
 function invalid(): never {
   throw new DependencyUnavailableError("Persisted connection template state is invalid.");
@@ -51,20 +51,29 @@ function versionFromRow(row: Row): ConnectionTemplateVersion {
   return {
     templateId: text(row, "template_id"),
     version: integer(row, "version"),
-    clientRegistrationId: text(row, "client_registration_id"),
+    ...(row.oauth_client_id === null ? {} : { oauthClientId: text(row, "oauth_client_id") }),
+    mode: row.mode === "manual" || row.mode === "mcp_discovery" ? row.mode : invalid(),
+    ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
+    ...(row.observed_metadata === null
+      ? {}
+      : {
+          observed: row.observed_metadata as NonNullable<ConnectionTemplateVersion["observed"]>,
+          mcp: {
+            serverUrl: text(row.observed_metadata as Row, "serverUrl"),
+            resource: text(row.observed_metadata as Row, "resource"),
+          },
+        }),
     issuer: text(row, "issuer"),
-    clientId: text(row, "client_id"),
     authorizationUrl: text(row, "authorization_url"),
     tokenUrl: text(row, "token_url"),
     scopes,
     authorizationParameters: parameters as Record<string, string>,
-    endpoint: {
+    recipient: {
       host: text(row, "endpoint_host"),
       port: integer(row, "endpoint_port"),
       path: text(row, "endpoint_path"),
       access,
     },
-    envVar: text(row, "env_var"),
     createdAt: timestamp(row, "version_created_at"),
   };
 }
@@ -79,12 +88,20 @@ function templateFromRow(row: Row): Readonly<ConnectionTemplate> {
   });
 }
 
-function registrationFromRow(row: Row): Readonly<ConnectionClientRegistration> {
+function registrationFromRow(row: Row): Readonly<OAuthClient> {
   return immutableCopy({
     id: text(row, "id"),
     ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
     issuer: text(row, "issuer"),
     clientId: text(row, "client_id"),
+    displayName: text(row, "display_name"),
+    ...(row.secret_registration_id === null
+      ? {}
+      : { secretRegistrationId: text(row, "secret_registration_id") }),
+    tokenUrl: text(row, "token_url"),
+    ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
+    tokenEndpointAuthMethod:
+      row.token_endpoint_auth_method as OAuthClient["tokenEndpointAuthMethod"],
     credentialRefreshDriverId: text(row, "credential_refresh_driver_id"),
     createdAt: timestamp(row, "created_at"),
   });
@@ -96,25 +113,25 @@ async function insertVersion(
 ): Promise<void> {
   await client.query(
     `INSERT INTO occ.connection_template_versions
-     (template_id, version, client_registration_id, issuer, client_id, authorization_url,
-      token_url, scopes, authorization_parameters, endpoint_host, endpoint_port, endpoint_path,
-      endpoint_access, env_var, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9::jsonb, $10, $11, $12, $13, $14, $15)`,
+     (template_id, version, oauth_client_id, issuer, mode, authorization_url, token_url, revocation_url, scopes,
+      authorization_parameters, endpoint_host, endpoint_port, endpoint_path, endpoint_access, observed_metadata, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [
       version.templateId,
       version.version,
-      version.clientRegistrationId,
+      version.oauthClientId ?? null,
       version.issuer,
-      version.clientId,
+      version.mode,
       version.authorizationUrl,
       version.tokenUrl,
+      version.revocationUrl ?? null,
       version.scopes,
       JSON.stringify(version.authorizationParameters),
-      version.endpoint.host,
-      version.endpoint.port,
-      version.endpoint.path,
-      version.endpoint.access,
-      version.envVar,
+      version.recipient.host,
+      version.recipient.port,
+      version.recipient.path,
+      version.recipient.access,
+      version.observed ?? null,
       version.createdAt,
     ],
   );
@@ -152,7 +169,7 @@ export function postgresConnectionTemplates(
     hasOtherConnectionIssuer: async (issuer) =>
       (
         await client.query(
-          "SELECT 1 FROM occ.connection_client_registrations WHERE issuer <> $1 LIMIT 1",
+          "SELECT 1 FROM occ.connection_template_versions WHERE issuer <> $1 LIMIT 1",
           [issuer],
         )
       ).rows.length > 0,
@@ -167,23 +184,73 @@ export function postgresConnectionTemplates(
       ).rows;
       return row === undefined ? undefined : immutableCopy(versionFromRow(row as Row));
     },
-    findClientRegistration: async (issuer, clientId, namespaceId) => {
+    listOAuthClients: async () =>
+      Object.freeze(
+        (await client.query("SELECT * FROM occ.oauth_clients ORDER BY id", [])).rows.map((row) =>
+          registrationFromRow(row as Row),
+        ),
+      ),
+    countNamespaceOAuthClients: async (namespaceId) =>
+      integer(
+        (
+          await client.query("SELECT count(*) AS n FROM occ.oauth_clients WHERE namespace_id=$1", [
+            namespaceId,
+          ])
+        ).rows[0] as Row,
+        "n",
+      ),
+    findOAuthClient: async (registrationId) => {
       const [row] = (
-        await client.query(
-          `SELECT * FROM occ.connection_client_registrations WHERE issuer = $1 AND client_id = $2
-             AND namespace_id IS NOT DISTINCT FROM $3`,
-          [issuer, clientId, namespaceId ?? null],
-        )
+        await client.query(`SELECT * FROM occ.oauth_clients WHERE id = $1`, [registrationId])
       ).rows;
       return row === undefined ? undefined : registrationFromRow(row as Row);
     },
-    findClientRegistrationById: async (registrationId) => {
+    lockOAuthClient: async (id) => {
       const [row] = (
-        await client.query(`SELECT * FROM occ.connection_client_registrations WHERE id = $1`, [
-          registrationId,
-        ])
+        await client.query("SELECT * FROM occ.oauth_clients WHERE id=$1 FOR UPDATE", [id])
       ).rows;
       return row === undefined ? undefined : registrationFromRow(row as Row);
+    },
+    setOAuthClientSecret: async (id, handle) => {
+      await client.query("UPDATE occ.oauth_clients SET secret_registration_id=$2 WHERE id=$1", [
+        id,
+        handle,
+      ]);
+    },
+    listRetiredOAuthClientSecrets: async (limit) =>
+      (
+        await client.query(
+          "SELECT * FROM occ.retired_oauth_client_secrets WHERE retry_at <= now() ORDER BY retry_at,id LIMIT $1",
+          [limit],
+        )
+      ).rows.map((row) => ({
+        id: text(row as Row, "id"),
+        issuer: text(row as Row, "issuer"),
+        clientId: text(row as Row, "client_id"),
+        credentialRefreshDriverId: text(row as Row, "credential_refresh_driver_id"),
+      })),
+    queueOAuthClientSecretCleanup: async (ref, phase) => {
+      await client.query(
+        `INSERT INTO occ.retired_oauth_client_secrets(id,issuer,client_id,credential_refresh_driver_id,retry_at)
+         VALUES ($1,$2,$3,$4,CASE WHEN $5='staging' THEN now()+interval '5 minutes' ELSE now() END)`,
+        [ref.id, ref.issuer, ref.clientId, ref.credentialRefreshDriverId, phase],
+      );
+    },
+    lockOAuthClientSecretCleanup: async (id, dueOnly) =>
+      (
+        await client.query(
+          `SELECT id FROM occ.retired_oauth_client_secrets WHERE id=$1 AND (NOT $2::boolean OR retry_at <= now()) FOR UPDATE SKIP LOCKED`,
+          [id, dueOnly],
+        )
+      ).rowCount === 1,
+    deferRetiredOAuthClientSecret: async (id) => {
+      await client.query(
+        "UPDATE occ.retired_oauth_client_secrets SET retry_at=now()+INTERVAL '1 minute' WHERE id=$1",
+        [id],
+      );
+    },
+    forgetRetiredOAuthClientSecret: async (id) => {
+      await client.query("DELETE FROM occ.retired_oauth_client_secrets WHERE id=$1", [id]);
     },
     lockConnectionTemplate: async (templateId) => {
       await client.query("SELECT id FROM occ.connection_templates WHERE id = $1 FOR UPDATE", [
@@ -192,12 +259,12 @@ export function postgresConnectionTemplates(
       // A concurrent editor may have committed a new current version while we waited.
       return (await selectTemplates("WHERE t.id = $1", [templateId]))[0];
     },
-    createClientRegistration: async (registration) => {
+    createOAuthClient: async (registration) => {
       await requireInitialized();
       await client.query(
-        `INSERT INTO occ.connection_client_registrations
-         (id, namespace_id, issuer, client_id, credential_refresh_driver_id, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO occ.oauth_clients
+         (id, namespace_id, issuer, client_id, credential_refresh_driver_id, created_at, display_name, token_url, revocation_url, token_endpoint_auth_method, secret_registration_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           registration.id,
           registration.namespaceId ?? null,
@@ -205,22 +272,27 @@ export function postgresConnectionTemplates(
           registration.clientId,
           registration.credentialRefreshDriverId,
           registration.createdAt,
+          registration.displayName,
+          registration.tokenUrl,
+          registration.revocationUrl ?? null,
+          registration.tokenEndpointAuthMethod,
+          registration.secretRegistrationId ?? null,
         ],
       );
       return immutableCopy(registration);
     },
-    deleteClientRegistration: async (registrationId) => {
+    deleteOAuthClient: async (registrationId) => {
       // Concurrent deletions of templates sharing a client must check the last reference
       // one at a time. A separate statement sees commits made while the lock was pending.
       await client.query(
         "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
-        [`occ.connection_client_registrations:${registrationId}`],
+        [`occ.oauth_clients:${registrationId}`],
       );
       const deleted = await client.query(
-        `DELETE FROM occ.connection_client_registrations r WHERE r.id = $1
+        `DELETE FROM occ.oauth_clients r WHERE r.id = $1
          AND NOT EXISTS (
            SELECT 1 FROM occ.connection_template_versions v
-           WHERE v.client_registration_id = r.id
+           WHERE v.oauth_client_id = r.id
          )`,
         [registrationId],
       );

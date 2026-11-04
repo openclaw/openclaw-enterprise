@@ -40,9 +40,11 @@ const CONSOLE_ASSETS = new Map([
     ],
     "image/vnd.microsoft.icon": ["favicon.ico"],
     "text/javascript; charset=utf-8": [
+      "startup-recovery.mts",
       "api-client.mts",
       "sign-in-presentation.mts",
       "configuration-fields.mts",
+      "connection-templates.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",
       "request-turns.mts",

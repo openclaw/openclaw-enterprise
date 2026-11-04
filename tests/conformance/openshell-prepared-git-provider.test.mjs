@@ -39,6 +39,16 @@ async function wire(t) {
     "utf8",
   );
   proto = proto.replace(
+    "service OpenShell {",
+    `service OpenShell {
+    rpc GetProvider(GetProviderRequest) returns (ProviderResponse);
+    rpc GetProviderProfile(GetProviderProfileRequest) returns (ProviderProfileResponse);`,
+  );
+  proto = proto.replace(
+    "  string path_template = 9;",
+    "  string path_template = 9;\n  bool stable_placeholder = 12;",
+  );
+  proto = proto.replace(
     "  PROVIDER_MUTATION_KIND_UPDATE = 3;",
     "  PROVIDER_MUTATION_KIND_UPDATE = 3;\n  PROVIDER_MUTATION_KIND_OBSERVE = 4;",
   );
@@ -77,6 +87,9 @@ async function wire(t) {
       int32 outcome = 6;
       google.protobuf.Timestamp completed_time = 110;
     }
+    message GetProviderRequest { string name = 1; WorkspaceSelector workspace_scope = 2; }
+    message GetProviderProfileRequest { string id = 1; WorkspaceSelector workspace_scope = 2; }
+    message ProviderProfileResponse { ProviderProfile profile = 1; }
     message ProviderDesiredIdentity {
       string sandbox_id = 1;
       string sandbox = 2;

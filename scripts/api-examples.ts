@@ -179,29 +179,48 @@ const authAccount = {
 const sessionKey = "example-session-binding-not-a-credential";
 
 const connectionTemplateId = id("ctp");
-const connectionTemplateInput = {
-  displayName: "Example account",
+const oauthClientId = id("ccr");
+const oauthClientInput = {
+  displayName: "Example provider client",
   issuer: "https://accounts.example.com",
-  authorizationUrl: "https://accounts.example.com/authorize",
   tokenUrl: "https://accounts.example.com/token",
   clientId: "example-client",
-  scopes: ["profile.read"],
-  envVar: "EXAMPLE_ACCESS_TOKEN",
-  endpoint: { host: "api.example.com", port: 443, path: "/profile", access: "full" },
+  tokenEndpointAuthMethod: "client_secret_basic",
 };
-const { displayName, ...approvedValues } = connectionTemplateInput;
+const oauthClient = { ...oauthClientInput, id: oauthClientId, createdAt: time };
+const connectionTemplateInput = {
+  mode: "manual",
+  issuer: oauthClient.issuer,
+  authorizationUrl: "https://accounts.example.com/authorize",
+  tokenUrl: oauthClient.tokenUrl,
+  oauthClientId,
+  scopes: ["profile.read"],
+  recipient: { host: "api.example.com", port: 443, path: "/profile", access: "read-only" },
+};
 const connectionTemplate = {
   id: connectionTemplateId,
   namespaceId,
-  displayName,
+  displayName: "Example account",
   createdAt: time,
   current: {
-    ...approvedValues,
+    ...connectionTemplateInput,
+    templateId: connectionTemplateId,
     authorizationParameters: {},
     version: 1,
-    clientRegistrationId: id("cr"),
     createdAt: time,
   },
+};
+const mcpServerUrl = "https://tools.example.com/mcp";
+const discovered = {
+  serverUrl: mcpServerUrl,
+  resource: mcpServerUrl,
+  issuers: [oauthClient.issuer],
+  issuer: oauthClient.issuer,
+  authorizationUrl: connectionTemplateInput.authorizationUrl,
+  tokenUrl: oauthClient.tokenUrl,
+  requestedScopes: ["profile.read"],
+  resourceScopes: ["profile.read"],
+  tokenEndpointAuthMethods: ["client_secret_basic"],
 };
 
 const savedAccount = {
@@ -214,6 +233,7 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  oauthClientId,
   connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
@@ -261,10 +281,12 @@ export const requestExamples = {
   createConnectionTemplate: {
     ...connectionTemplateInput,
     namespaceId,
-    clientSecret: "example-client-secret",
+    displayName: connectionTemplate.displayName,
   },
   updateConnectionTemplate: { displayName: "Engineering account" },
-  rotateConnectionClientSecret: { clientSecret: "replacement-example-client-secret" },
+  discoverConnectionTemplate: { serverUrl: mcpServerUrl },
+  createOAuthClient: { ...oauthClientInput, clientSecret: "example-client-secret" },
+  rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
   deployAgentFirst: {
     key: "review-1",
     expectedConfigurationId: configurationId,
@@ -378,7 +400,10 @@ export const responseExamples = {
   getConnectionTemplate: connectionTemplate,
   createConnectionTemplate: connectionTemplate,
   updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
-  rotateConnectionClientSecret: connectionTemplate,
+  discoverConnectionTemplate: discovered,
+  listOAuthClients: [oauthClient],
+  createOAuthClient: oauthClient,
+  rotateOAuthClientSecret: oauthClient,
   getInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   bootstrapInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   getInstallationDeploymentInventory: {

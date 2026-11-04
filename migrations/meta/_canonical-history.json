@@ -536,7 +536,7 @@
       "when": 1787000000067,
       "tag": "0067_connection_templates",
       "breakpoints": true,
-      "sha256": "3ee13ab5fae9ac1a0aa71291bf51453af288b8c4113040caebfcdea0a89ae933"
+      "sha256": "7401add46e5fcdd8fb290d7ee311abad800bc096eb45fe92fe608dca3ae1a34a"
     },
     {
       "idx": 68,
@@ -544,7 +544,7 @@
       "when": 1787000000068,
       "tag": "0068_saved_connections",
       "breakpoints": true,
-      "sha256": "6e18525b07a0b438e233ca0b9f8b478575712cba388944c442c17e02674e00d1"
+      "sha256": "9b2b0cccf03d5e5ac5f099401ac416246e29c71b5dfa5769faec67c19103c7bf"
     }
   ],
   "initialSchemaStates": {
@@ -558,8 +558,18 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        ["occ_migrator", "occ_migrator", "CREATE", false],
-        ["occ_migrator", "occ_migrator", "USAGE", false]
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "CREATE",
+          false
+        ],
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "USAGE",
+          false
+        ]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -585,13 +595,13 @@
       "e4f1ce2a27d8561664fd107679c962b7c67060c658869bf3faa3fc47ce384a0b",
       "048eb30e1c7db94dde5c3ab7731b940b9acbfbed0b41dd20cfc705aebf2850ae"
     ],
-    "3b0c1da17b3ca00df3d8537e3d87d50bf47c24eb2f8067fe98f7866351fd8020": [
-      "3037f1fb4cfb0afe3ae3dc0fe44f58574491bbd601ac4170346a81ba1d6ccc3c",
-      "47074a4f73a8c8aedb317965127741a2355cde05aa56613e65978767e9b13559"
+    "3cc94acc303811c722c79d18d3db1907175fcc9825bcc161b1ae29c764d805c5": [
+      "0f474f56911e2bc168f041d3d4195e5d991e65d45632fbcca47783d8b9aa3002",
+      "2da67e4f9eb4d804b5eb6efede8e13d1c37bc170d70a0fa3eff2a85258d80760"
     ],
-    "b935a041b9bd5279da454e3607c096de20dc1d61dfc26590fd5e4475210ae751": [
-      "0e5e3ba903abd852b700cc34e6a3288fb4b33dcf58190b652607a72f5a4c7bac",
-      "dcb912da82cb775dcbab536191e88d22abf6fd043e47dd5cd96e5aed874ecb88"
+    "d65098d94d97fc2d51f14b1ba08cb0ee9d15419f2d5d81ef6eb76378d6dcc3c2": [
+      "13cece7fc38b9576acf590946c33e647953a13cd9e7309ef14983ead6a7e8e19",
+      "2c29be9e6c9e491aa386d6b128442f88841fd441685f8e41fa2b3d49cc60f217"
     ]
   },
   "catalogs": {
@@ -600,7 +610,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "b935a041b9bd5279da454e3607c096de20dc1d61dfc26590fd5e4475210ae751",
+    "completed": "3cc94acc303811c722c79d18d3db1907175fcc9825bcc161b1ae29c764d805c5",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -638,7 +648,7 @@
     "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
     "preAgentDeployIntent": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40",
     "preConnectionTemplates": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998",
-    "preSavedConnections": "3b0c1da17b3ca00df3d8537e3d87d50bf47c24eb2f8067fe98f7866351fd8020"
+    "preSavedConnections": "d65098d94d97fc2d51f14b1ba08cb0ee9d15419f2d5d81ef6eb76378d6dcc3c2"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

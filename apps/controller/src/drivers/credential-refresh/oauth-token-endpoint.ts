@@ -39,13 +39,42 @@ export async function requestOAuthTokens(
   tokenUrl: string,
   parameters: URLSearchParams,
   requestedScope: string,
+  client: Pick<OAuthConnectionGrant, "clientId" | "tokenEndpointAuthMethod" | "resource">,
+  clientSecret: string | undefined,
   signal: AbortSignal,
 ) {
+  const headers = new Headers({
+    "Content-Type": "application/x-www-form-urlencoded",
+    Accept: "application/json",
+  });
+  if (client.tokenEndpointAuthMethod === "client_secret_basic") {
+    if (!clientSecret) {
+      throw new BrowserAuthorizationError("client_refused", "fix_configuration");
+    }
+    // RFC 6749 section 2.3.1 encodes both components before constructing the Basic value.
+    const encode = (value: string) => new URLSearchParams([["", value]]).toString().slice(1);
+    headers.set(
+      "authorization",
+      "Basic " +
+        Buffer.from(encode(client.clientId) + ":" + encode(clientSecret)).toString("base64"),
+    );
+  } else {
+    parameters.set("client_id", client.clientId);
+    if (client.tokenEndpointAuthMethod === "client_secret_post") {
+      if (!clientSecret) {
+        throw new BrowserAuthorizationError("client_refused", "fix_configuration");
+      }
+      parameters.set("client_secret", clientSecret);
+    }
+  }
+  if (client.resource !== undefined) {
+    parameters.set("resource", client.resource);
+  }
   const startedAt = Date.now();
   const response = await fetch(tokenUrl, {
     method: "POST",
     redirect: "error",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    headers,
     body: parameters,
     signal: AbortSignal.any([signal, AbortSignal.timeout(OAUTH_EXCHANGE_TIMEOUT_MS)]),
   });
@@ -103,7 +132,13 @@ export async function requestOAuthTokens(
 export function refreshPinnedOAuthGrant(
   grant: Pick<
     OAuthConnectionGrant,
-    "tokenUrl" | "refreshToken" | "clientId" | "clientSecret" | "scope"
+    | "tokenUrl"
+    | "refreshToken"
+    | "clientId"
+    | "clientSecret"
+    | "tokenEndpointAuthMethod"
+    | "resource"
+    | "scope"
   >,
   signal: AbortSignal,
 ) {
@@ -112,11 +147,12 @@ export function refreshPinnedOAuthGrant(
     new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: grant.refreshToken,
-      client_id: grant.clientId,
-      client_secret: grant.clientSecret,
+
       scope: grant.scope,
     }),
     grant.scope,
+    grant,
+    grant.clientSecret,
     signal,
   );
 }

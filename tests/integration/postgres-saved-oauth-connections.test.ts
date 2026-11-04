@@ -103,6 +103,8 @@ test(
     const preparedTokens = new TokenService(
       new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
     );
+    const serverUrl="https://api.connections.test/mcp";
+    const tokenUrl=`${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
     let skew = 0;
     const { app, controller, state, principal, computeDriver, inject, pool, adminAccount } =
       await createPostgresAgentApp(t, {
@@ -111,6 +113,10 @@ test(
         secretDriver,
         controllerOptions: { preparedTokens, now: () => new Date(Date.now() + skew) },
         appOptions: {
+          // Discovery metadata is controlled; authorization, consent and token exchange reach Keycloak.
+          discoverMcpAuthorization:async()=>({serverUrl,resource:serverUrl,issuers:[issuer],issuer,
+            authorizationUrl:`${issuer}/protocol/openid-connect/auth`,tokenUrl,requestedScopes:["openid"],
+            resourceScopes:["openid","profile"],supportedScopes:["openid","profile"],tokenEndpointAuthMethods:["client_secret_basic","client_secret_post"]}),
           publicOrigin,
           provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
         },
@@ -139,7 +145,7 @@ test(
         name: `oce-${namespace.id.slice(3, 11)}`,
       }),
     });
-    const { providers } = selectTemplateDrivers(controller);
+    const { providers } = selectTemplateDrivers(controller, { selectGateway: false });
     const makeNamespace = async () => {
       const result = await inject("POST", "/namespaces", { name: `Accounts ${randomUUID()}` });
       assert.equal(result.statusCode, 201, result.body);
@@ -151,20 +157,42 @@ test(
     const otherId = await makeNamespace();
     const base = `/namespaces/${namespaceId}`;
     const connections = `${base}/connections`;
-    const template = await inject("POST", "/connection-templates", {
-      displayName: "Keycloak",
+    const recipient = { host: "api.connections.test", port: 443, path: "/mcp", access: "full" };
+    const registered = await inject("POST", "/oauth-clients", {
+      displayName: "Saved accounts",
       namespaceId,
+      issuer,
+      tokenUrl,
       clientId,
       clientSecret,
+      revocationUrl:`${issuer}/protocol/openid-connect/revoke`,
+      tokenEndpointAuthMethod: "client_secret_basic",
+    });
+    assert.equal(registered.statusCode, 201, registered.body);
+    const oauthClientId = registered.json().data.id;
+    const template = await inject("POST", "/connection-templates", {
+      mode: "manual",
+      displayName: "Keycloak",
+      namespaceId,
       issuer,
       authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
-      tokenUrl: `${tokenOrigin}/realms/oce/protocol/openid-connect/token`,
+      tokenUrl,
+      oauthClientId,
       scopes: ["openid"],
-      envVar: "CONNECTION_TOKEN",
-      endpoint: { host: "api.connections.test", port: 443, path: "/**" },
+      recipient,
     });
     assert.equal(template.statusCode, 201, template.body);
-    const input = { connectionTemplateId: template.json().data.id };
+    const manual={connectionTemplateId:template.json().data.id};
+    // The client also permits revocation, but this version uses only its token endpoint.
+    const manualStart=await inject("POST",connections,manual);
+    assert.equal(manualStart.statusCode,201,manualStart.body);
+    const mcp=await inject("POST","/connection-templates",{displayName:"Scope selection",namespaceId,mode:"mcp_discovery",issuer,serverUrl,scopes:["openid","profile"],oauthClientId});
+    assert.equal(mcp.statusCode,201,mcp.body);
+    const input={connectionTemplateId:mcp.json().data.id,selectedScopes:["openid"]};
+    for(const selectedScopes of [undefined,["profile"],["openid","other"]]){
+      const refused=await inject("POST",connections,{connectionTemplateId:input.connectionTemplateId,...(selectedScopes && {selectedScopes})});
+      assert.equal(refused.statusCode,400,refused.body);
+    }
     // Even an Installation administrator cannot use a Namespace-scoped template elsewhere.
     const wrongScope = await inject("POST", `/namespaces/${otherId}/connections`, input);
     assert.equal(wrongScope.statusCode, 404, wrongScope.body);
@@ -201,6 +229,7 @@ test(
     async function begin() {
       const response = await owner("POST", connections, input);
       assert.equal(response.statusCode, 201, response.body);
+      assert.equal(new URL(response.json().data.authorizationUrl).searchParams.get("scope"),"openid");
       return {
         id: response.json().data.credentialSourceId as string,
         callback: await consentRedirect(
@@ -258,22 +287,52 @@ test(
     assert.equal(custody.rowCount, 1);
     const privateRef = custody.rows[0].secret_ref;
     assert.ok(secretDriver.has(privateRef));
-    const sender = [...providers.values()].find((value) => value.name.startsWith("oce-cs-"));
-    assert.ok(sender);
-    assert.deepEqual(Object.keys(sender.credentials), ["CONNECTION_TOKEN"]);
+    const account = accounts.json().data[0];
+    assert.deepEqual(
+      [
+        account.oauthClientId,
+        account.clientId,
+        account.issuer,
+        account.tokenUrl,
+        account.recipient,
+        account.requestedScopes,
+        account.grantedScopes,
+      ],
+      [oauthClientId, clientId, issuer, tokenUrl, recipient, ["openid"], ["openid"]],
+    );
+    // The trusted Token Service consumer can use the grant. Saving/rotating alone creates no sender.
+    async function prepared() {
+      const custody = await state.read((view) =>
+        view.savedConnections.findTokenCustody(namespaceId, id),
+      );
+      assert.ok(custody);
+      const token = await preparedTokens.oauthConnections!.warm(
+        custody,
+        new AbortController().signal,
+      );
+      assert.ok(token);
+      return token.accessToken;
+    }
+    const hasSender = () =>
+      [...providers.values()].some((provider) => provider.name.startsWith("oce-cs-"));
+    assert.equal(hasSender(), false);
     const subject = async (bearer: string) => {
       const result = await fetch(`${issuer}/protocol/openid-connect/userinfo`, {
         headers: { authorization: `Bearer ${bearer}` },
       });
-      assert.equal(result.status, 200, "Keycloak accepts the sender's prepared access token");
+      assert.equal(
+        result.status,
+        200,
+        "Keycloak accepts the Token Service's prepared access token",
+      );
       return (await result.json()).sub;
     };
-    const original = sender.credentials.CONNECTION_TOKEN;
+    const original = await prepared();
     const alice = await subject(original);
     assert.ok(alice);
     const rotated = await inject("POST", `${source}/rotate`, undefined);
     assert.equal(rotated.statusCode, 200, rotated.body);
-    const renewed = sender.credentials.CONNECTION_TOKEN;
+    const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
     // Advancing OCC's clock clears the credential registration fence without delaying the test.
@@ -289,9 +348,6 @@ test(
       0,
     );
     assert.equal(secretDriver.has(privateRef), false);
-    assert.equal(
-      [...providers.values()].some((entry) => entry.name === sender.name),
-      false,
-    );
+    assert.equal(hasSender(), false);
   },
 );

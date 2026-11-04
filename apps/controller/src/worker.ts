@@ -1184,6 +1184,7 @@ export class ControllerWorker {
   private connectionRevocationCursor: string | undefined;
   private connectionRevocationScanAfter = 0;
   private connectionMaintenance: Promise<void> | undefined;
+  private nextClientCleanup = 0;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly preparedTokens:
@@ -1544,6 +1545,10 @@ export class ControllerWorker {
           this.claimedPassesSinceSweep = 0;
           await this.withdrawPendingHarnessExposure();
           await this.sweepConnectionRevocation();
+          if (this.credentialRefresh && Date.now() >= this.nextClientCleanup) {
+            this.nextClientCleanup = Date.now() + 30_000;
+            await this.provisioningController?.cleanupRetiredOAuthClientSecrets();
+          }
         }
         const claim = await this.queue.claim();
         this.claimedLastPass = claim !== undefined;
@@ -1666,10 +1671,7 @@ export class ControllerWorker {
     controller: OpenClawController,
     installationId: string,
   ): Promise<void> {
-    const canRenew =
-      this.preparedTokens?.oauthConnections !== undefined &&
-      this.credentialGateway?.publishConnectionToken !== undefined &&
-      this.credentialGateway.withdrawConnectionToken !== undefined;
+    const canRenew = this.preparedTokens?.oauthConnections !== undefined;
     const pollMs = Math.min(this.pollIntervalMs, 250);
     const cleanupIntervalMs = 5_000;
     const batchSize = 4;

@@ -10,6 +10,7 @@ import type {
   LeaveGuard,
   TabNavigation,
 } from "./page-context.mjs";
+import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -124,6 +125,7 @@ interface RetainedView {
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
+app.querySelector(":scope > .startup-recovery")?.remove();
 const lifetime = createViewLifetime();
 let session: Session | null = null;
 let namespaces: Namespace[] = [];
@@ -2336,8 +2338,12 @@ async function loadPage({
       attachDiagnostics(shell.diagnostics);
     }
     if (current.feature === "settings") {
-      shell.view.append(settingsView(session.user));
+      const settings = settingsView(session.user);
+      shell.view.append(settings);
       if (installationAdmin) {
+        settings.append(
+          renderConnectionTemplates({ request: viewRequest, isCurrent: viewIsCurrent }, namespaces),
+        );
         shell.view.append(
           renderInstallationConfigurations({
             request,

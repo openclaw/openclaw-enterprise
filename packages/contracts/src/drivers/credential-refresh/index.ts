@@ -96,7 +96,10 @@ export interface CredentialClientRegistrationContext {
 
 /** The approved values of one connection template version that the browser flow uses. */
 export interface CredentialBrowserAuthorizationRequest {
-  readonly clientRegistrationId: string;
+  readonly oauthClientId: string;
+  readonly secretRegistrationId?: string;
+  readonly tokenEndpointAuthMethod: "none" | "client_secret_post" | "client_secret_basic";
+  readonly resource?: string;
   readonly issuer: string;
   readonly clientId: string;
   readonly authorizationUrl: string;

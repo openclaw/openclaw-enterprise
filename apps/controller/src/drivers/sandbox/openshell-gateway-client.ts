@@ -539,12 +539,11 @@ export interface OpenShellGatewayClient
     signal: AbortSignal,
     credentialExpirationTimes?: Readonly<Record<string, string>>,
   ): Promise<void>;
-  /** Rotate credential values, or remove one key and its expiry, at the observed provider version. */
+  /** Static credential rotation, conditional on the previously observed provider version. */
   updateProviderCredentialsConditionally?(
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,
     signal: AbortSignal,
-    clearCredentialKey?: string,
   ): Promise<OpenShellProviderResponse>;
   /** Merges nonempty configuration into an existing provider with optimistic concurrency. */
   updateProviderConfig(
@@ -2245,16 +2244,12 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,
     signal: AbortSignal,
-    clearCredentialKey?: string,
   ): Promise<OpenShellProviderResponse> {
-    const clearing = clearCredentialKey !== undefined;
-    const validPayload = clearing
-      ? isNonEmptyString(clearCredentialKey) &&
-        Object.keys(request.credentials).length === 0 &&
-        Object.keys(request.credentialExpirationTimes ?? {}).length === 0
-      : Object.keys(request.credentials).length > 0 &&
-        Object.values(request.credentials).every(isNonEmptyString);
-    if (!/^[1-9]\d*$/u.test(expectedResourceVersion) || !validPayload) {
+    if (
+      !/^[1-9]\d*$/u.test(expectedResourceVersion) ||
+      Object.keys(request.credentials).length === 0 ||
+      Object.values(request.credentials).some((value) => !isNonEmptyString(value))
+    ) {
       throw new OpenShellGatewayFailure(
         "OpenShell credential rotation requires values and a positive resource version.",
       );
@@ -2269,7 +2264,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           },
           type: request.type,
           profile_workspace: request.workspace,
-          credentials: clearing ? { [clearCredentialKey]: "" } : { ...request.credentials },
+          credentials: { ...request.credentials },
         },
         workspace_scope: { workspace: request.workspace },
         credential_expiration_times: Object.fromEntries(
@@ -2278,7 +2273,6 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
             timestampMessage(value),
           ]),
         ),
-        ...(clearing && { clear_credential_expiration_keys: [clearCredentialKey] }),
         request_id: randomUUID(),
       },
       signal,
