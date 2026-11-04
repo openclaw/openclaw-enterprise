@@ -21,7 +21,7 @@
     "tests/browser/console-agents-list-return.test.mjs": 29700,
     "tests/browser/console-agents.test.ts": 53800,
     "tests/browser/console-button-hierarchy.test.ts": 18300,
-    "tests/browser/console-codex-oauth.test.mjs": 30300,
+    "tests/browser/console-codex-oauth.test.ts": 30300,
     "tests/browser/console-create-agent-member.test.ts": 15000,
     "tests/browser/console-create-agent-provisioning-400.test.ts": 55400,
     "tests/browser/console-deployment-activity.test.ts": 47800,
