@@ -137,7 +137,8 @@
         "return readback requires both serving Pods to use the restored database",
         "release checkout admission rejects hidden edits and ignored execution inputs before Docker",
         "rehearsal TLS requests reject malformed and interrupted responses without exposing bytes",
-        "timed-out fixture commands reject success and terminate their subprocesses without exposing output"
+        "timed-out fixture commands reject success and terminate their subprocesses without exposing output",
+        "interrupted rehearsal runners stop concurrent command groups before exiting"
       ]
     },
     {

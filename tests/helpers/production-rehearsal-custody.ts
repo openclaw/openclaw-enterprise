@@ -18,6 +18,69 @@ export type FixtureRun = (
   options?: CommandOptions,
 ) => Promise<string>;
 
+const activeCommands = new Set<(signal: NodeJS.Signals) => void>();
+let interruptionTimer: ReturnType<typeof setTimeout> | undefined;
+
+function signalActiveCommands(signal: NodeJS.Signals) {
+  for (const command of activeCommands) {
+    command(signal);
+  }
+}
+
+function terminateActiveCommands() {
+  signalActiveCommands("SIGKILL");
+}
+
+const interruptHandlers = {
+  SIGINT: () => interruptCommands("SIGINT"),
+  SIGTERM: () => interruptCommands("SIGTERM"),
+};
+
+function removeCommandHandlers() {
+  process.off("SIGINT", interruptHandlers.SIGINT);
+  process.off("SIGTERM", interruptHandlers.SIGTERM);
+  process.off("exit", terminateActiveCommands);
+}
+
+function interruptCommands(signal: "SIGINT" | "SIGTERM") {
+  signalActiveCommands(signal);
+  if (interruptionTimer) {
+    return;
+  }
+  const defaultDisposition = process.listenerCount(signal) === 1;
+  interruptionTimer = setTimeout(() => {
+    terminateActiveCommands();
+    interruptionTimer = undefined;
+    if (defaultDisposition) {
+      // Restore the signal's normal exit status after all concurrent commands
+      // have been stopped. Existing runner handlers own their usual disposition.
+      removeCommandHandlers();
+      process.kill(process.pid, signal);
+    } else if (activeCommands.size === 0) {
+      removeCommandHandlers();
+    }
+  }, 1_000);
+}
+
+function ownCommand(signal: (signal: NodeJS.Signals) => void) {
+  if (activeCommands.size === 0 && !interruptionTimer) {
+    process.on("SIGINT", interruptHandlers.SIGINT);
+    process.on("SIGTERM", interruptHandlers.SIGTERM);
+    // A runner's existing signal handler can exit before the grace period ends.
+    process.on("exit", terminateActiveCommands);
+  }
+  activeCommands.add(signal);
+  return (terminated = false) => {
+    if (interruptionTimer && !terminated) {
+      return;
+    }
+    activeCommands.delete(signal);
+    if (activeCommands.size === 0 && !interruptionTimer) {
+      removeCommandHandlers();
+    }
+  };
+}
+
 export function runFixtureCommand(
   command: string,
   args: string[],
@@ -33,6 +96,9 @@ export function runFixtureCommand(
   bounded = false,
 ): Promise<string> {
   assert.ok(!protectedInput || !allowFailure);
+  if (interruptionTimer) {
+    return Promise.reject(new Error("cannot start a fixture command during interruption"));
+  }
   return new Promise((resolve, reject) => {
     const childEnv = env ? { ...process.env, ...env } : undefined;
     if (childEnv) {
@@ -52,6 +118,8 @@ export function runFixtureCommand(
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let interrupted = false;
+    let interruptionKilled = false;
     let closed = false;
     let killed = false;
     let cleanupFailed = false;
@@ -75,6 +143,25 @@ export function runFixtureCommand(
         }
       }
     };
+    const interruptedError = () =>
+      new Error(
+        cleanupFailed
+          ? `${command} could not terminate an interrupted fixture operation`
+          : `${command} interrupted${protectedInput ? " during a protected fixture operation" : ""}`,
+      );
+    const releaseCommand = ownCommand((name) => {
+      interrupted = true;
+      clearTimeout(timer);
+      clearTimeout(cleanupTimer);
+      interruptionKilled ||= name === "SIGKILL";
+      signal(name);
+      if (interruptionKilled && closed) {
+        if (!cleanupFailed) {
+          releaseCommand(true);
+        }
+        reject(interruptedError());
+      }
+    });
     const timer = setTimeout(() => {
       timedOut = true;
       signal("SIGTERM");
@@ -84,6 +171,7 @@ export function runFixtureCommand(
         killed = true;
         signal("SIGKILL");
         if (closed) {
+          releaseCommand();
           reject(timeoutError());
           return;
         }
@@ -91,6 +179,7 @@ export function runFixtureCommand(
           child.stdin.destroy();
           child.stdout.destroy();
           child.stderr.destroy();
+          releaseCommand();
           reject(timeoutError());
         }, 1_000);
       }, 1_000);
@@ -108,6 +197,7 @@ export function runFixtureCommand(
         return;
       }
       clearTimeout(timer);
+      releaseCommand();
       reject(
         protectedInput ? new Error(`${command} could not start a protected operation`) : error,
       );
@@ -115,13 +205,24 @@ export function runFixtureCommand(
     child.on("close", (code) => {
       closed = true;
       clearTimeout(timer);
+      if (interrupted) {
+        if (interruptionKilled) {
+          if (!cleanupFailed) {
+            releaseCommand(true);
+          }
+          reject(interruptedError());
+        }
+        return;
+      }
       if (timedOut) {
         if (killed) {
           clearTimeout(cleanupTimer);
+          releaseCommand();
           reject(timeoutError());
         }
         return;
       }
+      releaseCommand();
       if (code === 0 || (allowFailure && code === 1)) {
         resolve(stdout);
       } else {

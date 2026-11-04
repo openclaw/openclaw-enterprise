@@ -888,3 +888,112 @@ test(
     assert.equal(await readFile(heartbeat, "utf8"), finalHeartbeat);
   },
 );
+
+test(
+  "interrupted rehearsal runners stop concurrent command groups before exiting",
+  { timeout: 30_000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-interruption-control-"));
+    const runners: import("node:child_process").ChildProcess[] = [];
+    const childPIDs: string[] = [];
+    const { spawn } = await import("node:child_process");
+    t.after(async () => {
+      for (const runner of runners) {
+        try {
+          process.kill(-runner.pid!, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+            throw error;
+          }
+        }
+      }
+      for (const path of childPIDs) {
+        try {
+          process.kill(-Number(await readFile(path, "utf8")), "SIGKILL");
+        } catch (error) {
+          if (!["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+            throw error;
+          }
+        }
+      }
+      await rm(directory, { recursive: true, force: true });
+    });
+    for (const mode of ["test", "process"] as const) {
+      for (const signal of ["SIGINT", "SIGTERM"] as const) {
+        const fixture = join(directory, `${mode}-${signal}.test.mjs`);
+        const markers = [0, 1].map((index) => join(directory, `${mode}-${signal}-${index}-late`));
+        const continued = [0, 1].map((index) =>
+          join(directory, `${mode}-${signal}-${index}-continued`),
+        );
+        const ready = [0, 1].map((index) => join(directory, `${mode}-${signal}-${index}-pid`));
+        childPIDs.push(...ready);
+        const scripts = markers.map(
+          (marker, index) => `
+      const fs = require("node:fs");
+      process.on("SIGINT", () => { ${index === 0 ? "process.exit(0);" : ""} });
+      process.on("SIGTERM", () => { ${index === 0 ? "process.exit(0);" : ""} });
+      fs.writeFileSync(${JSON.stringify(ready[index])}, String(process.pid));
+      setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, "orphaned command"), 1800);
+      setInterval(() => {}, 1000);
+    `,
+        );
+        await writeFile(
+          fixture,
+          `
+      import test from "node:test";
+      import { writeFileSync } from "node:fs";
+      import { runFixtureCommand } from ${JSON.stringify(new URL("../helpers/production-rehearsal-custody.ts", import.meta.url).href)};
+      const continued = ${JSON.stringify(continued)};
+      const run = () => Promise.all(${JSON.stringify(scripts)}.map((script, index) =>
+        runFixtureCommand(process.execPath, ["-e", script], { timeout: 10000 })
+          .then(() => writeFileSync(continued[index], "advanced after interruption"))));
+      ${mode === "test" ? 'test("concurrent real rehearsal commands", run);' : "await run();"}
+    `,
+        );
+        const env = { ...process.env };
+        delete env.NODE_TEST_CONTEXT;
+        const runner = spawn(process.execPath, mode === "test" ? ["--test", fixture] : [fixture], {
+          detached: true,
+          stdio: "ignore",
+          env,
+        });
+        runners.push(runner);
+        const closed = new Promise<{
+          code: number | null;
+          signal: NodeJS.Signals | null;
+        }>((resolve, reject) => {
+          runner.once("error", reject);
+          runner.once("close", (code, signal) => resolve({ code, signal }));
+        });
+        const deadline = Date.now() + 5000;
+        while (
+          !(
+            await Promise.all(
+              ready.map((path) =>
+                stat(path).then(
+                  () => true,
+                  () => false,
+                ),
+              ),
+            )
+          ).every(Boolean)
+        ) {
+          assert.ok(Date.now() < deadline, "real command processes did not start");
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        // Deliver the same process-group signal as a terminal interrupt. One command
+        // exits zero and the other ignores it; neither may advance the rehearsal.
+        process.kill(-runner.pid!, signal);
+        const result = await closed;
+        assert.deepEqual(
+          result,
+          mode === "test" ? { code: 1, signal: null } : { code: null, signal },
+        );
+        await new Promise((resolve) => setTimeout(resolve, 2200));
+        for (const marker of [...markers, ...continued]) {
+          await assert.rejects(stat(marker), { code: "ENOENT" });
+        }
+      }
+    }
+  },
+);
