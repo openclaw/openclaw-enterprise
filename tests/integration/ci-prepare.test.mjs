@@ -1735,6 +1735,60 @@ for (let index = 0; index < Number(times); index += 1) {
     }
   });
 
+  test("advisory OpenShell shards execute every manifest file once without cancelling siblings", async (t) => {
+    const workflow = loadYaml(
+      await readFile(join(repositoryRoot, ".github/workflows/qa-advisory.yml"), "utf8"),
+    );
+    const selection = workflow.jobs.eligibility.steps.find(
+      (step) => step.id === "openshell-matrix",
+    );
+    const job = workflow.jobs.openshell;
+    const action = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane");
+    const files = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json")).lanes
+      .openshell.files;
+    assert.equal(job["runs-on"], "ubuntu-24.04");
+    assert.equal(job.strategy["fail-fast"], false);
+    assert.equal(job.environment, "integration-qa-pr");
+    assert.equal(
+      job.strategy.matrix,
+      "${{ fromJSON(needs.eligibility.outputs.openshell-matrix) }}",
+    );
+    assert.equal(action.with["test-file"], "${{ matrix.file }}");
+    assert.equal(action.with["artifact-prefix"], "qa-advisory-${{ matrix.shard }}");
+
+    const root = await fixture(t);
+    for (const [index, selected] of [
+      "",
+      files[0].path,
+      "tests/integration/unknown.test.mjs",
+    ].entries()) {
+      const output = join(root, `matrix-${index}`);
+      // Execute the workflow's selector, so a fixed matrix that drops a registered file fails here.
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", selection.run], {
+        cwd: repositoryRoot,
+        env: { ...process.env, OPENSHELL_FILE: selected, GITHUB_OUTPUT: output },
+        encoding: "utf8",
+      });
+      if (index === 2) {
+        assert.notEqual(
+          result.status,
+          0,
+          "An unknown selection must fail, not produce an empty matrix.",
+        );
+        continue;
+      }
+      assert.equal(result.status, 0, result.stderr);
+      const { include } = JSON.parse(
+        (await readFile(output, "utf8")).trim().slice("matrix=".length),
+      );
+      assert.deepEqual(
+        include.map(({ file }) => file),
+        selected ? [selected] : files.map(({ path }) => path),
+      );
+      assert.equal(new Set(include.map(({ shard }) => shard)).size, include.length);
+    }
+  });
+
   test("Kubernetes test helper passes an explicit Codex localhost seccomp profile into runtime config", () => {
     const profile = "openclaw/codex-bwrap.json";
     const configuration = createKubernetesInstallationConfiguration({

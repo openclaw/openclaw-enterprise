@@ -1,3 +1,4 @@
+import { serveChannelDirectory } from "./channel-directory-fixture.mts";
 import networkPolicySchema from "./network-policy-schema.mts";
 import { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
@@ -1264,59 +1265,7 @@ export function installFixture(scenario, evidence) {
         return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
       }
       if (resource === "channel-directory/lookup" && method === "POST") {
-        if (!secrets.has(body.secretId) || !["users", "channels"].includes(body.kind)) {
-          return error(400);
-        }
-        const candidates =
-          body.kind === "users"
-            ? [
-                { id: "UDEMO123", name: "alex.chen", displayName: "Alex Chen" },
-                { id: "UDEMO124", name: "alex.ops", displayName: "Alex Chen" },
-                { id: "WDEMO125", name: "sam.rivers", displayName: "Sam Rivers" },
-                { id: "UDEMO126", name: "riley.park", displayName: "Riley Park" },
-                { id: "UDEMO127", name: "morgan.lee", displayName: "Morgan Lee" },
-                { id: "UDEMO128", name: "jordan.bell", displayName: "Jordan Bell" },
-                { id: "UDEMO129", name: "taylor.reed", displayName: "Taylor Reed" },
-                { id: "UDEMO130", name: "casey.wong", displayName: "Casey Wong" },
-                { id: "UDEMO131", name: "jamie.stone", displayName: "Jamie Stone" },
-              ]
-            : [
-                { id: "CDEMO123", name: "general" },
-                { id: "GDEMO124", name: "incident-private" },
-                { id: "CDEMO125", name: "platform" },
-                { id: "CDEMO126", name: "releases" },
-                { id: "CDEMO127", name: "support" },
-                { id: "CDEMO128", name: "design" },
-                { id: "CDEMO129", name: "engineering" },
-                { id: "CDEMO130", name: "product" },
-                { id: "CDEMO131", name: "announcements" },
-              ];
-        const query = (body.query ?? "").toLowerCase();
-        const matches = candidates.filter((candidate) =>
-          body.ids
-            ? body.ids.includes(candidate.id)
-            : [candidate.id, candidate.name, candidate.displayName ?? ""].some((value) =>
-                value.toLowerCase().includes(query),
-              ),
-        );
-        const offset = body.cursor === "page-2" ? 7 : 0;
-        if (body.cursor && body.cursor !== "page-2") {
-          return error(400);
-        }
-        const nextCursor = !body.ids && matches.length > offset + 7 ? "page-2" : undefined;
-        evidence.directoryResponses.push({
-          kind: body.kind,
-          query: body.query ?? "",
-          cursor: body.cursor ?? null,
-          ids: body.ids ?? null,
-        });
-        return response({
-          workspaceId: "TDEMO123",
-          workspaceName: "Demo workspace",
-          candidates: body.ids ? matches : matches.slice(offset, offset + 7),
-          ...(nextCursor ? { nextCursor } : {}),
-          complete: !nextCursor,
-        });
+        return serveChannelDirectory(body, secrets, evidence);
       }
       if (resource === "credential-sources") {
         if (method === "GET") {

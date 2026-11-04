@@ -76,3 +76,8 @@ Check that new assets load and the interaction works with the actual API. Follow
 [visual review instructions](../../AGENTS.md#console-storybook) for screenshots and video.
 Record the interaction with [pr-walkthrough](../../.agents/skills/pr-walkthrough/SKILL.md)
 so reviewers can read the starting state, follow the action, and see the result.
+
+Use [`responseTo`](../../tests/browser/console-action-helpers.ts) to wait for a response
+to the exact request method and URL. Start listening before triggering the action,
+then assert the status separately. An unexpected 500 fails the assertion immediately
+instead of making the test time out while waiting for a 403 or 503.
