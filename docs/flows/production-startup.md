@@ -1,17 +1,16 @@
 ---
 created: 2026-08-25
 updated: "2026-11-04"
-last_updated_session: "authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446"
+last_updated_session: "authoring-run/9ad2db0a-6b05-4873-aeda-52d96af2405e"
 ---
 
 # Production Startup Flow
 
 ## Overview
 
-Prepare a fresh protected bootstrap PVC; install Helm with approved images,
-PostgreSQL/authentication credentials, trusted Installation YAML and network
-policies. Wait for private API/worker readiness; authenticate `/installation`
-with the service key.
+Prepare a fresh protected bootstrap PVC and install Helm with approved images,
+PostgreSQL/authentication credentials, trusted Installation YAML and policies.
+After private API/worker readiness, authenticate `/installation` with the service key.
 
 [Deployment guide](../guides/deploy.md).
 
@@ -34,8 +33,8 @@ First install requires [empty OCE history](../reference/settings/operations.md#m
 ```mermaid
 graph TD
     subgraph Operator["Operator-owned preparation"]
-        A["Edit native values, Installation YAML, and bootstrap PVC manifest"]
-        B["Create system namespace and file-backed Secrets"]
+        A["Prepare values, Installation YAML and bootstrap PVC"]
+        B["Create namespace and Secrets; check prerequisites"]
         C["Create fresh bootstrap PVC"]
         D["prepare-bootstrap-volume verifies empty output and root permissions"]
     end
@@ -80,19 +79,21 @@ The process continues; the next query opens a new connection.
 
 ### 1. Prepare native production inputs
 
+`scripts/diagnose-kubernetes-prerequisites.mjs:diagnose` reads CRDs, controllers,
+addresses and object quota headroom. EKS binds account, ARN, endpoint and CA.
+[Resolve failed/unknown checks](../guides/deploy/prerequisite-diagnosis.md) before Helm.
+
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Prepare values, Installation YAML and bootstrap PVC outside the checkout. Helm
-selects controller images, API endpoint, Secrets, claim,
-client/node selectors and egress. `openclaw.validate` requires a DNS-1123
-release Namespace label up to 63 characters. Installation YAML selects IAM,
-Configuration, Compute, optional Backends, gateway/Agent images, projected
-workload identity and runtime networking/storage.
+Keep values, Installation YAML and bootstrap PVC outside the checkout. Helm
+selects images, endpoint, Secrets, claim, selectors and egress.
+`openclaw.validate` requires a DNS-1123 release Namespace label (maximum 63 characters).
+Installation YAML selects Drivers, Backends, runtime images, projected identity,
+networking and storage.
 
-File-backed Kubernetes Secrets supply Installation startup, database URLs/optional
-CA, Better Auth signing, and optional ChatGPT administrator credentials. These
-inputs are not synchronization targets. Helm neither rewrites Driver
-configuration nor infers gateway/Agent images.
+File-backed Secrets supply Installation startup, database URLs/optional CA, Better Auth
+signing, and optional ChatGPT administrator credentials. Helm neither synchronizes
+inputs, rewrites Driver configuration, nor infers runtime images.
 
 ### 2. Prepare the fresh bootstrap volume
 
@@ -396,6 +397,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 22:57: Trace prerequisite diagnosis. (authoring-run/9ad2db0a-6b05-4873-aeda-52d96af2405e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-11-04 07:10: Trace read-only initialization handoff and exact current chart recognition. (authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446 - 0c39ae057d294e7c1a244666fb6b98a1200b7f52)
 

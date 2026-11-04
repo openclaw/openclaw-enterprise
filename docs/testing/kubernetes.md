@@ -78,9 +78,9 @@ OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
   node --test tests/integration/installation-handoff-k3d-real.test.ts
 ```
 
-This builds `occ` and checks rendered Jobs, named-read RBAC, and replacement UIDs.
-Suspended Jobs need no database/model credentials; migration/bootstrap and runtime
-remain unproved.
+Checks named Job reads, replacement UIDs, CRDs/controllers, Job quota
+headroom, address drift and denials. Migration/bootstrap, EKS connectivity
+and Envoy acceptance remain unproved.
 
 ### Production workload network access
 

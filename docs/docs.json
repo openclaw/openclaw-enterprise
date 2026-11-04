@@ -374,10 +374,10 @@
                             "page": "reference/drivers/kubernetes-compute/configuration",
                             "label": "Configuration"
                           },
-                        {
+                          {
                             "page": "reference/drivers/kubernetes-compute/model-provider",
                             "label": "Model Provider"
-                        },
+                          },
                           {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
@@ -769,6 +769,7 @@
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
+              "guides/deploy/prerequisite-diagnosis",
               "guides/deploy/production-tui",
               "reference/settings/oidc"
             ]
