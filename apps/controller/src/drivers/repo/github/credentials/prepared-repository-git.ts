@@ -534,13 +534,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         ...(installationRecipient(this.proxy) && {
           githubRepository: Object.freeze({
             readMaterial: (route, signal) =>
-              this.readRecipientMaterial(
-                route.revisionId,
-                lifetime(signal),
-                route,
-                "github-repository",
-                mode,
-              ),
+              this.readRecipientMaterial(route, lifetime(signal), "github-repository", mode),
             authorize: (request, installed, signal) =>
               this.authorizeProtectedRequest(
                 checkRequest(request, "github-repository"),
@@ -552,7 +546,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           }),
           githubInstallation: Object.freeze({
             readMaterial: (route, signal) =>
-              this.readRecipientMaterial(route.revisionId, lifetime(signal), route, scope, mode),
+              this.readRecipientMaterial(route, lifetime(signal), scope, mode),
             authorize: async (request, installed, signal) => {
               const q = checkRequest(request, scope);
               const binding = structuredClone(installed);
@@ -572,7 +566,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           } satisfies NonNullable<RepositoryGitAuthority<Allow>["githubInstallation"]>),
         }),
         readMaterial: (route, signal) =>
-          this.readRecipientMaterial(route.revisionId, lifetime(signal), route, undefined, mode),
+          this.readRecipientMaterial(route, lifetime(signal), undefined, mode),
         authorize: (request, installed, signal) =>
           this.authorizeProtectedRequest(
             checkRequest(request),
@@ -695,31 +689,27 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   /** Reads existing material for the worker's selected revision, never a workload request.
    * This neither prepares material nor grants permission to send. Each later request must
    * still authorize the exact installed attempt/version against current session authority. */
-  async readRecipientMaterial(
-    revisionId: string,
+  private async readRecipientMaterial(
+    route: RepositoryGitInstallationFence,
     signal: AbortSignal,
-    install?: RepositoryGitInstallationFence,
     scope?: undefined,
     mode?: Authorization,
   ): Promise<ProtectedRepositoryGitMaterial | RepositoryGitMaterialAbsence | undefined>;
-  async readRecipientMaterial(
-    revisionId: string,
+  private async readRecipientMaterial(
+    route: RepositoryGitInstallationFence,
     signal: AbortSignal,
-    install: RepositoryGitInstallationFence,
     scope: "github-installation",
     mode?: Authorization,
   ): Promise<ProtectedGitHubInstallationMaterial | RepositoryGitMaterialAbsence | undefined>;
-  async readRecipientMaterial(
-    revisionId: string,
+  private async readRecipientMaterial(
+    route: RepositoryGitInstallationFence,
     signal: AbortSignal,
-    install: RepositoryGitInstallationFence,
     scope: "github-repository",
     mode?: Authorization,
   ): Promise<ProtectedGitHubRepositoryMaterial | RepositoryGitMaterialAbsence | undefined>;
-  async readRecipientMaterial(
-    revisionId: string,
+  private async readRecipientMaterial(
+    route: RepositoryGitInstallationFence,
     signal: AbortSignal,
-    install?: RepositoryGitInstallationFence,
     scope?: "github-installation" | "github-repository",
     mode: Authorization = null,
   ): Promise<
@@ -734,6 +724,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     const unprepared: RepositoryGitMaterialAbsence = Object.freeze({ absent: "unprepared" });
     try {
       signal.throwIfAborted();
+      const { revisionId } = route;
       const result = await this.transaction(async (c) => {
         const current = await lockLiveSession(c, "live_revision_id", revisionId, this.proxy);
         if (!current) {
@@ -744,13 +735,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           // conditional installer may receive a token; a changed fence or observation gets none.
           if (
             current.authorization !== mode ||
-            !install ||
-            install.revisionId !== revisionId ||
+            route.revisionId !== revisionId ||
             !(
               await c.query(this.proxy.policy.evidence.observed, [
                 revisionId,
-                install.fence,
-                JSON.stringify(install.observed),
+                route.fence,
+                JSON.stringify(route.observed),
               ])
             ).rowCount
           ) {
@@ -770,7 +760,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
             (source.adoption === installationGitAdoption ||
               source.adoption === selectedGitAdoption) ||
           (wide && grant.profile !== scope) ||
-          (wide && (!install || !installationRecipient(this.proxy)))
+          (wide && !installationRecipient(this.proxy))
         ) {
           return unprepared;
         }

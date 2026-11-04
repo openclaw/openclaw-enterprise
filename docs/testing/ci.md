@@ -219,6 +219,11 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 
 ### Setting Overrides
 
+For lanes that accept optional Kubernetes runtime images, set both
+`OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and `OCC_TEST_KUBERNETES_AGENT_IMAGE` to
+immutable references, or omit both to build from source. Supplying only one fails
+preparation before state or resources are created.
+
 These process environment variables are optional. Keep the same directory and
 slot for First Agent `images` and `run`; only a distinct slot isolates host-wide names.
 
@@ -331,9 +336,29 @@ worker and redeployment cases. Its control plane runs in Compose; its workloads
 still use Kubernetes Compute. `full-qa` takes precedence when both labels exist.
 The focused run skips the other advisory jobs, keeps manifest case requirements
 and cleanup, and records `scope: focused`. It cannot satisfy full-lane aggregation.
-Inspect `qa-advisory-compose-openshell` and its attempt-specific artifacts.
+Inspect `qa-advisory-local-first-agent-openshell-real-openshell` and its attempt-specific artifacts.
 
-The three credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
+Full advisory OpenShell runs use one Ubuntu 24.04 runner per file from the
+[OpenShell manifest](../../scripts/ci/test-suites/openshell.json). The files run in
+parallel across separate VMs. The two first-Agent files provision and clean up
+through Local Setup. Their focused lane preparation records selection and state
+without building images or creating a second cluster, database, routing setup,
+OpenShell installation, or Keycloak instance. Other files retain their lane
+preparation. The runner enforces both lane-wide and per-file `requiredEnv`
+inputs, expected cases, and cleanup. A failed shard does not cancel the
+others. Each result has `scope: focused`; require every shard to pass before
+claiming full advisory OpenShell coverage. The manual Full Integration lane
+continues to run the full manifest serially and prepares the shared resources
+needed by its other files. First-Agent files do not request a separate CI database
+in either mode.
+
+First-Agent stage measurements appear in `files[].measurements`: Local Setup,
+initial deployment and model calls, nonce-only reuse, native deployment, native
+model execution, native redeployment, resumed model execution, and cleanup.
+Each record contains only a fixed stage, outcome, and elapsed milliseconds.
+The parent test duration includes its native subtest; do not add them together.
+
+The credentialed branch-advisory jobs share `integration-qa-pr`. Store both `CODEX_ACCESS_TOKEN` and `OPENAI_API_KEY` there, with the model variables listed above. See [CI resource preparation](../flows/github-actions-testing/preparation.md) for the OpenShell browser setting and sandbox checks.
 
 Codex timeout diagnostics from `tests/helpers/openshell-kubernetes-real.mjs` report the client phase, pending method names, message and command counts, and whether an action started. They exclude prompts, request identifiers, and payloads. A timeout does not authorize another turn; only the existing final capacity receipt before any action permits a retry.
 
@@ -439,6 +464,34 @@ the manifest and workflow. Workers own Agents/cleanup; keep dependent steps
 sequential and installation-wide changes outside workers. Preserve failure,
 security and disposal assertions.
 
+### Local k3d quickstart on a fresh runner
+
+Dispatch the [k3d quickstart workflow](../../.github/workflows/k3d-quickstart-e2e.yml) on `main`:
+
+```sh
+gh workflow run k3d-quickstart-e2e.yml --ref main
+```
+
+The workflow creates a fresh local installation, onboards a model-only Agent in the
+Control UI, and reopens the original conversation. It enables Linear and reads
+a known team through the Agent. It then adds Git to the same Agent, pushes one
+empty commit to a unique test branch, verifies the remote commit, and restores
+read-only access. It verifies that the final deployment retains Linear and that
+the Agent recalls the preference from its original conversation.
+
+Configure these inputs at the **repository** level:
+
+| Input                                    | Purpose                                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------------------- |
+| Secret `OCE_QUICKSTART_CODEX_PAT`        | Codex service account with the selected model and an authorized Linear connection |
+| Secret `OCE_TEST_GITHUB_APP_PRIVATE_KEY` | RSA key for the App installed on the test repository                              |
+| Variable `OCE_QUICKSTART_MODEL`          | Model available to the service account                                            |
+| Variable `OCC_TEST_LINEAR_TEAM_ID`       | ID of a team the connected account can read                                       |
+
+Use the workflow result and its sanitized receipt to check the push, read-only
+restoration, tool result and cleanup. If a run ends during a push, check the
+remote ref before retrying. Keep the private operator session on the runner.
+
 <a id="manual-full-integration-lanes"></a>
 
 ### Full Integration
@@ -525,4 +578,5 @@ gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3
 
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
 The 180-minute job budget includes setup/cleanup. Advisory results use
-`qa-advisory-local-installation-dev-up-k3d`; OpenShell uses `qa-advisory-openshell`.
+`qa-advisory-local-installation-dev-up-k3d`; each OpenShell shard uses
+`qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`).

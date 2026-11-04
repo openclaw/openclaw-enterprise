@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-02
-last_updated_session: 01a19d8b-33a8-76c0-9817-521a7f10626d
+updated: 2026-11-04
+last_updated_session: authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9
 ---
 
 # Compose development flow
@@ -211,7 +211,9 @@ before creating the corresponding Gateway Workspace. Startup waits until the
 OCC Namespace becomes ready. See the
 [OpenShell flow](openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
 
-### 6. Start protected OpenShell transport
+<a id="6-start-protected-openshell-transport"></a>
+
+### 6. Start authenticated OpenShell transport
 
 `internal/occdev/egress_k3d.go:protectedEgressSelection`,
 `internal/occdev/openshell_k3d.go:installDevelopmentPlatform`,
@@ -232,17 +234,16 @@ Any presence of `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including an empty
 value, is rejected. Unset, empty and `0` protected-egress selections retain ordinary
 startup; malformed values still fail validation. Refusal does not select a fallback.
 
-The retained packaging fixtures still exercise authority provisioning and release
-ordering: the Gateway becomes ready after the API authority starts and before
-workers start. The fixtures cover authority TLS and public trust, native OpenShell
-PKI, and paired Backend and authority settings. For an existing installation,
-keep the recorded state and ownership evidence for cleanup and rollback.
+For an existing installation, keep the recorded state and ownership evidence
+for cleanup. Legacy protected fields remain readable in cleanup receipts but
+do not configure startup.
 
 The chart projects the administrative client certificate into API and worker
 only. The Backend supplies it to verified gRPC TLS for DNS or exact-IP server
-identities. Service traffic keeps its separate scoped bearer identity. For recorded
-protected state, the API alone receives authority TLS and the issuer public key; selected Gateway and
-supervisor Pods can reach that listener through narrow NetworkPolicies. See the
+identities. Service traffic keeps its separate scoped bearer identity. For
+separately prepared production installations with an authority, the API alone
+receives authority TLS and the issuer public key; selected Gateway and supervisor
+Pods can reach that listener through narrow NetworkPolicies. See the
 [Backend authentication boundary](../reference/backends.md#openshell-gateway).
 
 `selectedDevelopmentDatabase` validates an optional disposable database name
@@ -251,8 +252,7 @@ migrator and application URLs. Bootstrap, API and worker share the limited
 application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
 Helm waits for both. Unselected profiles retain the existing database and
 transport defaults. The [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
-describes accepted selectors; retained [packaging verification](../testing/static-egress.md#protected-launch-packaging)
-covers historical configuration and existing owners, not new local launches.
+describes accepted selectors.
 
 ## Debugging and Verification
 
@@ -310,6 +310,8 @@ covers historical configuration and existing owners, not new local launches.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 08:53: Remove retired local authority provisioning and retain authenticated Gateway readiness and recorded-state cleanup. (authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9 - d0421ca03868db643faa8ba2d13e784fc637cc2e)
 
 - 2026-11-02 13:31: Separate default authenticated Gateway bootstrap from opt-in static inference; accompanying launcher changes. (01a19d8b-33a8-76c0-9817-521a7f10626d - f5bef23f5796c2c3421189c79e6508079257cfd5)
 

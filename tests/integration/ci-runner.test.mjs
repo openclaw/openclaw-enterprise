@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -619,6 +619,27 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
 
   const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
   delete manifest.lanes.lane.requiredEnv;
+  manifest.lanes.lane.files[0].requiredEnv = ["CI_RUNNER_FILE_INPUT"];
+  await writeJson(join(root, "manifest.json"), manifest);
+  const missingFileEnv = run(root, [
+    "run",
+    "lane",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/lane.jsonl",
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(missingFileEnv.status, 1);
+  summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(
+    summary.issues.map((entry) => [entry.code, entry.env]),
+    [["missing-env", "CI_RUNNER_FILE_INPUT"]],
+  );
+  delete manifest.lanes.lane.files[0].requiredEnv;
   await writeJson(join(root, "manifest.json"), manifest);
   const selected = run(root, [
     "run",
@@ -642,6 +663,12 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
   ]);
+  const suiteSkip = summary.issues.find((entry) => entry.name === "skipped suite");
+  assert.equal(suiteSkip.file, "tests/integration/skips.test.mjs");
+  assert.equal(suiteSkip.source.file, suiteSkip.file);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.line) && suiteSkip.source.line > 0);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.column) && suiteSkip.source.column > 0);
+  assert.equal(suiteSkip.source.nesting, 0);
   // Every issue is named in the job log, which keeps every attempt.
   for (const line of [
     "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
@@ -650,6 +677,48 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected suite did not run its tests: skipped suite",
   ]) {
     assert.ok(selected.stderr.split("\n").includes(line), line);
+  }
+
+  // Filesystem traversal follows the symlink before '..'; lexical normalization
+  // instead points at the unrelated in-tree helper and must not supply a source.
+  const external = await temporaryDirectory(t, "ci-runner-source-");
+  await mkdir(join(external, "deep"));
+  await symlink(join(external, "deep"), join(root, "link"), "dir");
+  await writeFile(join(root, "helper.mjs"), "// Not the source of the skipped suite.\n");
+  await writeFile(
+    join(external, "helper.mjs"),
+    'describe("external skipped suite", { skip: true }, () => {});\n',
+  );
+  for (const filename of [`${root}/link/../helper.mjs`, "link/../helper.mjs"]) {
+    await writeFile(
+      join(root, "tests/integration/skips.test.mjs"),
+      [
+        'import { readFileSync } from "node:fs";',
+        'import { describe } from "node:test";',
+        'import { runInNewContext } from "node:vm";',
+        `const filename = ${JSON.stringify(filename)};`,
+        'runInNewContext(readFileSync(filename, "utf8"), { describe }, { filename });',
+      ].join("\n"),
+    );
+    const escaped = run(root, [
+      "run",
+      "lane",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/lane.jsonl",
+      "--results",
+      resultsPath,
+    ]);
+    const escapedSummary = JSON.parse(await readFile(resultsPath, "utf8"));
+    const escapedSkip = escapedSummary.issues.find(
+      (entry) => entry.name === "external skipped suite",
+    );
+    assert.equal(escaped.status, 1);
+    assert.equal(escapedSkip.code, "unexpected-skip");
+    assert.equal(escapedSkip.source, undefined, filename);
   }
 });
 
@@ -5098,6 +5167,32 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       'test("measures", (t) => {',
       ...[
         measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: 1234,
+          transcript: "secretauthvalue-transcript",
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "secretauthvalue-stage",
+          outcome: "passed",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "secretauthvalue-outcome",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: "secretauthvalue-time",
+        }),
+
+        measurement({
           kind: "kubelet-volume-refresh",
           volume: "secret",
           nudge: "pod-annotation",
@@ -5233,6 +5328,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(summary.files[0].measurements, [
+    { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
     {
       kind: "kubelet-volume-refresh",
       volume: "secret",

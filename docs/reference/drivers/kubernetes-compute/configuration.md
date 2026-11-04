@@ -79,30 +79,26 @@ for label constraints, egress rules, and source-address verification.
 Omission selects the verification runtime. Storage requirements are defined in
 [storage and credentials](storage-and-credentials.md).
 
-| Setting                                         | Type       | Requirement | Value, default, and constraints                                                                                                                                                    |
-| ----------------------------------------------- | ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `runtime.transportSecretPrefix`                 | string     | Required    | Must form a DNS-safe Secret name with `-` and a 12-character suffix.                                                                                                               |
-| `runtime.gatewayStorageClassName`               | string     | Required    | DNS-safe StorageClass name for private `10Gi` RWO gateway disks with filesystem locking and durability.                                                                            |
-| `runtime.nodeSelector`                          | string map | Optional    | Harness and embedded Pod placement. Omission adds no selector.                                                                                                                     |
-| `runtime.gatewayNodeSelector`                   | string map | Optional    | Required for dedicated real Gateways, including their state initializer. Use separate trusted and tenant node pools.                                                               |
-| `runtime.nativeOpenClawSessionCapacity`         | integer    | Optional    | `1`–`1024`, default `8` retained native session workers per AgentRevision Sandbox.                                                                                                 |
-| `runtime.codexSeccompProfile`                   | string     | Optional    | Relative localhost profile installed on every eligible node. Omission uses `RuntimeDefault`.                                                                                       |
-| `runtime.codexModelBaseUrl`                     | string     | Optional    | HTTPS streaming Responses endpoint ending in `/v1` for dedicated Codex API-key auth; omission retains OpenAI's default.                                                            |
-| `runtime.codexModelSupportsStandaloneWebSearch` | boolean    | Optional    | Default `false` for an explicit endpoint; `true` requires `codexModelBaseUrl`. See [provider capabilities](managed-native-configuration.md#custom-codex-provider-capabilities).    |
-| `runtime.channels`                              | object     | Optional    | Requires `proxyUrl`; optional `managedProxy` has `hostname`, `namespace`, `podLabels`, and `port`. No channel proxy by default. See [channel egress](networking-and-isolation.md). |
+| Setting                                 | Type       | Requirement | Value, default, and constraints                                                                                                                                                    |
+| --------------------------------------- | ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime.transportSecretPrefix`         | string     | Required    | Must form a DNS-safe Secret name with `-` and a 12-character suffix.                                                                                                               |
+| `runtime.gatewayStorageClassName`       | string     | Required    | DNS-safe StorageClass name for private `10Gi` RWO gateway disks with filesystem locking and durability.                                                                            |
+| `runtime.nodeSelector`                  | string map | Optional    | Harness and embedded Pod placement. Omission adds no selector.                                                                                                                     |
+| `runtime.gatewayNodeSelector`           | string map | Optional    | Required for dedicated real Gateways, including their state initializer. Use separate trusted and tenant node pools.                                                               |
+| `runtime.nativeOpenClawSessionCapacity` | integer    | Optional    | `1`–`1024`, default `8` retained native session workers per AgentRevision Sandbox.                                                                                                 |
+| `runtime.codexSeccompProfile`           | string     | Optional    | Relative localhost profile installed on every eligible node. Omission uses `RuntimeDefault`.                                                                                       |
+| `runtime.modelProvider`                 | object     | Optional    | Shared OpenAI-compatible provider for Codex and OpenClaw. Requires `protocol` and `baseUrl`; see [model providers](model-provider.md).                                             |
+| `runtime.channels`                      | object     | Optional    | Requires `proxyUrl`; optional `managedProxy` has `hostname`, `namespace`, `podLabels`, and `port`. No channel proxy by default. See [channel egress](networking-and-isolation.md). |
 
 Stopping a hosted native session releases its slot; saved history does not consume
 capacity. OpenClaw does not retire idle paired-node workers, so size capacity
 against workload CPU and memory limits.
 
-`codexModelBaseUrl` rejects wildcards, port `0`, `@` or credentials, spaces,
-controls, missing `//`, queries, fragments, and shorthand IPv4. A non-443 port,
-IPv6, or excluded IPv4 [starts with a warning](../../../guides/operate/network-isolation.md#if-a-check-fails).
-OpenShell credential sources select their own endpoint. OAuth, account logins,
-and OpenClaw ignore this option. Only the Harness receives the key. Private
-Gateway configuration qualifies parent and subagent selections (strings or
-primary/fallback objects), preserving native IDs and admitted values. Transport
-uses the authenticated app server and fail-closed HTTP; see [Harness execution](../../harness-execution.md).
+The [shared model provider](model-provider.md) owns endpoint selection and
+validation. Credential Sources retain separate destination authorization.
+Only the Harness receives its key. For dedicated Codex, transport uses the
+authenticated app server and fail-closed HTTP; see
+[Harness execution](../../harness-execution.md).
 
 ## Private routing
 

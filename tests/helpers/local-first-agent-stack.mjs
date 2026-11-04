@@ -15,6 +15,26 @@ const phases = [
   ["OpenClaw Enterprise development stack is ready.", "ready"],
 ];
 
+// The reporter retains only fixed stage names, outcome and elapsed time.
+export async function measureFirstAgentStage(context, stage, operation) {
+  const started = performance.now();
+  let outcome = "failed";
+  try {
+    const result = await operation();
+    outcome = "passed";
+    return result;
+  } finally {
+    context.diagnostic(
+      `openclaw-ci-measurement ${JSON.stringify({
+        kind: "local-first-agent",
+        stage,
+        outcome,
+        elapsedMs: Math.round(performance.now() - started),
+      })}`,
+    );
+  }
+}
+
 function withoutModelCredentials(environment) {
   const result = { ...environment };
   delete result.OPENAI_API_KEY;
@@ -350,7 +370,9 @@ export async function localFirstAgentStack(context) {
       return;
     }
     try {
-      await run(cli, ["dev", "down"], subprocessEnvironment, "Stop Local Setup", 4 * minute);
+      await measureFirstAgentStage(context, "cleanup", () =>
+        run(cli, ["dev", "down"], subprocessEnvironment, "Stop Local Setup", 4 * minute),
+      );
     } catch (error) {
       try {
         await lstat(directory);
@@ -363,6 +385,8 @@ export async function localFirstAgentStack(context) {
     }
   });
   initializationAttempted = true;
-  await run(cli, startupArguments, subprocessEnvironment, "Start Local Setup", 18 * minute);
+  await measureFirstAgentStage(context, "setup", () =>
+    run(cli, startupArguments, subprocessEnvironment, "Start Local Setup", 18 * minute),
+  );
   return { directory, environment };
 }

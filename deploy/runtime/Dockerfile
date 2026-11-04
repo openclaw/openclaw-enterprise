@@ -118,7 +118,7 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
     && git apply /tmp/openclaw-codex-read-only-paths.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
-RUN echo '7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+RUN echo '37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
@@ -356,8 +356,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     mkdir -p /usr/local/lib/oce/plugins/google/bin; \
     node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
 
-COPY apps/controller/plugins/oce-slack/mcp.json /usr/local/lib/oce/plugins/slack/mcp.json
-COPY apps/controller/plugins/oce-slack/ai.openclaw.oce/release.json /usr/local/lib/oce/plugins/slack/release.json
+COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/

@@ -161,19 +161,30 @@ Create a private evidence directory and record these values before mutation.
 - [ ] PVC names and UIDs, PV names, representative workspace file hashes,
       session counts, and gateway state. Back up volumes when recovery could
       require restoring Agent data.
-- [ ] If recovery needs both PostgreSQL and Agent storage, capture the database
-      and affected volumes at one consistent point. Pause all relevant writers
-      throughout capture, or use storage tooling that guarantees consistency
-      across those stores. A PostgreSQL recovery window spanning two disk
-      snapshots does not prove their contents agree.
-      Before booking downtime, restore the database, Gateway state, and
-      workspaces together on an isolated copy. Before starting restored
-      services, block production traffic and outbound access to production
-      repository, channel, and model providers. A restored worker can otherwise
-      revoke credentials still in use or send live deliveries. Use isolated test
-      endpoints and credentials for checks that need a provider. Through the
-      restored application, verify a known Agent revision, reopen an existing
-      session, and check a known workspace file. Record the recovery time.
+- [ ] When recovery needs data from multiple stores, capture the required stores
+      at one consistent point. Include the selected Configuration Driver's
+      backing store when recovery needs current Configuration values. For the
+      Kubernetes Driver, capture the
+      [Configuration ConfigMaps](../../reference/configuration/kubernetes.md)
+      in their tenant storage namespaces using existing authorized access.
+      Pause all relevant writers throughout capture, or use storage tooling
+      that guarantees consistency across those stores. A PostgreSQL recovery
+      window spanning two disk snapshots does not prove their contents agree.
+      Before booking downtime, restore the database, Gateway state, workspaces,
+      and any required Configuration values together on an isolated copy.
+      Before starting restored services, block production traffic and outbound
+      access to production repository, channel, and model providers. A restored
+      worker can otherwise revoke credentials still in use or send live
+      deliveries. Use isolated test endpoints and credentials for checks that
+      need a provider. If you restored Configuration values, read a known saved
+      Configuration through the restored application by its exact Namespace and
+      Configuration IDs. Compare its generation and a representative nonsecret
+      value with the source baseline. Through the same application, verify a
+      known Agent revision and compare a nonsecret setting with that revision's
+      baseline. PostgreSQL stores the revision's immutable configuration
+      snapshot, which can differ from the current draft. Do not print or record
+      sensitive Configuration or Secret material. Reopen an existing session
+      and check a known workspace file. Record the recovery time.
 - [ ] Authentication origin, cookie domain, auth-secret identity, TLS material,
       bootstrap key storage, service-principal and service-key identities,
       repository registry metadata, broker sessions, and external provider or

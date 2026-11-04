@@ -47,6 +47,42 @@ export const AgentProvisioningWorkId = Type.String({
   maxLength: 200,
   pattern: "^[A-Za-z0-9._~:@/-]{1,200}$",
 });
+export const FirstDeploymentIntent = Type.Object(
+  {
+    key: Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" }),
+    expectedConfigurationId: ConfigurationId,
+    expectedGeneration: ConfigurationGeneration,
+  },
+  { additionalProperties: false },
+);
+
+// Decimal strings below the maximum either have fewer digits or first differ at
+// one position with a smaller digit. Keep the wire bound tied to the numeric bound.
+const maximumGeneration = String(Number.MAX_SAFE_INTEGER);
+const generationPrefixes = [...maximumGeneration].flatMap((digit, index) => {
+  const minimum = index === 0 ? 1 : 0;
+  const maximum = Number(digit) - 1;
+  return maximum < minimum
+    ? []
+    : [
+        `${maximumGeneration.slice(0, index)}[${minimum}-${maximum}][0-9]{${maximumGeneration.length - index - 1}}`,
+      ];
+});
+// Unlike $, the final assertion also rejects a trailing newline.
+const generationPattern = `^(?:[1-9][0-9]{0,${maximumGeneration.length - 2}}|${generationPrefixes.join("|")}|${maximumGeneration})(?![\\s\\S])`;
+
+/** Path values stay text until the handler converts the validated decimal generation. */
+export const FirstDeploymentRecoveryTuple = Type.Object(
+  {
+    ...FirstDeploymentIntent.properties,
+    expectedGeneration: Type.String({
+      pattern: generationPattern,
+      maxLength: maximumGeneration.length,
+    }),
+  },
+  { additionalProperties: false },
+);
+
 export const BackendId = Type.String({
   minLength: 1,
   maxLength: BACKEND_ID_MAX_CHARACTERS,
@@ -540,13 +576,28 @@ export const DiscoverSavedAgentPluginsBody = Type.Object(
   { additionalProperties: false },
 );
 
-export const DiscoverSavedAgentPluginDetailsBody = Type.Object(
-  {
-    pluginId: Type.String({ minLength: 1, maxLength: 256 }),
-    credentialSource: Type.Optional(CredentialSourceReference),
-  },
-  { additionalProperties: false },
-);
+export const DiscoverSavedAgentPluginDetailsBody = Type.Union([
+  Type.Object(
+    {
+      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+      credentialSource: Type.Optional(CredentialSourceReference),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+      managedConnection: Type.Object(
+        {
+          slot: Type.String({ minLength: 1, maxLength: 64 }),
+          sourceId: CredentialSourceId,
+        },
+        { additionalProperties: false },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 export const PermissionActionSchema = Type.Union([
   Type.Literal("create"),
@@ -1143,6 +1194,9 @@ export type IAMAccessBindingId = Type.Static<typeof IAMAccessBindingId>;
 export type IAMServicePrincipalId = Type.Static<typeof IAMServicePrincipalId>;
 export type ConfigurationGeneration = Type.Static<typeof ConfigurationGeneration>;
 export type AgentId = Type.Static<typeof AgentId>;
+export type DiscoverSavedAgentPluginDetailsBody = Type.Static<
+  typeof DiscoverSavedAgentPluginDetailsBody
+>;
 export type RevisionId = Type.Static<typeof RevisionId>;
 export type AuditId = Type.Static<typeof AuditId>;
 export type RequestId = Type.Static<typeof RequestId>;
@@ -1275,3 +1329,5 @@ export const UpdatePresetBody = Type.Object(
   { name: Type.Optional(Name), template: Type.Optional(PresetTemplateSchema) },
   { additionalProperties: false, minProperties: 1 },
 );
+
+export type FirstDeploymentIntent = Type.Static<typeof FirstDeploymentIntent>;

@@ -94,10 +94,14 @@ a running Kubernetes Pod or model turn.
 ```sh
 pnpm credentials:build
 node --test tests/integration/repository-credentials-package.test.ts
+REPOSITORY_CREDENTIALS_APP_ROOT="$PWD/.build/repository-credentials/client/dist" \
+  node --test tests/integration/repository-credentials-router.test.mjs
 ```
 
 This verifies the emitted service and client without workspace source or runtime
-`node_modules`. To test those artifacts together, build both images as described in
+`node_modules`, including hooks reached through relative symlinks after package
+relocation. The router run uses the generated hook launchers for native Git checks.
+To test those artifacts together, build both images as described in
 the [operator guide](../guides/repository-credentials/standalone-service.md#container-images),
 then run:
 

@@ -3303,6 +3303,65 @@ test(
   },
 );
 
+test("MCP plugin discovery has independent API HTTPS egress", tooling, async () => {
+  const name = "openclaw-enterprise-api-plugin-discovery-egress";
+  const modelName = "openclaw-enterprise-api-model-discovery-egress";
+  const defaults = await resources((await render()).stdout);
+  assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
+
+  const pluginValues = {
+    "api.pluginDiscoveryCidrs[0]": "203.0.113.15/32",
+    "api.pluginDiscoveryCidrs[1]": "203.0.113.16/32",
+  };
+  const pluginOnly = await resources((await render(pluginValues)).stdout);
+  assert.ok(!pluginOnly.some(({ metadata }) => metadata.name === modelName));
+  const policy = pluginOnly.find(
+    ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
+  );
+  assert.ok(policy, "configured MCP hosts must render their own API egress policy");
+  assert.deepEqual(policy.spec, {
+    podSelector: {
+      matchLabels: {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": "oce",
+        "app.kubernetes.io/component": "api",
+      },
+    },
+    policyTypes: ["Egress"],
+    egress: [
+      {
+        to: [{ ipBlock: { cidr: "203.0.113.15/32" } }, { ipBlock: { cidr: "203.0.113.16/32" } }],
+        ports: [{ protocol: "TCP", port: 443 }],
+      },
+    ],
+  });
+
+  // Configuring both lists retains their distinct policies and destinations.
+  const modelValues = { "api.modelDiscoveryCidrs[0]": "198.51.100.25/32" };
+  const modelOnly = await resources((await render(modelValues)).stdout);
+  assert.ok(!modelOnly.some(({ metadata }) => metadata.name === name));
+  const combined = await resources((await render({ ...pluginValues, ...modelValues })).stdout);
+  assert.deepEqual(
+    combined.find(({ metadata }) => metadata.name === name),
+    policy,
+  );
+  assert.deepEqual(
+    combined.find(({ metadata }) => metadata.name === modelName),
+    modelOnly.find(({ metadata }) => metadata.name === modelName),
+  );
+
+  for (const cidr of ["0.0.0.0/0", "203.0.113.0/24", "mcp.example.invalid"]) {
+    await assert.rejects(
+      render({ "api.pluginDiscoveryCidrs[0]": cidr }),
+      /api.pluginDiscoveryCidrs/,
+    );
+  }
+  await assert.rejects(
+    render({ "api.pluginDiscoveryCidrs": "203.0.113.15/32" }),
+    /api.pluginDiscoveryCidrs/,
+  );
+});
+
 test("Slack directory proxy grants only API egress to its exact endpoint", tooling, async () => {
   const name = "openclaw-enterprise-api-channel-directory-egress";
   const defaults = await resources((await render()).stdout);

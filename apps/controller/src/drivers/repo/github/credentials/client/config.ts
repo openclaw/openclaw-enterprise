@@ -113,6 +113,29 @@ export function encodeRepositoryCredentialSessionFiles(
   };
 }
 
+/** Refuse an unpublishable client directory: a missing or shared parent, or an existing target. */
+export async function assertClientDirectoryAvailable(directory: string): Promise<void> {
+  const target = resolve(directory);
+  try {
+    await assertPrivateDirectory(dirname(target));
+  } catch (error) {
+    // A fixed code for a missing parent or ancestor; the OS message repeats the path.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("client-parent-missing", { cause: error });
+    }
+    throw error;
+  }
+  try {
+    await lstat(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  throw new Error("client-directory-exists");
+}
+
 /** Publish a new private directory atomically; existing sessions are never overwritten. */
 export async function writeClientConfiguration(
   opened: RepositoryCredentialSessionResult,
@@ -122,15 +145,7 @@ export async function writeClientConfiguration(
   const contents = encodeRepositoryCredentialSessionFiles(opened, publicCa);
   const target = resolve(directory);
   const parent = dirname(target);
-  await assertPrivateDirectory(parent);
-  try {
-    await lstat(target);
-    throw new Error("client-directory-exists");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
+  await assertClientDirectoryAvailable(target);
   const staging = await mkdtemp(join(parent, ".session-"));
   const gh = join(staging, "gh");
   try {

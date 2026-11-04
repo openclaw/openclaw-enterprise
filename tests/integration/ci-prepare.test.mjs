@@ -13,7 +13,7 @@ import { describe, test } from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
@@ -48,6 +48,59 @@ async function writeState(path, state) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   await chmod(path, 0o600);
 }
+
+test("focused first-Agent preparation leaves installation to Local Setup and refuses another file", async (t) => {
+  const root = await fixture(t);
+  const saved = {
+    CODEX_ACCESS_TOKEN: process.env.CODEX_ACCESS_TOKEN,
+    OCC_HELM_BIN: process.env.OCC_HELM_BIN,
+    OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
+  };
+  // Fail before side effects if generic stack preparation is accidentally restored.
+  process.env.OCC_HELM_BIN = join(root, "unavailable-helm");
+  process.env.CODEX_ACCESS_TOKEN = "synthetic-model-credential";
+  process.env.OCC_TEST_OPENAI_MODEL = "synthetic-model";
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+  for (const file of [
+    "tests/integration/local-first-agent-openshell-real.test.mjs",
+    "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+  ]) {
+    const statePath = join(root, `${file.split("/").at(-1)}.json`);
+    const lane = await prepareLane({ lane: "openshell", statePath, file });
+    const prepared = await prepareFile({ lane: "openshell", statePath, file });
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    assert.deepEqual(state.resources, []);
+    assert.equal(prepared.env.OCC_TEST_DATABASE_URL, undefined);
+    assert.equal(prepared.env.OCC_TEST_KUBERNETES_CONTEXT, undefined);
+    assert.equal(prepared.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");
+    await assert.rejects(
+      prepareFile({
+        lane: "openshell",
+        statePath,
+        file: "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      }),
+      /Selected file must match/,
+    );
+    await prepared.cleanup();
+    await lane.cleanup();
+  }
+  await assert.rejects(
+    prepareLane({
+      lane: "openshell",
+      statePath: join(root, "invalid.json"),
+      file: "tests/integration/not-a-lane-file.test.ts",
+    }),
+    /Selected file must belong/,
+  );
+});
 
 // A ready Compose PostgreSQL server, owned by its own preparation prefix, published on port
 // (a fake server's, when the case runs SQL).
@@ -1735,6 +1788,60 @@ for (let index = 0; index < Number(times); index += 1) {
     }
   });
 
+  test("advisory OpenShell shards execute every manifest file once without cancelling siblings", async (t) => {
+    const workflow = loadYaml(
+      await readFile(join(repositoryRoot, ".github/workflows/qa-advisory.yml"), "utf8"),
+    );
+    const selection = workflow.jobs.eligibility.steps.find(
+      (step) => step.id === "openshell-matrix",
+    );
+    const job = workflow.jobs.openshell;
+    const action = job.steps.find((step) => step.uses === "./.github/actions/run-ci-lane");
+    const files = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json")).lanes
+      .openshell.files;
+    assert.equal(job["runs-on"], "ubuntu-24.04");
+    assert.equal(job.strategy["fail-fast"], false);
+    assert.equal(job.environment, "integration-qa-pr");
+    assert.equal(
+      job.strategy.matrix,
+      "${{ fromJSON(needs.eligibility.outputs.openshell-matrix) }}",
+    );
+    assert.equal(action.with["test-file"], "${{ matrix.file }}");
+    assert.equal(action.with["artifact-prefix"], "qa-advisory-${{ matrix.shard }}");
+
+    const root = await fixture(t);
+    for (const [index, selected] of [
+      "",
+      files[0].path,
+      "tests/integration/unknown.test.mjs",
+    ].entries()) {
+      const output = join(root, `matrix-${index}`);
+      // Execute the workflow's selector, so a fixed matrix that drops a registered file fails here.
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", selection.run], {
+        cwd: repositoryRoot,
+        env: { ...process.env, OPENSHELL_FILE: selected, GITHUB_OUTPUT: output },
+        encoding: "utf8",
+      });
+      if (index === 2) {
+        assert.notEqual(
+          result.status,
+          0,
+          "An unknown selection must fail, not produce an empty matrix.",
+        );
+        continue;
+      }
+      assert.equal(result.status, 0, result.stderr);
+      const { include } = JSON.parse(
+        (await readFile(output, "utf8")).trim().slice("matrix=".length),
+      );
+      assert.deepEqual(
+        include.map(({ file }) => file),
+        selected ? [selected] : files.map(({ path }) => path),
+      );
+      assert.equal(new Set(include.map(({ shard }) => shard)).size, include.length);
+    }
+  });
+
   test("Kubernetes test helper passes an explicit Codex localhost seccomp profile into runtime config", () => {
     const profile = "openclaw/codex-bwrap.json";
     const configuration = createKubernetesInstallationConfiguration({
@@ -2147,12 +2254,70 @@ for (let index = 0; index < Number(times); index += 1) {
     }
   });
 
+  test("prepareLane reports skipped image pulls when logging image configuration cannot be read", async (t) => {
+    const root = await fixture(t);
+    const summary = join(root, "summary.md");
+    const preload = join(root, "fail-collector-config.mts");
+    const prepareUrl = new URL("../../scripts/ci/prepare.mjs", import.meta.url).href;
+    // The preload also supplies the logging module when the prepare CLI imports it.
+    await writeFile(
+      preload,
+      `import { registerHooks } from "node:module";
+
+export function prepareLogging(): never {
+  throw new Error("unexpected logging setup");
+}
+
+export async function readDefaultCollectorImage(): Promise<never> {
+  throw new Error("fixture collector config read failed");
+}
+
+const prepareUrl = ${JSON.stringify(prepareUrl)};
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "./logging.mjs" && context.parentURL === prepareUrl) {
+      return { url: import.meta.url, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  },
+});
+`,
+    );
+    const result = await spawnResult(
+      process.execPath,
+      [
+        "--import",
+        preload,
+        preparePath,
+        "--lane",
+        "logging-collector",
+        "--state",
+        join(root, "state.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          GITHUB_ENV: "",
+          GITHUB_OUTPUT: "",
+          GITHUB_STEP_SUMMARY: summary,
+          OCC_DOCKER_BIN: join(root, "must-not-run"),
+        },
+      },
+    );
+
+    assert.equal(result.status, 1, result.stderr);
+    assertStderrMatch(result.stderr, /^fixture collector config read failed$/m);
+    assert.doesNotMatch(result.stderr, /\[ci-timing\]/);
+    assert.equal(await readFile(summary, "utf8"), "- logging-collector / image-pulls: skipped\n");
+  });
+
   test("prepareLane pre-pulls logging and metrics images with retry and preserves its Node override", async (t) => {
     for (const failure of ["transient", "missing-manifest"]) {
       await t.test(failure, async (t) => {
         const root = await fixture(t);
         const statePath = join(root, "logging-state.json");
         const githubEnv = join(root, "github.env");
+        const summary = join(root, "summary.md");
         const customNodeImage =
           "docker.io/library/node:24-bookworm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         const collectorImage = loadYaml(
@@ -2208,7 +2373,14 @@ process.exit(2);
             OCC_DOCKER_BIN: dockerPath,
             OCC_TEST_LOGGING_NODE_IMAGE: customNodeImage,
             CI_METRICS_PULL_FAILURE: failure,
+            GITHUB_STEP_SUMMARY: summary,
           },
+        );
+
+        const outcome = failure === "missing-manifest" ? "failure" : "success";
+        assert.match(
+          await readFile(summary, "utf8"),
+          new RegExp(`^- logging-collector / image-pulls: ${outcome} \\(\\d+ ms\\)\\n$`),
         );
 
         const pulls = (await readJsonLines(join(root, "docker.jsonl")))
@@ -2624,6 +2796,47 @@ if (args[0] === "pull") {
           : /OCC_TEST_KUBERNETES_GATEWAY_IMAGE must be an immutable/,
       );
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+    }
+  });
+
+  test("Kubernetes runtime image overrides require a complete pair before preparation", async (t) => {
+    const root = await fixture(t);
+    for (const selection of ["gateway", "agent", "both", "neither"]) {
+      await t.test(selection, async () => {
+        const statePath = join(root, `${selection}.json`);
+        const partial = selection === "gateway" || selection === "agent";
+        // Partial overrides must fail before state or infrastructure is created.
+        // Complete/default selections reach the existing prepared-state boundary.
+        const result = await runPrepare(
+          [
+            "--lane",
+            "k3d-model",
+            "--state",
+            statePath,
+            ...(partial ? [] : ["--file", "tests/integration/harness-topology-k3d-real.test.mjs"]),
+          ],
+          {
+            OPENAI_API_KEY: "test-openai-key",
+            OCC_TEST_OPENAI_MODEL: "gpt-test",
+            NODE_BASE_IMAGE: nodeBaseImage,
+            OCC_DOCKER_BIN: join(root, "docker-must-not-run"),
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE:
+              selection === "gateway" || selection === "both" ? immutableImage : "",
+            OCC_TEST_KUBERNETES_AGENT_IMAGE:
+              selection === "agent" || selection === "both" ? immutableImage : "",
+            OCC_TEST_KUBERNETES_RUNTIME_IMAGE: "",
+            OCC_TEST_KUBERNETES_CODEX_IMAGE: "",
+          },
+        );
+        assert.equal(result.status, 1);
+        assertStderrMatch(
+          result.stderr,
+          partial
+            ? /OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together/
+            : /requires a prior prepareLane/,
+        );
+        await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+      });
     }
   });
 
