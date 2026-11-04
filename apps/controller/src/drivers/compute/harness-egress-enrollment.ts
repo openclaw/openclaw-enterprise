@@ -1,4 +1,7 @@
 export const HARNESS_EGRESS_ENROLLMENT_PATH = "/openclaw/runtime/egress-enrollment";
+// Shared by the generated launcher and its denial-only authority branch.
+export const HARNESS_GIT_PROBE_PATH_PATTERN =
+  /^\/(?:[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.git\/)?oce-observe-request\/[0-9a-f]{32}\.git\/info\/refs$/;
 
 // This runs in the generated Harness, before Codex, login or its first model probe. The transport
 // bearer may read this challenge; only Compute can sign its release.
@@ -104,7 +107,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
         if (online && Object.hasOwn(release, "probePath")) {
           const {probePath, startupId} = release;
           if (probeSent || startupId !== challenge.startupId ||
-              !/^\/oce-observe-request\/[0-9a-f]{32}\.git\/info\/refs$/.test(probePath)) {
+              typeof probePath !== "string" || !${HARNESS_GIT_PROBE_PATH_PATTERN}.test(probePath)) {
             answer(409, {error: "stale_probe"});
             return;
           }
