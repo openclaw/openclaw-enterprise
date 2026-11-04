@@ -104,7 +104,8 @@ endpoint and projected authorization-token file. Ambient AWS keys, profiles, and
 alternate credential endpoints are not supported. With default-deny egress, allow
 the trusted controller to reach the EKS Pod Identity endpoint on TCP 80 and the
 regional STS and SSM endpoints over verified HTTPS on TCP 443. Its role needs
-`ssm:GetParameter` on that exact ARN and `sts:GetCallerIdentity` access. The
+`ssm:GetParameter` on that exact ARN. The driver uses `GetCallerIdentity` to
+check the account. AWS requires no IAM permission for that call. The
 parameter must belong to the role's AWS account, use the commercial `aws`
 partition, and select a supported commercial region. Cross-account shared
 parameters are refused. For a customer managed KMS key, grant decryption through
@@ -115,8 +116,9 @@ tenants cannot override them. Configure the API and worker consistently.
 
 For an authorized protected credential read, the driver checks live Kubernetes
 Namespace placement and exact Secret ownership, reads the current decrypted AWS
-value, then checks ownership again. It returns the AWS version and the time it
-validated the response. A failed AWS read, changed owner, cancellation, or elapsed
+value, then checks ownership again. It returns an opaque identifier for the publication and the time it
+validated the response. The identifier includes the binding, AWS version, and
+AWS modification time because recreating a parameter restarts its version counter. A failed AWS read, changed owner, cancellation, or elapsed
 deadline fails the operation without using the Kubernetes value. The next
 protected read queries AWS again; the driver neither caches nor writes AWS
 material.

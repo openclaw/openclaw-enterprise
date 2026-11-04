@@ -288,6 +288,12 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
   server.on("connection", () => {
     tcpConnections++;
   });
+  let requestBytes = 0;
+  server.on("secureConnection", (socket) => {
+    socket.on("data", (chunk) => {
+      requestBytes += chunk.length;
+    });
+  });
   server.requestTimeout = 35_000;
   server.headersTimeout = 5_000;
   t.after(() => {
@@ -306,6 +312,9 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
   return {
     observations,
     errors,
+    get requestBytes() {
+      return requestBytes;
+    },
     get tcpConnections() {
       return tcpConnections;
     },

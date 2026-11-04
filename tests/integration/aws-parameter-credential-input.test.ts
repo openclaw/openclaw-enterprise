@@ -66,6 +66,7 @@ async function awsWire(t: TestContext) {
     ARN: arn,
     Type: "SecureString",
     Version: 1,
+    LastModifiedDate: 1_700_000_000,
     Value: "synthetic-aws-A",
   };
   let failure = false;
@@ -217,8 +218,14 @@ async function awsWire(t: TestContext) {
     setCallerAccount(account: string) {
       callerAccount = account;
     },
-    rotate(value: string, version: number) {
-      parameter = { ARN: arn, Type: "SecureString", Version: version, Value: value };
+    rotate(value: string, version: number, modifiedAt = 1_700_000_000 + version) {
+      parameter = {
+        ARN: arn,
+        Type: "SecureString",
+        Version: version,
+        Value: value,
+        LastModifiedDate: modifiedAt,
+      };
       failure = false;
     },
     invalid(fields: Record<string, unknown>) {
@@ -382,7 +389,17 @@ test(
       assert.equal(aws.calls, before + 1);
       priorVersion = result.version;
     }
-    for (const fields of [{ ARN: arn + "-wrong" }, { Type: "String" }, { Version: 1.5 }]) {
+    // The same ARN and version can name another publication after delete and recreate.
+    aws.rotate("synthetic-recreated", 2, 1_700_001_002);
+    const recreated = await read();
+    assert.notEqual(recreated.version, priorVersion);
+    assert.equal((await read()).version, recreated.version, "one publication keeps one identifier");
+    for (const fields of [
+      { LastModifiedDate: undefined },
+      { ARN: arn + "-wrong" },
+      { Type: "String" },
+      { Version: 1.5 },
+    ]) {
       aws.rotate("synthetic-aws-B", 2);
       aws.invalid(fields);
       await assert.rejects(read(), SecretBackendUnavailableError);
@@ -459,7 +476,7 @@ test(
 );
 
 test(
-  "regular OCC protected inference uses fresh AWS input and enforces withdrawn grants",
+  "OCC resolves fresh AWS input and refuses send authorization after grant withdrawal",
   { timeout: 30000 },
   async (t) => {
     const { staticEgressFixture } = await import("../helpers/static-egress.mjs");
@@ -533,7 +550,7 @@ test(
       const before = aws.calls;
       const captured = f.capture();
       const resolved = await f.resolve(captured);
-      assert.ok(resolved.ready, JSON.stringify(resolved));
+      assert.ok(resolved.ready);
       assert.equal(resolved.ready.credential_headers[0].value, `Bearer ${value}`);
       assert.notEqual(resolved.ready.evidence.material_version, priorVersion);
       priorVersion = resolved.ready.evidence.material_version;
@@ -547,6 +564,7 @@ test(
     const captured = f.capture();
     const resolved = await f.resolve(captured);
     assert.ok(resolved.ready);
+    // The installed sender is exercised in egress-connected. This exchange observes OCC refusal.
     await f.revoke();
     const before = aws.calls;
     assert.ok(
@@ -555,6 +573,5 @@ test(
     );
     assert.ok((await f.resolve(f.capture())).refused);
     assert.equal(aws.calls, before, "withdrawn grant is checked before fresh AWS reads");
-    assert.equal(f.providerRequests.length, 2, "withdrawal permits zero new destination sends");
   },
 );

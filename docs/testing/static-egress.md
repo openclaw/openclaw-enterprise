@@ -301,33 +301,30 @@ Killing a local client does not establish remote termination. Never replay an un
 
 ### Read evidence and retain cleanup custody
 
-The test creates resources through public APIs, deploys through the real worker,
-reads its persisted installation, and checks the authenticated supplier receipt.
-It uses the packaged Codex app-server caller from the Agent Gateway Pod. It
-explicitly adopts its fresh unbound source with `adoption: "live"` and
-`authorityScope: "execution"`. The origin observes seventeen requests: one
-normal startup probe, fifteen measured Codex sends (including six hostile
-responses and recovery), and one managed request from an ordinary sibling.
-For that sibling and the direct TCP probe, the operator uses the supplier's
-authenticated [workload launch path](./protected-repository-custody.md) so both
-inherit the installed connection mediation. Kubernetes exec remains suitable for
-independent process inspection, but cannot establish managed workload traffic.
-Each measured exchange must join the supervisor's resolve, permit and response
-transitions. IAM revocation must produce no permit or upstream request. A raw
-TCP bypass to the same live listener must produce no connection, with independent
-reachability controls immediately before and after. Hostile responses must give
-Codex an empty HTTP 502, no partial assistant output, and a private
-`response_blocked` transition after the authorized provider send. The test
-checks that the synthetic provider credential is absent from the ordinary Agent
-and running Codex process environments, observed responses, bounded logs,
-diagnostics, audit, Pod specs and ConfigMaps.
+The test adopts an unbound source with `adoption: "live"` and
+`authorityScope: "execution"`, deploys through the worker, and checks the persisted
+installation against the supplier receipt. The origin counts 19 requests: one
+startup probe, 17 Codex sends from the Agent Gateway Pod, and one sibling request.
+The sibling and the direct TCP probe use the supplier's authenticated
+[workload launch path](./protected-repository-custody.md). Kubernetes exec serves
+only for process inspection.
 
-Retain `.build/egress-connected/runtime-<uuid>/` for atomic phase checkpoints, resource
-IDs and bounded observations, without raw requests or credentials. Each controller
-attempt starts with an operation ID and unknown outcome. A response does not establish
-the effect. Failures retain the phase and source location.
-The deployed checkpoint identifies the public owner capability of the source selected
-by the admitted Harness, while sender evidence independently shows protected sends.
+Join each request ID to its supervisor transitions. During withdrawal, the test
+holds the Namespace row and queues the public grant deletion. After the sender
+reserves its resolved request, the test releases the row. Require a refused
+receipt, an empty client refusal, zero new TCP connections and zero TLS
+application bytes at the origin. A fresh turn must fail before material access;
+regrant must restore a successful turn.
+
+The direct TCP probe must make no connection between two successful reachability
+controls. Hostile responses must yield an empty HTTP 502, no partial assistant
+output and a private `response_blocked` transition. Check for credential leaks
+in Agent and Codex environments, responses, bounded logs, diagnostics, audit,
+Pod specs and ConfigMaps.
+
+Keep the private checkpoints in `.build/egress-connected/runtime-<uuid>/`. They record
+resource IDs, the selected source owner, operation IDs and failure locations.
+Confirm each effect independently of its HTTP response. Exclude raw requests and credentials.
 
 Cleanup removes the owned Agent, confirms API, Sandbox and workload Pod absence,
 then removes supporting resources and closes the provider. Reconcile missing Sandbox
@@ -337,7 +334,7 @@ and disposal of the prepared Namespace, database, cluster, controller and gatewa
 A passing selected run establishes only this static-inference slice at its
 recorded inputs. Source checks are not runtime proof. The scenario does not
 prove real-provider usefulness, all workload credential/control-API containment,
-revocation between Resolve and AuthorizeSend, mixed-version activation, HA,
+live AWS Parameter Store or EKS Pod Identity, mixed-version activation, HA,
 dynamic credentials, long-lived streaming or complete Egress MVP delivery.
 
 ## Installed repository response and dispatch custody

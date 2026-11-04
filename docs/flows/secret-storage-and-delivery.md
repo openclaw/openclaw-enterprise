@@ -1,23 +1,17 @@
 ---
 created: 2026-08-28
-updated: "2026-10-29"
-last_updated_session: "authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42"
+updated: "2026-11-04"
+last_updated_session: "authoring-run/feaaef9d-0611-43ec-95b9-12f883a66786"
 ---
 
 # Secret Storage and Gateway Delivery Flow
 
 ## Overview
 
-An authorized owner stores a Namespace-owned Secret before any Agent exists,
-binds its stable reference in Configuration for gateway delivery, then grants, assigns
-and deploys a consuming Agent. For these Configuration bindings, OCC admits
-references and Kubernetes supplies values only to each selected gateway.
-Harness model authentication uses the
-[shared Agent binding flow](native-service-account-credential-delivery.md).
-The local installer also grants a new Agent access and verifies a model response.
-For operator-mapped AWS parameters, the same Secret identity admits transient
-protected credential reads through the Secret Driver. Credential issuance and
-provider internals are outside this flow.
+OCC stores a Namespace Secret and admits its reference for gateway delivery.
+Kubernetes supplies the value to the selected gateway. Agent model authentication
+follows the [Agent binding flow](native-service-account-credential-delivery.md).
+A protected sender can use the same Secret identity to read a mapped AWS parameter.
 
 ## Entry Points
 
@@ -300,49 +294,40 @@ credential at its issuer.
 `packages/occ/src/index.ts:OpenClawController`;
 `apps/controller/src/drivers/secret/kubernetes/index.ts:KubernetesSecretDriver.readCredentialInput`
 
-Protected source admission authorizes exact Secret `operate` and locks its OCC
-record before calling `readCredentialInput`. The live protected resolver also
-uses that versioned read contract. The driver first verifies Kubernetes Namespace
-placement and exact labels, annotations, driver identity, and backend UID.
-It finds a configured mapping by Namespace and Secret ID, then requires its
-pinned UID. A replacement cannot become an unmapped local-value read.
+Source admission checks `operate` on the exact Secret and locks its OCC record.
+Admission and live resolution call `readCredentialInput`. The Driver verifies
+Namespace placement, Secret labels, annotations and Driver identity. A mapping
+for the Namespace and Secret IDs requires the pinned Kubernetes UID.
 
-Within the caller's effective cancellation signal and deadline, the driver reads
-the exact SecureString ARN through `readAwsParameter`, validates the value and
-version, and records the response observation time. It performs a fresh
-Kubernetes ownership read after AWS responds and checks cancellation and deadline
-before returning transient material. AWS failures and ownership changes return
-no credential. Provider validation and send authorization remain with the
-existing protected caller.
+`apps/controller/src/drivers/secret/kubernetes/aws-parameter-input.ts:readAwsParameter`
+checks the Pod Identity account and reads the exact SecureString ARN. The Driver
+validates the response and records its observation time. The publication identifier
+binds the ARN, local identity, AWS version and modification time. Before returning
+material, the Driver rereads Kubernetes ownership and checks cancellation and deadline.
+Failure returns no value. OCC checks permission again before issuing a send permit.
 
-Mapped `resolve` and `withValue` calls and local value writes are refused, so
-these paths cannot deliver the old Kubernetes bytes. Delete retains Kubernetes
-UID/resourceVersion preconditions and never calls AWS. Unmapped operations keep
-the existing path. A Gateway that copied credentials during registration still
-requires its own reconfiguration and activation; this read path does not change
-that Gateway's retained project.
+Mapped Secrets refuse local writes, `resolve` and `withValue`. Delete uses the
+Kubernetes UID and resourceVersion and leaves AWS untouched. See the
+[Driver reference](../reference/drivers/kubernetes-secret.md#read-a-rotating-aws-parameter-for-protected-use)
+for registration-time copies and mapping removal.
 
 ## Debugging and Verification
 
 - Read public Secret metadata without requesting or dumping values. Inspect safe
   ownership/UID metadata separately as an authorized operator; do not print
   `Secret.data`, complete process environments, or credential-bearing requests.
-- A stored Secret with no ready gateway is valid. Update success does not imply
-  delivery. Compare Agent revision/Pod identities and use noncredential sentinel values
-  for restart assertions.
+- Use noncredential sentinel values and compare Agent revision and Pod identities
+  to verify delivery after restart.
 - On local failure, rerun the tool with the same Agent name. It prints the Agent
   and Agent revision IDs only after the model responds.
 - Source selection, exact Namespace ownership, consumption authorization, missing
   material, and concurrent backend mutations fail closed. Do not retry a denial
   against another driver or model-key source.
 - [Real Agent acceptance](../../tests/integration/harness-topology-k3d-real.test.mjs)
-  requires explicitly selected PostgreSQL/Kubernetes, digest-pinned real runtime
-  images, and an authorized model key. It must prove the native-ref negative control,
-  genuine turn, and env restart behavior; mocked rendering is not that proof.
+  needs PostgreSQL, Kubernetes, digest-pinned runtime images and an authorized
+  model key for the native-ref negative control, model turn and restart.
 - Run focused conformance, API, startup, Helm, PostgreSQL Secret-state, real
-  Compute, and real Agent suites when changing this flow's implementation. State
-  skipped credentials, infrastructure, or runtime hooks as verification gaps
-  rather than replacing them with mocked rendering.
+  Compute, and real Agent suites. Record missing prerequisites and skipped cases.
 
 ## Related docs
 
@@ -358,6 +343,8 @@ that Gateway's retained project.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 23:04: Distinguish recreated AWS publications and trace the send permit. (authoring-run/feaaef9d-0611-43ec-95b9-12f883a66786 - 9d134f8ba19778f28e4800990e83e1c19315c016)
 
 - 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
 

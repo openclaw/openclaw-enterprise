@@ -169,6 +169,7 @@ export async function readAwsParameter(
     const parameter = response.Parameter;
     const value = parameter?.Value;
     const version = parameter?.Version;
+    const modifiedAt = parameter?.LastModifiedDate?.getTime();
     if (
       effectiveSignal.aborted ||
       parameter?.ARN !== input.parameterArn ||
@@ -176,6 +177,7 @@ export async function readAwsParameter(
       typeof version !== "number" ||
       !Number.isSafeInteger(version) ||
       version <= 0 ||
+      !Number.isFinite(modifiedAt) ||
       typeof value !== "string" ||
       value.length === 0 ||
       value.includes("\0") ||
@@ -184,6 +186,8 @@ export async function readAwsParameter(
     ) {
       throw unavailable();
     }
+    // Recreating the same parameter ARN restarts its version counter. Keep a
+    // rejection of the old publication from fencing the replacement.
     const binding = createHash("sha256")
       .update(
         JSON.stringify([
@@ -193,6 +197,7 @@ export async function readAwsParameter(
           input.backendUid,
           region,
           input.parameterArn,
+          modifiedAt,
         ]),
       )
       .digest("hex");

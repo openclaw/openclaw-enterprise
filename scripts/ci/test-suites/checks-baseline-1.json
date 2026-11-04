@@ -538,7 +538,7 @@
       "path": "tests/integration/aws-parameter-credential-input.test.ts",
       "expectedTests": [
         "configured AWS protected input rereads rotation and refuses unsafe reads",
-        "regular OCC protected inference uses fresh AWS input and enforces withdrawn grants"
+        "OCC resolves fresh AWS input and refuses send authorization after grant withdrawal"
       ]
     },
     {

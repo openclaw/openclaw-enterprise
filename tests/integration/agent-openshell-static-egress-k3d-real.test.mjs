@@ -20,6 +20,7 @@ import {
   registerCleanupAndStartProvider,
   observeInstalledProtection,
 } from "../helpers/egress-installed-agent.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 import { tryDirectTcp } from "../helpers/egress-custody-observations.mjs";
 import {
   encodeSyntheticEvents,
@@ -77,7 +78,7 @@ test(
       const turns = await observeRunningAgent(setup, stack, evidence, owned, deployment, installed);
 
       await verifyManagedClientsAndDirectBypass(setup, evidence, owned, installed, turns);
-      await revokeExactGrantAndObserveDenial(stack, evidence, owned, deployment, turns);
+      await revokeExactGrantAndObserveDenial(stack, evidence, owned, deployment, turns, installed);
       await regrantAndObserveRecovery(owned, deployment, turns);
       const rotatedSecret = await rotateSecretOnly(setup, stack, evidence, deployment, turns);
       await verifyHostileResponsesAndRecovery(owned, turns);
@@ -328,14 +329,18 @@ async function observeRunningAgent(setup, stack, evidence, owned, deployment, in
         "expected the supplier's public refusal",
       );
     }
-    const revoked = phase === "fresh-iam-revoked";
-    const transitions = revoked
-      ? ["resolve_refused", "no_permit", "response_blocked"]
-      : [
-          "resolve_accepted",
-          "permit_accepted",
-          expected === "completed" ? "response_released" : "response_blocked",
-        ];
+    let transitions;
+    if (phase === "fresh-iam-revoked") {
+      transitions = ["resolve_refused", "no_permit", "response_blocked"];
+    } else if (phase === "iam-revoked-before-send") {
+      transitions = ["resolve_accepted", "no_permit", "response_blocked"];
+    } else {
+      transitions = [
+        "resolve_accepted",
+        "permit_accepted",
+        expected === "completed" ? "response_released" : "response_blocked",
+      ];
+    }
     const requestId = await custodyTransitions.expectAfter(before, transitions);
     assert.deepEqual(provider.errors, [], "synthetic provider failed independently of enforcement");
     await checkpoint("turn-complete", {
@@ -416,6 +421,7 @@ async function verifyManagedClientsAndDirectBypass(setup, evidence, owned, insta
   const nonce = `OCE-EGRESS-${randomUUID()}`;
   const model = controller.model;
   const before = provider.observations.length;
+  const bytesBefore = provider.requestBytes;
   const delivered = await inAgent(
     "curl",
     "-q",
@@ -438,6 +444,7 @@ async function verifyManagedClientsAndDirectBypass(setup, evidence, owned, insta
     delivered === expected,
     "sibling receives only the complete approved Responses stream and HTTP 200",
   );
+  assert.ok(provider.requestBytes > bytesBefore, "origin counted TLS application data");
   const [sent, ...extra] = provider.observations.slice(before);
   assert.ok(sent?.nonce === nonce && sent.status === 200 && sent.credentialVersion === "initial");
   assert.equal(extra.length, 0, "one authenticated sibling request at the independent origin");
@@ -459,51 +466,141 @@ async function verifyManagedClientsAndDirectBypass(setup, evidence, owned, insta
  * @param {OwnedResources} owned
  * @param {Deployment} deployment
  * @param {AgentTurns} turns
+ * @param {InstalledProtection} installed
  */
-async function revokeExactGrantAndObserveDenial(stack, evidence, owned, deployment, turns) {
+async function revokeExactGrantAndObserveDenial(
+  stack,
+  evidence,
+  owned,
+  deployment,
+  turns,
+  installed,
+) {
   const { namespacePath, namespace, pool } = stack;
   const { api, checkpoint } = evidence;
   const { provider } = owned;
   const { agent, source, binding, revision } = deployment;
   const { turn, unchanged } = turns;
-  // Revoke only the exact native IAM grant. Do not withdraw the source, stop the
-  // Agent, mutate its revision, or replace a production authority callback.
-  await api("DELETE", `${namespacePath}/iam/access-bindings/${binding.id}`, undefined, 204);
+  const instanceId = installed.installation.enforcement.instanceId;
+  const connections = provider.tcpConnections;
+  const bytes = provider.requestBytes;
+  const sends = provider.observations.length;
+
   const beforeDenials = await pool.query(
     "SELECT id FROM occ.audit_events WHERE namespace_id = $1 AND actor_id = $2 AND resource_id = $3 AND action = 'openclaw.egress.authorize'",
     [namespace.id, agent.servicePrincipalId, source.id],
   );
   const knownDenials = new Set(beforeDenials.rows.map(({ id }) => id));
-  const beforeDenied = provider.observations.length;
+
+  // Order the public DELETE ahead of the final IAM check on the same Namespace.
+  // Ordinary resolution can still read the committed grant. Release the row only
+  // once the installed sender has requested a permit with the selected material.
+  const gate = await pool.connect();
+  const pending = [];
+  let reserved;
+  try {
+    await gate.query("BEGIN");
+    const locked = await gate.query(
+      "SELECT pg_backend_pid() AS pid FROM occ.namespaces WHERE id=$1 FOR NO KEY UPDATE",
+      [namespace.id],
+    );
+    assert.equal(locked.rowCount, 1);
+    const withdrawal = api(
+      "DELETE",
+      `${namespacePath}/iam/access-bindings/${binding.id}`,
+      undefined,
+      204,
+    );
+    pending.push(withdrawal);
+    const run = async () => {
+      await waitUntil("IAM writer queued for the Namespace", async () => {
+        const result = await pool.query(
+          "SELECT EXISTS (SELECT FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid))) AS waiting",
+          [locked.rows[0].pid],
+        );
+        return result.rows[0].waiting;
+      });
+      return turn("iam-revoked-before-send", "failed");
+    };
+    const deniedTurn = run();
+    pending.push(deniedTurn);
+    const observe = waitFor("pending static dispatch from the enrolled sender", async () => {
+      const rows = await pool.query(
+        `SELECT use_id FROM occ.egress_send_receipts WHERE instance_id=$1
+           AND binding->'material'->>'kind'='static' AND authorized_dispatch IS NULL AND NOT settled`,
+        [instanceId],
+      );
+      assert.ok(rows.rowCount <= 1);
+      return rows.rows[0]?.use_id;
+    });
+    pending.push(observe);
+    // An early terminal result is a failure, even if some other operation later reserves a receipt.
+    reserved = await Promise.race([
+      observe,
+      withdrawal.then(() => assert.fail("withdrawal completed before the reservation")),
+      deniedTurn.then(() => assert.fail("turn ended before the reservation")),
+    ]);
+    await gate.query("ROLLBACK");
+    await withdrawal;
+    assert.equal((await deniedTurn).requestId, reserved);
+  } finally {
+    gate.release(true); // Disconnect also releases the row if any observation failed.
+    await Promise.allSettled(pending);
+  }
+
+  const deniedSend = await pool.query(
+    `SELECT authorized_dispatch IS NULL AS no_permit, settled, outcome
+       FROM occ.egress_send_receipts WHERE instance_id=$1 AND use_id=$2 AND attempt_id=$2`,
+    [instanceId, reserved],
+  );
+  assert.deepEqual(deniedSend.rows, [
+    {
+      no_permit: true,
+      settled: true,
+      outcome: {
+        kind: "refused",
+        dispatched: false,
+        error: { kind: "denied", code: "unauthorized" },
+      },
+    },
+  ]);
+  assert.equal(provider.requestBytes, bytes);
+  assert.equal(provider.tcpConnections, connections);
+  assert.equal(provider.observations.length, sends);
+  await checkpoint("iam-withdrawn-before-send", { requestId: reserved, providerSends: 0 });
+
   const { requestId } = await turn("fresh-iam-revoked", "failed");
   assert.equal(
     provider.observations.length,
-    beforeDenied,
-    "fresh IAM denial must precede every provider send",
+    sends,
+    "neither the resolved nor the fresh denied turn reached the provider",
   );
+  assert.equal(provider.tcpConnections, connections, "no new provider connection");
+  assert.equal(provider.requestBytes, bytes, "no request bytes on a reused TLS connection");
   const denials = await pool.query(
     "SELECT id, actor_id, resource_kind, resource_id, details, outcome FROM occ.audit_events WHERE namespace_id = $1 AND actor_id = $2 AND resource_id = $3 AND action = 'openclaw.egress.authorize'",
     [namespace.id, agent.servicePrincipalId, source.id],
   );
   const freshDenials = denials.rows.filter(({ id }) => !knownDenials.has(id));
-  assert.equal(
-    freshDenials.length,
-    1,
-    "one refused operation must produce one attributable authority denial",
-  );
-  const denied = freshDenials[0];
-  assert.equal(denied.actor_id, agent.servicePrincipalId);
-  assert.equal(denied.resource_kind, "credential_source");
-  assert.equal(denied.resource_id, source.id);
-  assert.equal(denied.details.code, "unauthorized");
-  assert.equal(denied.details.phase, "before_access");
-  assert.equal(denied.details.revisionId, revision.id);
-  assert.equal(denied.outcome, "denied");
-  assert.equal(denied.details.requestId, requestId, "IAM denied the exact supervisor exchange");
+  assert.equal(freshDenials.length, 2, "one attributable denial per sender operation");
+  for (const [id, phase] of [
+    [reserved, "before_send"],
+    [requestId, "before_access"],
+  ]) {
+    const denied = freshDenials.find((event) => event.details.requestId === id);
+    assert.ok(denied, "IAM denied this exact supervisor exchange");
+    assert.equal(denied.actor_id, agent.servicePrincipalId);
+    assert.equal(denied.resource_kind, "credential_source");
+    assert.equal(denied.resource_id, source.id);
+    assert.equal(denied.details.code, "unauthorized");
+    assert.equal(denied.details.phase, phase);
+    assert.equal(denied.details.revisionId, revision.id);
+    assert.equal(denied.outcome, "denied");
+  }
   await unchanged();
   await checkpoint("fresh-iam-denial", {
-    requestId: denied.details.requestId,
-    phase: denied.details.phase,
+    requestId,
+    phase: "before_access",
     providerSends: 0,
   });
 }
