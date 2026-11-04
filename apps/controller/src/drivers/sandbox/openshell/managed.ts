@@ -5,6 +5,8 @@ import type {
   ComputeAgentBinding,
   SandboxHarnessContext,
   SandboxHarnessWithdrawalContext,
+  SandboxHarnessObservation,
+  SandboxLogContext,
   SandboxNamespaceContext,
   SandboxResourceRef,
 } from "@openclaw-enterprise/contracts";
@@ -29,6 +31,7 @@ import {
   type OpenShellGatewayClient,
   type OpenShellSandboxCreateRequest,
   type OpenShellSandboxResponse,
+  type OpenShellPolicyRequest,
 } from "../openshell-gateway-client.ts";
 import type { openShellManagedMcpPolicies } from "../openshell-managed-mcp-policy.ts";
 import type { openShellPluginPolicy } from "../openshell-plugin-policy.ts";
@@ -398,7 +401,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       }
       if (!isDeepStrictEqual(immutableWorkload(existing.spec), immutableWorkload(create.spec))) {
         throw new Error(
-          "OpenShell workload update cannot change policy, resources or runtime class; this prototype refuses that revision.",
+          "OpenShell workload update cannot change resources or runtime class; this prototype refuses that revision.",
         );
       }
       if (client.updateSandbox === undefined || existing.resourceVersion === undefined) {
@@ -406,22 +409,38 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
           "Managed Compute requires SandboxUpdates.UpdateSandbox and a resource version.",
         );
       }
+    }
+    existing = await this.reconcilePolicy(client, context, existing, create.spec);
+    if (!matches(existing)) {
       existing = await this.reconcileProviders(client, context, existing, create.spec);
       const sandboxId = existing.id;
+      const baselinePolicy = existing.spec?.policy;
       if (existing.resourceVersion === undefined) {
         throw new Error("Managed workload update requires a Sandbox resource version.");
       }
-      await client.updateSandbox(
+      await client.updateSandbox!(
         { ...create, requestId: randomUUID(), expectedResourceVersion: existing.resourceVersion },
         context.signal,
       );
       existing = await client.getSandbox(selector, context.signal);
       // Older protobuf servers may silently ignore added fields. Never start an
       // image-only update with the previous revision's command or environment.
-      if (existing === undefined || existing.id !== sandboxId || !matches(existing)) {
+      if (
+        existing === undefined ||
+        existing.id !== sandboxId ||
+        !matches(existing) ||
+        !sameOpenShellPolicy(existing.spec?.policy, baselinePolicy)
+      ) {
         throw new Error(
           "OpenShell did not store the exact requested workload update; the Sandbox remains stopped.",
         );
+      }
+      const policy = await client.getPolicyStatus!(
+        { workspace: selector.workspace, sandbox: selector.name },
+        context.signal,
+      );
+      if (!sameOpenShellPolicy(policy.policy, create.spec.policy)) {
+        throw new Error("OpenShell policy readback differs; the Sandbox will not start.");
       }
     }
     if (
@@ -490,8 +509,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     if (client.getPolicyStatus === undefined) {
       throw new Error("Managed replacement requires current Sandbox policy observation.");
     }
-    // TODO(OpenShell policy reconciliation): reconcile live policy edits stored
-    // separately from spec.policy. Until then, refuse differences before attachment changes.
+    // Attachment changes require an unchanged policy, including on retry.
     const policy = await client.getPolicyStatus(
       { workspace, sandbox: existing.name },
       context.signal,
@@ -554,6 +572,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
           !stopped(next) ||
           !isDeepStrictEqual(next.annotations, existing.annotations) ||
           !isDeepStrictEqual(next.labels, existing.labels) ||
+          !sameOpenShellPolicy(next.spec?.policy, existing.spec?.policy) ||
           !isDeepStrictEqual(
             comparableWorkload(next.spec),
             comparableWorkload({ ...existing.spec, providers: expected }),
@@ -567,6 +586,113 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       }
     }
     return observed;
+  }
+
+  private async reconcilePolicy(
+    client: OpenShellGatewayClient,
+    context: SandboxHarnessContext,
+    existing: OpenShellSandboxResponse,
+    desired: OpenShellSandboxCreateRequest["spec"],
+  ): Promise<OpenShellSandboxResponse> {
+    const request = { workspace: workspaceName(context.namespace), sandbox: existing.name };
+    const desiredPolicy = asRecord(desired.policy);
+    if (desiredPolicy === undefined) {
+      throw new Error("Managed Sandbox requires a complete policy.");
+    }
+    if (client.getPolicyStatus === undefined) {
+      throw new Error("Managed replacement requires current Sandbox policy observation.");
+    }
+    const current = await client.getPolicyStatus(request, context.signal);
+    if (
+      !sameOpenShellPolicy(fixedPolicy(existing.spec?.policy), fixedPolicy(desired.policy)) ||
+      !sameOpenShellPolicy(fixedPolicy(current.policy), fixedPolicy(desired.policy))
+    ) {
+      throw new Error("Managed replacement cannot change static policy or middleware bindings.");
+    }
+    if (sameOpenShellPolicy(current.policy, desired.policy)) {
+      return existing;
+    }
+    // TODO(OpenShell coordinated policy/Provider replacement): remove dependent routes
+    // before changing attachments, then install the final policy. Until then reject both.
+    if (!isDeepStrictEqual(providerNames(existing.spec), providerNames(desired))) {
+      throw new Error(
+        "Provider replacement requires the current Sandbox policy to remain unchanged.",
+      );
+    }
+    if (!stopped(existing)) {
+      throw new Error("Stop the previous managed workload before updating its Sandbox policy.");
+    }
+    if (client.updatePolicy === undefined || existing.resourceVersion === undefined) {
+      throw new Error("Managed policy replacement requires UpdateConfig and a resource version.");
+    }
+    await client.updatePolicy(
+      {
+        ...request,
+        policy: desiredPolicy,
+        expectedResourceVersion: existing.resourceVersion,
+        requestId: randomUUID(),
+      },
+      context.signal,
+    );
+    const observed = await client.getSandbox(
+      { workspace: request.workspace, name: existing.name },
+      context.signal,
+    );
+    const policy = await client.getPolicyStatus(request, context.signal);
+    if (
+      observed === undefined ||
+      observed.resourceVersion === undefined ||
+      observed.id !== existing.id ||
+      observed.workspace !== existing.workspace ||
+      !stopped(observed) ||
+      !isDeepStrictEqual(observed.labels, existing.labels) ||
+      !isDeepStrictEqual(observed.annotations, existing.annotations) ||
+      !isDeepStrictEqual(
+        canonicalSandboxSpec(observed.spec),
+        canonicalSandboxSpec(existing.spec),
+      ) ||
+      !sameOpenShellPolicy(policy.policy, desired.policy)
+    ) {
+      throw new Error("OpenShell policy readback differs; the Sandbox will not start.");
+    }
+    return observed;
+  }
+
+  protected override async networkPolicyBaseline(
+    client: OpenShellGatewayClient,
+    request: OpenShellPolicyRequest,
+    _sandbox: OpenShellSandboxResponse,
+    signal: AbortSignal,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    if (client.getPolicyStatus === undefined) {
+      throw new Error("Managed Sandbox requires current policy observation.");
+    }
+    return (await client.getPolicyStatus(request, signal)).policy;
+  }
+
+  override async observeHarness(context: SandboxLogContext): Promise<SandboxHarnessObservation> {
+    const observation = await super.observeHarness(context);
+    if (observation.state !== "running") {
+      return observation;
+    }
+    const client = this.gatewayClientForNamespace(context.namespace.name);
+    if (client.getPolicyStatus === undefined) {
+      throw new Error("Managed Sandbox requires policy activation observation.");
+    }
+    const policy = await client.getPolicyStatus(
+      {
+        workspace: workspaceName(context.namespace),
+        sandbox: this.agentSandboxName(context.revision.agentId),
+      },
+      context.signal,
+    );
+    if (policy.state === "POLICY_STATUS_FAILED" || policy.state === "POLICY_STATUS_SUPERSEDED") {
+      throw new Error("OpenShell did not activate the latest Sandbox policy.");
+    }
+    // A stored update is not proof that the restarted supervisor has loaded it.
+    return policy.state === "POLICY_STATUS_LOADED" && policy.activeVersion === policy.version
+      ? observation
+      : { state: "starting" };
   }
 
   override async workspaceNodePeerLabels(
@@ -707,6 +833,7 @@ function immutableWorkload(spec: OpenShellSandboxResponse["spec"]) {
     command: _command,
     environment: _environment,
     providers: _providers,
+    policy: _policy,
     template,
     ...rest
   } = value;
@@ -726,7 +853,13 @@ function providerNames(spec: OpenShellSandboxResponse["spec"]): string[] {
 }
 
 function comparableWorkload(spec: OpenShellSandboxResponse["spec"]) {
-  return canonicalSandboxSpec({ ...spec, providers: providerNames(spec) });
+  const { policy: _policy, ...workload } = spec ?? {};
+  return canonicalSandboxSpec({ ...workload, providers: providerNames(spec) });
+}
+
+function fixedPolicy(policy: unknown) {
+  const { network_policies: _network, ...fixed } = asRecord(policy) ?? {};
+  return fixed;
 }
 
 function userMetadata(values: Readonly<Record<string, string>>) {

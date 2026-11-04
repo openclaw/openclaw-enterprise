@@ -8,7 +8,9 @@
   "files": [
     {
       "path": "tests/integration/openshell-provider-replacement-real.test.ts",
-      "expectedTests": ["OpenShell managed Provider replacement preserves shared sources"]
+      "expectedTests": [
+        "OpenShell managed replacement preserves shared sources and updates network policy"
+      ]
     }
   ]
 }
