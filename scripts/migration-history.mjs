@@ -154,6 +154,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 66 && completedCount > 66) {
     return "preConnectionTemplates";
   }
+  if (count === 67 && completedCount > 67) {
+    return "preSavedConnections";
+  }
   if (count === completedCount) {
     return "completed";
   }

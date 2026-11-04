@@ -133,3 +133,33 @@ function sameParameters(
     leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key])
   );
 }
+
+/** One connected credential source: who consented in this Namespace and which template version they approved. */
+export interface SavedConnection {
+  readonly namespaceId: string;
+  readonly credentialSourceId: string;
+  /** Revocation survives process restarts until the worker retires the grant. */
+  readonly revocationRequestedBy?: string;
+  readonly revokedAt?: string;
+  readonly ownerPrincipalId: string;
+  readonly connectionTemplateId: string;
+  readonly connectionTemplateVersion: number;
+  readonly createdAt: string;
+}
+
+/** A pending browser authorization, found by the SHA-256 of its `state` and consumed once. */
+export interface ConnectionSession {
+  readonly stateHash: string;
+  readonly namespaceId: string;
+  readonly credentialSourceId: string;
+  /** Server-private PKCE state, erased when the callback consumes the attempt. */
+  readonly privateState: string;
+  readonly issuerRequired: boolean;
+  readonly sessionId: string;
+  readonly redirectUri: string;
+  readonly actorId: string;
+  readonly connectionTemplateId: string;
+  readonly connectionTemplateVersion: number;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+}

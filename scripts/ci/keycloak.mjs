@@ -17,6 +17,10 @@ export const keycloakRealmFile = join(repositoryRoot, "tests/fixtures/keycloak/r
 export const keycloakImageFile = join(repositoryRoot, "tests/fixtures/keycloak/image.json");
 export const keycloakHost = "keycloak.oce.localhost";
 export const keycloakIssuer = `https://${keycloakHost}/realms/oce`;
+// The OpenShell gateway refuses `localhost` token hosts (it would reach itself), so connection
+// tests post to the token endpoint through this reserved `.test` name (RFC 2606) instead.
+export const keycloakTokenHost = "keycloak.oce.test";
+const keycloakHosts = [keycloakHost, keycloakTokenHost];
 export const keycloakResourceKind = "keycloak-server";
 
 const clientId = "oce-console";
@@ -91,7 +95,7 @@ async function createCertificates(directory, execFile) {
   ]);
   const leaves = {};
   for (const [name, commonName, subjectAltName] of [
-    ["keycloak", keycloakHost, `DNS:${keycloakHost}`],
+    ["keycloak", keycloakHost, keycloakHosts.map((host) => `DNS:${host}`).join(",")],
     ["console", "127.0.0.1", "IP:127.0.0.1"],
   ]) {
     const certPath = join(directory, `${name}.crt`);
@@ -151,22 +155,27 @@ async function createCertificates(directory, execFile) {
   return { ca, leaves };
 }
 
-/** The resolver's answer for the Keycloak name, as text for the prepare log. */
+/** The resolver's answer for the first Keycloak name not exactly 127.0.0.1, for the log. */
 async function resolverAnswer(lookupAll) {
-  try {
-    const addresses = (await lookupAll(keycloakHost)).map(({ address }) => address);
-    return { loopbackOnly: addresses.length === 1 && addresses[0] === "127.0.0.1", addresses };
-  } catch (error) {
-    return { loopbackOnly: false, addresses: [], error: error.code ?? error.message };
+  for (const host of keycloakHosts) {
+    try {
+      const addresses = (await lookupAll(host)).map(({ address }) => address);
+      if (addresses.length !== 1 || addresses[0] !== "127.0.0.1") {
+        return { loopbackOnly: false, host, addresses };
+      }
+    } catch (error) {
+      return { loopbackOnly: false, host, addresses: [], error: error.code ?? error.message };
+    }
   }
+  return { loopbackOnly: true };
 }
 
-function describeAnswer({ addresses, error }) {
-  return error === undefined ? `[${addresses.join(", ")}]` : `no answer (${error})`;
+function describeAnswer({ host, addresses, error }) {
+  return `${host} resolves to ${error === undefined ? `[${addresses.join(", ")}]` : `no answer (${error})`}`;
 }
 
 function hostsLineFor(resource) {
-  return `127.0.0.1 ${keycloakHost} ${hostsMarker} ${resource.name}`;
+  return `127.0.0.1 ${keycloakHosts.join(" ")} ${hostsMarker} ${resource.name}`;
 }
 
 function loopbackPortAccepts(port) {
@@ -371,12 +380,12 @@ export async function prepareKeycloak({
     // each runner image's resolver behaviour (docs/testing/kubernetes.md#keycloak-oidc-tests).
     const answer = await resolverAnswer(lookupAll);
     if (answer.loopbackOnly) {
-      log(`Keycloak hosts: ${keycloakHost} resolves to 127.0.0.1; no /etc/hosts line added.`);
+      log(
+        `Keycloak hosts: ${keycloakHosts.join(" and ")} resolve to 127.0.0.1; no /etc/hosts line added.`,
+      );
       return;
     }
-    log(
-      `Keycloak hosts: ${keycloakHost} resolves to ${describeAnswer(answer)}; adding an /etc/hosts line.`,
-    );
+    log(`Keycloak hosts: ${describeAnswer(answer)}; adding an /etc/hosts line.`);
     resource.hostsLine = hostsLineFor(resource);
     await saveState();
     await execFile("sudo", [
@@ -390,7 +399,7 @@ export async function prepareKeycloak({
     const added = await resolverAnswer(lookupAll);
     if (!added.loopbackOnly) {
       throw new Error(
-        `${keycloakHost} still resolves to ${describeAnswer(added)}, not exactly 127.0.0.1; /etc/hosts is not consulted first.`,
+        `${describeAnswer(added)}, not exactly 127.0.0.1; /etc/hosts is not consulted first.`,
       );
     }
   });
@@ -465,6 +474,7 @@ export async function prepareKeycloak({
     resource,
     env: {
       OCC_TEST_KEYCLOAK_ISSUER: keycloakIssuer,
+      OCC_TEST_KEYCLOAK_TOKEN_ORIGIN: `https://${keycloakTokenHost}`,
       OCC_TEST_KEYCLOAK_CONSOLE_PORT: String(port),
       OCC_TEST_KEYCLOAK_SECRETS_FILE: secretsPath,
       OCC_TEST_KEYCLOAK_CA_CERT: ca.certPath,

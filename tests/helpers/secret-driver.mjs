@@ -92,8 +92,10 @@ export function createTestSecretDriver(options = {}) {
         throw options.deleteError;
       }
       const key = keyOf(secret);
-      requireEntry(key, secret);
-      entries.delete(key);
+      if (entries.has(key)) {
+        requireEntry(key, secret);
+        entries.delete(key);
+      }
     },
     async withValue(secret, use) {
       calls.push({ operation: "withValue", secret: clone(secret) });

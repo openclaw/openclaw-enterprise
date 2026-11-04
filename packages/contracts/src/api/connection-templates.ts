@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { Meta, NamespaceId } from "./common.ts";
 
-const ConnectionTemplateId = Type.String({
+export const ConnectionTemplateId = Type.String({
   pattern: "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 });
 

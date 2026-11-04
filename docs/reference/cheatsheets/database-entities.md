@@ -180,6 +180,46 @@ Identifies the Refresh Driver registration for a client in one scope.
 - `credential_refresh_driver_id`
 - `created_at`
 
+### `saved_connections`
+
+Records the Namespace, consenting principal, approved template version and revocation status of a saved account.
+
+- `namespace_id`
+- `credential_source_id`
+- `owner_principal_id`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `revocation_requested_by`
+- `revoked_at`
+
+### `connection_sessions`
+
+Stores the private, single-use OAuth attempt for the initiating principal and browser session.
+
+- `state_hash`
+- `namespace_id`
+- `credential_source_id`
+- `private_state`
+- `issuer_required`
+- `session_id`
+- `redirect_uri`
+- `actor_id`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `expires_at`
+
+### `connection_token_custody`
+
+Tracks the Token Service secret reference, the published access token version and the next refresh time.
+
+- `namespace_id`
+- `credential_source_id`
+- `secret_ref`
+- `published_version`
+- `next_refresh_at`
+
 ### `credential_sources`
 
 Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.

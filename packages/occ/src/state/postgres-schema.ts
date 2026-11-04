@@ -2378,3 +2378,91 @@ export const connectionTemplateVersions = occSchema.table(
     }),
   ],
 );
+
+export const connectionTokenCustody = occSchema.table(
+  "connection_token_custody",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    secretRef: jsonb("secret_ref").notNull(),
+    publishedVersion: text("published_version"),
+    nextRefreshAt: timestamp("next_refresh_at", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
+    index("connection_token_refresh_due")
+      .on(table.nextRefreshAt)
+      .where(sql`${table.nextRefreshAt} IS NOT NULL`),
+    foreignKey({
+      name: "connection_token_custody_source",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+  ],
+);
+
+export const savedConnections = occSchema.table(
+  "saved_connections",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    revocationRequestedBy: text("revocation_requested_by"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    ownerPrincipalId: text("owner_principal_id")
+      .notNull()
+      .references(() => iamIdentities.id, { onDelete: "restrict", onUpdate: "restrict" }),
+    connectionTemplateId: text("connection_template_id").notNull(),
+    connectionTemplateVersion: integer("connection_template_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
+    foreignKey({
+      name: "saved_connections_source_owner",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    foreignKey({
+      name: "saved_connections_template_version",
+      columns: [table.connectionTemplateId, table.connectionTemplateVersion],
+      foreignColumns: [connectionTemplateVersions.templateId, connectionTemplateVersions.version],
+    })
+      .onDelete("restrict")
+      .onUpdate("restrict"),
+    check(
+      "saved_connections_revocation_requested",
+      sql`${table.revokedAt} IS NULL OR ${table.revocationRequestedBy} IS NOT NULL`,
+    ),
+    index("saved_connections_revoking_idx")
+      .on(table.credentialSourceId)
+      .where(sql`${table.revocationRequestedBy} IS NOT NULL`),
+    index("saved_connections_namespace_owner_idx").on(table.namespaceId, table.ownerPrincipalId),
+    index("saved_connections_template_idx").on(
+      table.connectionTemplateId,
+      table.connectionTemplateVersion,
+    ),
+  ],
+);
+
+export const connectionSessions = occSchema.table(
+  "connection_sessions",
+  {
+    stateHash: text("state_hash").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    privateState: text("private_state").notNull(),
+    issuerRequired: boolean("issuer_required").notNull(),
+    sessionId: text("session_id").notNull(),
+    redirectUri: text("redirect_uri").notNull(),
+    actorId: text("actor_id").notNull(),
+    connectionTemplateId: text("connection_template_id").notNull(),
+    connectionTemplateVersion: integer("connection_template_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [index("connection_sessions_expiry_idx").on(table.expiresAt)],
+);

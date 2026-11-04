@@ -318,6 +318,22 @@ export class DeviceAuthorizationStartError extends Error {
   }
 }
 
+/**
+ * A definite browser authorization failure. `code` is implementation-owned and carries no
+ * provider text; `recoveryAction` tells OCC who acts next.
+ */
+export class BrowserAuthorizationError extends Error {
+  readonly code: string;
+  readonly recoveryAction: "retry" | "fix_configuration";
+
+  constructor(code: string, recoveryAction: BrowserAuthorizationError["recoveryAction"]) {
+    super("The browser authorization did not complete.");
+    this.name = "BrowserAuthorizationError";
+    this.code = /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : "unclassified";
+    this.recoveryAction = recoveryAction;
+  }
+}
+
 /** Safe discovery outcomes carry no upstream response, credential, or error cause. */
 export class PluginDiscoveryError extends Error {
   readonly reason: "credentials_rejected" | "rate_limited" | "unavailable" | "invalid_response";

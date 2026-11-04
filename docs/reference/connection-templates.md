@@ -3,7 +3,7 @@
 An Installation administrator can save the OAuth settings that people will use
 to connect their accounts. A template applies throughout the Installation or to
 one Namespace. It defines the provider, client ID, scopes and destination that
-an administrator has approved. Saving a template does not start provider consent.
+an administrator has approved. People who can create credentials in a Namespace can use templates available there.
 
 ## Configure a template
 
@@ -42,3 +42,30 @@ share a registration only when their scope, issuer, and client ID match.
   remove the registration.
 
 For request and response examples, see the [API reference](api.md#connections).
+
+## Connect an account
+
+1. Use a signed-in browser session. List available templates at
+   `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
+   `credential_source:create` for that Namespace.
+2. Send the chosen `connectionTemplateId` to
+   `POST /namespaces/{namespaceId}/connections`. Open the returned
+   `authorizationUrl` in the same browser and approve the requested scopes.
+   Register the public OCC callback URL ending in `/oauth/callback` with the provider.
+3. After the redirect, look up the saved account with
+   `GET /namespaces/{namespaceId}/connections`. Other users see it only if
+   they have permission to read the source. Keep the credential source ID to
+   refer to the account. The Token Service keeps the tokens.
+
+The native Namespace role API currently rejects `create` permissions. Installation
+administrators can connect with the built-in administrator role. See
+[Namespace role limits](../guides/topics/iam.md#let-a-person-run-an-existing-agent).
+
+A pending request expires after ten minutes. Restart consent if it expires,
+the provider denies it, or the browser session changes. The server handles each
+code once. A connection requires renewed consent if the provider rejects its
+refresh grant.
+
+Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
+disconnect the account. OCC records the request before retiring the credential
+and the worker can finish an interrupted disconnect.

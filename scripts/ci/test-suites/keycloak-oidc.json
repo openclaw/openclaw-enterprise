@@ -7,7 +7,8 @@
     "OCC_TEST_KEYCLOAK_CONSOLE_CERT",
     "OCC_TEST_KEYCLOAK_CONSOLE_KEY",
     "OCC_TEST_KEYCLOAK_CONTAINER",
-    "NODE_EXTRA_CA_CERTS"
+    "NODE_EXTRA_CA_CERTS",
+    "OCC_TEST_KEYCLOAK_TOKEN_ORIGIN"
   ],
   "prepare": {
     "postgres": true,
@@ -24,6 +25,12 @@
         "a higher-priority Keycloak realm key changes the signing kid and the next sign-in succeeds without a controller restart",
         "unattached carol is refused after Keycloak sign-in, audited and given no account",
         "Console sign-out ends alice's OCE session, one click signs her in again while her Keycloak session lives, and disabling her keeps that session but refuses her next sign-in"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-saved-oauth-connections.test.ts",
+      "expectedTests": [
+        "OAuth consent saves the account for its owner and refreshes it through the Token Service"
       ]
     }
   ]

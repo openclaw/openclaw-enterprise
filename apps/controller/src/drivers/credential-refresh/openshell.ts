@@ -2,12 +2,16 @@ import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
+  CredentialBrowserAuthorizationCallback,
+  CredentialBrowserAuthorizationRequest,
   CredentialClientRegistrationContext,
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,
+  OAuthConnectionGrant,
   CredentialSourceContext,
   CredentialSourceDeviceAuthorization,
+  CredentialSourceBrowserAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
@@ -25,6 +29,12 @@ import {
   type OpenShellProviderResponse,
   type OpenShellRefreshStatus,
 } from "../sandbox/openshell-gateway-client.ts";
+
+import {
+  browserAuthorizationState,
+  exchangeAuthorizationCode,
+  startBrowserAuthorization,
+} from "./browser-authorization.ts";
 
 import {
   CODEX_OAUTH_TYPE,
@@ -309,6 +319,34 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     }
   }
 
+  async startBrowserAuthorization(
+    context: CredentialSourceContext,
+    request: CredentialBrowserAuthorizationRequest,
+  ): Promise<CredentialSourceBrowserAuthorization> {
+    this.requireBrowserSource(context);
+    return startBrowserAuthorization(context.source.id, request);
+  }
+
+  async completeBrowserAuthorization(
+    context: CredentialSourceContext,
+    privateState: string,
+    callback: CredentialBrowserAuthorizationCallback,
+    request: CredentialBrowserAuthorizationRequest,
+    acceptGrant: (grant: OAuthConnectionGrant) => Promise<void>,
+  ): Promise<void> {
+    this.requireBrowserSource(context);
+    const state = browserAuthorizationState(context.source.id, privateState, callback);
+    const clientSecret = await this.readClientSecret(request.clientRegistrationId, context.signal);
+    const grant = await exchangeAuthorizationCode(
+      request,
+      state.verifier,
+      callback.code,
+      clientSecret,
+      context.signal,
+    );
+    await acceptGrant(grant);
+  }
+
   async configureRefresh(
     context: CredentialSourceContext,
     input: CredentialRefreshInput,
@@ -331,7 +369,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       {
         workspace: openShellWorkspaceName(context.namespace),
         provider: openShellProviderName(context.source.id),
-        credentialKey: type.credentialKey(input.config),
+        credentialKey: type.credentialKey(context.source.config),
         strategy: type.strategy,
         material,
         requestId: input.requestId,
@@ -412,6 +450,50 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       type.credentialKey(context.source.config),
       context.signal,
     );
+  }
+
+  private requireClientWorkspace(): string {
+    if (this.clientWorkspace === undefined) {
+      throw new OpenShellCredentialRefreshFailure(
+        "Browser connections require the OpenShell Credential Refresh clientWorkspace setting.",
+      );
+    }
+    return this.clientWorkspace;
+  }
+
+  private requireBrowserSource(context: CredentialSourceContext): void {
+    if (
+      context.source.type !== "oauth2-refresh-token" ||
+      context.source.namespaceId !== context.namespace.id ||
+      context.source.driverId !== this.backend.drivers.credential_gateway
+    ) {
+      throw new ScopeViolationError("Browser connections create oauth2-refresh-token sources.");
+    }
+  }
+
+  private assertClientProvider(provider: OpenShellProviderResponse, registrationId: string): void {
+    if (
+      provider.labels[MANAGED_BY_LABEL] !== "openclaw-enterprise" ||
+      provider.labels[CLIENT_REGISTRATION_LABEL] !== registrationId
+    ) {
+      throw new ScopeViolationError(
+        "The OpenShell client provider is not owned by this OAuth client registration.",
+      );
+    }
+  }
+
+  /** Only the operator channel can export a stored credential. */
+  private async readClientSecret(registrationId: string, signal: AbortSignal): Promise<string> {
+    const workspace = this.requireClientWorkspace();
+    const secret = await this.backend.client
+      .credentialClientForNamespace(workspace)
+      .getProviderCredential(
+        workspace,
+        clientProviderName(registrationId),
+        CLIENT_SECRET_KEY,
+        signal,
+      );
+    return secret.value;
   }
 
   private async completeCodexConnection(
@@ -501,26 +583,6 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       throw new ScopeViolationError("The credential source type has no OpenShell refresh.");
     }
     return type;
-  }
-
-  private requireClientWorkspace(): string {
-    if (this.clientWorkspace === undefined) {
-      throw new OpenShellCredentialRefreshFailure(
-        "OAuth client registration requires the OpenShell Credential Refresh clientWorkspace setting.",
-      );
-    }
-    return this.clientWorkspace;
-  }
-
-  private assertClientProvider(provider: OpenShellProviderResponse, registrationId: string): void {
-    if (
-      provider.labels[MANAGED_BY_LABEL] !== "openclaw-enterprise" ||
-      provider.labels[CLIENT_REGISTRATION_LABEL] !== registrationId
-    ) {
-      throw new ScopeViolationError(
-        "The OpenShell client provider is not owned by this OAuth client registration.",
-      );
-    }
   }
 
   private client(context: CredentialSourceContext) {

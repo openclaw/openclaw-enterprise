@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -45,6 +46,20 @@ function recordingOpenShell() {
     },
     async updateProviderCredentials(workspace, name, credentials) {
       Object.assign(providers.get(key(workspace, name)).credentials, credentials);
+    },
+    async getProviderCredential(workspace, name, credentialKey) {
+      return { value: providers.get(key(workspace, name)).credentials[credentialKey] };
+    },
+    async updateProviderCredentialsConditionally(input, expectedResourceVersion) {
+      const provider = providers.get(key(input.workspace, input.name));
+      assert.equal(provider.resourceVersion, expectedResourceVersion);
+      Object.assign(provider, {
+        credentials: structuredClone(input.credentials),
+        credentialExpirationTimes: structuredClone(input.credentialExpirationTimes),
+        config: input.config ?? provider.config,
+        resourceVersion: String(Number(expectedResourceVersion) + 1),
+      });
+      return provider;
     },
     close() {},
   };

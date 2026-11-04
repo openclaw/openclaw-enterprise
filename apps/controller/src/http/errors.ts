@@ -25,6 +25,7 @@ import {
   CredentialWithdrawalNotFoundError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
+  BrowserAuthorizationError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -879,6 +880,15 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof AgentDeletingError) {
     return failure(409, "AGENT_DELETING", "The requested Agent is being deleted.");
+  }
+  if (error instanceof BrowserAuthorizationError) {
+    return failure(
+      409,
+      "RESOURCE_CONFLICT",
+      error.recoveryAction === "fix_configuration"
+        ? "An administrator must correct the connection template before connecting this account."
+        : "The connection did not complete. Connect again.",
+    );
   }
   if (error instanceof NotImplementedError) {
     return failure(501, "NOT_IMPLEMENTED", error.message);

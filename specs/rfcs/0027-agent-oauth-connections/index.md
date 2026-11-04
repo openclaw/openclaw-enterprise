@@ -252,8 +252,8 @@ selection before the redirect and uses the
    ID and, for MCP, the displayed template version and `selectedScopes`. OCC
    checks template availability and `credential_source:create` in the Namespace, and validates the
    selection. It then registers an empty source as `registering` and calls
-   `startBrowserAuthorization`. It stores `privateState` in a Namespace Secret, as
-   device login does, and returns the source ID and `authorizationUrl`.
+   `startBrowserAuthorization`. OCC saves `privateState` in a private attempt row bound to the initiating
+   browser and identity and returns the source ID and `authorizationUrl`.
 2. The console shows the destination and scopes the person will approve, then
    opens the consent URL in a popup. When a browser blocks popups, it redirects
    the page.

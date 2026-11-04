@@ -64,8 +64,13 @@ export type {
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
+  OAuthConnectionAccessToken,
+  OAuthConnectionCustody,
+  OAuthConnectionGrant,
+  OAuthConnectionTokenService,
   PreparedTokenService,
 } from "./prepared-token.ts";
+export { PENDING_OAUTH_CONNECTION } from "./prepared-token.ts";
 export {
   preparedGitHubType,
   preparedGitHubProviderRef,
@@ -146,6 +151,8 @@ export type {
   ConnectionTemplate,
   ConnectionTemplateValues,
   ConnectionTemplateVersion,
+  ConnectionSession,
+  SavedConnection,
 } from "./connection-templates.ts";
 export {
   ConnectionTemplateValidationError,
@@ -1407,6 +1414,9 @@ export type {
 } from "./drivers/credential-gateway/index.ts";
 export type {
   CredentialClientRegistrationContext,
+  CredentialBrowserAuthorizationRequest,
+  CredentialSourceBrowserAuthorization,
+  CredentialBrowserAuthorizationCallback,
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,

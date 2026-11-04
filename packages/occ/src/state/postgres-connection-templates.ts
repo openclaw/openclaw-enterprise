@@ -4,7 +4,7 @@ import type {
   ConnectionTemplate,
   ConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
-import { DependencyUnavailableError } from "../errors.ts";
+import { DependencyUnavailableError, ResourceStateConflictError } from "../errors.ts";
 import type { ConnectionTemplateRepository } from "./platform-state.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
@@ -149,6 +149,13 @@ export function postgresConnectionTemplates(
       );
       return integer(row as Row, "count");
     },
+    hasOtherConnectionIssuer: async (issuer) =>
+      (
+        await client.query(
+          "SELECT 1 FROM occ.connection_client_registrations WHERE issuer <> $1 LIMIT 1",
+          [issuer],
+        )
+      ).rows.length > 0,
     listConnectionTemplates: async () => Object.freeze(await selectTemplates("", [])),
     findConnectionTemplateVersion: async (templateId, version) => {
       const [row] = (
@@ -253,10 +260,25 @@ export function postgresConnectionTemplates(
       return (await selectTemplates("WHERE t.id = $1", [templateId]))[0];
     },
     deleteConnectionTemplate: async (templateId) => {
-      const deleted = await client.query("DELETE FROM occ.connection_templates WHERE id = $1", [
-        templateId,
-      ]);
-      return deleted.rowCount === 1;
+      try {
+        const deleted = await client.query(`DELETE FROM occ.connection_templates WHERE id = $1`, [
+          templateId,
+        ]);
+        return deleted.rowCount === 1;
+      } catch (error) {
+        // A saved account or an unexpired consent attempt can still reference a version.
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          (error.code === "23001" || error.code === "23503") &&
+          "constraint" in error &&
+          (error.constraint === "connection_sessions_template_version" ||
+            error.constraint === "saved_connections_template_version")
+        ) {
+          throw new ResourceStateConflictError("The connection template is in use.");
+        }
+        throw error;
+      }
     },
   };
 }

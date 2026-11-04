@@ -32,10 +32,18 @@ export function createPlatformReadView(
     connectionTemplates: bindRepository(repositories.connectionTemplates, lifetime, [
       "findConnectionTemplate",
       "listConnectionTemplates",
+      "hasOtherConnectionIssuer",
       "countNamespaceConnectionTemplates",
       "findConnectionTemplateVersion",
       "findClientRegistration",
       "findClientRegistrationById",
+    ]),
+    savedConnections: bindRepository(repositories.savedConnections, lifetime, [
+      "findTokenCustody",
+      "listDueConnectionTokens",
+      "findSavedConnection",
+      "listNamespaceConnections",
+      "listRevokingConnections",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",

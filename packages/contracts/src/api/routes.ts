@@ -15,6 +15,11 @@ import {
 } from "./sandbox-policy.ts";
 import { Type } from "typebox";
 import {
+  ConnectionStartResponse,
+  SavedConnectionListResponse,
+  StartNamespaceConnectionBody,
+} from "./connections.ts";
+import {
   ConnectionTemplateListResponse,
   ConnectionTemplateParams,
   ConnectionTemplateResponse,
@@ -974,6 +979,71 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: SecretParams,
+      response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+  {
+    operationId: "listUsableConnectionTemplates",
+    method: "GET",
+    path: "/namespaces/:namespaceId/connection-templates",
+    action: "openclaw.connection_templates.list_usable",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "List connection templates the caller may connect in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: ConnectionTemplateListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "startNamespaceConnection",
+    method: "POST",
+    path: "/namespaces/:namespaceId/connections",
+    action: "openclaw.namespaces.connections.start",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "Start consent for a reusable account in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      body: StartNamespaceConnectionBody,
+      response: { 201: ConnectionStartResponse, ...createErrors, 501: ErrorResponseRef },
+    },
+  },
+  {
+    operationId: "listNamespaceConnections",
+    method: "GET",
+    path: "/namespaces/:namespaceId/connections",
+    action: "openclaw.namespaces.connections.list",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary: "List completed connections the caller can read in this Namespace",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: SavedConnectionListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "disconnectNamespaceConnection",
+    method: "DELETE",
+    path: "/namespaces/:namespaceId/connections/:credentialSourceId",
+    action: "openclaw.namespaces.connections.disconnect",
+    iamAction: "delete",
+    resourceKind: "credential_source",
+    authorizationTarget: "credential_source",
+    summary: "Disconnect a saved account and retire its OAuth grant",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: CredentialSourceParams,
       response: { 204: Type.Null(), ...mutationErrors },
     },
   },

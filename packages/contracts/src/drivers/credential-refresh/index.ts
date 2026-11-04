@@ -1,4 +1,5 @@
 import type { CredentialSourceContext } from "../credential-gateway/index.ts";
+import type { OAuthConnectionGrant } from "../../prepared-token.ts";
 import type { Driver } from "../index.ts";
 
 export interface CredentialRefreshInput {
@@ -46,6 +47,22 @@ export interface CredentialRefreshDriver extends Driver {
   ): Promise<void>;
   /** Deletes the stored client secret; an absent secret counts as removed. */
   removeClient?(context: CredentialClientRegistrationContext): Promise<void>;
+  /** Builds the consent URL for the source's pending browser authorization. */
+  startBrowserAuthorization?(
+    context: CredentialSourceContext,
+    request: CredentialBrowserAuthorizationRequest,
+  ): Promise<CredentialSourceBrowserAuthorization>;
+  /**
+   * Exchanges the code using the immutable template version. Completes only after the Token
+   * Service accepts the reusable grant and first access token in durable custody.
+   */
+  completeBrowserAuthorization?(
+    context: CredentialSourceContext,
+    privateState: string,
+    callback: CredentialBrowserAuthorizationCallback,
+    request: CredentialBrowserAuthorizationRequest,
+    acceptGrant: (grant: OAuthConnectionGrant) => Promise<void>,
+  ): Promise<void>;
   /** Replaces the source's refresh material; replaying a successful `requestId` is a no-op. */
   configureRefresh(
     context: CredentialSourceContext,
@@ -75,4 +92,31 @@ export interface CredentialClientRegistrationContext {
   readonly issuer: string;
   readonly clientId: string;
   readonly signal: AbortSignal;
+}
+
+/** The approved values of one connection template version that the browser flow uses. */
+export interface CredentialBrowserAuthorizationRequest {
+  readonly clientRegistrationId: string;
+  readonly issuer: string;
+  readonly clientId: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly scopes: readonly string[];
+  readonly authorizationParameters: Readonly<Record<string, string>>;
+  /** The exact OCC callback URI registered with the provider. */
+  readonly redirectUri: string;
+}
+
+export interface CredentialSourceBrowserAuthorization {
+  /** The provider consent URL carrying the PKCE challenge and `state`. */
+  readonly authorizationUrl: string;
+  /** The random `state` in that URL; OCC keeps only its hash to find the callback's session. */
+  readonly state: string;
+  /** Opaque Refresh Driver state with the PKCE verifier; never an access or refresh token. */
+  readonly privateState: string;
+}
+
+export interface CredentialBrowserAuthorizationCallback {
+  readonly code: string;
+  readonly state: string;
 }
