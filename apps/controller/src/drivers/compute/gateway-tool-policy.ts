@@ -155,7 +155,7 @@ const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
 
 // Reviewed core, automation and Codex adapter enforcement. Update together
 // with the runtime source pin and archive provenance.
-export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "554f0b886bde6c089578c49967227f8b50d1cf16";
+export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "ae4828f528a4ccf574208ad2537c07a0114e743e";
 
 type SettingError = (setting: string, requirement: string) => Error;
 

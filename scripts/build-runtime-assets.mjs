@@ -31,28 +31,20 @@ const appliedPatches = [
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
-    sha256: "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804",
+    sha256: "6b8d49759513caf93231af7335e82025f56c778e92d79a2c5cbfce7f1fbb80b3",
     field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",
   },
   {
     file: "openclaw-control-ui-browser-reconnect.patch",
-    sha256: "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
+    sha256: "7ada72afd102ab0776b4b31a783191d2453558b6e932f1660d6294cb51cfe669",
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
-    sha256: "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+    sha256: "7903bcd6b97c77ea340ea721737962afd4a6a3f68c905bec9f3ff3b04ccb0d97",
   },
   {
     file: "openclaw-google-worker-placeholder.patch",
     sha256: "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
-  },
-  {
-    file: "openclaw-linux-private-store-setgid.patch",
-    sha256: "e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c",
-  },
-  {
-    file: "openclaw-plugin-config-startup-report.patch",
-    sha256: "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
   },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);

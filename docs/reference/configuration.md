@@ -200,7 +200,7 @@ only a write that keeps the value is refused.
 
 OCC also refuses `security.preset`. Remove it and [set the controls you need](../guides/console/configuration-plugins-and-files.md#configuration-tab).
 OpenClaw's `doctor --fix` removes the field without translating its restrictions.
-See [OpenClaw's repair behavior](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/docs/gateway/doctor/config-migrations.md#removed-security-presets).
+See [OpenClaw's repair behavior](https://github.com/openclaw/openclaw/blob/ae4828f528a4ccf574208ad2537c07a0114e743e/docs/gateway/doctor/config-migrations.md#removed-security-presets).
 
 Creation requires `create` permission for Configurations in the
 exact parent Namespace. Reads, updates, and deletes require the corresponding

@@ -1,7 +1,8 @@
 diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/server.required-placement-scopes.test.ts
+index 06f491bb912c08e38d7deeac0bf3250a056ac867..04b70160c3bf9ef4f8e5abd07de79abee2931c7a 100644
 --- a/src/gateway/server.required-placement-scopes.test.ts
 +++ b/src/gateway/server.required-placement-scopes.test.ts
-@@ -4,13 +4,20 @@
+@@ -4,13 +4,20 @@ import { afterEach, expect, test, vi } from "vitest";
  import { WebSocket } from "ws";
  import type { HelloOk } from "../../packages/gateway-protocol/src/schema/frames.js";
  import { waitForGatewayStartup } from "../../test/helpers/gateway-startup.js";
@@ -22,7 +23,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 
  gateway.installGatewayTestHooks({ scope: "suite" });
  const temps = useAutoCleanupTempDirTracker(afterEach);
-@@ -26,8 +33,12 @@
+@@ -26,8 +33,12 @@ const writerScopes: NonNullable<GatewayAuthConfig["identityScopes"]>[string] = [
  async function configureWriters(
    identityScopes: NonNullable<GatewayAuthConfig["identityScopes"]>,
    required = true,
@@ -36,7 +37,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
    const auth: GatewayAuthConfig = {
      mode: "trusted-proxy",
      identityScopes,
-@@ -41,9 +52,19 @@
+@@ -41,9 +52,19 @@ async function configureWriters(
    gateway.testState.gatewayAuth = auth;
    gateway.testState.gatewayControlUi = { allowedOrigins: [origin] };
    await writeConfigFile({
@@ -58,7 +59,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
        : {}),
    });
    if (required) {
-@@ -118,147 +139,257 @@
+@@ -118,148 +139,258 @@ test.each([false, true])(
    },
  );
 
@@ -262,7 +263,8 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +        let phase = "waiting for requested placement";
 +        try {
 +          if (afterAck) {
-+            expect(await created).toMatchObject({ ok: true });
++            const response = await created;
++            expect(response, JSON.stringify(response.error)).toMatchObject({ ok: true });
 +            // Release dispatch in finally even if the expected pause never arrives.
 +            await withinTest(
 +              withTestTimeout(
@@ -356,7 +358,8 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 -      void created.catch(() => {});
 -      try {
 -        if (afterAck) {
--          expect(await created).toMatchObject({ ok: true });
+-          const response = await created;
+-          expect(response, JSON.stringify(response.error)).toMatchObject({ ok: true });
 -          await committed.promise;
 -        } else {
 -          await Promise.race([
@@ -452,9 +455,10 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +  },
 +);
 diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.server.ts
+index 4d44cedfc1415f626de4856e5e42e1331fa5782c..e5b3f3a777c6e2e66f9ed27fc608ffb95721f6c7 100644
 --- a/src/gateway/test-helpers.server.ts
 +++ b/src/gateway/test-helpers.server.ts
-@@ -669,13 +669,20 @@
+@@ -669,13 +669,20 @@ export function onceMessage<T extends GatewayTestMessage = GatewayTestMessage>(
    // Full-suite runs can saturate the event loop (581+ files). Keep this high
    // enough to avoid flaky RPC timeouts, but still fail fast when a response
    // never arrives.
@@ -476,7 +480,7 @@ diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.serve
        ws.off("message", handler);
        ws.off("close", closeHandler);
      }
-@@ -690,11 +697,8 @@
+@@ -690,11 +697,8 @@ export function onceMessage<T extends GatewayTestMessage = GatewayTestMessage>(
          resolve(obj);
        }
      }
@@ -490,7 +494,7 @@ diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.serve
      ws.on("message", handler);
      ws.once("close", closeHandler);
    });
-@@ -1155,7 +1159,7 @@
+@@ -1155,7 +1159,7 @@ export async function rpcReq<T extends Record<string, unknown>>(
    ws: WebSocket,
    method: string,
    params?: unknown,
@@ -499,7 +503,7 @@ diff --git a/src/gateway/test-helpers.server.ts b/src/gateway/test-helpers.serve
  ) {
    // Config publication leaves in-flight session writers owned by the Gateway.
    publishGatewayTestConfig();
-@@ -1167,10 +1171,13 @@
+@@ -1167,10 +1171,13 @@ export async function rpcReq<T extends Record<string, unknown>>(
    }
    const { randomUUID } = await import("node:crypto");
    const id = randomUUID();

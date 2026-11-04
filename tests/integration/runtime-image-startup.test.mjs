@@ -1817,20 +1817,17 @@ if (${historicalCodex}) {
 } else {
   assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
 }
-assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804");
+assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "6b8d49759513caf93231af7335e82025f56c778e92d79a2c5cbfce7f1fbb80b3");
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
   "openclaw-codex-full-access-profile.patch": "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-  "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
-  "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+  "openclaw-control-ui-browser-reconnect.patch": "7ada72afd102ab0776b4b31a783191d2453558b6e932f1660d6294cb51cfe669",
+  "openclaw-terminated-gateway-namespace.patch": "7903bcd6b97c77ea340ea721737962afd4a6a3f68c905bec9f3ff3b04ccb0d97",
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   ...(${historicalCodex} ? {
     "stock-codex-0.163.0-alpha.2-dependency-pin.patch": "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
-  } : {
-    "openclaw-linux-private-store-setgid.patch": "e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c",
-    "openclaw-plugin-config-startup-report.patch": "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
-  }),
+  } : {}),
 });
 assert.equal(provenance.codex.version, ${JSON.stringify(stagingCodexVersion)});
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);

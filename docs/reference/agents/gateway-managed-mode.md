@@ -30,6 +30,10 @@ Gateways that support the notice show where to edit the Agent's draft Configurat
 while native configuration is read-only. Save the draft and select **Deploy new version**
 to apply your changes. See [Edit Agent Configuration](../../guides/console/configuration-plugins-and-files.md#configuration-tab).
 
+Select **Dismiss** to hide the notice in this browser for this Agent's Gateway.
+The browser remembers the choice across reloads. A changed notice appears again.
+Dismissing the notice does not enable native configuration writes.
+
 The [pinned OpenClaw revision](../../../deploy/runtime/openclaw-source.json) includes all three controls.
 The Compute Driver must declare support and launch a qualified runtime.
 Kubernetes requires a configured Gateway runtime. SSH does not support managed mode.

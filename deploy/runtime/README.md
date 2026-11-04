@@ -23,7 +23,9 @@ the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
 OCE builds an unreleased OpenClaw commit that supports Gateway managed mode
-and the separate tool policy for dedicated Harnesses. Managed mode restricts
+and the separate tool policy for dedicated Harnesses. Its Control UI lets an
+operator dismiss the read-only notice in this browser for this Gateway; see
+[Gateway managed mode](../../docs/reference/agents/gateway-managed-mode.md). Managed mode restricts
 native config writes, Gateway-local terminals and Gateway-hosted command jobs.
 The tool policy limits model turns in both modes. When a child spawns, OpenClaw
 waits for placement started by session creation and rechecks the parent's
@@ -52,15 +54,9 @@ does the same.
 private Linux PID namespace stopped recover only Gateway records from that
 namespace. OC still compares its lock fingerprint before recovery. An
 unattributed owner requires operator confirmation.
-`openclaw-linux-private-store-setgid.patch` normalizes only an owner-only
-Linux directory newly created with inherited setgid before private-store
-admission. This lets native setup create its control, client and state stores
-under the Sandbox workspace without changing existing parent permissions or
-relaxing ownership and symlink checks. The build runs the owning private-store
-regressions with the patched source.
-`openclaw-plugin-config-startup-report.patch` (openclaw/openclaw#189392) makes
-startup name each invalid plugin setting and exit 78. Remove both bridges after
-selecting an OpenClaw commit that contains them.
+The selected source includes the owner-only Linux private-store setgid repair
+and the startup report for invalid plugin configuration. These fixes no longer
+require Enterprise bridge patches.
 The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
@@ -103,7 +99,7 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                 |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The source's package version is `2026.10.8`; it does not identify this custom
+The source's package version is `2026.10.9`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
@@ -186,7 +182,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/ae4828f528a4ccf574208ad2537c07a0114e743e/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
