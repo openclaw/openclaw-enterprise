@@ -99,7 +99,9 @@ Local function parameter schemas accept `encrypted: true` only on a string schem
 This annotation does not itself encrypt data. The JSON string in
 `client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
 `none`, `minimal`, `low`, `medium`, `high` or `xhigh`. This metadata grants no authority.
-Unknown request fields remain refused.
+Unknown request fields remain refused. Response tool echoes may contain null descriptions,
+`strict`, `defer_loading`, or custom-tool `format`; their nonnull values retain
+the same type and local-tool restrictions. Namespace descriptions remain text.
 
 Static provider generation two identifies whole-execution authority. A generation-one
 grant remains narrower. Adopting live material and authorizing the broader execution

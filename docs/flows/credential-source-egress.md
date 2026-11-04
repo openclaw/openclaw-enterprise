@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-04
-last_updated_session: authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af
+last_updated_session: authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95
 ---
 
 # Protected credential request flow
@@ -248,12 +248,12 @@ stream. Recovery can renew before expiry. A shorter authenticated peer lifetime 
 and held responses despite later progress.
 Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
-For Responses, check client-assembled SDK output-part snapshots, assistant text across
-parts, items or deltas, and Codex's completed and streamed Plan views. Reject ambiguous
-order or indexes. Inspect function arguments as bounded JSON without recursively
-decoding strings. The
+For Responses, `openai-responses.ts:isResponsesEvent` admits null local-tool metadata
+only in responses. Protection checks SDK snapshots, joined assistant text and
+completed/streamed Codex Plans; ambiguous order or indexes refuse. It parses
+function arguments once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-preserves safe response bytes. The origin has already received the credential.
+preserves safe bytes. The origin already received the credential.
 
 Only this exchange can claim the response. `EgressSendReceipts.observe` atomically records
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
@@ -275,7 +275,7 @@ disables provider tools, and selects HTTP Responses without WebSockets or retrie
 Its `--ignore-user-config` probe disables
 request/stream retries and never repeats a timed-out protected probe.
 
-`apps/controller/src/drivers/egress-proxy/openai-provider.ts:openAiStaticProvider`
+`apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
 checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 through `openai-responses.ts:validResponsesRequest` before Secret resolution.
 Inline developer tools keep the local-tool restrictions.
@@ -339,6 +339,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
 
 - 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
 
