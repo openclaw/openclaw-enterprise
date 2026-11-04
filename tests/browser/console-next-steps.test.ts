@@ -4,7 +4,7 @@ import test, { type TestContext } from "node:test";
 import type { Page } from "playwright";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { createConsoleAppFixture as legacyConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   DEPLOYED_VERSION_UNREADABLE,
   deployAcceptedVersionUnreadable,
@@ -34,14 +34,14 @@ import {
   waitForIdleFetches,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture as legacyRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 const stopAgentButton = (page: Page) =>
   page
     .getByRole("region", { name: "Stop Agent", exact: true })
     .getByRole("button", { name: "Stop Agent", exact: true });
 
-// Narrow the legacy fixture's JSON results at this suite's boundary.
+// Narrow raw responses and domain-specific values at their usages.
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -49,100 +49,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function record(value: unknown): Record<string, unknown> {
   assert.ok(isRecord(value));
   return value;
-}
-
-function identified(value: unknown): Record<string, unknown> & { id: string } {
-  const item = record(value);
-  assert.ok(typeof item.id === "string");
-  return { ...item, id: item.id };
-}
-
-function agentRecord(value: unknown) {
-  const item = identified(value);
-  assert.ok(typeof item.name === "string");
-  assert.ok(typeof item.configurationId === "string");
-  return {
-    ...item,
-    name: item.name,
-    configurationId: item.configurationId,
-    harnessAuth: item.harnessAuth,
-  };
-}
-
-function secretRecord(value: unknown) {
-  const item = identified(value);
-  const ref = record(item.ref);
-  assert.ok(ref.kind === "secret");
-  assert.ok(typeof ref.id === "string" && typeof ref.namespaceId === "string");
-  return { ...item, ref: { kind: ref.kind, id: ref.id, namespaceId: ref.namespaceId } };
-}
-
-function revisionRecord(value: unknown) {
-  const item = identified(value);
-  assert.ok(typeof item.agentId === "string" && typeof item.namespaceId === "string");
-  assert.ok(typeof item.createdAt === "string");
-  return {
-    ...item,
-    agentId: item.agentId,
-    namespaceId: item.namespaceId,
-    createdAt: item.createdAt,
-  };
-}
-
-function typedFixture(fixture: Awaited<ReturnType<typeof legacyConsoleAppFixture>>) {
-  return {
-    ...fixture,
-    async createAgent(namespaceId: string, name: string, values: object = {}, options = {}) {
-      return agentRecord(await fixture.createAgent(namespaceId, name, values, options));
-    },
-    async updateAgent(namespaceId: string, agentId: string, body: unknown) {
-      return agentRecord(await fixture.updateAgent(namespaceId, agentId, body));
-    },
-    async createNamespace(name: string, options = {}) {
-      return identified(await fixture.createNamespace(name, options));
-    },
-    async createSecret(namespaceId: string, name: string, value: string) {
-      return secretRecord(await fixture.createSecret(namespaceId, name, value));
-    },
-    async deployAgent(namespaceId: string, agentId: string) {
-      return revisionRecord(await fixture.deployAgent(namespaceId, agentId));
-    },
-    async seedActiveAgentRevision(
-      namespaceId: string,
-      agentId: string,
-      expectedRevisionId?: string,
-    ) {
-      const result = await fixture.seedActiveAgentRevision(
-        namespaceId,
-        agentId,
-        expectedRevisionId,
-      );
-      return { agent: agentRecord(result.agent), revision: revisionRecord(result.revision) };
-    },
-    async request(
-      method: string,
-      path: string,
-      options: Parameters<typeof fixture.request>[2] = {},
-    ) {
-      const result = await fixture.request(method, path, options);
-      const data: unknown = result.data;
-      const body: unknown = result.body;
-      return { ...result, data, body };
-    },
-  };
-}
-
-async function createConsoleAppFixture(t: TestContext) {
-  return typedFixture(await legacyConsoleAppFixture(t));
-}
-
-async function createRuntimeAuthFixture(t: TestContext, name: string, options = {}) {
-  const result = await legacyRuntimeAuthFixture(t, name, options);
-  return {
-    ...result,
-    fixture: typedFixture(result.fixture),
-    namespace: identified(result.namespace),
-  };
 }
 
 // A next step the reader cannot take is a dead end (finding D750). Each page below names what
@@ -319,7 +225,7 @@ test("a rejected credential names the grant a member lacks and what deploying ne
   const hidden = ["Auth Rejected grants", secretId].filter(Boolean);
   const members: Record<
     string,
-    Parameters<ReturnType<typeof typedFixture>["createNamespaceMember"]>[2]
+    Parameters<Awaited<ReturnType<typeof createConsoleAppFixture>>["createNamespaceMember"]>[2]
   > = {
     // Agent update, and Secret update in place, but no Secret operate on the bound Secret.
     editor: [
