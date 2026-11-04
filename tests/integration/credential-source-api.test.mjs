@@ -84,6 +84,10 @@ async function fixture(
     gateway = { endpoint: "http://127.0.0.1:1" },
     modelProvider,
     placement,
+    selectGateway = true,
+    driverConfigurations = [],
+    filesystemConfiguration = false,
+    runtimeCredentials = false,
   } = {},
 ) {
   const providers = new Map();
@@ -160,6 +164,16 @@ async function fixture(
     async resolveSandboxNamespace(namespace) {
       return namespace;
     },
+    ...(runtimeCredentials
+      ? {
+          async getAgentRuntimeCredentialStatus() {
+            return { transportConfigured: true };
+          },
+          async provisionAgentRuntimeCredentials() {
+            return { transportConfigured: true };
+          },
+        }
+      : {}),
   };
   const secretDriver = createTestSecretDriver();
   const app = await createConsoleAppFixture(t, {
@@ -167,10 +181,15 @@ async function fixture(
     ...(persistedIam ? { provisionedPeople: [] } : {}),
     computeDriver,
     secretDriver,
+    driverConfigurations,
+    filesystemConfiguration,
+    ...(runtimeCredentials ? { publicOrigin: true } : {}),
   });
   await app.bootstrap();
   app.controller.registerDriver(driver);
-  app.controller.selectDriver("credential_gateway", driver.id);
+  if (selectGateway) {
+    app.controller.selectDriver("credential_gateway", driver.id);
+  }
   if (toolSources) {
     const refresh = new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend });
     app.controller.registerDriver(refresh);
@@ -189,6 +208,7 @@ async function fixture(
   return {
     ...app,
     driver,
+    backend,
     client,
     providers,
     profiles,
@@ -492,6 +512,255 @@ test("Installation discovery serializes OpenShell model authentication and refre
   assert.equal(refreshToken?.required, true);
   assert.equal(refreshToken?.issuerRotated, true);
   assert.deepEqual(f.mutations, []);
+});
+
+// Real API/Core/IAM/source admission for the regular QA caller. Only external
+// provider storage and Compute transport are fixture boundaries, not auth rules.
+test("regular QA Agent follows selected Gateway authentication and preserves Secret/provision paths", async (t) => {
+  const { createQaAgent } = await import("../helpers/qa-installation.mjs");
+  const { OpenShellSandboxDriver } =
+    await import("../../apps/controller/src/drivers/sandbox/openshell.ts");
+  const { temporaryDirectory } = await import("../helpers/temporary-directory.mjs");
+  const { readFile, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const preset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  );
+  for (const outcome of [
+    "gateway-api-key",
+    "gateway-account",
+    "no-gateway",
+    "no-gateway-account",
+    "source-grant-revoked",
+    "endpoint-mismatch",
+    "native-provision-source",
+    "native-provision-secret",
+  ]) {
+    await t.test(outcome, async (t) => {
+      const gateway = !["no-gateway", "no-gateway-account", "native-provision-secret"].includes(
+        outcome,
+      );
+      const account = ["gateway-account", "no-gateway-account"].includes(outcome);
+      const provision = outcome.startsWith("native-provision-");
+      const endpoint = "https://models.example.test/custom/v1";
+      const modelProvider = account
+        ? undefined
+        : { protocol: "openai-responses", baseUrl: endpoint };
+      const f = await fixture(t, {
+        modelProvider,
+        selectGateway: gateway,
+        persistedIam: true,
+        filesystemConfiguration: true,
+        runtimeCredentials: true,
+        driverConfigurations: gateway
+          ? [
+              {
+                capability: "sandbox",
+                driverId: "openshell-sandbox",
+                implementation: "openshell",
+                definition: OpenShellSandboxDriver,
+              },
+            ]
+          : [],
+      });
+      if (gateway) {
+        const sandbox = new OpenShellSandboxDriver(
+          {
+            gateway: { workspaceMode: "operator" },
+            kubernetes: {
+              runtimeClassName: "openshell-sandbox",
+              userNamespaces: false,
+              serviceAccount: { mode: "gatewayConfigured" },
+              sandboxDataMount: {
+                mountPath: "/sandbox/workspace",
+                subPath: "workspace",
+                readOnly: false,
+              },
+            },
+            policy: {
+              process: { runAsUser: "1000", runAsGroup: "1000" },
+              networkPolicies: [
+                {
+                  name: "model",
+                  endpoints: [{ host: "models.example.test", ports: [443] }],
+                  binaries: [{ path: "/app/bin/codex" }],
+                },
+              ],
+            },
+          },
+          { id: "openshell-sandbox", backend: f.backend },
+        );
+        f.controller.registerDriver(sandbox);
+        f.controller.selectDriver("sandbox", sandbox.id);
+      }
+      const stopped = new Error("stop at native provisioning boundary");
+      const calls = [];
+      let provisionBody;
+      const api = async (method, path, body) => {
+        calls.push({ method, path });
+        if (provision && path.endsWith("/agents/provision")) {
+          provisionBody = body;
+          throw stopped;
+        }
+        const response = await f.request(method, path, { ...(body === undefined ? {} : { body }) });
+        assert.ok(
+          response.status >= 200 && response.status < 300,
+          `${method} ${path}: HTTP ${response.status} ${response.body?.error?.message ?? ""}`,
+        );
+        return response.data;
+      };
+      const directory = await temporaryDirectory(t, "qa-source-auth-");
+      const key = "synthetic-qa-source-model-key";
+      const keyPath = join(directory, "model-input");
+      await writeFile(keyPath, key, { mode: 0o600 });
+      for (const [name, value] of Object.entries({
+        OCC_TEST_QA_OPENAI_KEY_FILE: keyPath,
+        OCC_TEST_QA_CODEX_TOKEN_FILE: keyPath,
+        OCC_TEST_QA_CODEX_MODEL: "gpt-4.1-mini",
+        OCC_TEST_QA_MODEL_API_KEY: undefined,
+      })) {
+        const previous = process.env[name];
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+        t.after(() => {
+          if (previous === undefined) {
+            delete process.env[name];
+          } else {
+            process.env[name] = previous;
+          }
+        });
+      }
+      const created = await api("POST", `/namespaces/${f.namespace.id}/presets`, preset);
+      const qa = {
+        namespace: f.namespace,
+        presets: [created],
+        agents: [],
+        suffix: "source-test",
+        controlPlane: provision ? "kubernetes" : "compose",
+        api,
+        configuration: {
+          drivers: {
+            plugin: { id: "codex-plugin" },
+            ...(gateway ? { credential_gateway: { id: f.driver.id } } : {}),
+            compute: {
+              configuration: {
+                runtime: {
+                  ...(modelProvider
+                    ? {
+                        modelProvider:
+                          outcome === "endpoint-mismatch"
+                            ? { ...modelProvider, baseUrl: "https://other.example.test/v1" }
+                            : modelProvider,
+                      }
+                    : {}),
+                },
+              },
+            },
+          },
+        },
+        async deployAndWait(agent) {
+          if (outcome === "source-grant-revoked") {
+            const bindings = await api("GET", `/namespaces/${f.namespace.id}/iam/access-bindings`);
+            const own = bindings.find(
+              (x) =>
+                x.subjectId === agent.servicePrincipalId && x.resourceKind === "credential_source",
+            );
+            assert.ok(own);
+            await api("DELETE", `/namespaces/${f.namespace.id}/iam/access-bindings/${own.id}`);
+          }
+          agent.revision = await api(
+            "POST",
+            `/namespaces/${f.namespace.id}/agents/${agent.id}/deploy`,
+          );
+        },
+      };
+      const create = () =>
+        createQaAgent(qa, "Codex", undefined, provision ? "-model-ui" : "-public-git-all", {
+          apiKeyAuth: !account,
+        });
+      if (outcome === "endpoint-mismatch") {
+        await assert.rejects(create(), /HTTP 400 .*must match/);
+        assert.equal(qa.agents.length, 0);
+        assert.equal(
+          (await api("GET", `/namespaces/${f.namespace.id}/credential-sources`)).length,
+          0,
+        );
+        assert.equal(
+          f.secretDriver.calls.some((x) => x.operation === "withValue"),
+          false,
+        );
+        return;
+      }
+      if (outcome === "source-grant-revoked") {
+        await assert.rejects(create(), /HTTP 403 .*Agent itself needs CredentialSource operate/);
+        assert.equal(
+          (await api("GET", `/namespaces/${f.namespace.id}/agents/${qa.agents[0].id}/revisions`))
+            .length,
+          0,
+        );
+        return;
+      }
+      if (provision) {
+        await assert.rejects(create(), (error) => error === stopped);
+        assert.equal(provisionBody.nativeAdmin, true);
+        assert.equal(provisionBody.configuration.kind, "agent");
+        assert.equal(provisionBody.harnessAuth.method, gateway ? "credential_source" : "api_key");
+        if (gateway) {
+          const [source] = await api("GET", `/namespaces/${f.namespace.id}/credential-sources`);
+          assert.equal(provisionBody.harnessAuth.sourceId, source.id);
+        } else {
+          assert.equal(provisionBody.harnessAuth.source.kind, "secret");
+        }
+        assert.equal(qa.agents.length, 0);
+        assert.equal(
+          calls.some((x) => x.path.endsWith("/iam/roles")),
+          false,
+          "provisioning retains ownership of Agent grant creation",
+        );
+        return;
+      }
+      const agent = await create();
+      assert.ok(agent.revision.id.startsWith("rev_"));
+      const bindings = (
+        await api("GET", `/namespaces/${f.namespace.id}/iam/access-bindings`)
+      ).filter((x) => x.subjectId === agent.servicePrincipalId);
+      assert.equal(bindings.length, 1);
+      const role = await api(
+        "GET",
+        `/namespaces/${f.namespace.id}/iam/roles/${bindings[0].roleId}`,
+      );
+      if (gateway) {
+        const [source] = await api("GET", `/namespaces/${f.namespace.id}/credential-sources`);
+        const stored = await f.controller.transact((unit) =>
+          unit.credentialSources.findCredentialSource(f.namespace.id, source.id),
+        );
+        assert.equal(stored.driverId, f.driver.id);
+        assert.equal(source.state, "ready");
+        assert.equal(source.type, account ? "codex-pat" : "openai");
+        assert.deepEqual(source.config, account ? {} : { authorized_base_url: endpoint });
+        assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId: source.id });
+        assert.deepEqual(agent.credentialSources, [{ sourceId: source.id }]);
+        assert.equal(bindings[0].resourceKind, "credential_source");
+        assert.equal(bindings[0].resourceId, source.id);
+        assert.deepEqual(role.permissions, [
+          { action: "operate", resourceKind: "credential_source" },
+        ]);
+        assert.equal(JSON.stringify({ source, agent }).includes(key), false);
+      } else {
+        assert.equal(agent.harnessAuth.method, account ? "codex_pat" : "api_key");
+        assert.equal(bindings[0].resourceKind, "secret");
+        assert.equal(bindings[0].resourceId, agent.harnessAuth.source.id);
+        assert.deepEqual(role.permissions, [{ action: "operate", resourceKind: "secret" }]);
+        assert.equal(
+          calls.some((x) => x.path.endsWith("/credential-sources")),
+          false,
+        );
+      }
+    });
+  }
 });
 
 test("credential source HTTP admission rejects invalid endpoints without retaining records", async (t) => {

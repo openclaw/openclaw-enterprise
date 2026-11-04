@@ -25,6 +25,7 @@ import {
   protectedModelApiKey,
   registerQaSecret,
   grantQaSecret,
+  grantQaCredentialSource,
   qaCommandFailureDetail,
   redactedQaTail,
 } from "./qa-secrets.mjs";
@@ -1169,10 +1170,27 @@ export async function createQaAgent(
     name: `${rendered.agent.name}-model`,
     value: credential,
   });
-  const auth = {
-    method: codexAccountLogin ? "codex_pat" : "api_key",
-    source: { kind: "secret", namespaceId: f.namespace.id, id: secret.id },
-  };
+  let credentialSource;
+  if (f.configuration.drivers.credential_gateway !== undefined) {
+    const modelProvider = f.configuration.drivers.compute?.configuration?.runtime?.modelProvider;
+    credentialSource = await f.api("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
+      name: `${rendered.agent.name}-model`,
+      type: codexAccountLogin ? "codex-pat" : "openai",
+      config:
+        !codexAccountLogin && modelProvider?.baseUrl !== undefined
+          ? { authorized_base_url: modelProvider.baseUrl }
+          : {},
+      secrets: { [codexAccountLogin ? "access_token" : "api_key"]: secret.ref },
+    });
+    assert.equal(credentialSource.state, "ready", "model credential source must be ready");
+    assert.equal(credentialSource.ownerCapability, "credential_gateway");
+  }
+  const auth = credentialSource
+    ? { method: "credential_source", sourceId: credentialSource.id }
+    : {
+        method: codexAccountLogin ? "codex_pat" : "api_key",
+        source: { kind: "secret", namespaceId: f.namespace.id, id: secret.id },
+      };
   const configuration = await f.api("POST", `/namespaces/${f.namespace.id}/configurations`, {
     ...rendered.configuration,
     kind: "agent",
@@ -1181,8 +1199,17 @@ export async function createQaAgent(
     ...rendered.agent,
     configurationId: configuration.id,
     harnessAuth: auth,
+    ...(credentialSource
+      ? {
+          credentialSources: [
+            ...(rendered.agent.credentialSources ?? []),
+            { sourceId: credentialSource.id },
+          ],
+        }
+      : {}),
   });
   f.agents.push(agent);
+
   agent.preset = presetName;
   agent.qaScenario = nameSuffix;
   agent.configuration = configuration;
@@ -1219,9 +1246,14 @@ export async function createQaAgent(
       { values },
     );
   }
-  await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
+  if (credentialSource) {
+    await grantQaCredentialSource(f, agent, credentialSource.id, `${agent.name}-model`);
+  } else {
+    await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);
+  }
   await f.api("POST", `/namespaces/${f.namespace.id}/agents/${agent.id}/runtime-credentials`, {});
   await f.deployAndWait(agent);
+
   agent.native = createNativePluginAssertions({
     gatewayUrl: (a) => f.gatewayUrl(a),
     execGateway: (a, args) => f.execRole(a, "gateway", args),
