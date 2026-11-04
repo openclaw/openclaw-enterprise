@@ -97,16 +97,25 @@ export interface OAuthConnectionCustody {
   readonly secret: Readonly<Secret>;
 }
 
-/** Trusted handoff from code exchange. Only the Token Service retains these credential bytes. */
-export interface OAuthConnectionGrant {
+/** The client and provider destination pinned when the account was connected. */
+export interface OAuthConnectionRegistration {
   readonly issuer: string;
   readonly tokenUrl: string;
   readonly oauthClientId: string;
-  readonly requestedScopes: readonly string[];
   readonly tokenEndpointAuthMethod: "none" | "client_secret_post" | "client_secret_basic";
   readonly resource?: string;
   readonly clientId: string;
-  readonly clientSecret?: string;
+}
+
+/** Server-owned registration and its private credential reader, resolved for one account. */
+export interface OAuthConnectionClient {
+  readonly registration: OAuthConnectionRegistration;
+  readonly readSecret?: (signal: AbortSignal) => Promise<string>;
+}
+
+/** Trusted handoff from code exchange. The Token Service retains the reusable grant. */
+export interface OAuthConnectionGrant extends OAuthConnectionRegistration {
+  readonly requestedScopes: readonly string[];
   /** Effective scope, initially verified against the approved template, then narrowed on renewal. */
   readonly scope: string;
   readonly accessToken: string;
@@ -148,7 +157,8 @@ export interface OAuthConnectionTokenService {
   renew(
     custody: OAuthConnectionCustody,
     signal: AbortSignal,
+    resolveClient: () => Promise<OAuthConnectionClient>,
     scheduledVersion?: string,
-  ): Promise<CredentialRefreshStatus>;
+  ): Promise<OAuthConnectionStatus>;
   retire(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void>;
 }

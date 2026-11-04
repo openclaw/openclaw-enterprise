@@ -46,8 +46,9 @@ administrators can connect with the built-in administrator role. See
 
 A pending request expires after ten minutes. Restart consent if it expires,
 the provider denies it, or the browser session changes. The server handles each
-code once. A connection requires renewed consent if the provider rejects its
-refresh grant.
+code once. If the provider rejects the client secret, an administrator can correct it and
+the Token Service retries the same grant. If the provider rejects the user’s
+refresh grant, the user reconnects.
 
 Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
 disconnect the account. OCC records the request before retiring the credential

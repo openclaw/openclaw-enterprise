@@ -132,15 +132,10 @@ export async function requestOAuthTokens(
 export function refreshPinnedOAuthGrant(
   grant: Pick<
     OAuthConnectionGrant,
-    | "tokenUrl"
-    | "refreshToken"
-    | "clientId"
-    | "clientSecret"
-    | "tokenEndpointAuthMethod"
-    | "resource"
-    | "scope"
+    "tokenUrl" | "refreshToken" | "clientId" | "tokenEndpointAuthMethod" | "resource" | "scope"
   >,
   signal: AbortSignal,
+  clientSecret: string | undefined,
 ) {
   return requestOAuthTokens(
     grant.tokenUrl,
@@ -152,7 +147,7 @@ export function refreshPinnedOAuthGrant(
     }),
     grant.scope,
     grant,
-    grant.clientSecret,
+    clientSecret,
     signal,
   );
 }

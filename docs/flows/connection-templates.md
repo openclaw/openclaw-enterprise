@@ -31,7 +31,8 @@ credential source ID, account owner, approved recipient, requested scopes, and
 granted scopes. A shared callback verifies the issuer when multiple issuers are
 configured. A provider timeout consumes the attempt.
 
-The worker renews the saved account through the Token Service. A conditional
-write fences concurrent renewals and disconnects. OCC records the next renewal
+The worker renews the saved account through the Token Service. For each refresh, it checks the saved grant against the approved registration
+and resolves the current client secret from its Driver. A conditional write
+fences concurrent renewals and disconnects. OCC records the next renewal
 and any narrower scopes. Creating and renewing a saved account require no
 Agent or sender profile.

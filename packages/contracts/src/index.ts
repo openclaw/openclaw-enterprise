@@ -67,6 +67,8 @@ export type {
   OAuthConnectionAccessToken,
   OAuthConnectionCustody,
   OAuthConnectionGrant,
+  OAuthConnectionClient,
+  OAuthConnectionRegistration,
   OAuthConnectionStatus,
   OAuthConnectionTokenService,
   PreparedTokenService,

@@ -161,6 +161,7 @@ import type {
   OAuthConnectionTemplateVersion,
   SavedConnection,
   OAuthConnectionGrant,
+  OAuthConnectionClient,
   OAuthClient,
   McpAuthorizationMetadata,
   ConnectionTemplate,
@@ -1335,9 +1336,6 @@ function browserAuthorizationRequest(
     issuer: version.issuer,
     clientId: client.clientId,
     tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
-    ...(client.secretRegistrationId === undefined
-      ? {}
-      : { secretRegistrationId: client.secretRegistrationId }),
     authorizationUrl: version.authorizationUrl,
     tokenUrl: version.tokenUrl,
     ...(version.mcp ? { resource: version.mcp.resource } : {}),
@@ -5103,6 +5101,47 @@ export class OpenClawController {
     });
   }
 
+  private async connectionRefreshClient(
+    namespaceId: string,
+    sourceId: string,
+  ): Promise<OAuthConnectionClient> {
+    const driver = this.browserConnectionDriver();
+    return this.read(async (view) => {
+      const account = await view.savedConnections.findSavedConnection(namespaceId, sourceId);
+      if (!account || account.revocationRequestedBy) {
+        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+      }
+      const version = await view.connectionTemplates.findOAuthConnectionTemplateVersion(
+        account.connectionTemplateId,
+        account.connectionTemplateVersion,
+      );
+      if (!version || version.oauthClientId !== account.oauthClientId) {
+        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+      }
+      const client = await this.connectionClientForVersion(view, namespaceId, version, driver.id);
+      return {
+        registration: {
+          oauthClientId: client.id,
+          issuer: client.issuer,
+          clientId: client.clientId,
+          tokenUrl: client.tokenUrl,
+          tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
+          ...(version.mcp && { resource: version.mcp.resource }),
+        },
+        ...(client.tokenEndpointAuthMethod !== "none" &&
+          driver.readClientSecret && {
+            readSecret: (signal: AbortSignal) =>
+              driver.readClientSecret!({
+                registrationId: client.id,
+                issuer: client.issuer,
+                clientId: client.clientId,
+                signal,
+              }),
+          }),
+      };
+    });
+  }
+
   async maintainConnectionToken(namespaceId: string, sourceId: string) {
     const custody = await this.read(async (view) => {
       const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
@@ -5119,7 +5158,12 @@ export class OpenClawController {
     if (!custody.due) {
       return service.status(custody, signal);
     }
-    const result = await service.renew(custody, signal, custody.scheduledVersion);
+    const result = await service.renew(
+      custody,
+      signal,
+      () => this.connectionRefreshClient(namespaceId, sourceId),
+      custody.scheduledVersion,
+    );
     if (result.state === "pending") {
       return result;
     }
@@ -5128,7 +5172,7 @@ export class OpenClawController {
       if (source?.state !== "ready") {
         return;
       }
-      if (result.state === "failed") {
+      if (result.state === "failed" && !result.schedule) {
         await unit.savedConnections.recordTokenSchedule(namespaceId, sourceId, "stopped");
       } else {
         await this.recordConnectionTokenSchedule(unit, custody, signal);
