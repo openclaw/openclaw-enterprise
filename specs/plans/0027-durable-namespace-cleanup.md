@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0028-durable-namespace-cleanup.md
+rfc: ../rfcs/0029-durable-namespace-cleanup.md
 ---
 
 # Implementation plan: durable Namespace cleanup
 
-- **ID:** RFC-0028
+- **ID:** RFC-0029
 - **Delivery status:** In progress
 - **Owner:** @russellb
-- **Authority:** [RFC-0028](../rfcs/0028-durable-namespace-cleanup.md)
+- **Authority:** [RFC-0029](../rfcs/0029-durable-namespace-cleanup.md)
 - **Source baseline:** PR #4088 at `bfef7f0d5f8091390d5ec8296d0be4cd5bb5faaa` and main `330073017`.
 
 ## Outcome and scope
@@ -194,6 +194,8 @@ and closed-Installation custody 1/1. RFC, security and genuine-provider proof ho
 remain.
 
 ## Delivery record
+
+- Renumbered the proposal to RFC-0029 after main assigned RFC-0028 to shared model provider configuration. The plan filename, original dates, submission links and Proposed status remain unchanged.
 
 - Renumbered the proposal to RFC-0028 after main assigned RFC-0027 to Agent OAuth connections. The plan filename, original dates, submission links and Proposed status remain unchanged.
 

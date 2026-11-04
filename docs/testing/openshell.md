@@ -302,7 +302,8 @@ To exercise an OpenAI-compatible service, set
 with explicit native model metadata. The first model ID selects the native Agent's
 model; it can differ from the Codex starter model. Supply that service's key as
 `OPENAI_API_KEY`, while retaining the separate `CODEX_ACCESS_TOKEN` for Codex.
-The native source is bound to the catalog's base URL. The same provisioning,
+Configure the Installation `runtime.modelProvider` with that URL and API first.
+The native source authorizes the same destination. The same provisioning,
 model-and-exec, and retained-session redeployment assertions run with this input;
 changing only the embedded QA preset does not exercise this path.
 

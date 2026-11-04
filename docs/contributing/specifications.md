@@ -253,6 +253,7 @@ Plan filenames and historical commit links retain their original names.
 | `40-agent-egress-0x`                         | [RFC-0017](../../specs/rfcs/0017-agent-egress-0x/index.md)              |
 | `2026-09-28-installation-profiles-design`    | [RFC-0018](../../specs/rfcs/0018-installation-profiles-design/index.md) |
 | `0021-driver-configuration-contributions.md` | [RFC-0022](../../specs/rfcs/0022-driver-configuration-contributions.md) |
+| `0027-shared-model-provider.md`              | [RFC-0028](../../specs/rfcs/0028-shared-model-provider.md)              |
 
 Earlier versions of the Credential Proxy proposal used these provisional paths.
 RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.
@@ -268,5 +269,6 @@ number later assigned on main. Original submission commits retain their old path
 
 | Previous RFC path                   | Current RFC                                                    |
 | ----------------------------------- | -------------------------------------------------------------- |
-| `0026-durable-namespace-cleanup.md` | [RFC-0028](../../specs/rfcs/0028-durable-namespace-cleanup.md) |
-| `0027-durable-namespace-cleanup.md` | [RFC-0028](../../specs/rfcs/0028-durable-namespace-cleanup.md) |
+| `0026-durable-namespace-cleanup.md` | [RFC-0029](../../specs/rfcs/0029-durable-namespace-cleanup.md) |
+| `0027-durable-namespace-cleanup.md` | [RFC-0029](../../specs/rfcs/0029-durable-namespace-cleanup.md) |
+| `0028-durable-namespace-cleanup.md` | [RFC-0029](../../specs/rfcs/0029-durable-namespace-cleanup.md) |

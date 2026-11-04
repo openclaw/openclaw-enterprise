@@ -2566,9 +2566,82 @@ test("resume rejects malformed protected inputs before another mutation", async 
   const f = await fixture(t);
   await f.failNext("lost-secret-response");
   await assert.rejects(f.run(), injectedFault);
-  await writeFile(join(f.directory, "values.json"), "");
-  await assert.rejects(f.run("--resume"), /protected Helm values changed/);
+  const path = join(f.directory, "values.json");
+  const original = await readFile(path, "utf8");
+  const events = await f.events();
+  // Real yq parses these files. An empty document or non-mapping must stop
+  // recovery before it tries the candidate alternative or repeats a write.
+  for (const content of ["", `${original}\n---\n`, `42\n---\n${original}`]) {
+    await writeFile(path, content);
+    await assert.rejects(f.run("--resume"), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Cannot compare upgrade YAML:.*only YAML mappings/);
+      assert.doesNotMatch(error.stderr, /protected Helm values changed|jq:|Error:/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), events);
+  }
   assert.equal((await f.events()).filter((event) => event === "migration").length, 0);
+});
+
+test("resume preserves protected edits when comparison evidence is write-only or unwritable", async (t) => {
+  // Root bypasses file permissions; this regression needs an unprivileged owner.
+  assert.notEqual(
+    process.getuid?.(),
+    0,
+    "comparison-file permissions require an unprivileged user",
+  );
+  const f = await fixture(t, { controllerOnly: true });
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  const path = join(f.directory, "values.json");
+  const values = JSON.parse(await readFile(path, "utf8"));
+  const changed = JSON.stringify({ ...values, outsideReviewedUpgrade: true });
+  await writeFile(path, changed);
+  const events = await f.events();
+  // Both valid inputs differ. Evidence permissions cannot make them equal or
+  // permit recovery to overwrite the operator's protected file.
+  for (const mode of [0o600, 0o200, 0o400]) {
+    for (const name of ["compare-actual.json", "compare-expected.json"]) {
+      const output = join(f.evidence, name);
+      await chmod(output, mode);
+      if (mode === 0o200) {
+        await assert.rejects(readFile(output), { code: "EACCES" });
+      }
+    }
+    await assert.rejects(f.run("--resume"), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(
+        error.stderr,
+        mode === 0o400 ? /Cannot compare upgrade YAML/ : /protected Helm values changed/,
+      );
+      assert.doesNotMatch(error.stderr, /jq:|Permission denied/);
+      return true;
+    });
+    assert.equal(await readFile(path, "utf8"), changed);
+    assert.deepEqual(await f.events(), events);
+  }
+});
+
+test("preparation rejects non-mapping candidate documents before protected-setting comparisons", async (t) => {
+  for (const name of ["candidate-values.json", "candidate-installation.json"]) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, { candidates: true, controllerOnly: true });
+      const path = join(f.directory, name);
+      const content = `${await readFile(path, "utf8")}\n---\n`;
+      // Real yq must reject the trailing empty document before a projection
+      // misreports it as a protected-setting or Plugin Driver change.
+      await writeFile(path, content);
+      await assert.rejects(f.run(), (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Cannot compare upgrade YAML:.*only YAML mappings/);
+        assert.doesNotMatch(error.stderr, /protected setting|Plugin Driver|jq:|Error:/);
+        return true;
+      });
+      assert.equal(await readFile(path, "utf8"), content);
+      assert.deepEqual(await f.events(), []);
+    });
+  }
 });
 
 test("reviewed settings survive an interrupted controller upgrade without losing unrelated Secret data", async (t) => {

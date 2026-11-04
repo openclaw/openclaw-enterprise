@@ -15,6 +15,7 @@
   },
   "include": [
     "**/*.test.ts",
+    "../scripts/verify-console-release.ts",
     "../deploy/runtime/google/install-gog.mts",
     "../scripts/console-storybook/*.stories.ts",
     "../scripts/console/record-walkthrough.ts",

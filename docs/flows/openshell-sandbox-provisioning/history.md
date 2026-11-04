@@ -8,35 +8,27 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
-- 2026-11-01 08:39: Preserve NetworkPolicy ingress restrictions through journal creation and updates when integrating main. (authoring-run/4063742f-8365-4098-b623-c6d59626a0ce - 1cae053ef4e6c6772136be0681a11cf72c85f222)
+- 2026-11-03 08:34: Preserve cleanup and Pod-label refusals. (authoring-run/1a111804-4886-49c8-b16b-bf3d756a0216 - 720dbad2180c451679bba0dd0e5a4911e4754eb7)
 
-- 2026-10-21 23:00: Fail a Gateway Pod-label refusal permanently instead of retrying it as an outage. (authoring-run/016ma8eD5SYoBTV5kswEV3Dn - 6d8d23457)
+- 2026-11-04 03:20: Record all applied quickstart service policies for removal. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - d64367ecb30d4b56e944b4bfd385496e7e1f3b0f)
 
-- 2026-10-30 16:38: Merge online Git startup with durable Namespace cleanup in the accompanying main merge. (authoring-run/1ef4bc7c-b32a-46c2-91a8-84483e88bbe7 - 75ac1fa63ed75ea1f7493d7172f02ddbb497f51b)
+- 2026-11-04 03:10: Bind persistent tenant ingress to namespace ownership. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - 7446e87d35b0fdaa7a80d01dead82fec488b66d5)
+
+- 2026-11-04 03:07: Refuse malformed repository probes before binding lookup. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - 05d56a9176b8e2785a4968fdd7d381a7d5c5e263)
+
+- 2026-11-04 01:57: Preserve quickstart management callers across tenant policy updates. (authoring-run/142bbf24-9a49-48de-816c-9898b58c311b - fdca6e74421067adc66dce4f141d153af0355f68)
+
+- 2026-11-04 01:57: Keep the held Git denial probe within its provider endpoint in the accompanying Driver fix. (authoring-run/8e4a06a2-463e-437c-9f6b-11ea7548f898 - fdca6e74421067adc66dce4f141d153af0355f68)
+
+- 2026-11-03 18:15: Correct provider ownership. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
 
 - 2026-10-30 16:09: Preserve capability-based repository admission while integrating patched runtime provenance. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
 
-- 2026-10-30 10:50: Refuse replay of unknown configured creates. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 922a031ef91f6dc14329034f50964752757ec29b)
-
-- 2026-10-30 10:40: Trace cleanup after definitive creation refusals. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 922a031ef91f6dc14329034f50964752757ec29b)
-
 - 2026-10-30 10:12: Adopt 0.1.6. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
-
-- 2026-10-30 10:00: Trace cleanup results before parent sweeping in the accompanying Driver change. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - ef2cf007043819118c83fd8339496a92bcab9fb3)
-
-- 2026-10-30 09:20: Trace durable Namespace cleanup in the accompanying Driver change. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 536e71d95bf39797f2b60048cb3677e879ed046b)
 
 - 2026-10-29 23:56: Merge both capabilities. (authoring-run/0f5c25dc-b648-4d4a-9ef2-24db4179b122 - fbb3b8065fc907305e4f607208fb419df2ffe17a)
 
 - 2026-10-29 23:25: Qualify Git independently of release labels. (authoring-run/58990420-42d2-463b-911f-914ca3d54611 - 77d84ecbf76ce5c60193ad21c8be33184a304ee6)
-
-- 2026-10-29 21:18: Merge preparation updates with cleanup ownership checks. (authoring-run/fb8f8f69-4a79-4657-90a7-fb1ec9f646c3 - b0178eed8d6722c133fd8f3f3cb0b0e090653642)
-
-- 2026-10-29 17:09: Preserve mode support and cleanup during merge. (authoring-run/8c9c6805-6fea-483a-9626-bce15cd10ab0 - 62cae82f7227a5a2ac0b3a8000e5e96326438b69)
-
-- 2026-10-29 16:13: Reject reassigned Sandboxes. (authoring-run/652cb088-e8de-4ee4-9970-513a3502d08d - 5ad9e16de6a249b096d851afe422a00e90eb3473)
-
-- 2026-10-29 15:03: Require provider cleanup after Namespace loss. (authoring-run/d72e8e1c-56b3-4bba-b7b2-83d6212f5e58 - 72dfce5bfdbde5a79f714dc62777425c26619581)
 
 - 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
 
@@ -53,6 +45,28 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
 
 - 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
+
+- 2026-11-01 08:39: Preserve NetworkPolicy ingress restrictions through journal creation and updates when integrating main. (authoring-run/4063742f-8365-4098-b623-c6d59626a0ce - 1cae053ef4e6c6772136be0681a11cf72c85f222)
+
+- 2026-10-21 23:00: Fail a Gateway Pod-label refusal permanently instead of retrying it as an outage. (authoring-run/016ma8eD5SYoBTV5kswEV3Dn - 6d8d23457)
+
+- 2026-10-30 16:38: Merge online Git startup with durable Namespace cleanup in the accompanying main merge. (authoring-run/1ef4bc7c-b32a-46c2-91a8-84483e88bbe7 - 75ac1fa63ed75ea1f7493d7172f02ddbb497f51b)
+
+- 2026-10-30 10:50: Refuse replay of unknown configured creates. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 922a031ef91f6dc14329034f50964752757ec29b)
+
+- 2026-10-30 10:40: Trace cleanup after definitive creation refusals. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 922a031ef91f6dc14329034f50964752757ec29b)
+
+- 2026-10-30 10:00: Trace cleanup results before parent sweeping in the accompanying Driver change. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - ef2cf007043819118c83fd8339496a92bcab9fb3)
+
+- 2026-10-30 09:20: Trace durable Namespace cleanup in the accompanying Driver change. (authoring-run/8312c018-795a-4cde-84b8-8fd87003134c - 536e71d95bf39797f2b60048cb3677e879ed046b)
+
+- 2026-10-29 21:18: Merge preparation updates with cleanup ownership checks. (authoring-run/fb8f8f69-4a79-4657-90a7-fb1ec9f646c3 - b0178eed8d6722c133fd8f3f3cb0b0e090653642)
+
+- 2026-10-29 17:09: Preserve mode support and cleanup during merge. (authoring-run/8c9c6805-6fea-483a-9626-bce15cd10ab0 - 62cae82f7227a5a2ac0b3a8000e5e96326438b69)
+
+- 2026-10-29 16:13: Reject reassigned Sandboxes. (authoring-run/652cb088-e8de-4ee4-9970-513a3502d08d - 5ad9e16de6a249b096d851afe422a00e90eb3473)
+
+- 2026-10-29 15:03: Require provider cleanup after Namespace loss. (authoring-run/d72e8e1c-56b3-4bba-b7b2-83d6212f5e58 - 72dfce5bfdbde5a79f714dc62777425c26619581)
 
 - 2026-10-23 14:21: Confirm released preview readiness with the acknowledged release and authenticated WebSocket in the accompanying Driver change. (authoring-run/5f5f89f5-e1c7-4af8-9b15-abd7a29db02e - 725e2371e5984fbe72d679e0fb7a55833225d70d)
 
@@ -92,8 +106,6 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 - 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
 
-- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
-
 - 2026-10-13 18:22: Preserve opaque account metadata during Sandbox environment relocation. (authoring-run/a67c01b5-f0f7-434b-8183-d2dcc6941836 - 7c25b823f17e93f62d7ba8abea23e65df4b36fef)
 
 - 2026-10-13 16:45: Reconcile native private temporary state and retained writable-subpath preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - ff12fc86cd1662c98a9d8db78be9c2fa4facdcdd)
@@ -117,8 +129,6 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-10-09 15:30: Record bounded Agent Sandbox failure metadata before the original error returns and rollback proceeds; tighten setup prose. (authoring-run/54f8d1c2-fb6e-4074-999f-5185af50a86f - 8bfec22f49b207c16afce21bd9a941ee0e9cd95d)
 
 - 2026-10-09 12:22: Pass the Sandbox-owned private native hook credential directory to the Gateway launcher. (authoring-run/8e337823-5cdf-4dbb-bdac-e9c51a5051b9 - 635244e85c443a4408c92730b508601bbb20f2cd)
-
-- 2026-10-08: Document normal native OpenClaw provider delivery and private Compute workspace initialization; retain experimental qualification limits. (Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
 
 - 2026-10-06 22:10: Preserve HTTP port 80 when creating the OpenShell gRPC target. (authoring-run/88f2e095-3f3a-4d9b-a878-663034cdde6e - 2fc8320cf8bfbf9d7ea20757ef3fe32d7157e6aa)
 
@@ -161,10 +171,6 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-10-01 14:07: Replaced whole-code node setup delivery with expiring split-envelope WebSocket substitution, optional workload identity, and relocated bounded runtime state; protected k3d proof remains pending. (authoring-run/e4bc9884-b517-4a72-8f04-264d4fa72f82 - 66922a5c23a44fabf23121968a8a63be20293380)
 
 - 2026-10-01 11:37: Updated the verified source, image, chart, and wire-contract pin to OpenShell v0.1.3-pre.2; retained the current fail-closed projection and authorization behavior. (authoring-run/f1f395c4-2594-4b07-9e92-ae829a5b5dd4 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
-
-- 2026-10-01: Adopted exact existing Sandboxes during reconciliation, retained revision providers across uncertain create outcomes, and gave the dev-up OpenShell Backend a 30-second local-cluster request deadline. The disposable k3d node now retains verified `Never`-pull OpenShell images through teardown.
-
-- 2026-10-01: Added the plugin-free dedicated Codex path with verifier-only app-server authentication, bearer passthrough, provider-managed runtime files, one-shot workspace-node credentials, and revision-provider cleanup.
 
 - 2026-09-30 23:45: Required hard Landlock compatibility in the OpenShell Sandbox request and rejected weaker Installation settings. (authoring-run/62afbbd6-1a38-43bf-b998-665eab33521a - 129723ab)
 
