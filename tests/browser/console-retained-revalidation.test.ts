@@ -20,7 +20,7 @@ import {
   stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { confirmAgentAction } from "./console-action-helpers.ts";
+import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   heldView,
   refocus,
@@ -110,16 +110,6 @@ async function showNamespaces(page: Page) {
 async function openAgent(page: Page, name: string) {
   await page.getByRole("link", { name }).click();
   await agentShown(page);
-}
-
-// Serves the Agent with a changed description, so its retained page no longer matches.
-function changeAgent(page: Page, namespace: Namespace, agent: Agent) {
-  return page.route(agentPath(namespace, agent), async (route) => {
-    const response = await route.fetch();
-    const body: unknown = await response.json();
-    assert.ok(typeof body === "object" && body !== null && !Array.isArray(body));
-    await route.fulfill({ response, json: { ...body, description: "changed" } });
-  });
 }
 
 // Records, after every DOM change, what the page shows. "pages" names the page in the content
@@ -622,11 +612,11 @@ for (const c of [
     title: "Reopening a changed Agent acknowledges the click before showing the new overview",
     namespace: "Reopen frames",
     agents: ["Reopened Agent"],
-    async prepare(page: Page, namespace: Namespace, agent: Agent) {
+    changeConfiguration: true,
+    async prepare(page: Page) {
       await openAgent(page, "Reopened Agent");
       await page.goBack();
       await listShown(page, "Reopened Agent");
-      await changeAgent(page, namespace, agent);
     },
     enter: (page: Page) => page.getByRole("link", { name: "Reopened Agent" }).click(),
     opening: true,
@@ -638,10 +628,10 @@ for (const c of [
     title: "Back to a changed Agent keeps the held page until the overview reveals",
     namespace: "Back reveal",
     agents: ["Back Agent"],
-    async prepare(page: Page, namespace: Namespace, agent: Agent) {
+    changeConfiguration: true,
+    async prepare(page: Page) {
       await openAgent(page, "Back Agent");
       await showNamespaces(page);
-      await changeAgent(page, namespace, agent);
     },
     enter: (page: Page) => page.goBack(),
     async whileHeld(page: Page) {
@@ -671,15 +661,50 @@ for (const c of [
   },
 ]) {
   test(c.title, async (t) => {
-    const { namespace, agents, page } = await openList(t, c.namespace, c.agents, {
+    const { fixture, namespace, agents, page } = await openList(t, c.namespace, c.agents, {
       deploy: true,
     });
     const agent = agents.at(-1);
     assert.ok(agent);
-    await c.prepare(page, namespace, agent);
+    await c.prepare(page);
+    let changedConfigurationId: string | undefined;
+    if (c.changeConfiguration) {
+      // Another client saves a new draft Configuration while the old Agent page is retained.
+      const draft: unknown = await fixture.createConfiguration(namespace.id, nativeValues("v2"));
+      assert.ok(typeof draft === "object" && draft !== null && "id" in draft);
+      assert.ok(typeof draft.id === "string" && draft.id.length > 0);
+      assert.notEqual(draft.id, agent.configurationId);
+      const changed = agentResource(
+        await fixture.updateAgent(namespace.id, agent.id, { configurationId: draft.id }),
+      );
+      assert.equal(changed.id, agent.id);
+      assert.equal(changed.configurationId, draft.id);
+      changedConfigurationId = draft.id;
+    }
     await page.evaluate<void, ShownKind>(recordShown, "frames");
     const record = await holdOverview(t, page, namespace, agent);
+    const changedRead =
+      changedConfigurationId === undefined
+        ? undefined
+        : responseTo(
+            page,
+            "GET",
+            `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+          );
     await c.enter(page);
+    if (changedRead) {
+      const reply = await changedRead;
+      assert.equal(reply.status(), 200);
+      const body: unknown = await reply.json();
+      assert.ok(typeof body === "object" && body !== null && "data" in body);
+      const observed = agentResource(body.data);
+      assert.equal(observed.id, agent.id);
+      assert.equal(
+        observed.configurationId,
+        changedConfigurationId,
+        "the retained visit must read the changed Agent Configuration",
+      );
+    }
     await record.requested;
     if (c.opening) {
       await page.locator(hiddenView).waitFor({ state: "attached" });
