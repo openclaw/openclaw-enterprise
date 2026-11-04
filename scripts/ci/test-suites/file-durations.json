@@ -60,7 +60,7 @@
     "tests/conformance/compute-lifecycle-hooks.test.mjs": 200,
     "tests/conformance/configuration-occ.test.mjs": 800,
     "tests/conformance/console-agent-name-runs.test.mjs": 300,
-    "tests/conformance/console-api-client.test.mjs": 600,
+    "tests/conformance/console-api-client.test.ts": 600,
     "tests/conformance/console-carry.test.mjs": 100,
     "tests/conformance/console-design-tokens.test.mjs": 100,
     "tests/conformance/console-json-errors.test.mjs": 300,
