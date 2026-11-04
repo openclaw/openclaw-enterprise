@@ -2258,20 +2258,30 @@ async function diagnostics(stack) {
       "get",
       "pods",
       "-o",
-      "jsonpath={.items[*].metadata.name}",
+      "json",
     ]);
-    for (const pod of stdout.split(/\s+/).filter(Boolean)) {
-      await attempt(`platform Pod ${pod} logs`, () =>
-        kubectl(stack, [
-          "-n",
-          stack.state.platformNamespace,
-          "logs",
-          pod,
-          "--all-containers",
-          "--tail",
-          "200",
-        ]),
-      );
+    for (const pod of JSON.parse(stdout).items) {
+      // A waiting later init container makes --all-containers fail before it
+      // returns the earlier installation-check refusal. Read each separately.
+      for (const container of [...(pod.spec.initContainers ?? []), ...pod.spec.containers]) {
+        await attempt(`platform Pod ${pod.metadata.name} ${container.name} logs`, () =>
+          kubectl(
+            stack,
+            [
+              "-n",
+              stack.state.platformNamespace,
+              "logs",
+              pod.metadata.name,
+              "-c",
+              container.name,
+              "--tail",
+              "200",
+              "--request-timeout=15s",
+            ],
+            { timeout: 20_000 },
+          ),
+        );
+      }
     }
   } catch (error) {
     process.stdout.write(`----- platform Pods unavailable: ${error.message.slice(0, 500)}\n`);

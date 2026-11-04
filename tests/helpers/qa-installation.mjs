@@ -237,6 +237,45 @@ export async function runQaCommand(f, command, args, options = {}) {
   }
 }
 
+// Preserve the exited services' bounded logs before the installation scope tears
+// them down. Diagnostics are redacted private files; they never replace the
+// original health/startup failure or become uploaded QA evidence.
+export async function recreateQaComposeServices(f) {
+  try {
+    await f.compose("up", "-d", "--no-deps", "--force-recreate", "controller", "worker-kubernetes");
+  } catch (error) {
+    for (const service of ["controller", "worker-kubernetes"]) {
+      try {
+        const output = await f.run(
+          "docker",
+          [
+            "compose",
+            "-p",
+            f.cluster,
+            "-f",
+            join(f.stateDirectory, "compose.yaml"),
+            ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
+            "logs",
+            "--no-color",
+            "--tail",
+            "120",
+            service,
+          ],
+          { timeout: 15_000, maxBuffer: 256 * 1024, privateFailureOutput: true },
+        );
+        await f.write(
+          `compose-startup-${service}-${randomUUID()}.log`,
+          redactedQaTail(output, f.env, { lines: 120, lineChars: 1000 }).join("\n") + "\n",
+        );
+      } catch {
+        // A missing service, log timeout or failed private write must not hide
+        // the owning Compose failure; continue collecting the other service.
+      }
+    }
+    throw error;
+  }
+}
+
 // Deploys a QA Agent's current configuration and waits for the deployment to succeed.
 export async function deployQaAgentAndWait(
   f,
@@ -624,14 +663,7 @@ export async function createQaInstallation(
       });
       f.configuration = configuration;
       if (controlPlane === "compose") {
-        await f.compose(
-          "up",
-          "-d",
-          "--no-deps",
-          "--force-recreate",
-          "controller",
-          "worker-kubernetes",
-        );
+        await recreateQaComposeServices(f);
       } else {
         await f.apply({
           apiVersion: "v1",

@@ -803,6 +803,83 @@ test("failed QA startup retains only bounded timing records and respects output 
   );
 });
 
+test("QA Compose recreation preserves private bounded startup diagnostics and original failure", async (t) => {
+  const { recreateQaComposeServices } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-startup-diagnostics-");
+  const original = new Error("controller health dependency failed");
+  const secret = "synthetic-private-startup-secret";
+  registerQaSecret(secret);
+  const calls = [];
+  const f = {
+    cluster: "occ-dev-qa-c-diagnostic",
+    stateDirectory: join(directory, "state"),
+    env: { OCC_TEST_PRIVATE_INPUT: "environment-private-startup-secret" },
+    async compose(...args) {
+      calls.push(args);
+      throw original;
+    },
+    async run(command, args, options) {
+      calls.push({ command, args, options });
+      if (args.at(-1) === "worker-kubernetes") {
+        throw new Error(secret);
+      }
+      return `startup-error CONFIGURATION_INVALID ${secret} environment-private-startup-secret\n`;
+    },
+    async write(name, value) {
+      await writeFile(join(directory, name), value, { mode: 0o600 });
+    },
+    async record() {
+      assert.fail("startup logs must stay outside public artifacts");
+    },
+  };
+  await assert.rejects(recreateQaComposeServices(f), (error) => error === original);
+  assert.deepEqual(calls[0], [
+    "up",
+    "-d",
+    "--no-deps",
+    "--force-recreate",
+    "controller",
+    "worker-kubernetes",
+  ]);
+  const probes = calls.slice(1);
+  assert.deepEqual(
+    probes.map(({ args }) => args.at(-1)),
+    ["controller", "worker-kubernetes"],
+  );
+  for (const { command, args, options } of probes) {
+    assert.equal(command, "docker");
+    assert.deepEqual(args.slice(0, 6), [
+      "compose",
+      "-p",
+      f.cluster,
+      "-f",
+      join(f.stateDirectory, "compose.yaml"),
+      "logs",
+    ]);
+    assert.ok(args.includes("--no-color") && args.includes("--tail") && args.includes("120"));
+    assert.equal(options.timeout, 15000);
+    assert.equal(options.maxBuffer, 256 * 1024);
+    assert.equal(options.privateFailureOutput, true);
+  }
+  const files = await readdir(directory);
+  assert.equal(files.length, 1);
+  const path = join(directory, files[0]);
+  const log = await readFile(path, "utf8");
+  assert.match(log, /startup-error CONFIGURATION_INVALID/);
+  assert.doesNotMatch(log, /synthetic-private-startup-secret|environment-private-startup-secret/);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  f.write = async () => {
+    throw new Error("private directory unavailable");
+  };
+  await assert.rejects(recreateQaComposeServices(f), (error) => error === original);
+  calls.length = 0;
+  f.compose = async (...args) => {
+    calls.push(args);
+  };
+  await recreateQaComposeServices(f);
+  assert.equal(calls.length, 1, "healthy recreation must not collect logs");
+});
+
 // Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
 // line, must lose every body line, not only the lines the tail still shows its BEGIN for.
 test("an image build step's unterminated private key is masked past the evidence window", async () => {
