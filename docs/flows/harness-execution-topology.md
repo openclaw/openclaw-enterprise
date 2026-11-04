@@ -81,7 +81,7 @@ contains only its OCC identity, credential kind, and opaque Secret reference.
 The worker claims version work, rechecks actor/ownership and the frozen Harness,
 then calls `ComputeDriver.prepareRevision`. `apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
 supplies native administration controls to the Gateway child after OCE setup.
-Dedicated Gateway launchers apply the model tool policy in both administration modes.
+Dedicated Gateways enforce tool policy, including [MCP routing](agent-plugins.md#2-admit-an-immutable-plugin-deployment), in both administration modes.
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
@@ -144,7 +144,6 @@ trust, writes a private one-use target and reconnects with the saved device toke
 Renewal and cleanup preserve exact ownership.
 
 `internal/occdev/kubernetes.go:writeInstallation` permits Node and pinned Codex model egress. Native workers connect outbound without an app-server endpoint. Compute binds `dedicated-native` with `inference: "worker"`; a missing or disconnected Harness fails without Gateway inference. Exact callbacks and session admission scope transport to the Agent.
-The Gateway grants same-node MCP execution per turn. For tools on another node or requiring Gateway hooks, the worker calls through the Gateway. Code Mode receives the structured MCP result or the policy denial.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
 projects `models.providers.openai` and an environment SecretRef. It retains
 normalized model HTTPS endpoints (port 443, paths ending in `/v1`), using the first
