@@ -2,7 +2,11 @@
 // parent argument still requires an experimental flag. This bounded compatibility
 // layer selects workspace ESM export URLs only; it does not resolve files.
 // https://nodejs.org/api/esm.html#resolution-algorithm-specification
-export function selectPackageExport(exports: unknown, subpath: string, conditions: ReadonlySet<string>) {
+export function selectPackageExport(
+  exports: unknown,
+  subpath: string,
+  conditions: ReadonlySet<string>,
+) {
   function invalid(): never {
     throw new Error("Invalid or unsupported package export target.");
   }

@@ -93,7 +93,11 @@ export function classifyCycles(files: readonly string[], edges: readonly Edge[])
   return Object.freeze({ runtimeCycles, typeOnlyCycles, typeInvolvingCycles });
 }
 
-export function cycleDiagnostic(members: readonly string[], edges: readonly Edge[], typeOnly: boolean) {
+export function cycleDiagnostic(
+  members: readonly string[],
+  edges: readonly Edge[],
+  typeOnly: boolean,
+) {
   // Cycle exceptions use these exact JSON bytes. Reuse each serialized edge for
   // locale-aware sorting and the final array instead of serializing per comparison.
   const cycleEdges = edges

@@ -35,7 +35,10 @@ async function walk(directory: string): Promise<string[]> {
 }
 
 /** Read a fresh, deterministic source snapshot. Symlinked directories are not traversed. */
-export async function readWorkspace(root: string, policy: { sourceRoots: readonly string[]; packages: readonly string[] }) {
+export async function readWorkspace(
+  root: string,
+  policy: { sourceRoots: readonly string[]; packages: readonly string[] },
+) {
   root = await realpath(root);
   const packageTypes = new Map<string, Promise<"module" | "commonjs">>();
   function packageType(directory: string): Promise<"module" | "commonjs"> {
@@ -54,7 +57,12 @@ export async function readWorkspace(root: string, policy: { sourceRoots: readonl
             const type: unknown = Reflect.get(Object(manifest), "type");
             return type === "module" ? "module" : "commonjs";
           } catch (error) {
-            if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
+            if (
+              !error ||
+              typeof error !== "object" ||
+              !("code" in error) ||
+              error.code !== "ENOENT"
+            ) {
               throw error;
             }
             const parent = dirname(directory);
