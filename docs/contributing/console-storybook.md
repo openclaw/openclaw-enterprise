@@ -191,7 +191,7 @@ navigation drawer; the page must not scroll horizontally.
 `scripts/console-storybook/` installs from its own manifest and lockfile under the
 seven-day release-age policy, independently of root dependencies.
 
-- `prepare-assets.mjs` reads the public Console assets through the controller's
+- `prepare-assets.ts` reads the public Console assets through the controller's
   asset reader, then versions the preview in `dist/assets/`. Rebuild after source
   edits so the development server serves the new assets.
 - `public/scenarios.mjs` owns story descriptions, initial data options, failure

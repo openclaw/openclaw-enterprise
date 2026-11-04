@@ -119,7 +119,7 @@ security/runtime holds until the amended behavior is proved.
 Component qualification passes: six real PostgreSQL/worker journal cases cover
 atomic reservation, CAS/restart, actual lease takeover, lock order, audit rollback,
 and a lost real COMMIT reply. The canonical migration/native-catalog and logical
-restore qualification passes 41 cases. Kubernetes controlled-SDK cases cover
+restore qualification passes 43 cases against the combined schema. Kubernetes controlled-SDK cases cover
 partial preparation, unknown creates, original UIDs, external release reply loss,
 parent handoff, and post-list replacement; they are not live cluster proof.
 OpenShell controlled-provider and pinned wire cases, Docker conformance, and SSH
@@ -194,6 +194,8 @@ and closed-Installation custody 1/1. RFC, security and genuine-provider proof ho
 remain.
 
 ## Delivery record
+
+- 2026-11-04: Main reserves migration 66 for Agent first-deployment receipts. The unchanged Namespace journal SQL moves to 67. Native PostgreSQL 18.6 qualification passes 43 canonical install/prefix/restore cases plus six Namespace transaction/lease/audit cases, with no skips. Prefixes 65 and 66 retain their distinct shapes; existing rows gain neither journal authority nor a first-deployment digest. Native and both restore fingerprints were measured from actual migrator-owned databases with limited application grants. The registered disposable fixture was removed. This verifies schema composition, not live provider cleanup.
 
 - Renumbered the proposal to RFC-0029 after main assigned RFC-0028 to shared model provider configuration. The plan filename, original dates, submission links and Proposed status remain unchanged.
 

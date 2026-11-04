@@ -1070,13 +1070,14 @@ test("the worker binds bundled OpenShell Git with the prepared owner's protected
   );
 });
 
-function nativeSenderRefusal(path, code) {
+function nativeSenderRefusal(path, code, message) {
   return (error) => {
     assert.equal(error.name, "ConfigurationValidationError");
     assert.deepEqual(
       error.error.details.map((detail) => [detail.path, detail.code]),
       [[path, code]],
     );
+    assert.equal(error.error.details[0].message, message);
     return true;
   };
 }
@@ -1117,14 +1118,26 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [(value) => (value.repository.nativeSender.publicCaPath = tls.keyFile), /invalid-public-ca/],
     [(value) => (value.repository.nativeSender.publicCaPath = writableCaPath), /invalid-public-ca/],
-    // The native sender's path contract (finding 2214): an existing CA file under a
-    // non-canonical path is refused at load. The control socket client checks its own path.
+    // An existing CA file under a non-canonical path is refused before file loading.
     [
       (value) =>
         (value.repository.nativeSender.publicCaPath =
           value.repository.nativeSender.publicCaPath.replace(/\/ca\.crt$/, "/./ca.crt")),
-      nativeSenderRefusal("", "INVALID_VALUE"),
+      nativeSenderRefusal(
+        "/publicCaPath",
+        "INVALID_VALUE",
+        "repository.nativeSender.publicCaPath must be a canonical absolute path without ASCII control characters.",
+      ),
     ],
+    // Both diagnostics identify the configured field without repeating the supplied path.
+    ...["private-relative/control.sock", `/${"é".repeat(52)}`].map((controlSocket) => [
+      (value) => (value.repository.nativeSender.controlSocket = controlSocket),
+      nativeSenderRefusal(
+        "/controlSocket",
+        "INVALID_VALUE",
+        "repository.nativeSender.controlSocket must be a canonical absolute path without ASCII control characters, at most 103 UTF-8 bytes.",
+      ),
+    ]),
     [(value) => (value.repository.package = "@example/driver"), /unsupported option package/],
     [(value) => (value.repository.implementation = "other"), /unsupported option implementation/],
     [(value) => (value.drivers.compute.id = "compute-ssh"), /bundled Kubernetes/],

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-04
-last_updated_session: authoring-run/9b858934-4857-4a62-80e1-dc6fc0aded6f
+last_updated_session: authoring-run/d89beadd-3258-4f64-873f-0033585df097
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -92,37 +92,39 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-`openshell` profiles support Node and x64/ARM64 Codex on any launcher architecture
-and require Landlock.
+`openshell` launchers require Landlock, support Node and x64/ARM64 Codex on any launcher, verify 0.1.6 charts and pin Gateway/supervisor/sandbox images. OCE image import precedes k3s garbage collection. `writeInstallation` selects curated Codex plugins; the selected Credential Gateway supplies credentials.
 
-`writeInstallation` selects curated Codex plugins for API provisioning;
-credentials use the selected Credential Gateway.
+`dev-up` validates Kubernetes/OpenShell before `occ dev up`.
+`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
+authentication, `oce-system`, imported PostgreSQL and [per-Agent HTTPS](../guides/deploy/local-setup.md).
+Its launcher checks port collisions and records engine, cluster, Namespace,
+ports and key path. Compose runs PostgreSQL/OCC with a k3d-targeting worker.
+The retired local static-inference profile no longer provisions an authority
+or verifies middleware chart configuration.
 
-`scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
-`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
-Kubernetes checks port collisions and records engine, cluster, Namespace, ports and key path. Both verify 0.1.6 charts and pin Gateway/supervisor/sandbox images.
-Protected preflight (`internal/occdev/egress_openshell_chart.go:checkProtectedOpenShellChart`)
-requires native TOML pre-credentials bindings and read-only CA mounts.
-Kubernetes-only imports PostgreSQL and serves the [per-Agent HTTPS route](../guides/deploy/local-setup.md).
-
-Both import OCE images before k3s garbage collection.
-
-On rollout failure, `prepareOpenShell` calls
-`internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout` once, preserving rollback's original error. It records Deployment, UID-linked ReplicaSets/Pods and Warning reasons, excluding messages, environment, full labels and logs. Unavailable, malformed or oversized results are marked (15-second context; three seconds/256 KiB per command, 32 KiB per record). No retries; 200 ms pipe draining cannot terminate descendants.
+After rollout failure, `prepareOpenShell` calls
+`internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
+once, preserving rollback's original error. Diagnostics include Deployment,
+UID-linked ReplicaSets/Pods and Warning reasons, excluding messages, environment,
+full labels and logs. Unavailable, malformed or oversized results are marked.
+Limits: 15-second context; three seconds/256 KiB per command; 32 KiB per record.
+No retries; 200 ms pipe draining cannot terminate descendants.
 
 `network.providerHarness` records Gateway ClusterIP, Pod selector and TCP/8080.
-Agent Gateways alias only the advertised hostname, preserving HTTP Host;
-NetworkPolicy permits only those Pods/port.
-Compose runs PostgreSQL/OCC with a k3d worker; Kubernetes-only uses `oce-system` and in-cluster authentication. Both install private Envoy routing and operator Workspaces. Gateway ingress admits API, worker, supervisor callbacks and dedicated Agent Gateways. The quickstart's `docs/snippets/openshell-quickstart/kubernetes/service-policies.py` uses live selectors for TCP/8080, preserves each Namespace's supervisor policy, and requires tenant ownership labels. Its platform helper records policy sets before applying them; uninstall removes each set. See [local deployment](../guides/deploy/local-kubernetes-development.md) and [protected development](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+Agent Gateways alias its advertised hostname without changing HTTP Host;
+policy permits only those Pods/port. Both launchers install private Envoy routing
+and operator Workspaces. Gateway ingress admits API, worker, supervisor callbacks
+and dedicated Agent Gateways; the public quickstart's
+`docs/snippets/openshell-quickstart/kubernetes/service-policies.py` reads live selectors and admits these callers on TCP/8080, retaining each Namespace's
+supervisor policy when another is applied. Tenant callers must still match the namespace ownership label. The quickstart platform helper records each policy set before applying it; uninstall deletes every recorded set. See [local deployment](../guides/deploy/local-kubernetes-development.md)
+and the [local protected-profile retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
-`internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` runs
-Driver validation before provisioning (policy file maximum 1 MiB). Persisted rules
-augment generated Installation rules; see [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
-
-`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` sets container
-ownership for private routing files; Installation files remain `0644` in private state.
-
-Cleanup validates ownership, deletes cluster/project/volumes, and retains partial-failure recovery state.
+`internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
+policies (maximum 1 MiB) before provisioning; persisted rules augment generated
+rules. See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
+`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` sets routing-file
+container ownership; Installation files remain `0644` in private state.
+Cleanup validates ownership, deletes cluster/project/volumes and retains partial-failure state.
 
 ### 0.1. Check Harness mode support
 
@@ -382,6 +384,6 @@ Workspace wire test checks request IDs and deletion outcomes. Live provider remo
 
 ## Changelog
 
-- 2026-11-04 04:08: Preserve cleanup ownership and quickstart policy/probe boundaries when integrating main. (authoring-run/9b858934-4857-4a62-80e1-dc6fc0aded6f - ca704785b3a06b45d637a99003cdfc41c81981ee)
+- 2026-11-04 07:14: Preserve Namespace cleanup while retiring local middleware provisioning. (authoring-run/d89beadd-3258-4f64-873f-0033585df097 - dc5792f75970f2ac79ba462f6067019bdaa6c360)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

@@ -1,7 +1,7 @@
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";

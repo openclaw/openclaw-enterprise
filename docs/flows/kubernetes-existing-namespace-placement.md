@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: 2026-10-30 13:51
-last_updated_session: authoring-run/20ee5e19-0126-4790-9781-3dfdc17d75f7
+updated: 2026-11-04
+last_updated_session: authoring-run/d89beadd-3258-4f64-873f-0033585df097
 ---
 
 # Existing Kubernetes Namespace Placement Flow
@@ -79,7 +79,7 @@ with its generated platform Namespace ID before queuing worker provisioning.
 Partial database uniqueness prevents simultaneous active claims for the same name.
 
 `packages/occ/src/state/postgres-schema.ts:namespaceLifecycle` and
-`migrations/0066_namespace_lifecycle.sql:reserve_namespace_lifecycle` reserve a
+`migrations/0067_namespace_lifecycle.sql:reserve_namespace_lifecycle` reserve a
 stable lifecycle UUID with the Namespace insertion, before any dispatch. The
 initial revision-zero record proves no effect was attempted. The worker's
 `ControllerWorker.namespaceLifecycle` locks work before Namespace, rechecks its
@@ -269,6 +269,8 @@ path exists for missing original identity or permanently lost provider evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 07:24: Keep the reservation source pointer current after migration numbering reconciliation; journal SQL and no-backfill behavior are unchanged. (authoring-run/d89beadd-3258-4f64-873f-0033585df097 - dc5792f75970f2ac79ba462f6067019bdaa6c360)
 
 - 2026-10-30 13:51: Trace initial operator-owned binding under selected preprovisioned authority and retained immutable IDs in the accompanying repair. (authoring-run/20ee5e19-0126-4790-9781-3dfdc17d75f7 - dc724484d59f5446e9cceea41f0b38192372b8dd)
 

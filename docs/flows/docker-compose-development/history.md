@@ -8,15 +8,15 @@ This record preserves the dated changes to the Compose development flow. See the
 
 ## Changelog
 
-- 2026-11-02 13:31: Separate default authenticated Gateway bootstrap from opt-in static inference; accompanying launcher changes. (01a19d8b-33a8-76c0-9817-521a7f10626d - f5bef23f5796c2c3421189c79e6508079257cfd5)
+- 2026-11-02 18:38: Preserve authenticated Gateway defaults and durable cleanup while merging main. (authoring-run/c9f16ccb-c34a-4d8b-a04c-5b0ccc4b01c1 - 94f7cd4a4cacd9ab8031ceb35fcd40d3522b3647)
 
-- 2026-10-30 21:23: Preserve patched runtime provenance and durable cleanup in the accompanying main merge. (authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743 - a85796bbb3aa8c167350824697171ca1ca52101d)
+- 2026-11-04 08:53: Remove retired local authority provisioning and retain authenticated Gateway readiness and recorded-state cleanup. (authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9 - d0421ca03868db643faa8ba2d13e784fc637cc2e)
+
+- 2026-11-02 13:31: Separate default authenticated Gateway bootstrap from opt-in static inference; accompanying launcher changes. (01a19d8b-33a8-76c0-9817-521a7f10626d - f5bef23f5796c2c3421189c79e6508079257cfd5)
 
 - 2026-10-30 16:09: Reconcile patched OpenShell documentation with capability-based repository admission. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
 
 - 2026-10-30 10:12: Select paired OpenShell 0.1.6 and preserve guarded preview admission. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
-
-- 2026-10-30 10:09: Update the linked execution trace for the accompanying durable Engine/network identity journal and conservative unknown-create refusal. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - ef2cf007043819118c83fd8339496a92bcab9fb3)
 
 - 2026-10-28 21:21: Select paired OpenShell 0.1.6 inputs without widening credential preview admission. (authoring-run/cc92d8d2-ac00-488a-a581-bba758672967 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
 
@@ -27,6 +27,10 @@ This record preserves the dated changes to the Compose development flow. See the
 - 2026-10-14 17:03: Validate protected development selectors before CLI dispatch and direct Docker script effects. (authoring-run/5607c5fd-a268-466b-a5c9-93e0cc984807 - 3fba9be5bae09aa9c33483a768221f44079edc3b)
 
 - 2026-10-14 16:11: Add the default-off protected OpenShell launch, native mTLS credential ownership, authority-first readiness and disposable database selection. (authoring-run/b0bd473e-3b1d-44cc-a1b1-4a1d411a1829 - 126b6a1b13b48281aee5d3ca4d476ec75da8a24a)
+
+- 2026-10-30 21:23: Preserve patched runtime provenance and durable cleanup in the accompanying main merge. (authoring-run/010dd6ea-2b4f-455b-bfe5-593e04307743 - a85796bbb3aa8c167350824697171ca1ca52101d)
+
+- 2026-10-30 10:09: Update the linked execution trace for the accompanying durable Engine/network identity journal and conservative unknown-create refusal. (authoring-run/80ea08bc-5b26-4327-bd7b-128cc7aaf0fd - ef2cf007043819118c83fd8339496a92bcab9fb3)
 
 - 2026-10-09 19:04: Import tagged development images through the platform-selected archive path and retain digest verification. (authoring-run/3980117d-b11c-47c0-9f7a-765c1481ee7b - 6d0bb202d97f487cbd5e41d64e0f1f5ab196d083)
 
@@ -57,10 +61,6 @@ This record preserves the dated changes to the Compose development flow. See the
 - 2026-09-17 06:42: Trace the accompanying Go CLI development lifecycle, Kubernetes startup and cleanup ownership, and retained Docker startup path. (01a0ae15-3bad-7d92-92b7-f8be208cbb49 - 14ad14c04deeeaa79f325b14d492ab13730adc7f)
 
 - 2026-09-17 00:48: Correct current harness admission and metadata-only dispatch boundaries after implementation review. (01a0acbf-4d5a-7413-9411-dce911f3ad23 - 107900e9551b90c3e9ac24d30f8ea866f17e5dbb)
-
-- 2026-09-09: Added automatic Podman selection, API socket delivery, Podman
-  status and bootstrap-copy handling, and the Docker-only Fluentd and Agent
-  runtime verification boundaries while retaining the Docker Compose path.
 
 - 2026-09-01 22:09: Document explicit runtime image rebuilding and link packaged-plugin and Codex compatibility checks. (01a05f89-ff1c-7643-a77f-7e1e3aed9e5f - 5fa47a6)
 

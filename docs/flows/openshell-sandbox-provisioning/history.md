@@ -8,7 +8,9 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
-- 2026-11-03 08:34: Preserve cleanup and Pod-label refusals. (authoring-run/1a111804-4886-49c8-b16b-bf3d756a0216 - 720dbad2180c451679bba0dd0e5a4911e4754eb7)
+- 2026-11-04 04:08: Preserve cleanup ownership and quickstart policy/probe boundaries when integrating main. (authoring-run/9b858934-4857-4a62-80e1-dc6fc0aded6f - ca704785b3a06b45d637a99003cdfc41c81981ee)
+
+- 2026-11-04 09:00: Remove the retired local middleware chart-verification claim. (authoring-run/5728cb52-6c01-4613-a558-c793a649f415 - 384b030ae118b130013f9863873bbeee0a9f4961)
 
 - 2026-11-04 03:20: Record all applied quickstart service policies for removal. (authoring-run/f5965c91-dd7b-445f-8656-57a942f4f9e0 - d64367ecb30d4b56e944b4bfd385496e7e1f3b0f)
 
@@ -45,6 +47,8 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
 
 - 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
+
+- 2026-11-03 08:34: Preserve cleanup and Pod-label refusals. (authoring-run/1a111804-4886-49c8-b16b-bf3d756a0216 - 720dbad2180c451679bba0dd0e5a4911e4754eb7)
 
 - 2026-11-01 08:39: Preserve NetworkPolicy ingress restrictions through journal creation and updates when integrating main. (authoring-run/4063742f-8365-4098-b623-c6d59626a0ce - 1cae053ef4e6c6772136be0681a11cf72c85f222)
 
