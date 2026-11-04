@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -959,5 +960,81 @@ func TestContainerListed(t *testing.T) {
 		if got := containerListed(listing, container); got != want {
 			t.Errorf("containerListed(%q) = %v, want %v", container, got, want)
 		}
+	}
+}
+
+func TestComposeRegistryRequiresCurrentRuntimeWithoutUnusedImageSelections(t *testing.T) {
+	server := newRegistryTestServer(t)
+	current := server.serveImage("compose/runtime", "application/vnd.oci.image.manifest.v1+json", registryTestConfig("linux/amd64", registryTestRevision))
+	stale := server.serveImage("compose/stale", "application/vnd.oci.image.manifest.v1+json", registryTestConfig("linux/amd64", strings.Repeat("f", 40)))
+	_, port, _ := strings.Cut(server.host, ":")
+	for _, tc := range []struct{ image, controller, want string }{
+		{image: current},
+		{image: stale, want: "selected image revision does not match checkout"},
+		{image: current, controller: current, want: "supports only OCC_KUBERNETES_RUNTIME_IMAGE"},
+	} {
+		t.Run(tc.image+tc.want, func(t *testing.T) {
+			fakeProfileCommands(t, map[string]string{
+				"git":    `"rev-parse --verify HEAD") echo ` + registryTestRevision + ` ;;`,
+				"docker": `"container inspect --format {{json .NetworkSettings.Ports}} ` + registryTestContainer + `") echo '{"5000/tcp":[{"HostIp":"127.0.0.1","HostPort":"` + port + `"}]}' ;;`,
+			})
+			r := newRunner(Options{})
+			r.engine = "docker"
+			r.env[developmentImageRegistrySetting] = registryTestContainer
+			r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] = tc.image
+			r.env["OCC_DEVELOPMENT_CONTROLLER_IMAGE"] = tc.controller
+			err := r.selectComposeDevelopmentImageRegistry(context.Background())
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("want %s, got %v", tc.want, err)
+				}
+			} else if err != nil || r.imageRegistry.pending != 1 {
+				t.Fatalf("runtime selection failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestComposeRegistryRecoveryDetachesOnlyItsRecordedNetwork(t *testing.T) {
+	project := "occ_registry_test"
+	network := project + "_development"
+	directory := developmentDownFixture(t, registryTestContainer, network)
+	data := readJSONFile(t, filepath.Join(directory, "state.json"))
+	data["deploymentMode"], data["composeProject"], data["platformNamespace"] = "", project, ""
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "state.json"), encoded, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "compose.yaml"), []byte("services: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state, err := readState(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := fakeProfileCommands(t, map[string]string{
+		"docker": `"container inspect --format {{with index .NetworkSettings.Networks \"` + network + `\"}}{{.IPAddress}}{{end}} ` + registryTestContainer + `") echo ` + registryTestAddress + ` ;;
+"network disconnect ` + network + ` ` + registryTestContainer + `") ;;
+"compose "*) ;;`,
+		"k3d": `"cluster list -o json") echo '[]' ;;`,
+	})
+	r := newRunner(Options{Repository: state.Repository})
+	r.engine = "docker"
+	if err := r.cleanup(context.Background(), state, true); err != nil {
+		t.Fatal(err)
+	}
+	calls := commands()
+	if !strings.HasPrefix(calls[1], "docker network disconnect "+network+" ") {
+		t.Fatalf("registry did not detach before Compose teardown: %v", calls)
+	}
+	state.ImageRegistryNetwork = "k3d-" + state.Cluster
+	if err := rewriteState(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readState(directory); err == nil {
+		t.Fatal("Compose state adopted a foreign k3d network")
 	}
 }

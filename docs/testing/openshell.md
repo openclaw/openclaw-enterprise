@@ -253,15 +253,18 @@ directory when finished.
 
 `tests/integration/local-first-agent-real.test.mjs` runs in both Compose-plus-k3d
 and Kubernetes-only first-Agent stacks. Each stack is created by the public Local
-Setup installer, including the pinned image builds and OpenShell installation.
+Setup installer, including OpenShell installation. Hosted focused jobs prepare
+current-source images through the [CI image path](ci.md); local runs retain source
+builds in the installer.
 The initial invocation checks a fresh nonce and a custom prompt. Reuse checks a
 new nonce without repeating the custom prompt, with credentials removed from the
 helper environment. It must retain the exact Agent, revision, Namespace, and
 model. Stage timings are retained in the [CI results](ci.md).
 
-The test first proves Codex with a `codex-pat`
-source, then creates a separate `openai` source from `OPENAI_API_KEY` for guided
-native OpenClaw provisioning. The native case uses the pinned runtime and
+After verifying the ready default Namespace created by Local Setup, the test
+runs distinct Codex and native Agents concurrently. Codex uses its `codex-pat`
+source; native OpenClaw uses a separate `openai` source from `OPENAI_API_KEY`.
+The test drains both operations before shared denial checks and stack teardown. The native case uses the pinned runtime and
 production Drivers without the k3d helper's compatibility bridge.
 
 To exercise an OpenAI-compatible service, set
