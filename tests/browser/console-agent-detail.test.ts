@@ -923,10 +923,10 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     source: replacementSecret.ref,
   });
   assert.deepEqual(
-    accessBindingPostRequests(requests, namespace.id).map(({ body }) => [
-      object(body).subjectId,
-      object(body).resourceId,
-    ]),
+    accessBindingPostRequests(requests, namespace.id).map(({ body }) => {
+      const { subjectId, resourceId } = object(body);
+      return [subjectId, resourceId];
+    }),
     [[agent.servicePrincipalId, replacementSecret.id]],
   );
 
@@ -1876,8 +1876,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
     },
     { times: 1 },
   );
-  const reads: unknown = await settledFetches(page, agentPath);
-  assert.ok(typeof reads === "number");
+  const reads = await settledFetches(page, agentPath);
   await page.getByRole("button", { name: "Refresh stop status" }).click();
   await waitForSettledFetches(page, agentPath, reads + 1);
   assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
