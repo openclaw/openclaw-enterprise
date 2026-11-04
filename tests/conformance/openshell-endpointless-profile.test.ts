@@ -93,8 +93,11 @@ test("files-only wire profiles pass Git provider verification without weakening 
   });
   const port = await new Promise<number>((resolve, reject) => {
     server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, bound) => {
-      if (error) reject(error);
-      else resolve(bound);
+      if (error) {
+        reject(error);
+      } else {
+        resolve(bound);
+      }
     });
   });
   const client = new GrpcOpenShellGatewayClient({
