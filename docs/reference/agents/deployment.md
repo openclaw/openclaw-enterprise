@@ -244,21 +244,22 @@ inspection reads its containers. It is not a health result; each version's [depl
 is. Unless Compute activates before commit, the worker sets the pointer before
 activation finishes.
 
-If a version fails before the worker sets the pointer, the pointer is
-unchanged. After a failed first deployment, the Agent has no selected version.
+Failure before the worker sets the pointer leaves it unchanged: unset for a
+first deployment.
 With [exclusive replacement](../drivers/compute.md#production-revision-stages),
 the unchanged pointer names a predecessor that was already stopped, so nothing
 serves until a new version activates. When the worker refuses such a candidate
-or any first deployment, for example because its deploying actor lost `deploy`
+or a first deployment, for example because its deploying actor lost `deploy`
 or a credential source was revoked, it stops the candidate's workload and
 records the refusal only after the stop succeeds (until then it waits as
 [`REFUSED_CANDIDATE_STOP_PENDING`](#pending-deployment-progress)). Other refused
-candidates stay until a later successful deployment, stop, delete or
+candidates stay until a later successful deployment, stop, deletion or
 [repository cleanup](../repository-credentials.md#deletion-and-restart).
-Runtime failures such as `RUNTIME_MODEL_PROBE_FAILED` or
-`CONVERGENCE_DEADLINE_EXCEEDED` retain Pods for the version's Logs
-tab until redeployment, unless repository cleanup stops them first.
-Cleanup can clear the selected version before credential disposal finishes.
+After runtime failures such as `RUNTIME_MODEL_PROBE_FAILED` or
+`CONVERGENCE_DEADLINE_EXCEEDED`, existing workloads remain for diagnosis until
+redeployment, stop, deletion or repository cleanup removes them. Logs require
+existing Pods. Repository cleanup clears a stopped revision's pointer only if
+it remains selected; credential disposal may remain pending.
 Kubernetes embedded replacement reports ready while the predecessor still
 serves, so the worker sets the pointer first. Activation then replaces the
 shared gateway, and the new gateway runs the startup model probe. If that
