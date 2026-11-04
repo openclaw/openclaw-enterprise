@@ -32,6 +32,7 @@ import {
 } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
+import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
@@ -153,12 +154,18 @@ function progress(lane, message) {
 
 async function timedPreparation(lane, phase, operation) {
   const started = performance.now();
+  let succeeded = false;
   try {
-    return await operation();
+    const result = await operation();
+    succeeded = true;
+    return result;
   } finally {
     const elapsedMs = Math.round(performance.now() - started);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
+    if (lane === "logging-collector" && phase === "image-pulls") {
+      await recordLoggingSetupTiming("image-pulls", succeeded ? "success" : "failure", elapsedMs);
+    }
     if (
       process.env.OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY === "1" &&
       process.env.GITHUB_STEP_SUMMARY &&

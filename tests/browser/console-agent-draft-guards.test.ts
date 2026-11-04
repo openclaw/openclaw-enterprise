@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import type { Page, Route } from "playwright";
+import type { SandboxPolicyViewWire } from "../../packages/contracts/src/api/sandbox-policy.ts";
+import type {
+  Agent,
+  AgentRevision,
+  Configuration,
+  Namespace,
+  SecretMetadata,
+  SecretBindings,
+  OpenClawConfigurationDocument,
+  Permission,
+} from "../../packages/contracts/src/index.ts";
 import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -43,6 +56,7 @@ import {
   focusedText,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
@@ -66,8 +80,110 @@ import {
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
+// Legacy resource fields enter the suite as unknown; the checks below narrow them.
+type NamespaceFixture = {
+  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>;
+  namespace: unknown;
+};
+
+type PolicyConsoleFixture = Omit<
+  Awaited<ReturnType<typeof createPolicyConsole>>,
+  "namespace" | "agent"
+> & { namespace: unknown; agent: unknown };
+
+type RepositoryConsoleFixture = Omit<
+  Awaited<ReturnType<typeof createConsoleRepositoryLaunchFixture>>,
+  "namespace" | "modelSecret"
+> & { namespace: unknown; modelSecret: unknown };
+
+// Legacy fixtures return untyped JSON. Check only the fields these scenarios consume.
+function record(value: unknown): Record<string, unknown> {
+  const isRecord = (input: unknown): input is Record<string, unknown> =>
+    typeof input === "object" && input !== null && !Array.isArray(input);
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function text(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function items(value: unknown): unknown[] {
+  assert.ok(Array.isArray(value));
+  return value;
+}
+
+function resource(value: unknown): Pick<Namespace, "id"> {
+  const data = record(value);
+  return { id: text(data.id) };
+}
+
+function policyFields(value: unknown): Pick<SandboxPolicyViewWire["policy"], "version"> & {
+  additions: unknown[];
+  application: unknown;
+} {
+  const data = record(value);
+  assert.ok(typeof data.version === "number");
+  return { version: data.version, additions: items(data.additions), application: data.application };
+}
+
+function checkedController(value: unknown): OpenClawController {
+  assert.ok(value instanceof OpenClawController);
+  return value;
+}
+
+function configurationFields(
+  value: unknown,
+): Pick<Configuration, "id"> & { secretBindings: unknown } {
+  const data = record(value);
+  return { id: text(data.id), secretBindings: data.secretBindings };
+}
+
+function revisionFields(value: unknown): Pick<AgentRevision, "id" | "revision"> {
+  const data = record(value);
+  assert.ok(typeof data.revision === "number");
+  return { id: text(data.id), revision: data.revision };
+}
+
+function agentFields(value: unknown): Pick<
+  Agent,
+  "id" | "name" | "namespaceId" | "configurationId" | "servicePrincipalId"
+> & {
+  harnessAuth: unknown;
+} {
+  const data = record(value);
+  return {
+    id: text(data.id),
+    name: text(data.name),
+    namespaceId: text(data.namespaceId),
+    configurationId: text(data.configurationId),
+    servicePrincipalId: text(data.servicePrincipalId),
+    harnessAuth: data.harnessAuth,
+  };
+}
+
+function secretFields(value: unknown): SecretMetadata {
+  const data = record(value);
+  const ref = record(data.ref);
+  assert.equal(ref.kind, "secret");
+  return {
+    id: text(data.id),
+    name: text(data.name),
+    namespaceId: text(data.namespaceId),
+    ref: { kind: "secret", id: text(ref.id), namespaceId: text(ref.namespaceId) },
+  };
+}
+
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
-  const { fixture, namespace, agent, base } = await createPolicyConsole(t);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
   // No operator ceiling delegates access. The actual OCC admission path must reject the preview;
   // no response interception or provider behavior is substituted for that decision.
   const { page } = await newPage(t, fixture, {
@@ -76,7 +192,7 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   // Through the sign-in form: a cold deep link to a draft's tab keeps its Namespace, revision
   // and tab across password sign-in.
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "policy");
-  await loginThroughForm(page, fixture, url);
+  await loginThroughForm(page, fixture, url.href);
   await page.waitForURL(url.href);
   const requests = apiRequests(page, fixture.origin);
   await page.getByRole("button", { name: "Manage rules", exact: true }).click();
@@ -137,8 +253,9 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
     "outside.example.org",
   );
   const unchanged = await fixture.request("GET", base);
-  assert.equal(unchanged.data.policy.version, 1);
-  assert.deepEqual(unchanged.data.policy.additions, []);
+  const unchangedPolicy = record(record(unchanged.data).policy);
+  assert.equal(unchangedPolicy.version, 1);
+  assert.deepEqual(unchangedPolicy.additions, []);
 });
 
 // Without a Sandbox Driver that supports per-Agent network policy there is no Sandbox log source
@@ -146,18 +263,24 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
 test("Policy denials says once that the Installation selects no Sandbox Driver", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("No policy driver", { ready: true });
-  const created = await fixture.createAgent(
-    namespace.id,
-    "No policy driver",
-    createHarnessConfiguration("codex", "gpt-5.1"),
-    { executionMode: "dedicated" },
+  const namespace = resource(await fixture.createNamespace("No policy driver", { ready: true }));
+  const created = agentFields(
+    await fixture.createAgent(
+      namespace.id,
+      "No policy driver",
+      createHarnessConfiguration("codex", "gpt-5.1"),
+      { executionMode: "dedicated" },
+    ),
   );
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, created.id);
+  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    created.id,
+  );
+  const revision = revisionFields(rawRevision);
   const base = `/namespaces/${namespace.id}/agents/${created.id}/sandbox-policy/networking`;
   // The real API answers the policy read with no capability and its cause, and every policy
   // change gives the same cause: turning editing on is refused up front (D774).
-  const view = (await fixture.request("GET", base)).data;
+  const view = record((await fixture.request("GET", base)).data);
   assert.deepEqual(
     [view.capability, view.unavailableReason],
     [null, NO_SANDBOX_DRIVER_NETWORK_POLICY],
@@ -174,11 +297,11 @@ test("Policy denials says once that the Installation selects no Sandbox Driver",
   ];
   for (const refused of refusals) {
     assert.deepEqual(
-      [refused.status, refused.body.error?.message],
+      [refused.status, record(record(refused.body).error).message],
       [409, NO_SANDBOX_DRIVER_NETWORK_POLICY],
     );
   }
-  assert.equal((await fixture.request("GET", base)).data.editingEnabled, false);
+  assert.equal(record((await fixture.request("GET", base)).data).editingEnabled, false);
   // Turning editing off stays allowed.
   assert.equal(
     (await fixture.request("PATCH", `${base}/editing`, { body: { enabled: false } })).status,
@@ -216,11 +339,21 @@ test("Policy denials says once that the Installation selects no Sandbox Driver",
 // A version a Sandbox Driver provisioned names it in its snapshot, so the Policy denials tab reads
 // its Sandbox log. Only a version without one skips the read (finding 2484).
 test("Policy denials reads the Sandbox log of a version a Sandbox Driver provisioned", async (t) => {
-  const { fixture, namespace, agent } = await createPolicyConsole(t);
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+  }: PolicyConsoleFixture = await createPolicyConsole(t);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+  );
+  const revision = revisionFields(rawRevision);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const snapshot = await fixture.request("GET", `${agentPath}/revisions/${revision.id}`);
-  assert.equal(snapshot.data.sandboxDriverId, "policy-openshell");
+  assert.equal(record(snapshot.data).sandboxDriverId, "policy-openshell");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
@@ -248,8 +381,18 @@ test("Policy denials reads the Sandbox log of a version a Sandbox Driver provisi
 // grants. An administrator whose Restriction denies Agent administer on this Agent is told who
 // can change it, not "You do not have permission" (finding D753).
 test("A refused policy editing change says who can change it", async (t) => {
-  const { fixture, namespace, agent } = await createPolicyConsole(t);
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+  }: PolicyConsoleFixture = await createPolicyConsole(t);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+  );
+  const revision = revisionFields(rawRevision);
   restrict(fixture.policy, "administer", "agent", {
     namespaceId: namespace.id,
     resourceId: agent.id,
@@ -271,7 +414,13 @@ test("A refused policy editing change says who can change it", async (t) => {
 // ask again for the same answer (finding 2060). With a permission answer the console skips the
 // read instead (finding 2454), so the answer is withheld here to reach the API's refusal.
 test("A refused policy read offers no Retry", async (t) => {
-  const { fixture, namespace, agent } = await createPolicyConsole(t);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+  }: PolicyConsoleFixture = await createPolicyConsole(t);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
   const member = await fixture.createAccountWithPolicy("policy-member", (principal) => {
     fixture.policy.roles.push({
       id: "role-policy-member",
@@ -287,7 +436,11 @@ test("A refused policy read offers no Retry", async (t) => {
       roleId: "role-policy-member",
     });
   });
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+  );
+  const revision = revisionFields(rawRevision);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
@@ -322,11 +475,24 @@ test("A refused policy read offers no Retry", async (t) => {
 // remembered denial with a fresh answer, which is not audited, so the policy shows on the first
 // visit instead of only after a reload (finding 2454).
 test("A policy read grant after the page loaded shows the policy on the first visit", async (t) => {
-  const { fixture, namespace, agent } = await createPolicyConsole(t);
-  const role = {
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+  }: PolicyConsoleFixture = await createPolicyConsole(t);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  const role: { id: string; namespaceId: string; permissions: Permission[] } = {
     id: "role-policy-granted-later",
     namespaceId: namespace.id,
-    permissions: ["namespace", "agent", "agent_revision", "configuration"].map((resourceKind) => ({
+    permissions: (
+      [
+        "namespace",
+        "agent",
+        "agent_revision",
+        "configuration",
+      ] satisfies Permission["resourceKind"][]
+    ).map((resourceKind): Permission => ({
       action: "read",
       resourceKind,
     })),
@@ -341,7 +507,11 @@ test("A policy read grant after the page loaded shows the policy on the first vi
       roleId: role.id,
     });
   });
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+  );
+  const revision = revisionFields(rawRevision);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const answer = page.waitForResponse((r) => r.url().endsWith(`/agents/${agent.id}/permissions`));
@@ -351,7 +521,7 @@ test("A policy read grant after the page loaded shows the policy on the first vi
     detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
     member.credentials,
   );
-  assert.equal((await (await answer).json()).data.sandboxPolicyRead, false);
+  assert.equal(record(record(await (await answer).json()).data).sandboxPolicyRead, false);
   await settlePageRequests(page);
 
   role.permissions.push({ action: "read", resourceKind: "sandbox_policy" });
@@ -375,7 +545,13 @@ test("A policy read grant after the page loaded shows the policy on the first vi
 // tab says so instead of telling every reader to deploy. It reads no Sandbox log, so the denial
 // window's count and controls, which could only show nothing, are hidden (finding 2509).
 test("Policy denials on the draft says where denials and suggestions come from", async (t) => {
-  const { fixture, namespace, agent } = await createPolicyConsole(t);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+  }: PolicyConsoleFixture = await createPolicyConsole(t);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
   const tab = page.locator(".sandbox-policy");
@@ -426,10 +602,21 @@ const delegatedPolicyGrant = {
 };
 
 test("Agent policy proposals save separately or save then apply the newly saved version", async (t) => {
-  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
   // A real admitted revision is activated for presentation. This proves browser/HTTP/IAM
   // admission and the pending application record, not worker dispatch or provider enforcement.
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+  );
+  const revision = revisionFields(rawRevision);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
@@ -483,7 +670,7 @@ test("Agent policy proposals save separately or save then apply the newly saved 
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   await page.getByRole("button", { name: "Save for later", exact: true }).click();
   await page.getByText(/Policy v2 saved\. The current revision is unchanged\./).waitFor();
-  const saved = (await fixture.request("GET", base)).data.policy;
+  const saved = policyFields(record((await fixture.request("GET", base)).data).policy);
   assert.equal(saved.version, 2);
   assert.deepEqual(saved.additions, [delegatedPolicyGrant]);
   assert.equal(saved.application, undefined);
@@ -506,12 +693,13 @@ test("Agent policy proposals save separately or save then apply the newly saved 
   await page
     .getByText(/Policy v3 saved\. Application to the current revision is pending\./)
     .waitFor();
-  const applied = (await fixture.request("GET", base)).data.policy;
+  const applied = policyFields(record((await fixture.request("GET", base)).data).policy);
   assert.equal(applied.version, 3);
-  assert.equal(applied.additions[0].id, "python-reviewed");
-  assert.equal(applied.application.state, "pending");
-  assert.equal(applied.application.policyVersion, 3);
-  assert.equal(applied.application.revisionId, revision.id);
+  assert.equal(record(applied.additions[0]).id, "python-reviewed");
+  const application = record(applied.application);
+  assert.equal(application.state, "pending");
+  assert.equal(application.policyVersion, 3);
+  assert.equal(application.revisionId, revision.id);
   assert.deepEqual(
     pathRequests(requests, "POST", `${base}/apply`).map(({ body }) => body),
     [{ expectedVersion: 3, revisionId: revision.id }],
@@ -526,8 +714,15 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
     id: "unicode-tool",
     binary: `/${Array(6).fill("𐐀".repeat(45)).join("/")}/tool`,
   };
-  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [grant]);
-  const initial = (await fixture.request("GET", base)).data.policy;
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t, [grant]);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  const initial = policyFields(record((await fixture.request("GET", base)).data).policy);
   assert.equal(initial.version, 1);
   const accepted = await fixture.request("POST", `${base}/validate`, {
     body: { expectedVersion: initial.version, additions: [grant] },
@@ -562,7 +757,7 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   const previewResponse = await preview;
   assert.equal(previewResponse.status(), 200);
-  assert.deepEqual((await previewResponse.json()).data, {
+  assert.deepEqual(record(await previewResponse.json()).data, {
     success: true,
     data: { additions: [grant] },
   });
@@ -572,7 +767,7 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   await page.getByRole("button", { name: "Save for later", exact: true }).click();
   assert.equal((await saved).status(), 200);
   await page.getByText(/Policy v2 saved\. The current revision is unchanged\./).waitFor();
-  const persisted = (await fixture.request("GET", base)).data.policy;
+  const persisted = policyFields(record((await fixture.request("GET", base)).data).policy);
   assert.equal(persisted.version, initial.version + 1);
   assert.deepEqual(persisted.additions, [grant]);
   assert.equal(persisted.application, undefined);
@@ -603,9 +798,9 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   const rejectedResponse = await rejected;
   assert.equal(rejectedResponse.status(), 200);
-  const refusal = (await rejectedResponse.json()).data;
+  const refusal = record(record(await rejectedResponse.json()).data);
   assert.equal(refusal.success, false);
-  assert.deepEqual(refusal.error.details, [
+  assert.deepEqual(record(refusal.error).details, [
     {
       path: "/additions/0/binary",
       code: "TOO_LONG",
@@ -618,13 +813,20 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
     assert.equal(await page.getByRole("button", { name, exact: true }).count(), 0, name);
   }
   assert.equal(pathRequests(requests, "PUT", base).length, 1);
-  const unchanged = (await fixture.request("GET", base)).data.policy;
+  const unchanged = policyFields(record((await fixture.request("GET", base)).data).policy);
   assert.equal(unchanged.version, 2);
   assert.deepEqual(unchanged.additions, [grant]);
 });
 
 test("Agent policy under protected execution offers only removal of saved network rules", async (t) => {
-  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
   // Rules saved before protected execution applied block every protected deploy. This fixture
   // selects no Credential Proxy, so only the view's protectedExecution flag is set on the read;
   // the removal itself goes through real HTTP, IAM and OCC admission.
@@ -639,8 +841,8 @@ test("Agent policy under protected execution offers only removal of saved networ
       return;
     }
     const response = await route.fetch();
-    const body = await response.json();
-    body.data.protectedExecution = true;
+    const body = record(await response.json());
+    record(body.data).protectedExecution = true;
     await route.fulfill({ response, json: body });
   });
   const requests = apiRequests(page, fixture.origin);
@@ -675,7 +877,7 @@ test("Agent policy under protected execution offers only removal of saved networ
   const previewResponse = await preview;
   t.diagnostic(`Policy preview POST status: ${previewResponse.status()}`);
   assert.equal(previewResponse.status(), 200);
-  assert.deepEqual((await previewResponse.json()).data, {
+  assert.deepEqual(record(await previewResponse.json()).data, {
     success: true,
     data: { additions: [] },
   });
@@ -689,8 +891,9 @@ test("Agent policy under protected execution offers only removal of saved networ
   assert.equal(pathRequests(requests, "PUT", base).length, 0);
   const unchanged = await fixture.request("GET", base);
   assert.equal(unchanged.status, 200);
-  assert.equal(unchanged.data.policy.version, 2);
-  assert.deepEqual(unchanged.data.policy.additions, [delegatedPolicyGrant]);
+  const unchangedPolicy = record(record(unchanged.data).policy);
+  assert.equal(unchangedPolicy.version, 2);
+  assert.deepEqual(unchangedPolicy.additions, [delegatedPolicyGrant]);
   assert.equal(
     await page
       .getByRole("button", { name: "Save and apply to current revision", exact: true })
@@ -712,9 +915,10 @@ test("Agent policy under protected execution offers only removal of saved networ
   const cleared = await fixture.request("GET", base);
   t.diagnostic(`Policy readback GET status: ${cleared.status}`);
   assert.equal(cleared.status, 200);
-  assert.equal(cleared.data.policy.version, 3);
-  assert.deepEqual(cleared.data.policy.additions, []);
-  assert.equal(cleared.data.policy.application, undefined);
+  const clearedPolicy = record(record(cleared.data).policy);
+  assert.equal(clearedPolicy.version, 3);
+  assert.deepEqual(clearedPolicy.additions, []);
+  assert.equal(clearedPolicy.application, undefined);
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
   assert.equal(
     await page.getByRole("button", { name: "Remove saved network rules", exact: true }).count(),
@@ -727,8 +931,19 @@ test("Agent policy under protected execution offers only removal of saved networ
 });
 
 test("Agent policy combined save distinguishes ceiling rejection from a saved policy whose application is rejected", async (t) => {
-  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+  );
+  const revision = revisionFields(rawRevision);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
@@ -751,7 +966,7 @@ test("Agent policy combined save distinguishes ceiling rejection from a saved po
     0,
     "a rejected save must never apply the previous policy",
   );
-  assert.equal((await fixture.request("GET", base)).data.policy.version, 1);
+  assert.equal(record(record((await fixture.request("GET", base)).data).policy).version, 1);
 
   await page
     .getByRole("textbox", { name: "Destination hostname", exact: true })
@@ -773,15 +988,22 @@ test("Agent policy combined save distinguishes ceiling rejection from a saved po
       hasText: "Policy v2 was saved, but application to the current revision was not confirmed.",
     })
     .waitFor();
-  const persisted = (await fixture.request("GET", base)).data.policy;
+  const persisted = policyFields(record((await fixture.request("GET", base)).data).policy);
   assert.equal(persisted.version, 2);
-  assert.equal(persisted.additions[0].host, delegatedPolicyGrant.host);
+  assert.equal(record(persisted.additions[0]).host, delegatedPolicyGrant.host);
   assert.equal(persisted.application, undefined);
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
 });
 
 test("Agent policy conflict reload retains the draft and revalidates the new version", async (t) => {
-  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
   await page.getByRole("button", { name: "Manage rules", exact: true }).click();
@@ -814,14 +1036,25 @@ test("Agent policy conflict reload retains the draft and revalidates the new ver
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   await page.getByRole("button", { name: "Save for later", exact: true }).click();
   await page.getByText(/Policy v3 saved/).waitFor();
-  assert.deepEqual((await fixture.request("GET", base)).data.policy.additions, [
+  assert.deepEqual(record(record((await fixture.request("GET", base)).data).policy).additions, [
     delegatedPolicyGrant,
   ]);
 });
 
 test("overlapping policy refreshes retain the newest read and continue pending polling", async (t) => {
-  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+  );
+  const revision = revisionFields(rawRevision);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
@@ -873,7 +1106,10 @@ test("overlapping policy refreshes retain the newest read and continue pending p
     "pending policy stopped polling",
     10_000,
   );
-  assert.equal((await fixture.request("GET", base)).data.policy.application.state, "pending");
+  assert.equal(
+    record(record(record((await fixture.request("GET", base)).data).policy).application).state,
+    "pending",
+  );
 });
 
 // A failed live application says why and what to do next instead of showing only its reason
@@ -893,10 +1129,19 @@ for (const c of [
   },
 ]) {
   test(`a failed policy application (${c.reason}) says why and what to do next`, async (t) => {
-    const { fixture, namespace, agent, base } = await createPolicyConsole(t, [
-      delegatedPolicyGrant,
-    ]);
-    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const {
+      fixture,
+      namespace: rawNamespace,
+      agent: rawAgent,
+      base,
+    }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
+    const namespace = resource(rawNamespace);
+    const agent = agentFields(rawAgent);
+    const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+      namespace.id,
+      agent.id,
+    );
+    const revision = revisionFields(rawRevision);
     assert.equal(
       (
         await fixture.request("PUT", base, {
@@ -920,10 +1165,14 @@ for (const c of [
         return;
       }
       const response = await route.fetch();
-      const body = await response.json();
-      const { application } = body.data.policy;
+      const body = record(await response.json());
+      const application = record(record(record(body.data).policy).application);
       assert.equal(application.state, "pending");
-      body.data.policy.application = { ...application, state: "failed", reason: c.reason };
+      record(record(body.data).policy).application = {
+        ...application,
+        state: "failed",
+        reason: c.reason,
+      };
       await route.fulfill({ response, json: body });
     });
     // The pending application's poll reads the failure.
@@ -937,18 +1186,22 @@ for (const c of [
 }
 
 test("Agent deployment requires a reload after repository access changes", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
-    {
-      repositoryRef: "application",
-      repositoryId: "1600",
-      repository: "example/application",
-      namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
-    },
-  ]);
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Repository deploy review",
-    nativeValues("repository-deploy-review"),
+  const { fixture, namespace: rawNamespace }: NamespaceFixture =
+    await createRepositoryLaunchFixture(t, (namespaceId) => [
+      {
+        repositoryRef: "application",
+        repositoryId: "1600",
+        repository: "example/application",
+        namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+      },
+    ]);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(
+    await fixture.createAgent(
+      namespace.id,
+      "Repository deploy review",
+      nativeValues("repository-deploy-review"),
+    ),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const initial = await fixture.request("PATCH", path, {
@@ -1008,7 +1261,10 @@ test("Agent deployment requires a reload after repository access changes", async
     },
   });
   assert.equal(intentChange.status, 200);
-  assert.deepEqual(intentChange.data.repositoryBindings, bindingChange.data.repositoryBindings);
+  assert.deepEqual(
+    record(intentChange.data).repositoryBindings,
+    record(bindingChange.data).repositoryBindings,
+  );
   await deploy.click();
   await page.getByText(staleMessage, { exact: true }).waitFor();
   assert.equal(await deploy.isDisabled(), true);
@@ -1020,12 +1276,18 @@ test("Agent deployment requires a reload after repository access changes", async
 });
 
 test("Agent deployment reports preflight errors and requires reload for changed draft state", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment preflight");
-  const agent = await fixture.createAgent(
-    namespace.id,
+  const { fixture, namespace: rawNamespace }: NamespaceFixture = await createRuntimeAuthFixture(
+    t,
     "Deployment preflight",
-    nativeValues("before-preflight"),
-    { harnessAuth: { method: "runtime" } },
+  );
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(
+    await fixture.createAgent(
+      namespace.id,
+      "Deployment preflight",
+      nativeValues("before-preflight"),
+      { harnessAuth: { method: "runtime" } },
+    ),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);
@@ -1081,12 +1343,15 @@ test("Agent deployment reports preflight errors and requires reload for changed 
 // flashed "Checking Configuration…" then "Requesting deployment…" for a frame each (finding 1619).
 // One delayed status now covers the request and holds focus until the outcome is known.
 test("Deploy new version keeps keyboard focus and shows one delayed status", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment focus");
-  const agent = await fixture.createAgent(
-    namespace.id,
+  const { fixture, namespace: rawNamespace }: NamespaceFixture = await createRuntimeAuthFixture(
+    t,
     "Deployment focus",
-    nativeValues("deployment-focus"),
-    { harnessAuth: { method: "runtime" } },
+  );
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(
+    await fixture.createAgent(namespace.id, "Deployment focus", nativeValues("deployment-focus"), {
+      harnessAuth: { method: "runtime" },
+    }),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);
@@ -1138,7 +1403,15 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   });
   await pressDeploy();
   await movedOn.requested;
-  await page.evaluate(() => globalThis.document.activeElement?.blur());
+  await page.evaluate(() => {
+    const active = globalThis.document.activeElement;
+    if (active !== null) {
+      if (!(active instanceof HTMLElement)) {
+        throw new Error("Expected focused HTML element");
+      }
+      active.blur();
+    }
+  });
   movedOn.release();
   await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
   assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "BODY");
@@ -1177,7 +1450,7 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   await page.waitForFunction(
     () => globalThis.document.activeElement?.getAttribute("role") === "alert",
   );
-  assert.ok((await failure.textContent()).length > 0);
+  assert.ok(text(await failure.textContent()).length > 0);
   assert.equal(await focusedText(page), await failure.textContent());
   assert.equal(await status.textContent(), "");
   assert.equal(await deploy.isDisabled(), true);
@@ -1187,14 +1460,17 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   await page.reload();
   await page.getByText(/generation 2/).waitFor();
   await page.evaluate(() => {
-    const shown = [];
+    const shown: string[] = [];
     const node = globalThis.document.querySelector(".agent-draft-actions p[role=status]");
+    if (node === null) {
+      throw new Error("Expected deployment status");
+    }
     new globalThis.MutationObserver(() => {
       if (node.textContent && node.textContent !== shown.at(-1)) {
         shown.push(node.textContent);
       }
     }).observe(node, { childList: true, characterData: true, subtree: true });
-    globalThis.deployStatusTexts = shown;
+    Object.assign(globalThis, { deployStatusTexts: shown });
   });
   const admitted = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
     method: "POST",
@@ -1207,7 +1483,16 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   assert.equal(await status.locator(".delayed-status").textContent(), "Deploying…");
   admitted.release();
   await page.waitForURL(/revision=rev_/);
-  assert.deepEqual(await page.evaluate(() => globalThis.deployStatusTexts), ["Deploying…"]);
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const browserGlobal: object = globalThis;
+      if (!("deployStatusTexts" in browserGlobal)) {
+        throw new Error("Missing deployment status observations");
+      }
+      return browserGlobal.deployStatusTexts;
+    }),
+    ["Deploying…"],
+  );
 });
 
 // After an admitted deployment the draft page stays on screen, inert, while the new version
@@ -1224,14 +1509,20 @@ for (const [scenario, heldRead, heldMs, reader] of [
   ["a version read that outlasts the 2 s reveal wait", "revision", 2600, "stays"],
   ["a reader who goes Back during a slow Agent read", "agent", 700, "goes back"],
   ["a reader who moved on", "agent", 700, "moves on"],
-]) {
+] satisfies [string, "agent" | "namespaces" | "revision", number, string][]) {
   test(`An admitted deployment keeps keyboard focus until the new version opens: ${scenario}`, async (t) => {
-    const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment hand-off");
-    const agent = await fixture.createAgent(
-      namespace.id,
+    const { fixture, namespace: rawNamespace }: NamespaceFixture = await createRuntimeAuthFixture(
+      t,
       "Deployment hand-off",
-      nativeValues("deployment-hand-off"),
-      { harnessAuth: { method: "runtime" } },
+    );
+    const namespace = resource(rawNamespace);
+    const agent = agentFields(
+      await fixture.createAgent(
+        namespace.id,
+        "Deployment hand-off",
+        nativeValues("deployment-hand-off"),
+        { harnessAuth: { method: "runtime" } },
+      ),
     );
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const { page } = await newPage(t, fixture);
@@ -1249,7 +1540,15 @@ for (const [scenario, heldRead, heldMs, reader] of [
     await admitted.requested;
     assert.equal(await focusedText(page), "Deploying…");
     if (reader === "moves on") {
-      await page.evaluate(() => globalThis.document.activeElement?.blur());
+      await page.evaluate(() => {
+        const active = globalThis.document.activeElement;
+        if (active !== null) {
+          if (!(active instanceof HTMLElement)) {
+            throw new Error("Expected focused HTML element");
+          }
+          active.blur();
+        }
+      });
     }
     // Every focused node from admission until the new version shows (numbered, so a replaced
     // heading counts as a new one), and whether the loading page stood in.
@@ -1287,12 +1586,12 @@ for (const [scenario, heldRead, heldMs, reader] of [
     if (heldRead !== "revision" && heldMs > 250) {
       assert.ok(loadingShown, trail.join(" | "));
     }
-    assert.match(trail.at(-1), /^H1#\d+: Deployment hand-off$/, trail.join(" | "));
+    assert.match(text(trail.at(-1)), /^H1#\d+: Deployment hand-off$/, trail.join(" | "));
     if (reader === "moves on") {
       // Nothing takes focus while the page is held; the new version's heading takes it once shown.
       assert.deepEqual(trail.slice(0, -1), ["BODY"], trail.join(" | "));
     } else {
-      assert.match(trail[0], /^P#\d+: Deploying…$/, trail.join(" | "));
+      assert.match(text(trail[0]), /^P#\d+: Deploying…$/, trail.join(" | "));
       assert.ok(!trail.includes("BODY"), trail.join(" | "));
       // The held heading shows the same name: the focused heading at the end is a later one.
       assert.notEqual(
@@ -1306,7 +1605,7 @@ for (const [scenario, heldRead, heldMs, reader] of [
 
 for (const [field, change] of [
   ["execution mode", { executionMode: "dedicated" }],
-  ["Backend", { backendId: backendFixtures[0].id }],
+  ["Backend", { backendId: text(backendFixtures.at(0)?.id) }],
   [
     "plugin policy",
     {
@@ -1318,29 +1617,34 @@ for (const [field, change] of [
       },
     },
   ],
-]) {
+] satisfies [string, object][]) {
   test(`Agent deployment requires a reload after ${field} changes`, async (t) => {
     // SSH Compute runs only embedded Agents, and Agent save refuses a change to dedicated, so
     // the execution mode case runs on Kubernetes Compute with a Secret-backed key.
     const kubernetes = field === "execution mode";
-    const { fixture, namespace } = kubernetes
+    const { fixture, namespace: rawNamespace }: NamespaceFixture = kubernetes
       ? await (async () => {
           const created = await createConsoleAppFixture(t);
           await created.bootstrap();
           return {
             fixture: created,
-            namespace: await created.createNamespace(`Deployment ${field}`, { ready: true }),
+            namespace: resource(
+              await created.createNamespace(`Deployment ${field}`, { ready: true }),
+            ),
           };
         })()
       : await createRuntimeAuthFixture(t, `Deployment ${field}`);
+    const namespace = resource(rawNamespace);
     const pluginDriver = new CodexPluginDriver();
-    fixture.controller.registerDriver(pluginDriver);
-    fixture.controller.selectDriver("plugin", pluginDriver.id);
-    const agent = await fixture.createAgent(
-      namespace.id,
-      `Deployment ${field}`,
-      nativeValues("deployment-settings"),
-      kubernetes ? {} : { harnessAuth: { method: "runtime" } },
+    checkedController(fixture.controller).registerDriver(pluginDriver);
+    checkedController(fixture.controller).selectDriver("plugin", pluginDriver.id);
+    const agent = agentFields(
+      await fixture.createAgent(
+        namespace.id,
+        `Deployment ${field}`,
+        nativeValues("deployment-settings"),
+        kubernetes ? {} : { harnessAuth: { method: "runtime" } },
+      ),
     );
     const ready = () =>
       kubernetes
@@ -1384,12 +1688,17 @@ for (const [field, change] of [
   });
 }
 
-async function deployableRepositoryAgent(t, name) {
-  const { fixture, namespace, modelSecret, grantModelAccess } =
-    await createConsoleRepositoryLaunchFixture(t);
-  const configuration = await fixture.createConfiguration(
-    namespace.id,
-    createHarnessConfiguration("codex", "gpt-5.1"),
+async function deployableRepositoryAgent(t: TestContext, name: string) {
+  const {
+    fixture,
+    namespace: rawNamespace,
+    modelSecret: rawModelSecret,
+    grantModelAccess,
+  }: RepositoryConsoleFixture = await createConsoleRepositoryLaunchFixture(t);
+  const namespace = resource(rawNamespace);
+  const modelSecret = secretFields(rawModelSecret);
+  const configuration = configurationFields(
+    await fixture.createConfiguration(namespace.id, createHarnessConfiguration("codex", "gpt-5.1")),
   );
   const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
@@ -1400,7 +1709,7 @@ async function deployableRepositoryAgent(t, name) {
     },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const agent = created.data;
+  const agent = agentFields(created.data);
   await grantModelAccess(agent);
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const provisioned = await fixture.request("POST", `${path}/runtime-credentials`, {
@@ -1413,7 +1722,7 @@ async function deployableRepositoryAgent(t, name) {
 
 test("A recovery link refused by unsaved repository changes preserves Back and Forward", async (t) => {
   const { fixture, namespace, agent } = await deployableRepositoryAgent(t, "Recovery Agent");
-  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const revision = revisionFields(await fixture.deployAgent(namespace.id, agent.id));
   const { page } = await newPage(t, fixture);
   // The controller admitted this revision. Supply its failed status so the real recovery link
   // is available while the reader edits the draft; no worker or external service runs.
@@ -1494,7 +1803,9 @@ for (const tab of ["configuration", "repositories"]) {
     await assert.rejects(edit.click({ timeout: 500 }), /Timeout/);
     preflight.release();
     const committed = await deployment.requested;
-    assert.equal(committed.status(), 202, JSON.stringify(await committed.json()));
+    assert.ok(committed);
+    const committedBody: unknown = await committed.json();
+    assert.equal(committed.status(), 202, JSON.stringify(committedBody));
     await assert.rejects(edit.click({ timeout: 500 }), /Timeout/);
     deployment.release();
     assert.equal((await admitted).status(), 202);
@@ -1512,7 +1823,7 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     t,
     "Operator Secret Agent",
   );
-  const modelSecret = agent.harnessAuth.source;
+  const modelSecret = resource(record(agent.harnessAuth).source);
   const operator = await fixture.createNamespaceMember("operator", namespace.id, [
     ...AGENT_READ,
     ["read_logs", "agent"],
@@ -1563,7 +1874,7 @@ test("Deploy names the bound Secrets an operator may not operate", async (t) => 
     const response = await refused;
     assert.equal(response.status(), 403);
     assert.equal(
-      (await response.json()).error.message,
+      record(record(await response.json()).error).message,
       callerDenied("Secret operate", `Secret ${modelSecret.id}`),
     );
     const alert = page.getByRole("alert").filter({ hasText: reason });
@@ -1612,7 +1923,7 @@ test("Deploy says a bound Secret the operator may neither read nor operate needs
   ]);
   const reason = deployUnreadableSecrets(1);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
-  const deployed = async (page) => {
+  const deployed = async (page: Page) => {
     const deploy = page.getByRole("button", { name: "Deploy new version" });
     await expectNoText(page, reason, () => waitForEnabled(deploy));
     const admitted = page.waitForResponse(
@@ -1655,13 +1966,21 @@ test("Deploy says a bound Secret the operator may neither read nor operate needs
 });
 
 test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) => {
-  const { fixture, namespace, modelSecret, grantModelAccess } =
-    await createConsoleRepositoryLaunchFixture(t);
+  const {
+    fixture,
+    namespace: rawNamespace,
+    modelSecret: rawModelSecret,
+    grantModelAccess,
+  }: RepositoryConsoleFixture = await createConsoleRepositoryLaunchFixture(t);
+  const namespace = resource(rawNamespace);
+  const modelSecret = secretFields(rawModelSecret);
   // A loopback listener cannot serve the Gateway Service's Pod-IP traffic, so deployment
   // refuses it. The Configuration itself saves, as it does for an operator.
   const values = createHarnessConfiguration("codex", "gpt-5.1");
   values.gateway.bind = "loopback";
-  const configuration = await fixture.createConfiguration(namespace.id, values);
+  const configuration = configurationFields(
+    await fixture.createConfiguration(namespace.id, values),
+  );
   const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       name: "Typed deploy refusals",
@@ -1671,7 +1990,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const agent = created.data;
+  const agent = agentFields(created.data);
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);
   await login(
@@ -1688,12 +2007,12 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
         response.url() === `${fixture.origin}${path}/deploy` &&
         response.request().method() === "POST",
     );
-  async function refusal(status) {
+  async function refusal(status: number) {
     const response = deployResponse();
     await deploy.click();
-    const body = await (await response).json();
+    const body = record(await (await response).json());
     assert.equal((await response).status(), status, JSON.stringify(body));
-    return body.error.message;
+    return text(record(body.error).message);
   }
 
   // The caller may operate the model Secret, but the Agent's own service principal may not.
@@ -1712,7 +2031,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   await waitForEnabled(deploy);
   const revisions = await fixture.request("GET", `${path}/revisions`);
   assert.equal(revisions.status, 200);
-  assert.equal(revisions.data.length, 0, "a refused deployment creates no version");
+  assert.equal(items(revisions.data).length, 0, "a refused deployment creates no version");
 
   // The caller's own denial names the grant deploy checked on the Agent the request named, and
   // who grants it (finding 2534); a Restriction reads as a missing grant. The console shows it.
@@ -1739,7 +2058,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   fixture.policy.restrictions.pop();
 
   // Deploys against a routed 409 with `body` and waits for `text`, with Deploy enabled again.
-  async function routedConflict(body, text, exact) {
+  async function routedConflict(body: string, text: string, exact: boolean) {
     await page.route(`${fixture.origin}${path}/deploy`, (route) =>
       route.fulfill({ status: 409, contentType: "application/json", body }),
     );
@@ -1775,23 +2094,34 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
 
 for (const mutation of ["authentication", "channel Secrets"]) {
   test(`Agent deployment waits for ${mutation} writes and their recovery`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess } =
-      await createConsoleRepositoryLaunchFixture(
-        t,
-        mutation === "channel Secrets" ? { secretDriver: createTestSecretDriver() } : {},
-      );
-    const values = createHarnessConfiguration("codex", "gpt-5.1");
-    let appSecret;
-    let botSecret;
-    let replacementSecret;
-    let secretBindings;
+    const {
+      fixture,
+      namespace: rawNamespace,
+      modelSecret: rawModelSecret,
+      grantModelAccess,
+      grantSecretAccess,
+    }: RepositoryConsoleFixture = await createConsoleRepositoryLaunchFixture(
+      t,
+      mutation === "channel Secrets" ? { secretDriver: createTestSecretDriver() } : {},
+    );
+    const namespace = resource(rawNamespace);
+    const modelSecret = secretFields(rawModelSecret);
+    const values: {
+      -readonly [K in keyof OpenClawConfigurationDocument]: OpenClawConfigurationDocument[K];
+    } = createHarnessConfiguration("codex", "gpt-5.1");
+    let appSecret: SecretMetadata | undefined;
+    let botSecret: SecretMetadata | undefined;
+    let replacementSecret: SecretMetadata | undefined;
+    let secretBindings: SecretBindings | undefined;
     if (mutation === "channel Secrets") {
-      appSecret = await fixture.createSecret(namespace.id, "Slack app", "xapp-original");
-      botSecret = await fixture.createSecret(namespace.id, "Slack bot", "xoxb-original");
-      replacementSecret = await fixture.createSecret(
-        namespace.id,
-        "Slack app replacement",
-        "xapp-replacement",
+      appSecret = secretFields(
+        await fixture.createSecret(namespace.id, "Slack app", "xapp-original"),
+      );
+      botSecret = secretFields(
+        await fixture.createSecret(namespace.id, "Slack bot", "xoxb-original"),
+      );
+      replacementSecret = secretFields(
+        await fixture.createSecret(namespace.id, "Slack app replacement", "xapp-replacement"),
       );
       values.channels = {
         slack: {
@@ -1810,9 +2140,11 @@ for (const mutation of ["authentication", "channel Secrets"]) {
         SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
       };
     }
-    const configuration = await fixture.createConfiguration(namespace.id, values, {
-      secretBindings,
-    });
+    const configuration = configurationFields(
+      await fixture.createConfiguration(namespace.id, values, {
+        secretBindings,
+      }),
+    );
     const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
       body: {
         name: `Credential race ${mutation}`,
@@ -1822,7 +2154,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       },
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
-    const agent = created.data;
+    const agent = agentFields(created.data);
     await grantModelAccess(agent);
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const provisioned = await fixture.request("POST", `${path}/runtime-credentials`, {
@@ -1833,6 +2165,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     if (mutation === "channel Secrets") {
       // The replacement too: a reloaded draft must find every saved Secret granted to be ready.
       for (const secret of [appSecret, botSecret, replacementSecret]) {
+        assert.ok(secret);
         await grantSecretAccess(agent, secret);
       }
       await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -1876,7 +2209,9 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
     }
     const result = await write.requested;
-    assert.equal(result.status(), 200, JSON.stringify(await result.json()));
+    assert.ok(result);
+    const resultBody: unknown = await result.json();
+    assert.equal(result.status(), 200, JSON.stringify(resultBody));
     assert.equal(
       await deploy.isDisabled(),
       true,
@@ -1951,9 +2286,13 @@ for (const mutation of ["authentication", "channel Secrets"]) {
         assert.equal(await page.getByLabel(label, { exact: true }).isDisabled(), true, label);
       }
       assert.equal(
-        await page
-          .getByRole("button", { name: "Save authentication source" })
-          .evaluate((node) => node.ownerDocument.defaultView.getComputedStyle(node).opacity),
+        await page.getByRole("button", { name: "Save authentication source" }).evaluate((node) => {
+          const view = node.ownerDocument.defaultView;
+          if (view === null) {
+            throw new Error("Expected window");
+          }
+          return view.getComputedStyle(node).opacity;
+        }),
         "0.6",
       );
     }
@@ -1995,7 +2334,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       const configurationPath = `/namespaces/${namespace.id}/configurations/${configuration.id}`;
       const refusalText = CONFIGURATION_SAVE_DENIED;
       // A refused check before the save keeps its own text: nothing was written (finding 1839).
-      const refusedCheck = (route) =>
+      const refusedCheck = (route: Route) =>
         route.request().method() === "GET"
           ? route.fulfill({
               status: 403,
@@ -2022,6 +2361,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       // the saved state again rather than retry through controls built from the old snapshot.
       const refusedHtml = await page.content();
       for (const secret of [appSecret, botSecret, replacementSecret]) {
+        assert.ok(secret);
         assert.equal(refusedHtml.includes(secret.name), false);
         assert.equal(refusedHtml.includes(secret.id), false);
       }
@@ -2068,25 +2408,40 @@ for (const mutation of ["authentication", "channel Secrets"]) {
 
 for (const changed of ["generation", "identity"]) {
   test(`Channel Secret save rejects a stale Configuration ${changed} before writing`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess } =
-      await createConsoleRepositoryLaunchFixture(t, { secretDriver: createTestSecretDriver() });
-    const appSecret = await fixture.createSecret(namespace.id, "Slack app", "xapp-original");
-    const botSecret = await fixture.createSecret(namespace.id, "Slack bot", "xoxb-original");
-    const replacementSecret = await fixture.createSecret(
-      namespace.id,
-      "Slack app replacement",
-      "xapp-replacement",
+    const {
+      fixture,
+      namespace: rawNamespace,
+      modelSecret: rawModelSecret,
+      grantModelAccess,
+      grantSecretAccess,
+    }: RepositoryConsoleFixture = await createConsoleRepositoryLaunchFixture(t, {
+      secretDriver: createTestSecretDriver(),
+    });
+    const namespace = resource(rawNamespace);
+    const modelSecret = secretFields(rawModelSecret);
+    const appSecret = secretFields(
+      await fixture.createSecret(namespace.id, "Slack app", "xapp-original"),
     );
-    const values = createHarnessConfiguration("codex", "gpt-5.1");
+    const botSecret = secretFields(
+      await fixture.createSecret(namespace.id, "Slack bot", "xoxb-original"),
+    );
+    const replacementSecret = secretFields(
+      await fixture.createSecret(namespace.id, "Slack app replacement", "xapp-replacement"),
+    );
+    const values: {
+      -readonly [K in keyof OpenClawConfigurationDocument]: OpenClawConfigurationDocument[K];
+    } = createHarnessConfiguration("codex", "gpt-5.1");
     values.channels = {
       slack: { enabled: true, mode: "socket", channels: { COLD: { requireMention: true } } },
     };
-    const configuration = await fixture.createConfiguration(namespace.id, values, {
-      secretBindings: {
-        SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
-        SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
-      },
-    });
+    const configuration = configurationFields(
+      await fixture.createConfiguration(namespace.id, values, {
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+        },
+      }),
+    );
     const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
       body: {
         name: "Stale channel Secret",
@@ -2096,7 +2451,7 @@ for (const changed of ["generation", "identity"]) {
       },
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
-    const agent = created.data;
+    const agent = agentFields(created.data);
     await grantModelAccess(agent);
     for (const secret of [appSecret, botSecret]) {
       await grantSecretAccess(agent, secret);
@@ -2146,16 +2501,18 @@ for (const changed of ["generation", "identity"]) {
 
     // Another operator changes the shared Configuration after this page was opened.
     const newerValues = structuredClone(values);
-    newerValues.channels.slack.channels = { CNEW: { requireMention: false } };
+    record(record(newerValues.channels).slack).channels = { CNEW: { requireMention: false } };
     if (changed === "generation") {
       const updated = await fixture.request("PATCH", configurationPath, {
         body: { values: newerValues },
       });
       assert.equal(updated.status, 200, JSON.stringify(updated.body));
     } else {
-      const replacement = await fixture.createConfiguration(namespace.id, newerValues, {
-        secretBindings: configuration.secretBindings,
-      });
+      const replacement = configurationFields(
+        await fixture.createConfiguration(namespace.id, newerValues, {
+          secretBindings: configuration.secretBindings,
+        }),
+      );
       const updated = await fixture.request("PATCH", path, {
         body: { configurationId: replacement.id },
       });
@@ -2172,7 +2529,7 @@ for (const changed of ["generation", "identity"]) {
     assert.equal(pathRequests(requests, "PATCH", secretPath).length, 0);
     assert.equal(pathRequests(requests, "PATCH", configurationPath).length, 0);
     assert.deepEqual(
-      (await fixture.request("GET", configurationPath)).data.values,
+      record((await fixture.request("GET", configurationPath)).data).values,
       changed === "generation" ? newerValues : values,
     );
     // The chosen Secret stays shown, unsaved, for Reload draft to carry (finding 1512).
@@ -2210,31 +2567,42 @@ for (const changed of ["generation", "identity"]) {
 }
 
 // A dedicated Codex Agent whose Slack tokens are bound, so its draft is ready to deploy.
-async function createSlackBoundAgent(fixture, namespace, name, marker) {
-  const app = await fixture.createSecret(namespace.id, `${name} app token`, "xapp-draft-guard");
-  const bot = await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-draft-guard");
-  const agent = await fixture.createAgent(
-    namespace.id,
-    name,
-    nativeValues(marker, {
-      harnessId: "codex",
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-          channels: {},
+async function createSlackBoundAgent(
+  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
+  namespace: Pick<Namespace, "id">,
+  name: string,
+  marker: string,
+) {
+  const app = secretFields(
+    await fixture.createSecret(namespace.id, `${name} app token`, "xapp-draft-guard"),
+  );
+  const bot = secretFields(
+    await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-draft-guard"),
+  );
+  const agent = agentFields(
+    await fixture.createAgent(
+      namespace.id,
+      name,
+      nativeValues(marker, {
+        harnessId: "codex",
+        channels: {
+          slack: {
+            enabled: true,
+            mode: "socket",
+            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+            channels: {},
+          },
+        },
+      }),
+      {
+        executionMode: "dedicated",
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
         },
       },
-    }),
-    {
-      executionMode: "dedicated",
-      secretBindings: {
-        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-      },
-    },
+    ),
   );
   return agent;
 }
@@ -2243,8 +2611,12 @@ for (const action of ["disable", "drawer"]) {
   test(`Channel ${action} blocks deployment and navigation while its Configuration write is pending`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`Pending channel ${action}`, { ready: true });
-    const otherNamespace = await fixture.createNamespace(`Other ${action}`, { ready: true });
+    const namespace = resource(
+      await fixture.createNamespace(`Pending channel ${action}`, { ready: true }),
+    );
+    const otherNamespace = resource(
+      await fixture.createNamespace(`Other ${action}`, { ready: true }),
+    );
     const agent = await createSlackBoundAgent(
       fixture,
       namespace,
@@ -2262,14 +2634,17 @@ for (const action of ["disable", "drawer"]) {
     await login(page, fixture, url);
     await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
     assert.equal(
-      await page
-        .locator(".channels-section")
-        .evaluate((section) =>
-          [...section.childNodes].some(
-            (node) =>
-              node.nodeType === globalThis.Node.TEXT_NODE && node.textContent.trim() === "null",
-          ),
-        ),
+      await page.locator(".channels-section").evaluate((section) =>
+        [...section.childNodes].some((node) => {
+          if (node.nodeType !== globalThis.Node.TEXT_NODE) {
+            return false;
+          }
+          if (node.textContent === null) {
+            throw new Error("Expected text node content");
+          }
+          return node.textContent.trim() === "null";
+        }),
+      ),
       false,
     );
     const deploy = page.getByRole("button", { name: "Deploy new version" });
@@ -2334,7 +2709,9 @@ for (const action of ["disable", "drawer"]) {
 test("Channel save with a lost response blocks deployment until the draft is reloaded", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Uncertain channel save", { ready: true });
+  const namespace = resource(
+    await fixture.createNamespace("Uncertain channel save", { ready: true }),
+  );
   const agent = await createSlackBoundAgent(
     fixture,
     namespace,
@@ -2368,18 +2745,18 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   await page.getByRole("button", { name: "Reload draft" }).click();
   await page.getByText(/Configuration .*generation 2/).waitFor();
   const saved = await fixture.request("GET", configurationPath);
-  assert.equal(saved.data.values.channels.slack.enabled, false);
+  assert.equal(record(record(record(record(saved.data).values).channels).slack).enabled, false);
 });
 
 test("Channel Secrets withholds access grants when the save response contains other bindings", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unconfirmed channel bindings", { ready: true });
+  const namespace = resource(
+    await fixture.createNamespace("Unconfirmed channel bindings", { ready: true }),
+  );
   const agent = await createSlackBoundAgent(fixture, namespace, "Unconfirmed Agent", "unconfirmed");
-  const replacement = await fixture.createSecret(
-    namespace.id,
-    "Replacement app token",
-    "synthetic",
+  const replacement = secretFields(
+    await fixture.createSecret(namespace.id, "Replacement app token", "synthetic"),
   );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -2392,11 +2769,11 @@ test("Channel Secrets withholds access grants when the save response contains ot
     }
     const response = await route.fetch();
     assert.equal(response.status(), 200);
-    const body = await response.json();
-    const bindings = body.data.secretBindings;
-    assert.equal(bindings.SLACK_APP_TOKEN.source.id, replacement.id);
+    const body = record(await response.json());
+    const bindings = record(body.data).secretBindings;
+    assert.equal(record(record(record(bindings).SLACK_APP_TOKEN).source).id, replacement.id);
     // Keep the new generation but replace the returned bindings with those from before the save.
-    body.data.secretBindings = original.data.secretBindings;
+    record(body.data).secretBindings = record(original.data).secretBindings;
     await route.fulfill({ response, json: body });
   });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
@@ -2419,18 +2796,16 @@ test("Channel Secrets withholds access grants when the save response contains ot
 test("Agent credentials block tab changes until Slack Secret grants finish", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Runtime Slack navigation grant", {
-    ready: true,
-  });
-  const slackAppSecret = await fixture.createSecret(
-    namespace.id,
-    "Navigation Slack app token",
-    "hidden-navigation-app",
+  const namespace = resource(
+    await fixture.createNamespace("Runtime Slack navigation grant", {
+      ready: true,
+    }),
   );
-  const slackBotSecret = await fixture.createSecret(
-    namespace.id,
-    "Navigation Slack bot token",
-    "hidden-navigation-bot",
+  const slackAppSecret = secretFields(
+    await fixture.createSecret(namespace.id, "Navigation Slack app token", "hidden-navigation-app"),
+  );
+  const slackBotSecret = secretFields(
+    await fixture.createSecret(namespace.id, "Navigation Slack bot token", "hidden-navigation-bot"),
   );
   const slack = {
     enabled: true,
@@ -2439,11 +2814,13 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
     botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
     channels: { CNAVIGATE123: { requireMention: true } },
   };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Runtime Slack Navigation Agent",
-    nativeValues("runtime-slack-navigation", { harnessId: "codex", channels: { slack } }),
-    { executionMode: "dedicated" },
+  const agent = agentFields(
+    await fixture.createAgent(
+      namespace.id,
+      "Runtime Slack Navigation Agent",
+      nativeValues("runtime-slack-navigation", { harnessId: "codex", channels: { slack } }),
+      { executionMode: "dedicated" },
+    ),
   );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -2477,12 +2854,14 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
-  assert.deepEqual(configuration.data.secretBindings, {
+  assert.deepEqual(record(configuration.data).secretBindings, {
     SLACK_APP_TOKEN: { source: slackAppSecret.ref, delivery: { type: "env" } },
     SLACK_BOT_TOKEN: { source: slackBotSecret.ref, delivery: { type: "env" } },
   });
   assert.deepEqual(
-    accessBindingPostRequests(requests, namespace.id).map((request) => request.body.resourceId),
+    accessBindingPostRequests(requests, namespace.id).map(
+      (request) => record(request.body).resourceId,
+    ),
     [slackAppSecret.id, slackBotSecret.id],
   );
 });
@@ -2492,7 +2871,11 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
     t,
     "Rejected credential",
   );
-  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { revision: rawRevision }: { revision: unknown } = await fixture.seedActiveAgentRevision(
+    namespace.id,
+    agent.id,
+  );
+  const revision = revisionFields(rawRevision);
   const { page } = await newPage(t, fixture);
   const failure = await routeFailedDeployment(page, fixture, {
     namespaceId: namespace.id,
@@ -2507,6 +2890,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   // The API's message carries the next step, so occ and HTTP clients get it too (finding
   // 1393); the console shows it once, in the failure's card, and adds only the link to
   // Credentials. The card folds Deployment details, which repeat it (finding 2094).
+  assert.ok(failure);
   assert.equal(failure.message, MODEL_CREDENTIAL_REJECTED_RECORDED);
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery.getByText(failure.message, { exact: false }).waitFor();
@@ -2517,14 +2901,16 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
     false,
   );
   assert.match(
-    await recovery.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
+    text(await recovery.getByRole("link", { name: "Open Credentials" }).getAttribute("href")),
     /tab=credentials/,
   );
   // The draft has no Logs tab, so the failure links to the failed version's output.
   assert.match(
-    await recovery
-      .getByRole("link", { name: `Open v${revision.revision} Logs` })
-      .getAttribute("href"),
+    text(
+      await recovery
+        .getByRole("link", { name: `Open v${revision.revision} Logs` })
+        .getAttribute("href"),
+    ),
     new RegExp(`revision=${revision.id}&tab=logs`),
   );
   // Secret values can be updated in place, so the rejected binding warns instead of blocking.
@@ -2582,14 +2968,12 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
 test("a reload asks first while an Agent editor holds unsaved work", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Unsaved reload", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Unsaved reload Agent",
-    nativeValues("unsaved-reload"),
+  const namespace = resource(await fixture.createNamespace("Unsaved reload", { ready: true }));
+  const agent = agentFields(
+    await fixture.createAgent(namespace.id, "Unsaved reload Agent", nativeValues("unsaved-reload")),
   );
   const { page } = await newPage(t, fixture);
-  const dialogs = [];
+  const dialogs: string[] = [];
   page.on("dialog", async (dialog) => {
     dialogs.push(dialog.type());
     await dialog.accept();
@@ -2646,14 +3030,9 @@ test("a refocus after a Secret operate grant updates the Deploy note", async (t)
   assert.equal(await deploy.isDisabled(), true);
   await settlePageRequests(page);
   const refocus = async () => {
-    const answered = page.waitForResponse(
-      (reply) =>
-        reply.url() === `${fixture.origin}${path}/permissions/secrets` &&
-        reply.request().method() === "GET" &&
-        reply.status() === 200,
-    );
+    const answered = responseTo(page, "GET", `${fixture.origin}${path}/permissions/secrets`);
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-    await answered;
+    assert.equal((await answered).status(), 200, "Secret permissions GET status");
     await settlePageRequests(page);
   };
 
@@ -2674,7 +3053,9 @@ test("a refocus after a Secret operate grant updates the Deploy note", async (t)
   await note.waitFor();
   assert.equal(await deploy.isDisabled(), true);
 
-  grantSecretOperate(fixture, namespace.id, operator.principal, [agent.harnessAuth.source.id]);
+  grantSecretOperate(fixture, namespace.id, operator.principal, [
+    text(record(record(agent.harnessAuth).source).id),
+  ]);
   await refocus();
   // Without Refresh, the note drops the Secret the operator may now operate, and Deploy follows.
   await note.waitFor({ state: "detached" });

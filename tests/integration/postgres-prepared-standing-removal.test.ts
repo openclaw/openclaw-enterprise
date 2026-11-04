@@ -285,7 +285,6 @@ test(
       tls: f.gh.tls,
       upstreamOrigins: [gitOrigin],
       log: undefined,
-      providerQueue: undefined,
     });
     const opened = await controlRequest(
       controlSocket,

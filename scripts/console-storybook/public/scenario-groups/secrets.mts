@@ -5,11 +5,9 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { ErrorCode } from "../../../../packages/contracts/src/api/common.ts";
 import type { SecretDetailResponse } from "../../../../packages/contracts/src/api/resources.ts";
+import type { StoryAction } from "../../story-action.mts";
 
 type SecretListPath = `/namespaces/${string}/secrets`;
-
-type SecretAction =
-  { click: string } | { selector: string; click: true } | { selector: string; value: string };
 
 type SecretRule = ({ path: SecretListPath } | { suffix: `/secrets/${string}` }) & {
   method?: "POST" | "PATCH" | "DELETE";
@@ -36,7 +34,7 @@ type SecretScenario = {
   denySecretCreate?: true;
   secretConsumers?: SecretConsumers;
   secretCallerPermissions?: SecretDetailResponse["data"]["callerPermissions"];
-  actions?: readonly SecretAction[];
+  actions?: readonly StoryAction[];
   rules?: readonly SecretRule[];
 };
 
