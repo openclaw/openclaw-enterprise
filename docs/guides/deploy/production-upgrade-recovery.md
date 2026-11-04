@@ -286,16 +286,15 @@ keeping baseline files matched to live state.
 
 ## Roll back across human sign-in
 
-Migration `0037` adds the human sign-in state. `helm rollback` skips the
-pre-upgrade migration Job, so it never reverses that migration.
+Helm rollback does not reverse migration `0037`. Never run both controllers together.
 
-Before GitHub sign-in is activated, scale `deployment/openclaw-enterprise-api` to
-zero and wait for its Pods to disappear, run `helm rollback`, then verify password
-sign-in before reopening ingress.
+If the target supports the configured provider and enforces session bindings,
+keep that configuration. [Rehearse the return](upgrade-baseline.md#restore-the-retained-candidate-database).
+Verify a fresh sign-in reaches the original account and a resource it could read before.
 
-After activation, do not roll back; fix forward. The database refuses sessions
-that the previous controller issues without a human sign-in binding, so it
-cannot sign anyone in, and existing sessions expire within 8 hours. Never run
-the previous and current controllers together.
-To roll back anyway, first return to password-only sign-in with
-[stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
+For a target that issues unbound sessions:
+
+- Before activation, scale `deployment/openclaw-enterprise-api` to zero, wait
+  for its Pods to disappear, roll back, then verify password sign-in before reopening ingress.
+- After activation, fix forward: the database rejects unbound sessions; existing sessions
+  expire within 8 hours. Returning to this target requires [stopped password-only maintenance](auth-maintenance.md#deactivate-external-sign-in).
