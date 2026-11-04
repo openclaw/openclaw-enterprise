@@ -147,7 +147,8 @@ test(
       {
         method: "POST",
         body: {
-          source_branch: "main",
+          // Valid distinct branches, so only the source-ref allowlist can refuse this draft.
+          source_branch: "release/private",
           target_branch: "main",
           title: "Draft: Unauthorized source branch",
         },
