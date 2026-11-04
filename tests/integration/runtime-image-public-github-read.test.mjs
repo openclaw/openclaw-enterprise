@@ -140,7 +140,7 @@ async function readerWithPrivateProvider() {
 // OpenClaw permission profile, then give it to Codex command/exec without a model turn.
 async function readWithStockCodex() {
   const assert = (await import("node:assert/strict")).default;
-  const { mkdirSync, readdirSync } = await import("node:fs");
+  const { accessSync, constants, mkdirSync, readdirSync } = await import("node:fs");
   const { spawnSync } = await import("node:child_process");
   const { createRequire } = await import("node:module");
   const { pluginConfig, skillPath, materialSetup, manifest } = JSON.parse(process.argv[1]);
@@ -154,6 +154,27 @@ async function readWithStockCodex() {
       ([key]) => key.startsWith("OCE_PUBLIC_GITHUB_") || key === "GIT_EXEC_PATH" || key === "PATH",
     ),
   );
+  // Separate outer mount/access failures from the native sandbox checks below.
+  // Catch filesystem errors so diagnostics contain fixed labels, never paths.
+  for (const [label, path, mode] of [
+    ["ca-readable", publicEnvironment.OCE_PUBLIC_GITHUB_READ_CA_FILE, constants.R_OK],
+    ["config-readable", publicEnvironment.OCE_PUBLIC_GITHUB_READ_CONFIG, constants.R_OK],
+    [
+      "helper-executable",
+      publicEnvironment.GIT_EXEC_PATH + "/git-remote-https",
+      constants.R_OK | constants.X_OK,
+    ],
+    ["helper-source-readable", publicEnvironment.GIT_EXEC_PATH + "/transport.mjs", constants.R_OK],
+  ]) {
+    let accessible = false;
+    try {
+      accessSync(path, mode);
+      accessible = true;
+    } catch {
+      // The fixed assertion below identifies the failed check without its error payload.
+    }
+    assert.ok(accessible, "public-git-outer-failed:" + label);
+  }
   const { resolveProviderIdForAuth } = await import("openclaw/plugin-sdk/provider-auth-aliases");
   const workspace = "/home/node/workspace";
   mkdirSync(workspace, { recursive: true });
@@ -229,6 +250,9 @@ async function readWithStockCodex() {
       'test -r "$OCE_PUBLIC_GITHUB_READ_CA_FILE"',
       "stage=config-readable",
       'test -r "$OCE_PUBLIC_GITHUB_READ_CONFIG"',
+      "stage=helper-path",
+      'test "$GIT_EXEC_PATH" = "$2"',
+      'test "$GIT_EXEC_PATH" = "${OCE_PUBLIC_GITHUB_READ_CONFIG%/*}"',
       "stage=helper-executable",
       'test -x "$GIT_EXEC_PATH/git-remote-https"',
       "stage=helper-source-readable",
@@ -253,7 +277,15 @@ async function readWithStockCodex() {
     const result = await client.request("command/exec", {
       permissionProfile: profileName,
       cwd: workspace,
-      command: ["/bin/sh", "-eu", "-c", shell, "public-read", skillPath],
+      command: [
+        "/bin/sh",
+        "-eu",
+        "-c",
+        shell,
+        "public-read",
+        skillPath,
+        publicEnvironment.GIT_EXEC_PATH,
+      ],
     });
     assert.equal(result.exitCode, 0, result.stderr + result.stdout);
     const [pull, first, second, remote] = result.stdout.trim().split("\n");
@@ -374,6 +406,10 @@ test(
       // Compute's private-home initializer owns this parent before the skill is mounted.
       "--tmpfs",
       "/home/node/.openclaw:size=64m,uid=1000,gid=1000,mode=700",
+      // Product material lives on disk-backed runtime storage. Permit execution
+      // only in this private subtree; HOME and /tmp retain their noexec defaults.
+      "--tmpfs",
+      "/home/node/.oce-public-git:size=16m,uid=1000,gid=1000,mode=700,exec",
       "--tmpfs",
       "/tmp",
       "-v",
