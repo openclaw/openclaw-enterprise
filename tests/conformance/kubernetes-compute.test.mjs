@@ -16467,25 +16467,7 @@ function separateResources() {
   return configured;
 }
 
-test("resource quantities reject bare numbers with structured field diagnostics", () => {
-  for (const [role, kind, field, value] of [
-    ["gateway", "limits", "cpu", 4],
-    ["agent", "limits", "cpu", 1],
-    ["agent", "requests", "cpu", 0.5],
-  ]) {
-    const configured = separateResources();
-    configured.resources[role][kind][field] = value;
-    assert.throws(
-      () => requireConfiguration(KubernetesComputeDriver, configured),
-      (error) => {
-        assert.ok(error instanceof SharedConfigurationValidationError);
-        assert.ok(
-          error.error.details.some(({ path }) => path === `/resources/${role}/${kind}/${field}`),
-        );
-        return true;
-      },
-    );
-  }
+test("resource quantities reject negative workloads and preserve signed zero", () => {
   // A negative request can be below a valid limit; ordering alone does not make it valid.
   // Exercise each workload role, both quantity fields, and signed zero separately.
   for (const role of ["gateway", "agent", "defaults"]) {
@@ -16523,6 +16505,27 @@ test("resource quantities reject bare numbers with structured field diagnostics"
       resources.limits[field] = "0";
       assert.doesNotThrow(() => requireConfiguration(KubernetesComputeDriver, zero));
     }
+  }
+});
+
+test("resource quantities reject bare numbers with structured field diagnostics", () => {
+  for (const [role, kind, field, value] of [
+    ["gateway", "limits", "cpu", 4],
+    ["agent", "limits", "cpu", 1],
+    ["agent", "requests", "cpu", 0.5],
+  ]) {
+    const configured = separateResources();
+    configured.resources[role][kind][field] = value;
+    assert.throws(
+      () => requireConfiguration(KubernetesComputeDriver, configured),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError);
+        assert.ok(
+          error.error.details.some(({ path }) => path === `/resources/${role}/${kind}/${field}`),
+        );
+        return true;
+      },
+    );
   }
   const defaults = separateResources();
   defaults.resources.namespace.containerDefaults.limits.cpu = 4;

@@ -1712,14 +1712,14 @@ function validateResources(value: V1ResourceRequirements, description: string, p
       `${description} ${kind} limit`,
       `${path}.limits.${resource}`,
     );
-    for (const [kind, quantity] of [
+    for (const [field, quantity] of [
       ["requests", request],
       ["limits", limit],
     ] as const) {
       if ((compareResourceQuantities(quantity, "0") ?? 0) < 0) {
         throw configurationConstraintFailure(
-          "Resource quantities must be non-negative Kubernetes quantity strings.",
-          `/${path.replaceAll(".", "/")}/${kind}/${resource}`,
+          `${description} ${kind} ${field} must be non-negative Kubernetes quantity strings, such as ${resource === "cpu" ? "500m" : "128Mi"}.`,
+          `/${path.replaceAll(".", "/")}/${field}/${resource}`,
         );
       }
     }

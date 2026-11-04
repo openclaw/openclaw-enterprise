@@ -39,7 +39,7 @@ in the controller's ServiceAccount or protected kubeconfig, not inline YAML valu
 | `images.gateway`, `images.agent`        | string     | Required    | Approved image references with lowercase repository paths.                                                              |
 | `images.requireImmutableDigest`         | boolean    | Required    | Must be `true` in production, requiring lowercase `@sha256:` digests.                                                   |
 | `resources.gateway`, `resources.agent`  | object     | Required    | Each has `requests` and `limits`, both with non-negative `cpu` and `memory` quantity strings. Requests must fit limits. |
-| `resources.namespace.quota`             | string map | Required    | Nonempty Kubernetes resource quota; nonnegative quantity strings.                                                       |
+| `resources.namespace.quota`             | string map | Required    | Nonempty Kubernetes resource quota; non-negative quantity strings.                                                      |
 | `resources.namespace.containerDefaults` | object     | Required    | Namespace default `requests` and `limits`, each with non-negative `cpu` and `memory` quantities.                        |
 
 Quotas and defaults cover both roles in a shared tenant namespace; the two-cluster
