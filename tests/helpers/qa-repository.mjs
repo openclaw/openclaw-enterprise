@@ -4,6 +4,7 @@ import { captureChild } from "./child-processes.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
+import { BlockList } from "node:net";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
@@ -118,9 +119,15 @@ export async function prepareQaRepository(f) {
   ]);
   f.repositoryEntry = entry;
   // Record the runner's DNS view, not cluster reachability. Only these two fixed
-  // provider hostnames are queried; this does not change the approved /32 list.
+  // provider hostnames are queried; this does not change the approved egress policy.
   try {
-    const cidrs = JSON.parse(await readFile(join(input, "upstream-cidrs.json"), "utf8"));
+    const inputRanges = JSON.parse(await readFile(join(input, "upstream-cidrs.json"), "utf8"));
+    const cidrs = Array.isArray(inputRanges) ? inputRanges : inputRanges.githubApiAndGit;
+    const approved = new BlockList();
+    for (const cidr of cidrs) {
+      const [address, prefix] = cidr.split("/");
+      approved.addSubnet(address, Number(prefix), "ipv4");
+    }
     const hosts = await Promise.all(
       ["api.github.com", "github.com"].map(async (hostname) => {
         let deadline;
@@ -141,7 +148,7 @@ export async function prepareQaRepository(f) {
             hostname,
             addresses: addresses.map(({ address }) => ({
               address,
-              approved: cidrs.includes(`${address}/32`),
+              approved: approved.check(address, "ipv4"),
             })),
           };
         } catch (error) {

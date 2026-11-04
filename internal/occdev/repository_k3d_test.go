@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -145,7 +146,20 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 		t.Fatalf("a draft PR grant was rejected: %v", err)
 	}
 	reset()
-	// Provider egress must name specific authorized destinations, not a broad range.
+	// Explicit local grants remain host-only. Hosted QA uses the published provider ranges.
+	metadata := []byte(`{"githubApiAndGit":["140.82.112.0/20","20.201.28.148/32"]}`)
+	ranges, err := repositoryUpstreamCIDRs(metadata, false)
+	if err != nil || !reflect.DeepEqual(ranges, []string{"140.82.112.0/20", "20.201.28.148/32"}) {
+		t.Fatalf("published GitHub ranges: %v, %v", ranges, err)
+	}
+	if _, err := repositoryUpstreamCIDRs(metadata, true); err == nil {
+		t.Fatal("private issuer accepted public GitHub egress")
+	}
+	for _, bad := range []string{"0.0.0.0/0", "10.0.0.0/8", "172.0.0.0/8", "140.82.112.1/20"} {
+		if _, err := repositoryUpstreamCIDRs([]byte(`{"githubApiAndGit":["`+bad+`"]}`), false); err == nil {
+			t.Fatalf("accepted invalid published range %s", bad)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(directory, "upstream-cidrs.json"), []byte(`["192.0.2.0/24"]`), 0600); err != nil {
 		t.Fatal(err)
 	}

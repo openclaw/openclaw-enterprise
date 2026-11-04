@@ -118,6 +118,38 @@ function qaRegistry(repositories) {
   });
 }
 
+test("hosted repository egress selects only public GitHub API and Git IPv4 networks", () => {
+  const meta = {
+    api: ["140.82.112.0/20", "2606:50c0::/32"],
+    git: ["140.82.112.0/20", "20.201.28.148/32"],
+    actions: ["4.0.0.0/8"],
+  };
+  function select(metadata) {
+    return spawnSync("python3", ["scripts/ci/github-repository-egress.py"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      input: JSON.stringify(metadata),
+    });
+  }
+  const result = select(meta);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    githubApiAndGit: ["140.82.112.0/20", "20.201.28.148/32"],
+  });
+  for (const git of [
+    undefined,
+    [],
+    ["2606:50c0::/32"],
+    ["0.0.0.0/0"],
+    ["172.0.0.0/8"],
+    ["140.82.112.3/20"],
+  ]) {
+    const invalid = select({ ...meta, git });
+    assert.notEqual(invalid.status, 0);
+    assert.equal(invalid.stdout, "");
+  }
+});
+
 async function runQaCredentialMaterializer(
   t,
   overrides = {},
@@ -127,6 +159,12 @@ async function runQaCredentialMaterializer(
   const githubEnv = join(directory, "github-env");
   const registryFile = join(directory, "reviewed-registry.json");
   await writeFile(registryFile, registry, { mode: 0o600 });
+  await writeFile(
+    join(directory, "github-repository-egress.json"),
+    JSON.stringify({
+      githubApiAndGit: ["140.82.112.0/20"],
+    }),
+  );
   const env = {
     RUNNER_TEMP: directory,
     GITHUB_ENV: githubEnv,
@@ -142,7 +180,6 @@ async function runQaCredentialMaterializer(
     OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
     REPOSITORY_REGISTRY_FILE: registryFile,
     REPOSITORY_APP_KEY: "synthetic-private-key",
-    REPOSITORY_UPSTREAM_CIDRS_JSON: "[]",
     ...overrides,
   };
   const result = spawnSync(globalThis.process.execPath, ["scripts/ci/qa-matrix-credentials.mjs"], {
@@ -164,6 +201,9 @@ test("QA credential materializer reads reviewed registry files only for reposito
   assert.doesNotMatch(exported, /OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE=/);
   const repository = join(result.directory, "qa-matrix-credentials", "repository");
   assert.equal(await readFile(join(repository, "registry.json"), "utf8"), registry);
+  assert.deepEqual(JSON.parse(await readFile(join(repository, "upstream-cidrs.json"), "utf8")), {
+    githubApiAndGit: ["140.82.112.0/20"],
+  });
   assert.equal(
     await readFile(join(repository, "private-key.pem"), "utf8"),
     "synthetic-private-key",

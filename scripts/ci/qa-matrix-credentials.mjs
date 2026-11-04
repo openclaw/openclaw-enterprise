@@ -72,6 +72,16 @@ function validateRepositoryFixture() {
 // test results, command arguments, or the environment file itself.
 const repositoryFixture = process.env.QA_REPOSITORY_FIXTURE ?? "default";
 validateRepositoryFixture();
+const upstreamRanges = selection.repository
+  ? await readFile(join(process.env.RUNNER_TEMP, "github-repository-egress.json"), "utf8")
+  : undefined;
+if (selection.repository) {
+  const ranges = JSON.parse(upstreamRanges).githubApiAndGit;
+  assert.ok(
+    Array.isArray(ranges) && ranges.length > 0,
+    "GitHub repository egress ranges are required",
+  );
+}
 await mkdir(directory, { mode: 0o700 });
 const mapping = {
   OPENAI_API_KEY: ["openai", "OCC_TEST_QA_OPENAI_KEY_FILE"],
@@ -92,13 +102,15 @@ for (const [source, [filename, target]] of Object.entries(mapping)) {
 }
 if (selection.repository) {
   await mkdir(repository, { mode: 0o700 });
-  for (const [source, name] of [
-    ["REPOSITORY_APP_KEY", "private-key.pem"],
-    ["REPOSITORY_UPSTREAM_CIDRS_JSON", "upstream-cidrs.json"],
-  ]) {
-    assert.ok(process.env[source], `${source} is required`);
-    await writeFile(join(repository, name), process.env[source], { mode: 0o600, flag: "wx" });
-  }
+  assert.ok(process.env.REPOSITORY_APP_KEY, "REPOSITORY_APP_KEY is required");
+  await writeFile(join(repository, "private-key.pem"), process.env.REPOSITORY_APP_KEY, {
+    mode: 0o600,
+    flag: "wx",
+  });
+  await writeFile(join(repository, "upstream-cidrs.json"), upstreamRanges, {
+    mode: 0o600,
+    flag: "wx",
+  });
   await writeFile(join(repository, "registry.json"), registryJson, { mode: 0o600, flag: "wx" });
   entries.push(`OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=${repository}`);
   entries.push(`OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=${repository}`);

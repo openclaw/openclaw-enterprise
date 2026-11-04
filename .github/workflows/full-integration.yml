@@ -658,6 +658,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - name: Resolve GitHub repository egress ranges
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 30 --retry 2 https://api.github.com/meta |
+            python3 scripts/ci/github-repository-egress.py > "$RUNNER_TEMP/github-repository-egress.json"
       - name: Materialize approved QA credentials
         if: (inputs.qa_repository_fixture || 'default') == 'default'
         env:
@@ -668,7 +674,6 @@ jobs:
           SLACK_SENDER_TOKEN: ${{ secrets.SLACK_SENDER_TOKEN }}
           REPOSITORY_REGISTRY_FILE: scripts/ci/qa-repositories/default.json
           REPOSITORY_APP_KEY: ${{ secrets.REPOSITORY_APP_KEY }}
-          REPOSITORY_UPSTREAM_CIDRS_JSON: ${{ vars.REPOSITORY_UPSTREAM_CIDRS_JSON }}
         run: node scripts/ci/qa-matrix-credentials.mjs
       - name: Materialize isolated QA repository credentials
         if: inputs.qa_repository_fixture == 'isolated'
@@ -682,7 +687,6 @@ jobs:
           QA_ISOLATED_REPOSITORY_FULL_NAME: ${{ vars.QA_ISOLATED_REPOSITORY_FULL_NAME }}
           REPOSITORY_REGISTRY_FILE: scripts/ci/qa-repositories/isolated.json
           REPOSITORY_APP_KEY: ${{ secrets.QA_ISOLATED_REPOSITORY_APP_KEY }}
-          REPOSITORY_UPSTREAM_CIDRS_JSON: ${{ vars.REPOSITORY_UPSTREAM_CIDRS_JSON }}
         run: node scripts/ci/qa-matrix-credentials.mjs
       - uses: ./.github/actions/run-ci-lane
         with:
