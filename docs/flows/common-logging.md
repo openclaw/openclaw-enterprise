@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-31
-last_updated_session: authoring-run/71d9343b-72da-449a-8e8a-a55be95876c7
+updated: 2026-11-04
+last_updated_session: authoring-run/07eb6957-9eeb-45ad-9f95-abc240f6e218
 ---
 
 # Common Operational Logging Flow
@@ -284,15 +284,17 @@ for panels, correlation, and authorization limits.
 
 ### 9. The optional operator command observes worker exits
 
-`scripts/observe-worker-terminations.ts:main` uses existing operator privileges
-for a namespace- and release-scoped Pod LIST/WATCH. It projects observed worker
-terminations, deduplicates recent identities and records coverage gaps in a
-private file. `deploy/logging/worker-observer.yaml` validates that file's schema
-and exports allowlisted fields through the protected exporter. This log pipeline
-has no network log receiver; export and Collector self-telemetry can use the
-network. The [operator procedure](../guides/observability/worker-terminations.md)
-owns setup, retention, supervision and observation limits. Helm enablement does
-not start this command; existing application logging is unchanged.
+`scripts/observe-worker-terminations.ts:main` lists worker Pods in the selected
+namespace and watches from the list's resource version. For each Pod UID it reads
+the worker's container status, including restartable init containers. During
+backoff the waiting container ID can identify the current exit in `lastState`
+before kubelet increments the restart count. The observer syncs each new exit
+and count change to the private file. A closed watch stops observation until the
+supervisor starts a new list.
+
+`deploy/logging/worker-observer.yaml` projects the file records into a separate
+OTLP pipeline. The [operator procedure](../guides/observability/worker-terminations.md)
+covers credentials, supervision, queue storage and backend verification.
 
 ## Debugging and Verification
 
@@ -320,6 +322,8 @@ not start this command; existing application logging is unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 23:10: Trace worker exits during kubelet backoff and watch closure. (authoring-run/07eb6957-9eeb-45ad-9f95-abc240f6e218 - e8ae41a62e9b480db3b67b894611b3d7fe340342)
 
 - 2026-10-31 04:17: Export bounded continuity comparisons and startup hashes. (authoring-run/71d9343b-72da-449a-8e8a-a55be95876c7 - 370dc4d10297a81fbb18f850500dc945bc7925d5)
 

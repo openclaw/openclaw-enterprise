@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { createRequire } from "node:module";
-import { promisify } from "node:util";
 import {
   mkdtemp,
   rm,
@@ -19,6 +17,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
+import {
+  workerObserverCollectorBinary,
+  writeWorkerObserverExporter,
+} from "../helpers/worker-termination-installed.mjs";
 
 type Terminated = {
   exitCode: number;
@@ -28,7 +30,7 @@ type Terminated = {
   message?: string;
   signal?: number;
 };
-type State = { running?: object; terminated?: Terminated };
+type State = { running?: object; waiting?: { reason: string }; terminated?: Terminated };
 type ContainerStatus = {
   name: string;
   restartCount: number;
@@ -139,33 +141,7 @@ test(
     if (process.env.OCC_KUBECTL_BIN) {
       await symlink(process.env.OCC_KUBECTL_BIN, join(directory, "kubectl"));
     }
-    // CI already prepares this immutable local image. Extraction never pulls or
-    // starts it. The standalone override is only for isolated no-Docker proof.
-    let collectorBinary = process.env.OCC_TEST_WORKER_COLLECTOR_BIN;
-    if (!collectorBinary) {
-      const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
-      const { loadYaml } = require("@kubernetes/client-node");
-      const production = loadYaml(
-        await readFile("deploy/helm/openclaw-enterprise/values.yaml", "utf8"),
-      ) as { logging: { collector: { image: string } } };
-      const image = production.logging.collector.image;
-      assert.ok(image, "Prepared observability Collector image is required");
-      assert.match(image, /@sha256:[a-f0-9]{64}$/);
-      const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-      const exec = promisify(execFile);
-      collectorBinary = join(directory, "otelcol-contrib");
-      const created = await exec(docker, ["create", "--pull=never", image], { timeout: 15_000 });
-      const container = created.stdout.trim();
-      assert.match(container, /^[a-f0-9]{64}$/);
-      try {
-        await exec(docker, ["cp", `${container}:/otelcol-contrib`, collectorBinary], {
-          timeout: 15_000,
-        });
-        await chmod(collectorBinary, 0o700);
-      } finally {
-        await exec(docker, ["rm", "--force", container], { timeout: 15_000 });
-      }
-    }
+    const collectorBinary = await workerObserverCollectorBinary(directory);
     const batches: Request[] = [];
     const records = () =>
       batches.flatMap((r) =>
@@ -196,11 +172,7 @@ test(
     await writeFile(endpoint, "", { mode: 0o600 });
     const state = join(directory, "state");
     await mkdir(state, { mode: 0o700 });
-    const config = join(directory, "exporter.yaml");
-    await writeFile(
-      config,
-      `exporters:\n  otlp_http:\n    logs_endpoint: http://127.0.0.1:${receiverPort}/v1/logs\n    encoding: json\n    compression: none\n    sending_queue:\n      storage: file_storage\nservice:\n  telemetry:\n    logs:\n      level: error\n`,
-    );
+    const config = await writeWorkerObserverExporter(directory, receiverPort);
     const startCollector = () =>
       spawn(
         collectorBinary,
@@ -214,7 +186,8 @@ test(
         ],
         {
           env: {
-            ...process.env,
+            HOME: directory,
+            PATH: process.env.PATH,
             OCE_WORKER_STATE_DIR: state,
             OCE_WORKER_OBSERVATIONS_FILE: endpoint,
             OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `http://127.0.0.1:${receiverPort}/v1/logs`,
@@ -286,7 +259,7 @@ test(
     );
     // Every observer subprocess uses only this synthetic, credential-free context.
     const observerEnv = {
-      ...process.env,
+      HOME: directory,
       PATH: `${directory}:${process.env.PATH}`,
       KUBECONFIG: kubeconfig,
     };
@@ -313,10 +286,21 @@ test(
       assert.equal(child.exitCode, null, output);
       return Boolean(watch);
     });
+    await until(() => attrs().some((r) => r["oce.observation.state"] === "baseline"));
     const emit = (value: object, type = "MODIFIED") =>
       watch!.write(`${JSON.stringify({ type, object: value })}\n`);
     const first = termination(pod(1), 139, oldID, "2030-01-01T00:00:01Z");
     first.status.containerStatuses![0]!.lastState!.terminated!.reason = "UnknownAlphabeticReason";
+    // During backoff kubelet can move the just-exited container to lastState
+    // before a replacement exists. The first exit must survive even if the Pod
+    // disappears before its restart count advances.
+    const waiting = structuredClone(first);
+    const waitingWorker = waiting.status.containerStatuses![0]!;
+    waitingWorker.restartCount = 0;
+    waitingWorker.containerID = oldID;
+    waitingWorker.state = { waiting: { reason: "CrashLoopBackOff" } };
+    emit(waiting);
+    await until(() => attrs().some((r) => r["oce.termination.container_id"] === oldID));
     emit(first);
     emit(first);
     emit(termination(pod(2), 137, secondID, "2030-01-01T00:00:02.123456789Z"));
@@ -334,10 +318,12 @@ test(
       ["app.kubernetes.io/instance", "other"],
     ]) {
       const wrong = structuredClone(first);
+      wrong.metadata.uid = "42345678-1234-1234-1234-123456789012";
       wrong.metadata.labels[field!] = val!;
       emit(wrong);
     }
     const wrongNamespace = structuredClone(first);
+    wrongNamespace.metadata.uid = "52345678-1234-1234-1234-123456789012";
     wrongNamespace.metadata.namespace = "other";
     emit(wrongNamespace);
     emit(termination(pod(5), 0, oldID, "2030-01-01T00:00:03Z"));
@@ -548,6 +534,7 @@ test(
           null,
           2,
         ),
+        { mode: 0o600, flag: "wx" },
       );
     }
   },

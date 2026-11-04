@@ -19,7 +19,7 @@ const integer = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 0;
 const exec = promisify(execFile);
 
-async function main() {
+async function main(signal: AbortSignal) {
   const [context, namespace, release, outputPath, ...extra] = process.argv.slice(2);
   if (!context || !identifier(namespace) || !identifier(release) || !outputPath || extra.length) {
     throw new Error("usage");
@@ -40,7 +40,11 @@ async function main() {
   }
   const output = await open(
     resolve(outputPath),
-    constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
+    constants.O_WRONLY |
+      constants.O_APPEND |
+      constants.O_CREAT |
+      constants.O_NOFOLLOW |
+      constants.O_NONBLOCK,
     0o600,
   );
   const file = await output.stat();
@@ -81,6 +85,7 @@ async function main() {
   }
 
   async function observe(value: unknown, deleted = false) {
+    signal.throwIfAborted();
     const pod = object(value);
     const metadata = object(pod.metadata);
     const podLabels = object(metadata.labels);
@@ -129,9 +134,23 @@ async function main() {
       "oce.container.kind": normal ? "container" : "restartable-init",
     };
     const retained = new Set(previouslySeen);
+    const current = object(container.state);
+    const last = object(container.lastState);
+    const lastID = object(last.terminated).containerID;
+    // Kubelet can move the current exit to lastState during backoff, before
+    // it creates the next incarnation. A matching ID identifies that exit.
+    let lastIncarnation = count === undefined || count === 0 ? undefined : count - 1;
+    if (
+      current.waiting &&
+      typeof lastID === "string" &&
+      lastID &&
+      lastID === container.containerID
+    ) {
+      lastIncarnation = count;
+    }
     for (const [state, incarnation] of [
-      [object(container.lastState), count === undefined || count === 0 ? undefined : count - 1],
-      [object(container.state), count],
+      [last, lastIncarnation],
+      [current, count],
     ] as const) {
       const terminated = object(state.terminated);
       if (
@@ -222,7 +241,7 @@ async function main() {
   const { stdout } = await exec(
     "kubectl",
     [...args, "--request-timeout=30s", "get", "--raw", `${path}?${query}&limit=500`],
-    { maxBuffer: 8 * 1024 * 1024 },
+    { maxBuffer: 8 * 1024 * 1024, signal },
   );
   const list = object(JSON.parse(stdout));
   const metadata = object(list.metadata);
@@ -244,15 +263,12 @@ async function main() {
   const child = spawn(
     "kubectl",
     [...args, "--request-timeout=0", "get", "--raw", `${path}?${query}`],
-    { stdio: ["ignore", "pipe", "ignore"] },
+    { stdio: ["ignore", "pipe", "ignore"], signal },
   );
   let spawnFailed = false;
   child.on("error", () => {
     spawnFailed = true;
   });
-  const stop = () => child.kill();
-  process.once("SIGTERM", stop);
-  process.once("SIGINT", stop);
   try {
     child.stdout.setEncoding("utf8");
     let pending = "";
@@ -277,14 +293,17 @@ async function main() {
     }
     throw new Error(spawnFailed ? "kubectl" : "watch-ended");
   } finally {
-    stop();
+    child.kill();
     await output.close();
-    process.removeListener("SIGTERM", stop);
-    process.removeListener("SIGINT", stop);
   }
 }
 
-main().catch((error: unknown) => {
+const lifetime = new AbortController();
+const stop = () => lifetime.abort();
+process.once("SIGTERM", stop);
+process.once("SIGINT", stop);
+
+main(lifetime.signal).catch((error: unknown) => {
   // API errors and subprocess stderr may contain credentials or raw payloads.
   const codes = [
     "usage",

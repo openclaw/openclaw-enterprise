@@ -59,7 +59,6 @@
     "fixtures/repository-credentials/planning.ts",
     "helpers/protected-static-secret-read.ts",
     "../scripts/observe-worker-terminations.ts"
-
   ],
   "references": [
     {

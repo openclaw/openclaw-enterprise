@@ -38,7 +38,9 @@ section**, retaining the name `otlp_http`, backend endpoint, authentication,
 TLS and retention policy. The [standard exporter](../../../deploy/logging/exporter.yaml)
 is the starting shape: preserve its bounded queue and retry settings, with
 `sending_queue.storage: file_storage`. The receiver config supplies that extension
-using `OCE_WORKER_STATE_DIR`. Do not merge another receiver or service pipeline.
+using `OCE_WORKER_STATE_DIR`. Give only the Collector the exporter credentials.
+Give only the observer the operator kubeconfig. Do not merge another receiver
+or service pipeline.
 Add this explicit self-telemetry configuration to the same protected file. It
 keeps the Collector's Prometheus metrics listener on loopback; allow access only
 to trusted local monitoring. Do not add telemetry exporters or other listeners
@@ -86,7 +88,9 @@ KUBECONFIG=/protected/operator-kubeconfig \
   production-context oce-system oce-release "$OCE_WORKER_OBSERVATIONS_FILE"
 ```
 
-Replace context, namespace and release with the actual installation. The observer
+Replace context, namespace and release with the actual installation. Kubernetes
+authorizes Pod list/watch for the namespace. The release label filters the
+request. Use a dedicated identity with those two verbs and no Secret access. The observer
 appends and syncs each record to disk. Configure restart delay and alerting for
 both processes. API errors, watch closure, malformed input and capacity failures
 stop the observer with a fixed diagnostic. Collector startup/configuration errors
@@ -103,8 +107,10 @@ the receiver, not the file. The only retained reasons are `Completed`, `Error`,
 `OOMKilled`, `ContainerCannotRun`, `StartError` and `ContainerStatusUnknown`;
 unknown reasons are omitted by both observer and receiver.
 
-The observer stops at 64 MiB of input (plus at most one record); monitor capacity
-before that point. To rotate, stop the observer, let the Collector drain, and
+The observer stops appending once the file reaches 64 MiB (plus at most one record). Monitor capacity
+before that point and check Collector export failures. The standard exporter stops
+retrying a failed export after 60 seconds. A saved file offset alone cannot
+confirm delivery. To rotate, stop the observer, let the Collector drain, and
 verify backend receipt and an empty exporter queue. Stop the Collector, archive
 the input **and** state directory under the protected retention policy, then
 start with an empty mode-0600 input and a **new empty state directory**. Never
@@ -123,7 +129,9 @@ termination messages and application output are not forwarded. Recognized
 terminated CRI IDs and explicit nonzero signals are kept;
 replacement IDs and images are absent. Exit 139 is not proof of SIGSEGV, and 137
 is not proof of OOM. Current termination uses `restartCount`; last termination
-uses `restartCount - 1`, with finish time included in the stable observation ID.
+usually uses `restartCount - 1`. During backoff, if the waiting container and
+last termination have the same container ID, both describe the incarnation at
+`restartCount`. The observation ID includes the finish time.
 
 `worker.observation.coverage` distinguishes baseline, changed count, unavailable
 status and counter reset. `oce.observation.missing_terminations_min` is a lower
@@ -132,13 +140,14 @@ window. A baseline count describes history unknown to this observer at startup,
 not necessarily records missing from the backend. For example, after a restart
 with `restartCount: 2` and only incarnation 1 in `lastState`, the baseline reports
 1 even if the backend already retained incarnations 0 and 1. Do not sum baseline
-counts across observer restarts as backend loss. Consecutive missing statuses preserve the last known count rather than recounting old gaps.
+counts across observer restarts as backend loss. The observer keeps the last known count across missing statuses.
 A zero gap does not prove complete history: rapid restarts, deleted Pods, counter
 resets, process/API outages and backend loss can still hide deaths. The initial
 list is limited to 500 Pods, input to 8 MiB and tracking to 1,024 Pod UIDs.
 
 Before relying on an installation, verify two controlled exits in an approved
 release, normal and restartable init workers, backend retention, supervisor
-recovery, and unchanged application logging. Local synthetic API proof does not
-establish installed RBAC or end-to-end durability. See [test coverage](../../testing/local.md#worker-termination-observer)
-and the existing [logging setup](../observability.md).
+recovery, and continued application logging. Check that the two observation IDs
+remain queryable after Kubernetes replaces the first termination in Pod status.
+See [test coverage](../../testing/local.md#worker-termination-observer) and
+[logging setup](../observability.md).

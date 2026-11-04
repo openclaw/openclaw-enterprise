@@ -230,31 +230,43 @@ permission checks.
 
 ### Worker termination observer
 
-With Node.js 24+ and `kubectl` installed, run:
+The `k3d-observability` lane also runs the observer against actual Helm-installed
+workers. A namespace-scoped ServiceAccount lists and watches Pods. The test sends
+SIGTERM to each worker twice, waits for kubelet to restart the container in the
+same Pod, and checks that the OTLP receiver still holds both terminations
+after the second restart. The two cases cover the ordinary worker container and
+the native repository sender profile, where the worker is a restartable init
+container. The latter uses generated keys and an unadmitted test repository; it
+does not call a Git provider or prove repository operations. The lane builds the
+real native sender image and requires `OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE` in
+its prepared state. To run both installed cases in that environment:
+
+```sh
+OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.mjs
+```
+
+Both cases must pass. The receiver writes decoded OTLP to a temporary volume.
+Its contents verify receipt after the second restart. Backend retention over
+time needs a separate check against the operator's storage policy.
+
+For the synthetic LIST/WATCH case, use Node.js 24+ and `kubectl`:
 
 ```sh
 OCC_TEST_WORKER_COLLECTOR_BIN=/trusted/bin/otelcol-contrib \
   node --test tests/integration/worker-termination-observer.test.ts
 ```
 
-The registered `k3d-observability` lane uses its already prepared, digest-pinned
-host source from `logging.collector.image` in the production chart (the exported
-`OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE` is a separate k3d import reference). The test creates an owned temporary
-container with `--pull=never`, copies `/otelcol-contrib`, and removes that
-container by its returned ID in a `finally` block without starting it.
-`OCC_DOCKER_BIN` selects the container engine. No extra CI environment
-variable is required, and missing prepared input fails instead of skipping.
-For an isolated no-Docker proof, `OCC_TEST_WORKER_COLLECTOR_BIN` can select a
-verified standalone 0.159.0 binary; that variant does not prove image extraction.
+In CI, the test extracts `/otelcol-contrib` from the host image pinned by
+`logging.collector.image` in the production chart. It creates a temporary
+container with `--pull=never` and removes it after copying the binary.
+`OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE` identifies the separate k3d import.
+`OCC_DOCKER_BIN` and `OCC_KUBECTL_BIN` select the executables. The standalone
+binary override above bypasses image extraction and requires a verified 0.159.0
+Collector.
 
-Both variants use real kubectl (`OCC_KUBECTL_BIN` can select it), a local synthetic
-LIST/WATCH API, the exact shipped private-file receiver and standard persistent
-exporter with a test-only local backend/JSON encoding override. Neither variant
-uses a live cluster in this test.
-
-Coverage includes distinct 139/137 exits in both worker layouts, unknown reasons,
-count gaps across missing status, private-directory refusal, separate untrusted
-files, invalid streams/bodies and nested resource/scope/extra-field canaries.
-`OCC_TEST_WORKER_OBSERVATION_EVIDENCE` saves synthetic received batches to a private
-file. The [operator guide](../guides/observability/worker-terminations.md) defines
-the remaining installed acceptance, startup and retention requirements.
+The synthetic API exercises backoff before the restart count advances, distinct
+139/137 exits, missing status, and watch closure. The real Collector reads the
+private file, rejects malformed records and excludes canaries from OTLP. Set
+`OCC_TEST_WORKER_OBSERVATION_EVIDENCE` to a new private file path to retain the
+synthetic batches. See the [operator guide](../guides/observability/worker-terminations.md)
+for deployment and retention.
