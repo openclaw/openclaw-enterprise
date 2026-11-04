@@ -29,6 +29,7 @@
   },
   "include": [
     "**/*.test.ts",
+    "browser/console-agent-detail-cases.mts",
     "browser/console-agent-detail-deployment.ts",
     "../scripts/verify-console-release.ts",
     "../deploy/runtime/google/install-gog.mts",
