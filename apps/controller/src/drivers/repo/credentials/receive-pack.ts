@@ -48,13 +48,26 @@ export function allowsReceivePackInput(
   return (body) => {
     let offset = 0;
     let commands = 0;
+    let pushOptions = false;
+    let commandSectionEnded = false;
     for (;;) {
       if (offset + 4 > body.length) {
         return false;
       }
       const length = packetLength(body, offset);
       if (length === 0) {
+        if (!commandSectionEnded) {
+          commandSectionEnded = true;
+          if (!pushOptions) {
+            return true;
+          }
+          offset += 4;
+          continue;
+        }
         return true;
+      }
+      if (commandSectionEnded) {
+        return length === 4;
       }
       if (length < 5 || offset + length > body.length) {
         return false;
@@ -78,6 +91,9 @@ export function allowsReceivePackInput(
       }
       const text = Buffer.from(payload).toString("latin1");
       const line = separator < 0 ? text : text.slice(0, separator);
+      if (commands === 0 && separator >= 0) {
+        pushOptions = /(?:^|\s)push-options(?:\s|$)/.test(text.slice(separator + 1));
+      }
       offset += length;
       if (line.startsWith("shallow ")) {
         if (separator >= 0 || !shallow.test(line)) {

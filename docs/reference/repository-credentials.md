@@ -334,12 +334,12 @@ Local Git commands skip the helper. Pins do not freeze arbitrary
 subprocesses and have no preflight. Native settings can override these defaults; other helpers can
 retain credentials. OCE's helper ignores `store` and `erase`.
 
-For the API launcher, use GitHub CLI **2.103.2**, `GH_HOST=github.com` and a
-gateway hostname with verified TLS. Its private `hosts.yml` uses the
+The API launcher uses GitHub CLI **2.103.2**, `GH_HOST=github.com` and a
+gateway hostname with verified TLS on port 443. Its private `hosts.yml` uses the
 `api_host` setting and stores the gateway bearer in `oauth_token`.
-The launcher admits [selected commands](repository-credentials/access-levels.md#supported-commands)
-and relative API paths. It rejects absolute destinations. Network controls must
-enforce egress restrictions.
+It admits [selected commands](repository-credentials/access-levels.md#supported-commands)
+and relative API paths, rejects absolute destinations, and network controls enforce
+egress restrictions.
 
 ### Service limits
 

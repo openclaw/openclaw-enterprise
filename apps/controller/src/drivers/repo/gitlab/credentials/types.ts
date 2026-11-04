@@ -1,4 +1,7 @@
-import type { RepositoryBackendFactory, Clock } from "../../credentials/backend-contracts.ts";
+import type {
+  BoundPreparedRepositoryBackendFactory,
+  Clock,
+} from "../../credentials/backend-contracts.ts";
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 import type { GitLabTokenConfiguration } from "./config.ts";
 import type { GitLabProfile } from "../client.ts";
@@ -20,11 +23,12 @@ export interface GitLabStaticTokenOwner {
 export interface GitLabFactoryOptions {
   readonly configuration: GitLabTokenConfiguration;
   readonly authority: GitLabStaticTokenOwner;
+  readonly namespaceId: string;
   readonly gatewayOrigin: string;
   readonly limits: ServiceLimits;
   readonly clock: Clock;
 }
 
-export interface GitLabDriverFactory extends RepositoryBackendFactory {
+export interface GitLabDriverFactory extends BoundPreparedRepositoryBackendFactory {
   readonly trustedUpstreamOrigins: ReadonlySet<string>;
 }

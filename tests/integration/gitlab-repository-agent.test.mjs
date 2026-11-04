@@ -32,12 +32,17 @@ function requireLiveAuthorization() {
 async function startGitLabService(t, limits = {}) {
   const resources = createTestResourceScope(t);
   try {
-    const [{ createSystemClock }, { createGitLabStaticTokenOwner }, { createGitLabDriverFactory }] =
-      await Promise.all([
-        appModule("drivers/repo/credentials/clock"),
-        appModule("drivers/repo/gitlab/credentials/static-token"),
-        appModule("drivers/repo/gitlab/credentials/factory"),
-      ]);
+    const [
+      { createSystemClock },
+      { createGitLabStaticTokenOwner },
+      { createGitLabDriverFactory },
+      { validateGitLabRepositoryRegistry, resolveGitLabRepositoryBinding },
+    ] = await Promise.all([
+      appModule("drivers/repo/credentials/clock"),
+      appModule("drivers/repo/gitlab/credentials/static-token"),
+      appModule("drivers/repo/gitlab/credentials/factory"),
+      appModule("drivers/repo/gitlab/credentials/registry"),
+    ]);
     const clock = createSystemClock();
     const token = (await readFile(tokenFile, "utf8")).trim();
     assert.ok(token.length > 0, "the token file must contain a token");
@@ -52,6 +57,7 @@ async function startGitLabService(t, limits = {}) {
         configVersion: "1",
         projectId,
         project,
+        namespaceId: "rmcook84",
         tokenFile,
         developmentOnly: true,
         pushRefAllowlist: [],
@@ -59,6 +65,7 @@ async function startGitLabService(t, limits = {}) {
         leaseSeconds: 900,
       },
       authority: owner,
+      namespaceId: "rmcook84",
       gatewayOrigin: config.gateway.publicOrigin,
       limits: config.limits,
       clock,
@@ -71,7 +78,43 @@ async function startGitLabService(t, limits = {}) {
       upstreamOrigins: ["https://gitlab.com"],
       trustedUpstreamOrigins: new Set(["https://gitlab.com"]),
     });
-    const opened = started.service.open({ durationSeconds: 900, profile: "git-write" });
+    const registry = validateGitLabRepositoryRegistry(
+      {
+        version: 1,
+        backendId: "gitlab-live",
+        providerInstanceId: "gitlab-live",
+        configVersion: "1",
+        maximumDurationSeconds: 900,
+        projects: [
+          {
+            projectId,
+            path: project,
+            namespaces: [
+              {
+                namespaceId: "rmcook84",
+                profiles: ["git-read", "git-write", "git-full"],
+                pushRefAllowlist: [],
+              },
+            ],
+          },
+        ],
+      },
+      "gitlab-live",
+    );
+    const expected = resolveGitLabRepositoryBinding(registry, {
+      namespaceId: "rmcook84",
+      repositoryRef: projectId,
+      profile: "git-write",
+    });
+    const opened = started.service.open({
+      durationSeconds: 900,
+      profile: "git-write",
+      namespaceId: "rmcook84",
+      repositoryRef: projectId,
+      expectedBinding: expected.grant,
+      deadlineWallMs: clock.wallNow() + 900000,
+      preparedOnly: true,
+    });
     return { ...started, resources, opened };
   } catch (error) {
     await resources.close(error);

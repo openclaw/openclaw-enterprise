@@ -51,7 +51,13 @@ function optionalMetadata(name) {
 
 function validateClient(client) {
   const hasPolicy = client !== null && typeof client === "object" && Object.hasOwn(client, "pushRefAllowlist");
-  exactKeys(client, [...clientKeys, ...(hasPolicy ? ["pushRefAllowlist"] : [])]);
+  const hasProjectId = client !== null && typeof client === "object" && Object.hasOwn(client, "projectId");
+  exactKeys(client, [
+    ...clientKeys,
+    ...(hasProjectId ? ["projectId"] : []),
+    ...(hasPolicy ? ["pushRefAllowlist"] : []),
+  ]);
+  requireValid(!hasProjectId || /^[1-9][0-9]{0,15}$/.test(client.projectId));
   if (hasPolicy) normalizePushRefAllowlist(client.pushRefAllowlist);
   requireValid(clientKeys.every((key) => typeof client[key] === "string" &&
     Buffer.byteLength(client[key], "utf8") <= 4096 && !/[\x00-\x1f\x7f]/.test(client[key])));

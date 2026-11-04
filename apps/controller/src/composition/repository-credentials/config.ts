@@ -177,6 +177,7 @@ export async function loadConfiguration(
         await import("../../drivers/repo/gitlab/credentials/factory.ts");
       factory = createGitLabDriverFactory({
         authority: owner,
+        namespaceId: configuration.namespaceId,
         gatewayOrigin: config.gateway.publicOrigin,
         limits: config.limits,
         clock,

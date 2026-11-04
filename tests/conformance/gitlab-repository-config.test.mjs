@@ -11,6 +11,7 @@ const valid = {
   configVersion: "1",
   projectId: "88516404",
   project: "rmcook84/test",
+  namespaceId: "rmcook84",
   tokenFile: "/run/secrets/gitlab-token",
   developmentOnly: true,
   pushRefAllowlist: ["refs/heads/*"],

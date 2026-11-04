@@ -45,6 +45,8 @@ const digest = (value: unknown): string =>
 function readPublicClient(value: unknown): ClientFiles["client"] {
   const hasPolicy =
     value !== null && typeof value === "object" && Object.hasOwn(value, "pushRefAllowlist");
+  const hasProjectId =
+    value !== null && typeof value === "object" && Object.hasOwn(value, "projectId");
   const client = record(value, [
     "gatewayOrigin",
     "gitRemote",
@@ -52,7 +54,7 @@ function readPublicClient(value: unknown): ClientFiles["client"] {
     "canonicalApiHost",
     "apiHost",
     "repository",
-    "projectId",
+    ...(hasProjectId ? ["projectId"] : []),
     ...(hasPolicy ? ["pushRefAllowlist"] : []),
   ]);
   if (

@@ -4,11 +4,13 @@ import type {
   RepositoryBindingRequest,
 } from "@openclaw-enterprise/contracts";
 import { normalizeGitLabProjectPath, type GitLabProfile } from "../client.ts";
+import { normalizePushRefAllowlist } from "../../credentials/client-contracts.ts";
+import { createGitLabGrantIdentity } from "./grants.ts";
 
 /**
- * Installation-approved GitLab.com projects. A caller selects a project by its canonical path;
- * the registry owns the numeric identity and the profiles that project may use. The registry
- * never accepts a host, so the provider origin stays fixed.
+ * Installation-approved GitLab.com projects. A caller selects a project by its opaque numeric
+ * identity; the registry owns its path, Namespace scope, profiles, and push allowlist. The
+ * registry never accepts a host, so the provider origin stays fixed.
  */
 export interface GitLabRepositoryRegistration {
   readonly projectId: string;
@@ -20,6 +22,7 @@ export interface GitLabRepositoryRegistration {
 export interface GitLabRepositoryNamespacePolicy {
   readonly namespaceId: string;
   readonly profiles: readonly GitLabProfile[];
+  readonly pushRefAllowlist: readonly string[];
   readonly allowStandingApproval?: true;
 }
 
@@ -27,6 +30,7 @@ export interface GitLabRepositoryRegistry {
   readonly version: 1;
   readonly backendId: string;
   readonly providerInstanceId: string;
+  readonly configVersion: string;
   readonly maximumDurationSeconds: number;
   readonly projects: readonly GitLabRepositoryRegistration[];
 }
@@ -65,6 +69,14 @@ function numericId(value: unknown): string {
   return id;
 }
 
+function configVersion(value: unknown): string {
+  const version = text(value);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(version)) {
+    invalid();
+  }
+  return version;
+}
+
 function parseProfiles(value: unknown): readonly GitLabProfile[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > allowedProfiles.length) {
     invalid();
@@ -89,7 +101,12 @@ function namespacePolicies(value: unknown): readonly GitLabRepositoryNamespacePo
   const namespaceIds = new Set<string>();
   return Object.freeze(
     value.map((candidate) => {
-      const policy = asRecord(candidate, ["namespaceId", "profiles", "allowStandingApproval"]);
+      const policy = asRecord(candidate, [
+        "namespaceId",
+        "profiles",
+        "pushRefAllowlist",
+        "allowStandingApproval",
+      ]);
       const namespaceId = text(policy.namespaceId);
       if (namespaceIds.has(namespaceId)) {
         invalid();
@@ -98,9 +115,16 @@ function namespacePolicies(value: unknown): readonly GitLabRepositoryNamespacePo
       if (policy.allowStandingApproval !== undefined && policy.allowStandingApproval !== true) {
         invalid();
       }
+      let pushRefAllowlist: readonly string[];
+      try {
+        pushRefAllowlist = normalizePushRefAllowlist(policy.pushRefAllowlist);
+      } catch {
+        invalid();
+      }
       return Object.freeze({
         namespaceId,
         profiles: parseProfiles(policy.profiles),
+        pushRefAllowlist,
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
       });
     }),
@@ -115,6 +139,7 @@ export function validateGitLabRepositoryRegistry(
     "version",
     "backendId",
     "providerInstanceId",
+    "configVersion",
     "maximumDurationSeconds",
     "projects",
   ]);
@@ -126,6 +151,7 @@ export function validateGitLabRepositoryRegistry(
   if (!identifierPattern.test(providerInstanceId)) {
     invalid();
   }
+  const version = configVersion(root.configVersion);
   const maximumDurationSeconds = root.maximumDurationSeconds;
   if (
     typeof maximumDurationSeconds !== "number" ||
@@ -172,6 +198,7 @@ export function validateGitLabRepositoryRegistry(
     version: 1,
     backendId,
     providerInstanceId,
+    configVersion: version,
     maximumDurationSeconds,
     projects: Object.freeze(projects),
   });
@@ -188,7 +215,7 @@ export function resolveGitLabRepositoryBinding(
   if (typeof profile !== "string") {
     invalid();
   }
-  const project = registry.projects.find((candidate) => candidate.path === repositoryRef);
+  const project = registry.projects.find((candidate) => candidate.projectId === repositoryRef);
   if (project === undefined) {
     invalid();
   }
@@ -197,14 +224,18 @@ export function resolveGitLabRepositoryBinding(
     invalid();
   }
   return Object.freeze({
-    repositoryRef: project.path,
+    repositoryRef: project.projectId,
     profile,
     backendId: registry.backendId,
-    grant: Object.freeze({
+    grant: createGitLabGrantIdentity({
+      authority: "gitlab-token",
+      configVersion: registry.configVersion,
       providerInstanceId: registry.providerInstanceId,
-      repositoryId: project.projectId,
-      // Stable and opaque: the same project and profile always name the same grant.
-      grantId: `${registry.providerInstanceId}:${project.projectId}:${profile}`,
+      projectId: project.projectId,
+      project: project.path,
+      namespaceId,
+      profile: profile as GitLabProfile,
+      pushRefAllowlist: policy.pushRefAllowlist,
     }),
   });
 }
@@ -218,7 +249,7 @@ export function resolveGitLabStandingApprovalScope(
 ): RepositoryApprovalScope | undefined {
   const namespaceId = text(input.namespaceId);
   const project = registry.projects.find(
-    (candidate) => candidate.path === input.binding.repositoryRef,
+    (candidate) => candidate.projectId === input.binding.repositoryRef,
   );
   if (project === undefined) {
     return undefined;

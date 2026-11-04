@@ -1,7 +1,11 @@
-import type { Clock, DriverCustody } from "../../credentials/backend-contracts.ts";
+import type {
+  PreparedRepositoryBackend,
+  RequestPlan,
+  ResolvedGrant,
+} from "../../credentials/backend-contracts.ts";
+import { sameBinding } from "../../credentials/grant-identity.ts";
 import { createGatewayAuthentication } from "../../credentials/gateway-authentication.ts";
 import { createGitLabGrantResolver } from "./grants.ts";
-import { createGitLabDriver } from "./driver.ts";
 import { createGitLabRoutePolicy } from "./routes.ts";
 import type { GitLabDriverFactory, GitLabFactoryOptions } from "./types.ts";
 import { validateGitLabConfiguration } from "./config.ts";
@@ -13,11 +17,14 @@ export function createGitLabDriverFactory(options: GitLabFactoryOptions): GitLab
   }
   const gatewayOrigin = new URL(options.gatewayOrigin).origin;
   const owner = options.authority;
-  const leaseMs = configuration.leaseSeconds * 1000;
-  if (leaseMs < options.limits.exchangeMs + 2 * options.limits.credentialMarginMs) {
+  const namespaceId = options.namespaceId;
+  if (
+    configuration.leaseSeconds * 1000 <
+    options.limits.exchangeMs + 2 * options.limits.credentialMarginMs
+  ) {
     throw new Error("invalid-configuration");
   }
-  const grants = createGitLabGrantResolver({ configuration, gatewayOrigin });
+  const grants = createGitLabGrantResolver({ configuration, gatewayOrigin, namespaceId });
   const policy = (profile: "git-read" | "git-write" | "git-full") =>
     createGitLabRoutePolicy({
       project: configuration.project,
@@ -34,30 +41,64 @@ export function createGitLabDriverFactory(options: GitLabFactoryOptions): GitLab
       return route !== undefined && route.kind !== "api";
     },
   });
+  const selections = new WeakMap<ResolvedGrant, "git-read" | "git-write" | "git-full">();
   return Object.freeze<GitLabDriverFactory>({
     trustedUpstreamOrigins: new Set(["https://gitlab.com"]),
-    resolve: grants.resolve,
+    resolveBound(input) {
+      const selection = grants.resolveBound(input);
+      selections.set(selection, input.profile as "git-read" | "git-write" | "git-full");
+      return selection;
+    },
     ...authentication,
-    create({
-      authority: input,
-      custody,
-      clock,
-    }: {
-      authority: Parameters<GitLabDriverFactory["create"]>[0]["authority"];
-      custody: DriverCustody;
-      clock: Clock;
-    }) {
-      const authority = Object.freeze({ ...input });
-      const admitted = grants.forAuthority(authority);
-      const { profile } = admitted;
-      return createGitLabDriver({
-        authority,
-        binding: admitted.grant.binding,
-        custody,
-        clock,
-        routes: policy(profile),
-        owner,
-        leaseMs,
+    createPrepared(authority, selection) {
+      const profile = selections.get(selection);
+      if (
+        profile === undefined ||
+        !sameBinding(selection.binding, authority) ||
+        !authority.sessionId
+      ) {
+        throw new Error("invalid-binding");
+      }
+      selections.delete(selection);
+      const routes = policy(profile);
+      return Object.freeze<PreparedRepositoryBackend>({
+        binding: selection.binding,
+        plan({ head }) {
+          const plan = routes.plan(head);
+          if ("kind" in plan) {
+            return plan;
+          }
+          return Object.freeze({ ...plan, bindRequestDigest: true });
+        },
+        async authorize(plan: RequestPlan, _requestDigestSha256, bounds) {
+          return owner.withToken(async (bytes, assertCurrent) => {
+            const basic = plan.category.startsWith("git-")
+              ? Buffer.concat([Buffer.from("x-access-token:"), bytes])
+              : undefined;
+            const authorization = basic ? `Basic ${basic.toString("base64")}` : undefined;
+            const privateToken =
+              basic === undefined ? Buffer.from(bytes).toString("utf8") : undefined;
+            let startedSend = false;
+            return Object.freeze({
+              headers: Object.freeze({
+                ...plan.requestHeaders,
+                ...(authorization === undefined ? {} : { authorization }),
+                ...(privateToken === undefined ? {} : { "private-token": privateToken }),
+              }),
+              assertSendStart() {
+                assertCurrent();
+                if (
+                  startedSend ||
+                  bounds.signal.aborted ||
+                  options.clock.monotonicNow() >= bounds.deadlineMonoMs
+                ) {
+                  throw new Error("exchange-expired");
+                }
+                startedSend = true;
+              },
+            });
+          });
+        },
       });
     },
   });

@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   allowsReceivePackInput,
   maximumPushRefs,
-} from "../../apps/controller/src/drivers/repo/github/credentials/routes/receive-pack.ts";
+} from "../../apps/controller/src/drivers/repo/credentials/receive-pack.ts";
 import {
   normalizePushRefAllowlist,
   readPushedBranchRef,
@@ -214,4 +214,24 @@ test("an empty allowlist refuses every push command while allowing an empty flus
   const none = allowsReceivePackInput([]);
   assert.equal(none(body(`${zero} ${b} refs/heads/agent/x${caps}`)), false);
   assert.equal(none(Buffer.concat([flush])), true);
+});
+
+test("receive-pack inspector refuses negotiated push options with provider effects", () => {
+  const pushOptionCaps = `\0report-status-v2 push-options object-format=sha1`;
+  const command = `${a} ${b} refs/heads/agent/x${pushOptionCaps}\n`;
+  assert.equal(allows(Buffer.concat([pkt(command), flush, pkt("ci.skip"), flush, pack])), false);
+  assert.equal(
+    allows(
+      Buffer.concat([
+        pkt(command),
+        flush,
+        pkt("merge_request.create"),
+        pkt("merge_request.draft"),
+        flush,
+        pack,
+      ]),
+    ),
+    false,
+  );
+  assert.equal(allows(Buffer.concat([pkt(command), flush, flush, pack])), true);
 });

@@ -40,8 +40,13 @@ async function sendAuthenticated<T>(
   const basic = plan.category.startsWith("git-")
     ? Buffer.concat([Buffer.from("x-access-token:"), copy])
     : undefined;
+  const bearer = basic === undefined && plan.category === "api" && apiAuthentication === "bearer";
   try {
-    const authorization = basic ? `Basic ${basic.toString("base64")}` : undefined;
+    const authorization = basic
+      ? `Basic ${basic.toString("base64")}`
+      : bearer
+        ? `Bearer ${copy.toString("utf8")}`
+        : undefined;
     const privateToken =
       basic === undefined && plan.category === "api" && apiAuthentication === "private-token"
         ? copy.toString("utf8")

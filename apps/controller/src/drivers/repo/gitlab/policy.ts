@@ -100,7 +100,7 @@ export class GitLabRepositoryPolicy implements RepositoryPolicyDriver {
       }
       return [
         Object.freeze({
-          repositoryRef: project.path,
+          repositoryRef: project.projectId,
           displayName: project.displayName ?? project.path,
           allowedProfiles: Object.freeze([...policy.profiles]),
         }),

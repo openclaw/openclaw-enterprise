@@ -142,7 +142,7 @@ function classifyApiRoute(
     pipelines: ["per_page=100"],
   };
   if (head.method === "GET" && readRoutes[endpoint]?.includes(target.query) === true) {
-    return { kind: "api", effect: "read", target: path };
+    return { kind: "api", effect: "read", target: `${path}?${target.query}` };
   }
   if (head.method !== "POST" || target.query !== "") {
     return undefined;

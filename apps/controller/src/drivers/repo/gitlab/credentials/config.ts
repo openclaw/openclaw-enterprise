@@ -14,6 +14,7 @@ export interface GitLabTokenConfiguration {
   readonly configVersion: string;
   readonly projectId: string;
   readonly project: string;
+  readonly namespaceId: string;
   readonly tokenFile: string;
   readonly developmentOnly: true;
   /** Enforced at the gateway on receive-pack commands; an empty list denies every push. */
@@ -29,6 +30,7 @@ const allowedFields = [
   "configVersion",
   "projectId",
   "project",
+  "namespaceId",
   "tokenFile",
   "developmentOnly",
   "pushRefAllowlist",
@@ -86,7 +88,10 @@ export function validateGitLabConfiguration(value: unknown): GitLabTokenConfigur
       invalid();
     }
   }
-  const { providerInstanceId, configVersion, projectId } = input as Record<string, string>;
+  const { providerInstanceId, configVersion, projectId, namespaceId } = input as Record<
+    string,
+    string
+  >;
   if (typeof input.project !== "string") {
     invalid();
   }
@@ -94,7 +99,8 @@ export function validateGitLabConfiguration(value: unknown): GitLabTokenConfigur
   if (
     !validIdentifier(providerInstanceId) ||
     !validConfigVersion(configVersion) ||
-    !validProjectId(projectId)
+    !validProjectId(projectId) ||
+    !validIdentifier(namespaceId)
   ) {
     invalid();
   }
@@ -134,6 +140,7 @@ export function validateGitLabConfiguration(value: unknown): GitLabTokenConfigur
     configVersion: configVersion!,
     projectId: projectId!,
     project: normalizedProject,
+    namespaceId: namespaceId!,
     tokenFile: input.tokenFile as string,
     developmentOnly: true,
     pushRefAllowlist,

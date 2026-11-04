@@ -926,7 +926,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     ],
     [
       "public CA composition cannot import an additional file reader",
-      'import { readFile } from "node:fs/promises";',
+      'import { appendFile } from "node:fs/promises";',
       /unreviewed runtime import from node:fs\/promises/,
       "composition/repository-credentials/platform.ts",
     ],
