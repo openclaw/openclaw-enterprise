@@ -3625,7 +3625,7 @@ function assertNativeToolSucceeded(history, marker, expectedText) {
   }
 }
 
-async function assertConversation(topology, sessionKey, nonce) {
+async function assertConversation(topology, sessionKey, nonce, { assistantNonce = nonce } = {}) {
   return waitFor(`provider transcript ${nonce}`, async () => {
     let history;
     try {
@@ -3654,7 +3654,7 @@ async function assertConversation(topology, sessionKey, nonce) {
       (message) => message.role === "user" && messageText(message).includes(nonce),
     );
     const assistant = history.messages.find(
-      (message) => message.role === "assistant" && messageText(message).includes(nonce),
+      (message) => message.role === "assistant" && messageText(message).includes(assistantNonce),
     );
     return user && assistant ? history : undefined;
   });
@@ -4257,14 +4257,20 @@ async function assertActualPublicGithubRead(topology) {
 async function assertDedicatedNativeChildRelay(topology) {
   const marker = `OCE-NATIVE-CHILD-${randomUUID()}`;
   const sessionKey = `agent:main:native-child-${randomUUID()}`;
+  const childTask =
+    `Reply with exactly ${JSON.stringify(marker)} as plain text. ` +
+    "Do not include quotes, Markdown, an explanation, or any other text.";
   await requestDedicatedAgentTurn(
     topology,
     sessionKey,
-    `Use native Codex spawn_agent to create exactly one child. Ask it to reply exactly ${marker}. ` +
-      "Wait for that child to finish and return its answer. Do not use OpenClaw sessions_spawn.",
+    `Call native Codex spawn_agent exactly once with message=${JSON.stringify(childTask)}. ` +
+      "Wait for that child to finish, then return only its answer verbatim. " +
+      "Do not answer for the child or use OpenClaw sessions_spawn.",
   );
-  const history = await assertConversation(topology, sessionKey, marker);
-  const assistant = assistantMessageContaining(history, marker);
+  // Inspect the child even when the parent's truthful answer omits the nonce.
+  // The nonce-containing Gateway reply remains required after the native proof.
+  const history = await assertConversation(topology, sessionKey, marker, { assistantNonce: "" });
+  const assistant = assistantMessageContaining(history, "");
   const parentThreadId = assistant.idempotencyKey?.match(/^codex-app-server:([^:]+):/)?.[1];
   assert.ok(parentThreadId, "the Gateway transcript must identify the native parent thread");
 
@@ -4351,9 +4357,42 @@ async function assertDedicatedNativeChildRelay(topology) {
               observation.errorTurnCount = child.turns.filter((turn) => turn.error !== undefined && turn.error !== null).length;
               observation.turnStatuses = child.turns.slice(-10).map((turn) =>
                 ["completed", "inProgress", "failed", "interrupted"].includes(turn.status) ? turn.status : "unknown");
+              // Inspect the actual forwarded task and child-owned output without
+              // exporting either text or treating parent narration as an answer.
+              const spawnPrompts = parent.turns.flatMap((turn) => turn.items).filter((item) =>
+                item.type === "collabAgentToolCall" && item.tool === "spawnAgent" &&
+                item.receiverThreadIds.includes(childId) && typeof item.prompt === "string");
+              observation.spawnPromptCount = spawnPrompts.length;
+              observation.spawnPromptNonceSeen = spawnPrompts.some((item) => item.prompt.includes(${JSON.stringify(marker)}));
+              observation.spawnPromptMatchesTask = spawnPrompts.some((item) => item.prompt === ${JSON.stringify(childTask)});
+              const userTexts = child.turns.flatMap((turn) => turn.items).filter((item) => item.type === "userMessage")
+                .flatMap((item) => item.content.filter((block) => block.type === "text").map((block) => block.text));
+              observation.childUserTextCount = userTexts.length;
+              observation.childUserNonceSeen = userTexts.some((text) => text.includes(${JSON.stringify(marker)}));
+              observation.childUserTaskSeen = userTexts.some((text) => text === ${JSON.stringify(childTask)});
               const messages = child.turns.flatMap((turn) => turn.items).filter((item) => item.type === "agentMessage");
               observation.agentMessageCount = messages.length;
               observation.exactNonceMessages = messages.filter((item) => item.text.trim() === ${JSON.stringify(marker)}).length;
+              observation.messageShapes = messages.slice(-10).map((item) => {
+                const text = item.text.trim();
+                const lines = text.split(/\\r?\\n/);
+                let phase = "unknown";
+                if (item.phase === undefined || item.phase === null) {
+                  phase = "absent";
+                } else if (["commentary", "final_answer"].includes(item.phase)) {
+                  phase = item.phase;
+                }
+                return {
+                  phase,
+                  textBytes: Buffer.byteLength(item.text),
+                  lineCount: lines.length,
+                  containsNonce: text.includes(${JSON.stringify(marker)}),
+                  jsonQuotedNonce: text === JSON.stringify(${JSON.stringify(marker)}),
+                  backtickQuotedNonce: text === "\u0060" + ${JSON.stringify(marker)} + "\u0060",
+                  fencedNonce: lines.length === 3 && /^\u0060\u0060\u0060(?:text|plaintext)?$/.test(lines[0]) &&
+                    lines[1] === ${JSON.stringify(marker)} && lines[2] === "\u0060\u0060\u0060",
+                };
+              });
               const completed = child.turns.find((turn) => turn.status === "completed" && turn.items.some(
                 (item) => item.type === "agentMessage" && item.text.trim() === ${JSON.stringify(marker)},
               ));
@@ -4385,6 +4424,14 @@ async function assertDedicatedNativeChildRelay(topology) {
   assert.equal(evidence.parentThreadId, parentThreadId);
   assert.notEqual(evidence.childThreadId, parentThreadId);
   process.stderr.write(`k3d native child observation: ${JSON.stringify(evidence.observation)}\n`);
+  const completedHistory = await assertConversation(topology, sessionKey, marker);
+  assert.equal(
+    assistantMessageContaining(completedHistory, marker).idempotencyKey?.match(
+      /^codex-app-server:([^:]+):/,
+    )?.[1],
+    parentThreadId,
+    "the exact child answer must return through the same Gateway parent thread",
+  );
 }
 
 async function requestFreshDedicatedHarnessTurn(topology) {
