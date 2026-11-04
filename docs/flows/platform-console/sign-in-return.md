@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: 2026-11-04
-last_updated_session: authoring-run/1ca69282-ea7b-4b53-8db4-3fdb81fc30e1
+last_updated_session: authoring-run/f3ac7737-494a-40ed-834e-194dbd804522
 ---
 
 # Console sign-in and destination recovery
@@ -133,7 +133,7 @@ See the [parent flow](../platform-console.md#3-authorize-the-selected-page-resou
 
 ## Debugging and Verification
 
-The focused cases in `tests/browser/console.test.mjs` exercise the console
+The focused cases in `tests/browser/console.test.ts` exercise the console
 against controller sessions and resource reads. Their external provider exchange
 and recovery endpoint are modeled; they do not establish a deployed OAuth or
 native-gateway integration.
@@ -153,6 +153,8 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 10:50: Correct the browser-suite pointer after its TypeScript rename. (authoring-run/f3ac7737-494a-40ed-834e-194dbd804522 - 9ca96ac4489e91f6df131ef8561be39233edb774)
 
 - 2026-11-04 12:53: Explain keyboard focus while sign-in is pending. (authoring-run/1ca69282-ea7b-4b53-8db4-3fdb81fc30e1 - 15f0c1d443090f1346dc3d94444dad2397cb4fdc)
 
