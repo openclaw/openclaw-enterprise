@@ -45,9 +45,6 @@ function recordingOpenShell() {
     async deleteProvider(workspace, name) {
       providers.delete(key(workspace, name));
     },
-    async updateProviderCredentials(workspace, name, credentials) {
-      Object.assign(providers.get(key(workspace, name)).credentials, credentials);
-    },
     async updateProviderCredentialsConditionally(request, resourceVersion, _signal, clearKeys) {
       const current = providers.get(key(request.workspace, request.name));
       if (!current || current.resourceVersion !== resourceVersion) {

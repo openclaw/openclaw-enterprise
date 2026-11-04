@@ -240,13 +240,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     const name = clientProviderName(context.registrationId);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined) {
-      this.assertClientProvider(existing, context.registrationId);
-      await client.updateProviderCredentials(
-        workspace,
-        name,
-        { [CLIENT_SECRET_KEY]: clientSecret },
-        context.signal,
-      );
+      await this.replaceClientSecret(context, existing, clientSecret);
       return;
     }
     if ((await client.getProviderProfile(workspace, name, context.signal)) === undefined) {
@@ -275,13 +269,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       if (created === undefined) {
         throw error;
       }
-      this.assertClientProvider(created, context.registrationId);
-      await client.updateProviderCredentials(
-        workspace,
-        name,
-        { [CLIENT_SECRET_KEY]: clientSecret },
-        context.signal,
-      );
+      await this.replaceClientSecret(context, created, clientSecret);
     }
   }
 
@@ -297,11 +285,31 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     if (existing === undefined) {
       throw new ScopeViolationError("The OAuth client registration has no stored secret.");
     }
-    this.assertClientProvider(existing, context.registrationId);
-    await client.updateProviderCredentials(
-      workspace,
-      name,
-      { [CLIENT_SECRET_KEY]: clientSecret },
+    await this.replaceClientSecret(context, existing, clientSecret);
+  }
+
+  private async replaceClientSecret(
+    context: CredentialClientRegistrationContext,
+    provider: OpenShellProviderResponse,
+    secret: string,
+  ) {
+    this.assertClientProvider(provider, context.registrationId);
+    const workspace = this.requireClientWorkspace();
+    const client = this.backend.client.clientForNamespace(workspace);
+    if (!client.updateProviderCredentialsConditionally) {
+      throw new ScopeViolationError(
+        "The OpenShell client cannot replace a versioned OAuth client secret.",
+      );
+    }
+    await client.updateProviderCredentialsConditionally(
+      {
+        workspace,
+        name: provider.name,
+        type: provider.type,
+        labels: provider.labels,
+        credentials: { [CLIENT_SECRET_KEY]: secret },
+      },
+      provider.resourceVersion,
       context.signal,
     );
   }
