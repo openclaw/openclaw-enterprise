@@ -221,3 +221,32 @@ test("standing approvals follow the Namespace opt-in and approved binding", () =
     undefined,
   );
 });
+
+test("the composed routes' GitLab request helpers stay within the provider intent", async () => {
+  const { draftMergeRequestRequest, refuseGitLabQuickActions } =
+    await import("../../apps/controller/src/drivers/repo/gitlab/client.ts");
+  // Notes and descriptions are data, never commands: a quick action can merge or approve.
+  for (const value of ["/ready", "  /merge", "comment\n/close"]) {
+    assert.throws(
+      () => refuseGitLabQuickActions(value, "merge request note"),
+      /must not contain a quick action line/,
+      value,
+    );
+  }
+  // A slash inside a sentence is not a command line.
+  assert.equal(
+    refuseGitLabQuickActions("See docs/runbook.md", "merge request note"),
+    "See docs/runbook.md",
+  );
+  // A draft request names the two branches the route policy admitted; it never pushes or forks.
+  const draft = draftMergeRequestRequest({
+    sourceBranch: "agent/work",
+    targetBranch: "main",
+    title: "Release notes",
+  });
+  assert.equal(draft.method, "POST");
+  assert.equal(draft.path, "/merge_requests");
+  assert.equal(draft.body.source_branch, "agent/work");
+  assert.equal(draft.body.target_branch, "main");
+  assert.equal(draft.body.title, "Draft: Release notes");
+});
