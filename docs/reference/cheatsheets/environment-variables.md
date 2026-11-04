@@ -15,7 +15,7 @@ Command-line flags override these variables. See the [CLI reference](../cli.md).
 - `OCC_SERVICE_KEY_FILE` — Path to a service-key JSON response; required for resource commands.
 - `OCC_NAMESPACE` — Namespace ID for scoped resource commands.
 - `OCC_CA_BUNDLE` — Additional PEM certificate-authority bundle for HTTPS.
-- `OCC_TIMEOUT_SECONDS` — Request timeout in whole seconds; default: `30`.
+- `OCC_TIMEOUT_SECONDS` — OCC request or installation handoff timeout in whole seconds; default: `30`.
 
 ## Controller and authentication
 
