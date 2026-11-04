@@ -12,6 +12,11 @@ import {
   runModuleBoundaryCli,
   verifyModuleBoundaries,
 } from "../../scripts/verify-module-boundaries.ts";
+import {
+  applyExceptions,
+  diagnosticIdentity,
+  validateExceptions,
+} from "../../scripts/module-boundaries/exceptions.ts";
 import { settled as settle } from "../helpers/child-processes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -189,6 +194,48 @@ async function workspace(t, overrides = {}) {
 }
 
 describe("module boundaries", { concurrency: true }, () => {
+  test("preserves exception coercion, sparse bindings and detached frozen reports", () => {
+    const hash = `loader:sha256:${"a".repeat(64)}`;
+    const bindings = Array(2);
+    bindings[1] = "name";
+    const entry = {
+      rule: "",
+      from: "",
+      to: "",
+      specifier: "",
+      kind: "",
+      typeOnly: false,
+      bindings,
+      owner: "owner",
+      removeWhen: "remove",
+      reason: "reason",
+      loaderIdentity: [hash],
+      extra: { nested: [1] },
+    };
+    const input = { version: 1, exceptions: [entry] };
+    validateExceptions(input);
+    assert.throws(
+      () => validateExceptions({ version: 1, exceptions: [entry, { ...entry, owner: "other" }] }),
+      /Duplicate module-boundary exception/,
+    );
+    assert.throws(
+      () =>
+        validateExceptions({ version: 1, exceptions: [{ ...entry, loaderIdentity: Symbol() }] }),
+      TypeError,
+    );
+    assert.throws(
+      () => validateExceptions({ version: 1, exceptions: [{ ...entry, loaderIdentity: null }] }),
+      /Exceptions require/,
+    );
+    assert.equal(diagnosticIdentity({ from: "x" }), '[null,"x",null,null,null,null,null,null]');
+    const result = applyExceptions([], input);
+    assert.equal(result.violations[0].rule, "stale-exception");
+    assert.deepEqual(result.violations[0].extra, entry.extra);
+    assert.notEqual(result.violations[0].extra, entry.extra);
+    assert.equal(Object.isFrozen(result.violations[0].extra.nested), true);
+    assert.equal(Object.isFrozen(entry.extra), false);
+    assert.equal(Object.isFrozen(entry.bindings), false);
+  });
   test("keeps native package error diagnostics independent of the workspace path", async (t) => {
     const { root, write, cli: verify, link } = await workspace(t);
     await link();

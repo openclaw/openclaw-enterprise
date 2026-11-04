@@ -6,7 +6,7 @@ import { freezeRecord } from "./module-boundaries/freeze-record.ts";
 import { collectSourceImports } from "./module-boundaries/source-imports.ts";
 import { resolveImports } from "./module-boundaries/resolve-import.ts";
 import { evaluatePolicy, validatePolicy } from "./module-boundaries/evaluate-policy.ts";
-import { applyExceptions, validateExceptions } from "./module-boundaries/exceptions.mjs";
+import { applyExceptions, validateExceptions } from "./module-boundaries/exceptions.ts";
 
 const defaultRoot = fileURLToPath(new URL("../", import.meta.url));
 

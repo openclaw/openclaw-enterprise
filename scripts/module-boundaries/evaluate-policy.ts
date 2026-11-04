@@ -1,6 +1,6 @@
 import { posix } from "node:path";
 import { classifyCycles, cycleDiagnostic } from "./cycles.ts";
-import { diagnosticIdentity } from "./exceptions.mjs";
+import { diagnosticIdentity } from "./exceptions.ts";
 import type { SourceReference } from "./source-imports.ts";
 import type { Resolution } from "./resolve-import.ts";
 
