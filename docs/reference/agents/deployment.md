@@ -253,17 +253,19 @@ or any first deployment, for example because its deploying actor lost `deploy`
 or a credential source was revoked, it stops the candidate's workload and
 records the refusal only after the stop succeeds (until then it waits as
 [`REFUSED_CANDIDATE_STOP_PENDING`](#pending-deployment-progress)). Other refused
-candidates stay until a later successful deployment, stop or delete. A candidate
-whose runtime failed by itself, such as `RUNTIME_MODEL_PROBE_FAILED` or
-`CONVERGENCE_DEADLINE_EXCEEDED`, keeps its Pods so its version's Logs tab can
-show the cause; the next deployment stops them.
+candidates stay until a later successful deployment, stop, delete or
+[repository cleanup](../repository-credentials.md#deletion-and-restart).
+Runtime failures such as `RUNTIME_MODEL_PROBE_FAILED` or
+`CONVERGENCE_DEADLINE_EXCEEDED` retain Pods for the version's Logs
+tab until redeployment, unless repository cleanup stops them first.
+Cleanup can clear the selected version before credential disposal finishes.
 Kubernetes embedded replacement reports ready while the predecessor still
 serves, so the worker sets the pointer first. Activation then replaces the
 shared gateway, and the new gateway runs the startup model probe. If that
 probe rejects the credential, the deployment fails with
 `RUNTIME_AUTHENTICATION_FAILED` (or, for a probe that timed out after its retries,
-`RUNTIME_MODEL_PROBE_TIMEOUT`). The failed version stays selected because its
-workload is the only one left; the predecessor has already been replaced. OCC
+`RUNTIME_MODEL_PROBE_TIMEOUT`). Unless cleanup stops it, the failed version stays selected;
+its predecessor has already been replaced. OCC
 never rolls back to an earlier version. To recover, correct the cause and
 deploy a new version, or stop the Agent.
 
