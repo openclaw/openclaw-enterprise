@@ -2092,7 +2092,6 @@ revisionTest(
     const withdrawal = await requestWithdrawal(fixture, owner, sourceId, fixture.actor.id);
     await fixture.start(compute, { transformDrivers });
     await fixture.work(third, "failed_permanent", 60_000);
-    await fixture.stop();
 
     assert.equal((await fixture.workResult(third)).rows[0].reason_code, "CREDENTIAL_WITHDRAWN");
     assert.deepEqual(prepared, [first.id, second.id]);
@@ -2112,6 +2111,7 @@ revisionTest(
       },
       30_000,
     );
+    await fixture.stop();
   },
 );
 
