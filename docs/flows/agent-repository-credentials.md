@@ -11,7 +11,7 @@ last_updated_session: authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195
 Deployment freezes repository grants.
 Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver. On the
 [OpenShell path](../reference/repository-credentials/protected-openshell-git.md), the sandbox gets a placeholder.
-The worker delivers the credential to the provider and checks signed requests against the live grant.
+The worker supplies credentials and checks signed requests against grants.
 See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
 [service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
@@ -23,7 +23,7 @@ See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-
 - `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
   repository sessions before invoking Compute.
 
-See [standing approval across session expiry](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
+See [standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
 
 ## Flow
 
@@ -224,12 +224,12 @@ Both gate startup; the consumer mount is read-only. Metadata and gateway
 bearers remain separate.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.activateRevision`
-replaces consumers when material changes, even within one version. Readiness requires
+replaces consumers whenever material changes, including within a version. Readiness requires
 role, version, generation and current deadlines. Dedicated replacement preserves enrollment
 and version-private storage.
 `KubernetesComputeDriver.prepareRevision` rechecks material after plugin,
 gateway and node observations; generation changes, lost readiness or expiry return incomplete.
-Activation rechecks deadlines after final observations.
+Activation rechecks deadlines after observation.
 Dedicated gateways lack repository material and repository-gateway egress.
 Both consumers trust CAs through `SSL_CERT_FILE`, `GIT_SSL_CAINFO` and
 `NODE_EXTRA_CA_CERTS`; overrides fail.
@@ -237,23 +237,20 @@ Compute grants consumer egress; Helm admits consumers through
 [credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
 For [prepared native Git](../reference/repository-credentials/prepared-native-git.md),
 `apps/controller/src/drivers/compute/kubernetes/repository-compute-ingress.ts:reconcilePreparedRepositoryIngress`
-admits the revision's ingress peer only when the session's hostname, TLS port and
-worker selector match the Helm-recorded broker Service. A mismatch refuses admission
-without widening policy. Native preparation writes aggregate `gitconfig` without reading
-bearers. System Git includes
-`/run/oce/repository-credentials/gitconfig`, preserving HOME/global configuration.
+requires the peer’s hostname, TLS port and worker selector to match the broker
+Service recorded by Helm. Native preparation writes `gitconfig` without reading
+bearers. System Git includes `/run/oce/repository-credentials/gitconfig` and
+preserves global settings.
 Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
 `tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
 `allow_login_shell=false` and `shell_environment_policy.set.PATH`, and keeps the Pod's
-`NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication remains intact.
+`NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication persists.
 App keys, JWTs, installation tokens and the control socket never enter consumer material.
 The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines Codex plugin and repository-bound filesystem and proxy access, explicit denies,
 and dedicated/embedded eligibility. Unbound policy, broker authorization and TLS
-verification stay in force. The OCE OpenClaw bridge selects the configured network
-profile explicitly for native thread and turn requests. Before returning a started,
-resumed, or forked thread, it checks that Codex reports the requested profile;
-a missing or different profile stops the request before a model turn.
+verification stay in force. Stock Codex threads and turns select the named network
+profile. Start, resume and fork require Codex to confirm it before execution.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 

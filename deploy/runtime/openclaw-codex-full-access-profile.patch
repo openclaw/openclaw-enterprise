@@ -159,3 +159,42 @@ diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/s
      ...(modelSelection
        ? { model: modelSelection.model, personality: CODEX_NATIVE_PERSONALITY_NONE }
        : {}),
+diff --git a/extensions/codex/src/app-server/side-question.ts b/extensions/codex/src/app-server/side-question.ts
+--- a/extensions/codex/src/app-server/side-question.ts
++++ b/extensions/codex/src/app-server/side-question.ts
+@@ -130,7 +130,10 @@
+   CodexThreadPolicyHandoffError,
+   refreshCodexThreadPolicy,
+ } from "./thread-policy.js";
+-import { buildCodexRuntimeThreadConfig } from "./thread-requests.js";
++import {
++  buildCodexRuntimeThreadConfig,
++  codexThreadSandboxOrPermissions,
++} from "./thread-requests.js";
+ import { resolveCodexToolAbortTerminalReason } from "./tool-abort-terminal-reason.js";
+ import { buildCodexTemporalAdditionalContext } from "./turn-params.js";
+ import type { CodexAppServerServerRequest, CodexThreadRouteScope } from "./turn-router.js";
+@@ -780,6 +783,9 @@
+                         approvalPolicy,
+                         approvalsReviewer: appServer.approvalsReviewer,
+                         ...(sandboxEnvironment || appServer.networkProxy ? {} : { sandbox }),
++                        ...(!sandboxEnvironment && appServer.networkProxy
++                          ? codexThreadSandboxOrPermissions(appServer)
++                          : {}),
+                         ...(serviceTier ? { serviceTier } : {}),
+                         config: threadConfig,
+                         developerInstructions: SIDE_DEVELOPER_INSTRUCTIONS,
+@@ -890,7 +896,12 @@
+                           nativeToolSurfaceEnabled,
+                         ),
+                       }
+-                    : { cwd }),
++                    : {
++                        cwd,
++                        ...(appServer.networkProxy
++                          ? codexThreadSandboxOrPermissions(appServer)
++                          : {}),
++                      }),
+                   model: modelSelection.model,
+                   ...(usesSupervisionConnection
+                     ? {}
