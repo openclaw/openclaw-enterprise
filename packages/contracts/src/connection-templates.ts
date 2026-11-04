@@ -18,7 +18,6 @@ export interface OAuthClient {
   readonly revocationUrl?: string;
   readonly clientId: string;
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
-  readonly secretRegistrationId?: string;
   /** Installation Driver that owns this client registration and its private material. */
   readonly credentialRefreshDriverId: string;
   readonly createdAt: string;

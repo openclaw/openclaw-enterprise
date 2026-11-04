@@ -142,7 +142,7 @@ test(
 );
 
 test(
-  "OAuth client rotation commits the new secret handle with its audit",
+  "OAuth client rotation updates its stable private reference across an unknown commit",
   requiresPostgres,
   async (t) => {
     assert.ok(databaseUrl);
@@ -158,12 +158,13 @@ test(
     assert.equal(original.statusCode, 201, original.body);
     const client = original.json().data;
     const next = randomUUID();
-    const stage = refresh.registerClient.bind(refresh);
+    const providerNames = [...providers.keys()];
+    const rotate = refresh.rotateClientSecret.bind(refresh);
     t.mock.method(
       refresh,
-      "registerClient",
-      async (...args: Parameters<typeof stage>) => {
-        await stage(...args);
+      "rotateClientSecret",
+      async (...args: Parameters<typeof rotate>) => {
+        await rotate(...args);
         proxy.arm();
       },
       { times: 1 },
@@ -173,8 +174,9 @@ test(
     });
     assert.equal(response.statusCode, 503, response.body);
     assert.ok(proxy.observedCommit);
-    // SQL committed before the socket closed. Replay only retires the previous secret generation.
-    await controller.cleanupRetiredOAuthClientSecrets();
+    // An unknown audit commit cannot switch references or retire material still used by the client.
+    assert.deepEqual([...providers.keys()], providerNames);
+    await controller.cleanupOAuthClients();
     assert.equal(providers.size, 1);
     assert.ok(JSON.stringify([...providers.values()]).includes(next));
     assert.ok(!JSON.stringify([...providers.values()]).includes(input.clientSecret));
@@ -182,13 +184,13 @@ test(
       (await inject("DELETE", `/oauth-clients/${client.id}`, undefined)).statusCode,
       204,
     );
-    await controller.cleanupRetiredOAuthClientSecrets();
+    await controller.cleanupOAuthClients();
     assert.equal(providers.size, 0);
   },
 );
 
 test(
-  "the worker recovers an abandoned secret staged before PostgreSQL receives COMMIT",
+  "the worker removes an unpublished OAuth client after interrupted creation",
   requiresPostgres,
   async (t) => {
     assert.ok(databaseUrl);
@@ -222,7 +224,9 @@ test(
       },
       { times: 1 },
     );
-    const response = inject("POST", `/oauth-clients/${original.json().data.id}/rotate-secret`, {
+    const response = inject("POST", "/oauth-clients", {
+      ...input,
+      clientId: randomUUID(),
       clientSecret: randomUUID(),
     });
     await waitFor(
@@ -236,11 +240,11 @@ test(
     assert.equal(providers.size, 2);
     // Advance just this reservation to its due time, then run maintenance under a new controller.
     const expired = await pool.query(
-      "UPDATE occ.retired_oauth_client_secrets SET retry_at=now() WHERE id=$1 RETURNING id",
+      "UPDATE occ.oauth_clients SET cleanup_after=now() WHERE id=$1 AND cleanup_after IS NOT NULL RETURNING id",
       [stagedId],
     );
     assert.equal(expired.rowCount, 1);
-    await recovered.cleanupRetiredOAuthClientSecrets();
+    await recovered.cleanupOAuthClients();
     assert.equal(providers.size, 1);
     assert.ok(JSON.stringify([...providers.values()]).includes(input.clientSecret));
   },

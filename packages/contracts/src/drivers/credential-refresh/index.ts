@@ -71,6 +71,7 @@ export type CredentialSourceDeviceAuthorizationResult = { readonly status: "pend
 
 /** One OAuth client at one authorization server, whose secret the Refresh Driver keeps. */
 export interface CredentialClientRegistrationContext {
+  /** Stable OAuthClient ID. All grants for this client use its current private material. */
   readonly registrationId: string;
   readonly issuer: string;
   readonly clientId: string;

@@ -536,7 +536,7 @@
       "when": 1787000000067,
       "tag": "0067_connection_templates",
       "breakpoints": true,
-      "sha256": "a13e0da445bdd739d3b43a793475efe76568ac3532017623024b3aff3d39088e"
+      "sha256": "814c5efd6b3b437f27e6899c70a48fae8d57d4800e9eb86ee5b3deb4fa7e78ad"
     }
   ],
   "initialSchemaStates": {
@@ -550,18 +550,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -587,9 +577,9 @@
       "e4f1ce2a27d8561664fd107679c962b7c67060c658869bf3faa3fc47ce384a0b",
       "048eb30e1c7db94dde5c3ab7731b940b9acbfbed0b41dd20cfc705aebf2850ae"
     ],
-    "3bc06bb42a1c76cf8df16575a1a6739bf6de9d72d42af2eb367644232e63e734": [
-      "d2f59ee0d62ba800f8476f4a02f2d8e389b870f1910ab6df2ca33d4340708fc1",
-      "dab23f8923c7ce0744ab79dce8a0a2151fcd88e7f99ab6cfbbe23691ea7a79aa"
+    "900bbc9d8447b18665483664d51147945a9238000dc5457e00a126ae07be98c4": [
+      "5280667e0e47a6d07f4ac7476f26c0fa86191b77a02bc6e46a43a83f26949b80",
+      "6dd42916e4f42a29c381fa198ef99b7087064adf1c4257ede3d94cf0220feb5d"
     ]
   },
   "catalogs": {
@@ -598,7 +588,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "3bc06bb42a1c76cf8df16575a1a6739bf6de9d72d42af2eb367644232e63e734",
+    "completed": "900bbc9d8447b18665483664d51147945a9238000dc5457e00a126ae07be98c4",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",

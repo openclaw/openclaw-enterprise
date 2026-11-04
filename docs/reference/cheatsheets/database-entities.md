@@ -161,17 +161,11 @@ Pins the approved OAuth configuration and access to its API recipient. A discove
 
 ### `oauth_clients`
 
-Identifies an independently managed OAuth client and its approved credential destinations. Confidential clients point to a private Refresh Driver handle.
+Identifies an independently managed OAuth client and its approved credential destinations. The client ID also identifies confidential material in the selected Refresh Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
 
 - `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
 - `token_url`, `revocation_url`, `token_endpoint_auth_method`
-- `credential_refresh_driver_id`, `secret_registration_id`, `created_at`
-
-### `retired_oauth_client_secrets`
-
-Queues removal of abandoned secret generations and private handles superseded by rotation or deletion.
-
-- `id`, `issuer`, `client_id`, `credential_refresh_driver_id`, `retry_at`
+- `credential_refresh_driver_id`, `cleanup_after`, `created_at`
 
 ### `credential_sources`
 

@@ -4,6 +4,10 @@ The administrator selects manual configuration or supplies an MCP server URL. OC
 
 OCC checks scope and the client's allowed destinations before it references an OAuth client. PostgreSQL commits the template version and its audit together. A template can exist without a client. The Agent plugin release determines the local credential placeholder when the account is used.
 
-When an administrator creates or rotates a confidential client, OCC reserves a new private handle in its cleanup queue before the Refresh Driver stages the secret. The writer locks that reservation while it stores the secret. OCC commits the active handle and its audit, removes the reservation, and queues the previous handle in one transaction. If a writer stops before commit, the worker can remove the abandoned secret once its reservation is due. The worker retries removal through the Driver. The public OAuth client ID stays stable across rotation.
+OCC reserves a hidden OAuth client row before the Refresh Driver writes a confidential client’s secret. The Driver uses the client ID as its private storage reference. OCC publishes the client and records its creation in one transaction. If creation stops before publication, the worker removes the private material and the hidden row.
+
+For rotation, OCC records the administrator’s request, locks the client, rechecks the session, and asks the Driver to replace the value at that same reference. Code exchange and token refresh use the current value. OCC records successful completion after the write. If the caller loses the response, repeating the operation with the same value is safe.
+
+When an administrator deletes a confidential client, OCC checks for dependent template versions, hides the client, and records the deletion. The worker retries private cleanup before removing the client row.
 
 See [OAuth connection templates and clients](../reference/connection-templates.md) for the supported operations.

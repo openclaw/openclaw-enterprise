@@ -5,7 +5,7 @@ CREATE TABLE occ.oauth_clients (
   namespace_id text REFERENCES occ.namespaces(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   issuer text COLLATE "C" NOT NULL,
   display_name text NOT NULL CHECK (length(display_name) BETWEEN 1 AND 200 AND display_name = btrim(display_name)),
-  secret_registration_id text UNIQUE,
+  cleanup_after timestamptz,
   token_endpoint_auth_method text NOT NULL CHECK (token_endpoint_auth_method IN ('none','client_secret_basic','client_secret_post')),
   token_url text NOT NULL CHECK (token_url ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'),
   revocation_url text CHECK (revocation_url ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'),
@@ -18,10 +18,7 @@ CREATE TABLE occ.oauth_clients (
   CONSTRAINT oauth_clients_issuer_https CHECK (
     issuer ~ '^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$' AND length(issuer) <= 2048
   ),
-  CONSTRAINT oauth_clients_private_material CHECK (
-    (token_endpoint_auth_method='none' AND secret_registration_id IS NULL) OR
-    (token_endpoint_auth_method<>'none' AND secret_registration_id IS NOT NULL)
-  ),
+  CONSTRAINT oauth_clients_cleanup_confidential CHECK (cleanup_after IS NULL OR token_endpoint_auth_method <> 'none'),
   CONSTRAINT oauth_clients_client_id_valid CHECK (
     client_id ~ '^[!-~]+$' AND length(client_id) <= 256
   ),
@@ -128,12 +125,6 @@ CREATE TRIGGER connection_template_version_is_immutable
 BEFORE UPDATE ON occ.oauth_connection_template_versions
 FOR EACH ROW EXECUTE FUNCTION occ.reject_row_mutation();
 --> statement-breakpoint
--- Existing account snapshots retain their own previously approved client material.
-CREATE TABLE occ.retired_oauth_client_secrets (
-  id text PRIMARY KEY, issuer text NOT NULL, client_id text NOT NULL,
-  credential_refresh_driver_id text NOT NULL, retry_at timestamptz NOT NULL DEFAULT now()
-);
---> statement-breakpoint
 REVOKE ALL ON occ.oauth_clients, occ.connection_templates,
   occ.oauth_connection_template_versions FROM PUBLIC, occ_app;
 --> statement-breakpoint
@@ -152,7 +143,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
   IF NEW.oauth_client_id IS NULL THEN RETURN NEW; END IF;
   PERFORM 1 FROM occ.connection_templates AS t, occ.oauth_clients AS r
-  WHERE t.id = NEW.template_id AND r.id = NEW.oauth_client_id
+  WHERE t.id = NEW.template_id AND r.id = NEW.oauth_client_id AND r.cleanup_after IS NULL
     AND (r.namespace_id IS NULL OR r.namespace_id = t.namespace_id)
     AND (NEW.revocation_url IS NULL OR NEW.revocation_url = r.revocation_url)
     FOR KEY SHARE OF t, r;
@@ -169,6 +160,4 @@ FOR EACH ROW EXECUTE FUNCTION occ.check_connection_registration_scope();
 REVOKE ALL ON FUNCTION occ.guard_connection_template_update(), occ.check_connection_registration_scope() FROM PUBLIC;
 
 --> statement-breakpoint
-GRANT UPDATE (secret_registration_id) ON occ.oauth_clients TO occ_app;
---> statement-breakpoint
-GRANT SELECT, INSERT, UPDATE (retry_at), DELETE ON occ.retired_oauth_client_secrets TO occ_app;
+GRANT UPDATE (cleanup_after) ON occ.oauth_clients TO occ_app;

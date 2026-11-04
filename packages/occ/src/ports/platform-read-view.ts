@@ -34,7 +34,7 @@ export function createPlatformReadView(
       "listConnectionTemplates",
       "countNamespaceConnectionTemplates",
       "findOAuthConnectionTemplateVersion",
-      "listRetiredOAuthClientSecrets",
+      "listOAuthClientCleanups",
       "listOAuthClients",
       "countNamespaceOAuthClients",
       "findOAuthClient",
