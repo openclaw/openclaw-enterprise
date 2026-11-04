@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import type { StorybookConfig } from "@storybook/html-vite";
+
 export default {
   framework: "@storybook/html-vite",
   stories: ["../*.stories.ts"],
@@ -20,4 +22,4 @@ export default {
     };
   },
   core: { disableTelemetry: true },
-};
+} satisfies StorybookConfig;

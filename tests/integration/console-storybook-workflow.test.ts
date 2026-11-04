@@ -59,7 +59,7 @@ const scenarios = [
   },
   {
     name: "Storybook configuration",
-    changed: ["scripts/console-storybook/.storybook/main.mjs"],
+    changed: ["scripts/console-storybook/.storybook/main.ts"],
     builds: true,
   },
   {

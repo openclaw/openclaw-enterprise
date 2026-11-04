@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Page, Response } from "playwright";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import type { Restriction } from "../../packages/contracts/src/index.ts";
 
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -18,6 +21,38 @@ import { openAdvancedSettings } from "./console-agents-test-support.mjs";
 import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
 import { liftRestriction } from "../helpers/iam-grants.mjs";
 
+type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
+
+function text(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function entity(value: unknown): Record<string, unknown> & { id: string } {
+  const result = record(value);
+  return { ...result, id: text(result.id) };
+}
+
+function agentEntity(value: unknown) {
+  const result = entity(value);
+  return { ...result, configurationId: text(result.configurationId) };
+}
+
+function responseData(value: unknown) {
+  return record(record(value).data);
+}
+
+function controller(fixture: Fixture): OpenClawController {
+  const value: unknown = fixture.controller;
+  assert.ok(value instanceof OpenClawController);
+  return value;
+}
+
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
 const pluginId = "occ-plugin:diffs";
@@ -25,21 +60,24 @@ const selections = JSON.stringify({
   [pluginId]: { enabled: true, toolDefaults: { approval: "none" } },
 });
 
-async function pluginFixture(t, options) {
+async function pluginFixture(t: TestContext, options: Record<string, unknown> = {}) {
   const fixture = await createConsoleAppFixture(t, options);
   await fixture.bootstrap();
   const driver = new OCCPluginDriver();
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
+  controller(fixture).registerDriver(driver);
+  controller(fixture).selectDriver("plugin", driver.id);
   return fixture;
 }
 
 // What a reader sees of the focused refusal, and whether the page scrolls sideways.
-const refusalView = (page) =>
+const refusalView = (page: Page) =>
   page
     .getByRole("alert")
     .filter({ hasText: "every tool" })
     .evaluate((alert) => {
+      if (!(alert instanceof HTMLElement)) {
+        throw new Error("Expected an HTML alert");
+      }
       const { top, bottom } = alert.getBoundingClientRect();
       const status = [...globalThis.document.querySelectorAll("[role=status]")].find((node) =>
         node.textContent.includes("Configuration saved:"),
@@ -65,15 +103,27 @@ const refusalView = (page) =>
 // fixture built with `options`, with `entries` merged into the Configuration's `agents` and
 // `selected` as the plugin selections, at `width`.
 async function filledCreateForm(
-  t,
-  name,
-  entries,
-  { width = 1280, selected = selections, harness = "openclaw", options = {} } = {},
+  t: TestContext,
+  name: string,
+  entries: Record<string, unknown>,
+  {
+    width = 1280,
+    selected = selections,
+    harness = "openclaw",
+    options = {},
+  }: {
+    width?: number;
+    selected?: string;
+    harness?: "openclaw" | "codex";
+    options?: Record<string, unknown>;
+  } = {},
 ) {
-  const preset = JSON.parse(
-    await readFile(
-      new URL(`../../deploy/presets/standard-${harness}.json`, import.meta.url),
-      "utf8",
+  const preset = record(
+    JSON.parse(
+      await readFile(
+        new URL(`../../deploy/presets/standard-${harness}.json`, import.meta.url),
+        "utf8",
+      ),
     ),
   );
   const audit = new InMemoryAuditSink();
@@ -82,7 +132,7 @@ async function filledCreateForm(
     defaultPresets: [preset],
     auditSink: audit,
   });
-  const namespace = await fixture.createNamespace(name, { ready: true });
+  const namespace = entity(await fixture.createNamespace(name, { ready: true }));
   const { page } = await newPage(t, fixture, {
     browser,
     context: { viewport: { width, height: 900 } },
@@ -91,22 +141,22 @@ async function filledCreateForm(
   const requests = apiRequests(page, fixture.origin);
   const writes = () => writeRequests(requests).map(({ method, path }) => `${method} ${path}`);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption({ label: preset.name });
+  await page.getByLabel("Preset template").selectOption({ label: text(preset.name) });
   await page.getByLabel("Name", { exact: true }).fill(name.toLowerCase().replaceAll(" ", "-"));
   await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-model-key");
   await page.getByRole("button", { name: "Use Preset" }).click();
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON");
-  const values = JSON.parse(await configuration.inputValue());
-  values.agents = { ...values.agents, ...entries };
+  const parsed = record(JSON.parse(await configuration.inputValue()));
+  const values = { ...parsed, agents: { ...record(parsed.agents), ...entries } };
   await configuration.fill(JSON.stringify(values, null, 2));
   await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
   const pluginJson = page.getByLabel("Plugin selections JSON");
   await pluginJson.fill(selected);
   await pluginJson.press("Tab");
   const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
-  const isPost = (url) => (response) =>
+  const isPost = (url: string) => (response: Response) =>
     response.url() === url && response.request().method() === "POST";
   return {
     fixture,
@@ -126,7 +176,7 @@ async function filledCreateForm(
 }
 
 // Submits the form with the keyboard, as a reader of the focused refusal would.
-async function submitWithKeyboard(page) {
+async function submitWithKeyboard(page: Page) {
   await page.getByRole("button", { name: "Create Agent", exact: true }).focus();
   await page.keyboard.press("Enter");
 }
@@ -136,10 +186,15 @@ async function submitWithKeyboard(page) {
 // which leaves the Configuration saved. The retry selects the plugin; with the Configuration
 // saved there is no preflight, and Agent create refuses the pair. Returns the page and the
 // POST /agents matcher.
-async function refusedCreateForm(t, name, entries, width = 1280) {
+async function refusedCreateForm(
+  t: TestContext,
+  name: string,
+  entries: Record<string, unknown>,
+  width = 1280,
+) {
   const form = await filledCreateForm(t, name, entries, { width, selected: "{}" });
   const { fixture, namespace, page, configuration, pluginJson, agentsUrl, isAgentPost } = form;
-  const denied = {
+  const denied: Restriction = {
     id: "deny-first-agent-create",
     namespaceId: namespace.id,
     resourceKind: "agent",
@@ -173,13 +228,19 @@ async function refusedCreateForm(t, name, entries, width = 1280) {
 }
 
 // Nothing reached the API but the preflight: no Secret, Configuration or Agent exists.
-async function assertNothingSaved(form) {
+async function assertNothingSaved(form: Awaited<ReturnType<typeof filledCreateForm>>) {
   const { fixture, audit, namespace, writes, since } = form;
   assert.deepEqual(writes().slice(since.writes), [
     `POST /namespaces/${namespace.id}/agents/validate`,
   ]);
-  assert.deepEqual((await fixture.request("GET", `/namespaces/${namespace.id}/agents`)).data, []);
-  assert.deepEqual((await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data, []);
+  assert.deepEqual(
+    record(await fixture.request("GET", `/namespaces/${namespace.id}/agents`)).data,
+    [],
+  );
+  assert.deepEqual(
+    record(await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data,
+    [],
+  );
   assert.deepEqual(
     audit.events.slice(since.audit).filter((event) => event.kind === "mutation"),
     [],
@@ -195,7 +256,7 @@ test("Create Agent keeps the form ready to retry when the configuration check ti
   const { page, agentsUrl, configuration } = form;
   const entered = await configuration.inputValue();
   // The real check succeeds, but its reply does not reach the form before the client deadline.
-  const checked = Promise.withResolvers();
+  const checked = Promise.withResolvers<number>();
   await page.route(`${agentsUrl}/validate`, async (route) => {
     checked.resolve((await route.fetch()).status());
   });
@@ -255,7 +316,7 @@ test("Create Agent refuses a plugin pair before saving anything and keeps the fo
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await created;
   assert.equal(response.status(), 201, await response.text());
-  assert.deepEqual(Object.keys((await response.json()).data.plugins), [pluginId]);
+  assert.deepEqual(Object.keys(record(responseData(await response.json()).plugins)), [pluginId]);
   await page.waitForURL(/\/console\/agents\/agt_/);
 });
 
@@ -278,18 +339,18 @@ test("Create Agent refuses a Dedicated Agent the Installation cannot place befor
     },
   );
   const { fixture, page, configuration, isPreflight } = form;
-  const installation = await fixture.request("GET", "/installation");
-  assert.deepEqual(installation.data.capabilities.agentProvisioning, {
+  const installation: unknown = await fixture.request("GET", "/installation");
+  assert.deepEqual(record(responseData(installation).capabilities).agentProvisioning, {
     executionModes: ["dedicated"],
   });
   const refused = page.waitForResponse(isPreflight);
   await submitWithKeyboard(page);
   const response = await refused;
   assert.equal(response.status(), 400);
-  assert.deepEqual(response.request().postDataJSON().harnessAuth, { method: "api_key" });
+  assert.deepEqual(record(response.request().postDataJSON()).harnessAuth, { method: "api_key" });
   const alert = page.getByRole("alert").filter({ hasText: "Dedicated Agents need" });
   await alert.waitFor();
-  assert.ok((await alert.textContent()).startsWith(CODEX_PLACEMENT_REFUSAL));
+  assert.ok(text(await alert.textContent()).startsWith(CODEX_PLACEMENT_REFUSAL));
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   await assertNothingSaved(form);
   // Nothing is saved, so the form can still follow that advice.
@@ -314,7 +375,7 @@ test("Create Agent refuses a roster that initial workspace files cannot reach be
   await alert.waitFor();
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   assert.ok(
-    (await alert.textContent()).startsWith(
+    text(await alert.textContent()).startsWith(
       "Configuration setting agents.entries must hold only main, or be omitted, for initial workspace files: only the main Agent reads them.",
     ),
   );
@@ -367,11 +428,16 @@ test("Create Agent completes after deselecting the plugin a refusal names", asyn
 
 // Without a plugin in the refusal the form adds nothing: the API's sentence stands alone.
 test("Create Agent adds no plugin guidance to a refusal that names no selected plugin", async (t) => {
-  const preset = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-openclaw.json", import.meta.url), "utf8"),
+  const preset = record(
+    JSON.parse(
+      await readFile(
+        new URL("../../deploy/presets/standard-openclaw.json", import.meta.url),
+        "utf8",
+      ),
+    ),
   );
   const fixture = await pluginFixture(t, { defaultPresets: [preset] });
-  const namespace = await fixture.createNamespace("Plain refusal create", { ready: true });
+  const namespace = entity(await fixture.createNamespace("Plain refusal create", { ready: true }));
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByLabel("Preset template").selectOption({ label: "Standard OpenClaw" });
@@ -399,20 +465,23 @@ test("Create Agent adds no plugin guidance to a refusal that names no selected p
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const alert = page.getByRole("alert").filter({ hasText: reason });
   await alert.waitFor();
-  const text = await alert.textContent();
-  assert.ok(text.startsWith(reason), text);
-  assert.doesNotMatch(text, /deselect plugin|cannot edit saved Configuration/i);
+  const message = text(await alert.textContent());
+  assert.ok(message.startsWith(reason), message);
+  assert.doesNotMatch(message, /deselect plugin|cannot edit saved Configuration/i);
 });
 
 // The Plugins tab showed a refusal in the muted status line and dropped focus to the page
 // when Save disabled (finding 1864).
 test("the Plugins tab shows a plugin refusal as a focused error", async (t) => {
   const fixture = await pluginFixture(t);
-  const namespace = await fixture.createNamespace("Plugin refusal tab", { ready: true });
-  const values = nativeValues("refusal");
-  delete values.plugins.entries.knowledge;
-  values.tools = { ...values.tools, byProvider: { openai: { deny: ["diffs"] } } };
-  const agent = await fixture.createAgent(namespace.id, "Deny Agent", values);
+  const namespace = entity(await fixture.createNamespace("Plugin refusal tab", { ready: true }));
+  const values = record(nativeValues("refusal"));
+  delete record(record(values.plugins).entries).knowledge;
+  values.tools = {
+    ...(values.tools === undefined ? {} : record(values.tools)),
+    byProvider: { openai: { deny: ["diffs"] } },
+  };
+  const agent = agentEntity(await fixture.createAgent(namespace.id, "Deny Agent", values));
   const { page } = await newPage(t, fixture, {
     browser,
     context: { viewport: { width: 390, height: 900 } },

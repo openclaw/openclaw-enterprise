@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import type { Locator } from "playwright";
+import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import type { PluginApprovers, SecretMetadata } from "../../packages/contracts/src/index.ts";
 
 import {
   CodexPluginDriver,
@@ -40,29 +44,107 @@ import {
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
+type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value));
+  return value as Record<string, unknown>;
+}
+
+function text(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function entity(value: unknown): Record<string, unknown> & { id: string } {
+  const result = record(value);
+  return { ...result, id: text(result.id) };
+}
+
+function agentEntity(value: unknown) {
+  const result = entity(value);
+  return { ...result, configurationId: text(result.configurationId) };
+}
+
+function responseData(value: unknown) {
+  return record(record(value).data);
+}
+
+function controller(fixture: Fixture): OpenClawController {
+  const value: unknown = fixture.controller;
+  assert.ok(value instanceof OpenClawController);
+  return value;
+}
+
+function secretEntity(value: unknown): SecretMetadata {
+  const result = record(value);
+  const ref = record(result.ref);
+  assert.equal(ref.kind, "secret");
+  return {
+    id: text(result.id),
+    name: text(result.name),
+    namespaceId: text(result.namespaceId),
+    ref: { kind: "secret", id: text(ref.id), namespaceId: text(ref.namespaceId) },
+  };
+}
+
+function lastBody(requests: ReturnType<typeof pathRequests>) {
+  const request = requests.at(-1);
+  assert.ok(request, "Expected an API request");
+  return record(request.body);
+}
+
+type LookupBody = Record<string, unknown> & { ids?: string[]; query?: string };
+
+function isLookupBody(body: Record<string, unknown>): body is LookupBody {
+  const ids: unknown = body.ids;
+  return (
+    (ids === undefined ||
+      (Array.isArray(ids) && ids.every((id: unknown) => typeof id === "string"))) &&
+    (body.query === undefined || typeof body.query === "string")
+  );
+}
+
+function lookupBody(value: unknown): LookupBody {
+  const body = record(value);
+  assert.ok(isLookupBody(body), "Expected directory lookup IDs and query");
+  return body;
+}
+
+declare global {
+  var waitForPluginDetails: () => Promise<void>;
+  var showPluginPage2: (selections?: string) => void;
+  var liveWrites: (string | null)[];
+  var liveRegions: (string | null)[];
+}
+
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
 
 test("A dedicated OpenClaw Agent can enable and disable Google Workspace without a connection", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Package installation");
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Package installation");
+  const namespace = entity(namespaceValue);
   for (const driver of [
     new OCCPluginDriver(),
     createTestKubernetesComputeDriver("compute-google-package"),
   ]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
   }
-  const agent = await fixture.createAgent(namespace.id, "Package Agent", nativeValues("package"), {
-    executionMode: "dedicated",
-    harnessAuth: null,
-  });
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "Package Agent", nativeValues("package"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+    }),
+  );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const id = "occ-plugin:google@1.0.0";
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins" });
-  async function checkPolicySupport(pluginName) {
+  async function checkPolicySupport(pluginName: string) {
     const policies = dialog.getByRole("group", { name: "Plugin policies" });
     for (const label of ["tools enabled by default", "require approval for", "default reviewer"]) {
       const field = policies.getByRole("combobox", { name: `${pluginName} ${label}`, exact: true });
@@ -83,14 +165,16 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
     .getByRole("option", { name: "Install without an account" })
     .waitFor({ state: "attached" });
   await checkPolicySupport("Google Workspace");
-  async function save(enabled) {
+  async function save(enabled: boolean) {
     await dialog.getByRole("button", { name: "Done", exact: true }).click();
     const saved = page.waitForResponse(
       (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
     );
     await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
     assert.equal((await saved).status(), 200);
-    assert.deepEqual((await fixture.request("GET", path)).data.plugins, { [id]: { enabled } });
+    assert.deepEqual(responseData(await fixture.request("GET", path)).plugins, {
+      [id]: { enabled },
+    });
     await page.getByText("Plugin selections saved.", { exact: true }).waitFor();
   }
   await save(true);
@@ -117,8 +201,8 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
   await fixture.bootstrap();
   for (const destination of ["Beta", "Search plugins"]) {
     const { page } = await newPage(t, fixture, { browser });
-    const requested = Promise.withResolvers();
-    const released = Promise.withResolvers();
+    const requested = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
     t.after(() => released.resolve());
     await page.exposeFunction("waitForPluginDetails", () => {
       requested.resolve();
@@ -130,10 +214,32 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
     await page.locator(settledView).waitFor();
     // Exercise the served Console component with a held synthetic catalog update.
     await page.evaluate(async () => {
-      const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
+      const modulePath = "/console/agents/plugin-fields.mjs";
+      const module: unknown = await import(modulePath);
+      function isPluginFieldsModule(
+        value: unknown,
+      ): value is Pick<
+        typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs"),
+        "createPluginFields"
+      > {
+        return (
+          typeof value === "object" &&
+          value !== null &&
+          "createPluginFields" in value &&
+          typeof value.createPluginFields === "function"
+        );
+      }
+      if (!isPluginFieldsModule(module)) {
+        throw new Error("Expected createPluginFields from " + modulePath);
+      }
+      const { createPluginFields } = module;
       const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
       const beta = { id: "beta", name: "Beta", tools: [] };
-      const catalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
+      const catalog: PluginFieldCatalog = {
+        status: "ready",
+        canLoad: true,
+        entries: [alpha, beta],
+      };
       const input = globalThis.document.createElement("textarea");
       input.id = "plugin-focus-selections";
       input.value = "{}";
@@ -156,7 +262,7 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
     await requested.promise;
     await alpha.focus();
     await page.keyboard.press("Tab");
-    const isFocused = (node) => node === node.ownerDocument.activeElement;
+    const isFocused = (node: Element) => node === node.ownerDocument.activeElement;
     assert.equal(await beta.evaluate(isFocused), true);
     if (destination === "Search plugins") {
       await page.keyboard.press("Shift+Tab");
@@ -181,10 +287,28 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   // As above: the dialog opens only after sign-in's reload of the page.
   await page.locator(settledView).waitFor();
   await page.evaluate(async () => {
-    const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
+    const modulePath = "/console/agents/plugin-fields.mjs";
+    const module: unknown = await import(modulePath);
+    function isPluginFieldsModule(
+      value: unknown,
+    ): value is Pick<
+      typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs"),
+      "createPluginFields"
+    > {
+      return (
+        typeof value === "object" &&
+        value !== null &&
+        "createPluginFields" in value &&
+        typeof value.createPluginFields === "function"
+      );
+    }
+    if (!isPluginFieldsModule(module)) {
+      throw new Error("Expected createPluginFields from " + modulePath);
+    }
+    const { createPluginFields } = module;
     const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
     const beta = { id: "beta", name: "Beta", tools: [] };
-    const catalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
+    const catalog: PluginFieldCatalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
     const input = globalThis.document.createElement("textarea");
     input.id = "plugin-live-selections";
     input.value = "{}";
@@ -212,6 +336,9 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
     const observer = new globalThis.MutationObserver((records) => {
       for (const record of records) {
         const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+        if (!target) {
+          throw new Error("Expected a live-region mutation target");
+        }
         globalThis.liveWrites.push(target.textContent);
       }
     });
@@ -250,27 +377,31 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
 });
 
 test("Create Agent searches approvers with a search-only Slack Secret", async (t) => {
-  const preset = JSON.parse(
-    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+  const preset = record(
+    JSON.parse(
+      await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+    ),
   );
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
   await fixture.bootstrap();
   const driver = new CodexPluginDriver();
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  const namespace = await fixture.createNamespace("Approver search", { ready: true });
-  const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
+  controller(fixture).registerDriver(driver);
+  controller(fixture).selectDriver("plugin", driver.id);
+  const namespace = entity(await fixture.createNamespace("Approver search", { ready: true }));
+  const bot = secretEntity(
+    await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token"),
+  );
   const { page, artifacts } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
-  const lookups = [];
-  const lookupStarted = Promise.withResolvers();
-  const releaseLookup = Promise.withResolvers();
+  const lookups: ReturnType<typeof lookupBody>[] = [];
+  const lookupStarted = Promise.withResolvers<void>();
+  const releaseLookup = Promise.withResolvers<void>();
   t.after(() => releaseLookup.resolve());
   let denied = false;
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
     async (route) => {
-      const body = route.request().postDataJSON();
+      const body = lookupBody(route.request().postDataJSON());
       lookups.push(body);
       if (body.ids?.includes("UTEST123")) {
         lookupStarted.resolve();
@@ -303,7 +434,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await openAdvancedSettings(page);
   // The approvers select looks like every other select on the form: it was bold with a thin
   // square border and no padding (finding 2401).
-  const controlStyle = (locator) =>
+  const controlStyle = (locator: Locator) =>
     locator.evaluate((node) => {
       const style = globalThis.getComputedStyle(node);
       return {
@@ -362,32 +493,41 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await page.getByLabel("Agent name").fill("Approver search Agent");
   await enterManualModel(page, "synthetic-model-key", "gpt-5.1");
   await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
-  const body = pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).at(-1).body;
+  const body = lastBody(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`));
   assert.deepEqual(body.pluginApprovers, [{ channel: "slack", id: "team:TTEST123:user:UTEST123" }]);
-  const configuration = pathRequests(
-    requests,
-    "POST",
-    `/namespaces/${namespace.id}/configurations`,
-  ).at(-1).body;
-  assert.equal(configuration.secretBindings?.SLACK_BOT_TOKEN, undefined);
+  const configuration = lastBody(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/configurations`),
+  );
+  assert.equal(
+    configuration.secretBindings === undefined
+      ? undefined
+      : record(configuration.secretBindings).SLACK_BOT_TOKEN,
+    undefined,
+  );
 });
 
 test("Create Agent keeps the search Secret out of plugin approver lookups", async (t) => {
-  const preset = JSON.parse(
-    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+  const preset = record(
+    JSON.parse(
+      await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+    ),
   );
   const pluginId = "occ-plugin:diffs";
-  preset.template.agent.plugins = {
+  record(record(preset.template).agent).plugins = {
     [pluginId]: { enabled: true, approvers: [{ channel: "slack", id: "UOTHER123" }] },
   };
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
   await fixture.bootstrap();
   const driver = new OCCPluginDriver();
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  const namespace = await fixture.createNamespace("Approver privacy", { ready: true });
-  const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
-  const spare = await fixture.createSecret(namespace.id, "Spare bot", "synthetic-spare-token");
+  controller(fixture).registerDriver(driver);
+  controller(fixture).selectDriver("plugin", driver.id);
+  const namespace = entity(await fixture.createNamespace("Approver privacy", { ready: true }));
+  const bot = secretEntity(
+    await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token"),
+  );
+  const spare = secretEntity(
+    await fixture.createSecret(namespace.id, "Spare bot", "synthetic-spare-token"),
+  );
   // This administrator may not create Secrets in the Namespace, so the Namespace permission answer
   // denies Secret create; nothing here creates one.
   restrict(fixture.policy, "create", "secret", { namespaceId: namespace.id });
@@ -397,11 +537,11 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
     resourceId: spare.id,
   });
   const { page } = await newPage(t, fixture, { browser });
-  const lookups = [];
+  const lookups: ReturnType<typeof lookupBody>[] = [];
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
     async (route) => {
-      lookups.push(route.request().postDataJSON());
+      lookups.push(lookupBody(route.request().postDataJSON()));
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -457,11 +597,17 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await fixture.bootstrap();
   // Plugin and tool overrides need a Driver that advertises them; Codex offers only the default.
   const pluginDriver = new OCCPluginDriver();
-  fixture.controller.registerDriver(pluginDriver);
-  fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const namespace = await fixture.createNamespace("Slack directory picker", { ready: true });
-  const appSecret = await fixture.createSecret(namespace.id, "Slack app token", "xapp-test-secret");
-  const botSecret = await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-test-secret");
+  controller(fixture).registerDriver(pluginDriver);
+  controller(fixture).selectDriver("plugin", pluginDriver.id);
+  const namespace = entity(
+    await fixture.createNamespace("Slack directory picker", { ready: true }),
+  );
+  const appSecret = secretEntity(
+    await fixture.createSecret(namespace.id, "Slack app token", "xapp-test-secret"),
+  );
+  const botSecret = secretEntity(
+    await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-test-secret"),
+  );
   const slack = {
     enabled: true,
     mode: "socket",
@@ -470,18 +616,20 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     dmPolicy: "disabled",
     channels: { CEXIST123: { requireMention: true, users: ["*"] } },
   };
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Slack Directory Agent",
-    nativeValues("slack-directory", { channels: { slack } }),
-    {
-      // Channels need a dedicated Agent workload, which Agent save checks.
-      executionMode: "dedicated",
-      secretBindings: {
-        SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
-        SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+  const agent = agentEntity(
+    await fixture.createAgent(
+      namespace.id,
+      "Slack Directory Agent",
+      nativeValues("slack-directory", { channels: { slack } }),
+      {
+        // Channels need a dedicated Agent workload, which Agent save checks.
+        executionMode: "dedicated",
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+        },
       },
-    },
+    ),
   );
   const pluginId = "occ-plugin:diffs";
   const toolId = "diffs";
@@ -491,14 +639,14 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   });
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
-  const directoryBodies = [];
+  const directoryBodies: ReturnType<typeof lookupBody>[] = [];
   let directoryAvailable = true;
   let directoryDenied = false;
   // The browser test owns Console selection and saved API state; only provider directory data is simulated.
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
     async (route) => {
-      const body = route.request().postDataJSON();
+      const body = lookupBody(route.request().postDataJSON());
       directoryBodies.push(body);
       if (directoryDenied) {
         await route.fulfill({
@@ -540,7 +688,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
             workspaceId: "TTEST123",
             workspaceName: "Test workspace",
             candidates: body.ids
-              ? candidates.filter((candidate) => body.ids.includes(candidate.id))
+              ? candidates.filter((candidate) => body.ids?.includes(candidate.id))
               : candidates,
             complete: true,
           },
@@ -563,13 +711,14 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   const searched = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/channel-directory/lookup`) &&
-      response.request().postDataJSON()?.query === "Alex",
+      lookupBody(response.request().postDataJSON()).query === "Alex",
   );
   await people.fill("Alex");
   await searched;
   const result = picker.getByRole("option", { name: /Alex.*@alex/ });
   await result.waitFor();
   const resultNode = await result.elementHandle();
+  assert.ok(resultNode);
   const lookupCount = directoryBodies.length;
   const sessionPath = `${fixture.origin}/api/auth/session`;
   const session = await holdRequests(t, page, sessionPath, { afterServer: true, timeout: 0 });
@@ -599,6 +748,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await page.getByRole("button", { name: "Configure plugins", exact: true }).focus();
   assert.equal(await people.getAttribute("aria-expanded"), "false");
   const peopleNode = await people.elementHandle();
+  assert.ok(peopleNode);
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await people.waitFor({ state: "detached" });
   assert.equal(await peopleNode.evaluate((node) => node.isConnected), false);
@@ -610,7 +760,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   const resolvedSelection = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/channel-directory/lookup`) &&
-      response.request().postDataJSON()?.ids?.includes("UTEST123"),
+      lookupBody(response.request().postDataJSON()).ids?.includes("UTEST123") === true,
   );
   await people.focus();
   await result.waitFor();
@@ -621,6 +771,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     .getByText("Alex (@alex)")
     .waitFor();
   const selectedPeopleNode = await people.elementHandle();
+  assert.ok(selectedPeopleNode);
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await people.waitFor({ state: "detached" });
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
@@ -693,21 +844,23 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   assert.equal((await savedApprovers).status(), 200);
   const approvers = [{ channel: "slack", id: "team:TTEST123:user:UTEST123" }];
   assert.deepEqual(
-    pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`).at(-1).body
+    lastBody(pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`))
       .pluginApprovers,
     approvers,
   );
   assert.deepEqual(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
+    responseData(await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
       .pluginApprovers,
     approvers,
   );
-  let savedAgent = (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
-    .data;
-  assert.deepEqual(savedAgent.plugins[pluginId].approvers, []);
-  assert.deepEqual(savedAgent.plugins[pluginId].tools[toolId].approvers, [
-    { channel: "slack", id: "UTEST123" },
-  ]);
+  let savedAgent = responseData(
+    await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`),
+  );
+  assert.deepEqual(record(record(savedAgent.plugins)[pluginId]).approvers, []);
+  assert.deepEqual(
+    record(record(record(record(savedAgent.plugins)[pluginId]).tools)[toolId]).approvers,
+    [{ channel: "slack", id: "UTEST123" }],
+  );
   directoryAvailable = true;
   assert.deepEqual(directoryBodies[0], {
     secretId: botSecret.id,
@@ -742,10 +895,13 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   );
   await page.getByRole("button", { name: "Save plugin selections" }).click();
   assert.equal((await savedInheritance).status(), 200);
-  savedAgent = (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
-    .data;
-  assert.deepEqual(savedAgent.plugins[pluginId].approvers, []);
-  assert.deepEqual(savedAgent.plugins[pluginId].tools[toolId], { enabled: true });
+  savedAgent = responseData(
+    await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`),
+  );
+  assert.deepEqual(record(record(savedAgent.plugins)[pluginId]).approvers, []);
+  assert.deepEqual(record(record(record(savedAgent.plugins)[pluginId]).tools)[toolId], {
+    enabled: true,
+  });
 
   await page.goto(pluginsUrl.href);
   await page.getByLabel("Default plugin approvers mode").selectOption("inherit");
@@ -760,25 +916,30 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await page.getByRole("button", { name: "Save plugin selections" }).click();
   assert.equal((await clearedDefault).status(), 200);
   assert.equal(
-    pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`).at(-1).body
+    lastBody(pathRequests(requests, "PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`))
       .pluginApprovers,
     null,
   );
-  savedAgent = (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
-    .data;
+  savedAgent = responseData(
+    await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`),
+  );
   assert.equal(Object.hasOwn(savedAgent, "pluginApprovers"), false);
 });
 
 test("Unsaved default plugin approvers block deployment after leaving Plugins", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unsaved plugin approvers");
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createRuntimeAuthFixture(t, "Unsaved plugin approvers");
+  const namespace = entity(namespaceValue);
   const pluginDriver = new CodexPluginDriver();
-  fixture.controller.registerDriver(pluginDriver);
-  fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Approver Draft Agent",
-    nativeValues("approver-draft"),
-    { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+  controller(fixture).registerDriver(pluginDriver);
+  controller(fixture).selectDriver("plugin", pluginDriver.id);
+  const agent = agentEntity(
+    await fixture.createAgent(
+      namespace.id,
+      "Approver Draft Agent",
+      nativeValues("approver-draft"),
+      { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+    ),
   );
   const { page } = await newPage(t, fixture, { browser });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
@@ -808,27 +969,33 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
 // update and is skipped for this reader, so they show as text, as a version's snapshot does
 // (finding 2447).
 test("A reader sees the version draft's default plugin approvers", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Reader plugin approvers");
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createRuntimeAuthFixture(t, "Reader plugin approvers");
+  const namespace = entity(namespaceValue);
   const pluginDriver = new CodexPluginDriver();
-  fixture.controller.registerDriver(pluginDriver);
-  fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Reader Approver Agent",
-    nativeValues("reader-approvers"),
-    { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+  controller(fixture).registerDriver(pluginDriver);
+  controller(fixture).selectDriver("plugin", pluginDriver.id);
+  const agent = agentEntity(
+    await fixture.createAgent(
+      namespace.id,
+      "Reader Approver Agent",
+      nativeValues("reader-approvers"),
+      { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+    ),
   );
   const approver = "team:TTEST123:user:UREADER1";
   await fixture.updateAgent(namespace.id, agent.id, {
     configurationId: agent.configurationId,
     pluginApprovers: [{ channel: "slack", id: approver }],
   });
-  const reader = await fixture.createNamespaceMember("approver-reader", namespace.id, [
-    ["read", "namespace"],
-    ["read", "agent"],
-    ["read", "agent_revision"],
-    ["read", "configuration"],
-  ]);
+  const reader = record(
+    await fixture.createNamespaceMember("approver-reader", namespace.id, [
+      ["read", "namespace"],
+      ["read", "agent"],
+      ["read", "agent_revision"],
+      ["read", "configuration"],
+    ]),
+  );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
@@ -836,7 +1003,7 @@ test("A reader sees the version draft's default plugin approvers", async (t) => 
     page,
     fixture,
     detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
-    reader.credentials,
+    record(reader.credentials),
   );
   await page
     .getByText("These are the version draft's plugin selections, read-only", { exact: false })
@@ -851,15 +1018,19 @@ test("A reader sees the version draft's default plugin approvers", async (t) => 
 });
 
 test("Codex Agents offer only default plugin approvers", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Codex plugin approvers");
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createRuntimeAuthFixture(t, "Codex plugin approvers");
+  const namespace = entity(namespaceValue);
   const pluginDriver = new CodexPluginDriver();
-  fixture.controller.registerDriver(pluginDriver);
-  fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Codex Approver Agent",
-    nativeValues("codex-approvers"),
-    { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+  controller(fixture).registerDriver(pluginDriver);
+  controller(fixture).selectDriver("plugin", pluginDriver.id);
+  const agent = agentEntity(
+    await fixture.createAgent(
+      namespace.id,
+      "Codex Approver Agent",
+      nativeValues("codex-approvers"),
+      { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+    ),
   );
   const pluginId = "codex-plugin:calendar@openai-curated-remote";
   const toolId = "app_calendar/create_event";
@@ -890,8 +1061,26 @@ test("No Slack approvers does not ask the operator to select hidden people", asy
   await login(page, fixture, "/console");
   await page.locator(settledView).waitFor();
   const hints = await page.evaluate(async () => {
-    const { createSlackApproverField } = await import("/console/agents/slack-approvers.mjs");
-    let value = [];
+    const modulePath = "/console/agents/slack-approvers.mjs";
+    const module: unknown = await import(modulePath);
+    function isSlackApproversModule(
+      value: unknown,
+    ): value is Pick<
+      typeof import("../../apps/controller/src/console/agents/slack-approvers.mjs"),
+      "createSlackApproverField"
+    > {
+      return (
+        typeof value === "object" &&
+        value !== null &&
+        "createSlackApproverField" in value &&
+        typeof value.createSlackApproverField === "function"
+      );
+    }
+    if (!isSlackApproversModule(module)) {
+      throw new Error("Expected createSlackApproverField from " + modulePath);
+    }
+    const { createSlackApproverField } = module;
+    let value: PluginApprovers | undefined = [];
     const field = createSlackApproverField({
       context: {
         namespaceId: "ns_1",
@@ -917,8 +1106,11 @@ test("No Slack approvers does not ask the operator to select hidden people", asy
     });
     globalThis.document.body.append(field);
     const helper = field.querySelector("p.hint");
-    const picker = field.querySelector(".slack-directory-field");
+    const picker = field.querySelector<HTMLElement>(".slack-directory-field");
     const select = field.querySelector("select");
+    if (!helper || !picker || !select) {
+      throw new Error("Expected approver field controls");
+    }
     const none = { hint: helper.textContent, pickerHidden: picker.hidden };
     select.value = "chosen";
     select.dispatchEvent(new Event("change"));
@@ -944,25 +1136,29 @@ test("No Slack approvers does not ask the operator to select hidden people", asy
 });
 
 test("plugin prefetch remains usable after leaving during its debounce", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Plugin return");
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Plugin return");
+  const namespace = entity(namespaceValue);
   for (const driver of [
     new OCCPluginDriver(),
     createTestKubernetesComputeDriver("compute-plugin-return"),
   ]) {
-    fixture.controller.registerDriver(driver);
-    fixture.controller.selectDriver(driver.capability, driver.id);
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
   }
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Plugin return Agent",
-    nativeValues("package"),
-    { executionMode: "dedicated", harnessAuth: null },
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "Plugin return Agent", nativeValues("package"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+    }),
   );
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const initialSelections = { "occ-plugin:google@1.0.0": { enabled: false } };
-  const saved = await fixture.request("PATCH", agentPath, {
-    body: { configurationId: agent.configurationId, plugins: initialSelections },
-  });
+  const saved = record(
+    await fixture.request("PATCH", agentPath, {
+      body: { configurationId: agent.configurationId, plugins: initialSelections },
+    }),
+  );
   assert.equal(saved.status, 200);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -985,5 +1181,8 @@ test("plugin prefetch remains usable after leaving during its debounce", async (
     await dialog.getByRole("button", { name: "Loading plugins…", exact: true }).count(),
     0,
   );
-  assert.deepEqual((await fixture.request("GET", agentPath)).data.plugins, initialSelections);
+  assert.deepEqual(
+    responseData(await fixture.request("GET", agentPath)).plugins,
+    initialSelections,
+  );
 });

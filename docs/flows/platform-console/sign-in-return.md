@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: 2026-11-04
-last_updated_session: authoring-run/e5be3034-9c43-4cba-9ba7-e7e2f487f042
+last_updated_session: authoring-run/1ca69282-ea7b-4b53-8db4-3fdb81fc30e1
 ---
 
 # Console sign-in and destination recovery
@@ -56,10 +56,17 @@ and withholds private content and reads. **Retry** repeats the session check.
 `showLogin` reads `GET /api/auth/providers`; true `github`/`google` flags add their **Continue
 with** buttons, and discovery failure keeps password login. A true `oidc` flag adds a button
 labelled from `oidcSignIn.label` only when `oidcSignIn.authorizationUrl` is `https:`; its start
-URL must use that endpoint's origin and path, as GitHub's and Google's must use their fixed ones. `password: false`
-(recovery-only) hides the form behind **Recovery sign-in** and changes the
-provider-error advice from "use your password" to asking an administrator. Pending login disables
-all; generations reject late redirects. With `sessionBinding`, `loadPage`
+URL must use that endpoint's origin and path, as GitHub's and Google's must use their fixed ones.
+An explicit `password: false` makes the form recovery-only and changes the
+provider-error advice from "use your password" to asking an administrator. The
+console puts an empty form behind **Recovery sign-in** when focus is outside it
+and no sign-in is pending. A late discovery reply keeps the form visible while
+focus is inside it, even if both fields are empty.
+
+While sign-in is pending, the console ignores repeat password submissions and
+provider activations. Keyboard focus stays on the control that started the
+request unless the reader moves it. Generations reject late redirects. With
+`sessionBinding`, `loadPage`
 exchanges the button's stored `attemptId` once for its key. Tabs then send
 their pinned `x-occ-session-key`, so a replaced cookie yields login.
 A refused callback returns with `authError` and makes no exchange, so a failed
@@ -146,6 +153,8 @@ reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 12:53: Explain keyboard focus while sign-in is pending. (authoring-run/1ca69282-ea7b-4b53-8db4-3fdb81fc30e1 - 15f0c1d443090f1346dc3d94444dad2397cb4fdc)
 
 - 2026-11-04 12:29: Document recovery from a malformed Console session reply. (authoring-run/e5be3034-9c43-4cba-9ba7-e7e2f487f042 - 9f1dcbeb2361006e7bea52d0cee595d9616ed16a)
 
