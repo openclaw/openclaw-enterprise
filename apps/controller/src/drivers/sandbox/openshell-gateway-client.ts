@@ -539,7 +539,7 @@ export interface OpenShellGatewayClient
     signal: AbortSignal,
     credentialExpirationTimes?: Readonly<Record<string, string>>,
   ): Promise<void>;
-  /** Rotate credential values, or remove one key and its expiry, at the observed provider version. */
+  /** Rotate credential values, or remove keys and their expiries, at the observed provider version. */
   updateProviderCredentialsConditionally?(
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,

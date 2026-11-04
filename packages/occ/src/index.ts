@@ -8682,7 +8682,10 @@ export class OpenClawController {
         namespaceId: input.namespaceId,
       });
       const namespace = await this.exactNamespace(state, input.namespaceId);
-      // An Installation property, so it is reported before any Namespace or source state.
+      // Check Installation capabilities before disclosing Namespace or source state.
+      if (!this.selections.has("credential_refresh")) {
+        this.assertCredentialSourceOwnerSelected();
+      }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -9139,7 +9142,10 @@ export class OpenClawController {
               id: credentialSourceId,
               namespaceId,
             });
-      // An Installation property, so it is reported before any source lookup.
+      // A saved OAuth account can be owned by the Refresh Driver on an Installation without a Gateway.
+      if (!this.selections.has("credential_refresh")) {
+        this.assertCredentialSourceOwnerSelected();
+      }
       const found = await state.credentialSources.lockCredentialSource(
         locked.id,
         credentialSourceId,
@@ -15090,6 +15096,9 @@ export class OpenClawController {
           namespaceId,
           id: sourceId,
         });
+      }
+      if (!this.selections.has("credential_refresh")) {
+        this.assertCredentialSourceOwnerSelected();
       }
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (source === undefined || source.state !== "ready") {

@@ -62,6 +62,7 @@
       "kind": "import",
       "typeOnly": false,
       "bindings": [
+        "type:ConnectionTokenCustody",
         "type:PlatformOperation",
         "type:PlatformReadView",
         "type:PlatformStateStore",
@@ -80,6 +81,7 @@
       "kind": "import",
       "typeOnly": true,
       "bindings": [
+        "type:ConnectionTokenCustody",
         "type:PlatformOperation",
         "type:PlatformReadView",
         "type:PlatformStateStore",

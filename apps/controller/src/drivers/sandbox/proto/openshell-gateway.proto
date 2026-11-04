@@ -755,6 +755,7 @@ message UpdateProviderRequest {
   Provider provider = 1;
   WorkspaceSelector workspace_scope = 3;
   map<string, google.protobuf.Timestamp> credential_expiration_times = 102;
+  repeated string clear_credential_expiration_keys = 103;
   string request_id = 4;
 }
 

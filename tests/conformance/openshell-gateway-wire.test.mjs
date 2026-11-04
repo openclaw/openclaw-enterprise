@@ -2728,6 +2728,29 @@ test("OpenShell client serializes v0.1.5 provider updates and detach receipts", 
     assert.deepEqual(detached, { receiptId: "receipt-detach", detached: true });
     assert.equal(requests.statuses[0].receipt_id, "receipt-detach");
     assert.equal(status.state, "PROVIDER_READINESS_STATE_REVOKED");
+    // One release slot can deliver its prepared account under two names. Withdrawal
+    // must send both values and both expiry removals in the same fenced native update.
+    const keys = ["EXAMPLE_ACCESS_TOKEN", "EXAMPLE_TOOL_TOKEN"];
+    await client.updateProviderCredentialsConditionally(
+      {
+        workspace: "tenant-workspace",
+        name: "oce-saved-account",
+        type: "oce-account-profile",
+        labels: {},
+        credentials: {},
+      },
+      "8",
+      AbortSignal.timeout(2_000),
+      keys,
+    );
+    assert.equal(requests.updates.length, 3);
+    const withdrawal = requests.updates[2];
+    assert.equal(withdrawal.provider.metadata.resource_version, "8");
+    assert.deepEqual(withdrawal.provider.credentials, {
+      EXAMPLE_ACCESS_TOKEN: "",
+      EXAMPLE_TOOL_TOKEN: "",
+    });
+    assert.deepEqual(withdrawal.clear_credential_expiration_keys, keys);
     // An empty value would leave the old credential in place, so the client refuses it.
     await assert.rejects(
       client.updateProviderCredentials(
