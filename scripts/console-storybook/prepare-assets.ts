@@ -29,7 +29,9 @@ await copyFile(
 );
 await writeFile(
   new URL("agents/plugin-fields.mjs", assets),
-  await readFile(new URL("./plugin-fields.storybook-wrapper.mjs", import.meta.url), "utf8"),
+  stripTypeScriptTypes(
+    await readFile(new URL("./plugin-fields.storybook-wrapper.mts", import.meta.url), "utf8"),
+  ),
 );
 
 // Preview shipped Presets so screenshots follow their current contracts.

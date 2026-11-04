@@ -9790,7 +9790,7 @@ export const scenarios = {
     swePreset: true,
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
-    fixturePluginCatalog: true,
+    fixturePluginCatalog: /** @type {const} */ (true),
     fixturePluginCatalogMessage:
       "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
@@ -9847,7 +9847,7 @@ export const scenarios = {
     swePreset: true,
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
-    fixturePluginCatalog: true,
+    fixturePluginCatalog: /** @type {const} */ (true),
     fixturePluginCatalogMessage:
       "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
