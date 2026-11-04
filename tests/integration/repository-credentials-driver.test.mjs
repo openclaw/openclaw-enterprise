@@ -589,6 +589,45 @@ test("Unix control rejects malformed status and preserves authoritative absence 
       (error) => error.retryable === true,
     );
   });
+  await t.test("created response accepts validated GitLab subgroup metadata", async () => {
+    const gitlabConfiguration = {
+      gatewayOrigin: "https://credentials.example.test",
+      gitRemote: "https://credentials.example.test/group/sub/project.git",
+      gitUsername: "gateway-session",
+      canonicalApiHost: "gitlab.com",
+      apiHost: "credentials.example.test",
+      repository: "group/sub/project",
+      projectId: "88516404",
+    };
+    const gitlabInput = {
+      namespaceId: "namespace",
+      repositoryRef: "project",
+      profile: "git-read",
+      expectedBinding: valid.binding,
+      durationSeconds: 1,
+      deadlineWallMs: valid.deadlineWallMs,
+      admissionId: `${Date.now()}-${randomUUID()}`,
+    };
+    reply = {
+      status: 201,
+      body: {
+        session: { ...valid, state: "OPEN" },
+        bearer: "b".repeat(43),
+        client: gitlabConfiguration,
+      },
+    };
+    assert.deepEqual(
+      (await client.open(gitlabInput, gitlabInput.admissionId, signal)).result.client,
+      gitlabConfiguration,
+    );
+    for (const projectId of ["0", "12x", "885164048851640488516404"]) {
+      reply.body.client = { ...gitlabConfiguration, projectId };
+      await assert.rejects(
+        client.open(gitlabInput, gitlabInput.admissionId, signal),
+        (error) => error.retryable === true,
+      );
+    }
+  });
   reply = { status: 404, body: { error: "not-found" } };
   assert.equal(await client.status(id, signal), undefined);
   for (const candidate of [

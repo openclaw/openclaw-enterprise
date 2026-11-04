@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
 import { writeClientConfiguration } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { repositorySessionFiles } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
 
 const bearer = "compatibility_bearer_0123456789abcdef01234567";
 
@@ -107,4 +108,18 @@ test("GitLab client material with projectId loads and stays provider-scoped", as
     await readFile(join(manifest.bindings[0].materialDirectory, "gh", "hosts.yml"), "utf8"),
     "version: 1\n",
   );
+  const materialDirectory = manifest.bindings[0].materialDirectory;
+  const files = Object.fromEntries(
+    await Promise.all(
+      ["bearer", "client.json", "gitconfig", "gh/config.yml", "gh/hosts.yml"].map(async (name) => [
+        name,
+        await readFile(join(materialDirectory, name), "utf8"),
+      ]),
+    ),
+  );
+  const validated = repositorySessionFiles(
+    { sessionId: "session-compatibility", deadlineWallMs },
+    files,
+  );
+  assert.deepEqual(validated.client, client);
 });

@@ -67,7 +67,11 @@ export function allowsReceivePackInput(
         return true;
       }
       if (commandSectionEnded) {
-        return length === 4;
+        if (length === 4) {
+          offset += 4;
+          continue;
+        }
+        return false;
       }
       if (length < 5 || offset + length > body.length) {
         return false;

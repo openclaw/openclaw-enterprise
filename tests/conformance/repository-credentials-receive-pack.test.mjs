@@ -221,6 +221,10 @@ test("receive-pack inspector refuses negotiated push options with provider effec
   const command = `${a} ${b} refs/heads/agent/x${pushOptionCaps}\n`;
   assert.equal(allows(Buffer.concat([pkt(command), flush, pkt("ci.skip"), flush, pack])), false);
   assert.equal(
+    allows(Buffer.concat([pkt(command), flush, pkt(""), pkt("ci.skip"), flush, pack])),
+    false,
+  );
+  assert.equal(
     allows(
       Buffer.concat([
         pkt(command),

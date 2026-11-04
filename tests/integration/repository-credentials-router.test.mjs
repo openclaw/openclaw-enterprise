@@ -21,6 +21,7 @@ import {
   readRuntimeRepositoryManifest,
 } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
 import {
+  selectGitCredential,
   selectGhRepository,
   selectGitPushDestination,
   selectImplicitGhRepository,
@@ -61,10 +62,17 @@ const gitWith =
 const git = gitWith();
 
 const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const opened = (sessionId, { repository = "example/project", pushRefAllowlist } = {}) => ({
+const opened = (
+  sessionId,
+  { repository = "example/project", pushRefAllowlist, ...client } = {},
+) => ({
   session: { sessionId, deadlineWallMs: Date.now() + 86400000 },
   bearer: `controlled_gateway_${sessionId}_${"0".repeat(32)}`,
-  client: repositoryClientData({ repository, ...(pushRefAllowlist && { pushRefAllowlist }) }),
+  client: repositoryClientData({
+    repository,
+    ...(pushRefAllowlist && { pushRefAllowlist }),
+    ...client,
+  }),
 });
 /** Native material from `[repositoryRef, opened]` pairs. */
 const nativeMaterial = (t, ...entries) =>
@@ -459,6 +467,40 @@ describe("repository credential router", { concurrency: true }, () => {
       ["https://credentials.example.test//example/project.git", /unsupported-push-destination/],
     ]) {
       assert.throws(() => selectGitPushDestination(manifest, destination), error);
+    }
+  });
+
+  test("GitLab subgroup paths match exact credential and push destinations", async (t) => {
+    const selected = opened("gitlab-subgroup", {
+      repository: "group/sub/project",
+      canonicalApiHost: "gitlab.com",
+      projectId: "88516404",
+      pushRefAllowlist: ["refs/heads/agent/*"],
+    });
+    const material = await nativeMaterial(t, ["88516404", selected]);
+    const manifest = await readRuntimeRepositoryManifest(material.root);
+    const binding = manifest.bindings[0];
+    assert.equal(
+      selectGitCredential(
+        manifest,
+        new Map([
+          ["protocol", "https"],
+          ["host", "credentials.example.test"],
+          ["path", "group/sub/project.git"],
+        ]),
+      ),
+      binding,
+    );
+    assert.equal(
+      selectGitPushDestination(manifest, "https://credentials.example.test/group/sub/project.git"),
+      binding,
+    );
+    for (const destination of [
+      "https://credentials.example.test/group/sub/project.git/extra",
+      "https://credentials.example.test/group/sub/project.git-extra",
+      "https://credentials.example.test/group/project.git",
+    ]) {
+      assert.equal(selectGitPushDestination(manifest, destination), undefined);
     }
   });
 

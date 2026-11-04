@@ -70,7 +70,10 @@ function validateClient(client) {
     /^[A-Za-z0-9._-]{1,128}$/.test(client.gitUsername) &&
     /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.apiHost) &&
     /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(client.canonicalApiHost) &&
-    client.apiHost === origin.hostname && /^[A-Za-z0-9._/-]{1,512}$/.test(client.repository));
+    remote.pathname === "/" + client.repository + ".git" &&
+    (!hasProjectId
+      ? /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(client.repository)
+      : /^([A-Za-z0-9][A-Za-z0-9._-]*\/)+[A-Za-z0-9][A-Za-z0-9._-]*$/.test(client.repository)));
 }
 
 function validateDescriptor(descriptor) {
@@ -157,13 +160,18 @@ function validateProjection(sourceRoot, binding) {
   const client = JSON.parse(files["client.json"].text);
   exactKeys(client, ["sessionId", "deadlineWallMs", "client", "hasPublicCa"]);
   validateClient(client.client);
+  const hasProjectId = Object.hasOwn(binding.client, "projectId");
   requireValid(client.sessionId === binding.sessionId && client.deadlineWallMs === binding.deadlineWallMs &&
     client.hasPublicCa === hasPublicCa && clientKeys.every((key) => client.client[key] === binding.client[key]) &&
+    (!hasProjectId || client.client.projectId === binding.client.projectId) &&
     JSON.stringify(client.client.pushRefAllowlist) === JSON.stringify(binding.client.pushRefAllowlist));
   requireValid(files.gitconfig.text === "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n");
   requireValid(files["gh/config.yml"].text === "version: 1\nprompt: disabled\ngit_protocol: https\n");
-  requireValid(files["gh/hosts.yml"].text === JSON.stringify(binding.client.canonicalApiHost) + ":\n  api_host: " +
-    JSON.stringify(binding.client.apiHost) + "\n  git_protocol: https\n  oauth_token: " + JSON.stringify(files.bearer.text) + "\n");
+  requireValid(files["gh/hosts.yml"].text === (hasProjectId
+    ? "version: 1\n"
+    : JSON.stringify(binding.client.canonicalApiHost) + ":\n  api_host: " +
+      JSON.stringify(binding.client.apiHost) + "\n  git_protocol: https\n  oauth_token: " +
+      JSON.stringify(files.bearer.text) + "\n"));
   requireValid(!hasPublicCa || files["ca.pem"].contents.length > 0);
   requireValid(fs.realpathSync(directory) === resolved && sameFile(before, metadata(resolved)) &&
     fs.realpathSync(path.join(directory, "gh")) === gh && sameFile(ghBefore, metadata(gh)));

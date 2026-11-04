@@ -8,6 +8,7 @@ import type {
 import type { JsonValue } from "../../credentials/json-value.ts";
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 import { allowsReceivePackInput } from "../../credentials/receive-pack.ts";
+import { allowsPushRef } from "../../credentials/client-contracts.ts";
 import { draftMergeRequestRequest, refuseGitLabQuickActions } from "../client.ts";
 import type { GitLabTokenProfile } from "./types.ts";
 
@@ -184,7 +185,10 @@ function requireString(value: unknown, field: string): string {
   return refuseGitLabQuickActions(value, field);
 }
 
-function apiInput(route: GitLabRoute): (body: Uint8Array) => InputVerdict {
+function apiInput(
+  route: GitLabRoute,
+  pushRefAllowlist: readonly string[],
+): (body: Uint8Array) => InputVerdict {
   return (body) => {
     try {
       const value = object(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)));
@@ -197,6 +201,9 @@ function apiInput(route: GitLabRoute): (body: Uint8Array) => InputVerdict {
             ? {}
             : { description: requireString(value.description, "merge request description") }),
         });
+        if (!allowsPushRef(pushRefAllowlist, `refs/heads/${request.body.source_branch}`)) {
+          return false;
+        }
         return { body: Buffer.from(JSON.stringify(request.body)) };
       }
       if (route.target.endsWith("/issues")) {
@@ -325,7 +332,9 @@ function plan(
     }),
     responsePolicy: responsePolicy(route),
     ...(route.effect === "write" ? { bindRequestDigest: true } : {}),
-    ...(route.kind === "api" && head.method === "POST" ? { inputPolicy: apiInput(route) } : {}),
+    ...(route.kind === "api" && head.method === "POST"
+      ? { inputPolicy: apiInput(route, options.pushRefAllowlist) }
+      : {}),
     ...(route.kind === "git-push"
       ? { inputPolicy: allowsReceivePackInput(options.pushRefAllowlist) }
       : {}),

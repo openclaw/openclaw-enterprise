@@ -283,6 +283,56 @@ process.exit(material.status ?? 1);
   ]);
 }
 
+test(
+  "runtime image initializes GitLab subgroup repository material",
+  imageTestOptions,
+  async (t) => {
+    const material = await createNativeClientMaterial(t, [
+      {
+        repositoryRef: "88516404",
+        opened: {
+          session: {
+            sessionId: "gitlab-subgroup",
+            deadlineWallMs: Date.now() + 600_000,
+          },
+          bearer: `controlled_gateway_gitlab_${"0".repeat(32)}`,
+          client: {
+            gatewayOrigin: "https://credentials.example.test",
+            gitRemote: "https://credentials.example.test/group/sub/project.git",
+            gitUsername: "gateway-session",
+            canonicalApiHost: "gitlab.com",
+            apiHost: "credentials.example.test",
+            repository: "group/sub/project",
+            projectId: "88516404",
+            pushRefAllowlist: ["refs/heads/agent/*"],
+          },
+        },
+      },
+    ]);
+    const manifestPath = join(material.root, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.bindings = manifest.bindings.map((binding) => ({
+      ...binding,
+      directory: runtimeRepositorySessionDirectory(binding.repositoryRef, binding.sessionId),
+    }));
+    await writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
+    const volumeName = `oce-gitlab-material-${randomBytes(6).toString("hex")}`;
+    t.after(() => removeDockerVolumes([volumeName]));
+    await runDocker(["volume", "create", volumeName]);
+    await populateRepositoryProjectionVolume(material.root, volumeName, {
+      uid: 0,
+      gid: 1000,
+      directoryMode: "550",
+      fileMode: "440",
+    });
+    await runRepositoryMaterialInitProbe(volumeName, {
+      sourceRoot: "/source-repository-credentials/sessions",
+      targetRoot: "/run/oce/repository-credentials",
+      manifest,
+    });
+  },
+);
+
 async function createRuntimeBrokerTlsMaterial(t) {
   const directory = await temporaryDirectory(t, "oce-runtime-broker-tls-");
   await execute("openssl", [

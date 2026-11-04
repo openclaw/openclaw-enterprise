@@ -1,9 +1,12 @@
 import { spawnSync } from "node:child_process";
 import type { RuntimeRepositoryBinding, RuntimeRepositoryManifest } from "./manifest.ts";
 
-function gitRepositoryPath(value: string): string | undefined {
+function gitRepositoryPath(value: string, gitlab = false): string | undefined {
   const path = value.replace(/\/+$/, "");
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(path) && !path.includes("..")
+  return (gitlab
+    ? /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/
+    : /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+  ).test(path) && !path.includes("..")
     ? path.toLowerCase()
     : undefined;
 }
@@ -30,7 +33,10 @@ export function selectGitCredential(
   fields: ReadonlyMap<string, string>,
   pinned?: RuntimeRepositoryBinding,
 ): RuntimeRepositoryBinding {
-  const path = gitRepositoryPath(fields.get("path") ?? "");
+  const path = gitRepositoryPath(
+    fields.get("path") ?? "",
+    manifest.bindings.some(({ client }) => client.projectId !== undefined),
+  );
   if (fields.get("protocol") !== "https" || path === undefined) {
     throw new Error("repository-not-admitted");
   }
@@ -92,7 +98,10 @@ function gitPushDestinations(
     // bearer. Fail closed when a repository it may name has a push-ref policy.
     let decoded: string | undefined;
     try {
-      decoded = gitRepositoryPath(decodeURIComponent(url.pathname).replace(/^\/+/, ""));
+      decoded = gitRepositoryPath(
+        decodeURIComponent(url.pathname).replace(/^\/+/, ""),
+        manifest.bindings.some(({ client }) => client.projectId !== undefined),
+      );
     } catch {
       decoded = undefined;
     }
@@ -109,7 +118,10 @@ function gitPushDestinations(
     }
     return [];
   }
-  const path = gitRepositoryPath(url.pathname.slice(1));
+  const path = gitRepositoryPath(
+    url.pathname.slice(1),
+    manifest.bindings.some(({ client }) => client.projectId !== undefined),
+  );
   if (path === undefined) {
     return [];
   }

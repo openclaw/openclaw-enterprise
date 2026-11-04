@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -39,11 +40,13 @@ async function startGitLabService(t, limits = {}) {
       { createGitLabStaticTokenOwner },
       { createGitLabDriverFactory },
       { validateGitLabRepositoryRegistry, resolveGitLabRepositoryBinding },
+      { UnixRepositoryCredentialControlClient },
     ] = await Promise.all([
       appModule("drivers/repo/credentials/clock"),
       appModule("drivers/repo/gitlab/credentials/static-token"),
       appModule("drivers/repo/gitlab/credentials/factory"),
       appModule("drivers/repo/gitlab/credentials/registry"),
+      appModule("backends/repository-credentials/control-client"),
     ]);
     const clock = createSystemClock();
     const token = (await readFile(tokenFile, "utf8")).trim();
@@ -62,7 +65,7 @@ async function startGitLabService(t, limits = {}) {
         namespaceId: "rmcook84",
         tokenFile,
         developmentOnly: true,
-        pushRefAllowlist: [],
+        pushRefAllowlist: [`refs/heads/${writeBranch}`],
         allowGraphql: false,
         leaseSeconds: 900,
       },
@@ -81,6 +84,10 @@ async function startGitLabService(t, limits = {}) {
       trustedUpstreamOrigins: new Set(["https://gitlab.com"]),
       trustSystemUpstream: true,
     });
+    const control = new UnixRepositoryCredentialControlClient({
+      controlSocket: config.gateway.controlSocket,
+    });
+    await control.checkAdmissionReady(t.signal);
     const registry = validateGitLabRepositoryRegistry(
       {
         version: 1,
@@ -96,7 +103,7 @@ async function startGitLabService(t, limits = {}) {
               {
                 namespaceId: "rmcook84",
                 profiles: ["git-read", "git-write", "git-full"],
-                pushRefAllowlist: [],
+                pushRefAllowlist: [`refs/heads/${writeBranch}`],
               },
             ],
           },
@@ -109,15 +116,21 @@ async function startGitLabService(t, limits = {}) {
       repositoryRef: projectId,
       profile: "git-write",
     });
-    const opened = started.service.open({
-      durationSeconds: 900,
-      profile: "git-write",
-      namespaceId: "rmcook84",
-      repositoryRef: projectId,
-      expectedBinding: expected.grant,
-      deadlineWallMs: clock.wallNow() + 900000,
-      preparedOnly: true,
-    });
+    const opened = (
+      await control.open(
+        {
+          durationSeconds: 900,
+          profile: "git-write",
+          namespaceId: "rmcook84",
+          repositoryRef: projectId,
+          expectedBinding: expected.grant,
+          deadlineWallMs: clock.wallNow() + 900000,
+          preparedOnly: true,
+        },
+        `${clock.wallNow()}-${randomUUID()}`,
+        t.signal,
+      )
+    ).result;
     return { ...started, clock, tls, config, resources, opened };
   } catch (error) {
     await resources.close(error);
@@ -140,6 +153,21 @@ test(
     );
     assert.equal(forbidden.status, 400);
     assert.equal(JSON.parse(forbidden.body).error.code, "unsupported-request");
+
+    const forbiddenBranch = await gatewayRequest(
+      fixture,
+      `/api/v4/projects/${projectId}/merge_requests`,
+      {
+        method: "POST",
+        body: {
+          source_branch: "main",
+          target_branch: "main",
+          title: "Draft: Unauthorized source branch",
+        },
+      },
+    );
+    assert.equal(forbiddenBranch.status, 400);
+    assert.equal(JSON.parse(forbiddenBranch.body).error.code, "unsupported-request");
 
     fixture.service.close(fixture.opened.session.sessionId);
     const withdrawn = await gatewayRequest(fixture, `/api/v4/projects/${projectId}`);
