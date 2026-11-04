@@ -17,6 +17,7 @@ import {
   applyQaRepositoryInstallation,
   grantQaRepositoryBranch,
   qaRepositoryServiceConfig,
+  prepareQaRepository,
 } from "../helpers/qa-repository.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -103,6 +104,38 @@ async function startWorkerOwner(loaded: LoadedInstallation) {
     registry: loaded.repositoryRegistry,
   });
 }
+
+test("QA repository rejects malformed egress input before worker or DNS preparation", async (t) => {
+  const input = await temporaryDirectory(t, "qa-repository-egress-");
+  await writeFile(
+    join(input, "registry.json"),
+    JSON.stringify(grantQaRepositoryBranch(operatorRegistry(), suffix)),
+    { mode: 0o600 },
+  );
+  for (const [name, ranges] of [
+    ["missing published ranges", {}],
+    ["empty published ranges", { githubApiAndGit: [] }],
+    ["non-array published ranges", { githubApiAndGit: "140.82.112.0/20" }],
+    ["non-string CIDR", { githubApiAndGit: [123] }],
+    ["invalid address", { githubApiAndGit: ["999.82.112.0/20"] }],
+    ["non-numeric prefix", { githubApiAndGit: ["140.82.112.0/no"] }],
+    ["missing prefix", { githubApiAndGit: ["140.82.112.0/"] }],
+    ["default route", { githubApiAndGit: ["0.0.0.0/0"] }],
+    ["host bits set", { githubApiAndGit: ["140.82.112.1/20"] }],
+    ["IPv6 destination", { githubApiAndGit: ["2606:50c0::/32"] }],
+    ["range in explicit host list", ["140.82.112.0/20"]],
+  ] as const) {
+    await t.test(name, async () => {
+      await writeFile(join(input, "upstream-cidrs.json"), JSON.stringify(ranges), { mode: 0o600 });
+      // No worker/cluster or network fixture is supplied. Invalid local policy
+      // must fail explicitly before preparation can reach those dependencies.
+      await assert.rejects(
+        prepareQaRepository({ repositoryInput: input, suffix }),
+        /repository egress|explicit repository endpoints/,
+      );
+    });
+  }
+});
 
 test("QA repository inputs start the controller, worker owner and repository service", async (t) => {
   const registry = grantQaRepositoryBranch(

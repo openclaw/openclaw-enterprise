@@ -31,8 +31,11 @@ Cover the addresses that both `github.com` and `api.github.com` can resolve to;
 GitHub rotates DNS answers, so one successful lookup or API request does not
 establish Git transport connectivity. Review the `git` and `api` inventories in
 [GitHub Meta](https://api.github.com/meta) when preparing the allowlist.
-Each entry in a local endpoint array must be a canonical IPv4 `/32`. Hosted QA uses a separate `githubApiAndGit` object generated from GitHub Meta on each run. The
-metadata also includes broader networks, and host DNS alone does not prove
+Each entry in a local endpoint array must be a canonical IPv4 `/32`. Hosted QA uses
+a separate `githubApiAndGit` object. Before it configures the worker, the installer
+checks each range against the current `api` and `git` lists from GitHub Meta. If the
+lookup fails or a range is absent, the installer stops. The metadata includes
+broader networks, and host DNS alone does not prove
 the address seen after cluster network translation. Verify the actual path in
 the selected cluster before supplying the endpoints. Update the input and
 recreate this disposable installation when provider endpoints change.

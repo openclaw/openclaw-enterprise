@@ -14,12 +14,14 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -176,7 +178,7 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 	if err != nil {
 		return nil, err
 	}
-	cidrs, err := repositoryUpstreamCIDRs(cidrData, origin != "")
+	cidrs, err := repositoryUpstreamCIDRs(cidrData, origin != "", repositoryMetaClient)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +228,7 @@ var nonPublicRepositoryNetworks = []netip.Prefix{
 
 // Local endpoint lists grant individual hosts. Hosted QA supplies the API and Git
 // networks selected from GitHub Meta; private issuer fixtures always use a single host.
-func repositoryUpstreamCIDRs(data []byte, privateIssuer bool) ([]string, error) {
+func repositoryUpstreamCIDRs(data []byte, privateIssuer bool, client *http.Client) ([]string, error) {
 	var cidrs []string
 	published := false
 	if err := json.Unmarshal(data, &cidrs); err != nil {
@@ -262,7 +264,49 @@ func repositoryUpstreamCIDRs(data []byte, privateIssuer bool) ([]string, error) 
 			}
 		}
 	}
+	if published {
+		if err := verifyPublishedRepositoryCIDRs(cidrs, client); err != nil {
+			return nil, err
+		}
+	}
 	return cidrs, nil
+}
+
+var repositoryMetaClient = &http.Client{
+	Timeout:       15 * time.Second,
+	Transport:     &http.Transport{Proxy: nil},
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// Verify exact entries against GitHub itself before granting the worker egress.
+// A caller can select a subset, but cannot add another network or a broader prefix.
+func verifyPublishedRepositoryCIDRs(cidrs []string, client *http.Client) error {
+	response, err := client.Get("https://api.github.com/meta")
+	if err != nil {
+		return fmt.Errorf("verify GitHub repository egress ranges: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("verify GitHub repository egress ranges: HTTP %d", response.StatusCode)
+	}
+	const maxBytes = 4 << 20
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil || len(body) > maxBytes {
+		return fmt.Errorf("cannot read GitHub repository network metadata within %d bytes", maxBytes)
+	}
+	var meta struct {
+		API []string `json:"api"`
+		Git []string `json:"git"`
+	}
+	if err := json.Unmarshal(body, &meta); err != nil || len(meta.API) == 0 || len(meta.Git) == 0 {
+		return fmt.Errorf("GitHub repository network metadata must contain API and Git ranges")
+	}
+	for _, cidr := range cidrs {
+		if !slices.Contains(meta.API, cidr) && !slices.Contains(meta.Git, cidr) {
+			return fmt.Errorf("repository range %s is absent from GitHub's current API and Git ranges", cidr)
+		}
+	}
+	return nil
 }
 
 func (r *runner) validateDevelopmentRepositoryImage(ctx context.Context) error {

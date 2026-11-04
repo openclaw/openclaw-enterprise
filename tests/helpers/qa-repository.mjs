@@ -4,7 +4,7 @@ import { captureChild } from "./child-processes.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { BlockList } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
@@ -100,15 +100,51 @@ export function applyQaRepositoryInstallation(configuration, registry, podLabels
   return configuration;
 }
 
+// The hosted selector and launcher validate the public GitHub source. Validate
+// this local input's shape before DNS/exec, and reuse one containment policy for
+// runner evidence and the worker's actual connection (not string equality /32).
+async function readQaRepositoryUpstreamPolicy(input) {
+  let value;
+  try {
+    value = JSON.parse(await readFile(join(input, "upstream-cidrs.json"), "utf8"));
+  } catch {
+    throw new Error("repository egress input must contain valid JSON");
+  }
+  const explicit = Array.isArray(value);
+  const cidrs = explicit ? value : value?.githubApiAndGit;
+  assert.ok(Array.isArray(cidrs) && cidrs.length > 0, "repository egress requires IPv4 CIDRs");
+  const approved = new BlockList();
+  for (const cidr of cidrs) {
+    assert.equal(typeof cidr, "string", "repository egress requires canonical IPv4 CIDRs");
+    const [address, prefix, extra] = cidr.split("/");
+    assert.ok(
+      isIP(address) === 4 && /^(?:[1-9]|[12][0-9]|3[0-2])$/.test(prefix) && extra === undefined,
+      "repository egress requires canonical IPv4 CIDRs",
+    );
+    const bits = Number(prefix);
+    const numeric = address.split(".").reduce((value, octet) => value * 256 + Number(octet), 0);
+    assert.equal(numeric % 2 ** (32 - bits), 0, "repository egress CIDR must be a network address");
+    assert.ok(!explicit || bits === 32, "explicit repository endpoints require IPv4 /32 addresses");
+    approved.addSubnet(address, bits, "ipv4");
+  }
+  return { cidrs, approved };
+}
+
 // Run where prepared GitHub issuance runs, before any QA Agent binds this repository.
 // Node HTTPS keeps production's DNS selection, agent:false and verified TLS. This
 // public request proves transport only: even a 403 does not prove App credentials.
-async function probeQaRepositoryWorker(f, input) {
+async function probeQaRepositoryWorker(f, { cidrs, approved }) {
   const script = String.raw`
     const { lookup } = await import("node:dns/promises");
     const { request } = await import("node:https");
+    const { BlockList, isIP } = await import("node:net");
+    const approved = new BlockList();
+    for (const cidr of ${JSON.stringify(cidrs)}) {
+      const [address, prefix] = cidr.split("/");
+      approved.addSubnet(address, Number(prefix), "ipv4");
+    }
     const evidence = { hostname: "api.github.com", addresses: [] };
-    const codes = ["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH", "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "ERR_TLS_CERT_ALTNAME_INVALID"];
+    const codes = ["EAI_AGAIN", "ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EHOSTUNREACH", "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "ERR_TLS_CERT_ALTNAME_INVALID", "ENDPOINT_NOT_APPROVED"];
     const finish = (error) => {
       if (error) {
         evidence.error = error.code === "ABORT_ERR" ? "ETIMEDOUT"
@@ -136,6 +172,12 @@ async function probeQaRepositoryWorker(f, input) {
         req.once("socket", (socket) => socket.once("secureConnect", () => {
           evidence.address = socket.remoteAddress;
           evidence.tlsVerified = socket.authorized === true;
+          // Check the selected address without replacing production DNS selection.
+          // No HTTP request is sent outside the approved ranges.
+          if (isIP(evidence.address) !== 4 || !approved.check(evidence.address, "ipv4")) {
+            req.destroy(Object.assign(new Error("unapproved endpoint"), { code: "ENDPOINT_NOT_APPROVED" }));
+            return;
+          }
           req.end();
         }));
         req.once("response", (response) => {
@@ -198,20 +240,19 @@ async function probeQaRepositoryWorker(f, input) {
     // Never copy exec stderr or an unstructured process failure into the artifact.
     evidence = { hostname: "api.github.com", addresses: [], error: "worker-probe-unavailable" };
   }
-  const cidrs = JSON.parse(await readFile(join(input, "upstream-cidrs.json"), "utf8"));
-  const approved = (address) => cidrs.includes(`${address}/32`);
+  const contains = (address) => isIP(address ?? "") === 4 && approved.check(address, "ipv4");
   await f.record("repository-provider-worker-preflight", {
     scope: "worker",
     controlPlane: f.controlPlane,
     approvedEndpoints: cidrs.length,
     ...evidence,
-    addresses: evidence.addresses.map((address) => ({ address, approved: approved(address) })),
-    connectedAddressApproved: approved(evidence.address),
+    addresses: evidence.addresses.map((address) => ({ address, approved: contains(address) })),
+    connectedAddressApproved: contains(evidence.address),
   });
   assert.ok(
     status === 0 &&
       evidence.tlsVerified === true &&
-      approved(evidence.address) &&
+      contains(evidence.address) &&
       Number.isInteger(evidence.httpStatus) &&
       evidence.httpStatus >= 100 &&
       evidence.httpStatus <= 599,
@@ -237,16 +278,11 @@ export async function prepareQaRepository(f) {
     `refs/heads/${qaRepositoryBranch(f.suffix)}`,
   ]);
   f.repositoryEntry = entry;
+  const upstreamPolicy = await readQaRepositoryUpstreamPolicy(input);
   // Record the runner's DNS view, not cluster reachability. Only these two fixed
   // provider hostnames are queried; this does not change the approved egress policy.
   try {
-    const inputRanges = JSON.parse(await readFile(join(input, "upstream-cidrs.json"), "utf8"));
-    const cidrs = Array.isArray(inputRanges) ? inputRanges : inputRanges.githubApiAndGit;
-    const approved = new BlockList();
-    for (const cidr of cidrs) {
-      const [address, prefix] = cidr.split("/");
-      approved.addSubnet(address, Number(prefix), "ipv4");
-    }
+    const { cidrs, approved } = upstreamPolicy;
     const hosts = await Promise.all(
       ["api.github.com", "github.com"].map(async (hostname) => {
         let deadline;
@@ -289,7 +325,7 @@ export async function prepareQaRepository(f) {
     // Optional diagnostics cannot prevent repository setup or replace its failure.
   }
   if (f.controlPlane === "kubernetes") {
-    await probeQaRepositoryWorker(f, input);
+    await probeQaRepositoryWorker(f, upstreamPolicy);
     return;
   }
   entry.namespaces = [{ ...entry.namespaces[0], namespaceId: f.namespace.id }];
@@ -731,7 +767,7 @@ export async function prepareQaRepository(f) {
   );
   applyQaRepositoryInstallation(f.configuration, registry, labels);
   await f.saveInstallation(f.configuration);
-  await probeQaRepositoryWorker(f, input);
+  await probeQaRepositoryWorker(f, upstreamPolicy);
 }
 
 // The serial worker waits for the Gateway's whole active-work drain, bounded by
