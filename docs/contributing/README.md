@@ -26,6 +26,9 @@ assign existing issues to a two-week iteration in the project.
 
 ## Build, test, and debug
 
+Use [Testing & CI](../testing/README.md) for local checks, integration setup,
+and the scenarios and results for each CI check.
+
 - [oce-cookbook](../../.agents/skills/oce-cookbook/SKILL.md) provides maintenance
   recipes only when deliberately invoked. Start with
   `$oce-cookbook update-openclaw-pin <ref>` to update the source pin and qualify its images.

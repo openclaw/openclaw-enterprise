@@ -151,7 +151,7 @@ history. It also needs Docker, k3d, kubectl, Helm, `openssl`, and
 network access to the pinned assets. The CI preparation creates a disposable
 cluster, installs the OpenShell and Agent Sandbox prerequisites, imports
 immutable images, and prepares PostgreSQL. A standard k3d cluster alone is not
-sufficient. See the [CI lane guide](ci.md#manual-full-integration-lanes) for the hosted run.
+sufficient. See the [CI lane guide](ci/full-integration.md#scenarios) for the hosted run.
 
 To run the same lane locally, export both credentials and the model through your
 approved credential workflow. Preparation builds the controller unless

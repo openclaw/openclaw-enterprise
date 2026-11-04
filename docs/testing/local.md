@@ -83,7 +83,7 @@ node --test tests/integration/console-api.test.mjs
 ### Browser failure diagnostics
 
 Failed `checks-browser` CI lanes retain `browser-failures-*` artifacts for three
-days. Use the [CI evidence overrides](ci.md#local-runner-overrides) to collect them
+days. Use the [CI evidence overrides](ci/configuration.md#runner-overrides) to collect them
 locally, including an optional Playwright trace. Open a trace with
 `pnpm exec playwright show-trace`.
 

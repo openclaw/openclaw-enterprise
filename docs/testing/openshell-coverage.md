@@ -174,8 +174,7 @@ The Codex scenario then updates the source through the API, withdraws it from
 the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. The
-[complete OpenShell advisory lane](ci.md#qa-matrix) runs on every push to `main` and on
-trusted pull requests when a maintainer requests it with the `full-qa` label.
+[complete OpenShell advisory lane](ci/qa-advisory.md) uses the triggers and trusted-PR selection described on that page.
 
 ### QA matrix selector
 
