@@ -15,6 +15,7 @@ const cursorExamples: Record<string, string | undefined> = {
 };
 const rateLimitCodes: Record<string, string | undefined> = {
   signInEmail: "RATE_LIMITED",
+  completeAgentConnection: "RATE_LIMITED",
   getAgentSandboxRecommendations: "RUNTIME_LOGS_RATE_LIMITED",
   getAgentDeploymentRuntime: "RUNTIME_LOGS_RATE_LIMITED",
   getAgentDeploymentRuntimeLogs: "RUNTIME_LOGS_RATE_LIMITED",
@@ -121,7 +122,7 @@ export function documentApiExamples<T>(document: T): T {
         if (!response.description || response.description === "Default Response") {
           response.description = isError ? failure?.[1] : lookup(STATUS_CODES, status);
         }
-        if (status === "204" || status === "302") {
+        if (status === "204" || status === "302" || status === "303") {
           continue;
         }
         const responseContent = record(response.content ?? {}, `${name} ${status} content`);

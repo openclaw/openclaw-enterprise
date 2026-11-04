@@ -283,6 +283,7 @@ test("the singleton platform resource model keeps Namespace ownership explicit",
     "agent_revision",
     "credential_source",
     "sandbox_policy",
+    "connection_template",
   ]);
   assert.equal(Object.isFrozen(RESOURCE_KINDS), true);
 

@@ -116,6 +116,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		app.secretCommand(),
 		app.presetCommand(),
 		app.credentialSourceCommand(),
+		app.connectionTemplateCommand(),
 		app.serviceAccountCommand(),
 		app.agentCommand(),
 		developmentCommand(),
@@ -1014,6 +1015,7 @@ func (app *application) agentCommand() *cobra.Command {
 		app.agentRuntimeCommand(),
 		app.agentLogsCommand(),
 		app.agentPolicyCommand(),
+		app.agentConnectionCommand(),
 	)
 	return command
 }

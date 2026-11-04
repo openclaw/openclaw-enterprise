@@ -274,6 +274,10 @@
                     "label": "Credential Withdrawal"
                   },
                   {
+                    "page": "reference/connection-templates",
+                    "label": "Connection Templates"
+                  },
+                  {
                     "page": "reference/credential-sources/protected-inference",
                     "label": "Protected Inference"
                   },
@@ -1087,6 +1091,7 @@
               "guides/deploy/local-compose-kubernetes",
               "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
+              "guides/deploy/google-gmail-connection",
               "guides/deploy/local-openshell-images",
               "guides/deploy/local-kubernetes-tools",
               "guides/operate/local-setup-troubleshooting",
@@ -1131,6 +1136,7 @@
               "flows/openshell-sandbox-provisioning",
               "flows/credential-source-lifecycle",
               "flows/credential-source-refresh",
+              "flows/agent-oauth-connections",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",

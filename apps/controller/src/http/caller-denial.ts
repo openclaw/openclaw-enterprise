@@ -10,6 +10,7 @@ export const NAMED_DENIAL_PREFIX = "Not authorized:";
 // Resource kinds in the permissions cheat sheet's words.
 const KIND_LABELS: Readonly<Record<ResourceKind, string>> = Object.freeze({
   installation: "Installation",
+  connection_template: "connection template",
   namespace: "Namespace",
   configuration: "Configuration",
   preset: "Preset",

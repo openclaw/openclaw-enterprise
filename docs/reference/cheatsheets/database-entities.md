@@ -251,6 +251,86 @@ Mirrors each Agent draft's `credential_sources` through a trigger, so the databa
 - `agent_id`
 - `credential_source_id`
 
+### `connection_client_registrations`
+
+Records one OAuth client per issuer and client ID; the Credential Refresh Driver holds its secret.
+
+- `id`
+- `issuer`
+- `client_id`
+- `credential_refresh_driver_id`
+- `created_at`
+
+### `connection_templates`
+
+Stores Installation connection templates and the number of their current version.
+
+- `id`
+- `display_name`
+- `current_version`
+- `created_at`
+
+### `connection_template_versions`
+
+Stores each immutable version of a connection template's approved values.
+
+- `template_id`
+- `version`
+- `client_registration_id`
+- `issuer`
+- `client_id`
+- `authorization_url`
+- `token_url`
+- `scopes`
+- `authorization_parameters`
+- `endpoint_host`
+- `endpoint_port`
+- `endpoint_path`
+- `env_var`
+- `created_at`
+
+### `agent_connections`
+
+Records the person who consented, the approved template version, and the optional Agent from which consent started. Current attachments are stored with each Agent.
+
+- `namespace_id`
+- `credential_source_id`
+- `agent_id`
+- `owner_principal_id`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `revocation_requested_by`
+- `revoked_at`
+
+### `connection_sessions`
+
+OCC looks up a pending connection by the SHA-256 hash of its OAuth state. Only the initiating user and browser session can complete it.
+
+- `state_hash`
+- `namespace_id`
+- `agent_id`
+- `credential_source_id`
+- `private_state`
+- `issuer_required`
+- `session_id`
+- `redirect_uri`
+- `actor_id`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `expires_at`
+
+### `connection_token_custody`
+
+Records the Token Service’s secret reference for a saved connection, its published access token version, and when refresh is due.
+
+- `namespace_id`
+- `credential_source_id`
+- `secret_ref`
+- `published_version`
+- `next_refresh_at`
+
 ### `credential_source_secrets`
 
 Links each credential source secret field to the Namespace Secret that supplied it.
@@ -367,12 +447,13 @@ Defines native IAM roles as sets of actions and resource kinds.
 
 ### `iam_access_bindings`
 
-Grants a native IAM role to an identity or group, optionally for a specific resource.
+Grants a native IAM role to an identity, group, or Namespace, optionally for a specific resource. A Namespace subject is valid only on an Installation binding for a connection template.
 
 - `id`
 - `namespace_id`
 - `identity_subject_id`
 - `group_subject_id`
+- `namespace_subject_id`
 - `role_id`
 - `resource_kind`
 - `resource_id`

@@ -64,8 +64,13 @@ export type {
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
+  OAuthConnectionAccessToken,
+  OAuthConnectionCustody,
+  OAuthConnectionGrant,
+  OAuthConnectionTokenService,
   PreparedTokenService,
 } from "./prepared-token.ts";
+export { PENDING_OAUTH_CONNECTION } from "./prepared-token.ts";
 export {
   preparedGitHubType,
   preparedGitHubProviderRef,
@@ -140,6 +145,16 @@ export {
   sandboxNetworkGrantsWithinCeiling,
 } from "./sandbox-policy.ts";
 
+export type {
+  AgentConnection,
+  ConnectionSession,
+  ConnectionClientRegistration,
+  ConnectionEndpoint,
+  ConnectionTemplate,
+  ConnectionTemplateValues,
+  ConnectionTemplateVersion,
+} from "./connection-templates.ts";
+export { connectionValuesChanged } from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 
@@ -352,7 +367,16 @@ export const RESOURCE_KINDS = Object.freeze([
   "agent_revision",
   "credential_source",
   "sandbox_policy",
+  "connection_template",
 ] as const);
+
+/** Resource kinds that belong to the Installation rather than to one Namespace. */
+export const INSTALLATION_RESOURCE_KINDS = Object.freeze(["connection_template"] as const);
+
+export type InstallationResourceKind = (typeof INSTALLATION_RESOURCE_KINDS)[number];
+
+/** The built-in Installation Role that grants `use` on one connection template. */
+export const CONNECTION_TEMPLATE_USER_ROLE_ID = "role_connection_template_user";
 
 export type ResourceKind = (typeof RESOURCE_KINDS)[number];
 
@@ -1193,6 +1217,7 @@ export type Identity = Principal | ServicePrincipal;
 
 /**
  * `read_logs` delegates reading an Agent's runtime log text without `administer`.
+ * `use` lets a person connect an account through a connection template.
  * No action implies another.
  */
 export const PERMISSION_ACTIONS = Object.freeze([
@@ -1205,6 +1230,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "administer",
   "read_logs",
   "manage_policy",
+  "use",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1237,6 +1263,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
     "manage_policy",
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
+  connection_template: Object.freeze(["create", "read", "update", "delete", "use"] as const),
 });
 
 export function isSupportedPermission(permission: Readonly<Permission>): boolean {
@@ -1267,7 +1294,8 @@ export interface GroupMembership extends Scope {
   readonly principalId: string;
 }
 
-export type AccessBindingSubjectKind = "identity" | "group";
+/** A `namespace` subject is valid only on Installation access bindings; see `namespaceContext`. */
+export type AccessBindingSubjectKind = "identity" | "group" | "namespace";
 
 export interface AccessBinding extends Scope {
   readonly id: string;
@@ -1292,6 +1320,11 @@ export interface AuthorizationRequest {
   readonly principalId: string;
   readonly action: PermissionAction;
   readonly resource: ResourceRef;
+  /**
+   * The Namespace on whose behalf a human acts on an Installation resource. Only a
+   * `namespace` access binding naming this Namespace matches it; omit it otherwise.
+   */
+  readonly namespaceContext?: string;
 }
 
 /** Asks whether one identity already holds every grant of another identity. */
@@ -1374,6 +1407,7 @@ export type {
   IAMPolicyManagementContext,
   ManagedIAMResourceKind,
   IAMManagedRoleInput,
+  IAMInstallationAccessBindingInput,
   IAMManagedAccessBindingInput,
   IAMManagedServicePrincipalInput,
 } from "./drivers/iam/index.ts";
@@ -1398,6 +1432,10 @@ export type {
   CredentialRefreshStatus,
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
+  CredentialClientRegistrationContext,
+  CredentialBrowserAuthorizationRequest,
+  CredentialSourceBrowserAuthorization,
+  CredentialBrowserAuthorizationCallback,
 } from "./drivers/credential-refresh/index.ts";
 export type {
   HarnessExecutionModeSupport,

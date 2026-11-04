@@ -26,14 +26,20 @@ token for the deployed binding or refuses the request. [Credential access and li
   returns `{ authorizationUrl, privateState }`. MCP requires the owner's validated
   `selectedScopes`. Configured OAuth uses the version's fixed scopes. The Driver
   creates the PKCE verifier, a random `state`, and a nonce for `accountIdentity: oidc`.
-  `privateState` is opaque to OCC.
+  OCC keeps the opaque verifier state in a private PostgreSQL attempt row.
+  The original identity and browser session can claim it once, before expiry.
 - `completeBrowserAuthorization(context, privateState, { code, state, iss? })` verifies
   `state` and exchanges the code using the verifier and pinned client registration.
+  OCC compares any callback `iss` to the approved issuer. Before exchanging a
+  code on the shared callback, OCC requires `iss` if another issuer has a client
+  registration at the start or at completion. A single issuer can omit `iss`.
   The Driver hands the validated refresh grant and first usable access token to
   the Token Service, bound to the source and its approved OAuth context. It returns
   `ready` only after the Token Service durably accepts them. An uncertain handoff
   leaves the source `registering` and never replays the code. OCC receives status
-  and an optional verified `accountEmail`.
+  and an optional verified `accountEmail`. For configured OAuth, the issuer may
+  narrow the approved scope. When the issuer omits scope, use the requested scope.
+  Refresh uses the effective scope and rejects any expansion.
 
 ### MCP authorization
 
@@ -167,8 +173,8 @@ the server URL’s HTTPS host, effective port and literal path. OpenShell permit
 endpoint. Installing the plugin alone grants no route.
 OAuth metadata discovery, registration and refresh use separate management endpoints.
 
-The sender authenticates the deployed execution and checks its current authority
-to use the attached source. It evaluates the actual request before presenting the
+The sender authenticates the deployed execution and checks its installed source
+attachment. It evaluates the actual request before presenting the
 credential. A connector policy can restrict the operation and its arguments:
 for a Gmail metadata-only binding, `format=metadata` may pass while
 `format=full` fails on the same message URL. Apply those checks both to `gog` and
@@ -179,19 +185,19 @@ If the selected route cannot enforce a promised restriction, refuse deployment.
 
 ## Failure and recovery
 
-| Condition                                                   | Result                                           | Recovery                                       |
-| ----------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------- |
-| Consent denied, popup closed, or session expired            | Pending source deleted                           | Connect again                                  |
-| `state` mismatch, reuse, or another user's session          | `400`; no exchange                               | The owner connects again                       |
-| Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`              | Administrator corrects the connection template |
-| Timeout after the exchange started                          | Source stays `registering`                       | Delete and reconnect; OCC never replays a code |
-| Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`     | **Reconnect** and redeploy                     |
-| Driver unavailable before source creation                   | `503`; no source created                         | Retry                                          |
-| OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                      | Administrator corrects `issuer` or URLs        |
-| ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`              | Administrator checks the provider; reconnect   |
-| Connection template edited after consent                    | Source unchanged; **Reconnect to apply changes** | Owner reconnects; administrator can disconnect |
-| Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use            | Retry withdrawal, or stop the affected Agent   |
-| Provider disables a rotated-out client secret               | Older connections report `reauthorize`           | Owners **Reconnect**                           |
+| Condition                                                   | Result                                                 | Recovery                                        |
+| ----------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------- |
+| Consent denied, or an abandoned attempt expires             | Pending source deleted on refusal or by expiry cleanup | Connect again                                   |
+| `state` mismatch, reuse, or another user's session          | Callback reports failure without exchange              | Retry from the original session or reconnect    |
+| Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`                    | Administrator corrects the connection template  |
+| Timeout after the exchange started                          | Source stays `registering`                             | Delete and reconnect; OCC never replays a code  |
+| Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`           | **Reconnect** and redeploy                      |
+| Driver unavailable before source creation                   | `503`; no source created                               | Retry                                           |
+| OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                            | Administrator corrects `issuer` or URLs         |
+| ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`                    | Administrator checks the provider; reconnect    |
+| Connection template edited after consent                    | Source unchanged; **Reconnect to apply changes**       | Owner reconnects; administrator can disconnect  |
+| Withdrawal pending or failed after Agent detach             | A running revision may retain access                   | Retry withdrawal, or stop the affected revision |
+| Provider disables a rotated-out client secret               | Older connections report `reauthorize`                 | Owners **Reconnect**                            |
 
 The operator guide documents provider rules. Google requires verification for
 public applications requesting `gmail.readonly`, and External Testing applications
@@ -206,8 +212,10 @@ issue seven-day refresh tokens.
   grant. Refuse attachment or deployment of a pending source before and during
   callback. Refuse a caller who can only read the source, a caller who cannot
   update the Agent, and an attachment across Namespaces. Detach A, including
-  with queued and serving revisions: A loses access, B can still send approved
-  requests, and neither action repeats consent. Disconnect the account and
+  with queued and serving revisions. Refuse new use at admission and dispatch.
+  Verify the serving revision loses access after confirmed withdrawal and B
+  can still send approved requests without repeat consent. Exercise operator
+  retry when withdrawal fails before the first revision activates. Disconnect the account and
   verify B also loses access. Verify no codes or tokens appear in responses,
   logs, or audit.
 - **Refresh ownership.** For both configured OAuth and MCP, observe the Token

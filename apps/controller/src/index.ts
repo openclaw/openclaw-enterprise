@@ -138,6 +138,14 @@ import {
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
 import {
+  CONNECTION_CALLBACK_PATH,
+  connectionCallbackOperation,
+  connectionCallbackSchema,
+  connectionHandlers,
+  createConnectionCallback,
+  performInstallationConnectionOperation,
+} from "./http/connections.ts";
+import {
   isRuntimeLogDownload,
   RUNTIME_LOG_DOWNLOAD_ACTION,
   runtimeLogDownloadBody,
@@ -234,6 +242,8 @@ interface RequiredPermission {
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
+    | "unless_consent_owner"
+    | "withdrawal_required"
     | "bound_credential_source"
     | "saved_sandbox_policy_additions";
 }
@@ -472,6 +482,16 @@ function operationTarget(
   if (operation.operationId === "createNamespace") {
     return { kind: "namespace", id: installationId };
   }
+  // Connection templates are Installation resources; a collection route names the Installation.
+  if (typeof params.connectionTemplateId === "string") {
+    return { kind: "connection_template", id: params.connectionTemplateId };
+  }
+  if (
+    operation.operationId === "listConnectionTemplates" ||
+    operation.operationId === "createConnectionTemplate"
+  ) {
+    return { kind: "connection_template", id: installationId };
+  }
   if (operation.resourceKind === "preset" && namespaceId) {
     return { kind: "preset", id: presetId ?? namespaceId, namespaceId };
   }
@@ -564,6 +584,43 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     resourceKind: operation.resourceKind,
   };
 
+  if (operation.operationId === "attachAgentConnection") {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+        condition: "unless_consent_owner",
+      },
+    ];
+  }
+  if (operation.operationId === "disconnectNamespaceConnection") {
+    return [{ ...permission, scope: "requested", condition: "unless_consent_owner" }];
+  }
+  if (operation.operationId === "disconnectAgentConnection") {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: "operate",
+        resourceKind: "agent",
+        scope: "requested",
+        condition: "withdrawal_required",
+      },
+    ];
+  }
+  if (
+    operation.operationId === "startAgentConnection" ||
+    operation.operationId === "startNamespaceConnection"
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      ...(operation.operationId === "startAgentConnection"
+        ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
+        : []),
+      { action: "use", resourceKind: "connection_template", scope: "request_body" },
+    ];
+  }
   if (
     [
       "getAgentSandboxPolicy",
@@ -1048,11 +1105,18 @@ function permissionDescription(
     agent_revision: "Agent revision",
     credential_source: "CredentialSource",
     sandbox_policy: "SandboxPolicy",
+    connection_template: "ConnectionTemplate",
   };
 
   const description = permissions
     .map(({ action, resourceKind, scope, condition }) => {
       const name = names[resourceKind];
+      if (condition === "unless_consent_owner") {
+        return `Requires ${action} permission on this CredentialSource unless the caller owns the consent.`;
+      }
+      if (condition === "withdrawal_required") {
+        return "Requires operate permission on the requested Agent when a revision must withdraw the source.";
+      }
       if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
       }
@@ -1820,9 +1884,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     auditSink: options.auditSink,
   });
 
+  // Providers redirect people back here; administrators register this exact URI.
+  const connectionOrigin = publicOrigin ?? browserOrigin?.origin;
+  const connectionRedirectUri =
+    connectionOrigin === undefined ? undefined : `${connectionOrigin}${CONNECTION_CALLBACK_PATH}`;
   const handlers: ResourceHandlers = {
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
+    ...connectionHandlers(() => connectionRedirectUri),
     ...createAgentHandlers({
       nativeAdmin: options.nativeAdmin,
       publicOrigin,
@@ -1905,7 +1974,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
-      operation.operationId !== "listAgentRevisions"
+      operation.operationId !== "listAgentRevisions" &&
+      // The provider's redirect carries state and code; the callback's schema bounds them.
+      operation !== connectionCallbackOperation
     ) {
       throw failure(
         400,
@@ -2080,6 +2151,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const context: RequestContext = {
       actorId: identity.id,
+      ...(admitted.method === "session" && { sessionId: admitted.session.id }),
       issuer: admitted.externalIdentity.issuer,
       subject: admitted.externalIdentity.subject,
       admissionDecisionId: admitted.decisionId,
@@ -2304,6 +2376,39 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         meta: { requestId: request.id },
       });
       return;
+    }
+
+    if (
+      await performInstallationConnectionOperation({
+        controller,
+        operation,
+        request,
+        reply,
+        context,
+        params,
+        body,
+        redirectUri: connectionRedirectUri,
+        mutationEvent: (target) => event(operation, request, target, "mutation", context),
+      })
+    ) {
+      return;
+    }
+
+    // A connection is consent by one person: only their signed-in session may start it.
+    if (
+      operation.operationId === "startAgentConnection" ||
+      operation.operationId === "startNamespaceConnection"
+    ) {
+      if (admissions.get(request)?.method !== "session") {
+        throw failure(
+          403,
+          "FORBIDDEN",
+          "Connecting an account requires a signed-in console session; service API keys cannot.",
+        );
+      }
+      if (connectionRedirectUri === undefined) {
+        throw dependencyUnavailable();
+      }
     }
 
     const namespaceId = params.namespaceId;
@@ -4420,6 +4525,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
       },
       nativeAdmin.resolveReturn,
+    );
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      CONNECTION_CALLBACK_PATH,
+      {
+        schema: connectionCallbackSchema,
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          limitNativeAdminReturn(request.routeOptions.config.rateLimit, request.ip, reply);
+          await admit(request, connectionCallbackOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, connectionCallbackOperation),
+      },
+      createConnectionCallback({
+        getController: () => controller,
+        getContext: (request) => contexts.get(request),
+        auditEvent: (request, context, target) =>
+          event(connectionCallbackOperation, request, target, "mutation", context),
+        auditFailure: (request, context, reasonCode) =>
+          rejectedMutation(connectionCallbackOperation, request, context, reasonCode),
+      }),
     );
     routes.route({
       method: "GET",

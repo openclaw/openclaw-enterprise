@@ -316,6 +316,14 @@ function validateOAuth2Config(
   gateway: OpenShellGatewayPlacement | undefined,
 ): Readonly<Record<string, string>> | void {
   validateEndpointConfig(type, config);
+  // The placeholder resolver scopes a refreshed token by host, port and path. Another
+  // allowed network rule can admit a write even when the provider profile is read-only.
+  if ((config.access ?? "full") !== "full") {
+    throw new CredentialSourceConfigError(
+      "access",
+      "OpenShell cannot restrict this OAuth2 connection to read-only requests.",
+    );
+  }
   if (config.binary !== undefined && !allowsOAuthBinary(options, config.binary)) {
     throw new CredentialSourceConfigError(
       "binary",
@@ -374,7 +382,12 @@ function bearerProfile(
   config: Readonly<Record<string, string>>,
   options: OpenShellCredentialGatewayOptions,
   displayName: string,
-  credential: Pick<OpenShellProviderProfile["credentials"][number], "name" | "refresh">,
+  credential: Pick<
+    OpenShellProviderProfile["credentials"][number],
+    "name" | "refresh" | "stablePlaceholder"
+  > & {
+    readonly required?: boolean;
+  },
 ): Omit<OpenShellProviderProfile, "annotations"> {
   return {
     id: openShellProviderName(sourceId),
@@ -384,13 +397,13 @@ function bearerProfile(
       {
         ...credential,
         envVars: [config.env_var ?? ""],
-        required: true,
+        required: credential.required ?? true,
         authStyle: "bearer",
         headerName: "authorization",
       },
     ],
     endpoints: [{ ...bearerTokenEndpoint(config), protocol: "rest" }],
-    binaries: requiredToolBinaries(options, credential.refresh ? config.binary : undefined),
+    binaries: requiredToolBinaries(options, config.binary),
     inferenceCapable: false,
   };
 }
@@ -418,6 +431,9 @@ function oauth2SourceType(
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
       checkStoredHost(config);
+      if ((config.access ?? "full") !== "full") {
+        throw new StoredCredentialSourceConfigError("access");
+      }
       // A source stored before the token_url host rules fails here until it is replaced.
       if (
         !tokenUrlHostAllowed(config.token_url ?? "") ||
@@ -425,6 +441,14 @@ function oauth2SourceType(
         !tokenUrlPortAllowed(config.token_url ?? "")
       ) {
         throw new StoredCredentialSourceConfigError("token_url");
+      }
+      if (type === "oauth2-refresh-token" && config.oauth_owner === "token_service") {
+        // OpenShell can withdraw an optional key from a still-attached provider after a terminal refresh failure.
+        return bearerProfile(sourceId, config, options, "Connected OAuth account", {
+          name: "access_token",
+          required: false,
+          stablePlaceholder: true,
+        });
       }
       return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
         name: "access_token",
@@ -1133,6 +1157,92 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       context.signal,
     );
     return { state: "ready" };
+  }
+
+  publishConnectionToken(
+    context: CredentialSourceContext,
+    token: { readonly accessToken: string; readonly expiresAt: string },
+  ): Promise<void> {
+    if (!(Date.parse(token.expiresAt) > Date.now())) {
+      throw new ScopeViolationError("The prepared access token has expired.");
+    }
+    return this.writeConnectionToken(context, token);
+  }
+
+  withdrawConnectionToken(context: CredentialSourceContext): Promise<void> {
+    return this.writeConnectionToken(context);
+  }
+
+  private async writeConnectionToken(
+    context: CredentialSourceContext,
+    token?: { readonly accessToken: string; readonly expiresAt: string },
+  ): Promise<void> {
+    const { source, signal } = context;
+    if (
+      source.driverId !== this.id ||
+      source.namespaceId !== context.namespace.id ||
+      source.type !== "oauth2-refresh-token" ||
+      source.config.oauth_owner !== "token_service"
+    ) {
+      throw new ScopeViolationError(
+        "The credential source does not accept prepared connection tokens.",
+      );
+    }
+    const type = sourceType(source.type, this.options, this.refresh);
+    const client = this.client(context);
+    const workspace = openShellWorkspaceName(context.namespace);
+    const name = openShellProviderName(source.id);
+    const existing = await client.getProvider(workspace, name, signal);
+    if (!existing && !token) {
+      return;
+    }
+    if (
+      existing &&
+      (!ownedBy(existing, source.id) ||
+        existing.labels[NAMESPACE_ID_LABEL] !== context.namespace.id)
+    ) {
+      throw new ScopeViolationError("The OpenShell provider belongs to a different source.");
+    }
+    const key = source.config.env_var;
+    if (!key || !ENVIRONMENT_NAME.test(key)) {
+      throw new StoredCredentialSourceConfigError("env_var");
+    }
+    await this.ensureProfile(
+      client,
+      workspace,
+      type,
+      source.id,
+      source.config,
+      this.placement(context),
+      signal,
+    );
+    const provider = {
+      workspace,
+      name,
+      type: name,
+      labels: {
+        [MANAGED_BY_LABEL]: MANAGED_BY,
+        [SOURCE_ID_LABEL]: source.id,
+        [NAMESPACE_ID_LABEL]: context.namespace.id,
+      },
+      credentials: token ? { [key]: token.accessToken } : {},
+      ...(token && { credentialExpirationTimes: { [key]: token.expiresAt } }),
+    };
+    if (!existing) {
+      await client.createProvider(provider, signal);
+      return;
+    }
+    if (!client.updateProviderCredentialsConditionally || !existing.resourceVersion) {
+      throw new OpenShellCredentialGatewayFailure(
+        "Prepared access tokens require conditional provider updates.",
+      );
+    }
+    await client.updateProviderCredentialsConditionally(
+      provider,
+      existing.resourceVersion,
+      signal,
+      token ? undefined : key,
+    );
   }
 
   async withSourceToken<T>(

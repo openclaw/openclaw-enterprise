@@ -1,4 +1,5 @@
 import type { Secret } from "./index.ts";
+import type { CredentialRefreshStatus } from "./drivers/credential-refresh/index.ts";
 import type {
   CredentialReadLifetime,
   CredentialSourceControl,
@@ -86,5 +87,56 @@ export interface PreparedTokenIssuer {
 
 /** The installation chooses the lifecycle owner independently of the Sandbox and sender. */
 export interface PreparedTokenService {
+  readonly oauthConnections?: OAuthConnectionTokenService | undefined;
   issuer(provider: EgressRef): PreparedTokenIssuer | undefined;
+}
+
+/** The source owner keeps this private Secret reference outside the user-managed Secret inventory. */
+export interface OAuthConnectionCustody {
+  readonly sourceId: string;
+  readonly secret: Readonly<Secret>;
+}
+
+/** Trusted handoff from code exchange. Only the Token Service retains these credential bytes. */
+export interface OAuthConnectionGrant {
+  readonly issuer: string;
+  readonly tokenUrl: string;
+  readonly clientRegistrationId: string;
+  readonly clientId: string;
+  readonly clientSecret: string;
+  /** Effective scope, initially verified against the approved template, then narrowed on renewal. */
+  readonly scope: string;
+  readonly accessToken: string;
+  readonly refreshToken: string;
+  readonly expiresAt: string;
+}
+
+/** The only credential the trusted delivery path may install, with a deadline for its use. */
+export interface OAuthConnectionAccessToken {
+  readonly nextRefreshAt: string;
+  readonly accessToken: string;
+  readonly version: string;
+  readonly expiresAt: string;
+}
+
+export const PENDING_OAUTH_CONNECTION = "pending";
+
+export interface OAuthConnectionTokenService {
+  accept(
+    custody: OAuthConnectionCustody,
+    grant: OAuthConnectionGrant,
+    signal: AbortSignal,
+  ): Promise<void>;
+  warm(
+    custody: OAuthConnectionCustody,
+    signal: AbortSignal,
+  ): Promise<OAuthConnectionAccessToken | undefined>;
+  status(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<CredentialRefreshStatus>;
+  /** Renew when due, or early when custody still holds the specified published version. */
+  renew(
+    custody: OAuthConnectionCustody,
+    signal: AbortSignal,
+    publishedVersion?: string,
+  ): Promise<CredentialRefreshStatus>;
+  retire(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void>;
 }

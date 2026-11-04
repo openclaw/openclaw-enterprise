@@ -302,6 +302,25 @@ async function fixture(
   };
 }
 
+test("OpenShell refuses a read-only OAuth2 connection before profile registration or attachment", async (t) => {
+  const f = await fixture(t, { toolSources: true });
+  const type = "oauth2-refresh-token";
+  const config = { access: "read-only" };
+  assert.throws(
+    () => f.validate(type, config),
+    /cannot restrict this OAuth2 connection to read-only/,
+  );
+  await f.assertNothingSaved();
+
+  const { stored } = f.seedStored(type, config);
+  await assert.rejects(f.attach(stored), {
+    name: "StoredCredentialSourceConfigError",
+    message: storedCredentialSourceConfig("access"),
+  });
+  assert.deepEqual(f.mutations, []);
+  assert.equal(f.profiles.size, 0);
+});
+
 test("source API rejects routing inputs and mismatched destination authorization before registration", async (t) => {
   const endpoint = "https://models.example.test/v1";
   const f = await fixture(t, {

@@ -6,6 +6,7 @@ import type {
   Identity,
   IdentityAccessCoverageRequest,
   IdentityLookup,
+  InstallationResourceKind,
   Permission,
   ResourceKind,
   Restriction,
@@ -61,6 +62,22 @@ export interface IAMDriver extends Driver {
     namespaceId: string,
     bindingId: string,
   ): Promise<boolean>;
+  listInstallationRoles?(context: IAMPolicyReadContext): Promise<readonly Readonly<Role>[]>;
+  listInstallationAccessBindings?(
+    context: IAMPolicyReadContext,
+  ): Promise<readonly Readonly<AccessBinding>[]>;
+  getInstallationAccessBinding?(
+    context: IAMPolicyReadContext,
+    bindingId: string,
+  ): Promise<Readonly<AccessBinding> | undefined>;
+  createInstallationAccessBinding?(
+    context: IAMPolicyManagementContext,
+    input: IAMInstallationAccessBindingInput,
+  ): Promise<Readonly<AccessBinding>>;
+  deleteInstallationAccessBinding?(
+    context: IAMPolicyManagementContext,
+    bindingId: string,
+  ): Promise<boolean>;
   listNamespaceServicePrincipals?(
     context: IAMPolicyReadContext,
     namespaceId: string,
@@ -100,6 +117,11 @@ export interface IAMPolicyReadRepository {
     namespaceId: string,
     servicePrincipalId: string,
   ): Promise<Readonly<ServicePrincipal> | undefined>;
+  /** Installation-scoped Roles, which have no Namespace. */
+  listInstallationRoles(): Promise<readonly Readonly<Role>[]>;
+  /** Bindings on Installation resources (`INSTALLATION_RESOURCE_KINDS`) only. */
+  listInstallationAccessBindings(): Promise<readonly Readonly<AccessBinding>[]>;
+  getInstallationAccessBinding(bindingId: string): Promise<Readonly<AccessBinding> | undefined>;
 }
 
 export interface IAMPolicyRepository extends IAMPolicyReadRepository {
@@ -108,6 +130,8 @@ export interface IAMPolicyRepository extends IAMPolicyReadRepository {
   createAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
   deleteAccessBinding(namespaceId: string, bindingId: string): Promise<boolean>;
   createServicePrincipal(servicePrincipal: ServicePrincipal): Promise<Readonly<ServicePrincipal>>;
+  createInstallationAccessBinding(binding: AccessBinding): Promise<Readonly<AccessBinding>>;
+  deleteInstallationAccessBinding(bindingId: string): Promise<boolean>;
 }
 
 export interface IAMPolicyReadContext {
@@ -147,6 +171,19 @@ export interface IAMManagedAccessBindingInput {
 }
 
 /** A non-Agent automation identity fixed to one Namespace; it carries no grant. */
+/**
+ * Grants an Installation Role on one Installation resource to a person (`identity`) or to
+ * anyone acting on behalf of a Namespace (`namespace`).
+ */
+export interface IAMInstallationAccessBindingInput {
+  readonly id: string;
+  readonly subjectKind: "identity" | "namespace";
+  readonly subjectId: string;
+  readonly roleId: string;
+  readonly resourceKind: InstallationResourceKind;
+  readonly resourceId: string;
+}
+
 export interface IAMManagedServicePrincipalInput {
   readonly id: string;
   readonly namespaceId: string;

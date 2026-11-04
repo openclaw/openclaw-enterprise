@@ -1372,6 +1372,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
+      ["occ.remove_connection_template_access()", false],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
       ["occ.retry_failed_namespace_deletion(text,text,text)", true],
@@ -1729,10 +1730,28 @@ const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 
 // A revision admitted before 0060 carries no execution admission. The upgrade records
 // the unprotected decision it was admitted under. Existing revisions have no first-deployment
-// recovery binding; every other stored field stays identical.
-function upgradedCanonicalData(data) {
+// recovery binding; every other stored revision field stays identical.
+function upgradedCanonicalData(data, prefix) {
   return {
     ...data,
+    // 0067 gives existing Installations the template-user role and preserves binding subjects.
+    iam_roles:
+      prefix >= 67 || data.installation.length === 0
+        ? data.iam_roles
+        : [
+            ...data.iam_roles,
+            {
+              value: {
+                id: "role_connection_template_user",
+                namespace_id: null,
+                name: "Connection template user",
+                permissions: [{ action: "use", resourceKind: "connection_template" }],
+              },
+            },
+          ],
+    iam_access_bindings: data.iam_access_bindings.map(({ value }) => ({
+      value: { namespace_subject_id: null, ...value },
+    })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
         ...value,
@@ -1996,6 +2015,10 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
+      [66, "preInstallationAccessBindings"],
+      [67, "preConnectionTemplates"],
+      [68, "preAgentConnections"],
+      [69, "preConnectionRevocations"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2019,7 +2042,7 @@ test(
         await assertSourceOwners?.();
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
-        assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
+        assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before, prefix));
         // Upgrading an existing revision must never invent a recoverable first-deployment intent.
         const existingBindings = await db.app.query(
           "SELECT first_deployment_digest FROM occ.agent_revisions",
@@ -2561,7 +2584,7 @@ test(
           history: "completed",
         });
         assert.deepEqual(await logicalRestoreSnapshot(restored), upgraded);
-        assert.deepEqual(await canonicalData(restored), upgradedCanonicalData(nativeData));
+        assert.deepEqual(await canonicalData(restored), upgradedCanonicalData(nativeData, 51));
         await assertPopulatedUpgradeReturn(context, fixture.container, restored, archive, {
           snapshot: async (database) => ({
             history: await logicalRestoreSnapshot(database),
@@ -2862,7 +2885,7 @@ test(
     await assertCompletedHistory(db, before.receipts);
     const completed = await historySnapshot(db);
     const upgradedData = await canonicalData(db);
-    assert.deepEqual(upgradedData, upgradedCanonicalData(data));
+    assert.deepEqual(upgradedData, upgradedCanonicalData(data, 59));
     assert.deepEqual(
       completed.receipts.slice(59).map(({ hash, created_at }) => [hash, Number(created_at)]),
       manifest.entries.slice(59).map(({ sha256, when }) => [sha256, when]),
@@ -3270,7 +3293,7 @@ test(
     const attempts = await count();
     assert.deepEqual(await runHistoryMigration(db, "production"), { ok: true, history: "main" });
     await assertCompletedHistory(db, receipts);
-    assert.deepEqual(await canonicalData(db), before);
+    assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before, 25));
     // Keep the same hostile application session: ALTER FUNCTION must invalidate
     // the already-compiled vulnerable bodies while ordinary IAM inserts still work.
     await exercise("after", false);

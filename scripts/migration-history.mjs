@@ -262,6 +262,18 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 63) {
     return "preGatewayManagedMode";
   }
+  if (count === 66) {
+    return "preInstallationAccessBindings";
+  }
+  if (count === 67) {
+    return "preConnectionTemplates";
+  }
+  if (count === 68) {
+    return "preAgentConnections";
+  }
+  if (count === 69) {
+    return "preConnectionRevocations";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

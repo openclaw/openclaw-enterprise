@@ -12177,6 +12177,2005 @@
         ]
       }
     },
+    "/connection-templates": {
+      "get": {
+        "description": "Requires read permission on the requested ConnectionTemplate.",
+        "operationId": "listConnectionTemplates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "current": {
+                            "authorizationParameters": {},
+                            "authorizationUrl": "https://accounts.example.com/authorize",
+                            "clientId": "example-client",
+                            "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+                            "createdAt": "2026-10-01T12:00:00.000Z",
+                            "endpoint": {
+                              "access": "full",
+                              "host": "api.example.com",
+                              "path": "/profile",
+                              "port": 443
+                            },
+                            "envVar": "EXAMPLE_ACCESS_TOKEN",
+                            "issuer": "https://accounts.example.com",
+                            "scopes": ["profile.read"],
+                            "tokenUrl": "https://accounts.example.com/token",
+                            "version": 1
+                          },
+                          "displayName": "Example account",
+                          "id": "ctp_123e4567-e89b-42d3-a456-426614174000"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "createdAt": { "type": "string" },
+                          "current": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authorizationParameters": {
+                                "additionalProperties": { "type": "string" },
+                                "type": "object"
+                              },
+                              "authorizationUrl": { "type": "string" },
+                              "clientId": { "type": "string" },
+                              "clientRegistrationId": { "type": "string" },
+                              "createdAt": { "type": "string" },
+                              "endpoint": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read-only", "type": "string" },
+                                      { "const": "full", "type": "string" }
+                                    ]
+                                  },
+                                  "host": { "type": "string" },
+                                  "path": { "type": "string" },
+                                  "port": { "type": "integer" }
+                                },
+                                "required": ["host", "port", "path", "access"],
+                                "type": "object"
+                              },
+                              "envVar": { "type": "string" },
+                              "issuer": { "type": "string" },
+                              "scopes": { "items": { "type": "string" }, "type": "array" },
+                              "tokenUrl": { "type": "string" },
+                              "version": { "minimum": 1, "type": "integer" }
+                            },
+                            "required": [
+                              "version",
+                              "issuer",
+                              "authorizationUrl",
+                              "tokenUrl",
+                              "clientId",
+                              "clientRegistrationId",
+                              "scopes",
+                              "authorizationParameters",
+                              "endpoint",
+                              "envVar",
+                              "createdAt"
+                            ],
+                            "type": "object"
+                          },
+                          "displayName": { "type": "string" },
+                          "id": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "redirectUri": { "type": "string" }
+                        },
+                        "required": ["id", "displayName", "current", "createdAt"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List Installation connection templates",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires create permission on the requested ConnectionTemplate.",
+        "operationId": "createConnectionTemplate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "authorizationUrl": "https://accounts.example.com/authorize",
+                    "clientId": "example-client",
+                    "clientSecret": "example-client-secret",
+                    "displayName": "Example account",
+                    "endpoint": {
+                      "access": "full",
+                      "host": "api.example.com",
+                      "path": "/profile",
+                      "port": 443
+                    },
+                    "envVar": "EXAMPLE_ACCESS_TOKEN",
+                    "issuer": "https://accounts.example.com",
+                    "scopes": ["profile.read"],
+                    "tokenUrl": "https://accounts.example.com/token"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "authorizationParameters": {
+                    "additionalProperties": { "maxLength": 512, "type": "string" },
+                    "maxProperties": 16,
+                    "type": "object"
+                  },
+                  "authorizationUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
+                  "clientSecret": { "maxLength": 4096, "minLength": 1, "type": "string" },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "endpoint": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "access": {
+                        "anyOf": [
+                          { "const": "read-only", "type": "string" },
+                          { "const": "full", "type": "string" }
+                        ]
+                      },
+                      "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                      "path": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "pattern": "^/",
+                        "type": "string"
+                      },
+                      "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                    },
+                    "required": ["host"],
+                    "type": "object"
+                  },
+                  "envVar": { "pattern": "^[A-Z_][A-Z0-9_]{0,63}$", "type": "string" },
+                  "issuer": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "scopes": {
+                    "items": {
+                      "maxLength": 512,
+                      "minLength": 1,
+                      "pattern": "^[!#-\\[\\]-~]+$",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "tokenUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "displayName",
+                  "issuer",
+                  "authorizationUrl",
+                  "tokenUrl",
+                  "clientId",
+                  "scopes",
+                  "endpoint",
+                  "envVar"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "createdAt": "2026-10-01T12:00:00.000Z",
+                        "current": {
+                          "authorizationParameters": {},
+                          "authorizationUrl": "https://accounts.example.com/authorize",
+                          "clientId": "example-client",
+                          "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "endpoint": {
+                            "access": "full",
+                            "host": "api.example.com",
+                            "path": "/profile",
+                            "port": 443
+                          },
+                          "envVar": "EXAMPLE_ACCESS_TOKEN",
+                          "issuer": "https://accounts.example.com",
+                          "scopes": ["profile.read"],
+                          "tokenUrl": "https://accounts.example.com/token",
+                          "version": 1
+                        },
+                        "displayName": "Example account",
+                        "id": "ctp_123e4567-e89b-42d3-a456-426614174000"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": { "type": "string" },
+                        "current": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "authorizationParameters": {
+                              "additionalProperties": { "type": "string" },
+                              "type": "object"
+                            },
+                            "authorizationUrl": { "type": "string" },
+                            "clientId": { "type": "string" },
+                            "clientRegistrationId": { "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "endpoint": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "access": {
+                                  "anyOf": [
+                                    { "const": "read-only", "type": "string" },
+                                    { "const": "full", "type": "string" }
+                                  ]
+                                },
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path", "access"],
+                              "type": "object"
+                            },
+                            "envVar": { "type": "string" },
+                            "issuer": { "type": "string" },
+                            "scopes": { "items": { "type": "string" }, "type": "array" },
+                            "tokenUrl": { "type": "string" },
+                            "version": { "minimum": 1, "type": "integer" }
+                          },
+                          "required": [
+                            "version",
+                            "issuer",
+                            "authorizationUrl",
+                            "tokenUrl",
+                            "clientId",
+                            "clientRegistrationId",
+                            "scopes",
+                            "authorizationParameters",
+                            "endpoint",
+                            "envVar",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        "displayName": { "type": "string" },
+                        "id": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "redirectUri": { "type": "string" }
+                      },
+                      "required": ["id", "displayName", "current", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Create an Installation connection template",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      }
+    },
+    "/connection-templates/{connectionTemplateId}": {
+      "delete": {
+        "description": "Requires delete permission on the requested ConnectionTemplate.",
+        "operationId": "deleteConnectionTemplate",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ctp_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "connectionTemplateId",
+            "required": true,
+            "schema": {
+              "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": { "description": "No Content" },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Delete a connection template that no connection uses",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "delete", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      },
+      "get": {
+        "description": "Requires read permission on the requested ConnectionTemplate.",
+        "operationId": "getConnectionTemplate",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ctp_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "connectionTemplateId",
+            "required": true,
+            "schema": {
+              "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "createdAt": "2026-10-01T12:00:00.000Z",
+                        "current": {
+                          "authorizationParameters": {},
+                          "authorizationUrl": "https://accounts.example.com/authorize",
+                          "clientId": "example-client",
+                          "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "endpoint": {
+                            "access": "full",
+                            "host": "api.example.com",
+                            "path": "/profile",
+                            "port": 443
+                          },
+                          "envVar": "EXAMPLE_ACCESS_TOKEN",
+                          "issuer": "https://accounts.example.com",
+                          "scopes": ["profile.read"],
+                          "tokenUrl": "https://accounts.example.com/token",
+                          "version": 1
+                        },
+                        "displayName": "Example account",
+                        "id": "ctp_123e4567-e89b-42d3-a456-426614174000"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": { "type": "string" },
+                        "current": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "authorizationParameters": {
+                              "additionalProperties": { "type": "string" },
+                              "type": "object"
+                            },
+                            "authorizationUrl": { "type": "string" },
+                            "clientId": { "type": "string" },
+                            "clientRegistrationId": { "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "endpoint": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "access": {
+                                  "anyOf": [
+                                    { "const": "read-only", "type": "string" },
+                                    { "const": "full", "type": "string" }
+                                  ]
+                                },
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path", "access"],
+                              "type": "object"
+                            },
+                            "envVar": { "type": "string" },
+                            "issuer": { "type": "string" },
+                            "scopes": { "items": { "type": "string" }, "type": "array" },
+                            "tokenUrl": { "type": "string" },
+                            "version": { "minimum": 1, "type": "integer" }
+                          },
+                          "required": [
+                            "version",
+                            "issuer",
+                            "authorizationUrl",
+                            "tokenUrl",
+                            "clientId",
+                            "clientRegistrationId",
+                            "scopes",
+                            "authorizationParameters",
+                            "endpoint",
+                            "envVar",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        "displayName": { "type": "string" },
+                        "id": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "redirectUri": { "type": "string" }
+                      },
+                      "required": ["id", "displayName", "current", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Get one connection template",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      },
+      "patch": {
+        "description": "Requires update permission on the requested ConnectionTemplate.",
+        "operationId": "updateConnectionTemplate",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ctp_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "connectionTemplateId",
+            "required": true,
+            "schema": {
+              "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": { "displayName": "Engineering account" }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "authorizationParameters": {
+                    "additionalProperties": { "maxLength": 512, "type": "string" },
+                    "maxProperties": 16,
+                    "type": "object"
+                  },
+                  "authorizationUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
+                  "clientSecret": { "maxLength": 4096, "minLength": 1, "type": "string" },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "endpoint": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "access": {
+                        "anyOf": [
+                          { "const": "read-only", "type": "string" },
+                          { "const": "full", "type": "string" }
+                        ]
+                      },
+                      "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                      "path": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "pattern": "^/",
+                        "type": "string"
+                      },
+                      "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                    },
+                    "required": ["host"],
+                    "type": "object"
+                  },
+                  "envVar": { "pattern": "^[A-Z_][A-Z0-9_]{0,63}$", "type": "string" },
+                  "issuer": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "scopes": {
+                    "items": {
+                      "maxLength": 512,
+                      "minLength": 1,
+                      "pattern": "^[!#-\\[\\]-~]+$",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "tokenUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "createdAt": "2026-10-01T12:00:00.000Z",
+                        "current": {
+                          "authorizationParameters": {},
+                          "authorizationUrl": "https://accounts.example.com/authorize",
+                          "clientId": "example-client",
+                          "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "endpoint": {
+                            "access": "full",
+                            "host": "api.example.com",
+                            "path": "/profile",
+                            "port": 443
+                          },
+                          "envVar": "EXAMPLE_ACCESS_TOKEN",
+                          "issuer": "https://accounts.example.com",
+                          "scopes": ["profile.read"],
+                          "tokenUrl": "https://accounts.example.com/token",
+                          "version": 1
+                        },
+                        "displayName": "Example account",
+                        "id": "ctp_123e4567-e89b-42d3-a456-426614174000"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": { "type": "string" },
+                        "current": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "authorizationParameters": {
+                              "additionalProperties": { "type": "string" },
+                              "type": "object"
+                            },
+                            "authorizationUrl": { "type": "string" },
+                            "clientId": { "type": "string" },
+                            "clientRegistrationId": { "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "endpoint": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "access": {
+                                  "anyOf": [
+                                    { "const": "read-only", "type": "string" },
+                                    { "const": "full", "type": "string" }
+                                  ]
+                                },
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path", "access"],
+                              "type": "object"
+                            },
+                            "envVar": { "type": "string" },
+                            "issuer": { "type": "string" },
+                            "scopes": { "items": { "type": "string" }, "type": "array" },
+                            "tokenUrl": { "type": "string" },
+                            "version": { "minimum": 1, "type": "integer" }
+                          },
+                          "required": [
+                            "version",
+                            "issuer",
+                            "authorizationUrl",
+                            "tokenUrl",
+                            "clientId",
+                            "clientRegistrationId",
+                            "scopes",
+                            "authorizationParameters",
+                            "endpoint",
+                            "envVar",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        "displayName": { "type": "string" },
+                        "id": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "redirectUri": { "type": "string" }
+                      },
+                      "required": ["id", "displayName", "current", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Rename a connection template, or create a version with new approved values",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      }
+    },
+    "/connection-templates/{connectionTemplateId}/rotate-client-secret": {
+      "post": {
+        "description": "Requires update permission on the requested ConnectionTemplate.",
+        "operationId": "rotateConnectionClientSecret",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ctp_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "connectionTemplateId",
+            "required": true,
+            "schema": {
+              "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": { "clientSecret": "replacement-example-client-secret" }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "clientSecret": { "maxLength": 4096, "minLength": 1, "type": "string" }
+                },
+                "required": ["clientSecret"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "createdAt": "2026-10-01T12:00:00.000Z",
+                        "current": {
+                          "authorizationParameters": {},
+                          "authorizationUrl": "https://accounts.example.com/authorize",
+                          "clientId": "example-client",
+                          "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "endpoint": {
+                            "access": "full",
+                            "host": "api.example.com",
+                            "path": "/profile",
+                            "port": 443
+                          },
+                          "envVar": "EXAMPLE_ACCESS_TOKEN",
+                          "issuer": "https://accounts.example.com",
+                          "scopes": ["profile.read"],
+                          "tokenUrl": "https://accounts.example.com/token",
+                          "version": 1
+                        },
+                        "displayName": "Example account",
+                        "id": "ctp_123e4567-e89b-42d3-a456-426614174000"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": { "type": "string" },
+                        "current": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "authorizationParameters": {
+                              "additionalProperties": { "type": "string" },
+                              "type": "object"
+                            },
+                            "authorizationUrl": { "type": "string" },
+                            "clientId": { "type": "string" },
+                            "clientRegistrationId": { "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "endpoint": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "access": {
+                                  "anyOf": [
+                                    { "const": "read-only", "type": "string" },
+                                    { "const": "full", "type": "string" }
+                                  ]
+                                },
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path", "access"],
+                              "type": "object"
+                            },
+                            "envVar": { "type": "string" },
+                            "issuer": { "type": "string" },
+                            "scopes": { "items": { "type": "string" }, "type": "array" },
+                            "tokenUrl": { "type": "string" },
+                            "version": { "minimum": 1, "type": "integer" }
+                          },
+                          "required": [
+                            "version",
+                            "issuer",
+                            "authorizationUrl",
+                            "tokenUrl",
+                            "clientId",
+                            "clientRegistrationId",
+                            "scopes",
+                            "authorizationParameters",
+                            "endpoint",
+                            "envVar",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        "displayName": { "type": "string" },
+                        "id": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "redirectUri": { "type": "string" }
+                      },
+                      "required": ["id", "displayName", "current", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Replace the OAuth client secret used by new connections",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      }
+    },
+    "/iam/access-bindings": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "listInstallationAccessBindings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "id": "binding_123e4567-e89b-42d3-a456-426614174000",
+                          "resourceId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "resourceKind": "connection_template",
+                          "roleId": "role_connection_template_user",
+                          "subjectId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                          "subjectKind": "namespace"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "resourceId": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "resourceKind": { "const": "connection_template", "type": "string" },
+                          "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "subjectKind": {
+                            "anyOf": [
+                              { "const": "identity", "type": "string" },
+                              { "const": "namespace", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "subjectKind",
+                          "subjectId",
+                          "roleId",
+                          "resourceKind",
+                          "resourceId"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List IAM AccessBindings on Installation resources",
+        "tags": ["IAM"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "createInstallationAccessBinding",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "resourceId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                    "resourceKind": "connection_template",
+                    "roleId": "role_connection_template_user",
+                    "subjectId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                    "subjectKind": "namespace"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "resourceId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "resourceKind": { "const": "connection_template", "type": "string" },
+                  "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "subjectKind": {
+                    "anyOf": [
+                      { "const": "identity", "type": "string" },
+                      { "const": "namespace", "type": "string" }
+                    ]
+                  }
+                },
+                "required": ["subjectKind", "subjectId", "roleId", "resourceKind", "resourceId"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "id": "binding_123e4567-e89b-42d3-a456-426614174000",
+                        "resourceId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "resourceKind": "connection_template",
+                        "roleId": "role_connection_template_user",
+                        "subjectId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                        "subjectKind": "namespace"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "resourceId": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "resourceKind": { "const": "connection_template", "type": "string" },
+                        "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "subjectKind": {
+                          "anyOf": [
+                            { "const": "identity", "type": "string" },
+                            { "const": "namespace", "type": "string" }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "subjectKind",
+                        "subjectId",
+                        "roleId",
+                        "resourceKind",
+                        "resourceId"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Grant an Installation Role on one connection template to a person or Namespace",
+        "tags": ["IAM"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/iam/access-bindings/{bindingId}": {
+      "delete": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "deleteInstallationAccessBinding",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "binding-agent-secret"
+              }
+            },
+            "in": "path",
+            "name": "bindingId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "No Content" },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Remove an IAM AccessBinding on an Installation resource",
+        "tags": ["IAM"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/iam/roles": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "listInstallationRoles",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "id": "role_connection_template_user",
+                          "permissions": [
+                            { "action": "use", "resourceKind": "connection_template" }
+                          ]
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "name": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                            "type": "string"
+                          },
+                          "permissions": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "action": {
+                                  "anyOf": [
+                                    { "const": "create", "type": "string" },
+                                    { "const": "read", "type": "string" },
+                                    { "const": "update", "type": "string" },
+                                    { "const": "delete", "type": "string" },
+                                    { "const": "deploy", "type": "string" },
+                                    { "const": "operate", "type": "string" },
+                                    { "const": "administer", "type": "string" },
+                                    { "const": "read_logs", "type": "string" },
+                                    { "const": "manage_policy", "type": "string" },
+                                    { "const": "use", "type": "string" }
+                                  ]
+                                },
+                                "resourceKind": {
+                                  "anyOf": [
+                                    { "const": "installation", "type": "string" },
+                                    { "const": "namespace", "type": "string" },
+                                    { "const": "configuration", "type": "string" },
+                                    { "const": "preset", "type": "string" },
+                                    { "const": "service_account", "type": "string" },
+                                    { "const": "secret", "type": "string" },
+                                    { "const": "agent", "type": "string" },
+                                    { "const": "agent_revision", "type": "string" },
+                                    { "const": "credential_source", "type": "string" },
+                                    { "const": "sandbox_policy", "type": "string" },
+                                    { "const": "connection_template", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": ["action", "resourceKind"],
+                              "type": "object"
+                            },
+                            "minItems": 1,
+                            "type": "array"
+                          }
+                        },
+                        "required": ["id", "permissions"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List Installation IAM Roles",
+        "tags": ["IAM"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
     "/installation": {
       "get": {
         "description": "Requires read permission on the requested Installation.",
@@ -20476,6 +22475,711 @@
             "action": "read",
             "condition": "saved_sandbox_policy_additions",
             "resourceKind": "sandbox_policy",
+            "scope": "requested"
+          }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/connections": {
+      "get": {
+        "description": "Requires read permission on the requested Agent.",
+        "operationId": "listAgentConnections",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "connectionTemplateVersion": 1,
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
+                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                          "ownerPrincipalId": "user-docs-admin"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "agentId": {
+                            "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "connectionTemplateId": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
+                          "createdAt": { "type": "string" },
+                          "credentialSourceId": {
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "ownerPrincipalId": { "type": "string" }
+                        },
+                        "required": [
+                          "namespaceId",
+                          "credentialSourceId",
+                          "ownerPrincipalId",
+                          "connectionTemplateId",
+                          "connectionTemplateVersion",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List an Agent's connected accounts",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires use permission on the requested ConnectionTemplate.",
+        "operationId": "startAgentConnection",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": { "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000" }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  }
+                },
+                "required": ["connectionTemplateId"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "authorizationUrl": "https://accounts.example.com/authorize?state=example-state",
+                        "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
+                        "expiresAt": "2026-10-01T12:00:00.000Z"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "authorizationUrl": { "type": "string" },
+                        "credentialSourceId": {
+                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "expiresAt": { "type": "string" }
+                      },
+                      "required": ["credentialSourceId", "authorizationUrl", "expiresAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Start consent for a reusable account from this Agent",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          { "action": "use", "resourceKind": "connection_template", "scope": "request_body" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}": {
+      "delete": {
+        "description": "Requires update permission on the requested Agent. Requires operate permission on the requested Agent when a revision must withdraw the source.",
+        "operationId": "disconnectAgentConnection",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "cs_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "credentialSourceId",
+            "required": true,
+            "schema": {
+              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": { "deleted": false, "withdrawalRequested": false },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "deleted": { "type": "boolean" },
+                        "withdrawalRequested": { "type": "boolean" }
+                      },
+                      "required": ["withdrawalRequested", "deleted"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Detach an account from this Agent and withdraw its access",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "operate",
+            "condition": "withdrawal_required",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
+        ]
+      },
+      "post": {
+        "description": "Requires update permission on the requested Agent. Requires operate permission on this CredentialSource unless the caller owns the consent.",
+        "operationId": "attachAgentConnection",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "cs_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "credentialSourceId",
+            "required": true,
+            "schema": {
+              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": { "description": "No Content" },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Attach a completed account and grant this Agent access to its source",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          {
+            "action": "operate",
+            "condition": "unless_consent_owner",
+            "resourceKind": "credential_source",
             "scope": "requested"
           }
         ]
@@ -33475,6 +36179,708 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/connection-templates": {
+      "get": {
+        "description": "Only ConnectionTemplate resources with individual use permission are returned.",
+        "operationId": "listUsableConnectionTemplates",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "current": {
+                            "authorizationParameters": {},
+                            "authorizationUrl": "https://accounts.example.com/authorize",
+                            "clientId": "example-client",
+                            "clientRegistrationId": "cr_123e4567-e89b-42d3-a456-426614174000",
+                            "createdAt": "2026-10-01T12:00:00.000Z",
+                            "endpoint": {
+                              "access": "full",
+                              "host": "api.example.com",
+                              "path": "/profile",
+                              "port": 443
+                            },
+                            "envVar": "EXAMPLE_ACCESS_TOKEN",
+                            "issuer": "https://accounts.example.com",
+                            "scopes": ["profile.read"],
+                            "tokenUrl": "https://accounts.example.com/token",
+                            "version": 1
+                          },
+                          "displayName": "Example account",
+                          "id": "ctp_123e4567-e89b-42d3-a456-426614174000"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "createdAt": { "type": "string" },
+                          "current": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authorizationParameters": {
+                                "additionalProperties": { "type": "string" },
+                                "type": "object"
+                              },
+                              "authorizationUrl": { "type": "string" },
+                              "clientId": { "type": "string" },
+                              "clientRegistrationId": { "type": "string" },
+                              "createdAt": { "type": "string" },
+                              "endpoint": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "access": {
+                                    "anyOf": [
+                                      { "const": "read-only", "type": "string" },
+                                      { "const": "full", "type": "string" }
+                                    ]
+                                  },
+                                  "host": { "type": "string" },
+                                  "path": { "type": "string" },
+                                  "port": { "type": "integer" }
+                                },
+                                "required": ["host", "port", "path", "access"],
+                                "type": "object"
+                              },
+                              "envVar": { "type": "string" },
+                              "issuer": { "type": "string" },
+                              "scopes": { "items": { "type": "string" }, "type": "array" },
+                              "tokenUrl": { "type": "string" },
+                              "version": { "minimum": 1, "type": "integer" }
+                            },
+                            "required": [
+                              "version",
+                              "issuer",
+                              "authorizationUrl",
+                              "tokenUrl",
+                              "clientId",
+                              "clientRegistrationId",
+                              "scopes",
+                              "authorizationParameters",
+                              "endpoint",
+                              "envVar",
+                              "createdAt"
+                            ],
+                            "type": "object"
+                          },
+                          "displayName": { "type": "string" },
+                          "id": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "redirectUri": { "type": "string" }
+                        },
+                        "required": ["id", "displayName", "current", "createdAt"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List connection templates the caller may connect in this Namespace",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "use", "resourceKind": "connection_template", "scope": "each_returned" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/connections": {
+      "get": {
+        "description": "Requires read permission on the requested Namespace.",
+        "operationId": "listNamespaceConnections",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "empty": {
+                    "summary": "No readable resources",
+                    "value": {
+                      "data": [],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  },
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": [
+                        {
+                          "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "connectionTemplateVersion": 1,
+                          "createdAt": "2026-10-01T12:00:00.000Z",
+                          "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
+                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+                          "ownerPrincipalId": "user-docs-admin"
+                        }
+                      ],
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "agentId": {
+                            "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "connectionTemplateId": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
+                          "createdAt": { "type": "string" },
+                          "credentialSourceId": {
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "ownerPrincipalId": { "type": "string" }
+                        },
+                        "required": [
+                          "namespaceId",
+                          "credentialSourceId",
+                          "ownerPrincipalId",
+                          "connectionTemplateId",
+                          "connectionTemplateVersion",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "List completed connections the caller owns or can use in this Namespace",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires read permission on the requested Namespace. Requires use permission on the requested ConnectionTemplate.",
+        "operationId": "startNamespaceConnection",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": { "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000" }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  }
+                },
+                "required": ["connectionTemplateId"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "authorizationUrl": "https://accounts.example.com/authorize?state=example-state",
+                        "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
+                        "expiresAt": "2026-10-01T12:00:00.000Z"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "authorizationUrl": { "type": "string" },
+                        "credentialSourceId": {
+                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "expiresAt": { "type": "string" }
+                      },
+                      "required": ["credentialSourceId", "authorizationUrl", "expiresAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Start consent for a reusable account in this Namespace",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" },
+          { "action": "use", "resourceKind": "connection_template", "scope": "request_body" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/connections/{credentialSourceId}": {
+      "delete": {
+        "description": "Requires delete permission on this CredentialSource unless the caller owns the consent.",
+        "operationId": "disconnectNamespaceConnection",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "cs_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "credentialSourceId",
+            "required": true,
+            "schema": {
+              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": { "description": "No Content" },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Revoke a saved account and withdraw access from every Agent",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          {
+            "action": "delete",
+            "condition": "unless_consent_owner",
+            "resourceKind": "credential_source",
+            "scope": "requested"
+          }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/credential-sources": {
       "get": {
         "description": "Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned.",
@@ -34714,7 +38120,8 @@
                               "subjectKind": {
                                 "anyOf": [
                                   { "const": "identity", "type": "string" },
-                                  { "const": "group", "type": "string" }
+                                  { "const": "group", "type": "string" },
+                                  { "const": "namespace", "type": "string" }
                                 ]
                               }
                             },
@@ -34749,7 +38156,8 @@
                               "subjectKind": {
                                 "anyOf": [
                                   { "const": "identity", "type": "string" },
-                                  { "const": "group", "type": "string" }
+                                  { "const": "group", "type": "string" },
+                                  { "const": "namespace", "type": "string" }
                                 ]
                               }
                             },
@@ -34953,7 +38361,8 @@
                             "subjectKind": {
                               "anyOf": [
                                 { "const": "identity", "type": "string" },
-                                { "const": "group", "type": "string" }
+                                { "const": "group", "type": "string" },
+                                { "const": "namespace", "type": "string" }
                               ]
                             }
                           },
@@ -34988,7 +38397,8 @@
                             "subjectKind": {
                               "anyOf": [
                                 { "const": "identity", "type": "string" },
-                                { "const": "group", "type": "string" }
+                                { "const": "group", "type": "string" },
+                                { "const": "namespace", "type": "string" }
                               ]
                             }
                           },
@@ -35345,7 +38755,8 @@
                             "subjectKind": {
                               "anyOf": [
                                 { "const": "identity", "type": "string" },
-                                { "const": "group", "type": "string" }
+                                { "const": "group", "type": "string" },
+                                { "const": "namespace", "type": "string" }
                               ]
                             }
                           },
@@ -35380,7 +38791,8 @@
                             "subjectKind": {
                               "anyOf": [
                                 { "const": "identity", "type": "string" },
-                                { "const": "group", "type": "string" }
+                                { "const": "group", "type": "string" },
+                                { "const": "namespace", "type": "string" }
                               ]
                             }
                           },
@@ -40887,6 +44299,89 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/oauth/callback": {
+      "get": {
+        "description": "Requires the signed-in human session that started the connection, permission on the starting Namespace or Agent, and use permission on the connection template in that Namespace. The provider redirects here with `state` and `code`, or with `error`. The response is a 303 redirect to the console without the query string.",
+        "operationId": "completeAgentConnection",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "example-browser-bound-state"
+              }
+            },
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": { "maxLength": 512, "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "example-provider-code"
+              }
+            },
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": { "maxLength": 4096, "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "access_denied"
+              }
+            },
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": { "maxLength": 256, "type": "string" }
+          },
+          {
+            "description": "Authorization server issuer. Must match the connection template when present. Required for code exchange if another issuer has a client registration when consent starts or when the callback arrives.",
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "https://accounts.example.com"
+              }
+            },
+            "in": "query",
+            "name": "iss",
+            "required": false,
+            "schema": { "maxLength": 2048, "type": "string" }
+          }
+        ],
+        "responses": {
+          "303": {
+            "content": {
+              "application/json": {
+                "schema": { "description": "Redirect to the console with the connection outcome" }
+              }
+            },
+            "description": "Redirect to the console with the connection outcome"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RATE_LIMITED" } },
+                "schema": { "description": "Too many requests; wait for Retry-After" }
+              }
+            },
+            "description": "Too many requests; wait for Retry-After"
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "Complete a browser connection for the signed-in person who started it",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          { "action": "use", "resourceKind": "connection_template", "scope": "requested" }
         ]
       }
     },

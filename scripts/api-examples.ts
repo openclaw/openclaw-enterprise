@@ -178,7 +178,54 @@ const authAccount = {
 };
 const sessionKey = "example-session-binding-not-a-credential";
 
+const connectionTemplateId = id("ctp");
+const connectionTemplateInput = {
+  displayName: "Example account",
+  issuer: "https://accounts.example.com",
+  authorizationUrl: "https://accounts.example.com/authorize",
+  tokenUrl: "https://accounts.example.com/token",
+  clientId: "example-client",
+  scopes: ["profile.read"],
+  envVar: "EXAMPLE_ACCESS_TOKEN",
+  endpoint: { host: "api.example.com", port: 443, path: "/profile", access: "full" },
+};
+const { displayName, ...approvedValues } = connectionTemplateInput;
+const connectionTemplate = {
+  id: connectionTemplateId,
+  displayName,
+  createdAt: time,
+  current: {
+    ...approvedValues,
+    authorizationParameters: {},
+    version: 1,
+    clientRegistrationId: id("cr"),
+    createdAt: time,
+  },
+};
+const templateBindingInput = {
+  subjectKind: "namespace",
+  subjectId: namespaceId,
+  roleId: "role_connection_template_user",
+  resourceKind: "connection_template",
+  resourceId: connectionTemplateId,
+};
+const templateBinding = { ...templateBindingInput, id: id("binding") };
+const connectionStart = {
+  credentialSourceId: source.id,
+  authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
+  expiresAt: time,
+};
+const savedAccount = {
+  namespaceId,
+  credentialSourceId: source.id,
+  ownerPrincipalId: userId,
+  connectionTemplateId,
+  connectionTemplateVersion: 1,
+  createdAt: time,
+};
+
 export const parameterExamples = {
+  connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
   expectedGeneration: "1",
@@ -215,11 +262,18 @@ export const parameterExamples = {
   cursor: "opaque-cursor-from-the-previous-response",
   code: "example-provider-code",
   state: "example-browser-bound-state",
+  iss: connectionTemplateInput.issuer,
   error: "access_denied",
   error_description: "The user declined sign-in.",
 };
 
 export const requestExamples = {
+  startNamespaceConnection: { connectionTemplateId },
+  startAgentConnection: { connectionTemplateId },
+  createConnectionTemplate: { ...connectionTemplateInput, clientSecret: "example-client-secret" },
+  updateConnectionTemplate: { displayName: "Engineering account" },
+  rotateConnectionClientSecret: { clientSecret: "replacement-example-client-secret" },
+  createInstallationAccessBinding: templateBindingInput,
   deployAgentFirst: {
     key: "review-1",
     expectedConfigurationId: configurationId,
@@ -322,6 +376,25 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  listConnectionTemplates: [connectionTemplate],
+  listUsableConnectionTemplates: [connectionTemplate],
+  getConnectionTemplate: connectionTemplate,
+  createConnectionTemplate: connectionTemplate,
+  updateConnectionTemplate: connectionTemplate,
+  rotateConnectionClientSecret: connectionTemplate,
+  listInstallationRoles: [
+    {
+      id: "role_connection_template_user",
+      permissions: [{ action: "use", resourceKind: "connection_template" }],
+    },
+  ],
+  listInstallationAccessBindings: [templateBinding],
+  createInstallationAccessBinding: templateBinding,
+  startNamespaceConnection: connectionStart,
+  startAgentConnection: connectionStart,
+  listNamespaceConnections: [savedAccount],
+  listAgentConnections: [savedAccount],
+  disconnectAgentConnection: { withdrawalRequested: false, deleted: false },
   getInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   bootstrapInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   getInstallationDeploymentInventory: {
