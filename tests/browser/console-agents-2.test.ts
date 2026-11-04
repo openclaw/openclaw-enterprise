@@ -2152,11 +2152,46 @@ for (const width of [1440, 390]) {
 
     // Switching to Anthropic does not merge this field and must not acquire this validation.
     await editAllow(7);
-    await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+    const provider = page.getByLabel("Provider", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+    const mode = page.getByLabel("Execution mode", { exact: true });
+    const authMethod = page.getByLabel("Authentication method", { exact: true });
+    await provider.selectOption("anthropic");
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
     assert.equal(await choice.isVisible(), true);
     assert.equal(await choice.inputValue(), "");
     assert.equal(record((await readValues()).plugins).allow, 7);
     assert.equal(await configuration.getAttribute("aria-invalid"), null);
+
+    // Returning to Codex must preflight before changing the provider, catalog, or credentials.
+    await choice.selectOption("claude-opus-5-5");
+    assert.equal(primary(await readValues()), "anthropic/claude-opus-5-5");
+    const anthropicDraft = await configuration.inputValue();
+    const anthropicOptions = await optionValues(choice);
+    const previousMode = await mode.inputValue();
+    const previousAuth = await authMethod.inputValue();
+    await provider.selectOption("openai");
+    await assertBlocked(anthropicDraft);
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await mode.inputValue(), previousMode);
+    assert.equal(await authMethod.inputValue(), previousAuth);
+    assert.equal(await choice.inputValue(), "claude-opus-5-5");
+    assert.deepEqual(await optionValues(choice), anthropicOptions);
+
+    await editAllow([]);
+    await provider.selectOption("openai");
+    assert.equal(await provider.inputValue(), "openai");
+    assert.equal(await harness.inputValue(), "codex");
+    assert.equal(await choice.isVisible(), true);
+    assert.equal(await choice.inputValue(), "");
+    assert.equal(primary(await readValues()), undefined);
+    assert.equal(await choice.locator('option[value="claude-opus-5-5"]').count(), 0);
+    assert.equal(await choice.locator('option[value="gpt-6-sol"]').count(), 1);
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    await choice.selectOption("gpt-6-sol");
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
     assert.deepEqual(errors, []);
     assert.deepEqual(nonAuthWriteRequests(requests), []);
   });

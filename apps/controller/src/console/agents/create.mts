@@ -1143,8 +1143,11 @@ function renderAgentForm(
     ...(useModelChoices ? [choiceField, toggleModel] : []),
     modelField,
   );
-  function resetModelChoices(resetTransport = false, selectedModel = "") {
-    const values = readModelConfiguration();
+  function resetModelChoices(
+    resetTransport = false,
+    selectedModel = "",
+    values = readModelConfiguration(),
+  ) {
     if (values === "invalid-allow") {
       return false;
     }
@@ -1343,6 +1346,7 @@ function renderAgentForm(
   if (harness.value === "codex") {
     mode.value = "dedicated";
   }
+  let appliedProvider = nativeProvider.value;
   const currentTemplate = () =>
     JSON.stringify(
       configurationTemplate(harness.value, nativeProvider.value, model.value.trim()),
@@ -1367,14 +1371,16 @@ function renderAgentForm(
     feedback.textContent = "";
     renderChannelEditor();
   });
-  function readModelConfiguration(): LaunchValues | "invalid-json" | "invalid-allow" {
+  function readModelConfiguration(
+    targetHarness = harness.value,
+  ): LaunchValues | "invalid-json" | "invalid-allow" {
     const values = parseObject(configuration);
     // Keep the existing control transitions for invalid JSON; only the merge is skipped.
     if (values === undefined) {
       return "invalid-json";
     }
     // Only the Codex template merges this field. Do not validate unrelated draft settings.
-    if (harness.value !== "codex" || !Object.hasOwn(values.plugins ?? {}, "allow")) {
+    if (targetHarness !== "codex" || !Object.hasOwn(values.plugins ?? {}, "allow")) {
       return values;
     }
     const allow = values.plugins?.allow;
@@ -1595,16 +1601,24 @@ function renderAgentForm(
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
-    harness.value =
+    const targetHarness =
       nativeProvider.value === "anthropic" || binding?.method === "runtime" ? "openclaw" : "codex";
+    const values = readModelConfiguration(targetHarness);
+    if (values === "invalid-allow") {
+      // The native select changed before preflight; retain the last applied provider.
+      nativeProvider.value = appliedProvider;
+      return;
+    }
+    appliedProvider = nativeProvider.value;
+    harness.value = targetHarness;
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     clearModelCredential();
     if (!binding) {
       authMethod.value = "api_key";
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
   });
   authMethod.addEventListener("change", () => {
@@ -1683,6 +1697,7 @@ function renderAgentForm(
           clearModelCredential();
         }
         nativeProvider.value = selectedProvider;
+        appliedProvider = selectedProvider;
         if (selectedProvider === "anthropic") {
           harness.value = "openclaw";
           mode.value = "embedded";
