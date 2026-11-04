@@ -41,17 +41,26 @@ function breadcrumb(phase, value, extra) {
       "peer3-response",
       "deadline",
     ].includes(phase)
-  )
+  ) {
     return;
+  }
   const record = { event: "stale-peer-diagnostic", phase };
-  if (phase === "replacement-request" || phase === "deadline") record.ordinal = value;
-  if (phase === "deadline") record.lastPhase = extra;
+  if (phase === "replacement-request" || phase === "deadline") {
+    record.ordinal = value;
+  }
+  if (phase === "deadline") {
+    record.lastPhase = extra;
+  }
   if (phase === "identity-check") {
     record.singleProcess = value;
     record.sameIdentity = extra;
   }
-  if (phase === "credential-check") record.sameCredential = value;
-  if (phase === "native-ready" || phase === "wrapper-ready") record.ready = value;
+  if (phase === "credential-check") {
+    record.sameCredential = value;
+  }
+  if (phase === "native-ready" || phase === "wrapper-ready") {
+    record.ready = value;
+  }
   stalePhase = phase;
   console.log(JSON.stringify(record));
 }
@@ -133,7 +142,9 @@ const server = createServer(async (request, response) => {
   const countRecovery = trackSamePeerRecovery;
   const thirdPeerResponse = staleReplacement && peer.startupId === "harness-startup-3";
   response.end(JSON.stringify(peer), () => {
-    if (thirdPeerResponse) breadcrumb("peer3-response");
+    if (thirdPeerResponse) {
+      breadcrumb("peer3-response");
+    }
     if (countRecovery) {
       samePeerRecoveryResponses++;
     }
@@ -237,7 +248,9 @@ function linearEnabled(config) {
 
 try {
   await waitFor("the first Gateway to become ready", 240_000, ready);
-  if (staleReplacement) breadcrumb("initial-ready");
+  if (staleReplacement) {
+    breadcrumb("initial-ready");
+  }
   const [before] = await gatewayProcess();
   initialGateway = before;
   assert.equal(before.token, appServerToken("harness-startup-1"));

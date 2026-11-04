@@ -55,23 +55,37 @@ const startupPhases = new Set([
 
 function emitPeerDiagnostics(t, fixtureOutput, containerOutput) {
   for (const entry of jsonLogEntries(fixtureOutput)) {
-    if (entry?.event !== "stale-peer-diagnostic" || !diagnosticPhases.has(entry.phase)) continue;
+    if (entry?.event !== "stale-peer-diagnostic" || !diagnosticPhases.has(entry.phase)) {
+      continue;
+    }
     const record = { phase: entry.phase };
-    if (Number.isSafeInteger(entry.ordinal) && entry.ordinal >= 0) record.ordinal = entry.ordinal;
-    if (diagnosticPhases.has(entry.lastPhase) || entry.lastPhase === "initial")
+    if (Number.isSafeInteger(entry.ordinal) && entry.ordinal >= 0) {
+      record.ordinal = entry.ordinal;
+    }
+    if (diagnosticPhases.has(entry.lastPhase) || entry.lastPhase === "initial") {
       record.lastPhase = entry.lastPhase;
+    }
     for (const field of ["singleProcess", "sameIdentity", "sameCredential", "ready"]) {
-      if (typeof entry[field] === "boolean") record[field] = entry[field];
+      if (typeof entry[field] === "boolean") {
+        record[field] = entry[field];
+      }
     }
     t.diagnostic(`stale peer: ${JSON.stringify(record)}`);
   }
   for (const entry of jsonLogEntries(containerOutput)) {
-    if (entry?.event !== "runtime.startup_phase" || !startupPhases.has(entry.phase)) continue;
-    if (!["ok", "failed", "started"].includes(entry.outcome)) continue;
+    if (entry?.event !== "runtime.startup_phase" || !startupPhases.has(entry.phase)) {
+      continue;
+    }
+    if (!["ok", "failed", "started"].includes(entry.outcome)) {
+      continue;
+    }
     const record = { phase: entry.phase, outcome: entry.outcome };
-    if (Number.isFinite(entry.ms) && entry.ms >= 0) record.ms = entry.ms;
-    if (Number.isFinite(entry.sinceStartMs) && entry.sinceStartMs >= 0)
+    if (Number.isFinite(entry.ms) && entry.ms >= 0) {
+      record.ms = entry.ms;
+    }
+    if (Number.isFinite(entry.sinceStartMs) && entry.sinceStartMs >= 0) {
       record.sinceStartMs = entry.sinceStartMs;
+    }
     t.diagnostic(`wrapper phase: ${JSON.stringify(record)}`);
   }
 }
