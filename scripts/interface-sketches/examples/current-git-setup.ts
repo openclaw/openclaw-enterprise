@@ -2,13 +2,12 @@ import type { Diagram } from "../diagram.ts";
 
 export default {
   title: "01b Protected Git setup",
-  subtitle:
-    "OpenShell reference implementation · provisioning, token refresh and installation readback",
+  subtitle: "OpenShell · held startup, token installation and refresh",
   layout: { board: [1180, 640] },
   groups: [
     {
       id: "control-plane",
-      title: "OCE · OpenClaw Enterprise control plane",
+      title: "OpenClaw Enterprise control plane",
       role: "control",
       pin: [20, 75, 690, 505],
     },
@@ -21,7 +20,7 @@ export default {
     },
     {
       id: "worker",
-      title: "Worker · token preparation and transport",
+      title: "Worker · token preparation and Git authorization",
       role: "control",
       parent: "control-plane",
       pin: [15, 210, 660, 280],
@@ -39,7 +38,7 @@ export default {
     {
       id: "installation",
       title: "Installation configuration",
-      detail: "Pairs both capabilities",
+      detail: "Selects both capabilities",
       group: "control-plane",
       pin: [25, 35, 250, 55],
     },
@@ -65,42 +64,42 @@ export default {
     {
       id: "harness",
       title: "Harness",
-      detail: "Agent has no Git secrets",
+      detail: "Starts after signed release",
       group: "sandbox",
       pin: [10, 35, 210, 55],
     },
     {
       id: "policy",
-      title: "GitHubRepositoryPolicy",
-      detail: "RepositoryPolicyDriver",
+      title: "Repository policy",
+      detail: "Admitted scope and permissions",
       group: "worker",
       pin: [10, 35, 235, 55],
     },
     {
       id: "adapter",
       title: "Git transport adapter",
-      detail: "OpenShell reference",
+      detail: "Request-phase middleware",
       group: "worker",
       pin: [405, 35, 245, 55],
     },
     {
       id: "token-service",
       title: "Token Service",
-      detail: "Scheduled preparation",
+      detail: "Prepares and renews",
       group: "worker",
       pin: [10, 135, 205, 55],
     },
     {
       id: "owner",
-      title: "Prepared Git owner",
-      detail: "Restricted port · observedHook.readMaterial",
+      title: "Prepared Git authority",
+      detail: "Returns committed material for this route",
       group: "worker",
       pin: [345, 135, 305, 55],
     },
     {
       id: "app-signer",
-      title: "App JWT signer",
-      detail: "GitHub issues the installation token",
+      title: "GitHub App signer",
+      detail: "Signs a JWT for token issuance",
       group: "worker",
       pin: [10, 215, 255, 55],
     },
@@ -114,14 +113,14 @@ export default {
     {
       id: "gateway",
       title: "Gateway · management API",
-      detail: "Sentinel provider\nSandbox references its name",
+      detail: "Attaches the provider to\nthe Sandbox policy",
       group: "openshell",
       pin: [10, 245, 240, 75],
     },
     {
       id: "supervisor",
       title: "Supervisor",
-      detail: "Loaded policy +\nprovider generation",
+      detail: "Loads the policy and\nprovider generation",
       group: "openshell",
       pin: [10, 425, 240, 75],
     },
@@ -198,7 +197,7 @@ export default {
     {
       from: "policy",
       to: "adapter",
-      label: "Admitted binding\n+ installation ID",
+      label: "Selects the scope",
       pin: { label: [300, 326] },
     },
     { from: "token-service", to: "owner", label: "Prepares", pin: { label: [285, 439] } },
@@ -240,7 +239,7 @@ export default {
     {
       from: "adapter",
       to: "gateway",
-      label: "Bootstraps provider;\nupdates token if needed",
+      label: "Installs and refreshes\nprovider credentials",
       kind: "setup",
       pin: {
         from: "right",
@@ -255,7 +254,7 @@ export default {
     {
       from: "adapter",
       to: "gateway",
-      label: "Checks recipient\n+ generation",
+      label: "Verifies recipient\nand generation",
       pin: {
         from: "right",
         to: "top",
@@ -276,7 +275,7 @@ export default {
     },
   ],
   notes: [
-    "Gateway acceptance alone does not confirm installation. Mandatory mediation is unverified. The bundled Driver refuses repository-scoped Git.",
-    "Git requests do not pull tokens. The native Git sender and broker use a separate path.",
+    "Repository grants require the pre-credentials binding. The worker matches the held launcher’s request to an authenticated denial before installing the token.",
+    "Compute releases the launcher after installation readback. Token preparation and refresh run separately from request authorization.",
   ],
 } satisfies Diagram;

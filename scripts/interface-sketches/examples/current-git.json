@@ -13,7 +13,7 @@
     },
     {
       "kind": "text",
-      "text": "OpenShell reference implementation · GitHub App installation preview · setup in 01b",
+      "text": "OpenShell · request authorization before the supervisor adds credentials · setup in 01b",
       "x": 20,
       "y": 55,
       "size": 16,
@@ -60,7 +60,7 @@
       "y": 245,
       "w": 320,
       "h": 55,
-      "lines": ["Credential Proxy", "OpenShell supervisor"],
+      "lines": ["OpenShell supervisor", "Intercepts GitHub HTTPS requests"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "runtime"
@@ -74,8 +74,8 @@
       "h": 75,
       "lines": [
         "Git transport adapter",
-        "Verifies caller identity and binding.",
-        "Classifies the HTTP request."
+        "Authenticates the caller and checks the",
+        "request, binding and loaded generation"
       ],
       "titleLineCount": 1,
       "density": "compact",
@@ -88,7 +88,11 @@
       "y": 405,
       "w": 340,
       "h": 75,
-      "lines": ["Prepared Git owner", "Restricted worker authority", "observedHook.authorize"],
+      "lines": [
+        "Repository Git authority",
+        "Checks the current grant through",
+        "the authority for the selected scope"
+      ],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -100,7 +104,7 @@
       "y": 417,
       "w": 320,
       "h": 75,
-      "lines": ["GitHub", "Checks repository membership,", "permissions and branch rules."],
+      "lines": ["GitHub", "Enforces installation token permissions", "and GitHub branch rules"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "external"
@@ -135,7 +139,7 @@
     },
     {
       "kind": "text",
-      "text": "EvaluateHttpRequest\nbefore injection",
+      "text": "EvaluateHttpRequest\nwith the attempted request",
       "x": 477,
       "y": 248,
       "size": 14,
@@ -156,7 +160,7 @@
     },
     {
       "kind": "text",
-      "text": "Get local decision",
+      "text": "Check the grant",
       "x": 43,
       "y": 366,
       "size": 14,
@@ -198,7 +202,7 @@
     },
     {
       "kind": "text",
-      "text": "Inject token and forward\nif allowed",
+      "text": "If allowed, add the\ninstalled token and send",
       "x": 976,
       "y": 367,
       "size": 14,
@@ -208,7 +212,7 @@
     },
     {
       "kind": "text",
-      "text": "Before allow: worker rechecks recipient and loaded generation via Gateway status, without fetching a token.",
+      "text": "github-repository restricts access to selected repositories. GitHub governs refs. Explicit git-write checks the pushed ref in OCE.",
       "x": 20,
       "y": 522,
       "size": 14,
@@ -216,17 +220,9 @@
     },
     {
       "kind": "text",
-      "text": "Preview: allow does not prove delivery; one denial does not prove every request uses the hook. No OCE per-ref filter.",
+      "text": "github-installation uses the App installation’s scope and requires opt-in. An allow leaves exact dispatch and delivery unconfirmed.",
       "x": 20,
       "y": 544,
-      "size": 14,
-      "role": "note"
-    },
-    {
-      "kind": "text",
-      "text": "The bundled Driver refuses repository-scoped Git; no native sender fallback.",
-      "x": 20,
-      "y": 562,
       "size": 14,
       "role": "note"
     }

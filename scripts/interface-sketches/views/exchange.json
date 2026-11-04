@@ -5,7 +5,7 @@
     "apps/controller/src/composition/production.ts#composeProduction": "Controller startup",
     "apps/controller/src/drivers/egress-proxy/openshell-authority.ts#createOpenShellEgressAuthority": "Reference listener",
     "packages/contracts/src/credential-proxy-exchange.ts#CredentialProxyExchange": "Transport contract",
-    "packages/contracts/src/credential-proxy.ts#CredentialProxyDriver.bindExchange": "Selected Driver",
+    "packages/contracts/src/drivers/credential-proxy/index.ts#CredentialProxyDriver.bindExchange": "Selected Driver",
     "packages/occ/src/credential-proxy.ts#CredentialProxy": "OCC exchange authority",
     "packages/occ/src/index.ts#OpenClawController.createCredentialProxy": "Controller factory"
   },
@@ -21,7 +21,7 @@
     "packages/contracts/src/credential-proxy-exchange.ts#CredentialProxyExchange": [
       570, 470, 240, 65
     ],
-    "packages/contracts/src/credential-proxy.ts#CredentialProxyDriver.bindExchange": [
+    "packages/contracts/src/drivers/credential-proxy/index.ts#CredentialProxyDriver.bindExchange": [
       819, 86, 225, 65
     ],
     "packages/occ/src/credential-proxy.ts#CredentialProxy": [484, 347, 270, 65],

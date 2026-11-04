@@ -1,11 +1,11 @@
 {
-  "title": "00 Protected requests in OCE",
+  "title": "00 Who handles a protected request?",
   "width": 1180,
   "height": 640,
   "items": [
     {
       "kind": "text",
-      "text": "00 Protected requests in OCE",
+      "text": "00 Who handles a protected request?",
       "x": 20,
       "y": 33,
       "size": 28,
@@ -13,7 +13,7 @@
     },
     {
       "kind": "text",
-      "text": "OpenClaw Enterprise · platform roles, with an optional Git authority binding",
+      "text": "OpenClaw Enterprise · platform roles and the optional Git binding",
       "x": 20,
       "y": 55,
       "size": 16,
@@ -22,7 +22,7 @@
     { "kind": "box", "id": "setup", "x": 20, "y": 80, "w": 1140, "h": 130, "role": "control" },
     {
       "kind": "text",
-      "text": "Setup · installed capabilities",
+      "text": "Installed Driver capabilities",
       "x": 32,
       "y": 98,
       "size": 16,
@@ -33,7 +33,7 @@
     { "kind": "box", "id": "execution", "x": 380, "y": 290, "w": 460, "h": 250, "role": "runtime" },
     {
       "kind": "text",
-      "text": "Execution · request path",
+      "text": "Runtime · request path",
       "x": 392,
       "y": 308,
       "size": 16,
@@ -57,7 +57,7 @@
       "y": 120,
       "w": 270,
       "h": 55,
-      "lines": ["ComputeDriver", "Prepares and verifies execution"],
+      "lines": ["ComputeDriver", "Verifies protected execution"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -69,7 +69,7 @@
       "y": 120,
       "w": 320,
       "h": 55,
-      "lines": ["SandboxDriver", "Protected Git requires repositoryAccess"],
+      "lines": ["SandboxDriver", "Declares the repository access capability"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -81,7 +81,7 @@
       "y": 120,
       "w": 370,
       "h": 55,
-      "lines": ["CredentialProxyDriver", "Can supply the Git transport adapter"],
+      "lines": ["CredentialProxyDriver", "Can bind a transport to the worker authority"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -93,11 +93,7 @@
       "y": 330,
       "w": 290,
       "h": 75,
-      "lines": [
-        "Repository Git authority",
-        "ProtectedRepositoryGitAuthority",
-        "Checks grant and requested operation"
-      ],
+      "lines": ["Repository Git authority", "Checks the grant and requested operation"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -109,7 +105,7 @@
       "y": 348,
       "w": 215,
       "h": 55,
-      "lines": ["Agent workload", "Attempts a protected request"],
+      "lines": ["Agent workload", "Initiates the request"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "boundary"
@@ -121,7 +117,7 @@
       "y": 440,
       "w": 240,
       "h": 75,
-      "lines": ["Trusted sender", "Enforces the selected profile", "outside the workload"],
+      "lines": ["Trusted sender", "Handles the provider connection", "outside the workload"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "runtime"
@@ -133,7 +129,7 @@
       "y": 440,
       "w": 190,
       "h": 75,
-      "lines": ["Provider", "Applies its own", "access rules"],
+      "lines": ["Provider", "Enforces its own", "access rules"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "external"
@@ -151,7 +147,7 @@
     },
     {
       "kind": "text",
-      "text": "For protected Git, the worker supplies the authority\nCredentialProxyDriver.bindRepositoryGit(authority)",
+      "text": "Worker binds the Git authority\nCredentialProxyDriver.bindRepositoryGit(authority)",
       "x": 355,
       "y": 257,
       "size": 14,
@@ -171,7 +167,7 @@
     },
     {
       "kind": "text",
-      "text": "Attempt\nrequest",
+      "text": "Request",
       "x": 720,
       "y": 383,
       "size": 14,
@@ -191,7 +187,7 @@
     },
     {
       "kind": "text",
-      "text": "Authorize this\nGit request",
+      "text": "Check this\nGit request",
       "x": 212,
       "y": 450,
       "size": 14,
@@ -220,7 +216,7 @@
     },
     {
       "kind": "text",
-      "text": "OpenShell implements the GitHub App installation preview. Its online allow decision leaves dispatch and provider delivery unconfirmed.",
+      "text": "The selected OpenShell Driver checks Git requests before credentials are added. Its allow decision leaves dispatch and delivery unconfirmed.",
       "x": 20,
       "y": 562,
       "size": 14,
@@ -228,7 +224,7 @@
     },
     {
       "kind": "text",
-      "text": "Strands/Box has separate sandbox and provider-call prototypes. Protected Git requires its own binding and verification.",
+      "text": "Sender guarantees depend on the selected Driver and runtime. The generic exchange in 02 has a separate binding.",
       "x": 20,
       "y": 584,
       "size": 14,

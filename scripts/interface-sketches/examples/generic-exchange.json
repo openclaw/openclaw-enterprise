@@ -13,7 +13,7 @@
     },
     {
       "kind": "text",
-      "text": "Generic exchange · configured OCC API and OpenShell listener · the stock supervisor lacks a qualified exact sender",
+      "text": "Generic exchange · OpenClaw Control Plane authorizes · the runtime sender connects to the provider",
       "x": 20,
       "y": 55,
       "size": 16,
@@ -41,7 +41,7 @@
       "y": 125,
       "w": 205,
       "h": 56,
-      "lines": ["SecretDriver", "Versioned static value"],
+      "lines": ["SecretDriver", "Reads a versioned secret"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -53,7 +53,7 @@
       "y": 125,
       "w": 205,
       "h": 56,
-      "lines": ["PreparedTokenIssuer", "Eligible warm token"],
+      "lines": ["PreparedTokenIssuer", "Eligible prepared token"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -65,7 +65,7 @@
       "y": 250,
       "w": 375,
       "h": 60,
-      "lines": ["OCC exchange authority", "CredentialProxy class · checks use, send and reply"],
+      "lines": ["OCC exchange authority", "Resolves material, permits sends, protects replies"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -77,7 +77,7 @@
       "y": 377,
       "w": 375,
       "h": 60,
-      "lines": ["Driver-owned exchange listener", "OpenShell adapter · authenticates the stream"],
+      "lines": ["OpenShell exchange listener", "Authenticates the exchange stream"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -100,8 +100,8 @@
       "x": 850,
       "y": 265,
       "w": 275,
-      "h": 42,
-      "lines": ["Capture request and hold reply"],
+      "h": 55,
+      "lines": ["Capture the request", "Record the original caller"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "runtime"
@@ -113,7 +113,7 @@
       "y": 342,
       "w": 275,
       "h": 55,
-      "lines": ["Enforce the decision", "Own upstream TLS and reply delivery"],
+      "lines": ["Send and hold the reply", "Owns upstream TLS and reply delivery"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "runtime"
@@ -183,7 +183,7 @@
     },
     {
       "kind": "text",
-      "text": "Five bound methods",
+      "text": "Calls five exchange methods",
       "x": 267,
       "y": 348,
       "size": 14,
@@ -214,7 +214,7 @@
       "kind": "line",
       "points": [
         { "node": "capture", "side": "left" },
-        [640, 286],
+        [640, 292.5],
         [640, 407],
         { "node": "listener", "side": "right" }
       ],
@@ -223,9 +223,49 @@
     },
     {
       "kind": "text",
-      "text": "Captured request / held response",
-      "x": 517,
-      "y": 307,
+      "text": "Resolve and authorize\nthe captured request",
+      "x": 520,
+      "y": 309,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "capture", "side": "bottom" },
+        { "node": "dispatch", "side": "top" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Wait for permit",
+      "x": 998,
+      "y": 334,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "dispatch", "side": "left" },
+        [690, 369.5],
+        [690, 407],
+        { "node": "listener", "side": "right" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Check the held reply",
+      "x": 523,
+      "y": 369,
       "size": 14,
       "role": "label",
       "backdrop": true,
@@ -236,18 +276,20 @@
       "points": [
         { "node": "listener", "side": "bottom" },
         [257.5, 493],
-        [763, 493],
-        [763, 369.5],
-        { "node": "dispatch", "side": "left" }
+        [785, 493],
+        [785, 418],
+        [1142, 418],
+        [1142, 369.5],
+        { "node": "dispatch", "side": "right" }
       ],
       "dashed": false,
       "arrow": true
     },
     {
       "kind": "text",
-      "text": "Credential headers when needed,\nsend permit / protected response",
-      "x": 509,
-      "y": 447,
+      "text": "Headers if needed, then send permit\nReturns only the approved reply",
+      "x": 507,
+      "y": 456,
       "size": 14,
       "role": "label",
       "backdrop": true,
@@ -274,7 +316,7 @@
     },
     {
       "kind": "text",
-      "text": "At API startup, the selected CredentialProxyDriver can bind its transport owner to OCC. A credential-free route skips both material readers.",
+      "text": "At API startup, the selected Driver can bind the exchange to OCC. A route that uses no credential skips both material readers.",
       "x": 20,
       "y": 562,
       "size": 14,
@@ -282,7 +324,7 @@
     },
     {
       "kind": "text",
-      "text": "The runtime sender must forward only the permitted request and release only the protected reply. The observed Git hook uses a separate worker path (01).",
+      "text": "The sender releases the approved reply to the original caller. Stock OpenShell lacks this sender guarantee. Git uses the separate worker path in 01.",
       "x": 20,
       "y": 584,
       "size": 14,

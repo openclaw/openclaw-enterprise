@@ -6,8 +6,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "node build.ts",
-    "check": "node build.ts --check",
+    "build": "node build.ts && cp examples/*.png ../../docs/assets/credential-proxy/",
+    "check": "node build.ts --check && for image in examples/*.png; do cmp \"$image\" \"../../docs/assets/credential-proxy/${image##*/}\" || exit 1; done",
     "graph": "node graph.ts",
     "graph:check": "node graph.ts --check",
     "test": "tsc --noEmit && node --test '*.test.ts'"

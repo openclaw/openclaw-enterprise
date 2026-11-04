@@ -4,12 +4,14 @@ on:
     branches: [main, tools/interface-sketches]
     paths:
       - "scripts/interface-sketches/**"
+      - "docs/assets/credential-proxy/**"
       - "apps/controller/src/**"
       - "packages/**/src/**"
       - ".github/workflows/interface-sketches.yml"
   pull_request:
     paths:
       - "scripts/interface-sketches/**"
+      - "docs/assets/credential-proxy/**"
       - "apps/controller/src/**"
       - "packages/**/src/**"
       - ".github/workflows/interface-sketches.yml"

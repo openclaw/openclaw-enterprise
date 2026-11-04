@@ -13,7 +13,7 @@
     },
     {
       "kind": "text",
-      "text": "OpenShell reference implementation · provisioning, token refresh and installation readback",
+      "text": "OpenShell · held startup, token installation and refresh",
       "x": 20,
       "y": 55,
       "size": 16,
@@ -30,7 +30,7 @@
     },
     {
       "kind": "text",
-      "text": "OCE · OpenClaw Enterprise control plane",
+      "text": "OpenClaw Enterprise control plane",
       "x": 32,
       "y": 93,
       "size": 16,
@@ -56,7 +56,7 @@
     { "kind": "box", "id": "worker", "x": 35, "y": 285, "w": 660, "h": 280, "role": "control" },
     {
       "kind": "text",
-      "text": "Worker · token preparation and transport",
+      "text": "Worker · token preparation and Git authorization",
       "x": 47,
       "y": 303,
       "size": 16,
@@ -73,7 +73,7 @@
       "y": 110,
       "w": 250,
       "h": 55,
-      "lines": ["Installation configuration", "Pairs both capabilities"],
+      "lines": ["Installation configuration", "Selects both capabilities"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -121,7 +121,7 @@
       "y": 145,
       "w": 210,
       "h": 55,
-      "lines": ["Harness", "Agent has no Git secrets"],
+      "lines": ["Harness", "Starts after signed release"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "boundary"
@@ -133,7 +133,7 @@
       "y": 320,
       "w": 235,
       "h": 55,
-      "lines": ["GitHubRepositoryPolicy", "RepositoryPolicyDriver"],
+      "lines": ["Repository policy", "Admitted scope and permissions"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -145,7 +145,7 @@
       "y": 320,
       "w": 245,
       "h": 55,
-      "lines": ["Git transport adapter", "OpenShell reference"],
+      "lines": ["Git transport adapter", "Request-phase middleware"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -157,7 +157,7 @@
       "y": 420,
       "w": 205,
       "h": 55,
-      "lines": ["Token Service", "Scheduled preparation"],
+      "lines": ["Token Service", "Prepares and renews"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -169,7 +169,7 @@
       "y": 420,
       "w": 305,
       "h": 55,
-      "lines": ["Prepared Git owner", "Restricted port · observedHook.readMaterial"],
+      "lines": ["Prepared Git authority", "Returns committed material for this route"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -181,7 +181,7 @@
       "y": 500,
       "w": 255,
       "h": 55,
-      "lines": ["App JWT signer", "GitHub issues the installation token"],
+      "lines": ["GitHub App signer", "Signs a JWT for token issuance"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -205,7 +205,7 @@
       "y": 320,
       "w": 240,
       "h": 75,
-      "lines": ["Gateway · management API", "Sentinel provider", "Sandbox references its name"],
+      "lines": ["Gateway · management API", "Attaches the provider to", "the Sandbox policy"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "runtime"
@@ -217,7 +217,7 @@
       "y": 500,
       "w": 240,
       "h": 75,
-      "lines": ["Supervisor", "Loaded policy +", "provider generation"],
+      "lines": ["Supervisor", "Loads the policy and", "provider generation"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "runtime"
@@ -337,7 +337,7 @@
     },
     {
       "kind": "text",
-      "text": "Admitted binding\n+ installation ID",
+      "text": "Selects the scope",
       "x": 300,
       "y": 326,
       "size": 14,
@@ -438,7 +438,7 @@
     },
     {
       "kind": "text",
-      "text": "Bootstraps provider;\nupdates token if needed",
+      "text": "Installs and refreshes\nprovider credentials",
       "x": 723,
       "y": 319,
       "size": 14,
@@ -460,7 +460,7 @@
     },
     {
       "kind": "text",
-      "text": "Checks recipient\n+ generation",
+      "text": "Verifies recipient\nand generation",
       "x": 744,
       "y": 232,
       "size": 14,
@@ -489,7 +489,7 @@
     },
     {
       "kind": "text",
-      "text": "Gateway acceptance alone does not confirm installation. Mandatory mediation is unverified. The bundled Driver refuses repository-scoped Git.",
+      "text": "Repository grants require the pre-credentials binding. The worker matches the held launcher’s request to an authenticated denial before installing the token.",
       "x": 20,
       "y": 602,
       "size": 14,
@@ -497,7 +497,7 @@
     },
     {
       "kind": "text",
-      "text": "Git requests do not pull tokens. The native Git sender and broker use a separate path.",
+      "text": "Compute releases the launcher after installation readback. Token preparation and refresh run separately from request authorization.",
       "x": 20,
       "y": 624,
       "size": 14,

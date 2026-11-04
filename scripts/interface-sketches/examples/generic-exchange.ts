@@ -3,7 +3,7 @@ import type { Diagram } from "../diagram.ts";
 export default {
   title: "02 Who sends a protected request?",
   subtitle:
-    "Generic exchange · configured OCC API and OpenShell listener · the stock supervisor lacks a qualified exact sender",
+    "Generic exchange · OpenClaw Control Plane authorizes · the runtime sender connects to the provider",
   layout: { board: [1180, 640] },
   groups: [
     { id: "api", title: "Controller API process", role: "control", pin: [20, 80, 475, 460] },
@@ -21,42 +21,43 @@ export default {
     {
       id: "static",
       title: "SecretDriver",
-      detail: "Versioned static value",
+      detail: "Reads a versioned secret",
       group: "api",
       pin: [20, 45, 205, 56],
     },
     {
       id: "warm",
       title: "PreparedTokenIssuer",
-      detail: "Eligible warm token",
+      detail: "Eligible prepared token",
       group: "api",
       pin: [250, 45, 205, 56],
     },
     {
       id: "exchange",
       title: "OCC exchange authority",
-      detail: "CredentialProxy class · checks use, send and reply",
+      detail: "Resolves material, permits sends, protects replies",
       group: "api",
       pin: [50, 170, 375, 60],
     },
     {
       id: "listener",
-      title: "Driver-owned exchange listener",
-      detail: "OpenShell adapter · authenticates the stream",
+      title: "OpenShell exchange listener",
+      detail: "Authenticates the exchange stream",
       group: "api",
       pin: [50, 297, 375, 60],
     },
     { id: "agent", title: "Agent in sandbox", group: "runtime", pin: [35, 40, 275, 42] },
     {
       id: "capture",
-      title: "Capture request and hold reply",
+      title: "Capture the request",
+      detail: "Record the original caller",
       group: "sender",
-      pin: [20, 35, 275, 42],
+      pin: [20, 35, 275, 55],
     },
     {
       id: "dispatch",
-      title: "Enforce the decision",
-      detail: "Own upstream TLS and reply delivery",
+      title: "Send and hold the reply",
+      detail: "Owns upstream TLS and reply delivery",
       group: "sender",
       pin: [20, 112, 275, 55],
     },
@@ -96,7 +97,7 @@ export default {
     {
       from: "listener",
       to: "exchange",
-      label: "Five bound methods",
+      label: "Calls five exchange methods",
       pin: { from: "top", to: "bottom", label: [267, 348] },
     },
     {
@@ -108,30 +109,52 @@ export default {
     {
       from: "capture",
       to: "listener",
-      label: "Captured request / held response",
+      label: "Resolve and authorize\nthe captured request",
       pin: {
         from: "left",
         to: "right",
         via: [
-          [640, 286],
+          [640, 292.5],
           [640, 407],
         ],
-        label: [517, 307],
+        label: [520, 309],
+      },
+    },
+    {
+      from: "capture",
+      to: "dispatch",
+      label: "Wait for permit",
+      pin: { from: "bottom", to: "top", label: [998, 334] },
+    },
+    {
+      from: "dispatch",
+      to: "listener",
+      label: "Check the held reply",
+      pin: {
+        from: "left",
+        to: "right",
+        via: [
+          [690, 369.5],
+          [690, 407],
+        ],
+        label: [523, 369],
       },
     },
     {
       from: "listener",
       to: "dispatch",
-      label: "Credential headers when needed,\nsend permit / protected response",
+      label: "Headers if needed, then send permit\nReturns only the approved reply",
       pin: {
         from: "bottom",
-        to: "left",
+        to: "right",
         via: [
           [257.5, 493],
-          [763, 493],
-          [763, 369.5],
+          [785, 493],
+          [785, 418],
+          [1142, 418],
+          [1142, 369.5],
         ],
-        label: [509, 447],
+        label: [507, 456],
       },
     },
     {
@@ -143,7 +166,7 @@ export default {
     },
   ],
   notes: [
-    "At API startup, the selected CredentialProxyDriver can bind its transport owner to OCC. A credential-free route skips both material readers.",
-    "The runtime sender must forward only the permitted request and release only the protected reply. The observed Git hook uses a separate worker path (01).",
+    "At API startup, the selected Driver can bind the exchange to OCC. A route that uses no credential skips both material readers.",
+    "The sender releases the approved reply to the original caller. Stock OpenShell lacks this sender guarantee. Git uses the separate worker path in 01.",
   ],
 } satisfies Diagram;

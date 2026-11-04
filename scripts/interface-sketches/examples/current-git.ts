@@ -2,7 +2,8 @@ import type { Diagram } from "../diagram.ts";
 
 export default {
   title: "01 Protected Git request",
-  subtitle: "OpenShell reference implementation · GitHub App installation preview · setup in 01b",
+  subtitle:
+    "OpenShell · request authorization before the supervisor adds credentials · setup in 01b",
   layout: { board: [1180, 640] },
   groups: [
     {
@@ -35,29 +36,29 @@ export default {
     { id: "agent", title: "Agent", group: "sandbox", pin: [70, 30, 180, 40] },
     {
       id: "supervisor",
-      title: "Credential Proxy",
-      detail: "OpenShell supervisor",
+      title: "OpenShell supervisor",
+      detail: "Intercepts GitHub HTTPS requests",
       group: "openshell",
       pin: [60, 165, 320, 55],
     },
     {
       id: "adapter",
       title: "Git transport adapter",
-      detail: "Verifies caller identity and binding.\nClassifies the HTTP request.",
+      detail: "Authenticates the caller and checks the\nrequest, binding and loaded generation",
       group: "worker",
       pin: [30, 155, 340, 75],
     },
     {
       id: "owner",
-      title: "Prepared Git owner",
-      detail: "Restricted worker authority\nobservedHook.authorize",
+      title: "Repository Git authority",
+      detail: "Checks the current grant through\nthe authority for the selected scope",
       group: "worker",
       pin: [30, 325, 340, 75],
     },
     {
       id: "github",
       title: "GitHub",
-      detail: "Checks repository membership,\npermissions and branch rules.",
+      detail: "Enforces installation token permissions\nand GitHub branch rules",
       group: "internet",
       pin: [60, 27, 320, 75],
     },
@@ -72,13 +73,13 @@ export default {
     {
       from: "supervisor",
       to: "adapter",
-      label: "EvaluateHttpRequest\nbefore injection",
+      label: "EvaluateHttpRequest\nwith the attempted request",
       pin: { from: "left", to: "right", label: [477, 248] },
     },
     {
       from: "adapter",
       to: "owner",
-      label: "Get local decision",
+      label: "Check the grant",
       pin: {
         from: "left",
         to: "left",
@@ -106,7 +107,7 @@ export default {
     {
       from: "supervisor",
       to: "github",
-      label: "Inject token and forward\nif allowed",
+      label: "If allowed, add the\ninstalled token and send",
       kind: "conditional",
       pin: {
         from: "right",
@@ -120,7 +121,7 @@ export default {
     },
   ],
   notes: [
-    "Before allow: worker rechecks recipient and loaded generation via Gateway status, without fetching a token.",
-    "Preview: allow does not prove delivery; one denial does not prove every request uses the hook. No OCE per-ref filter.\nThe bundled Driver refuses repository-scoped Git; no native sender fallback.",
+    "github-repository restricts access to selected repositories. GitHub governs refs. Explicit git-write checks the pushed ref in OCE.",
+    "github-installation uses the App installation’s scope and requires opt-in. An allow leaves exact dispatch and delivery unconfirmed.",
   ],
 } satisfies Diagram;

@@ -41,7 +41,7 @@ const proxy = "packages/occ/src/credential-proxy.ts";
 const exchange = "packages/contracts/src/credential-proxy-exchange.ts";
 const listener = "apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
 const installed = "packages/occ/src/installed-driver.ts";
-const driver = "packages/contracts/src/credential-proxy.ts";
+const driver = "packages/contracts/src/drivers/credential-proxy/index.ts";
 const git = "apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 const gitContract = "packages/contracts/src/protected-repository-git.ts";
 const methods = ["resolve", "authorizeSend", "beginResponse", "renewResponse", "protectResponse"];
@@ -72,7 +72,7 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
           from: "authority",
           to: "proxy",
           label:
-            "For protected Git, the worker supplies the authority\nCredentialProxyDriver.bindRepositoryGit(authority)",
+            "Worker binds the Git authority\nCredentialProxyDriver.bindRepositoryGit(authority)",
           edgeKind: "setup",
         },
         required: [
@@ -94,13 +94,18 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
     claims: [
       {
         description:
-          "The Git adapter contains a typed installation-authority call, distinct from generic exchange calls; an allow or delivery is not proved.",
-        pointer: { kind: "edge", from: "adapter", to: "owner", label: "Get local decision" },
+          "The Git adapter has named calls to the explicit Git and installation authorities. The selected-repository authority uses an inline type outside the extractor’s scope.",
+        pointer: { kind: "edge", from: "adapter", to: "owner", label: "Check the grant" },
         required: [
           coupling(
             `${git}#protectedOpenShellGitOwner`,
             "calls",
             `${gitContract}#GitHubInstallationAuthority.authorize`,
+          ),
+          coupling(
+            `${git}#protectedOpenShellGitOwner`,
+            "calls",
+            `${gitContract}#RepositoryGitAuthority.authorize`,
           ),
         ],
       },
@@ -176,7 +181,12 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
       {
         description:
           "Installation binds five concrete methods and the listener contains five typed contract calls; this is lexical coupling, not execution or authenticated transport proof.",
-        pointer: { kind: "edge", from: "listener", to: "exchange", label: "Five bound methods" },
+        pointer: {
+          kind: "edge",
+          from: "listener",
+          to: "exchange",
+          label: "Calls five exchange methods",
+        },
         required: methods.flatMap((method) => [
           coupling(
             `${installation}#installEgressAuthority`,

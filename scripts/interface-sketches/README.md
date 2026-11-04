@@ -2,17 +2,11 @@
 
 Change the **TypeScript** to describe a component or connection. The tool lays out the graph and generates an editable JSON scene and a PNG. Use the PNG in a review; use the TypeScript for the next change.
 
-| Diagram                                                               | What it shows                                                                                                                                       | Authoring source                                                    |
-| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [00 · Protected requests in OCE](examples/platform-roles.png)         | Platform roles and the optional Git binding. Start here before the OpenShell reference views.                                                       | [platform-roles.ts](examples/platform-roles.ts)                     |
-| [1 · Protected Git request](examples/current-git.png)                 | One push attempt in the GitHub App installation preview. The supervisor calls the worker hook; an allow does not prove GitHub received the request. | [current-git.ts](examples/current-git.ts)                           |
-| [1b · Protected Git setup](examples/current-git-setup.png)            | How OCE prepares a token, updates an attached provider and verifies what the supervisor loaded.                                                     | [current-git-setup.ts](examples/current-git-setup.ts)               |
-| [2 · Who sends a protected request?](examples/generic-exchange.png)   | The controller API binds an exchange authority; the trusted sender owns provider TLS and response delivery.                                         | [generic-exchange.ts](examples/generic-exchange.ts)                 |
-| [3 · Credential pull proposal](examples/credential-pull-proposal.png) | A design proposal with a supervisor credential cache. Its ownership and refresh assumptions are separate from the current implementation.           | [credential-pull-proposal.ts](examples/credential-pull-proposal.ts) |
+See the [Credential Proxy architecture diagrams](../../docs/design/credential-proxy-architecture.md) for the reading order, current paths and proposed design. Each image has a same-named TypeScript source under [examples](examples/).
 
 ## Which parts are backed by code?
 
-The pictures are authored in TypeScript. A separate [claim catalog](evidence.ts) connects selected boxes and arrows to relationships that the TypeScript compiler can resolve in OCE source. The graph is extracted from code independently of the claims. Diagram 00 describes a contract, 1 and 1b trace a specific preview, 2 describes a conditional composition, and 3 is a proposal. None is a deployment inventory.
+The pictures are authored in TypeScript. A separate [claim catalog](evidence.ts) connects selected boxes and arrows to relationships that the TypeScript compiler can resolve in OCE source. The graph is extracted from code independently of the claims. Diagram 00 describes a contract, 1 and 1b trace the OpenShell Git path, 2 describes a conditional composition, and 3 is a proposal. None is a deployment inventory.
 
 From this directory, after installing dependencies:
 
@@ -27,12 +21,6 @@ The default scan checks selected files. Use a clean checkout with `--root` to co
 
 Look at `.evidence.diagrams[].coverage` before relying on a picture: unmapped elements have no automated claim. A match establishes a lexical relationship, even if the branch never runs. It cannot tell you which Driver an installation selects, where a process runs, which request reached a provider, or whether withdrawal stopped a send. Those require configuration and runtime evidence. CI checks the static claims separately from whether the generated pictures are up to date.
 
-![Platform roles for protected requests](examples/platform-roles.png)
-
-**Read the headings as roles.** The Git transport adapter is supplied by the selected backend. The public extension point is [`CredentialProxyDriver.bindRepositoryGit(authority)`](https://github.com/openclaw/openclaw-enterprise/blob/cdbbee5b97230097f43ae715d3f2fda087546a3c/packages/contracts/src/credential-proxy.ts#L429-L439); there is no required `GitTransportDriver` service. In 1 and 1b, OpenShell implements this role and its supervisor calls the worker hook. A different backend can implement the capability differently. [AWS Strands/Box sandbox work](https://github.com/openclaw/openclaw-enterprise/pull/3832) illustrates a different Sandbox implementation; the [separate Box sender prototype](https://github.com/openclaw/openclaw-enterprise/blob/ee2da743e54a8540b24c4ae217d8237fb17a5538/apps/controller/src/backends/strands-box.ts#L165) explores protected provider calls. Neither establishes support for this Git binding.
-
-For diagrams 1 and 1b, see the [worker hook and Git authority](https://github.com/openclaw/openclaw-enterprise/blob/cdbbee5b97230097f43ae715d3f2fda087546a3c/apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts#L2157-L2200) and the [profile admission checks](https://github.com/openclaw/openclaw-enterprise/blob/cdbbee5b97230097f43ae715d3f2fda087546a3c/apps/controller/src/drivers/egress-proxy/openshell.ts#L418-L437). Diagram 2 separates the controller API’s [exchange object and its five bound methods](https://github.com/openclaw/openclaw-enterprise/blob/4e9e2ccefd7e17bdb0746b62f3c90c59b3f822bb/apps/controller/src/composition/egress-authority.ts#L13-L42) from the sender that injects credentials and sends the request. Diagram 3 is a proposal.
-
 ## Make a change
 
 From the repository root, use Node 24 and the repository's pinned pnpm:
@@ -43,7 +31,7 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Open `examples/current-git.ts`, change the Agent's title, and run `pnpm build` again. Open `examples/current-git.png` to see the change. Commit the TypeScript, generated JSON and PNG together. `pnpm check` compares generated output without overwriting files; `pnpm test` type-checks the examples and runs tool tests.
+Open `examples/current-git.ts`, change the Agent's title, and run `pnpm build` again. Open `examples/current-git.png` to see the change. Commit the TypeScript, generated JSON and both PNG paths together. The build copies previews to `docs/assets/credential-proxy/` for the docs site and keeps the existing example URLs usable. `pnpm check` compares generated output without overwriting files; `pnpm test` type-checks the examples and runs tool tests.
 
 Canonical checks treat each top-level `examples/*.png` file as a preview. It must have a same-stem regular `.ts` source; declarations (`.d.ts`), symlinks and directories do not qualify. After renaming or deleting a source, restore it or manually remove the reported orphan PNG and its same-stem JSON, if present. Builds never delete old assets. Checks ignore standalone JSON and nested entries, and fail if no eligible sources remain. Custom `node build.ts INPUT.ts OUTPUT_PREFIX` builds are unchanged.
 
