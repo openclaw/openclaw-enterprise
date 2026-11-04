@@ -162,10 +162,11 @@ COPY --from=openclaw-source /inputs/ ./
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=secret,id=corepack-env,required=false \
     --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
     corepack enable; \
-    COREPACK_ENV_FILE=/run/secrets/corepack-env corepack pnpm --version
+    COREPACK_ENV_FILE=/run/secrets/corepack-env sh /tmp/install-attempts.sh corepack pnpm --version
 
 FROM openclaw-dependency-inputs AS openclaw-patched-source
 # Keep package-store downloads out of retained layers; installed files remain.

@@ -355,12 +355,10 @@ mounts npmrc during package-manager bootstrap and dependency installation. `.doc
 files. Registry tokens must not enter source, image layers, lockfiles, Helm
 values, startup YAML, logs, or runtime Pods.
 
-Corepack's initial download of pnpm uses separate registry settings and does not
-read npmrc. Both image recipes accept an optional `corepack-env` build secret
-for Corepack's registry and bearer authentication. It is mounted in a separate
-pnpm bootstrap step, outside dependency lifecycle execution. See [building through a package
-registry mirror](../../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
-for the file format and build options.
+Corepack does not read npmrc. Both recipes accept optional `corepack-env` for
+registry and bearer authentication, mounted only during pnpm bootstrap, outside
+dependency lifecycle execution. See the [registry mirror procedure](../../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
+for configuration.
 
 ## Loading, updates, and startup failures
 

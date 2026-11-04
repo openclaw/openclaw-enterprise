@@ -108,6 +108,8 @@ In both image recipes, a separate pnpm bootstrap step mounts the optional
 `corepack-env`, `npmrc` and `build-ca` secrets. The process-scoped
 `COREPACK_ENV_FILE` points Corepack at its registry settings. Both OpenClaw
 dependency stages inherit this bootstrap from `openclaw-dependency-inputs`.
+The shared bootstrap and both OpenClaw installs use `install-attempts.sh`:
+its first two attempts restart after 300 seconds; its final attempt has no deadline.
 Dependency installation then uses the populated package-manager cache with
 Corepack downloads disabled, without the Corepack secret or its process
 environment. pnpm reads npmrc for dependency installation; Node uses the
