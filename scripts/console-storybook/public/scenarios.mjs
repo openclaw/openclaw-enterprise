@@ -3188,13 +3188,13 @@ export const scenarios = {
   },
   deploymentModelProbeFailed: {
     group: "Pages/Agent detail",
-    name: "New version failed its model check",
+    name: "New version uses an unavailable model",
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     description:
-      "Recovery comes first: v7 failed its startup model check, while selected v6 may have stopped. The detailed record preserves the reported cause without assuming a credential problem.",
+      "The recovery banner names the model configured for v7 and leads with Open Configuration so the operator can correct the model and deploy the same Agent.",
     steps: [
       "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
       "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration in the recovery card.",
@@ -3245,10 +3245,10 @@ export const scenarios = {
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     readOnlyPermissionSummary: true,
     description:
-      "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
+      "The viewer can read the Agent. Recovery tells them to ask a Configuration editor to choose a model and someone with deploy access to redeploy.",
     steps: [
       "Check that the recovery has one link, Open v7 Logs, and the header says Open draft. The picker includes Draft and its Configuration access.",
       "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
@@ -3261,7 +3261,7 @@ export const scenarios = {
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     agentPermissionSummary: {
       update: false,
       deploy: true,
@@ -3276,7 +3276,7 @@ export const scenarios = {
       sandboxPolicyRead: false,
     },
     description:
-      "Recovery offers Open draft when the viewer may deploy but cannot edit the Configuration, so the draft is theirs to read and deploy.",
+      "The viewer can deploy the Agent. Recovery tells them to ask a Configuration editor to choose a model, then redeploy after the editor saves it.",
     steps: [
       "Select Open draft and confirm the Configuration tab opens in view, focused, without deploying.",
     ],
@@ -3288,7 +3288,7 @@ export const scenarios = {
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     agentPermissionSummary: {
       update: true,
       deploy: false,
@@ -3305,7 +3305,7 @@ export const scenarios = {
     description:
       "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration.",
     steps: [
-      "Check that the recovery shows Open v7 Logs and Open Configuration, with no Deploy again.",
+      "Check that Open Configuration is first. Recovery tells the editor to choose a model and ask someone with deploy access to redeploy.",
       "Select Open Configuration and confirm the draft's Configuration tab opens in view with Edit Configuration available.",
     ],
     gap: "The failure and permissions are simulated; the API still authorizes every save.",
@@ -3393,7 +3393,7 @@ export const scenarios = {
     path: candidateVersion,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     agentPermissionSummary: {
       update: false,
       deploy: true,
@@ -3416,7 +3416,7 @@ export const scenarios = {
       },
     ],
     description:
-      "The startup model check failure for a viewer who may deploy but can neither edit nor read the Configuration. The draft Open draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
+      "The viewer has deploy access but cannot read the Configuration. Recovery asks them to involve a Configuration editor and someone who can redeploy, and offers only the Logs link.",
     steps: [
       "At 1440 and 390 wide, confirm the recovery shows one link, Open v7 Logs, and never shows Open draft.",
     ],

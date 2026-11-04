@@ -4120,8 +4120,15 @@ function codexTransientFailure(message, summary) {
   return summary.providerStatus >= 500 ||
     /server_error|overloaded|at capacity|high demand|stream disconnected|error sending request|connection (?:failed|reset|refused|closed)|broken pipe/i.test(message);
 }
-function codexProbeStatusFailure(message, detail) {
+function codexProbeStatusFailure(message, detail, modelId) {
   const summary = providerErrorSummary(message);
+  // Codex 0.164 formats a provider JSON error as status + error.message and drops error.code.
+  // Recognize that specific 404 for the model sent by this probe, including a reconnect notice.
+  if (summary.providerStatus === 404 && summary.providerCode === undefined) {
+    const match = /^(?:Reconnecting\.\.\. [1-9]\d*\/[1-9]\d* \()?unexpected status 404 Not Found: The model \x60([^\x60\r\n]+)\x60 does not exist or you do not have access to it\.?(?=$|, |\))/.exec(message);
+    if (match?.[1] === modelId) summary.providerCode = "model_not_found";
+  }
+  if (summary.providerCode === "model_not_found") detail = "model_not_found";
   return {
     ...probeFailure("PROBE_STATUS", codexRateLimited(message) ? "rate_limit" : detail),
     ...summary,
@@ -4151,6 +4158,7 @@ function probeCodexAuthentication(timeout) {
   try {
     const selectedModel = process.env.OPENCLAW_HARNESS_MODEL;
     if (typeof selectedModel !== "string" || !/^(openai|codex)\/.+/.test(selectedModel)) return finish("UNAVAILABLE");
+    const modelId = selectedModel.slice(selectedModel.indexOf("/") + 1);
     // Pinned native features suppress executable and external tools. Metadata may
     // still advertise apply_patch: read-only + never denies its writes. Any tool
     // event makes this probe unsuccessful, including harmless request_user_input.
@@ -4167,7 +4175,7 @@ function probeCodexAuthentication(timeout) {
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
-      "--model", selectedModel.slice(selectedModel.indexOf("/") + 1),
+      "--model", modelId,
       "-c", "cli_auth_credentials_store=file",
       "-c", 'web_search="disabled"',
       "-c", "project_doc_max_bytes=0",
@@ -4235,8 +4243,8 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
     let unrecoveredTransientFailure = false;
     for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
-      const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event")
-        : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed") : undefined;
+      const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event", modelId)
+        : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed", modelId) : undefined;
       // A protected profile (provider tools none) retries nothing, so its transient
       // failure is held like any other error event (finding 1599).
       if (failure?.transient === true && pluginRuntime?.manifest.providerTools !== "none") {
@@ -4246,10 +4254,10 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
       }
       if (event.type === "error") {
         if (pluginRuntime?.manifest.providerTools === "none" || !turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
-          ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(codexProbeStatusFailure(event.message, "error-event"));
+          ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(failure);
         continue;
       }
-      if (event.type === "turn.failed") return finish(codexProbeStatusFailure(event.error?.message, "turn-failed"));
+      if (event.type === "turn.failed") return finish(failure);
       if (!allowed.has(event.type) ||
         (event.type.startsWith("item.") && !["agent_message", "reasoning", "error"].includes(event.item?.type))) {
         return finish(probeFailure("PROBE_STATUS", event.type.startsWith("item.") ? "tool-event" : "unexpected-event"));
