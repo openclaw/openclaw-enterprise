@@ -10,7 +10,10 @@ import {
   ServiceAccountCredentialSecretExistsError,
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
 import {
   authorizedPrincipal,
   backendDefinition,
@@ -103,15 +106,12 @@ function apiController(fixture, state, { client, storage }) {
     state,
     storage,
   );
-  for (const selected of [
+  registerAndSelectDrivers(controller, [
     new NativeIAMDriver(state, { id: `issuance-recovery-iam-${randomUUID()}` }),
     createDevelopmentComputeDriver(),
     createTestConfigurationDriver(),
     driver,
-  ]) {
-    controller.registerDriver(selected);
-    controller.selectDriver(selected.capability, selected.id);
-  }
+  ]);
   return controller;
 }
 

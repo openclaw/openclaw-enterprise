@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-23
-last_updated_session: fix-1828
+updated: 2026-10-31
+last_updated_session: fix-3023
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -161,9 +161,10 @@ traces storage and delivery. Secret Broker substitution remains unimplemented.
 `apps/controller/src/drivers/configuration/filesystem/index.ts:FilesystemConfigurationDriver.write`
 
 Default Compose development uses the filesystem Driver. Each write exclusively
-creates a private temporary file under the exact Namespace directory, writes the
-approved document, closes the file, then atomically renames it to the Configuration
-path. A finally block removes only that write's temporary file, including after
+creates a private temporary file under the exact Namespace directory. It sets the
+open file to `0600` before writing so umask cannot make a successful replacement
+unreadable. It then writes the approved document, closes the file, and atomically
+renames it to the Configuration path. A finally block removes only that write's temporary file, including after
 partial writes such as `ENOSPC` or a failed rename. The prior destination stays
 intact until rename succeeds, and other writers' temporary files remain untouched. Storage
 and cleanup failures propagate to the caller; this does not add automatic retries
@@ -217,6 +218,17 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-01 07:20: Configuration and Secret writes send no Kubernetes call after 12 seconds; slow clusters fail them with `503` or a read's error. (fix-3106, finding 3106)
+- 2026-10-31: Writes, Agent save and deployment refuse a `gateway.auth.password` object OpenClaw cannot read on every Compute (no provider, other keys, a provider or allowlist that cannot serve it); Docker and Kubernetes Compute use the same reader, and a stored row still reads and deletes. (fix-3061, findings 3061-3063)
+- 2026-10-31: Writes, Agent save and deployment also refuse a `secrets.defaults` alias OpenClaw's configuration check refuses, before the password rule; SSH Compute reads the password with the same reader and renders a readable custom-provider reference as written. (fix-3064, findings 3064, 3065)
+- 2026-10-31: With no model selected, the provider catalog refusal names the model setting instead of the row rule. (fix-3023)
+
+- 2026-10-31: Writes also refuse model and runtime settings that conflict (entry primary, selectable models, runtime policies and IDs, Codex provider), with deployment's text and order; drafts without a model or runtime still save. (fix-3020, finding 3020)
+
+- 2026-10-31: Writes refuse a provider model entry that no primary or fallback selects, with deployment's text; a stored row that keeps one is refused on its next write. (fix-3019, finding 3019)
+
+- 2026-10-29: Establish the temporary file mode before replacing a filesystem Configuration. (authoring-run/74db2351-f5c1-4733-a3dc-a1ca653b29cf)
 
 - 2026-10-25: Writes refuse a Slack token SecretRef the Slack Channel Driver cannot read. (finding 2514)
 - 2026-10-25 13:00: Writes, provisioning and the Create Agent preflight refuse an enabled channel's unbound credential reference. (fix-2319, finding 2319)

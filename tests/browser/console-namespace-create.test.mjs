@@ -12,6 +12,7 @@ import {
 import {
   apiRequests,
   authorizationDenials,
+  expectReachableReason,
   expectWriteAsksBeforeUnload,
   fileBrowser,
   holdRequests,
@@ -377,6 +378,18 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   );
   // Nothing in the form can succeed now, so the name is not left editable as if it could.
   assert.equal(await dialog.getByLabel("Namespace name").isDisabled(), true);
+  // Both stay in the Tab order, described by the refusal, and send nothing (finding 2935). The
+  // name keeps its own help first.
+  await expectReachableReason(
+    page,
+    dialog.getByRole("button", { name: "Create Namespace", exact: true }),
+    CONSOLE_NAMESPACE_CREATE_DENIED,
+  );
+  await expectReachableReason(
+    page,
+    dialog.getByLabel("Namespace name"),
+    `Unique within this Installation. Names cannot currently be changed. ${CONSOLE_NAMESPACE_CREATE_DENIED}`,
+  );
   await dialog.getByRole("button", { name: "Cancel" }).click();
   // The refusal is the API's answer for this person: the page stops offering creation, says
   // why, and keeps focus on that reason rather than on a disabled button.
@@ -391,6 +404,10 @@ test("a member is not invited to create, and a real IAM denial disables Create N
     await emptyText.textContent(),
     "Ask an Installation administrator to create a Namespace or to give you access to an existing one.",
   );
+  // The refused Create Namespace stays in the Tab order, described by the refusal, and opens
+  // nothing (class of finding 2899).
+  await expectReachableReason(page, opener, REFUSED);
+  assert.equal(await dialog.count(), 0);
   // The page's Refresh offers creation again, as the refusal says (finding 2083); Escape after
   // the next refusal also leaves focus on it.
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -577,9 +594,11 @@ test("a lost Namespace creation response requires inspection before another atte
     .getByRole("alert")
     .filter({ hasText: /Outcome unknown/ })
     .waitFor();
-  assert.equal(
-    await dialog.getByRole("button", { name: "Create Namespace", exact: true }).isDisabled(),
-    true,
+  // Create Namespace stays in the Tab order, described by the warning (finding 2935).
+  await expectReachableReason(
+    page,
+    dialog.getByRole("button", { name: "Create Namespace", exact: true }),
+    (await dialog.getByRole("alert").textContent())?.trim(),
   );
   await dialog.getByRole("button", { name: "Check Namespaces" }).click();
   await page

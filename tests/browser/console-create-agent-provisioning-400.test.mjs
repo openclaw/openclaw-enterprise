@@ -4,7 +4,6 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -51,6 +50,7 @@ import {
   CONSOLE_NAMESPACE_NOT_READY,
   CODEX_PLACEMENT_REFUSAL,
   DEDICATED_PLACEMENT_REQUIREMENT,
+  dedicatedOpenClawSandboxRefusal,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
@@ -113,7 +113,13 @@ async function modelSourceFixture(t, { compute, ...options } = {}, gatewayMethod
       return [
         {
           type: "openai",
-          config: [],
+          config: [
+            {
+              name: "authorized_base_url",
+              required: false,
+              description: "Authorize the Installation model destination.",
+            },
+          ],
           secrets: [{ name: "api_key", required: true }],
           rotation: "none",
           harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
@@ -561,6 +567,9 @@ test("Credential Gateway creation registers the same model source for both dedic
         ready: true,
       });
       const { page, secret } = await openModelSourceForm(t, fixture, namespace, harness);
+      await page
+        .locator("#model-source-authorized_base_url")
+        .fill("https://models.example.test/v1");
       const requests = apiRequests(page, fixture.origin);
       const sentinel = "synthetic-source-model-key-" + harness;
       // Lose only the registration response. The real owner records the source first;
@@ -619,6 +628,9 @@ test("Credential Gateway creation registers the same model source for both dedic
       assert.equal(payload.executionMode, "dedicated");
       assert.equal(calls.length, harness === "openclaw" ? 2 : 1);
       assert.deepEqual(calls.at(-1).input.secrets, { api_key: sentinel });
+      assert.deepEqual(calls.at(-1).input.config, {
+        authorized_base_url: "https://models.example.test/v1",
+      });
       const registrations = pathRequests(
         requests,
         "POST",
@@ -633,6 +645,44 @@ test("Credential Gateway creation registers the same model source for both dedic
       assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).length, 0);
     });
   }
+});
+
+test("source destination rejection allows correction only after confirming no registration exists", async (t) => {
+  const { fixture, calls } = await modelSourceFixture(t);
+  const namespace = await fixture.createNamespace("Source destination correction", { ready: true });
+  const { page } = await openModelSourceForm(t, fixture, namespace);
+  const field = page.locator("#model-source-authorized_base_url");
+  await field.fill("https://other.example.test/v1");
+  const path = `/namespaces/${namespace.id}/credential-sources`;
+  let refused = false;
+  await page.route(`**${path}`, async (route) => {
+    if (route.request().method() === "POST" && !refused) {
+      refused = true;
+      // UI recovery from the owner's documented pre-registration refusal. The source API
+      // suite separately exercises the real destination validator and absence of side effects.
+      return route.fulfill(
+        apiErrorResponse(
+          400,
+          "INVALID_REQUEST",
+          "Credential destination authorization must match the Installation model provider.",
+        ),
+      );
+    }
+    return route.fallback();
+  });
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Check credential registration" }).waitFor();
+  assert.equal(await field.isDisabled(), true);
+  assert.equal(calls.length, 0);
+  await page.getByRole("button", { name: "Check credential registration" }).click();
+  await waitForEnabled(field);
+  await field.fill("https://models.example.test/v1");
+  const result = await submitCreateAgent(page, fixture, namespace.id, { path: "agents/provision" });
+  assert.equal(result.status(), 503); // The fixture has no durable provisioning queue.
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].input.config, {
+    authorized_base_url: "https://models.example.test/v1",
+  });
 });
 
 test("Create checks the requested credential registration instead of binding a different source", async (t) => {
@@ -1015,8 +1065,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
   );
 });
 
-const DEDICATED_SANDBOX_REFUSAL =
-  "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
+const DEDICATED_SANDBOX_REFUSAL = dedicatedOpenClawSandboxRefusal(false);
 const NO_OPENCLAW_MODE =
   "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
 
@@ -1089,7 +1138,11 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   // Codex does not need the Sandbox Driver and keeps Dedicated.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  // The select is unavailable with Codex (aria-disabled, finding 2945); its option is not refused.
+  assert.equal(
+    await mode.locator('option[value="dedicated"]').evaluate((node) => node.disabled),
+    false,
+  );
   assert.equal(
     await page.locator("#agent-harness-hint").textContent(),
     "This Agent will run Codex with Dedicated execution.",
@@ -1280,12 +1333,12 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
     "Dedicated OpenClaw needs example.setting: false in the Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
   const sandboxDriver = {
     ...nativeSandboxDriver(),
-    configureAgent(values, harness) {
-      if (harness.id === "openclaw") {
-        throw new ConfigurationHarnessError(settingRefusal);
-      }
-      return values;
-    },
+    supportsHarnessExecutionMode: Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({ supported: false }),
+        dedicated: Object.freeze({ supported: false, reason: settingRefusal }),
+      }),
+    }),
   };
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Setting refusal", {
     filesystemConfiguration: true,

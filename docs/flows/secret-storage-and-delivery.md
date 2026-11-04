@@ -101,6 +101,12 @@ its stored object was rewritten deletes it, pinned to the answered UID and
 resourceVersion. There is no value journal or automatic replay; a create still in
 flight can require operator recovery.
 
+Secret create, update and delete share the 12-second Kubernetes budget of
+[Configuration writes](configuration-driver/persistence-and-revisions.md). A Kubernetes
+write is sent only with at least 2 seconds of it left; otherwise the request fails with
+`503` and the write is not sent. A create that was sent and failed is cleaned up after
+the budget; a create that was not sent stored nothing and gets no cleanup read.
+
 ### 3. Bind a source, then admit references
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
@@ -176,8 +182,10 @@ process umask. It closes the temporary file before renaming and removes a
 failed temporary output without replacing the previous record.
 
 The tool provisions runtime credentials and requests deployment through
-OCC. The check requires the local OpenShell profile's Driver-owned
-workspace, `/sandbox/enterprise`, and frozen Codex policy:
+OCC. A rerun follows a newer revision from a later deploy, after the same
+drift check. If the Agent is stopped, it fails at once and prints the
+`occ agent deploy` command. The check requires the local OpenShell profile's
+Driver-owned workspace, `/sandbox/enterprise`, and frozen Codex policy:
 `sandbox: "danger-full-access"` with `approvalsReviewer: "user"` for either API-key
 or PAT sources. It can recognize a prior PAT Agent revision frozen with
 `workspace-write`; a new deployment uses the current policy. Other workspace or
@@ -187,7 +195,8 @@ tenant namespace through `openclaw.dev/namespace`. The supported local setup is
 single-cluster, so embedded and dedicated Gateways share that physical namespace
 with the provider-owned Harness. The verifier requires the exact Agent labels,
 Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends the
-prompt. Kubernetes Compute owns any experimental two-cluster placement; this
+prompt. It requires the OpenAI key in the Gateway container only for embedded
+OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
 The tool retains installation resources on exit.
 
@@ -301,7 +310,7 @@ credential at its issuer.
 - [SecretDriver implementation specification](../../specs/.archive/14-secret-driver.md)
 - [Secret access architecture](../design/safeguards.md#secret-access)
 - [Kubernetes deployment](../guides/deploy.md)
-- [Deploy your first Agent](../guides/first-agent.md)
+- [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md)
 - [Configuration](../reference/configuration.md)
 - [Kubernetes Secret Driver](../reference/drivers/kubernetes-secret.md)
 
@@ -310,6 +319,10 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
+
+- 2026-11-01 08:10: Secret create, update and delete send no Kubernetes call after the 12-second write budget. (fix-3106b, finding 3106)
 
 - 2026-10-29 19:38: Keep local first-Agent records owner-readable under restrictive umasks. (authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42 - cadab7afee966df8ff7a13250df443404ae76314)
 

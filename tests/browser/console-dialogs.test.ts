@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -10,10 +10,12 @@ import {
   consoleViewports,
   detailUrl,
   fileBrowser,
+  focusKeptOverClose,
   hasFocus,
   login,
   nativeValues,
   newPage,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -267,6 +269,53 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   }
   await page.keyboard.press("Escape");
   assert.equal(await hasFocus(create), true);
+});
+
+// A dialog's close event fires a task after Cancel closes it. The Stop, row Stop and Namespace
+// deletion dialogs returned focus to their opener then, taking it from wherever the reader had
+// already moved, such as a field they were typing in (finding 2862, fixed first for Plugins).
+// Escape still returns focus to the opener (the test above).
+test("Stop, row Stop and Namespace deletion dialogs keep focus that moved on before they closed", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Dialog focus");
+  const agent = await fixture.createAgent(namespace.id, "Focus Agent", nativeValues("focus"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const cancelKeeps = async (dialogName: string, elsewhere: Locator, label: string) => {
+    const dialog = page.getByRole("dialog", { name: dialogName, exact: true });
+    await dialog.waitFor();
+    const cancel = dialog.getByRole("button", { name: "Cancel", exact: true });
+    assert.equal(await focusKeptOverClose(cancel, elsewhere), true, label);
+  };
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
+  await page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  await cancelKeeps(
+    "Stop this Agent?",
+    page.getByRole("tab", { selected: true }),
+    "Agent detail Stop keeps focus on the tab",
+  );
+
+  await page.goto(new URL(`/console/agents?namespace=${namespace.id}`, fixture.origin).href);
+  const row = page.getByRole("row").filter({ hasText: "Focus Agent" });
+  const rowStop = row.getByRole("button", { name: "Stop Focus Agent", exact: true });
+  await waitForEnabled(rowStop);
+  await rowStop.click();
+  await cancelKeeps(
+    "Stop Focus Agent?",
+    row.getByRole("link", { name: "Focus Agent", exact: true }),
+    "the row's Stop keeps focus on the Agent's link",
+  );
+
+  await page.goto(new URL(`/console/namespaces?namespace=${namespace.id}`, fixture.origin).href);
+  await page.getByRole("button", { name: "Delete Dialog focus", exact: true }).click();
+  await cancelKeeps(
+    "Delete Dialog focus?",
+    page.getByRole("button", { name: "Create Namespace", exact: true }),
+    "Namespace deletion keeps focus on Create Namespace",
+  );
 });
 
 // Where the open sheet and its actions sit against the visible area, once the visual viewport's

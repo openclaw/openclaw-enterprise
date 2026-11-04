@@ -87,6 +87,7 @@ Stories reach error states through real controls after loading fixture data.
 | [Namespaces](../../scripts/console-storybook/namespace-create-workflow.md)         | Creation, status cards, empty, denied, recovery.                                                                                                                                                                                                                                                                                                                                                                  |
 | [Namespace Deletion](../../scripts/console-storybook/namespace-delete-workflow.md) | Confirmation, blockers, progress, denials, uncertain outcomes, and retry.                                                                                                                                                                                                                                                                                                                                         |
 | [Secrets](../../scripts/console-storybook/secrets-workflow.md)                     | Namespace listing, search, creation, masked values, consumers, replacement, deletion, missing values, readiness, denials, conflicts, and uncertain saves.                                                                                                                                                                                                                                                         |
+| [Model Provider](../../scripts/console-storybook/model-provider-workflow.md)       | Shared Installation provider values and explicit Credential Source destination authorization.                                                                                                                                                                                                                                                                                                                     |
 | Settings and navigation                                                            | Account, sign-out failure, unknown route.                                                                                                                                                                                                                                                                                                                                                                         |
 | Create Agent                                                                       | Installed default, missing/loading/denied Presets, Preset variables, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
 | Agent detail                                                                       | First and later drafts, version details, native JSON and plugin editors, immutable plugin snapshot, queued/running/succeeded/failed activity, exact-version diagnostics, error and permission states.                                                                                                                                                                                                             |
@@ -117,10 +118,13 @@ In **Components → Navigation → Namespace switcher**, switch Engineering/Rese
 and check URL, collection, and Back behavior. **Mobile Namespace selector** checks
 long names and direct switching. In **Mobile drawer**, widen past 760px while open:
 Agents search must work without Escape. Shrink and check reopening and dismissal.
+In **Compact drawer scroll position** at 390×480, press Page Down and wheel over
+the overlay. Visit Namespaces and return with Back: Secrets keeps its heading and
+search in view. Escape and widening to desktop restore page scrolling.
 No-readable, unavailable, loading, and denied stories cover restrictions.
 
-In **Pages → Namespaces → Unavailable selection**, recover inline and check the
-URL, dismissed warning, unchanged page, and Back navigation. **Unavailable selection
+In **Pages → Namespaces → Unavailable selection**, check the warning's reason, recover
+inline, and check the URL, dismissed warning, unchanged page, and Back navigation. **Unavailable selection
 mobile** repeats this at 390px; **Unavailable selection without access** shows access
 guidance. Simulated examples:
 [desktop](../assets/console-namespace-recovery/desktop.png),
@@ -177,6 +181,12 @@ Moved to [Agent workflows](console-storybook-agent-workflows.md#stop).
 Moved to [Agent workflows](console-storybook-agent-workflows.md#delete).
 
 ## Maintain coverage
+
+In **Pages/Settings → Nested Driver values**, expand a Driver and switch between
+**Fields** and **JSON**. Confirm that nesting, arrays, empty values, and redaction
+stay intact and the open groups remain open. Scroll the long page to verify that
+the sidebar and account control reach the bottom. Repeat on a phone and open the
+navigation drawer; the page must not scroll horizontally.
 
 `scripts/console-storybook/` installs from its own manifest and lockfile under the
 seven-day release-age policy, independently of root dependencies.

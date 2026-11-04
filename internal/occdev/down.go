@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -25,7 +24,10 @@ func Down(ctx context.Context, opts Options) error {
 		if sandbox != "none" {
 			return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes")
 		}
-		if err := r.selectEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
+		// Docker Compute stacks are started by scripts/dev-up with standalone
+		// podman-compose; stop them with the same provider or compose down
+		// removes nothing.
+		if err := r.selectDockerComputeEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
 			return err
 		}
 		args := append([]string{"compose"}, opts.ComposeArgs...)
@@ -79,7 +81,9 @@ func Down(ctx context.Context, opts Options) error {
 		r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 		r.engine = state.ContainerEngine
 		if r.engine == "podman" && state.DeploymentMode == "" {
-			provider, err := exec.LookPath("podman-compose")
+			// The same provider preference as startup, so every host that can
+			// start the Compose control plane can also stop it.
+			provider, err := composeProvider()
 			if err != nil {
 				return err
 			}

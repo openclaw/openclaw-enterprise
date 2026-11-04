@@ -1,16 +1,19 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { CODEX_PLACEMENT_REFUSAL, EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
+
+const GATEWAY_PASSWORD = { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" };
 
 async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
@@ -333,6 +336,7 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
     id: "workspace-setup-sandbox",
     capability: "sandbox",
     implementation: "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     async provisionHarness() {
       assert.fail("Agent save must not provision a Harness");
@@ -342,6 +346,7 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
     configureAgent(configuration, harness) {
       return OpenShellSandboxDriver.prototype.configureAgent.call(
         {
+          supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
           options: {
             gateway: {},
             kubernetes: { userNamespaces: false, sandboxDataMount: { mountPath: "/sandbox/data" } },
@@ -359,15 +364,7 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
     ["openclaw", "openai/gpt-4.1"],
     ["codex", "codex/gpt-5.1"],
   ]) {
-    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
-      body: {
-        kind: "agent",
-        values: {
-          agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
-        },
-      },
-    });
-    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const stored = await storeConfiguration(f, runtime, model);
     const refused = await f.create(`Sandboxed ${runtime}`, {
       configurationId: stored.data.id,
       executionMode: "dedicated",
@@ -389,71 +386,18 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
   );
 });
 
-/** A real OpenShell Sandbox Driver whose Kubernetes settings `overrides` overrides (an
- * undefined value removes the setting), with extra `gateway` settings. */
-function openShellSandbox(t, overrides = {}, gateway = {}) {
-  const kubernetes = {
-    runtimeClassName: "openshell-sandbox",
-    // Native OpenClaw workspace preparation requires it.
-    userNamespaces: false,
-    serviceAccount: { mode: "gatewayConfigured" },
-    sandboxDataMount: { subPath: "workspace", mountPath: "/sandbox/enterprise", readOnly: false },
-  };
-  for (const [key, value] of Object.entries(overrides)) {
-    if (value === undefined) {
-      delete kubernetes[key];
-    } else {
-      kubernetes[key] = value;
-    }
-  }
-  const definition = {
-    id: "workspace-openshell",
-    type: "openshell",
-    configuration: { endpoint: "http://127.0.0.1:9", insecureTransport: "network-policy" },
-    drivers: {
-      sandbox: "workspace-openshell-sandbox",
-      credential_gateway: "workspace-openshell-credentials",
-    },
-  };
-  const backend = createOpenShellBackend(definition);
-  t.after(() => backend.client.close());
-  const sandboxDriver = new OpenShellSandboxDriver(
-    {
-      gateway: { workspaceMode: "operator", ...gateway },
-      kubernetes,
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "model-egress",
-            endpoints: [{ host: "api.openai.com", ports: [443] }],
-            binaries: [{ path: "/usr/local/bin/node" }],
-          },
-        ],
-      },
-    },
-    { id: "workspace-openshell-sandbox", backend },
-  );
-  return {
-    sandboxDriver,
-    driverConfigurations: [
-      {
-        capability: "sandbox",
-        driverId: sandboxDriver.id,
-        implementation: sandboxDriver.implementation,
-        definition: OpenShellSandboxDriver,
-      },
-    ],
-  };
-}
-
-/** Saves an Agent Configuration that selects `model` on the `runtime` Harness. */
+/**
+ * Saves an Agent Configuration that selects `model` on the `runtime` Harness. A Codex one carries
+ * the generated Gateway password, which its Gateway needs to apply the workspace node (finding
+ * 3132).
+ */
 async function storeConfiguration(f, runtime, model) {
   const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
     body: {
       kind: "agent",
       values: {
         agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
+        ...(runtime === "codex" ? { gateway: { auth: { password: GATEWAY_PASSWORD } } } : {}),
       },
     },
   });
@@ -506,9 +450,14 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
     // Control: the shape workspace preparation accepts.
     [{}, { operatorWorkspaceResources: serviceAccounts.slice(0, 1) }],
   ]) {
-    const f = await setup(t, openShellSandbox(t, kubernetes, gateway));
+    const options = openShellSandbox(t, kubernetes, gateway);
+    // Capability reads must not execute this real transformation, even when settings refuse.
+    const transform = t.mock.method(options.sandboxDriver, "configureAgent");
+    const f = await setup(t, options);
+    transform.mock.resetCalls();
     const installation = await f.request("GET", "/installation");
     assert.equal(installation.status, 200, JSON.stringify(installation.body));
+    assert.equal(transform.mock.callCount(), 0);
     // Create Agent offers only the modes admission accepts, and shows the refusal that names the
     // setting (finding 2373).
     assert.deepEqual(
@@ -524,6 +473,8 @@ test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspac
     });
     if (message === undefined) {
       assert.equal(refused.status, 201, JSON.stringify(refused.body));
+      assert.ok(transform.mock.callCount() > 0);
+      assert.deepEqual(transform.mock.calls[0].arguments[0], openclaw.data.values);
       continue;
     }
     assertApiError(refused, 400, "INVALID_REQUEST");

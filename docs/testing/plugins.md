@@ -27,7 +27,7 @@ This checks status transport and restart behavior with controlled producers. It 
 
 ## Native startup metadata reads
 
-After credential authorization under the [contribution policy](../../CONTRIBUTING.md), inject `CODEX_ACCESS_TOKEN` without printing it. Set `OCC_TEST_KUBERNETES_AGENT_IMAGE` to an available immutable image containing Codex `0.163.0-alpha.2`, and start Docker.
+After credential authorization under the [contribution policy](../../CONTRIBUTING.md), inject `CODEX_ACCESS_TOKEN` without printing it. Set `OCC_TEST_KUBERNETES_AGENT_IMAGE` to an available immutable image containing Codex `0.164.0`, and start Docker.
 
 ```sh
 OCC_TEST_CODEX_STARTUP_READS_REAL=1 node --test \
@@ -39,7 +39,7 @@ The test removes its container. It checks the authenticated metadata protocol, n
 
 ### Offline native local plugins
 
-With a qualified image containing stock Codex `0.163.0-alpha.2`, Node, and `ws`, run:
+With a qualified image containing stock Codex `0.164.0`, Node, and `ws`, run:
 
 ```sh
 OCC_TEST_RUNTIME_IMAGE=<qualified-image> node --test \
@@ -76,6 +76,15 @@ the remaining protected plugin acceptance requirements are unchanged.
 
 Prepare the [Kubernetes runtime setup](kubernetes.md#kubernetes-model-turns-and-secrets), including immutable gateway and Agent images, an authorized model, a disposable cluster, and the proxy CIDRs above. For one scenario, set its database URL below or use `OCC_TEST_DATABASE_URL`. Set one scenario flag:
 
+Dedicated Codex cases also require the real Envoy Gateway and cert-manager
+controllers from [Gateway routing setup](kubernetes.md#private-gateway-routing). Provide
+`OCC_TEST_GATEWAY_CA_CERT_PATH` and `OCC_TEST_GATEWAY_CA_KEY_PATH` for that fixture.
+The test creates an owned Gateway; Kubernetes Compute creates each Agent route.
+Set `OCC_DOCKER_RUNTIME_IMAGE` to the qualified runtime for the fixture's
+TLS-preserving host relay. This fixture runs its controller on the host; the
+[OpenShell Linear case](openshell.md#linear-tool-use-qualification) instead starts
+the shipped control plane and uses its configured OCE Gateway route directly.
+
 | Scenario                                | Flag                                        | Database variable                                   |
 | --------------------------------------- | ------------------------------------------- | --------------------------------------------------- |
 | Embedded OpenClaw Diffs                 | `OCC_TEST_PLUGIN_DRIVER_OPENCLAW_REAL`      | `OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL`      |
@@ -88,7 +97,7 @@ Set the chosen flag to `1`, then run:
 node --test tests/integration/plugin-driver-real.test.mjs
 ```
 
-`OCC_TEST_PLUGIN_DRIVER_REAL=1` selects all three and requires all three scenario-specific URLs with distinct databases; separate host aliases for one database do not count. Unselected cases skip. The OpenClaw case needs `OPENAI_API_KEY` and an image supporting `plugins install --no-enable`; the repository's pinned runtime lacks that flag. Codex cases need an existing authorized account's `CODEX_ACCESS_TOKEN`, an immutable `OCC_TEST_KUBERNETES_AGENT_IMAGE` or `OCC_TEST_KUBERNETES_CODEX_IMAGE`, and the [Codex sandbox profile](../guides/deploy/codex-sandbox.md) on each test node, selected with `OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE`. Choose a supported model with `OCC_TEST_OPENAI_MODEL`; the default is `gpt-6-astra`. Provide sufficient cluster memory for version overlap.
+`OCC_TEST_PLUGIN_DRIVER_REAL=1` selects all three and requires all three scenario-specific URLs with distinct databases; separate host aliases for one database do not count. Unselected cases skip. The OpenClaw case needs `OPENAI_API_KEY`; the repository's pinned runtime supports `plugins install --no-enable`. Codex cases need an existing authorized account's `CODEX_ACCESS_TOKEN`, an immutable `OCC_TEST_KUBERNETES_AGENT_IMAGE` or `OCC_TEST_KUBERNETES_CODEX_IMAGE`, and the [Codex sandbox profile](../guides/deploy/codex-sandbox.md) on each test node, selected with `OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE`. Choose a supported model with `OCC_TEST_OPENAI_MODEL`; the default is `gpt-6-astra`. Provide sufficient cluster memory for version overlap.
 
 For Linear, connect the account and set `OCC_TEST_CODEX_LINEAR_PROMPT`, `OCC_TEST_CODEX_LINEAR_TOOL_NAME`, and `OCC_TEST_CODEX_LINEAR_RESULT_EXPECT` for a harmless read. For the failure case, connect the successful plugin account and select a real failing plugin; use `OCC_TEST_CODEX_SUCCESS_PLUGIN_ID` and newline-separated `OCC_TEST_CODEX_FAILURE_PLUGIN_IDS` to override the defaults. Calendar tool names differ between accounts: set `OCC_TEST_CODEX_CALENDAR_TOOL_NAME`, `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`, and, if needed, `OCC_TEST_CODEX_CALENDAR_PROMPT` for an available harmless read. Never print credentials or account identifiers.
 

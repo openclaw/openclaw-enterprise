@@ -606,8 +606,7 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
     }),
   ];
   const mixed = await read("source=sandbox");
-  assert.equal(mixed.status, 503, mixed.text);
-  assert.equal(mixed.body.error.code, "RUNTIME_LOGS_UNAVAILABLE");
+  assertApiError(mixed, 503, "RUNTIME_LOGS_UNAVAILABLE");
   assert.equal(mixed.body.data, undefined, "a refused chunk returns no records");
 
   const pod = await read("source=sandbox&pod=gateway-x-0");
@@ -619,8 +618,7 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
     code: 7,
   });
   const denied = await read("source=sandbox");
-  assert.equal(denied.status, 503, denied.text);
-  assert.equal(denied.body.error.code, "RUNTIME_LOGS_CLUSTER_RBAC");
+  assertApiError(denied, 503, "RUNTIME_LOGS_CLUSTER_RBAC");
   assert.equal(denied.text.includes("sandbox:read"), false, "gateway error text never leaks");
 
   // OpenShell answers NOT_FOUND both for an absent Sandbox and, to conceal it, for an
@@ -628,8 +626,7 @@ test("sandbox reads reject mixed Sandbox IDs, Pods and previous instances, and m
   for (const message of ["sandbox not found", "sandbox not found (caller is not a member)"]) {
     gateway.state.error = Object.assign(new Error(message), { code: 5 });
     const missing = await read("source=sandbox");
-    assert.equal(missing.status, 503, missing.text);
-    assert.equal(missing.body.error.code, "RUNTIME_LOGS_SANDBOX_NOT_FOUND");
+    assertApiError(missing, 503, "RUNTIME_LOGS_SANDBOX_NOT_FOUND");
     assert.equal(missing.body.data, undefined);
     assert.equal(missing.text.includes("member)"), false, "gateway error text never leaks");
   }
