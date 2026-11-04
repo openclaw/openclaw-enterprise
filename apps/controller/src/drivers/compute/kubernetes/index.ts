@@ -4873,17 +4873,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "must be a normalized HTTPS /v1 endpoint",
         );
       }
-      if (
-        codex &&
-        endpoint === undefined &&
-        this.options.runtime?.modelProvider?.baseUrl !== undefined &&
-        normalizeOpenAiBaseUrl(this.options.runtime.modelProvider?.baseUrl) !==
-          "https://api.openai.com/v1"
-      ) {
-        throw callerSettingError(
-          "harnessAuth.authorizedEndpoint",
-          "must authorize the Installation's custom API-key endpoint",
+      if (codex) {
+        // Installation-owned routing: the key reaches the Installation model provider (or the
+        // default OpenAI endpoint), so the Secret must authorize exactly that destination.
+        const effectiveCodexEndpoint = normalizeOpenAiBaseUrl(
+          this.options.runtime?.modelProvider?.baseUrl ?? "https://api.openai.com/v1",
         );
+        if (endpoint !== undefined && endpoint !== effectiveCodexEndpoint) {
+          throw callerSettingError(
+            "harnessAuth.authorizedEndpoint",
+            "must match the Dedicated Codex model endpoint",
+          );
+        }
+        if (endpoint === undefined && effectiveCodexEndpoint !== "https://api.openai.com/v1") {
+          throw callerSettingError(
+            "harnessAuth.authorizedEndpoint",
+            "must authorize the Installation's custom API-key endpoint",
+          );
+        }
       }
       if (native && endpoint !== undefined && endpoint !== "https://api.openai.com/v1") {
         throw harnessAuthSettingError(

@@ -24173,7 +24173,7 @@ test("an active embedded revision whose stored Gateway tool policy predates the 
   assert.throws(() => driver.validateConfiguration(revision.configuration), refused, "save");
 });
 
-test("custom Codex endpoint authorization is required and does not override Installation routing", async () => {
+test("custom Codex endpoint authorization must match the Installation routing", async () => {
   const fallback = "https://installation.example.test/v1";
   const missing = dedicatedFirstDeployFixture({ modelEndpoint: fallback });
   delete missing.revision.harnessAuth.authorizedEndpoint;
@@ -24183,17 +24183,30 @@ test("custom Codex endpoint authorization is required and does not override Inst
   );
   assert.equal(missing.state.setupCalls, 0);
 
-  const fixture = dedicatedFirstDeployFixture({
+  // An authorization for another endpoint is refused before any credential is projected.
+  const mismatch = dedicatedFirstDeployFixture({
     modelEndpoint: fallback,
     standaloneWebSearch: true,
   });
-  const selected = "https://agent.example.test/v1";
-  fixture.revision.harnessAuth = { ...fixture.revision.harnessAuth, authorizedEndpoint: selected };
-  await fixture.prepare();
-  const runtime = [...fixture.objects.values()].find(
+  mismatch.revision.harnessAuth = {
+    ...mismatch.revision.harnessAuth,
+    authorizedEndpoint: "https://agent.example.test/v1",
+  };
+  await assert.rejects(mismatch.prepare, /must match the Dedicated Codex model endpoint/);
+  assert.equal(mismatch.state.setupCalls, 0);
+
+  const matching = dedicatedFirstDeployFixture({
+    modelEndpoint: fallback,
+    standaloneWebSearch: true,
+  });
+  matching.revision.harnessAuth = {
+    ...matching.revision.harnessAuth,
+    authorizedEndpoint: fallback,
+  };
+  await matching.prepare();
+  const runtime = [...matching.objects.values()].find(
     (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
   );
-  // Endpoint metadata authorizes the credential; the Installation model provider still routes.
   assert.deepEqual(JSON.parse(runtime.data["runtime.json"]).modelEndpoint, {
     baseUrl: fallback,
     modelProvider: "openai-compatible",
