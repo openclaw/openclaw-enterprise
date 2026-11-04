@@ -143,9 +143,13 @@ test("word-count CLI characterizes comment delimiters in prose and fenced exampl
     for (const count of [row.proseWords, row.codeWords, row.totalWords]) {
       assert.ok(Number.isInteger(count) && count >= 0);
     }
-    assert.equal(row.totalWords, row.proseWords + row.codeWords);
+    await t.test(
+      `comment counts ${row.path}: prose=${row.proseWords} code=${row.codeWords} total=${row.totalWords}`,
+      () => {
+        assert.equal(row.totalWords, row.proseWords + row.codeWords);
+      },
+    );
   }
-  t.diagnostic(`comment delimiter counts: ${JSON.stringify(json.rows)}`);
 });
 
 test("word-count CLI includes table text and fenced examples", async (t) => {
