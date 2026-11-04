@@ -19,7 +19,7 @@ type SignInRule = {
           name: "Demo Operator";
           email: "operator@example.com";
         };
-        session?: never;
+        sessionKey?: never;
       };
       status?: never;
       bodyError?: never;
