@@ -52,6 +52,91 @@ test("a timed-out text download remains an interrupted read instead of a view ca
   });
 });
 
+for (const { name, status = 200, contentType, body, expectedStatus, succeeds = false } of [
+  { name: "plain text", contentType: "text/plain", body: "synthetic log\n", succeeds: true },
+  {
+    name: "parameterized mixed-case plain text",
+    contentType: "Text/Plain; Charset=UTF-8",
+    body: "synthetic log\n",
+    expectedStatus: 200,
+    succeeds: true,
+  },
+  { name: "JSON string data", contentType: "application/json", body: '{"data":"not a log"}' },
+  { name: "near-match media type", contentType: "text/plainish", body: "not a log" },
+  {
+    name: "nonmatching expected status",
+    contentType: "text/plain",
+    body: "synthetic log\n",
+    expectedStatus: 201,
+  },
+  {
+    name: "non-200 plain text",
+    status: 201,
+    contentType: "text/plain",
+    body: "synthetic log\n",
+    expectedStatus: 201,
+  },
+]) {
+  test(`text downloads enforce the attachment response boundary: ${name}`, async (t) => {
+    const fetch = t.mock.method(
+      globalThis,
+      "fetch",
+      async () => new Response(body, { status, headers: { "content-type": contentType } }),
+    );
+    const request = createApiClient({
+      lifetime: createViewLifetime(),
+      hasSession: () => true,
+      onExpired() {},
+    });
+    const result = request("/logs?download=true", { responseType: "text", expectedStatus });
+    if (succeeds) {
+      assert.equal(await result, body);
+    } else {
+      await assert.rejects(result, { status, message: "The request could not be completed." });
+    }
+    assert.equal(fetch.mock.callCount(), 1);
+  });
+}
+
+for (const status of [403, 401]) {
+  test(`text downloads retain JSON error metadata and session expiry for ${status}`, async (t) => {
+    const code = status === 401 ? "UNAUTHORIZED" : "FORBIDDEN";
+    const details = [{ path: "/source", code: "DENIED", message: "Synthetic denial" }];
+    const requestId = "req_12345678-1234-1234-1234-123456789abc";
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: { code, message: "Synthetic request refusal", details },
+            meta: { requestId },
+          }),
+          { status, headers: { "content-type": "application/json", "retry-after": "3" } },
+        ),
+    );
+    let expired = 0;
+    const request = createApiClient({
+      lifetime: createViewLifetime(),
+      hasSession: () => true,
+      onExpired() {
+        expired += 1;
+      },
+    });
+    await assert.rejects(request("/logs?download=true", { responseType: "text" }), (error) => {
+      assert.equal(error.status, status);
+      assert.equal(error.code, code);
+      assert.equal(error.serverMessage, "Synthetic request refusal");
+      assert.deepEqual(error.details, details);
+      assert.deepEqual(error.detailPaths, ["/source"]);
+      assert.equal(error.requestId, requestId);
+      assert.equal(error.retryAfterSeconds, 3);
+      return true;
+    });
+    assert.equal(expired, status === 401 ? 1 : 0);
+  });
+}
+
 test("a complete malformed JSON body retains the invalid-response error", async (t) => {
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
@@ -107,6 +192,10 @@ test("empty 204 responses honor an explicit expected status", async (t) => {
   const request = createApiClient({ lifetime, hasSession: () => true, onExpired() {} });
 
   assert.equal(await request("/resource", { expectedStatus: 204 }), undefined);
+  assert.equal(
+    await request("/resource", { responseType: "text", expectedStatus: 204 }),
+    undefined,
+  );
   for (const method of ["GET", "POST", "PUT", "DELETE"]) {
     await assert.rejects(request("/resource", { method }), { status: 204 });
   }
