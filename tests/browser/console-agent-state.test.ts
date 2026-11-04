@@ -3033,8 +3033,8 @@ test("An older permission reread that answers after a newer one failed applies t
   );
   const failed = responseTo(page, "GET", permissionsUrl);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
   assert.equal((await failed).status(), 503);
+  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
   older.release();
   // She holds Agent read only: Stop, Delete and the draft's access all follow the older answer.
   await stop.waitFor({ state: "hidden" });

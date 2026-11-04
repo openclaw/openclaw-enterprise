@@ -278,6 +278,10 @@ export function fileConsoleApp(options = {}) {
  * @param {Options & {auditSink?: InMemoryAuditSink}} [options]
  */
 export async function createConsoleAppFixture(t, options = {}) {
+  const auditSink = options.auditSink ?? new InMemoryAuditSink();
+  if (!(auditSink instanceof InMemoryAuditSink)) {
+    throw new TypeError("Console fixture auditSink must be an InMemoryAuditSink instance.");
+  }
   const defaultAgentGatewayManagedMode = options.agentGatewayManagedMode;
   const installationId = `ins_${randomUUID()}`;
   // The ports are part of the origins the app is configured with, so hold them until the
@@ -343,7 +347,6 @@ export async function createConsoleAppFixture(t, options = {}) {
     policy.identities.push(personSeed.principal);
     provisionedAccounts.push({ credentials: personCredentials, principal: personSeed.principal });
   }
-  const auditSink = options.auditSink ?? new InMemoryAuditSink();
   const policyUnit = new AsyncLocalStorage();
   class ConsolePlatformState extends InMemoryPlatformState {
     transact(work) {
