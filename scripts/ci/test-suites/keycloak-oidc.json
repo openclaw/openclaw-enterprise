@@ -30,7 +30,8 @@
     {
       "path": "tests/integration/postgres-agent-connections.test.mjs",
       "expectedTests": [
-        "one consent supplies independently authorized Agent connections in a Namespace"
+        "one consent supplies independently authorized Agent connections in a Namespace",
+        "connection templates keep their OAuth clients after a lost commit acknowledgement"
       ]
     }
   ]

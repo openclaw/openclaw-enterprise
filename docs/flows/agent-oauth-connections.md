@@ -45,6 +45,11 @@ sequenceDiagram
 
 ## Execution Trace
 
+When a template needs a new OAuth client registration, OCC stages the client secret
+before it saves the template and its audit event. A confirmed rollback removes the
+staged secret. If PostgreSQL loses the commit acknowledgment, OCC keeps the secret
+because the saved template may already reference it.
+
 1. `startAgentConnection` checks the human session, Namespace access and
    `connection_template:use`. An Agent-originated request also requires access
    to that Agent. OCC pins the approved template version, registers the pending

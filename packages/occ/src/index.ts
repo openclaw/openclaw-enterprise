@@ -8238,7 +8238,7 @@ export class OpenClawController {
         return created;
       });
     } catch (error) {
-      if (registration.created) {
+      if (registration.created && !(error instanceof PostgresCommitOutcomeUnknownError)) {
         await this.removeConnectionClient(refresh, registration.record);
       }
       throw error;
@@ -8318,7 +8318,7 @@ export class OpenClawController {
       }
       return updated;
     } catch (error) {
-      if (registration?.created) {
+      if (registration?.created && !(error instanceof PostgresCommitOutcomeUnknownError)) {
         await this.removeConnectionClient(refresh, registration.record);
       }
       throw error;

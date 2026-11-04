@@ -17,6 +17,7 @@ import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/driv
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
@@ -188,6 +189,36 @@ function recordingOpenShell() {
   return { client, providers, updates };
 }
 
+function selectConnectionDrivers(controller) {
+  const openShell = recordingOpenShell();
+  const backend = createOpenShellBackend(
+    {
+      id: "openshell-test",
+      type: "openshell",
+      configuration: { endpoint: "http://127.0.0.1:1" },
+      drivers: {
+        credential_gateway: "openshell-credentials",
+        sandbox: "openshell-sandbox",
+        credential_refresh: "openshell-refresh",
+      },
+    },
+    { gatewayClient: openShell.client },
+  );
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/app/bin/codex"], toolBinaries: ["/usr/local/bin/gog"] },
+    { id: "openshell-credentials", backend },
+  );
+  const refresh = new OpenShellCredentialRefreshDriver(
+    { clientWorkspace },
+    { id: "openshell-refresh", backend },
+  );
+  controller.registerDriver(gateway);
+  controller.selectDriver("credential_gateway", gateway.id);
+  controller.registerDriver(refresh);
+  controller.selectDriver("credential_refresh", refresh.id);
+  return { openShell, gateway, refresh };
+}
+
 test(
   "one consent supplies independently authorized Agent connections in a Namespace",
   requiresKeycloak,
@@ -253,32 +284,7 @@ test(
       ...namespace,
       name: `oce-${namespace.id.slice(3, 11)}`,
     });
-    const openShell = recordingOpenShell();
-    const backend = createOpenShellBackend(
-      {
-        id: "openshell-test",
-        type: "openshell",
-        configuration: { endpoint: "http://127.0.0.1:1" },
-        drivers: {
-          credential_gateway: "openshell-credentials",
-          sandbox: "openshell-sandbox",
-          credential_refresh: "openshell-refresh",
-        },
-      },
-      { gatewayClient: openShell.client },
-    );
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/app/bin/codex"], toolBinaries: ["/usr/local/bin/gog"] },
-      { id: "openshell-credentials", backend },
-    );
-    const refresh = new OpenShellCredentialRefreshDriver(
-      { clientWorkspace },
-      { id: "openshell-refresh", backend },
-    );
-    controller.registerDriver(gateway);
-    controller.selectDriver("credential_gateway", gateway.id);
-    controller.registerDriver(refresh);
-    controller.selectDriver("credential_refresh", refresh.id);
+    const { openShell, gateway, refresh } = selectConnectionDrivers(controller);
 
     // Bob and Carol are ordinary people with no Installation grant.
     const people = {};
@@ -1098,6 +1104,81 @@ test(
       clientSecretB,
     ]) {
       assert.equal(recorded.includes(value), false);
+    }
+  },
+);
+
+test(
+  "connection templates keep their OAuth clients after a lost commit acknowledgement",
+  requiresPostgres,
+  async (t) => {
+    for (const method of ["POST", "PATCH"]) {
+      await t.test(method, async (t) => {
+        const proxy = await commitAckProxy(databaseUrl);
+        t.after(() => proxy.close());
+        const { controller, inject } = await createPostgresAgentApp(t, {
+          label: "template-commit",
+          authSecret: "connection-template-commit-test-auth-secret",
+          transportDatabaseUrl: proxy.url,
+          appOptions: { publicOrigin },
+        });
+        const { refresh } = selectConnectionDrivers(controller);
+        const client = () => ({ clientId: randomUUID(), clientSecret: randomUUID() });
+        const input = {
+          displayName: `Template ${randomUUID()}`,
+          issuer: "https://issuer.example.test",
+          authorizationUrl: "https://issuer.example.test/authorize",
+          tokenUrl: "https://token.example.test/token",
+          scopes: ["openid"],
+          endpoint: { host: "api.connections.test", port: 443, path: "/**" },
+          envVar: "CONNECTION_TOKEN",
+          ...client(),
+        };
+        let path = "/connection-templates";
+        if (method === "PATCH") {
+          const initial = await inject("POST", path, input);
+          assert.equal(initial.statusCode, 201, initial.body);
+          path += `/${initial.json().data.id}`;
+        }
+
+        // Stage the new secret through the real Driver, then drop the database's next
+        // COMMIT response on the wire. The application cannot know the template version persisted.
+        const registerClient = refresh.registerClient.bind(refresh);
+        t.mock.method(
+          refresh,
+          "registerClient",
+          async (...args) => {
+            await registerClient(...args);
+            proxy.arm();
+          },
+          { times: 1 },
+        );
+        const registration = client();
+        const response = await inject(
+          method,
+          path,
+          method === "POST" ? { ...input, ...registration } : registration,
+        );
+        assert.equal(response.statusCode, 503, response.body);
+        assert.ok(proxy.observedCommit);
+        const list = await inject("GET", "/connection-templates");
+        assert.equal(list.statusCode, 200, list.body);
+        const saved = list
+          .json()
+          .data.find((template) => template.displayName === input.displayName);
+        assert.equal(saved?.current.clientId, registration.clientId);
+
+        // Rotate through the public API. OpenShell requires the originally stored client
+        // to exist, so this distinguishes an intact registration from orphaned metadata.
+        const rotation = await inject(
+          "POST",
+          `/connection-templates/${saved.id}/rotate-client-secret`,
+          { clientSecret: randomUUID() },
+        );
+        assert.equal(rotation.statusCode, 200, rotation.body);
+        const deleted = await inject("DELETE", `/connection-templates/${saved.id}`);
+        assert.equal(deleted.statusCode, 204, deleted.body);
+      });
     }
   },
 );
