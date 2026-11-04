@@ -346,9 +346,7 @@
     },
     {
       "path": "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
-      "expectedTests": [
-        "lost COMMIT response returns unknown without waiting for a hung rollback"
-      ]
+      "expectedTests": ["lost COMMIT response returns unknown without waiting for a hung rollback"]
     },
     {
       "path": "tests/integration/native-admin-access.test.mjs",
@@ -374,9 +372,7 @@
     {
       "path": "tests/integration/agent-create-validate-api.test.mjs"
     },
-    {
-      "path": "tests/integration/model-provider.test.ts"
-    },
+    { "path": "tests/integration/model-provider.test.ts" },
     {
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
     },
@@ -475,9 +471,7 @@
     },
     {
       "path": "tests/integration/repository-credentials-service-loss.test.mjs",
-      "expectedTests": [
-        "a broker restart cannot accept bound admissions without durable fencing"
-      ]
+      "expectedTests": ["a broker restart cannot accept bound admissions without durable fencing"]
     },
     {
       "path": "tests/conformance/repository-credentials-registry.test.mjs"

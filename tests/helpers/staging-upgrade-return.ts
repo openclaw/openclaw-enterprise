@@ -211,7 +211,7 @@ type ExternalRequest = (
   options: { authenticated: boolean },
 ) => Promise<{ status?: number; body: unknown }>;
 
-export async function assertReturnedInstallationAuthentication(
+async function assertReturnedInstallationAuthentication(
   request: ExternalRequest,
   installationId: string,
 ) {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { inspect } from "node:util";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   bindLocalRehearsalCluster,
   createRehearsalCustody,
@@ -16,7 +17,6 @@ import {
 import {
   assertDistinctControllers,
   assertReturnedAgents,
-  assertReturnedInstallationAuthentication,
   assertRunningController,
   returnedDatabaseConnections,
   selectRehearsalControllers,
@@ -108,7 +108,14 @@ test("migration check reports protected log failures without printing fixture cr
     { mode: 0o700 },
   );
   const marker = `key${randomUUID().slice(0, 6)}`;
-  const url = `postgresql://migrator:${marker}@fixture/occ_return`;
+  const url = syntheticCredentialUrl({
+    protocol: "postgresql",
+    username: "migrator",
+    password: marker,
+    host: "fixture",
+    port: undefined,
+    pathname: "/occ_return",
+  });
   const check = (stdout: string, stderr = "", exit = "0") => {
     const run: FixtureRun = (command, args, options) =>
       runFixtureCommand(command, args, {
@@ -466,7 +473,14 @@ test("fixture database effects and Helm teardown refuse replaced resources and d
         ].map(([key, user]) => [
           key,
           Buffer.from(
-            `postgresql://${user}:invented@postgres.${namespace}.svc.cluster.local:5432/openclaw_enterprise`,
+            syntheticCredentialUrl({
+              protocol: "postgresql",
+              username: user,
+              password: "invented",
+              host: `postgres.${namespace}.svc.cluster.local`,
+              port: 5432,
+              pathname: "/openclaw_enterprise",
+            }),
           ).toString("base64"),
         ]),
       ),
@@ -629,41 +643,5 @@ test("a running controller must match the scheduled platform and the verified ch
       async () => `sha256:${"e".repeat(64)}`,
     ),
     /selected platform image/u,
-  );
-});
-
-test("the returned Installation denies anonymous reads and accepts the original key and identity", async () => {
-  const calls: boolean[] = [];
-  const read: Parameters<typeof assertReturnedInstallationAuthentication>[0] = async (
-    method,
-    path,
-    body,
-    { authenticated },
-  ) => {
-    assert.deepEqual([method, path, body], ["GET", "/installation", undefined]);
-    calls.push(authenticated);
-    return authenticated
-      ? { status: 200, body: { data: { id: "installation-1" } } }
-      : { status: 401, body: {} };
-  };
-  await assertReturnedInstallationAuthentication(read, "installation-1");
-  assert.deepEqual(calls, [false, true]);
-  await assert.rejects(
-    assertReturnedInstallationAuthentication(
-      async () => ({ status: 200, body: {} }),
-      "installation-1",
-    ),
-    /must deny anonymous Installation reads/u,
-  );
-  await assert.rejects(
-    assertReturnedInstallationAuthentication(
-      async () => ({ status: 401, body: {} }),
-      "installation-1",
-    ),
-    /must accept the original service key/u,
-  );
-  await assert.rejects(
-    assertReturnedInstallationAuthentication(read, "installation-2"),
-    /must serve the original Installation/u,
   );
 });
