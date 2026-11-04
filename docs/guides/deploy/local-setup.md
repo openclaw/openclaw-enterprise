@@ -38,7 +38,7 @@ source docs/snippets/openshell-quickstart/stage-session.sh
 
 Choose one image path before starting the cluster.
 
-**Build from this checkout.** Clear any previous image selection. The launcher builds and imports both images from your checkout.
+**Build from this checkout.** Clear any previous image selection. The launcher builds and imports both images from your checkout. If your network inspects HTTPS, [configure the build CA](local-kubernetes-tools.md#build-behind-a-tls-inspection-proxy).
 
 ```bash
 unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
