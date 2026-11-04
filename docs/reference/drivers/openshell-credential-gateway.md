@@ -152,7 +152,7 @@ fail until that history is gone.
 
 Registration rejects provider types outside this catalog.
 
-For `protocol: mcp`, see the [Slack example](../../guides/topics/plugins-configure.md#prepare-a-slack-mcp-credential).
+For `protocol: mcp`, see the [Slack example](../../guides/topics/plugins-configure.md#configure-slack-search).
 
 ### Experimental Codex OAuth PoC
 

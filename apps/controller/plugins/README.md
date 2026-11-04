@@ -4,10 +4,10 @@ The [OCE marketplace index](./marketplace.json) lists packages by name and relat
 Each package has a [plugin.json](./oce-google-workspace/plugin.json) at its root. The
 `ai.openclaw.oce` extension points to the release that OCE deploys.
 
-- [Google Workspace](./oce-google-workspace/ai.openclaw.oce/release.json) pins the ClawHub skill and Linux `gog` binaries.
-- [Slack](./oce-slack/mcp.json) declares Slack’s hosted MCP server. The [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor. Once connected, OpenClaw discovers the tools Slack publishes through MCP `tools/list`. The worker stages the server with `enabled: false` until OCE supports binding a Slack user connection. See [Slack MCP](https://docs.slack.dev/ai/slack-mcp-server/).
+- **CLI packages** pin skills and worker executables, such as [Google Workspace](./oce-google-workspace/ai.openclaw.oce/release.json) with its ClawHub skill and Linux `gog` binaries. The release declares the executable’s `runtimeDirectory` and artifact hashes.
+- **Hosted MCP packages** declare a remote server, such as [Slack](./oce-slack/mcp.json) with its [Slack MCP endpoint](https://docs.slack.dev/ai/slack-mcp-server/).
 
-Slack’s release reserves an `account` slot for a future worker binding. Installing the package does not attach a credential or enable the MCP server.
+To bundle another managed MCP server, add its package to the marketplace index. Its `mcp.json` declares one Streamable HTTP server with a fixed HTTPS endpoint. Its [release](./oce-slack/ai.openclaw.oce/release.json) pins the descriptor hash and declares the credential slot, bearer placeholder, and MCP protocol versions. The controller and runtime images ship the reviewed package together. The operator selects tools in the Agent configuration. The Sandbox translates those names into request policy; the bundled OpenShell implementation enforces them before credential injection. Additional tools require selection and deployment before calls are allowed.
 
 The Plugin Driver registers each package by version. Publish changed release bytes under a new version so existing Agent selections continue to identify the reviewed release.
 
