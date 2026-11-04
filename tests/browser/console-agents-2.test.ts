@@ -308,8 +308,13 @@ for (const malformed of ["revision ID", "error message"] as const) {
     assert.equal(typeof body.requestId, "string");
     assert.equal(accepted.data.provisioning.requestId, body.requestId);
     assert.equal(accepted.data.provisioning.url, work.url);
+    const httpRequestId: unknown = accepted.meta.requestId;
+    assert.ok(
+      typeof httpRequestId === "string" && httpRequestId.trim().length > 0,
+      "admission includes a nonempty HTTP request ID",
+    );
     assert.notEqual(
-      accepted.meta.requestId,
+      httpRequestId,
       body.requestId,
       "HTTP request metadata is not the original provisioning request identity",
     );

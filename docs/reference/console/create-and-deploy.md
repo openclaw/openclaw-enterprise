@@ -190,10 +190,11 @@ existing Namespace Secrets before starting again.
 `registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
 registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-A failed first deployment keeps its Agent and version link even if the error
-message is unavailable. Follow that version's recovery guidance. After a Stop,
-including `PROVISIONING_CANCELLED` before deployment, open the Agent and deploy
-when ready.
+If the first deployment fails with valid Agent and version IDs, follow the linked
+version's recovery guidance even without an error message. A stopped or superseded
+deployment follows the separate guidance above.
+After a Stop, including `PROVISIONING_CANCELLED` before deployment, open the
+Agent and deploy when ready.
 
 If Agent creation is rejected after Configuration saves, correct the ordinary
 zero-binding Agent's editable fields and retry. The retry reuses Configuration
