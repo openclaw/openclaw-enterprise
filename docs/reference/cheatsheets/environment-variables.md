@@ -60,6 +60,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_GATEWAY_CA_PATH` — API-only path to the Gateway-only CA bundle that dedicated Harness nodes trust; empty means none. Unset, node enrollment uses `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.
 - `OCC_EGRESS_AUTHORITY_PORT`, `OCC_OPENSHELL_GIT_PORT` — Chart-set port of its `egressAuthority` and `openshellGit` listeners, or `disabled`. API and worker startup and the upgrade check refuse `CHART_LISTENER_MISMATCH` when the Installation authority uses another port, a host other than `0.0.0.0` or `::`, a disabled listener, or TLS or issuer file paths other than the chart's mounts. Not operator inputs.
 - `OCC_CA_SOURCES`, `OCC_DATABASE_CA_SOURCE` — Chart-set labels (value, Secret and key) that the OIDC CA startup checks print in their errors instead of mount paths. Helm sets them with OIDC CA values; not operator inputs.
+- `OCC_CHART_GATEWAY_ROUTING` — Chart-set private Gateway identity and hostnames. Startup refuses conflicting bundled Kubernetes Compute routing; not an operator input. See [production settings](../settings/production.md).
 
 ## PostgreSQL and migrations
 
@@ -112,8 +113,8 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_COMPUTE_DRIVER` — `docker` (default) or `kubernetes`; the Docker preview cannot deploy Agents.
 - `OCC_DEVELOPMENT_SANDBOX_DRIVER` — `none` (default) or `openshell`; OpenShell requires Kubernetes Compute.
 - `OCC_DEVELOPMENT_CONTROL_PLANE` — `compose` (default) or `kubernetes`; Kubernetes control plane requires Kubernetes Compute. Compose mode keeps PostgreSQL and OCC in Compose while Kubernetes Compute runs in k3d.
-- `OCC_DEVELOPMENT_PROTECTED_EGRESS` — `0` or unset by default; `1` opts into [static-inference enforcement](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Kubernetes-only Gateway authentication does not require this flag.
-- `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` — Optional verified private host IPv4 for the protected profile’s native OpenShell host alias; see [development settings](../settings/development.md).
+- `OCC_DEVELOPMENT_PROTECTED_EGRESS` — Unset, empty or `0` preserves ordinary startup; `1` is retired and rejected before effects, including with Kubernetes/OpenShell. Other values are invalid. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile). Gateway authentication remains enabled independently.
+- `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` — Retired; any presence, including an empty value, is rejected. Remove it from the environment; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_DATABASE_NAME` — Optional disposable `openclaw_k8s_` database for the Kubernetes control plane; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_CONTAINER_ENGINE` — `auto` (default), `docker`, or `podman`; Kubernetes-only mode uses it for k3d and image operations, while Compose mode also requires its Compose provider.
 - `OPENCLAW_DEV_PORT` — Published API port on host loopback; default: `3000`.

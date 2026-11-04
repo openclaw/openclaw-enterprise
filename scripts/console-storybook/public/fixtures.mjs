@@ -63,6 +63,11 @@ function configurationValues(scenario) {
     },
     channels: {},
   };
+  if (scenario.harnessId === "openclaw") {
+    const model = "openai/gpt-5.1";
+    values.agents.defaults.model = model;
+    values.agents.defaults.models = { [model]: { agentRuntime: { id: "openclaw" } } };
+  }
   if (scenario.gatewayPassword) {
     values.gateway.auth = {
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
@@ -2166,7 +2171,7 @@ export function installFixture(scenario, evidence) {
                     })),
                   ],
             cursor: "simulated-policy-cursor",
-            withheld: 0,
+            withheld: scenario.policyWithheld ?? 0,
             truncated: false,
           });
         }

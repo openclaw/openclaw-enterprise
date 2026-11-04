@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0027-durable-namespace-cleanup.md
+rfc: ../rfcs/0028-durable-namespace-cleanup.md
 ---
 
 # Implementation plan: durable Namespace cleanup
 
-- **ID:** RFC-0027
+- **ID:** RFC-0028
 - **Delivery status:** In progress
 - **Owner:** @russellb
-- **Authority:** [RFC-0027](../rfcs/0027-durable-namespace-cleanup.md)
+- **Authority:** [RFC-0028](../rfcs/0028-durable-namespace-cleanup.md)
 - **Source baseline:** PR #4088 at `bfef7f0d5f8091390d5ec8296d0be4cd5bb5faaa` and main `330073017`.
 
 ## Outcome and scope
@@ -194,6 +194,8 @@ and closed-Installation custody 1/1. RFC, security and genuine-provider proof ho
 remain.
 
 ## Delivery record
+
+- Renumbered the proposal to RFC-0028 after main assigned RFC-0027 to Agent OAuth connections. The plan filename, original dates, submission links and Proposed status remain unchanged.
 
 - Renumbered from provisional RFC-0026 to RFC-0027 after main assigned RFC-0026 to standalone web search. The original submission commits, dates, review links and decision status are unchanged.
 - Each RFC submission precedes its corresponding contract code. Component qualification and upstream integration are in progress; genuine provider proof remains pending. The complete static review applies to `75ac1fa`, before the later upstream integration.

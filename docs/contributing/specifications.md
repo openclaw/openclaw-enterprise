@@ -268,4 +268,5 @@ number later assigned on main. Original submission commits retain their old path
 
 | Previous RFC path                   | Current RFC                                                    |
 | ----------------------------------- | -------------------------------------------------------------- |
-| `0026-durable-namespace-cleanup.md` | [RFC-0027](../../specs/rfcs/0027-durable-namespace-cleanup.md) |
+| `0026-durable-namespace-cleanup.md` | [RFC-0028](../../specs/rfcs/0028-durable-namespace-cleanup.md) |
+| `0027-durable-namespace-cleanup.md` | [RFC-0028](../../specs/rfcs/0028-durable-namespace-cleanup.md) |

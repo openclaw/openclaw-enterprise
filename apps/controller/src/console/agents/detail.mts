@@ -2558,9 +2558,10 @@ export async function renderAgentDetail(
     // listed latest outcome is an earlier version's, whichever entry is viewed (finding D751).
     const acceptedId = acceptedHiddenVersion(latest.revision);
     const acceptedHidden = acceptedId !== undefined;
-    // Stop hides only for a failed first deployment, and says it cancels one still queued or in
-    // progress (findings 2385, 2580, D691). A failed read is unknown, not failed, and so is a
-    // newer deployment the caller cannot read.
+    // The latest readable outcome sets only Stop's confirmation copy: it says Stop cancels a first
+    // deployment still queued or in progress (findings 2385, 2580, D691). A failed one can hide
+    // newer queued work, so Stop stays (finding 2764). A failed read is unknown, not failed, and
+    // so is a newer deployment the caller cannot read.
     stopPanel.setLatestDeployment(acceptedHidden ? null : latestDeploymentStatus);
     const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about

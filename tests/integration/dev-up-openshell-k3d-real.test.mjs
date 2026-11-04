@@ -517,10 +517,10 @@ test(
       auth: { mode: "unauthenticated" },
     });
     try {
-      await assert.rejects(
-        anonymous.getWorkspace(namespace, AbortSignal.timeout(10_000)),
-        (error) => error.grpcStatus === 14 || error.grpcStatus === 16,
-      );
+      // Identity refusals keep grpc-js's raw UNAUTHENTICATED status code.
+      await assert.rejects(anonymous.getWorkspace(namespace, AbortSignal.timeout(10_000)), {
+        code: 16,
+      });
     } finally {
       anonymous.close();
     }

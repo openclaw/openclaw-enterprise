@@ -4,28 +4,41 @@ import {
   createGitHubRepositoryDeliveryResolver,
   type GitHubRepositoryRegistry,
 } from "../../drivers/repo/github/credentials/registry.ts";
-import type { SelectedDriverConfiguration } from "../installation-config.ts";
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
 
-type RepositoryPolicyInput = {
+export type RepositoryPolicyInput<Configuration = Readonly<Record<string, unknown>>> = {
   readonly backend: GitHubRepositoryCredentialBackendDefinition;
-  readonly selection: SelectedDriverConfiguration;
-  readonly policyConfiguration: { readonly sessionDurationSeconds: number };
+  readonly selection: {
+    readonly id: string;
+    readonly implementation: string;
+    readonly configuration: Configuration;
+  };
 };
 
-/** The caller validates the selected policy configuration before reading the registry. */
-export async function loadRepositoryPolicy(input: RepositoryPolicyInput) {
+export function repositoryPolicyOwner(input: RepositoryPolicyInput) {
   if (
     input.selection.implementation !== "github" ||
     input.selection.id !== input.backend.drivers.repo
   ) {
     throw new Error("The repository credential Driver must match its owning Backend.");
   }
+  return Object.freeze({
+    driverId: input.selection.id,
+    implementation: input.selection.implementation,
+    backendId: input.backend.id,
+  });
+}
+
+export async function loadRepositoryPolicy(
+  input: RepositoryPolicyInput<Readonly<{ sessionDurationSeconds: number }>>,
+) {
+  const repositoryOwner = repositoryPolicyOwner(input);
+  const { sessionDurationSeconds } = input.selection.configuration;
   const registry = await loadGitHubRepositoryRegistry(
     input.backend.configuration.registryPath,
     input.backend.id,
   );
-  const policy = composeRepositoryPolicy(input, registry);
+  const policy = composeRepositoryPolicy(repositoryOwner, registry, sessionDurationSeconds);
   return Object.freeze({
     ...policy,
     resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
@@ -34,21 +47,20 @@ export async function loadRepositoryPolicy(input: RepositoryPolicyInput) {
 
 /** Native composition calls this only after its registry and public CA have been read. */
 export function composeRepositoryPolicy(
-  input: RepositoryPolicyInput,
+  repositoryOwner: ReturnType<typeof repositoryPolicyOwner>,
   registry: GitHubRepositoryRegistry,
+  sessionDurationSeconds: number,
 ) {
-  const { backend: definition, selection } = input;
-  const repositoryOwner = Object.freeze({
-    driverId: selection.id,
-    implementation: selection.implementation,
-    backendId: definition.id,
-  });
   const repositoryPolicy = new GitHubRepositoryPolicy(repositoryOwner, registry, {
-    sessionDurationSeconds: input.policyConfiguration.sessionDurationSeconds,
+    sessionDurationSeconds,
   });
   return Object.freeze({
     repositoryRegistry: registry,
     repositoryOwner,
     repositoryPolicy,
+    repositoryAdmission: Object.freeze({
+      policy: repositoryPolicy,
+      backendId: repositoryOwner.backendId,
+    }),
   });
 }

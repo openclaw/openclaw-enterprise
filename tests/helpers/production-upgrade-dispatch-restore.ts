@@ -190,7 +190,10 @@ export function registerDispatchRestoreTests(
         }
         await writeFile(statePath, JSON.stringify(normalState));
 
-        await f.run("--resume");
+        // Keep the upgrade unfinished so the next resume exercises an older
+        // receipt after the journal has already selected the newer revision.
+        await f.failNext("doctor-error");
+        await assert.rejects(f.run("--resume"), /OpenClaw Doctor failed/);
         assert.equal(await projectedRevision(), revisionC);
         assert.deepEqual(await lastEntry(), [
           "replace",

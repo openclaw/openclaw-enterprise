@@ -1,3 +1,4 @@
+import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
   openShellRepositoryAccess,
   type OpenShellGitPolicyOverlap,
@@ -24,12 +25,22 @@ import {
   assertPluginNetworkInspection,
   assertPluginRequestPolicy,
   googleRequestPolicyFromSandbox,
-  managedGoogleCredentialEnvironment,
   openShellPluginPolicy,
   verifyPluginRequestGuard,
   verifyManagedPluginRegistration,
 } from "./openshell-plugin-policy.ts";
-import { managedCredentialBinding, managedGoogleInstall } from "../plugin/managed-catalog.ts";
+import {
+  assertNoManagedMcpRouteOverlap,
+  managedMcpNetwork,
+  openShellManagedMcpPolicies,
+  verifyManagedMcpPolicy,
+} from "./openshell-managed-mcp-policy.ts";
+import {
+  managedCredentialBinding,
+  managedMcpCredentialBinding,
+  managedMcpInstalls,
+  managedInstalls,
+} from "../plugin/managed-catalog.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
 import { workspaceNodeNetworkPolicy } from "./openshell-workspace-node-policy.ts";
@@ -2316,6 +2327,7 @@ function sandboxSpec(
   workspaceNodeBinding?: WorkspaceNodeBinding,
   egressPolicy?: Readonly<Record<string, unknown>>,
   plugin?: ReturnType<typeof openShellPluginPolicy>,
+  mcpPolicies: ReturnType<typeof openShellManagedMcpPolicies> = [],
 ) {
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
@@ -2327,6 +2339,10 @@ function sandboxSpec(
         "The Google plugin network rule name is reserved.",
       );
     }
+  }
+  for (const { install } of mcpPolicies) {
+    assertNoManagedMcpRouteOverlap(defaults, install);
+    assertNoManagedMcpRouteOverlap(additions, install);
   }
   const dataMount = sandboxDataMount(options, requirements);
   const workspace = workspaceVolumeMounts(requirements, dataMount, revision.id);
@@ -2369,7 +2385,7 @@ function sandboxSpec(
         dataMount.mount_path,
         workspace.workspaceMountPaths,
       ),
-      ...(plugin && { [managedGoogleCredentialEnvironment]: plugin.environment }),
+      ...(plugin && { [managedCredentialEnvironment]: plugin.environment }),
     },
     template: {
       image: requirements.image,
@@ -2395,6 +2411,7 @@ function sandboxSpec(
         ...(egressPolicy ? asRecord(egressPolicy.network_policies) : defaults),
         ...(egressPolicy ? {} : additions),
         ...plugin?.networks,
+        ...Object.fromEntries(mcpPolicies.map(({ network }) => [network.name, network])),
         ...(runtimeProvider === undefined || workspaceNodeBinding === undefined
           ? {}
           : workspaceNodeNetworkPolicy(workspaceNodeBinding)),
@@ -2831,7 +2848,7 @@ function canonicalProtobufValues(value: unknown): unknown {
   }
   const discriminator = record.kind;
   return Object.fromEntries(
-    Object.entries(record)
+    Object.entries(withoutSyntheticOneofs(record))
       .filter(
         ([key]) =>
           key !== "kind" ||
@@ -3710,6 +3727,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (plugin) {
       await verifyManagedPluginRegistration(client, context.signal);
     }
+    const mcpPolicies = openShellManagedMcpPolicies(
+      context.revision,
+      context.requirements,
+      this.options.providers ?? [],
+    );
     // Backstop for the admission check (finding 2144): the revision's own policy is immutable,
     // so a retry cannot clear an overlap.
     const gitOverlap =
@@ -3745,13 +3767,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
     }
-    const checkGuard = async () => {
+    const checkEffectivePolicy = async () => {
+      const config =
+        plugin || mcpPolicies.length
+          ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
+          : undefined;
       if (plugin) {
-        verifyPluginRequestGuard(
-          await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal),
-          plugin,
-          workspace,
-        );
+        verifyPluginRequestGuard(config, plugin, workspace);
+      }
+      for (const policy of mcpPolicies) {
+        verifyManagedMcpPolicy(config, policy, workspace);
       }
     };
     const exposed = exposesHarnessPort(context.requirements, codex);
@@ -3802,9 +3827,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         new Set([
           WORKSPACE_NODE_SETUP_ENVIRONMENT,
           WORKSPACE_NODE_CA_ENVIRONMENT,
-          managedGoogleCredentialEnvironment,
+          managedCredentialEnvironment,
           ...(!codex
-            ? Object.values(managedGoogleInstall.credentials).map((slot) => slot.delivery.env)
+            ? managedInstalls.flatMap(({ credentials }) =>
+                Object.values(credentials).map((slot) => slot.delivery.env),
+              )
             : []),
           // Only the attached provider supplies its identity-bound credential alias.
           // A static placeholder would survive withdrawal and shadow its absence.
@@ -3815,6 +3842,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         runtimeCredentialMaterial.binding,
         egressPolicy,
         plugin,
+        mcpPolicies,
       ),
       serviceExposures,
     };
@@ -3825,6 +3853,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ? {}
         : workspaceNodeNetworkPolicy(runtimeCredentialMaterial.binding);
     const composedPolicies = asRecord(create.spec.policy.network_policies);
+    for (const { install, network } of mcpPolicies) {
+      assertNoManagedMcpRouteOverlap(composedPolicies, install, [network.name]);
+    }
     if (
       !composedPolicies ||
       Object.hasOwn(composedPolicies, "workspace-node-enrollment") !==
@@ -3963,7 +3994,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           // delay when OpenShell reports that an exposed Sandbox service is ready.
           await delay(this.options.startupDelayMs, undefined, { signal: context.signal });
         }
-        await checkGuard();
+        await checkEffectivePolicy();
         await this.initializeWorkspace(context, sandbox, client);
         return result;
       }
@@ -3984,12 +4015,30 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           ...expectedSpec,
           environment: {
             ...expectedSpec.environment,
-            [managedGoogleCredentialEnvironment]: previous.environment,
+            [managedCredentialEnvironment]: previous.environment,
           },
           policy: {
             ...expectedSpec.policy,
             network_middlewares: previous.middlewares,
             network_policies: { ...expectedSpec.policy.network_policies, ...previous.networks },
+          },
+        };
+      }
+    }
+    const previousMcpRules = asRecord(asRecord(existing.spec?.policy)?.network_policies);
+    for (const install of managedMcpInstalls) {
+      // Native detach preserves the original launch policy. Reconstruct it from the revision.
+      const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
+      const network = managedMcpNetwork(install, binding?.toolNames ?? []);
+      if (
+        !mcpPolicies.some((policy) => policy.install.id === install.id) &&
+        sameOpenShellPolicy(previousMcpRules?.[network.name], network)
+      ) {
+        expectedSpec = {
+          ...expectedSpec,
+          policy: {
+            ...expectedSpec.policy,
+            network_policies: { ...expectedSpec.policy.network_policies, [network.name]: network },
           },
         };
       }
@@ -4026,7 +4075,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       validateHarnessServiceUrl(service.url);
     }
-    await checkGuard();
+    await checkEffectivePolicy();
     await this.initializeWorkspace(context, sandbox, client);
     return result;
   }
@@ -5171,6 +5220,22 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       ) {
         throw new SandboxNetworkPolicyConflictError(
           "The attached Google account requires its admitted request guard.",
+        );
+      }
+    }
+    const baselineRules = asRecord(baseline.network_policies);
+    for (const install of managedMcpInstalls) {
+      const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
+      const expected = managedMcpNetwork(install, binding?.toolNames ?? []);
+      if (sameOpenShellPolicy(baselineRules?.[expected.name], expected)) {
+        assertNoManagedMcpRouteOverlap(candidate.network_policies, install, [expected.name]);
+      } else if (
+        binding &&
+        Array.isArray(sandbox.spec?.providers) &&
+        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+      ) {
+        throw new SandboxNetworkPolicyConflictError(
+          "The managed MCP route differs from the admitted revision.",
         );
       }
     }

@@ -1,8 +1,5 @@
 # Worker, Compose, and PostgreSQL settings
 
-This reference owns worker, compose, and postgresql settings. Start with the
-[settings reference](../settings.md) for startup configuration and precedence.
-
 ## PostgreSQL connection authentication
 
 Both PostgreSQL API modes, the worker, shared Installation bootstrap, and
@@ -37,15 +34,22 @@ for deployment-owned identity inputs and chart limits, and
 [PostgreSQL testing](../../testing/postgresql.md#azure-workload-identity-connections)
 for the available connection proof and its limits.
 
+## PostgreSQL server compatibility
+
+PostgreSQL 18.6 is validated; migration, catalog, and restore checks also pass
+on 17.11. Other versions remain unqualified. Servers before 17 lack `MAINTAIN` and
+fail with `MIGRATION_SERVER_UNSUPPORTED` before catalog checks or writes.
+Preserve the database, use a compatible server, then rerun `--check`.
+Other database errors remain redacted as `MIGRATION_FAILED`.
+
 ## Migration history
 
-Set `OCC_MIGRATION_DATABASE_URL` privately to the intended database's dedicated
-`occ_migrator` login. The application login is `occ_app`; neither role may be a
-superuser, create roles or databases, replicate, or bypass row security. The
-migrator needs database `CREATE` and owns the `occ` and `drizzle` schemas. The
-application role must not inherit the migrator or have database/schema `CREATE`.
+Set `OCC_MIGRATION_DATABASE_URL` privately for `occ_migrator`. `occ_app` is the
+application login. Neither may be a superuser, create roles or databases,
+replicate, or bypass row security. The migrator needs database `CREATE` and owns
+`occ` and `drizzle`; `occ_app` must neither inherit it nor have database/schema `CREATE`.
 
-From the target release checkout, classify the database without applying migrations:
+From the release checkout, inspect history without applying SQL:
 
 ```sh
 pnpm db:migrate --check
@@ -94,10 +98,10 @@ the manifest pairs the PostgreSQL 18.6 restored catalog with its exact native
 digest. For the next schema, qualify both upgrading that restore and restoring
 the new schema. A match cannot establish backup completeness or provenance.
 
-After checking, confirm the target and authorization. Run `pnpm db:migrate`
+Confirm the target and authorization before `pnpm db:migrate`
 (development) or `pnpm db:migrate:production`. Both check source, roles, receipts,
 definitions and effective privileges under one advisory lock; Drizzle applies SQL
-and new receipts transactionally. Production also accepts `--check`.
+and receipts transactionally. Production also accepts `--check`.
 
 On first install, Helm adds `--expect-empty`. `MIGRATION_HISTORY_NOT_EMPTY`
 means migration stopped before changing recognized OCE history, not that the
@@ -219,9 +223,8 @@ access; qualify worker, Agent, repository, and provider behavior separately.
 
 ## Controller worker environment
 
-The [controller worker](../controller.md) runs separately from the HTTP API. It
-requires a bootstrapped Installation and the same migrated PostgreSQL database;
-it does not use the API's listener or authentication settings.
+The [controller worker](../controller.md) uses a bootstrapped Installation and
+the API's migrated PostgreSQL database, not its listener or authentication settings.
 
 | Variable                            | Requirement or default         | Behavior                                                                                                                                                                    |
 | ----------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -235,6 +238,8 @@ it does not use the API's listener or authentication settings.
 | `OCC_WORKER_DATABASE_TIMEOUT_MS`    | `60000`.                       | Client-side bound on each worker query and connection; a silent connection is dropped and retried, and longer lock waits fail the pass as an attempt; at most `2147483647`. |
 | `OCC_WORKER_READINESS_PATH`         | Optional absolute path.        | Writes a private freshness marker after real queue-health observations; required by packaged worker probes.                                                                 |
 | `OCC_WORKER_LIVENESS_PATH`          | Optional absolute path.        | Writes a private marker as the run loop makes progress, even through database outages; the packaged liveness probe restarts a worker whose marker is stale.                 |
+
+Packaged worker probes require regular marker files and refuse directory paths.
 
 The run loop writes the liveness marker at startup, at the start of every pass
 and on every claim renewal. A database outage keeps it moving; the packaged
@@ -302,8 +307,7 @@ Development logging override variables:
 | `OTEL_COLLECTOR_METRICS_PORT`      | `8888`.                                        | Publishes Collector self-metrics on `127.0.0.1:<port>`.                                                          |
 | `OCC_DOCKER_LOGGING_ADDRESS`       | `127.0.0.1:24224` when the override is active. | Tells Docker Compute where the Engine should forward managed gateway and Codex container logs; keep it loopback. |
 
-Both Compose files bind the PostgreSQL host port to loopback only. The following
-value controls Compose port substitution:
+Both Compose files bind PostgreSQL to loopback:
 
 | Variable            | Default | Behavior                                                                                              |
 | ------------------- | ------- | ----------------------------------------------------------------------------------------------------- |

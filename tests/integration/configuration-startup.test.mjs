@@ -811,6 +811,29 @@ async function repositoryInstallation(t) {
   return { configuration, registry, registrySource, tls, writableCaPath };
 }
 
+for (const mode of ["native", "selected-blocked", "selected"]) {
+  test(`Installation loads prepared GitHub lifecycle only for selected metadata: ${mode}`, async (t) => {
+    const configuration =
+      mode === "native"
+        ? (await repositoryInstallation(t)).configuration
+        : credentialProxyInstallation();
+    if (mode !== "native") {
+      configuration.drivers.credential_proxy.configuration.preparedGitHub = {
+        custodyKeyPath: "/nonexistent/fixture-custody.key",
+      };
+    }
+    const path = await fixture(t, configuration);
+    const result = spawnSync(
+      process.execPath,
+      ["tests/fixtures/repository-credentials/installation-module-guard.ts", path, mode],
+      { encoding: "utf8", timeout: 30_000, env: { PATH: process.env.PATH } },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr);
+  });
+}
+
 test("repository startup constructs the same local resolver without a private socket or App key", async (t) => {
   const { configuration, registry, registrySource } = await repositoryInstallation(t);
   const path = await fixture(t, configuration);

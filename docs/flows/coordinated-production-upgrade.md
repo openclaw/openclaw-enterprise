@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-03"
-last_updated_session: "authoring-run/1308615d-068b-473e-8062-2baec5b66ab0"
+updated: "2026-11-04"
+last_updated_session: "authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f"
 ---
 
 # Production image upgrade flow
@@ -62,15 +62,15 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Before reading protected files, writing evidence or contacting the cluster, the helper
-matches `HEAD` to `--source-revision` and checks the stock Helm chart against that commit.
-It rejects extra, missing or changed chart files, symlinks, and baseline or evidence paths
-inside the chart, including aliases. Keep the checkout unchanged throughout the run.
-Other local edits and image provenance remain unchecked.
+Before protected reads, evidence writes or cluster access, the helper matches
+`HEAD` to `--source-revision`. It rejects changed, extra or missing stock chart files, symlinks,
+and baseline/evidence paths or aliases inside the chart. Keep the checkout
+unchanged; other local edits and image provenance remain unchecked.
 
-Resume checks the evidence directory's canonical path, device and inode before cluster
-access. Aliases share its lock. Runtime upgrades also lock a private sibling dispatch journal
-for the run and frozen fleet. Restoring evidence leaves the journal intact.
+Resume binds the evidence directory's canonical path, device and inode; aliases
+share its lock. Any `completed` entry refuses resume before Kubernetes/OCC calls
+or evidence changes. Runtime upgrades also lock the private sibling dispatch
+journal for the frozen fleet. Restoring evidence leaves that journal intact.
 
 It checks protected inputs, cluster, deployed release and matching OCC/Secret Installation IDs.
 Candidates must match the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
@@ -79,7 +79,7 @@ rendering. Only the Slack directory proxy and curated Codex PluginDriver selecti
 may change before image flags apply. Broker checks compare references, not
 ConfigMap or Secret contents.
 
-Runtime upgrades require a complete, authorized inventory of running Agents and baseline versions.
+Runtime upgrades require a complete authorized inventory and baseline versions.
 Nonterminal deployments, missing versions or unready Namespaces stop preparation.
 Stopped or deleting Agents are excluded; pending repository cleanup does not block.
 
@@ -267,30 +267,27 @@ resume checks the replacement.
 
 Completion proves the selected Helm rollout and OCC access; runtime upgrades
 also verify recorded deployments, ready Pods, and Doctor without errors.
+After the final evidence capture, `scripts/upgrade-production-images` creates a
+private `completed` marker. A new upgrade requires a new evidence directory.
+If writing the marker fails, reconcile the retained evidence and live state:
+an absent marker does not prove that the operation is unfinished.
 Operators then verify model responses, providers, channels, credentials,
 workspace continuity, native access, and required restore behavior.
 
 ### Read-only export after a split-layout refusal
 
-The [split-layout export fallback](../guides/deploy/split-layout-upgrade.md#export-and-re-create)
-begins with the read-only `scripts/split-layout-tenants.mjs export --out FILE`.
-Its `createOccApi.expect` requires a data envelope for each successful resource
-response before `exportTenants` assembles the bundle. Malformed JSON, an empty
-body, or a missing data envelope causes export to exit nonzero before `main`
-writes the bundle; an actual empty collection remains valid. Empty 204 deletes
-and explicitly accepted 404 responses retain their meaning.
+The [split-layout fallback](../guides/deploy/split-layout-upgrade.md#export-and-re-create)
+uses `scripts/split-layout-tenants.mjs`. Its `createOccApi.expect` rejects
+malformed JSON, empty bodies and missing data envelopes before export writes a
+bundle. Empty collections, 204 deletes and explicitly accepted 404s remain valid.
 
-On re-creation, `importTenants` requires distinct target names for selected
-Namespaces. Saved destination IDs stay reserved even for skipped sources; skipped
-sources without saved destinations reserve nothing. The importer resolves selected
-unsaved targets by live name and rejects shared destinations before any mutation or ID-map
-save. Choose distinct `--rename` targets, skip a source, or correct the saved map
-before retrying. Saved mappings resume after validation. Previously merged
-resources stay merged.
-
-`--rename` keys are literal: `constructor` and `__proto__` remain unchanged unless
-renamed. Without a saved mapping, exact-name reuse requires a Namespace without
-Agents or Secrets.
+`importTenants` resolves unsaved targets by live name and rejects shared
+destinations before mutation or ID-map writes. Saved destination IDs remain
+reserved for skipped sources; unsaved skipped sources reserve nothing. Use
+distinct `--rename` targets, skip a source or correct the map before retrying.
+Validated saved mappings resume; previously merged resources stay merged.
+Rename keys, including `constructor` and `__proto__`, are literal. Without a
+saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 
 ## Debugging and Verification
 
@@ -323,6 +320,8 @@ Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 00:26: Record completion after final evidence capture and refuse resuming completed upgrades. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
 
 - 2026-11-03 10:46: Document stock chart verification. (authoring-run/1308615d-068b-473e-8062-2baec5b66ab0 - 11099b579a5c197e0ec5c342bffb78036c321a32)
 
