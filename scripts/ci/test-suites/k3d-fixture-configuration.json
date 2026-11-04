@@ -37,6 +37,7 @@
       "path": "tests/integration/installation-handoff-k3d-real.test.ts",
       "expectedTests": [
         "installation handoff distinguishes replaced Helm Jobs with only named get access",
+        "installation prerequisites report Job quota headroom, address drift and unreadable resources",
         "first install retains exact attempt evidence after a lost client"
       ]
     }

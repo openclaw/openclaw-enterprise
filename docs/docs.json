@@ -769,6 +769,7 @@
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
+              "guides/deploy/prerequisite-diagnosis",
               "guides/deploy/production-tui",
               "reference/settings/oidc"
             ]
