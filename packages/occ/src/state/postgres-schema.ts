@@ -2601,6 +2601,28 @@ export const connectionSessions = occSchema.table(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [
+    check("connection_sessions_state_hash_format", sql`${table.stateHash} ~ '^[0-9a-f]{64}$'`),
+    check(
+      "connection_sessions_expiry_after_creation",
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    foreignKey({
+      name: "connection_sessions_source_owner",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    foreignKey({
+      name: "connection_sessions_template_version",
+      columns: [table.connectionTemplateId, table.connectionTemplateVersion],
+      foreignColumns: [
+        oauthConnectionTemplateVersions.templateId,
+        oauthConnectionTemplateVersions.version,
+      ],
+    })
+      .onDelete("restrict")
+      .onUpdate("restrict"),
     check(
       "connection_sessions_selected_scopes_valid",
       sql`cardinality(${table.selectedScopes}) BETWEEN 1 AND 32 AND array_position(${table.selectedScopes},NULL) IS NULL`,
