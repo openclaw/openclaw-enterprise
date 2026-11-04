@@ -144,7 +144,7 @@ trust, writes a private one-use target and reconnects with the saved device toke
 Renewal and cleanup preserve exact ownership.
 
 `internal/occdev/kubernetes.go:writeInstallation` permits Node and pinned Codex model egress. Native workers connect outbound without an app-server endpoint. Compute binds `dedicated-native` with `inference: "worker"`; a missing or disconnected Harness fails without Gateway inference. Exact callbacks and session admission scope transport to the Agent.
-For each turn, the Gateway can grant a worker local execution of an MCP tool owned by its node. The worker calls that node’s MCP client directly. Tools that require Gateway policy hooks still run through the Gateway.
+For each turn, the Gateway can grant a worker local execution of an MCP tool owned by its node. The worker calls that node’s MCP client directly. When a tool needs a Gateway policy hook or belongs to another node, the worker calls it through the Gateway. The Gateway returns the structured MCP result to Code Mode, or the policy reason if it blocks the call.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
 projects `models.providers.openai` and an environment SecretRef. It retains
 normalized model HTTPS endpoints (port 443, paths ending in `/v1`), using the first

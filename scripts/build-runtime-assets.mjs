@@ -36,7 +36,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-control-ui-browser-reconnect.patch",
-    sha256: "19db4659a8c234a44a456bf964b300a3451dbf0c7e34267dd1a4af265dab7943",
+    sha256: "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",

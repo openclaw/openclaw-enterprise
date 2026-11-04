@@ -317,19 +317,19 @@ index cfe905152f8d70f15df13fe2ce3103a530e69e43..106573515193c39fb9279c9b6a284ab0
        aria-disabled={props["aria-disabled"]}
        onOpenclaw-route-element={elements.register}
 diff --git a/ui/src/i18n/locales/en.ts b/ui/src/i18n/locales/en.ts
-index ca35a766a3002b5a6e8923fcc1694b9cc65609fd..e598e1a4ad5e132e7ea41a0957cd7b96092f2215 100644
+index 9282056e54b004d8b3e25554634f03677f2752a6..4c7cfc82feb0954fa9806353b3838f12d1e6d698 100644
 --- a/ui/src/i18n/locales/en.ts
 +++ b/ui/src/i18n/locales/en.ts
-@@ -1361,6 +1361,9 @@ const startupEnglish = {
+@@ -1371,6 +1371,9 @@ const startupEnglish = {
      "reload-required": "Refresh required",
      offline: "Disconnected",
      reconnecting: "Reconnecting…",
 +    browserReconnectTitle: "Reconnect to the Gateway",
 +    browserReconnectExplanation: "Your sign-in may have expired, or your access may have changed.",
 +    browserReconnectAction: "Reconnect in browser",
-     interruptedRetrying:
-       "Connection to the Gateway was interrupted. Reconnecting automatically. (WebSocket {code})",
-     interrupted:
+     interruptedRetrying: "Disconnected. Reconnecting automatically. (WebSocket {code})",
+     interrupted: "Disconnected. Check your connection and reconnect. (WebSocket {code})",
+     restarting: "Restarting…",
 diff --git a/ui/src/styles/layout.css b/ui/src/styles/layout.css
 index 995470c81ff714a6d085de86316ba57ddbabaeaf..92a6fb5909064172ad5aa2e1be1a38b8574c95b7 100644
 --- a/ui/src/styles/layout.css
