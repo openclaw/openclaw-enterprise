@@ -17,10 +17,8 @@ Harness owns tools and approvals.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-- Trigger: Agent create/update with `plugins`, including a Console new-version
-  plugin save, followed by Agent deployment.
-- Assumptions: exact Agent permission, valid selections, compatible trusted
-  PluginDriver, and deployment prerequisites.
+- Trigger: Agent create/update with `plugins`, then deployment.
+- Requires Agent permission, valid selections and a compatible PluginDriver.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
   [OpenClawController](../../packages/occ/src/index.ts), and
   [bundled PluginDrivers](../../apps/controller/src/drivers/plugin/index.ts).
@@ -33,17 +31,18 @@ graph TD
   D0 -->|Saved| E0["Authorize Agent read/update"]
   E0 -->|no credential| D6
   E0 -->|bound| E1["Caller and Agent operate"] --> D6
+  E0 -->|managed MCP| M0["Check credential and discover server tools"] --> D5
   E0 -->|credentialSource| D2
   D1 -->|stored source| D2["Caller source operate"] --> D6["Check PluginDriver support"]
   D1 -->|token or none| D6
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
-  D6 -->|Secret| D3["Read Secret"] --> E3["Recheck source authority"] --> D4
-  D6 -->|CredentialSource| D9["Read token: timeout + disconnect"]
-  D9 -->|canceled| D12["Stop"]
-  D9 -->|token| D10["Recheck authority"] --> D11{"Disconnected?"}
-  D11 -->|yes| D12
-  D11 -->|no| D4
+  D6 -->|Secret| D3["Read and recheck"] --> D4
+  D6 -->|CredentialSource| D9["Read unless canceled"]
+  D9 -->|success| D10["Recheck authority"]
+  D10 -->|allowed and connected| D4
+  D9 -->|canceled or failed| D12["Stop"]
+  D10 -->|denied or disconnected| D12
   D4 -->|disconnect| D8["Cancel hosted reads"]
   D4 --> D5["Return safe catalog metadata"]
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
@@ -73,30 +72,33 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) checks
-Agent `create`. Stored credentials must share the Namespace. OCC checks caller
-source `operate` and rechecks both permissions before Driver use. Cross-Namespace references return `400`, missing
-Secrets `404`, and unavailable explicit CredentialSources `409`. Unsupported
-discovery reads no credential.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires
+Agent `create` and caller `operate` on stored sources. OCC rechecks both before
+Driver use. Wrong Namespace returns `400`, missing Secret `404`, unavailable
+explicit CredentialSource `409`. Unsupported discovery reads no credential.
 
-Saved discovery requires a dedicated Agent and caller `read` and `update`. OCC
-offers only plugins it would admit on save. For bound credentials OCC rechecks
-the attachment and both caller and Agent `operate`. For explicit sources it
-rechecks caller `operate`. Missing or non-ready bound sources return `404`.
-Credential Gateway supplies the current bearer. Curated discovery uses no credential.
-For CredentialSource reads, OCC combines the source timeout with HTTP disconnect
-before `withSourceToken`. It skips canceled reads. After rechecking authority, OCC
-rejects tokens returned after disconnect before calling the PluginDriver.
+Saved discovery requires a dedicated Agent and caller `read` and `update`.
+OCC offers admissible plugins. It rechecks attachment and both caller and Agent
+`operate` for bound sources, and caller `operate` for explicit sources.
+Missing or unready bound sources return `404`. Hosted catalogs use the saved
+bearer; curated catalogs need none.
 
-Console cancels hosted reads when a picker or view closes. Changing the account
-clears results. Hosted reads reject redirects and credential echoes, bound
-response size and time, and return safe metadata with `Cache-Control: no-store`.
-See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-for search, paging, and safe presentation fields.
+CredentialSource reads use timeout and HTTP cancellation. OCC skips canceled
+reads. After success it rechecks authority and discards the token on disconnect.
 
-The optional `NativeCodexPluginCatalogReader` reads `plugin/list` over app-server
-stdio. It rejects invalid results and stops the child on teardown. HTTP discovery
-uses the hosted reader.
+`packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
+
+For managed MCP, the Plugin Driver matches the release slot. OCC reads the bearer
+through the Secret Driver and rechecks grants and attachment before `tools/list`.
+`driverPolicy.toolNames` pins upstream names for worker, Gateway and OpenShell.
+
+Console cancels reads on picker or view close and clears results on account
+change. Hosted reads reject redirects and credential echoes, limit size and
+time, and return safe metadata with `Cache-Control: no-store`.
+See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+
+The optional `NativeCodexPluginCatalogReader` calls `plugin/list` over stdio,
+rejects invalid results and stops the child on teardown. HTTP uses the hosted reader.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -364,6 +366,10 @@ establish starvation.
 - 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
 
 - 2026-11-03 00:16: Describe plugin types. (authoring-run/c005ad62-46dd-4f91-8224-3934bc3dbfe7 - e1a6ce75ac414131e759b985d280833b3b26b90e)
+
+- 2026-11-02 23:59: Discover live MCP tools. (authoring-run/f6c72b81-af00-4c3d-9758-96b1d6ca64b1 - 6f95625048a1d20ebb5cc6e26368192b3300849c)
+
+- 2026-11-02 23:45: Describe discovery and deployment from a managed MCP release. (authoring-run/39268f6b-739c-4af1-82dd-3ecfe85d6ffa - 5d58446a2a6e200510da738698ef832612aab50d)
 
 - 2026-11-02 22:29: Trace the Slack account and tool selection through dedicated Agent deployment. (authoring-run/84451153-a081-4e74-aa29-e1a4acecddad - 5c0623f136d881356cec3c104b8657c761c14782)
 
