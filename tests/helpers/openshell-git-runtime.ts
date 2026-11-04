@@ -1,9 +1,5 @@
-import type { ProtectedGitHubInstallationMaterial } from "../../packages/contracts/src/protected-repository-git.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
-import {
-  createOpenShellGitProvider,
-  OpenShellGitRuntime,
-} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
@@ -51,37 +47,25 @@ type Faults = {
   /** The Sandbox does not exist yet: a first preparation bootstraps the route. */
   sandboxMissing?: boolean;
 };
-type Material =
-  | ProtectedGitHubInstallationMaterial
-  | {
-      value: string;
-      expiresAt: string;
-      preparationAttemptId: string;
-      materialVersion: string;
-      repository: string;
-      providerInstanceId: string;
-      repositoryId: string;
-      grantId: string;
-      pushRef: string;
-      apiOrigin: string;
-      sessionId: string;
-    };
+type Material = {
+  value: string;
+  expiresAt: string;
+  preparationAttemptId: string;
+  materialVersion: string;
+  repository: string;
+  providerInstanceId: string;
+  repositoryId: string;
+  grantId: string;
+  pushRef: string;
+  apiOrigin: string;
+  sessionId: string;
+};
 type Owner = {
   material: Material;
   readOpenShellMaterial: () => Promise<Material>;
   authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
-  revision: AgentRevision;
-  installationOnline: boolean;
-  observedPreview: boolean;
-  seeded: boolean;
-  gatewayState: {
-    profiles: Map<string, Record<string, unknown>>;
-    providers: Map<string, Record<string, unknown>>;
-  };
-  resolveDelivery: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
-
   sandbox: {
     id: string;
     name: string;
@@ -140,72 +124,32 @@ const admitted = resolveGitHubRepositoryBinding(registry, {
   repositoryRef: "application",
   profile: "git-write",
 });
-// Separate authority for scope-independent non-preview tests. No repository/ref claim.
-const installationRegistry = validateGitHubRepositoryRegistry(
-  {
-    ...registry,
-    repositories: [],
-    installationAccess: {
-      repositoryRef: "installation",
-      namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
-    },
-  },
-  registry.backendId,
-);
-const installationBinding = resolveGitHubRepositoryBinding(installationRegistry, {
-  namespaceId: "namespace-a",
-  repositoryRef: "installation",
-  profile: "github-installation",
-});
 const future = () => new Date(Date.now() + 600_000).toISOString();
 
 export function openShellGitRuntimeFixture({
   store,
   world,
-  observedPreview = world?.observedPreview ?? false,
-  installationOnline = world?.installationOnline ?? observedPreview,
-  seeded = world?.seeded ?? true,
-  resolveDelivery = world?.installationOnline
-    ? world.resolveDelivery
-    : createGitHubRepositoryDeliveryResolver(installationOnline ? installationRegistry : registry),
+  resolveDelivery = createGitHubRepositoryDeliveryResolver(registry),
   onEvent,
 }: {
-  /** v5 installation online admission; never a substitute for repository or preview tests. */
-  installationOnline?: boolean;
-  observedPreview?: boolean;
-  /** False starts without a fixture-owned route or provider generation. */
-  seeded?: boolean;
   store?: ReturnType<typeof routeStore>;
   world?: World;
   resolveDelivery?: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
   onEvent?: (event: Readonly<Record<string, unknown>>) => void;
 } = {}) {
-  const credentials = {
-    driver: { id: "repo-driver", implementation: "github" },
-    deadlineWallMs: Date.now() + 3_600_000,
-    bindings: [installationOnline ? installationBinding : admitted],
-  };
-  const revision =
-    (installationOnline ? world?.revision : undefined) ??
-    (Object.freeze({
-      id: "rev-one",
-      namespaceId: "namespace-a",
-      agentId: "agent-one",
-      harness: { id: "codex", mode: "dedicated" },
-      repositoryCredentials: credentials,
-      ...(installationOnline && {
-        executionAdmission: { version: observedPreview ? 6 : 5, mode: "protected" },
-        egressPlan: {
-          driver: { id: "openshell" },
-          execution: { executionId: "binding_0123456789abcdefghijklmn" },
-          repositoryGitAuthorization: observedPreview ? "request-hook-observed" : "online-request",
-          repositoryGit: credentials,
-        },
-      }),
-    }) as unknown as AgentRevision);
+  const revision = Object.freeze({
+    id: "rev-one",
+    namespaceId: "namespace-a",
+    agentId: "agent-one",
+    harness: { id: "codex", mode: "dedicated" },
+    repositoryCredentials: {
+      driver: { id: "repo-driver", implementation: "github" },
+      deadlineWallMs: Date.now() + 3_600_000,
+      bindings: [admitted],
+    },
+  }) as unknown as AgentRevision;
   // `world` shares the gateway, supervisor, faults and owner of an earlier fixture: the state a
-  // restarted worker process finds (finding 2128). Installation-online restarts also retain
-  // the exact admitted revision (including its deadline and plan) and delivery resolver.
+  // restarted worker process finds (finding 2128).
   const sandbox = world?.sandbox ?? {
     id: "sandbox-id-one",
     name: "git-execution",
@@ -229,14 +173,11 @@ export function openShellGitRuntimeFixture({
     observedWith: [] as (Entry["installed"] | undefined)[],
   };
   const faults: Faults = world?.faults ?? {};
-  // Fresh installation bootstraps and their replacement workers read the same Gateway maps.
-  // The production factory supplies the installation provider name; model reads stay separate.
+  // The gateway's own prepared Git profiles and providers, which a route's bootstrap writes
+  // (oce-git- plus 32 hex digits). Any other name is the Agent's model provider.
   const prepared = /^oce-git-[0-9a-f]{32}$/;
-  const gatewayState = (installationOnline ? world?.gatewayState : undefined) ?? {
-    profiles: new Map<string, Record<string, unknown>>(),
-    providers: new Map<string, Record<string, unknown>>(),
-  };
-  const { profiles, providers } = gatewayState;
+  const profiles = new Map<string, Record<string, unknown>>();
+  const providers = new Map<string, Record<string, unknown>>();
   const answer = (method: string, name?: string) => {
     const error = faults.gatewayCall?.(method, name);
     if (error) {
@@ -244,25 +185,13 @@ export function openShellGitRuntimeFixture({
     }
   };
   const client = {
-    getProvider: async (workspace: string, name: string) => {
+    getProvider: async (_workspace: string, name: string) => {
       answer("getProvider", name);
-      if (installationOnline && seeded && name === entry.binding.provider) {
-        return {
-          id: entry.binding.providerId,
-          name,
-          type: name,
-          workspace,
-          profileWorkspace: workspace,
-          resourceVersion: entry.binding.resourceVersion,
-        };
-      }
-      return (installationOnline && !seeded ? name !== "openai" : prepared.test(name))
-        ? providers.get(name)
-        : { type: "openai", profileWorkspace: "" };
+      return prepared.test(name) ? providers.get(name) : { type: "openai", profileWorkspace: "" };
     },
     getProviderProfile: async (_workspace: string | null, id: string) => {
       answer("getProviderProfile", id);
-      return (installationOnline && !seeded ? id !== "openai" : prepared.test(id))
+      return prepared.test(id)
         ? profiles.get(id)
         : { definition: { endpoints: [{ host: "api.openai.com" }], credentials: [] } };
     },
@@ -388,32 +317,19 @@ export function openShellGitRuntimeFixture({
       };
     },
   };
-  const material: Material = installationOnline
-    ? {
-        scope: "github-installation",
-        installationId: installationRegistry.githubInstallationId,
-        providerInstanceId: installationBinding.grant.providerInstanceId,
-        grantId: installationBinding.grant.grantId,
-        value: "synthetic-installation-token",
-        expiresAt: future(),
-        preparationAttemptId: "attempt-one",
-        materialVersion: "version-one",
-        apiOrigin: "https://api.github.com",
-        sessionId: "session-one",
-      }
-    : {
-        value: "synthetic-installation-token",
-        expiresAt: future(),
-        preparationAttemptId: "attempt-one",
-        materialVersion: "version-one",
-        repository: registry.repositories[0]!.repository,
-        providerInstanceId: admitted.grant.providerInstanceId,
-        repositoryId: admitted.grant.repositoryId,
-        grantId: admitted.grant.grantId,
-        pushRef: PUSH_REF,
-        apiOrigin: "https://api.github.com",
-        sessionId: "session-one",
-      };
+  const material = {
+    value: "synthetic-installation-token",
+    expiresAt: future(),
+    preparationAttemptId: "attempt-one",
+    materialVersion: "version-one",
+    repository: registry.repositories[0]!.repository,
+    providerInstanceId: admitted.grant.providerInstanceId,
+    repositoryId: admitted.grant.repositoryId,
+    grantId: admitted.grant.grantId,
+    pushRef: PUSH_REF,
+    apiOrigin: "https://api.github.com",
+    sessionId: "session-one",
+  };
   const owner: Owner = world?.owner ?? {
     readOpenShellMaterial: async () => {
       calls.material += 1;
@@ -430,9 +346,7 @@ export function openShellGitRuntimeFixture({
     client: client as unknown as Entry["client"],
     provider: provider as unknown as Entry["provider"],
     bindingId: "binding_0123456789abcdefghijklmn",
-    authorization: (installationOnline
-      ? resolveDelivery
-      : createGitHubRepositoryDeliveryResolver(registry))(revision),
+    authorization: createGitHubRepositoryDeliveryResolver(registry)(revision),
     otherProviders: ["openai"],
     binding: {
       workspace: sandbox.workspace,
@@ -451,33 +365,10 @@ export function openShellGitRuntimeFixture({
       }
     },
   };
-  if (installationOnline) {
-    // Derive the stock installation provider identity exactly as runtime adoption does.
-    // This only derives fixture metadata; an unseeded Gateway still has no provider or profile.
-    entry.binding = createOpenShellGitProvider(
-      client as unknown as Entry["client"],
-      sandbox.workspace,
-      "workspace-id-one",
-      sandbox.name,
-      revision.id,
-      entry.authorization.delivery,
-    ).restore(
-      {
-        providerId: entry.binding.providerId,
-        profileVersion: entry.binding.profileVersion,
-        resourceVersion: entry.binding.resourceVersion,
-        credentialState: entry.binding.credentialState,
-        expiresAt: entry.binding.expiresAt,
-      },
-      false,
-    );
-  }
   const events: Readonly<Record<string, unknown>>[] = [];
   const runtime = new OpenShellGitRuntime(
     {
       registrationName: "oce-prepared-git",
-      ...(installationOnline && { protectedExecution: true as const }),
-      ...(observedPreview && { observedHookPreviewWorkspace: sandbox.workspace }),
       authority:
         {} as import("../../apps/controller/src/composition/egress-authority.ts").EgressAuthorityConfiguration,
     },
@@ -490,7 +381,7 @@ export function openShellGitRuntimeFixture({
     onEvent?.(event);
   };
   runtime["routes"] = store as unknown as OpenShellGitRuntime["routes"];
-  if (seeded && store !== undefined && !store.rows.has(revision.id)) {
+  if (store !== undefined && !store.rows.has(revision.id)) {
     // The row this worker's own bootstrap left: fence 1, the bootstrap generation written.
     store.rows.set(revision.id, {
       revisionId: revision.id,
@@ -516,10 +407,8 @@ export function openShellGitRuntimeFixture({
       blocked: undefined,
     });
   }
-  if (seeded) {
-    runtime["entries"].set(revision.id, Promise.resolve(entry));
-    runtime["states"].set(revision.id, { entry });
-  }
+  runtime["entries"].set(revision.id, Promise.resolve(entry));
+  runtime["states"].set(revision.id, { entry });
   const identity = {
     sandboxId: sandbox.id,
     bindingId: entry.bindingId,
@@ -550,11 +439,6 @@ export function openShellGitRuntimeFixture({
   const denials = () => events.filter((event) => event.event === "worker.openshell-git-denied");
   return Object.assign(f, {
     runtime,
-    installationOnline,
-    observedPreview,
-    seeded,
-    gatewayState,
-    resolveDelivery,
     client,
     provider,
     store,
@@ -590,14 +474,7 @@ export async function reconciledOpenShellGitRuntimeFixture(
 export function bootstrappingOpenShellGitRuntimeFixture(
   options?: Parameters<typeof openShellGitRuntimeFixture>[0],
 ) {
-  const fixture = openShellGitRuntimeFixture({
-    ...options,
-    ...(options?.observedPreview ||
-    options?.installationOnline ||
-    options?.world?.installationOnline
-      ? { seeded: false }
-      : {}),
-  });
+  const fixture = openShellGitRuntimeFixture(options);
   fixture.runtime["entries"].clear();
   fixture.runtime["states"].clear();
   fixture.store?.rows.delete(fixture.revision.id);
