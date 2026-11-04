@@ -141,12 +141,14 @@ before rendering NetworkPolicies. Values must be strings or native null; type
 errors identify the setting.
 `runtime.gatewayNodeSelector`
 independently places the Gateway Pod and private-state initializer on trusted nodes.
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_READINESS_ENTRYPOINT`
-requires a successful authenticated loopback Codex `initialize` response. It uses Codex's non-originating probe identity to
-preserve ordinary clients' process-wide identity. It creates no thread or model
-turn. The program retains its two-second internal deadline; the unchanged
-Kubernetes exec probe has kubelet's one-second default timeout, including Node
-startup. This checks local RPC service, not Gateway-to-Harness routing.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentRuntimeReady`
+serves Kubernetes HTTP `GET /readyz`. It shares the authenticated Codex
+`initialize` check with the standalone Docker healthcheck. Codex's non-originating
+probe identity preserves ordinary clients' process-wide identity; the check
+creates no thread or model turn. The resident RPC check has a two-second internal
+deadline; Kubernetes retains its one-second default HTTP timeout. The standalone
+program's two-second deadline includes process startup. These checks verify local
+RPC service, not Gateway-to-Harness routing.
 
 After Harness readiness, preparation starts a candidate Gateway if its predecessor is stopped or unready. Activation waits for workspace node enrollment. Dedicated Codex keeps `agent-<agent digest>-workspace` across versions.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds its callbacks to the Agent route; `AGENT_WITH_NODE_ENTRYPOINT` prepares private capability storage and TLS trust, and OpenClaw authorizes callbacks. See [native hook routing](../reference/gateway-routing.md#native-node-endpoint).

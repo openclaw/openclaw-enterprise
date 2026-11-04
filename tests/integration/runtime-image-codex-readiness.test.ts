@@ -3,7 +3,10 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import test from "node:test";
 import { promisify } from "node:util";
-import { AGENT_READINESS_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_READINESS_ENTRYPOINT,
+  AGENT_RUNTIME_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
 const execute = promisify(execFile);
 const image = process.env.OCC_TEST_RUNTIME_IMAGE;
@@ -17,13 +20,14 @@ const assert = require("node:assert/strict");
 const { spawn, execFile } = require("node:child_process");
 const { createHash, randomBytes } = require("node:crypto");
 const { once } = require("node:events");
-const { mkdirSync } = require("node:fs");
+const { mkdirSync, readFileSync } = require("node:fs");
+const residentProgram = JSON.parse(readFileSync(0, "utf8")).residentProgram;
 const { connect } = require("node:net");
 const { promisify } = require("node:util");
 const { WebSocket, WebSocketServer } = require("ws");
 const execute = promisify(execFile);
 const token = randomBytes(32).toString("hex");
-const env = { PATH: process.env.PATH, HOME: "/tmp/readiness", CODEX_HOME: "/tmp/readiness/codex" };
+const env = { PATH: process.env.PATH, HOME: "/tmp/readiness", CODEX_HOME: "/tmp/readiness/codex", RUST_LOG: "info,codex_otel=off", LOG_FORMAT: "json" };
 mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
 async function probe(port, auth = token) {
   try {
@@ -34,6 +38,33 @@ async function probe(port, auth = token) {
   } catch (error) {
     assert.equal(typeof error.code, "number", "probe must exit within its own deadline");
     return { code: error.code, output: error.stdout + error.stderr };
+  }
+}
+// Execute the real generated HTTP listener and readiness callback. Stop the
+// program before login/model startup: this is HTTP component proof, not startup proof.
+async function probeHttp(port, auth = token) {
+  const child = spawn(process.execPath, [], {
+    env: { ...env, APP_SERVER_PORT: String(port), APP_SERVER_TOKEN: auth,
+      OPENCLAW_RUNTIME_STATUS_PORT: "18992" }, stdio: ["pipe", "ignore", "pipe"],
+  });
+  const exited = once(child, "exit");
+  child.stdin.end(residentProgram);
+  try {
+    const deadline = Date.now() + 3000;
+    for (;;) {
+      try {
+        const response = await fetch("http://127.0.0.1:18992/readyz", { signal: AbortSignal.timeout(3000) });
+        await response.text();
+        return response.status;
+      } catch (error) {
+        assert.equal(error.cause?.code, "ECONNREFUSED");
+        assert.ok(Date.now() < deadline, "resident readiness listener must start");
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    }
+  } finally {
+    child.kill("SIGTERM");
+    await exited;
   }
 }
 async function identity(name) {
@@ -79,15 +110,19 @@ try {
   }
   // Probing before the first ordinary client must not claim its originator.
   assert.deepEqual(await probe(18991), { code: 0, output: "" });
+  assert.equal(await probeHttp(18991), 200);
   const ordinaryIdentity = await identity("ordinary-client");
   assert.match(ordinaryIdentity, /^ordinary-client\//);
   // Later polling must also preserve that client's process-wide user-agent suffix.
   for (let attempt = 0; attempt < 2; attempt++) {
     assert.deepEqual(await probe(18991), { code: 0, output: "" });
+    assert.equal(await probeHttp(18991), 200);
     assert.equal(await identity("codex_app_server_daemon"), ordinaryIdentity);
   }
+  assert.match(serverLog, /"level":"INFO"/, "the log capture must observe production INFO output");
   assert.doesNotMatch(serverLog, /notification[^\n]*initialized/, "default logging must not add an initialized event per poll");
   assert.equal((await probe(18991, "wrong-capability-token")).code, 1);
+  assert.equal(await probeHttp(18991, "wrong-capability-token"), 503);
 } finally {
   server.kill("SIGTERM");
   const kill = setTimeout(() => server.kill("SIGKILL"), 2000);
@@ -119,7 +154,8 @@ for (const mode of cases) {
     // A complete result is authoritative even if the server drops the transport
     // afterward, as the packaged Codex server does during normal client closure.
     assert.equal(result.code, mode === "abrupt-after-result" ? 0 : 1, mode);
-    assert.deepEqual(requests, ["initialize"], "readiness must make no thread or turn request");
+    assert.equal(await probeHttp(peer.address().port), mode === "abrupt-after-result" ? 200 : 503, mode);
+    assert.deepEqual(requests, ["initialize", "initialize"], "readiness must make no thread or turn request");
     if (mode !== "abrupt-after-result") assert.match(result.output, /Codex app-server/);
     assert.ok(!result.output.includes("private-error-canary"), "probe output must omit peer content");
   } finally {
@@ -135,16 +171,17 @@ test(
   "runtime image Codex readiness requires a successful initialization RPC",
   {
     skip: image === undefined ? "Set OCC_TEST_RUNTIME_IMAGE to a local runtime image." : false,
-    timeout: 45000,
+    timeout: 60000,
   },
   async (t) => {
     assert.ok(image);
     const name = `oce-codex-readiness-${randomBytes(6).toString("hex")}`;
     t.after(() => execute(docker, ["rm", "--force", name], { timeout: 10000 }).catch(() => {}));
-    const result = await execute(
+    const pending = execute(
       docker,
       [
         "run",
+        "-i",
         "--name",
         name,
         "--network",
@@ -166,8 +203,14 @@ test(
         "-e",
         scenario,
       ],
-      { timeout: 40000, maxBuffer: 65536 },
+      { timeout: 55000, maxBuffer: 65536 },
     );
+    const parts = AGENT_RUNTIME_ENTRYPOINT.split(
+      "\nconst loginMode = process.env.CODEX_LOGIN_MODE;",
+    );
+    assert.equal(parts.length, 2, "select the generated resident listener before model startup");
+    pending.child.stdin!.end(JSON.stringify({ residentProgram: parts[0] }));
+    const result = await pending;
     assert.deepEqual(JSON.parse(result.stdout), { repeatedInitialization: true, peerCases: 7 });
   },
 );

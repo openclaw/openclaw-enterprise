@@ -128,6 +128,22 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
     );
     assert.ok(run.first(events, observedValue("ready", true)).at >= answered.at);
     assert.equal(events.some(isRuntimeFailure), false);
+    if (kind === "codex") {
+      // Exercise resident HTTP readiness after the full wrapper's real Codex
+      // startup. Only the upstream model provider is substituted by this fixture.
+      const observed = await runDocker([
+        "exec",
+        run.containerName,
+        "node",
+        "-e",
+        "Promise.all(Array.from({ length: 3 }, async () => { " +
+          "const response = await fetch('http://127.0.0.1:18791/readyz', { signal: AbortSignal.timeout(5000) }); " +
+          "await response.text(); return response.status; " +
+          "})).then(statuses => console.log(JSON.stringify(statuses)))" +
+          ".catch(() => process.exit(1));",
+      ]);
+      assert.deepEqual(JSON.parse(observed.stdout), [200, 200, 200]);
+    }
     t.diagnostic(
       describeStartupProbeRun(`${kind}, ${delayMs} ms model turn, --cpus ${run.wrapper.cpus}`, run),
     );
