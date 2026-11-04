@@ -125,6 +125,7 @@ export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsFast = story("diagnosticsFast");
 export const DiagnosticsNoSlack = story("diagnosticsNoSlack");
 export const DiagnosticsReader = story("diagnosticsReader");
+export const DangerZoneTabs = story("dangerZoneTabs");
 export const DangerZoneReader = story("dangerZoneReader");
 export const DiagnosticsRefused = story("diagnosticsRefused");
 export const DiagnosticsUnknown = story("diagnosticsUnknown");
@@ -262,6 +263,8 @@ export const PolicyDenialsReadDenied = story("policyDenialsReadDenied");
 export const PolicyDenialsLoading = story("policyDenialsLoading");
 export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");
 export const PolicyDenialsProtected = story("policyDenialsProtected");
+export const PolicyDenialsWithheldOne = story("policyDenialsWithheldOne");
+export const PolicyDenialsWithheldMany = story("policyDenialsWithheldMany");
 
 export const ConfigurationInvalid = story("policyConfigurationInvalid");
 export const ConfigurationConflict = story("policyConfigurationConflict");

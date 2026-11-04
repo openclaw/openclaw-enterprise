@@ -52,62 +52,28 @@ not select candidate images.
 
 ## Select the protected profile
 
-The ordinary installer selects stock OpenShell 0.1.6 for the Gateway, supervisor,
-sandbox runtime and both charts. No OpenShell candidate selectors are required.
-Compute still verifies the current installation before [signing the workload release](../../reference/credential-sources/protected-inference.md#execution-admission-cutoff).
-Launching the profile prepares the pair for qualification.
+New local launches of protected static inference are retired.
+`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` is rejected before engine, host or bootstrap
+work, including with Kubernetes Compute, Kubernetes control plane and OpenShell.
+There is no fallback to another profile. Leave the selector unset, empty or `0`
+for ordinary development. Kubernetes-only OpenShell still enables Gateway TLS,
+mTLS and native PKI independently.
 
-For a fresh Kubernetes control plane, select protected egress explicitly:
+`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` is also retired. Remove it from the
+environment entirely; even an empty value is rejected.
 
-```bash
-export OCC_DEVELOPMENT_PROTECTED_EGRESS=1
-export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
-export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
-export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
-export OCC_DEVELOPMENT_DATABASE_NAME=openclaw_k8s_connected
-./scripts/dev-up
-```
-
-The installer verifies the release source archive and pins all three image digests.
-Overrides still require a complete image selection and paired charts.
-Before creating the cluster, the launcher renders the chart and checks that the
-Gateway configuration registers only `oce-authority`, uses the expected HTTPS
-endpoint and audience, and mounts the authority's public CA read-only.
-The native `gatewayConfig` registration requires `binding_policy = "allowlist"`
-and `bindings = ["http_request_pre_credentials"]`. Missing, dynamic or response-only
-registration is refused. The released Gateway and supervisor also reject a service
-that does not advertise the required request binding. Runtime policy must attach
-this middleware with `on_error: fail_closed`; registration alone does not authorize
-or protect a destination. This does not replace repository scope or sender checks.
-Compute still verifies the installed capabilities before releasing a workload.
-
-The profile registers the authority, generates its server certificate, and uses
-OpenShell's native PKI hook for Gateway server/client certificates and extension
-signing keys. Only the API and worker receive the administrative mTLS client key.
-The authority receives only the issuer public key.
-
-The launcher installs the Gateway, then installs the OCE API with zero workers so
-the Gateway can reach the authority during startup. After it applies tenant access
-and network policies and the Gateway rollout succeeds, a Helm upgrade starts one
-worker to reconcile the bootstrap Namespace. If a prerequisite fails, the launcher
-returns that error and follows its owned-cluster rollback and retained-state recovery
-path. A successful rollout does not guarantee that the first reconciliation succeeds.
-
-`OCC_DEVELOPMENT_DATABASE_NAME` is optional. When selected it must match
+`OCC_DEVELOPMENT_DATABASE_NAME` remains an independent, optional selector for
+Kubernetes Compute with the Kubernetes control plane. It must match
 `openclaw_k8s_[a-z0-9_]+` and be at most 63 characters. The launcher uses it for
 database creation, readiness, migration, bootstrap, API and worker connections;
 the application still uses the limited `occ_app` role. Unset it to retain the
 default `openclaw_enterprise` database on a fresh launch.
 
-This profile is off when `OCC_DEVELOPMENT_PROTECTED_EGRESS` is unset or `0`, and
-requires both Kubernetes control plane and OpenShell when enabled. It does not
-qualify a model turn or supply a provider fixture. Resolve the separate Agent
-Gateway server-trust and fixture prerequisites in
-[protected launch verification](../../testing/static-egress.md#protected-launch-packaging)
-before running connected tests. If those tests use the native host alias, select
-the verified owned private host IPv4 through
-`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`; reachability and server-certificate
-checks remain prerequisites.
+Already recorded development state retains its owned rollback and recovery path.
+Keep that state for cleanup; changing these selectors does not convert an existing
+installation. [Protected packaging verification](../../testing/static-egress.md#protected-launch-packaging)
+is retained for historical state and existing owners. It is not a new local
+launch procedure.
 
 ## Preload the Agent Sandbox controller from a verified cache
 

@@ -8,7 +8,6 @@ import type { TLSSocket } from "node:tls";
 import { Worker } from "node:worker_threads";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/credentials/receipt-client.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
 import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
@@ -60,11 +59,33 @@ for (const first of ["removal", "use"] as const) {
             );
             return "same material";
           }),
-          f.owner.authorizeOpenShellRequest(q, { preparationAttemptId, materialVersion }, signal),
-        ]).catch((error: unknown) => error); // assert the result after releasing the transaction barrier
+          f.owner.use(q, signal).then(
+            (used) => {
+              assert.ok("value" in used, "native use must return material, not just a receipt");
+              assert.equal(used.exchangeId, q.exchangeId);
+              assert.equal(used.preparationAttemptId, preparationAttemptId);
+              assert.equal(used.materialVersion, materialVersion);
+              assert.equal(used.value, material.value);
+              assert.ok(new Date(used.sendStartBy).getTime() <= Date.parse(material.expiresAt));
+              assert.equal(f.gh.issuesOfTokens.length, 1, "native use must not mint again");
+              return "same material";
+            },
+            (error: unknown) => {
+              if (
+                error instanceof Error &&
+                error.message === "Prepared GitHub custody transaction did not complete (guard)."
+              ) {
+                return "native guard";
+              }
+              throw error;
+            },
+          ),
+        ]);
+        // Observe rejection while blocked; awaiting result after the barrier still rethrows it.
+        void result.catch(() => {});
         return { result, exchangeId: q.exchangeId };
       };
-      const denied = ["withdrawn", "access_withdrawn"];
+      const denied = ["withdrawn", "native guard"];
 
       // This pool has exactly one connection. Observe its actual lock waits and run the
       // removal owner's Namespace, Agent and generation-fenced State operations on it.
@@ -100,6 +121,12 @@ for (const first of ["removal", "use"] as const) {
         }
       }
 
+      // A different grant cannot use this live standing session or reach the provider.
+      const providerCalls = f.gh.trace.length;
+      await assert.rejects(f.owner.use(f.request({ grantId: randomUUID() }), signal), {
+        message: "Prepared GitHub custody transaction did not complete (guard).",
+      });
+      assert.equal(f.gh.trace.length, providerCalls);
       assert.deepEqual(await receipts(), []);
       let expectedReceipts: string[] = [];
       if (first === "removal") {
@@ -126,7 +153,7 @@ for (const first of ["removal", "use"] as const) {
           const removal = remove();
           await blocked(readers, 1, writer);
           await holder.query("ROLLBACK");
-          assert.deepEqual(await pending.result, ["same material", true]);
+          assert.deepEqual(await pending.result, ["same material", "same material"]);
           await removal;
           expectedReceipts = [pending.exchangeId];
           failed = false;
@@ -265,26 +292,6 @@ test(
     );
     const row = await f.state.read((v) => v.repositorySessions.findBrokerReceipt(admissionId));
     assert.ok(row?.state === "active" && row.sessionId === sessionId && row.generation);
-    const decision = new RepositoryReceiptClient(controlSocket, row.generation);
-    const authorize = () => decision.authorizeStanding(admissionId, sessionId, input);
-    await authorize();
-    const refusal = { message: "RECEIPT_UNAVAILABLE" };
-    await assert.rejects(decision.authorizeStanding(admissionId, randomUUID(), input), refusal);
-    await assert.rejects(
-      decision.authorizeStanding(admissionId, sessionId, {
-        ...input,
-        expectedBinding: { ...input.expectedBinding, grantId: randomUUID() },
-      }),
-      refusal,
-    );
-    await assert.rejects(
-      new RepositoryReceiptClient(controlSocket, randomUUID()).authorizeStanding(
-        admissionId,
-        sessionId,
-        input,
-      ),
-      refusal,
-    );
     const uses = async () =>
       (
         await f.pool.query(
@@ -349,7 +356,6 @@ test(
     assert.equal(withdrawalCommittedBeforeWrite, true);
     assert.deepEqual(await workerExit, [0]);
     assert.equal(pendingStatus, 200);
-    await assert.rejects(authorize(), refusal);
     assert.equal(originRequests, 2);
     const freshStatus = (await get()).status;
     assert.equal(freshStatus, 503);

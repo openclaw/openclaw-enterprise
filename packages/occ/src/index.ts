@@ -123,7 +123,7 @@ import {
   removedPolicyDetails,
   type RemovedAccessBinding,
 } from "./iam-policy-cleanup.ts";
-import { deploymentDiagnostics } from "./deployment-diagnostics.ts";
+import { deploymentDiagnostics, withHarnessDiagnostic } from "./deployment-diagnostics.ts";
 import {
   deviceAuthorizationSession,
   type DeviceAuthorizationSession,
@@ -208,7 +208,6 @@ import type {
   RevisionHarnessDescriptor,
   ResourceKind,
   ResourceRef,
-  RuntimeDiagnosticCheck,
   Role,
   SandboxDriver,
   SandboxHarnessLostCode,
@@ -1150,27 +1149,6 @@ const HARNESS_LOST_CODES: ReadonlySet<string> = new Set<SandboxHarnessLostCode>(
   "SANDBOX_FAILED",
   "HARNESS_EXITED",
 ]);
-/** The Harness Sandbox record as the leading `agent` `sandbox` diagnostic check. */
-function harnessDiagnosticCheck(
-  observed: AgentRuntimeHarnessStatus,
-  checkedAt: string,
-): RuntimeDiagnosticCheck {
-  // A Harness process that exited has failed even while its provider restarts it.
-  const state =
-    observed.state === "running"
-      ? "succeeded"
-      : observed.state === "lost" || observed.code === "HARNESS_RESTARTING"
-        ? "failed"
-        : "unknown";
-  const code = observed.code ?? (observed.state === "starting" ? "STARTING" : undefined);
-  return Object.freeze({
-    component: "agent",
-    check: "sandbox",
-    state,
-    checkedAt,
-    ...(code === undefined ? {} : { code }),
-  });
-}
 
 /**
  * A Credential Gateway must finish any effect of an aborted registration within
@@ -1808,6 +1786,36 @@ function invalidPluginRequest(): never {
   throw new PluginPolicyValidationError();
 }
 
+const PLUGIN_ID_SHAPE = /^[A-Za-z0-9._~:@-]{1,253}$/u;
+
+/**
+ * Discovery's refusal for a plugin ID the selected Driver does not offer. It names the IDs only
+ * in the selection-key shape, and the offered ID only as the versioned form of the rejected one.
+ * The request body has no `/plugins` member, so the refusal has no request path.
+ */
+function undiscoveredPlugin(
+  driverId: string,
+  error: PluginPolicyValidationError,
+): PluginPolicyValidationError {
+  const pluginId =
+    error.pluginId !== undefined && PLUGIN_ID_SHAPE.test(error.pluginId)
+      ? error.pluginId
+      : undefined;
+  const offeredId =
+    pluginId !== undefined &&
+    error.offeredId !== undefined &&
+    PLUGIN_ID_SHAPE.test(error.offeredId) &&
+    error.offeredId.startsWith(`${pluginId}@`)
+      ? error.offeredId
+      : undefined;
+  return new PluginPolicyValidationError(
+    "unknownPlugin",
+    driverId,
+    pluginId,
+    offeredId,
+  ).withoutRequestPath();
+}
+
 function normalizeAgentPlugins(
   plugins: PluginDesiredState | undefined,
 ): PluginDesiredState | undefined {
@@ -1954,7 +1962,50 @@ function rejectCrossNamespaceSecretSources(
   }
 }
 
+// Internal Installation composition only; the public Repo Driver contract is unchanged.
+type InstallationRepositoryAdmission = Readonly<{
+  policy: RepositoryPolicyDriver & {
+    listCatalog(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
+    resolveBindings(input: {
+      readonly namespaceId: string;
+      readonly bindings: readonly RepositoryBindingRequest[];
+    }): RepositoryCredentialResolution;
+  };
+  backendId: string;
+}>;
+
 export class OpenClawController {
+  private installationRepositoryAdmission?: InstallationRepositoryAdmission;
+
+  /** @internal Bind the Installation's exact owner for fresh revision admission. */
+  static forInstallation(
+    installation: Installation,
+    options: ControllerOptions,
+    repositoryAdmission: InstallationRepositoryAdmission | undefined,
+  ): OpenClawController {
+    const controller = new OpenClawController(installation, options);
+    if (
+      repositoryAdmission === undefined &&
+      controller.backends.some((backend) => "repo" in backend.drivers)
+    ) {
+      throw new DriverSelectionError(
+        "The Installation requires an explicit repository admission owner.",
+      );
+    }
+    if (repositoryAdmission !== undefined) {
+      const backend = controller.backendMap.get(repositoryAdmission.backendId);
+      if (
+        !backend ||
+        !("repo" in backend.drivers) ||
+        backend.drivers.repo !== repositoryAdmission.policy.id
+      ) {
+        throw new DriverSelectionError("Repository admission must bind its exact owning Backend.");
+      }
+      controller.installationRepositoryAdmission = Object.freeze({ ...repositoryAdmission });
+    }
+    return controller;
+  }
+
   readonly installation: Readonly<Installation>;
   private readonly configurations = new DriverConfigurationRegistry();
 
@@ -2757,9 +2808,16 @@ export class OpenClawController {
         "The selected repository credential Driver is unavailable.",
       );
     }
+    const admission = this.installationRepositoryAdmission;
+    if (admission !== undefined && admission.policy !== driver) {
+      throw new DependencyUnavailableError("The bound repository admission owner is not selected.");
+    }
     let result: RepositoryOptions;
     try {
-      result = await driver.listOptions({ namespaceId: namespace.id });
+      const input = { namespaceId: namespace.id };
+      result = await (admission === undefined
+        ? driver.listOptions(input)
+        : admission.policy.listCatalog(input));
     } catch {
       throw new DependencyUnavailableError(
         "The selected repository credential Driver could not list repository options.",
@@ -3034,6 +3092,13 @@ export class OpenClawController {
     principalId: string,
     input: ProvisionAgentInput,
     auditEvent?: (result: Readonly<ProvisionAgentResult>) => AuditEvent,
+    configurationPreparation?: {
+      readonly key: string;
+      readonly prepare: (
+        agent: Pick<Agent, "id" | "namespaceId">,
+        values: Readonly<OpenClawConfigurationDocument>,
+      ) => Readonly<OpenClawConfigurationDocument>;
+    },
   ): Promise<Readonly<ProvisionAgentResult>> {
     // Authorize the Namespace-level grants before reading the plan, as status and retry do: a
     // caller without them gets the same audited denial whatever the body says, and never a
@@ -3044,7 +3109,7 @@ export class OpenClawController {
     if (!isName(input.name)) {
       throw new ScopeViolationError("The Agent name is invalid.");
     }
-    const configurationInput = normalizeProvisioningConfiguration(input.configuration);
+    let configurationInput = normalizeProvisioningConfiguration(input.configuration);
     const harnessAuth = normalizeProvisioningHarnessAuth(input.harnessAuth ?? null);
     const executionMode = input.executionMode ?? "embedded";
     if (!validExecutionMode(executionMode)) {
@@ -3093,6 +3158,9 @@ export class OpenClawController {
       namespaceId: input.namespaceId,
       name: input.name,
       configuration: configurationInput,
+      ...(configurationPreparation === undefined
+        ? {}
+        : { configurationPreparation: configurationPreparation.key }),
       ...(workspace.initialWorkspaceFiles === undefined
         ? {}
         : { initialWorkspaceFiles: workspace.initialWorkspaceFiles }),
@@ -3139,7 +3207,21 @@ export class OpenClawController {
     const replay = await this.read((state) =>
       state.provisioning.findByRequest(input.namespaceId, principalId, requestId),
     );
+    // Reserve identity before preparing values, but expose agentId only after the Agent exists.
+    // The request fingerprint covers the original input and preparation choice, so retries
+    // reuse the saved plan even if Installation routing changes.
+    let reservedAgentId: string | undefined;
     if (replay === undefined) {
+      if (configurationPreparation !== undefined) {
+        reservedAgentId = this.nextIdentifier("agent");
+        configurationInput = normalizeProvisioningConfiguration({
+          ...configurationInput,
+          values: configurationPreparation.prepare(
+            { id: reservedAgentId, namespaceId: input.namespaceId },
+            configurationInput.values,
+          ),
+        });
+      }
       // A replay is checked against the current Installation by authorizeProvisioningRecord.
       this.requireSavedHarnessAuth(
         input.namespaceId,
@@ -3284,6 +3366,7 @@ export class OpenClawController {
         requestFingerprint: requestFingerprintHex,
         plan: {
           name: input.name,
+          ...(reservedAgentId === undefined ? {} : { reservedAgentId }),
           configuration: configurationInput,
           harnessAuth,
           executionMode,
@@ -3778,16 +3861,7 @@ export class OpenClawController {
     if (observed === undefined) {
       return diagnostics;
     }
-    // A lost Sandbox explains every other agent check, so it leads and the cap never drops it.
-    return Object.freeze({
-      ...diagnostics,
-      checks: Object.freeze(
-        [harnessDiagnosticCheck(observed, this.clock().toISOString()), ...diagnostics.checks].slice(
-          0,
-          32,
-        ),
-      ),
-    });
+    return withHarnessDiagnostic(diagnostics, observed, this.clock().toISOString());
   }
 
   /**
@@ -6182,10 +6256,11 @@ export class OpenClawController {
     const driver = this.selectedDriver("credential_proxy");
     const control = driver.sourceControl;
     // A new admission uses catalog order. An existing approval names a specific registration.
-    const resolve = () =>
-      previous
-        ? registeredCredentialProvider(control.providers, previous)
-        : control.providers.find((entry) => entry.sourceType.type === type);
+    const resolve = () => {
+      const ref =
+        previous ?? control.providers.find((entry) => entry.sourceType.type === type)?.ref;
+      return ref ? registeredCredentialProvider(control.providers, ref) : undefined;
+    };
     const provider = resolve();
     if (provider === "ambiguous") {
       throw new ResourceStateConflictError(
@@ -6378,7 +6453,7 @@ export class OpenClawController {
       // git-read, git-full or several bindings could never start. Refuse them by name before
       // reading the counterpart; its non-Git check would answer a generic 503 or admit a plan
       // that assertExecutionAdmission then rejects as an internal error.
-      throw new RepositoryGitProfileUnsupportedError();
+      throw new RepositoryGitProfileUnsupportedError(repositoryGit.bindings.length);
     }
     const gitAuthorization = await repositoryGitAuthorization(
       driver.sourceControl,
@@ -6477,12 +6552,14 @@ export class OpenClawController {
   /**
    * Registration records the source as `registering` before the gateway write, so an uncertain
    * gateway outcome always leaves a record an operator can list and delete. `audit` builds the
-   * success event, committed with the transition to `ready`.
+   * success event, committed with the transition to `ready`. `registrationAudit` records
+   * the initial `registering` row before any external effect, for multi-step callers.
    */
   async createCredentialSource(
     principalId: string,
     input: CreateCredentialSourceInput,
     audit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
+    registrationAudit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
     this.assertCredentialSourceTransactionBoundary();
     if (!isName(input.name)) {
@@ -6575,6 +6652,9 @@ export class OpenClawController {
           createdAt: this.timestamp(),
         }),
       );
+      if (registrationAudit !== undefined) {
+        await state.audit.append(registrationAudit(this.credentialSourceMetadata(registering)));
+      }
       return {
         namespace: locked,
         gateway: selected,
@@ -7844,6 +7924,10 @@ export class OpenClawController {
     namespaceId: string,
     harnessId: string,
     agentId?: string,
+    audit?: (
+      source: Readonly<CredentialSourceMetadata>,
+      phase: "source_registering" | "source_ready" | "session_pending",
+    ) => AuditEvent,
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
@@ -7889,11 +7973,16 @@ export class OpenClawController {
     }
     // Persist the source before external login. Failed or abandoned attempts remain visible
     // in credential-source management; closing a login must never revoke an Agent's source.
-    const source = await this.createCredentialSource(principalId, {
-      namespaceId,
-      name: `Device login ${crypto.randomUUID()}`,
-      type: supported[0]!.type,
-    });
+    const source = await this.createCredentialSource(
+      principalId,
+      {
+        namespaceId,
+        name: `Device login ${crypto.randomUUID()}`,
+        type: supported[0]!.type,
+      },
+      audit === undefined ? undefined : (source) => audit(source, "source_ready"),
+      audit === undefined ? undefined : (source) => audit(source, "source_registering"),
+    );
     const { context } = await this.authorizedCredentialSource(principalId, namespaceId, source.id);
     let started: CredentialSourceDeviceAuthorization;
     try {
@@ -7923,10 +8012,16 @@ export class OpenClawController {
       authorization,
       privateState,
     };
-    const secret = await this.createSecret(principalId, {
-      namespaceId,
-      name: `Device login session ${crypto.randomUUID()}`,
-      value: JSON.stringify(session),
+    const secret = await this.mutate(async (state) => {
+      const created = await this.createSecret(principalId, {
+        namespaceId,
+        name: `Device login session ${crypto.randomUUID()}`,
+        value: JSON.stringify(session),
+      });
+      if (audit !== undefined) {
+        await state.audit.append(audit(source, "session_pending"));
+      }
+      return created;
     });
     return { session: secret.ref, status: "pending" as const, expiresAt, ...authorization };
   }
@@ -8171,6 +8266,7 @@ export class OpenClawController {
         };
       },
       recheck,
+      signal,
     );
   }
 
@@ -8388,6 +8484,7 @@ export class OpenClawController {
         };
       },
       recheck,
+      signal,
     );
   }
 
@@ -8416,6 +8513,7 @@ export class OpenClawController {
     credential: PluginDiscoveryCredential,
     prepareDiscovery: () => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
     validateCurrent?: () => Promise<void>,
+    signal?: AbortSignal,
   ): Promise<T> {
     const source = credential.secretRef ?? credential.credentialSource;
     if (source !== undefined) {
@@ -8450,6 +8548,9 @@ export class OpenClawController {
         return { validationError: error };
       }
       try {
+        if (credential.credentialSource !== undefined) {
+          signal?.throwIfAborted();
+        }
         const value = await discover(authentication);
         const serialized = JSON.stringify(value);
         const encodedToken =
@@ -8465,6 +8566,11 @@ export class OpenClawController {
         }
         return { value };
       } catch (error) {
+        // A Driver refuses an ID its catalog does not offer as admission does (finding 2790).
+        // OCC rebuilds that refusal, so the response holds no Driver-authored text.
+        if (error instanceof PluginPolicyValidationError && error.pluginId !== undefined) {
+          return { validationError: undiscoveredPlugin(this.pluginDriver().id, error) };
+        }
         return {
           error: new PluginDiscoveryError(
             error instanceof PluginDiscoveryError ? error.reason : "unavailable",
@@ -8485,9 +8591,13 @@ export class OpenClawController {
           "The Credential Gateway does not support plugin discovery.",
         );
       }
-      outcome = await this.credentialGatewayOperation(() =>
-        gateway.withSourceToken!(context, invoke),
-      );
+      if (signal !== undefined) {
+        context.signal = AbortSignal.any([context.signal, signal]);
+      }
+      outcome = await this.credentialGatewayOperation(() => {
+        context.signal.throwIfAborted();
+        return gateway.withSourceToken!(context, invoke);
+      });
     } else if (credential.accessToken !== undefined) {
       outcome = await invoke({ accessToken: credential.accessToken });
     } else if (credential.secretRef !== undefined) {
@@ -8604,6 +8714,7 @@ export class OpenClawController {
           );
       },
       input.credentialSource,
+      signal,
     );
     if (page.plugins.length === 0) {
       return page;
@@ -8648,6 +8759,7 @@ export class OpenClawController {
           driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
       },
       input.credentialSource,
+      signal,
     );
     (await this.savedAgentPluginPlacement(namespaceId, agentId))(entry.id);
     return entry;
@@ -8696,6 +8808,7 @@ export class OpenClawController {
     agentId: string,
     prepareDiscovery: () => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
     credentialSource?: CredentialSourceReference,
+    signal?: AbortSignal,
   ): Promise<T> {
     if (credentialSource !== undefined) {
       await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
@@ -8705,6 +8818,7 @@ export class OpenClawController {
         { credentialSource },
         prepareDiscovery,
         () => this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId),
+        signal,
       );
     }
     const first = await this.boundAgentPluginSource(principalId, namespaceId, agentId);
@@ -8728,6 +8842,7 @@ export class OpenClawController {
           );
         }
       },
+      signal,
     );
   }
 
@@ -13218,6 +13333,7 @@ export class OpenClawController {
         namespace.id,
         planRecord.repositoryBindings as readonly RepositoryBindingRequest[] | undefined,
         "saved",
+        this.installationRepositoryAdmission,
       );
       const repositoryAccess = normalizedRepositoryAccess(
         planRecord.repositoryAccess,
@@ -13243,7 +13359,11 @@ export class OpenClawController {
             : { secretBindings: plan.configuration.secretBindings }),
           createdAt: configuration.createdAt,
         }));
-      const agentId = current.agentId ?? this.nextIdentifier("agent");
+      const agentId =
+        current.agentId ??
+        (isNonEmptyString(planRecord.reservedAgentId)
+          ? planRecord.reservedAgentId
+          : this.nextIdentifier("agent"));
       let agent = await state.agents.lockAgent(namespace.id, agentId);
       const createdAgent = agent === undefined;
       if (agent === undefined) {
@@ -14888,9 +15008,16 @@ export class OpenClawController {
     repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
     repositoryAccess?: RepositoryAccess;
   } {
+    const resolve = (bindings: readonly RepositoryBindingRequest[] | undefined) =>
+      this.repositoryBindingSelections(
+        namespaceId,
+        bindings,
+        "request",
+        this.installationRepositoryAdmission,
+      );
     if (input.repositoryAccess === undefined) {
       return {
-        repositoryBindings: this.repositoryBindingSelections(namespaceId, input.repositoryBindings),
+        repositoryBindings: resolve(input.repositoryBindings),
       };
     }
     if (input.repositoryBindings !== undefined || !validRepositoryAccess(input.repositoryAccess)) {
@@ -14900,7 +15027,7 @@ export class OpenClawController {
       repositoryRef: entry.repositoryRef,
       profile: entry.profile ?? input.repositoryAccess!.defaultProfile,
     }));
-    const repositoryBindings = this.repositoryBindingSelections(namespaceId, requested);
+    const repositoryBindings = resolve(requested);
     return {
       repositoryBindings,
       repositoryAccess: normalizedRepositoryAccess(input.repositoryAccess, repositoryBindings)!,
@@ -14916,6 +15043,7 @@ export class OpenClawController {
     namespaceId: string,
     bindings: readonly RepositoryBindingRequest[] | undefined,
     origin: "request" | "saved",
+    admission?: InstallationRepositoryAdmission,
   ):
     | {
         readonly driver: RepositoryPolicyDriver;
@@ -14944,9 +15072,14 @@ export class OpenClawController {
         "The selected repository credential Driver is unavailable.",
       );
     }
+    if (admission !== undefined && admission.policy !== driver) {
+      throw new DependencyUnavailableError("The bound repository admission owner is not selected.");
+    }
     let resolution: RepositoryCredentialResolution;
     try {
-      resolution = driver.resolve(immutableCopy({ namespaceId, bindings }));
+      const input = immutableCopy({ namespaceId, bindings });
+      resolution =
+        admission === undefined ? driver.resolve(input) : admission.policy.resolveBindings(input);
     } catch {
       // Every caller holds the Agent's or Namespace's grant, and the fixed text names no
       // repository or Driver reason, so it is a request or saved-state error, not a scope miss.
@@ -14980,6 +15113,7 @@ export class OpenClawController {
           ((requested.get(binding.repositoryRef) !== undefined ||
             isInstallationRepositoryProfile(binding.profile)) &&
             requested.get(binding.repositoryRef) !== binding.profile) ||
+          (admission !== undefined && binding.backendId !== admission.backendId) ||
           backend === undefined ||
           !("repo" in backend.drivers) ||
           backend.drivers.repo !== driver.id
@@ -15004,8 +15138,9 @@ export class OpenClawController {
     namespaceId: string,
     bindings: readonly RepositoryBindingRequest[] | undefined,
     origin: "request" | "saved" = "request",
+    admission?: InstallationRepositoryAdmission,
   ): readonly RepositoryBindingSelection[] | undefined {
-    const resolved = this.resolveRepositoryBindings(namespaceId, bindings, origin);
+    const resolved = this.resolveRepositoryBindings(namespaceId, bindings, origin, admission);
     if (resolved === undefined || bindings === undefined) {
       return undefined;
     }
@@ -15029,6 +15164,7 @@ export class OpenClawController {
       agent.namespaceId,
       agent.repositoryBindings,
       "saved",
+      this.installationRepositoryAdmission,
     );
     if (resolved === undefined) {
       return undefined;

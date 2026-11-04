@@ -422,7 +422,7 @@ test(
     // A real protocol reply establishes completed startup before SIGTERM.
     const preparedRuntime = join(temporary, "prepared-runtime");
     await cp(runtime, preparedRuntime, { recursive: true });
-    for (const module of ["factory.js", "driver.js", "static-token.js"]) {
+    for (const module of ["config.js", "factory.js", "driver.js", "static-token.js"]) {
       await rm(join(preparedRuntime, "dist/drivers/repo/github/credentials", module));
     }
     const preparedService = spawn(

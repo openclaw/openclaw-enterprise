@@ -156,6 +156,19 @@ const presetQuotedSettingRefused = [
   click("Create Agent"),
 ];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
+const repositorySearchOptions = [
+  "alpha/application-api",
+  "beta/my-application",
+  "omega/application",
+  "zeta/application",
+  "tools/cli",
+  "docs/handbook",
+  "ops/infrastructure",
+].map((displayName, index) => ({
+  repositoryRef: `catalog-${index}`,
+  displayName,
+  allowedProfiles: ["git-read", "git-write", "git-full"],
+}));
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
   'Configuration setting agents.entries.research_assistant.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
@@ -2159,6 +2172,36 @@ export const scenarios = {
       "Open Runtime details and Tab to Execution mode. With Codex it takes focus and looks unavailable, described by its hint; keys and clicks do not change it. OpenClaw makes it selectable (finding 2945).",
     ],
   },
+  createNativeAdmin: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI opt-in",
+    path: create,
+    nativeAdminSetup: true,
+    actions: readyForm,
+    description:
+      "Enable native administration during the first deployment. Simulated UI proof; no runtime is deployed.",
+    steps: [
+      "Check Enable Native admin UI, then uncheck it. It starts off and explains the required Agent administer permission.",
+      "Check it again and create the Agent. The provisioning request includes nativeAdmin: true.",
+    ],
+  },
+  createNativeAdminSelected: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI selected",
+    path: create,
+    nativeAdminSetup: true,
+    actions: [...readyForm, { selector: "#native-admin", click: true }],
+    description:
+      "The explicit opt-in is selected before creation. The API prepares the exact Agent origin; this preview does not prove deployment or authentication.",
+  },
+  createNativeAdminDisabled: {
+    group: "Pages/Create Agent",
+    name: "Native admin UI unavailable",
+    path: create,
+    actions: form,
+    description:
+      "The installation has not enabled native admin access. The unchecked control is disabled with an explanation; Agent creation remains available.",
+  },
   createSecretCreateNotPermitted: {
     group: "Pages/Create Agent",
     name: "Secret creation not permitted",
@@ -2326,6 +2369,7 @@ export const scenarios = {
       "Expand Access and credential setup for the full Driver guidance and external help links, then collapse it. The credential/access reminder stays visible; catalog availability does not verify connections.",
       "Open the information button beside each unavailable plugin to compare its administrator, plan, or unsupported-runtime reason and help link. Escape or a click outside dismisses the popover. Choose the plugin row to see the same guidance in detail; Add stays disabled.",
       "At 390px width and both 844px and 640px height, scroll the plugin list and use Next page and Previous page. Search and pagination remain reachable while the list and details scroll within the dialog.",
+      "At 1440×480, keep setup collapsed, then expand it. Scroll the catalog browser: plugin names remain readable, Calendar opens its details, and pagination stays reachable. Compare the Short window plugin picker story.",
       "Choose Calendar to load its tools and inspect their IDs beneath the titles, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
       "Type create into Filter tools: only Create event remains, and the caret stays after the text. Clear it to restore the other tools. Search plugins for Documents before visiting its catalog page, then clear the query.",
       "Click Done and expand Plugin selections JSON: one heading labels a bounded monospace editor. Replacing the dummy token or authentication method clears discovery results and preserves selections.",
@@ -3583,21 +3627,18 @@ export const scenarios = {
     name: "Exact repository names before prefix matches",
     path: create,
     actions: [...repositoryForm, { selector: "#repository-search", value: "application" }],
-    repositoryOptions: [
-      "alpha/application-api",
-      "beta/my-application",
-      "omega/application",
-      "zeta/application",
-      "tools/cli",
-      "docs/handbook",
-      "ops/infrastructure",
-    ].map((displayName, index) => ({
-      repositoryRef: `catalog-${index}`,
-      displayName,
-      allowedProfiles: ["git-read", "git-write", "git-full"],
-    })),
+    repositoryOptions: repositorySearchOptions,
     description:
       "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
+  },
+  createRepositoriesNoMatches: {
+    group: "Pages/Create Agent",
+    name: "Repository search with no matches",
+    path: create,
+    actions: [...repositoryForm, { selector: "#repository-search", value: "unknown/repository" }],
+    repositoryOptions: repositorySearchOptions,
+    description:
+      "An approved catalog search with no matches directs users to their Namespace operator. Search for application to return to matching repositories.",
   },
   createRepositoriesLocaleSearch: {
     group: "Pages/Create Agent",
@@ -3661,7 +3702,8 @@ export const scenarios = {
     path: create,
     actions: repositoryForm,
     repositoryOptions: [],
-    description: "Successful empty discovery permits an ordinary Agent without repository access.",
+    description:
+      "An empty approved catalog directs users to their Namespace operator and permits a draft without repositories.",
   },
   createRepositoriesLoading: {
     group: "Pages/Create Agent",
@@ -5000,6 +5042,7 @@ export const scenarios = {
     ],
     actions: [
       ...shareExistingPerson,
+      click("Configuration"),
       click("Delete Agent"),
       { selector: ".agent-delete-dialog button.danger", click: true },
       { selector: "a.page-back", click: true },
@@ -5933,8 +5976,9 @@ export const scenarios = {
       { repositoryRef: "handbook", profile: "git-read" },
     ],
     description:
-      "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; admitted revisions retain their prior access.",
+      "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; earlier Agent revisions retain their prior access.",
     steps: [
+      "Check that Repository access shows the controls without a Runtime support and access limits disclosure or an empty space in its place. Create Agent keeps that disclosure.",
       "Visit Channels, return to Repositories, change a selection, then press browser Back. The selection stays, with a note to save or cancel before leaving.",
       "Cancel the edit. Back returns to Channels; Forward opens Repositories with the saved selection.",
     ],
@@ -7174,9 +7218,9 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     rules: [{ suffix: "/runtime", delayMs: 1200, once: true }],
     description:
-      "The first runtime status takes 1.2 s after the Logs tab is selected. Stop Agent and Delete Agent stay hidden under the reserved area until the strip and output appear, so nothing below moves.",
+      "The first runtime status takes 1.2 s after the Logs tab is selected. The Logs panel reserves space for the strip and output.",
     steps: [
-      "Scroll to the version tabs and select Logs. The area keeps its height and Stop and Delete are hidden; after 1.2 s the strip, output and both cards appear in place and the panel scrolls into view.",
+      "Scroll to the version tabs and select Logs. The area keeps its height. After 1.2 s the strip and output appear and the panel scrolls into view.",
     ],
   },
   runtimeLogsStartupWarnings: {
@@ -7848,6 +7892,19 @@ export const scenarios = {
     steps: [
       "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
       "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",
+    ],
+  },
+  navigationDrawerScroll: {
+    group: "Components/Navigation",
+    name: "Compact drawer scroll position",
+    path: "/console/secrets?namespace=ns_00000000-0000-4000-8000-000000000001",
+    mobile: true,
+    description:
+      "The compact drawer keeps the document in place while its own contents scroll. API responses are simulated.",
+    steps: [
+      "At 390×480, open navigation and press Page Down on the focused link. Wheel over the overlay: the Secrets page behind it stays in place.",
+      "Choose Namespaces, then use Back. The Secrets heading and search return in view.",
+      "Open navigation and press Escape. Scroll Secrets normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
     ],
   },
   slack: {
@@ -9643,8 +9700,9 @@ export const scenarios = {
       click("Logs"),
       { text: "Runtime status requires Agent operate" },
       click("Workspace files"),
-      { selector: "#agent-stop-title" },
       click("Configuration"),
+      { selector: "#agent-stop-title" },
+      click("Deployment"),
       { selector: ".version-diagnostics .deployment-heading button:not(:disabled)" },
       click("Workspace files"),
       {
@@ -9659,9 +9717,9 @@ export const scenarios = {
     description:
       "Workspace files stay parked while Logs reads a newer Agent operate answer. A grant makes them editable on return, shows the Stop row and enables Run diagnostics. A revocation makes them read-only again, keeps unsaved text, hides Stop and disables Run diagnostics.",
     steps: [
-      "Workspace files open read-only, with the note that saving needs Agent operate. The Danger zone has no Stop row.",
+      "Workspace files open read-only, with the note that saving needs Agent operate. Open Configuration to check that the Danger zone has no Stop row.",
       "Logs records the runtime-status refusal. Returning to Workspace files keeps that note.",
-      "The next Logs visit reads an operate grant. Returning hides the note, AGENTS.md is editable, the Stop row appears, and Configuration offers Run diagnostics.",
+      "The next Logs visit reads an operate grant. Returning hides the note, AGENTS.md is editable, Configuration offers Stop, and Deployment offers Run diagnostics.",
       "After the edit, the following Logs visit reads a revocation. Returning keeps the unsaved text and makes AGENTS.md read-only; Stop hides and Run diagnostics is disabled with its reason.",
     ],
     gap: "The permission changes and runtime refusal are simulated. The preview checks Stop and Run diagnostics after the grant only; the browser test also checks them after the revocation, changing the controller's real IAM policy across the same tab visits. A failed permission read is not shown; the page keeps the previous answer. The controller still authorizes every write.",
@@ -10261,6 +10319,20 @@ export const scenarios = {
       "Cancel or press Escape. The page explains why Stop is unavailable, without sending a stop request; Stop Agent stays in the Tab order, described by that note.",
     ],
   },
+  dangerZoneTabs: {
+    group: "Pages/Agent detail",
+    name: "Danger zone on Configuration",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    stopped: true,
+    description:
+      "Compare the Workspace files and Configuration tabs for an Agent with a stop request.",
+    steps: [
+      "Workspace files opens directly. Scroll to the end of the tab.",
+      "Select Configuration and scroll to Danger zone. Check the stop status, Request Stop again, Refresh stop status and Delete Agent.",
+      "Return to Workspace files. The lifecycle controls disappear.",
+    ],
+  },
   dangerZoneReader: {
     group: "Pages/Agent detail",
     name: "Danger zone, viewer cannot stop or delete",
@@ -10280,7 +10352,7 @@ export const scenarios = {
     description: "Confirm stopping the Agent or cancel without changing its requested state.",
     steps: [
       "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
-      "For the revision clearing while Workspace is open, use Flows / Stop an Agent.",
+      "For the revision clearing after Stop, use Flows / Stop an Agent.",
     ],
   },
   stopPending: {
@@ -10307,7 +10379,7 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested. The Stop row replaces its action description with the result and restart guidance; shutdown completion is not verified here.",
   },
   stopReadDiscoversDeletion: {
     group: "Components/Stop Agent",
@@ -10348,7 +10420,7 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row.",
+      "A failed readable deployment leaves the Agent requested to run with no selected version. Stop stays available because a newer queued deployment may be unreadable.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopFirstDeploymentQueued: {
@@ -10359,7 +10431,7 @@ export const scenarios = {
     firstDeploymentQueued: true,
     actions: [click("Stop Agent")],
     description:
-      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway.",
+      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway. Confirming reports cancellation requested, not completed; later lifecycle reads retire that local result.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopNeverDeployed: {
@@ -10422,10 +10494,10 @@ export const scenarios = {
     description:
       "Open the Stop Agent confirmation and request the stopped desired state while preserving draft, revisions, credentials, and workspace data.",
     steps: [
-      "Open Stop Agent and review the confirmation copy.",
-      "With Workspace files open, confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
-      "Refresh stop status. The fixture now clears the current version; Workspace shows why files are unavailable, without reloading the page.",
-      "Open Configuration, then Workspace files again. The unavailable notice remains; the old editors do not return.",
+      "Select Configuration and open Stop Agent. Review the confirmation.",
+      "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
+      "Select Refresh stop status. The fixture clears the current version.",
+      "Open Workspace files. It explains why the files are unavailable. Return to Configuration.",
       "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
       "Return to Open draft and Deploy new version to request running again.",
     ],
@@ -10505,6 +10577,12 @@ for (const [id, state, name] of [
     "Policy logs unavailable without runtime credentials",
   ],
   ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
+  ["policyDenialsWithheldOne", "withheldOne", "One policy record withheld since the last refresh"],
+  [
+    "policyDenialsWithheldMany",
+    "withheldMany",
+    "Multiple policy records withheld since the last refresh",
+  ],
 ]) {
   scenarios[id] = {
     group: "Pages/Agent detail",
@@ -10516,6 +10594,8 @@ for (const [id, state, name] of [
     ...(["many", "populated"].includes(state)
       ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
       : {}),
+    ...(state === "withheldOne" ? { policyWithheld: 1 } : {}),
+    ...(state === "withheldMany" ? { policyWithheld: 2 } : {}),
     ...(state === "discoveryLoading"
       ? { rules: [{ suffix: "/driver-configurations", hold: true }] }
       : {}),
@@ -10529,6 +10609,11 @@ for (const [id, state, name] of [
     description:
       "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
     steps: [
+      ...(state === "many"
+        ? [
+            "Scroll to Denials. The pager is the last control below the five rows. Go to page 2 and turn on Follow. The page stays in place when 12 new denials arrive. Choose Show newest to see page 1 of 43 with 212 loaded denials.",
+          ]
+        : []),
       "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
       "Select denial rows across pages, then Allow selected. Confirm the validated proposal retains existing rules and combines repeated executable/host/port requests. Back to editing preserves the draft.",
       "Open Manage rules. Search the five-row pages, use a row menu to edit or remove a rule, or Add rule. Compare Save for later with Save and apply to current revision. Apply saved rules is unavailable while a proposal has unsaved edits.",
@@ -10540,6 +10625,7 @@ for (const [id, state, name] of [
           description:
             "A normalized executable path has 281 Unicode code points and 551 UTF-16 code units, within the API schema's 512-code-point limit.",
           steps: [
+            "Expand Policy details, then Read-only Installation defaults. The JSON is indented and the executable path wraps inside the block, even on a phone.",
             "Open View network limits and copy the full executable path from the Installation ceiling. Close the dialog, choose Review suggestion, then paste the copied path into Executable path. Confirm the value still ends with /tool.",
             "Choose Review changes. Confirm the complete executable path, including /tool, appears in Proposed rules. Choose Save for later and confirm policy v2 keeps that same path while the current revision stays unchanged.",
             "Reset the story to repeat. The six directory components each contain 45 Deseret letters (U+10400); the path is 1091 UTF-8 bytes.",
@@ -10634,6 +10720,23 @@ for (const [id, state, name] of [
     ...(state === "loading" ? { rules: [{ suffix: "/runtime/logs", hold: true }] } : {}),
     ...(state === "noCredential"
       ? { rules: [{ suffix: "/runtime/logs", status: 503, code: "DEPENDENCY_UNAVAILABLE" }] }
+      : {}),
+    ...(state === "withheldOne"
+      ? {
+          description:
+            'The Denials tab shows a warning banner when sandbox records are withheld. One withheld record uses the singular "record".',
+          steps: [
+            'Check the warning banner above the denial list. It reads "1 record withheld since the last refresh." Confirm the singular form.',
+          ],
+        }
+      : {}),
+    ...(state === "withheldMany"
+      ? {
+          description: 'Two withheld records: the warning banner uses the plural "records".',
+          steps: [
+            'Check the warning banner above the denial list. It reads "2 records withheld since the last refresh." Confirm the plural form.',
+          ],
+        }
       : {}),
   };
 }

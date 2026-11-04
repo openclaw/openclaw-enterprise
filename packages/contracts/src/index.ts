@@ -1,3 +1,5 @@
+import type { Static } from "typebox";
+import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
 import type {
@@ -298,6 +300,8 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
+  /** The API offers native admin configuration during Agent provisioning. */
+  readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
@@ -616,12 +620,14 @@ export function revisionCredentialSourceSnapshot(
   );
 }
 
-export type HarnessAuthBinding =
-  | { readonly method: "api_key"; readonly source: SecretReference }
-  | { readonly method: "codex_pat"; readonly source: SecretReference }
-  | { readonly method: "codex_pat"; readonly source: ServiceAccountReference }
-  | { readonly method: "credential_source"; readonly sourceId: string }
-  | { readonly method: "runtime" };
+// Expand source alternatives so callers can still Extract a binding by source.kind.
+type ReadonlyAuthBinding<Binding> = Binding extends { source: infer Source }
+  ? Source extends unknown
+    ? { readonly [Key in keyof Binding]: Key extends "source" ? Readonly<Source> : Binding[Key] }
+    : never
+  : Readonly<Binding>;
+
+export type HarnessAuthBinding = ReadonlyAuthBinding<Static<typeof HarnessAuthBindingSchema>>;
 
 /** Private admission metadata. Public APIs expose only HarnessAuthBinding. */
 export type HarnessAuthSnapshot =

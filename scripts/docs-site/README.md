@@ -76,14 +76,27 @@ examples, while excluding frontmatter, HTML comments, Markdown syntax, and link
 destinations. Symlinks resolve to one real file so aliases cannot duplicate
 counts or bypass the limit.
 
-`serve.mjs` serves only `dist/docs/` on `127.0.0.1`. MP4 walkthrough links open
+`serve.mjs` serves `dist/docs/` on `127.0.0.1` by default. MP4 walkthrough links open
 in the browser player with the `video/mp4` media type. It accepts an optional
-`--port` for parallel local previews and tests. These two small internal CLIs use
-built-in Node argument handling because each has one option and no subcommands.
+`--port` for parallel local previews. `docs:dev` adds `--watch` to enable the
+development workflow described in [Local preview](../../docs/local-preview.md).
+
+`preview-build.mjs` polls source metadata, combines rapid edits, and runs the
+renderer followed by Pagefind in a new directory. The renderer's internal
+`--output` option accepts only a fresh directory under `dist/.docs-preview-*/`;
+it never removes an existing preview directory. After both commands succeed,
+the server switches its output directory and tells `preview-client.mjs` to
+reload connected tabs. Requests still reading the previous build finish before
+its directory is removed. A failed build keeps that output and sends the error
+to the tabs. Shutdown stops the watcher and child processes and removes the
+temporary directories. The static server and standalone build do not load the
+refresh client.
 
 `site.mjs` owns mobile navigation, per-tab sidebar scroll restoration, local
 Pagefind search, theme switching, code copying, heading links, Mermaid rendering,
-and Driver matrix filtering. Sidebar scroll uses session storage and leaves the
+and Driver matrix filtering. Heading links navigate to the generated heading ID
+with native browser history and also copy the URL when clipboard access is available.
+Sidebar scroll uses session storage and leaves the
 navigation at the default position when storage is unavailable. Driver matrix
 pages use custom replacement blocks around generated GitHub fallback tables:
 
@@ -113,7 +126,8 @@ installing controller dependencies. Do not add it to the TypeScript solution.
 ## Generated API documentation
 
 `pnpm openapi:generate` exports the registered Fastify routes and adds the
-explicit examples in `scripts/api-examples.mjs`. That catalog reuses synthetic
+explicit examples in `scripts/api-examples.ts` using `scripts/document-api-examples.ts`.
+That catalog reuses synthetic
 resource values and never imports test fixtures or live credentials. New
 operations, parameters and body-bearing responses must have examples; generation
 fails on missing coverage. Keep examples consistent with the owning route schemas

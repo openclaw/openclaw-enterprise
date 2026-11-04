@@ -2597,7 +2597,11 @@ test("Plugin save keeps a Stop requested on the same page", async (t) => {
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins").href);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href,
+  );
   await page.getByRole("heading", { name: "Stopped Plugins", exact: true }).waitFor();
 
   const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
@@ -2611,6 +2615,7 @@ test("Plugin save keeps a Stop requested on the same page", async (t) => {
   const repeat = stopRegion.getByRole("button", { name: "Request Stop again", exact: true });
   await repeat.waitFor();
 
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   const plugins = { "codex-plugin:linear@openai-curated-remote": { enabled: false } };
   await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
   await page.getByLabel("Plugin selections JSON", { exact: true }).fill(JSON.stringify(plugins));
@@ -2624,6 +2629,7 @@ test("Plugin save keeps a Stop requested on the same page", async (t) => {
   assert.equal(saved.desiredRuntimeState, "stopped");
   assert.equal(saved.activeRevisionId, active.revision.id);
   // The rebuilt page still shows the stop request instead of offering a first Stop again.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await repeat.waitFor();
   assert.equal(await stop.count(), 0);
   await page
@@ -4070,7 +4076,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
   );
   await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
-  await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   // A slow permission answer reveals the page at FIRST_ACTIVITY_WAIT_MS, before the native admin
   // status read it gates is sent. Clear the log only after that first read, so the reread below
   // is the only one after the stop.
@@ -4169,6 +4175,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   assert.equal(cleared.desiredRuntimeState, "stopped");
   assert.equal(cleared.activeRevisionId, undefined);
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Refresh stop status" }).click();
   await page
     .getByRole("region", { name: "Stop Agent", exact: true })
@@ -4281,6 +4288,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   await workspace.click();
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await file.fill(draft);
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
 
   // The worker clears the current version; Refresh stop status shows it without a reload too.
   await state.transact((unit) =>
@@ -4299,9 +4307,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   assert.equal(await focusedText(), "Refresh stop status");
   // The viewed version is no longer current, and tabs built from the old state are rebuilt.
   const unavailable = page.getByText(WORKSPACE_FILES_UNAVAILABLE, { exact: true });
-  assert.equal(await file.count(), 0, "the mounted Workspace must release the old live editor");
-  await unavailable.waitFor();
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(
     await page
@@ -4318,7 +4324,9 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   // Files are live Agent data, not a revision snapshot. A later serving revision restores
   // the unsaved draft, but must not silently write it to the workspace.
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+  await workspace.click();
   await page
     .getByText("Unsaved edits restored. Reload replaces them with the current file.")
     .waitFor();
@@ -4794,7 +4802,7 @@ for (const viewport of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
 ]) {
-  test(`Stop and Delete share one danger zone card at ${viewport.width}px`, async (t) => {
+  test(`Only Configuration shows the Stop and Delete danger zone at ${viewport.width}px`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Danger zone", { ready: true });
@@ -4805,11 +4813,21 @@ for (const viewport of [
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
     );
     await page.getByRole("heading", { name: "Danger Zone Agent" }).first().waitFor();
     const zone = page.getByRole("region", { name: "Danger zone", exact: true });
+    await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+    assert.equal(await zone.count(), 0);
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await zone.waitFor();
+    const tabs = page.getByRole("tablist", { name: "Agent configuration views" });
+    for (const name of await tabs.getByRole("tab", { selected: false }).allTextContents()) {
+      await tabs.getByRole("tab", { name, exact: true }).click();
+      await tabs.getByRole("tab", { name, selected: true, exact: true }).waitFor();
+      assert.equal(await zone.count(), 0, name);
+    }
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await waitForDangerZoneRows(page, { stop: true, delete: true });
     assert.equal(await page.locator(".card--danger").count(), 1);
     assert.equal(await zone.locator(".card--danger").count(), 1);

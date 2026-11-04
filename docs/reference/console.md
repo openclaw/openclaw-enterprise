@@ -58,7 +58,8 @@ hidden. Namespace rows open their Agents.
 control, cleanup blockers, and deletion recovery.
 
 The Console uses light appearance and OCC-served fonts. Navigation focuses the
-destination heading; **Open navigation** opens the mobile drawer.
+destination heading; **Open navigation** opens the mobile drawer. The drawer
+scrolls independently and keeps the page behind it in place until it closes.
 
 Click an Agent name or an open area of its row to open its details. Version links
 and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to

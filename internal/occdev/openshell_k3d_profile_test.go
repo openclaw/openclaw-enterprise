@@ -157,7 +157,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 	text := string(data)
 	for _, required := range []string{
 		"id: sandbox-openshell-development",
-		"endpoint: http://openshell-gateway.oce-system.svc.cluster.local:8080",
+		"endpoint: https://openshell-gateway.oce-system.svc.cluster.local:8080",
 		"requestTimeoutMs: 30000",
 		"mode: inCluster",
 		"workspaceMode: operator",
@@ -168,6 +168,11 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		if !strings.Contains(text, required) {
 			t.Fatalf("installation.yaml is missing %q", required)
 		}
+	}
+	// Default Gateway authentication must not opt into static-inference authority.
+	if strings.Contains(text, "credential_proxy:") || strings.Contains(text, "insecureTransport:") ||
+		!strings.Contains(text, "mode: mtls") || !strings.Contains(text, "rootCertificatePath: /etc/openclaw/openshell/ca.crt") {
+		t.Fatal("expected authenticated Gateway without static inference")
 	}
 	// In-cluster Drivers authenticate with their ServiceAccounts, not a host kubeconfig.
 	if strings.Contains(text, "kubeconfigPath") {
@@ -393,8 +398,6 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 				"--set=supervisor.image.pullPolicy=Never",
 				"--set=workspaceResources.enabled=false",
 				"--set=server.drivers.kubernetes.allowDriverConfig=true",
-				// Harness labels must remain admitted for both image selections.
-				openShellAllowedPodLabelsValue,
 				"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 				"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 				"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
@@ -408,6 +411,39 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			if strings.Contains(install, "service.type=NodePort") ||
 				strings.Contains(install, "supervisor.sandboxRuntime.networkPolicyEnforced=true") {
 				t.Fatalf("unexpected OpenShell gateway install values: %s", install)
+			}
+			// The first install must use native PKI and authentication, not rely on a later repair.
+			gatewayValues := readJSONFile(t, filepath.Join(state.directory, "openshell-gateway-values.json"))
+			if field(t, gatewayValues, "pkiInitJob", "enabled") != true ||
+				field(t, gatewayValues, "server", "disableTls") != false ||
+				field(t, gatewayValues, "server", "tls", "enableMtls") != true ||
+				field(t, gatewayValues, "server", "auth", "allowUnauthenticatedUsers") != false {
+				t.Fatal("default OpenShell must require authenticated TLS")
+			}
+			if len(field(t, gatewayValues, "gatewayConfig", "openshell.supervisor.middleware").([]any)) != 0 ||
+				!strings.Contains(install, "-f "+filepath.Join(state.directory, "openshell-gateway-values.json")) ||
+				!strings.Contains(install, "--wait") {
+				t.Fatal("default Gateway must start without static-inference middleware")
+			}
+			if strings.Contains(strings.Join(commands(), "\n"), "create secret generic openshell-gateway-jwt-keys") {
+				t.Fatal("native PKI must own Gateway signing keys")
+			}
+			// Without the full allowlist the gateway rejects every Harness Sandbox at create, for
+			// both image selections. Compare the recorded Helm argument with the Sandbox Driver's
+			// list, not with the Go constant that produced it, so dropping a key from either side
+			// fails here.
+			const allowedPodLabelsFlag = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=`
+			start := strings.Index(install, allowedPodLabelsFlag)
+			if start < 0 {
+				t.Fatalf("OpenShell gateway install does not set allowed_pod_labels: %s", install)
+			}
+			value, _, _ := strings.Cut(install[start+len(allowedPodLabelsFlag):], " ")
+			var allowed []string
+			if err := json.Unmarshal([]byte(value), &allowed); err != nil {
+				t.Fatalf("invalid allowed_pod_labels value %q: %v", value, err)
+			}
+			if want := sandboxDriverHarnessPodLabelAllowlist(t); !slices.Equal(allowed, want) {
+				t.Fatalf("development gateway allowed_pod_labels = %q, Sandbox Driver forwards %q", allowed, want)
 			}
 			// Check every image value: the chart must receive the
 			// exact imported digest for each component, never a source digest or fallback.
@@ -442,6 +478,33 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			}
 		})
 	}
+}
+
+// sandboxDriverHarnessPodLabelAllowlist reads OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST from
+// the OpenShell Sandbox Driver source, which owns the labels it forwards to the gateway.
+func sandboxDriverHarnessPodLabelAllowlist(t *testing.T) []string {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join("..", "..", "apps", "controller", "src", "drivers", "sandbox", "openshell.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const declaration = "export const OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST: readonly string[] = Object.freeze(["
+	_, rest, found := strings.Cut(string(source), declaration)
+	if !found {
+		t.Fatalf("the OpenShell Sandbox Driver no longer declares %s", declaration)
+	}
+	body, _, found := strings.Cut(rest, "]);")
+	if !found {
+		t.Fatal("unterminated OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST declaration")
+	}
+	var keys []string
+	if err := json.Unmarshal([]byte("["+strings.TrimSuffix(strings.TrimSpace(body), ",")+"]"), &keys); err != nil {
+		t.Fatalf("OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST is not a plain string list: %v", err)
+	}
+	if len(keys) == 0 {
+		t.Fatal("OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST is empty")
+	}
+	return keys
 }
 
 func TestOpenShellImageImportRegistersThePodmanRecordedName(t *testing.T) {
@@ -1043,6 +1106,12 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 			values := readJSONFile(t, filepath.Join(state.directory, "helm-values.json"))
 			if !reflect.DeepEqual(values["auth"], jsonValue(t, map[string]string{"baseUrl": test.origin})) {
 				t.Fatalf("authentication must use the published Console origin: %#v", values["auth"])
+			}
+			if _, enabled := values["egressAuthority"]; enabled {
+				t.Fatal("default control plane must not enable the static-inference authority")
+			}
+			if test.sandboxDriver == "openshell" && field(t, values, "backend", "openshell", "clientSecretName") != "openshell-client-tls" {
+				t.Fatal("default OpenShell must project its administrative client identity")
 			}
 			gatewayRouting := map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 			if test.sandboxDriver == "openshell" {

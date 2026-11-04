@@ -47,6 +47,7 @@ import {
   resolveKubernetesControlNamespace,
   resolveKubernetesNamespace,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   ActivationFailedError,
   ActivationPendingError,
@@ -71,7 +72,9 @@ import {
   withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
-import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
+import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -1723,10 +1726,64 @@ test("standalone Codex search requires an explicit model endpoint and a boolean 
   }
 });
 
-test("dedicated OpenClaw delivers the selected Google release digest without a Sandbox provider file", async () => {
-  const { id, releaseSha256 } = managedGoogleInstall;
-  for (const enabled of [true, false]) {
-    const selections = { [id]: { enabled } };
+test("dedicated OpenClaw delivers managed releases and selected MCP tools without a Sandbox provider file", async () => {
+  await verifyManagedRelease(managedGoogleInstall);
+  for (const install of managedMcpInstalls) {
+    await verifyManagedRelease({
+      ...install,
+      toolNames: ["slack_search_public", "slack_send_message"],
+    });
+  }
+});
+
+test("the dedicated Gateway exposes reviewed MCP tools subject to its admitted allowlist", () => {
+  const tool = "oce_mcp_docs_ListItems";
+  const standard = { tools: { alsoAllow: ["diffs"] } };
+  const { tools } = managedGatewayConfiguration(standard, standard, false, undefined, [tool]);
+  assert.deepEqual(tools.alsoAllow, ["diffs", "oce_mcp_docs_listitems"]);
+  assert.ok(tools.gatewayPolicy.allow.includes("oce_mcp_docs_listitems"));
+
+  const explicit = { tools: { allow: ["exec"], deny: ["oce_mcp_docs_listitems"] } };
+  const configured = managedGatewayConfiguration(explicit, explicit, false, undefined, [tool]);
+  assert.deepEqual(configured.tools.allow, ["exec", "oce_mcp_docs_listitems"]);
+  assert.equal(configured.tools.alsoAllow, undefined);
+  assert.deepEqual(configured.tools.deny, explicit.tools.deny);
+
+  const restricted = { tools: { gatewayPolicy: { allow: ["exec"] } } };
+  const denied = managedGatewayConfiguration(restricted, restricted, false, undefined, [tool]);
+  assert.deepEqual(denied.tools.gatewayPolicy.allow, ["exec"]);
+  assert.equal(denied.tools.alsoAllow, undefined);
+  assert.throws(
+    () => managedGatewayConfiguration(standard, standard, false, undefined, ["gateway_exec"]),
+    /must not grant Gateway administrative tools/,
+  );
+});
+
+async function verifyManagedRelease({
+  id,
+  kind,
+  packageName,
+  releaseSha256,
+  credentials,
+  toolNames,
+}) {
+  const slotId = Object.keys(credentials)[0];
+  const selectionCases = [{ enabled: true }, { enabled: false }];
+  if (toolNames !== undefined) {
+    for (const selectedNames of [toolNames, [], undefined]) {
+      selectionCases.push({
+        enabled: true,
+        driverPolicy: {
+          releaseSha256,
+          credentials: { [slotId]: "cs_test_account" },
+          ...(selectedNames === undefined ? {} : { toolNames: selectedNames }),
+        },
+      });
+    }
+  }
+  for (const selection of selectionCases) {
+    const { enabled, driverPolicy } = selection;
+    const selections = { [id]: selection };
     let worker;
     const sandboxDriver = {
       id: "native-sandbox",
@@ -1749,6 +1806,11 @@ test("dedicated OpenClaw delivers the selected Google release digest without a S
     };
     const fixture = dedicatedFirstDeployFixture({
       sandboxDriver,
+      credentialGatewayDriver: {
+        id: "openshell-credentials",
+        implementation: "openshell",
+        capability: "credential_gateway",
+      },
       revision: {
         harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
         sandboxDriverId: sandboxDriver.id,
@@ -1764,30 +1826,34 @@ test("dedicated OpenClaw delivers the selected Google release digest without a S
     await fixture.prepare();
     assert.deepEqual(worker.files, []);
     const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
-    for (const environment of [worker.environment, gateway.containers[0].env]) {
-      const digest = environment.find(
-        ({ name }) => name === "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256",
+    const gatewayEnv = gateway.containers[0].env;
+    const variable = (environment, name) => environment.find((item) => item.name === name)?.value;
+    const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_PLUGIN_JSON");
+    const gatewaySettings = variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON");
+    const expected = {
+      kind,
+      packageName,
+      slotId,
+      ...(enabled && { releaseSha256 }),
+      ...(driverPolicy?.toolNames?.length && { toolNames: driverPolicy.toolNames }),
+    };
+    assert.deepEqual(workerSettings && JSON.parse(workerSettings), enabled ? expected : undefined);
+    assert.deepEqual(JSON.parse(gatewaySettings), { ...expected, id });
+    // An Agent editor cannot replace deployment inputs with Secret bindings.
+    for (const { name } of gatewayEnv.filter(({ name }) => name.startsWith("OPENCLAW_MANAGED_"))) {
+      assert.throws(
+        () =>
+          normalizeSecretBindings({
+            [name]: { source: { kind: "secret", namespaceId: "ns", id: "secret" } },
+          }),
+        { destinationRule: "reserved_prefix" },
       );
-      assert.equal(digest?.value, enabled ? releaseSha256 : undefined);
-    }
-    if (enabled) {
-      // An Agent editor must not be able to substitute either control with a Secret binding.
-      for (const value of [id, releaseSha256]) {
-        const { name } = gateway.containers[0].env.find((variable) => variable.value === value);
-        assert.throws(
-          () =>
-            normalizeSecretBindings({
-              [name]: { source: { kind: "secret", namespaceId: "ns", id: "secret" } },
-            }),
-          { destinationRule: "reserved_prefix" },
-        );
-      }
     }
     const volume = gateway.volumes.find(({ name }) => name === "openclaw-plugin-runtime");
     const manifest = fixture.read("ConfigMap", volume.configMap.name).data["runtime.json"];
     assert.deepEqual(JSON.parse(manifest).selections, selections);
   }
-});
+}
 
 test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {
   const provisions = [];
@@ -15144,6 +15210,67 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
       withoutProjection.harnessRequirementsFromDeployment(unexpectedProjection, "api_key", false),
     /credentials disabled must not project/i,
   );
+});
+
+// The pinned OpenShell gateway's allowed_pod_labels check, ported from NVIDIA/OpenShell
+// bdb956f2cd65a635f1294fccf1d138d263bf650f crates/openshell-driver-kubernetes/src/config.rs
+// (pod_metadata_key_allowed): an entry is an exact key or `<domain>/*`, and the openshell.ai
+// and agents.x-k8s.io domains (and their subdomains) are never admitted.
+function openShellPodLabelAllowed(allowlist, key) {
+  const domain = key.includes("/") ? key.slice(0, key.indexOf("/")) : undefined;
+  if (
+    domain !== undefined &&
+    ["openshell.ai", "agents.x-k8s.io"].some(
+      (reserved) => domain === reserved || domain.endsWith(`.${reserved}`),
+    )
+  ) {
+    return false;
+  }
+  return allowlist.some((entry) =>
+    entry.endsWith("/*") ? domain === entry.slice(0, -2) : entry === key,
+  );
+}
+
+test("the OpenShell gateway allowlist admits every label Compute puts on a Harness Pod", () => {
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      servicePrincipalCredentials: {
+        mode: "projectedServiceAccountToken",
+        audience: "openclaw-controller",
+        expirationSeconds: 900,
+      },
+    }),
+  );
+  // Every optional ownership field is set, so the Pod carries the widest label set Compute emits.
+  const workload = driver.deployment(
+    "agent-label-admission",
+    {
+      namespaceId: tenant.id,
+      agentId: "agt_00000000-0000-4000-8000-000000000002",
+      revisionId: "rev_00000000-0000-4000-8000-000000000002",
+      serviceAccountId: "sa_00000000-0000-4000-8000-000000000002",
+      servicePrincipalId: "service-agent-agt_00000000-0000-4000-8000-000000000002",
+    },
+    { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
+    "agent:local",
+    "agent-label-admission",
+    "agent",
+    {},
+    "info",
+    undefined,
+    undefined,
+    undefined,
+    preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
+  );
+  const requirements = driver.harnessRequirementsFromDeployment(workload, "api_key");
+  // The OpenShell Sandbox Driver forwards these labels as CreateSandbox template.labels. A key
+  // the gateway does not admit fails every create, as app.kubernetes.io/managed-by once did.
+  const refused = Object.keys(requirements.labels).filter(
+    (key) => !openShellPodLabelAllowed(OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST, key),
+  );
+  assert.deepEqual(refused, []);
+  assert.ok(Object.keys(requirements.labels).includes("app.kubernetes.io/managed-by"));
 });
 
 test("provider Harness readiness requires exactly one live matching Pod", async (t) => {

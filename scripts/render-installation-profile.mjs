@@ -2168,7 +2168,8 @@ function buildRendered(profile, parsed, diagnostics) {
 
   diagnostics.prerequisites.push(
     "Default ReadWriteOnce storage class available for dedicated Codex workspace claims.",
-    "Envoy Gateway and cert-manager installed before applying gatewayRouting values.",
+    "Envoy Gateway and cert-manager ready, their CRDs and Gateway API CRDs Established, and the configured GatewayClass Accepted before Helm installation; the chart does not install these prerequisites.",
+    "Configured gatewayApiKeySecretName Secret created with key occ in the control-plane namespace before Helm installation; private routing is enabled by default.",
   );
   if (agentNativeAdmin.enabled) {
     diagnostics.prerequisites.push(
@@ -2234,7 +2235,20 @@ function buildRendered(profile, parsed, diagnostics) {
     "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
   );
 
-  return { values, installation };
+  // Helm merges these values over the chart default `dns.podLabels` (`k8s-app: kube-dns`), and
+  // the DNS egress rule needs every merged label. A null deletes the default for a selector
+  // without it. `installation` keeps the exact selector, as Compute does not merge.
+  const dnsPodLabels = values.dns.podLabels;
+  return {
+    values: {
+      ...values,
+      dns: {
+        ...values.dns,
+        podLabels: { ...dnsPodLabels, ...("k8s-app" in dnsPodLabels ? {} : { "k8s-app": null }) },
+      },
+    },
+    installation,
+  };
 }
 
 async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {

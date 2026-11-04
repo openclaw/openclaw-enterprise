@@ -1202,6 +1202,7 @@ export function installFixture(scenario, evidence) {
         name: "Demo installation",
         createdAt,
         capabilities: {
+          ...(scenario.nativeAdminSetup ? { nativeAdmin: true } : {}),
           ...(scenario.unsupportedProvisioning === true
             ? {}
             : { agentProvisioning: { executionModes: ["dedicated"] } }),
@@ -2165,7 +2166,7 @@ export function installFixture(scenario, evidence) {
                     })),
                   ],
             cursor: "simulated-policy-cursor",
-            withheld: 0,
+            withheld: scenario.policyWithheld ?? 0,
             truncated: false,
           });
         }

@@ -27,9 +27,16 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const baselineControllerImage = `registry.example.invalid/controller@sha256:${"f".repeat(64)}`;
   const controllerImage = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`;
   const runtimeImage = `registry.example.invalid/runtime@sha256:${"b".repeat(64)}`;
+  const deployResponse = '{"id":"rev_candidate"}';
 
   const bin = join(directory, "bin");
   await mkdir(bin);
+  // Use real JSON operations for the run's dispatch journal and receipts.
+  const dispatchJson = `if [[ "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$1" == '-ser' || "$1" == '-cser' ]]; then
+  PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
+fi
+`;
+
   // The fixture commands below answer at once, and the readiness polls end on their
   // counters, not on time, so the helper's 2 s poll interval only adds wall time.
   await writeCommand(bin, "sleep", "exit 0\n", { interpreter: "bash" });
@@ -60,7 +67,7 @@ fi
   await writeCommand(
     bin,
     "jq",
-    `case "$*" in
+    `${dispatchJson}case "$*" in
   *'.info.status'*) printf 'deployed\\n' ;;
   *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
@@ -97,7 +104,11 @@ esac
   await writeCommand(
     bin,
     "python3",
-    `if (($# == 3)); then
+    `if [[ "$1" == scripts/upgrade-dispatch-state.py ||
+      ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
+        "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
+  command -p python3 "$@"
+elif (($# == 3)); then
   printf '%s\\n' '${"e".repeat(64)}'
 elif [[ "$1" == "-c" && "$2" != *b64decode* ]]; then
   command -p python3 "$@"
@@ -177,9 +188,11 @@ fi
   ];
   const environment = {
     ...process.env,
+    AGENT_DEPLOY_RESPONSE: deployResponse,
     CLUSTER_INSTALLATION_ID: "ins_upgrade_test",
     CURRENT_CONTROLLER_IMAGE: baselineControllerImage,
     ORIGINAL_TOOL_PATH: process.env.PATH,
+    UPGRADE_TEST_KUBECONFIG: protectedFiles.kubeconfig,
     LIVE_INSTALLATION_FILE: liveInstallation,
     LIVE_VALUES_FILE: liveValues,
     OCC_SERVICE_KEY_FILE: protectedFiles["service-key"],
@@ -295,7 +308,7 @@ fi
   await writeCommand(
     bin,
     "jq",
-    `if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
+    `${dispatchJson}if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
   cat
   exit 0
 fi
@@ -378,7 +391,7 @@ esac
     `printf 'occ %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
   *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false}]}]}' ;;
-  *'agent deploy'*) printf '%s\\n' '{"id":"rev_candidate"}' ;;
+  *'agent deploy'*) printf '%s\\n' "$AGENT_DEPLOY_RESPONSE" ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
   *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate","configurationId":"cfg_test"}' ;;
   *'configuration get'*) printf '%s\\n' '{"id":"cfg_test","values":{}}' ;;
@@ -471,26 +484,67 @@ esac
   await rm(readinessCounter, { force: true });
   await rm(runtimeCountCounter, { force: true });
 
+  const lastDispatchEntry = (journal) =>
+    JSON.parse(journal.toString().trimEnd().split("\n").at(-1));
+  for (const [name, response] of [
+    ["malformed", '{"id":'],
+    ["multiple", `${deployResponse}\n{"id":"rev_other"}`],
+  ]) {
+    await t.test(`${name} deploy response leaves the dispatch pending`, async () => {
+      const evidence = join(directory, `${name}-response-evidence`);
+      const log = join(directory, `${name}-commands.log`);
+      const args = upgradeArguments(evidence, ["runtime"]);
+      const options = {
+        cwd: repository,
+        env: {
+          ...environment,
+          AGENT_DEPLOY_RESPONSE: response,
+          COMMAND_LOG: log,
+          OBSERVED_CONTROLLER_IMAGE: baselineControllerImage,
+          READINESS_COUNTER: join(directory, `${name}-readiness-counter`),
+          RUNTIME_COUNT_COUNTER: join(directory, `${name}-runtime-count-counter`),
+        },
+      };
+      await assert.rejects(execute(upgradeScript, args, options), /deployment outcome is unknown/u);
+      const journalPath = evidence + ".dispatch-state";
+      const journal = await readFile(journalPath);
+      assert.deepEqual(lastDispatchEntry(journal), ["send", "ns_test", "agt_test"]);
+      const calls = await readFile(log, "utf8");
+      assert.equal(calls.match(/^occ .* agent deploy agt_test$/gmu)?.length, 1);
+
+      // An untrusted response cannot authorize another deployment on resume.
+      await assert.rejects(
+        execute(upgradeScript, [...args, "--resume"], options),
+        /unknown deployment outcome/u,
+      );
+      assert.deepEqual(await readFile(journalPath), journal);
+      assert.equal(await readFile(log, "utf8"), calls);
+    });
+  }
+
   // Durable deployment completion can precede Kubernetes readiness. The
   // command must observe a ready revision before reporting fleet success.
-  const completed = await execute(
-    upgradeScript,
-    upgradeArguments(join(directory, "ready-evidence"), ["runtime"]),
-    {
-      cwd: repository,
-      env: {
-        ...environment,
-        COMMAND_LOG: commandLog,
-        OBSERVED_CONTROLLER_IMAGE: baselineControllerImage,
-        READINESS_COUNTER: readinessCounter,
-        RUNTIME_COUNT_COUNTER: runtimeCountCounter,
-      },
+  const readyEvidence = join(directory, "ready-evidence");
+  const completed = await execute(upgradeScript, upgradeArguments(readyEvidence, ["runtime"]), {
+    cwd: repository,
+    env: {
+      ...environment,
+      COMMAND_LOG: commandLog,
+      OBSERVED_CONTROLLER_IMAGE: baselineControllerImage,
+      READINESS_COUNTER: readinessCounter,
+      RUNTIME_COUNT_COUNTER: runtimeCountCounter,
     },
-  );
+  });
   assert.match(
     completed.stdout,
     /runtime image; controller image remained unchanged and 1 running Agents selected new revisions/u,
   );
+  assert.deepEqual(lastDispatchEntry(await readFile(readyEvidence + ".dispatch-state")), [
+    "accept",
+    "ns_test",
+    "agt_test",
+    "rev_candidate",
+  ]);
   // This stand-in kubectl serves no cgroup files, so Doctor runs without the free-memory gate.
   assert.match(completed.stderr, /running OpenClaw Doctor without checking its free memory/u);
   assert.equal((await readFile(readinessCounter, "utf8")).trim(), "2");
@@ -575,6 +629,13 @@ test("production image upgrades bind the source revision before private inputs",
         };
         await execute("git", ["init", standalone], { env: gitEnvironment });
         const git = (args) => execute("git", args, { cwd: standalone, env: gitEnvironment });
+        const chart = join(standalone, "deploy/helm/openclaw-enterprise");
+        await mkdir(chart, { recursive: true });
+        await writeFile(
+          join(chart, "Chart.yaml"),
+          "apiVersion: v2\nname: fixture\nversion: 0.1.0\n",
+        );
+        await git(["add", "deploy/helm/openclaw-enterprise/Chart.yaml"]);
         await git([
           "-c",
           "user.name=Fixture",
@@ -583,7 +644,6 @@ test("production image upgrades bind the source revision before private inputs",
           "-c",
           "commit.gpgsign=false",
           "commit",
-          "--allow-empty",
           "-m",
           "Fixture",
         ]);

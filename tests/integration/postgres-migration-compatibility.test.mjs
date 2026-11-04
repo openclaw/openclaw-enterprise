@@ -14,6 +14,7 @@ import {
   assertInjectedMigrationRollback,
   retainGatewaySourcesAcrossProxyAdmission,
 } from "../helpers/credential-source-owner-upgrade.ts";
+import { assertPopulatedUpgradeReturn } from "../helpers/populated-upgrade-return.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
 import {
   catalogDigest,
@@ -2487,6 +2488,10 @@ test(
         // Use the published prefix verbatim, before any production upgrade.
         await installCanonicalPrefix(source, 51);
         assert.equal((await historyReceipts(source.migrator)).length, 51);
+        await seedCanonicalData(source, { preset: true });
+        await source.app
+          .query(`UPDATE occ.agents a SET active_revision_id=r.id, desired_runtime_state='running'
+          FROM occ.agent_revisions r WHERE r.agent_id=a.id`);
       } else {
         const previous = await historyReceipts(source.migrator);
         assert.deepEqual(await runHistoryCommand(source, "production"), {
@@ -2499,7 +2504,8 @@ test(
         "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES ('restore-human','principal','restore-fixture','human'), ('restore-service','service_principal',NULL,NULL)",
       );
       const native = await logicalRestoreSnapshot(source);
-      assert.equal(native.identities.length, 2);
+      assert.equal(native.identities.length, prefix ? 3 : 2);
+      const nativeData = prefix ? await canonicalData(source) : undefined;
 
       // Restore a real archive into a distinct database, preserving ownership and grants atomically.
       const { stdout: archive } = await execFileAsync(
@@ -2515,6 +2521,9 @@ test(
       assert.deepEqual(accepted.drizzle, native.drizzle);
       assert.deepEqual(accepted.identities, native.identities);
       assert.deepEqual(accepted.sequence, native.sequence);
+      if (prefix) {
+        assert.deepEqual(await canonicalData(restored), nativeData);
+      }
       assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
         ok: true,
         history,
@@ -2542,6 +2551,23 @@ test(
           history: "completed",
         });
         assert.deepEqual(await logicalRestoreSnapshot(restored), upgraded);
+        assert.deepEqual(await canonicalData(restored), upgradedCanonicalData(nativeData));
+        await assertPopulatedUpgradeReturn(context, fixture.container, restored, archive, {
+          snapshot: async (database) => ({
+            history: await logicalRestoreSnapshot(database),
+            data: await canonicalData(database),
+            revisions: (await database.app.query("SELECT * FROM occ.agent_revisions ORDER BY id"))
+              .rows,
+          }),
+          restore: (bytes) => restoreHistoryArchive(context, fixture, bytes),
+          checkHistory: (database) => runHistoryCommand(database, "production", "--check"),
+        });
+        assert.deepEqual(await runHistoryCommand(restored, "production", "--check"), {
+          ok: true,
+          history: "completed",
+        });
+        assert.deepEqual(await canonicalData(source), nativeData);
+        assert.deepEqual(await logicalRestoreSnapshot(source), native);
       } else {
         assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
       }

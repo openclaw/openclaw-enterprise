@@ -7,7 +7,7 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
  *   "sandboxDriver" | "credentialGatewayDriver" | "protectedDriver"> & {
  *   authentication?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["authentication"],
  *   repositoryCredentials?: boolean, gatewayRuntime?: boolean, channelRuntime?: boolean,
- *   routed?: boolean, gatewayTrustedProxyCidrs?: string[],
+ *   routed?: boolean, privateStatus?: boolean, gatewayTrustedProxyCidrs?: string[],
  * }} [options]
  */
 export function createTestKubernetesComputeDriver(
@@ -20,6 +20,10 @@ export function createTestKubernetesComputeDriver(
     // false: runtime storage without gateway routing or node enrollment, which dedicated Agents
     // cannot use (provisioning and deployment admission refuse them).
     routed = true,
+    // With runtime and routing: network.pluginStatusProxySourceCidrs, as `occ dev up` sets it, so
+    // the controller reads Gateway private status and a Dedicated Codex Gateway applies its
+    // workspace node at runtime.
+    privateStatus = false,
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
     sandboxDriver,
@@ -62,6 +66,7 @@ export function createTestKubernetesComputeDriver(
         ...(placed
           ? {}
           : { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }),
+        ...(placed && privateStatus ? { pluginStatusProxySourceCidrs: ["10.42.0.1/32"] } : {}),
         ...(repositoryCredentials
           ? {
               repositoryCredentials: {

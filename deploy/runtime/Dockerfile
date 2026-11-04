@@ -172,39 +172,22 @@ COPY --from=openclaw-source /source/ ./
 # Exercise the original caller through the public RPC before and after the
 # placement acknowledgment, including revocation, against this exact source.
 COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo '4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
+RUN echo 'fe61a9c3bd9d2c777db5ce7b6272c0db8b12da4a97a07fb7a42cc879a10dbf0e  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo 'f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+RUN echo '19db4659a8c234a44a456bf964b300a3451dbf0c7e34267dd1a4af265dab7943  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
 COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
-RUN echo '570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
+RUN echo '1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
 # Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.
 COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-google-worker-placeholder.patch
 RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-google-worker-placeholder.patch
-
-# Local qualification bridge for the pinned OpenClaw private-store owner.
-# Remove after selecting an OpenClaw revision containing this owning repair.
-COPY deploy/runtime/openclaw-linux-private-store-setgid.patch /tmp/openclaw-linux-private-store-setgid.patch
-RUN echo 'e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c  /tmp/openclaw-linux-private-store-setgid.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-linux-private-store-setgid.patch
-
-# Name each invalid plugin setting and exit 78 when Gateway startup refuses its config
-# (openclaw/openclaw#189392). Remove after selecting an OpenClaw commit that contains it.
-COPY deploy/runtime/openclaw-plugin-config-startup-report.patch /tmp/openclaw-plugin-config-startup-report.patch
-RUN echo '47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93  /tmp/openclaw-plugin-config-startup-report.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-plugin-config-startup-report.patch
-
-# Execute admitted MCP tools on the worker that owns their MCP session.
-COPY deploy/runtime/openclaw-same-node-mcp.patch /tmp/openclaw-same-node-mcp.patch
-RUN echo '656340049eb6515388f54e5b3529beec7cb27ba9d1c2dc292bdb811ab307216c  /tmp/openclaw-same-node-mcp.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-same-node-mcp.patch
 
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
@@ -218,12 +201,7 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
-    src/infra/private-store-file.test.ts src/worker/worker-local-mcp.test.ts \
-    src/agents/mcp-sdk-compatibility.test.ts src/node-host/connection.test.ts \
-    src/node-host/node-worker-supervisor.idle.test.ts src/node-host/runner.test.ts \
-    src/gateway/node-command-policy.test.ts src/gateway/node-registry.test.ts \
-    src/gateway/worker-environments/node-worker-tunnel.lifecycle.test.ts \
-    src/gateway/worker-environments/worker-turn-execution.test.ts
+    src/infra/private-store-file.test.ts
 # Type-check the two UI test graphs touched by the bridge. The upstream runner
 # generates its database types and compiler cache under .artifacts.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
@@ -365,6 +343,8 @@ RUN --mount=type=secret,id=build-ca,required=false \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     mkdir -p /usr/local/lib/oce/plugins/google/bin; \
     node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
+
+COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/

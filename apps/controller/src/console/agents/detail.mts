@@ -1305,7 +1305,7 @@ export async function renderAgentDetail(
     callerPermissionsRead.then((permissions) => permissions?.delete),
     () => permissionsRereads,
   );
-  // Stop and Delete are the rows of one danger zone at the end of the page (UX spec 3.9). A row
+  // Stop and Delete share the Configuration tab’s danger zone (UX spec 3.9). A row
   // hides itself when the caller's permission answer denies it, and the zone hides with no row.
   const dangerZone = element(
     "section",
@@ -1323,7 +1323,8 @@ export async function renderAgentDetail(
     headerActions.replaceChildren(
       element("span", { className: "badge", "data-tone": "warning" }, "Deleting"),
     );
-    view.classList.remove("agent-detail-pending", "agent-logs-opening");
+    view.classList.remove("agent-detail-pending");
+    dangerZone.hidden = false;
     // A deleting Agent can no longer be stopped; its deletion row is all the page shows.
     stopPanel.section.remove();
     view.replaceChildren(dangerZone);
@@ -1349,6 +1350,7 @@ export async function renderAgentDetail(
     const agentWide = ["workspace", "access"].includes(selectedTab);
     selector.hidden = agentWide;
     versionSummary.hidden = agentWide;
+    dangerZone.hidden = selectedTab !== "configuration";
   }
   const versionLayout = element(
     "div",
@@ -2556,9 +2558,10 @@ export async function renderAgentDetail(
     // listed latest outcome is an earlier version's, whichever entry is viewed (finding D751).
     const acceptedId = acceptedHiddenVersion(latest.revision);
     const acceptedHidden = acceptedId !== undefined;
-    // Stop hides only for a failed first deployment, and says it cancels one still queued or in
-    // progress (findings 2385, 2580, D691). A failed read is unknown, not failed, and so is a
-    // newer deployment the caller cannot read.
+    // The latest readable outcome sets only Stop's confirmation copy: it says Stop cancels a first
+    // deployment still queued or in progress (findings 2385, 2580, D691). A failed one can hide
+    // newer queued work, so Stop stays (finding 2764). A failed read is unknown, not failed, and
+    // so is a newer deployment the caller cannot read.
     stopPanel.setLatestDeployment(acceptedHidden ? null : latestDeploymentStatus);
     const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
@@ -4446,8 +4449,6 @@ export async function renderAgentDetail(
   }
 
   async function renderTab({ activated = false } = {}) {
-    // A Logs view left before it showed no longer holds the cards below it back.
-    view.classList.remove("agent-logs-opening");
     const resumeDrafts = context.suspendDrafts();
     if (mountedTab) {
       mountedTab.resumeDrafts = resumeDrafts;
@@ -4730,14 +4731,10 @@ export async function renderAgentDetail(
       logsServingChange(servingChange());
       content.append(logs.section);
       state.loading = false;
-      // The pending view is nearly empty: Stop and Delete sat under it, then the strip and
-      // output pushed them down 0.6-1.7 s later (finding 1479). Until the view shows, keep the
-      // reserved height and keep those cards hidden; they appear in place in the same frame.
-      view.classList.add("agent-logs-opening");
+      // Reserve the previous panel height until the first Logs view is ready.
       void logs.firstView.then(() => {
         if (mountedTab === state) {
           content.style.minHeight = "";
-          view.classList.remove("agent-logs-opening");
         }
       });
       // An address, reload or sign-in landing reveals the page already at the output once it is

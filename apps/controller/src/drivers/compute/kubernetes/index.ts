@@ -191,10 +191,8 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import {
-  managedGoogleInstall,
-  requireManagedCredentialRuntime,
-} from "../../plugin/managed-catalog.ts";
+import { managedInstalls, managedMcpCredentialBinding } from "../../plugin/managed-catalog.ts";
+import { requireManagedCredentialRuntime } from "../../plugin/managed-runtime.ts";
 import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
@@ -214,6 +212,7 @@ import {
   providerWaitsOnVariable,
   requireHarnessCredentialBinding,
   requireSelectedModelProvider,
+  requireWorkspaceNodeGatewayPassword,
   requireWorkspaceNodePlugins,
   TRUSTED_PROXY_IDENTITY,
   usesGatewayPasswordEnvironment,
@@ -266,6 +265,7 @@ import {
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
+  MANAGED_PLUGIN_ENVIRONMENT,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   NATIVE_WORKER_ENTRYPOINT,
@@ -2938,7 +2938,7 @@ function withoutVariableProviders(
 function requireConfiguredModelProviders(
   configuration: Readonly<OpenClawConfigurationDocument>,
   options?: ConfigurationValidationOptions,
-): void {
+): string | undefined {
   let harnessId: string;
   let authentication: ReturnType<typeof harnessModelAuthentication>;
   try {
@@ -2960,6 +2960,7 @@ function requireConfiguredModelProviders(
   );
   // An inline key is left to the Configuration Driver, whose message says to use a Secret.
   requireProviderApiKeys(configuration, harnessId === "openclaw", authentication, true, options);
+  return harnessId;
 }
 
 // The Harness the Configuration's model policy selects, resolved as requireConfiguredModelProviders
@@ -4843,25 +4844,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
    * model credentials only through the Harness authentication binding, the Gateway tool policy,
    * model selections and provider apiKeys on the primary model's provider, another spelling of a
    * plugin entry key it renders (finding 3077), plugin secret inputs OpenClaw cannot read
-   * (finding 3069), and the trusted-proxy allowlist and deviceAutoApprove shape (finding 3032).
-   * Deployment admission applies each in its own order
-   * (validateAdmittedHarnessAuth).
+   * (finding 3069), the trusted-proxy allowlist and deviceAutoApprove shape (finding 3032), and,
+   * where this Installation applies a Dedicated Codex workspace node at runtime, the gateway
+   * password its Gateway signs in with (finding 3132). Deployment admission applies each in its
+   * own order (validateAdmittedHarnessAuth).
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
   ): void {
     this.validateConfigurationContent(configuration, options);
-    requireConfiguredModelProviders(configuration, options);
+    const harnessId = requireConfiguredModelProviders(configuration, options);
     refuseUnreadablePluginSecretInputs(configuration, callerSettingError, options);
     // A Configuration whose model policy selects Codex runs only as Dedicated Codex.
-    if (configuredHarnessId(configuration, options) === "codex") {
+    const dedicatedCodex = (harnessId ?? configuredHarnessId(configuration, options)) === "codex";
+    if (dedicatedCodex) {
       requireCodexPlugin(configuration, callerSettingError, options);
     }
     // Deployment admission refuses the rest of the gateway shape in its own order.
     const trustedProxy = asRecord(asRecord(asRecord(configuration.gateway)?.auth)?.trustedProxy);
     if (trustedProxy !== undefined) {
       refuseInvalidTrustedProxyIdentities(trustedProxy, callerSettingError, options);
+    }
+    if (dedicatedCodex && this.appliesWorkspaceNodeAtRuntime()) {
+      requireWorkspaceNodeGatewayPassword(configuration, callerSettingError);
     }
   }
 
@@ -11516,9 +11522,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       runtime.kind === "openclaw" &&
       Object.keys(runtime.selections).length === 1 &&
-      Object.hasOwn(runtime.selections, managedGoogleInstall.id)
+      managedInstalls.some(({ id }) => Object.hasOwn(runtime.selections, id))
     ) {
-      return []; // The Google package is already in the image.
+      return []; // The managed package is already in the image.
     }
     const data = pluginRuntimeConfigMapData(runtime);
     const environment = new Map([
@@ -11716,9 +11722,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return (
       revision.harness.mode === "dedicated" &&
       revision.harness.id !== "openclaw" &&
+      this.appliesWorkspaceNodeAtRuntime() &&
+      this.getGatewayEndpoint(revision) !== undefined
+    );
+  }
+
+  // The Installation settings with which a dedicated Gateway other than OpenClaw gets its
+  // workspace node through the binding ConfigMap and confirms it through its own Gateway client
+  // (usesWorkspaceNodeBinding), which signs in with the gateway password
+  // (requireWorkspaceNodeGatewayPassword). Without private status, the node is in the pod spec.
+  private appliesWorkspaceNodeAtRuntime(): boolean {
+    return (
       this.nodeEnrollment !== undefined &&
       this.options.runtime !== undefined &&
-      this.getGatewayEndpoint(revision) !== undefined &&
+      this.options.gatewayRouting !== undefined &&
       this.gatewayPrivateStatusReachable()
     );
   }
@@ -16096,19 +16113,25 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
       }
     }
-    // The native worker consumes only the image release digest. Its Sandbox needs no plugin files.
+    // The managed release is in the image. The two processes receive only its
+    // identity and the reviewed tool selection, never the account's bearer.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
-      const selection = pluginRuntime.runtime.selections[managedGoogleInstall.id];
-      if (selection !== undefined && role === "gateway") {
+      const { selections } = pluginRuntime.runtime;
+      const install = managedInstalls.find(({ id }) => Object.hasOwn(selections, id));
+      if (install && (selections[install.id]?.enabled || role === "gateway")) {
+        const selection = selections[install.id]!;
+        const binding =
+          install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
         variables.push({
-          name: "OPENCLAW_MANAGED_GOOGLE_PLUGIN_ID",
-          value: managedGoogleInstall.id,
-        });
-      }
-      if (selection?.enabled) {
-        variables.push({
-          name: "OPENCLAW_MANAGED_GOOGLE_RELEASE_SHA256",
-          value: managedGoogleInstall.releaseSha256,
+          name: MANAGED_PLUGIN_ENVIRONMENT,
+          value: JSON.stringify({
+            kind: install.kind,
+            packageName: install.packageName,
+            slotId: Object.keys(install.credentials)[0],
+            ...(role === "gateway" && { id: install.id }),
+            ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
+            ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
+          }),
         });
       }
     }
