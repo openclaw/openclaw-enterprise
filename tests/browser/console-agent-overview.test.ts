@@ -13,10 +13,7 @@ import {
 } from "../../apps/controller/src/console/deployment-failure-steps.mjs";
 import { AgentProvisioningStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
-import {
-  createConsoleAppFixture as legacyConsoleAppFixture,
-  fileConsoleApp,
-} from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import {
   createProviderSandboxDriver,
   createRuntimeLogComputeDriver,
@@ -58,7 +55,7 @@ import {
   openDeploymentActivity as legacyOpenDeploymentActivity,
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.mjs";
-import { createRuntimeAuthFixture as legacyRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 import {
   CONFIGURATION_EDITS_PENDING,
@@ -82,10 +79,7 @@ type DeploymentResponseOptions = {
 function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
   return typeof value === "function";
 }
-function deploymentStatusResponse(
-  revision: ReturnType<typeof revisionRecord>,
-  options: DeploymentResponseOptions,
-) {
+function deploymentStatusResponse(revision: Revision, options: DeploymentResponseOptions) {
   const respond: unknown = legacyDeploymentStatusResponse;
   assert.ok(isCallable(respond));
   const response = record(respond(revision, options));
@@ -133,7 +127,7 @@ function persistedDeploymentError(...args: Parameters<typeof legacyPersistedDepl
   return error;
 }
 
-// Narrow the legacy fixture's JSON results at this suite's boundary.
+// Narrow raw responses and domain-specific values at their usages.
 function required<T>(value: T | null | undefined): T {
   assert.ok(value !== null && value !== undefined);
   return value;
@@ -148,125 +142,14 @@ function record(value: unknown): Record<string, unknown> {
   return value;
 }
 
-function identified(value: unknown): Record<string, unknown> & { id: string } {
-  const item = record(value);
-  assert.ok(typeof item.id === "string");
-  return { ...item, id: item.id };
-}
-
-function agentRecord(value: unknown) {
-  const item = identified(value);
-  assert.ok(typeof item.name === "string");
-  assert.ok(typeof item.configurationId === "string");
-  return {
-    ...item,
-    name: item.name,
-    configurationId: item.configurationId,
-    harnessAuth: item.harnessAuth,
-  };
-}
-
-function secretRecord(value: unknown) {
-  const item = identified(value);
-  const ref = record(item.ref);
-  assert.ok(ref.kind === "secret");
-  assert.ok(typeof ref.id === "string" && typeof ref.namespaceId === "string");
-  return { ...item, ref: { kind: ref.kind, id: ref.id, namespaceId: ref.namespaceId } };
-}
-
-function revisionRecord(value: unknown) {
-  const item = identified(value);
-  assert.ok(typeof item.agentId === "string" && typeof item.namespaceId === "string");
-  assert.ok(typeof item.createdAt === "string");
-  return {
-    ...item,
-    agentId: item.agentId,
-    namespaceId: item.namespaceId,
-    createdAt: item.createdAt,
-  };
-}
-
 function records(value: unknown): Record<string, unknown>[] {
   assert.ok(Array.isArray(value));
   return value.map(record);
 }
 
-type LegacyFixture = Awaited<ReturnType<typeof legacyConsoleAppFixture>>;
-
-function adaptFixture(fixture: LegacyFixture) {
-  return {
-    ...fixture,
-    async createAgent(
-      namespaceId: string,
-      name: string,
-      values: Parameters<typeof fixture.createAgent>[2] = {},
-      options: Parameters<typeof fixture.createAgent>[3] = {},
-    ) {
-      return agentRecord(await fixture.createAgent(namespaceId, name, values, options));
-    },
-    async updateAgent(namespaceId: string, agentId: string, body: unknown) {
-      return agentRecord(await fixture.updateAgent(namespaceId, agentId, body));
-    },
-    async createNamespace(
-      name: string,
-      options: Parameters<typeof fixture.createNamespace>[1] = {},
-    ) {
-      return identified(await fixture.createNamespace(name, options));
-    },
-    async createSecret(namespaceId: string, name: string, value: string) {
-      return secretRecord(await fixture.createSecret(namespaceId, name, value));
-    },
-    async deployAgent(namespaceId: string, agentId: string) {
-      return revisionRecord(await fixture.deployAgent(namespaceId, agentId));
-    },
-    async seedActiveAgentRevision(
-      namespaceId: string,
-      agentId: string,
-      expectedRevisionId?: string,
-    ) {
-      const result = await fixture.seedActiveAgentRevision(
-        namespaceId,
-        agentId,
-        expectedRevisionId,
-      );
-      return { agent: agentRecord(result.agent), revision: revisionRecord(result.revision) };
-    },
-    async request(
-      method: string,
-      path: string,
-      options: Parameters<typeof fixture.request>[2] = {},
-    ) {
-      const result = await fixture.request(method, path, options);
-      const data: unknown = result.data;
-      const body: unknown = result.body;
-      return { ...result, data, body };
-    },
-  };
-}
-
-type Fixture = ReturnType<typeof adaptFixture>;
-// The file app reuses its fixture; login's session cache must see one adapter for it.
-const fixtureAdapters = new WeakMap<LegacyFixture, Fixture>();
-function typedFixture(source: LegacyFixture): Fixture {
-  const existing = fixtureAdapters.get(source);
-  if (existing) {
-    return existing;
-  }
-  const fixture = adaptFixture(source);
-  fixtureAdapters.set(source, fixture);
-  return fixture;
-}
-
-type Identified = ReturnType<typeof identified>;
-
-async function createRuntimeAuthFixture(t: TestContext, name: string, options = {}) {
-  const result = await legacyRuntimeAuthFixture(t, name, options);
-  return {
-    ...result,
-    fixture: typedFixture(result.fixture),
-    namespace: identified(result.namespace),
-  };
-}
+type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type Identified = { id: string };
+type Revision = Awaited<ReturnType<Fixture["deployAgent"]>>;
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
 // polls, a steady layout, and failed-version recovery scoped to the caller.
@@ -276,9 +159,8 @@ const browser = fileBrowser();
 // One app for the tests that pass no fixture options; each makes its own Namespace.
 const overviewApp = fileConsoleApp();
 async function readyNamespace(t: TestContext, name: string, options?: object) {
-  const fixture = typedFixture(
-    options === undefined ? await overviewApp(t) : await legacyConsoleAppFixture(t, options),
-  );
+  const fixture =
+    options === undefined ? await overviewApp(t) : await createConsoleAppFixture(t, options);
   if (options !== undefined) {
     await fixture.bootstrap();
   }
@@ -318,7 +200,7 @@ function routeFailedRecord(
   fixture: Fixture,
   namespace: Identified,
   agent: Identified,
-  revision: ReturnType<typeof revisionRecord>,
+  revision: Revision,
   code = "RUNTIME_MODEL_PROBE_FAILED",
 ) {
   return routeFailedDeployment(page, fixture, {
@@ -338,7 +220,7 @@ async function routeFailedListing(
   fixture: Fixture,
   namespace: Identified,
   agent: Identified,
-  revision: ReturnType<typeof revisionRecord>,
+  revision: Revision,
   code = "RUNTIME_MODEL_PROBE_FAILED",
 ) {
   const listPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
@@ -3469,7 +3351,7 @@ for (const viewport of [
 // children a shorter render no longer has, and replaces a node whose role (or role node kind)
 // changes, since a live region or alert announces reliably only when it is inserted.
 test("deployment poll patches rewrite only changed text and replace a node whose role changes", async (t) => {
-  const fixture = typedFixture(await overviewApp(t));
+  const fixture = await overviewApp(t);
   const { page } = await newPage(t, fixture, { browser });
   await page.goto(new URL("/console/", fixture.origin).href);
   const outcome = await page.evaluate(async () => {
