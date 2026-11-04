@@ -19,7 +19,7 @@ export function selectPackageExport(
         return invalid();
       }
       const selected = wildcard === undefined ? value : value.replaceAll("*", wildcard);
-      let decoded;
+      let decoded: string;
       try {
         decoded = decodeURIComponent(selected);
       } catch {

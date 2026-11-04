@@ -43,7 +43,11 @@ function field(value: unknown, key: string): unknown {
   return value == null ? undefined : Reflect.get(Object(value), key);
 }
 function stringArray(value: unknown, valid: (value: unknown) => boolean): value is string[] {
-  return Array.isArray(value) && value.every(valid);
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  const entries: unknown[] = value;
+  return entries.every(valid);
 }
 
 const inside = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
@@ -121,7 +125,8 @@ export function validatePolicy(policy: unknown): asserts policy is Policy {
   if (boundaries !== undefined && !Array.isArray(boundaries)) {
     throw new Error("Invalid policy field: boundaries");
   }
-  for (const boundary of boundaries ?? []) {
+  const boundaryEntries: unknown[] = boundaries ?? [];
+  for (const boundary of boundaryEntries) {
     const rule = field(boundary, "rule");
     const message = field(boundary, "message");
     if (

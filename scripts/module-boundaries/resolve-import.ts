@@ -41,12 +41,10 @@ function visiblePackage(anchor: string, name: string, mode: Mode) {
     try {
       const manifest: unknown = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
       if (manifest === null) {
-        throw new TypeError("Cannot read properties of null (reading name)");
+        throw new TypeError("Cannot read properties of null (reading 'name')");
       }
-      if (
-        Reflect.get(Object(manifest), "name") === name &&
-        Reflect.get(Object(manifest), "exports") != null
-      ) {
+      const manifestName: unknown = Reflect.get(Object(manifest), "name");
+      if (manifestName === name && errorField(manifest, "exports") != null) {
         return realpathSync(directory);
       }
       break;
@@ -196,9 +194,9 @@ export function resolveImports(
         (item) => specifier === item.name || specifier.startsWith(`${item.name}/`),
       );
       named = Boolean(pkg);
-      let target;
-      let typeCandidate;
-      let nativeTarget;
+      let target: string | undefined;
+      let typeCandidate: string | undefined;
+      let nativeTarget: string | undefined;
       try {
         if (pkg) {
           const packageAnchor = resolve(root, pkg.path, "package.json");

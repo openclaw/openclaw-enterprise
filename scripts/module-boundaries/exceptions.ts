@@ -75,8 +75,9 @@ export function validateExceptions(exceptions: unknown): asserts exceptions is E
   if (!Array.isArray(entries)) {
     throw new Error("Invalid module-boundary exceptions.");
   }
+  const items: unknown[] = entries;
   const identities = new Set<string>();
-  for (const exception of entries) {
+  for (const exception of items) {
     if (
       !record(exception) ||
       !stringFields(exception, edgeFields) ||
@@ -103,7 +104,8 @@ export function validateExceptions(exceptions: unknown): asserts exceptions is E
 
 function frozenCopy(value: unknown): unknown {
   if (Array.isArray(value)) {
-    return Object.freeze(value.map(frozenCopy));
+    const items: unknown[] = value;
+    return Object.freeze(items.map(frozenCopy));
   }
   if (value && typeof value === "object" && record(value)) {
     return Object.freeze(
