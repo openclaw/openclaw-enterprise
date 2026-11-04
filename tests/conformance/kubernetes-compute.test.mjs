@@ -2224,10 +2224,10 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     },
   });
   // The provider's observed Pod readiness and enrolled node are independent of provisioning.
-  // Until the provider's Pod is Ready, the wait has no named reason.
+  // Name the provider Pod wait before checking its workspace connection.
   const podPending = await prepare();
   assert.equal(podPending.ready, false);
-  assert.equal(podPending.pendingReason, undefined);
+  assert.equal(podPending.pendingReason, "PROVIDER_HARNESS_POD_PENDING");
   state.providerPod = {
     apiVersion: "v1",
     kind: "Pod",
@@ -2248,7 +2248,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   save(gatewayDeployment);
   const nodePending = await prepare();
   assert.equal(nodePending.ready, false);
-  assert.equal(nodePending.pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal(nodePending.pendingReason, "PROVIDER_WORKSPACE_NODE_PENDING");
   // Finding 1657: the provider is told the node has not enrolled, and no exposure is withdrawn
   // before it has.
   assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
@@ -2383,8 +2383,8 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   assert.equal(named("APP_TOKEN_SHA").length, 1);
   assert.match(named("APP_TOKEN_SHA")[0].value, /^[a-f0-9]{64}$/);
   assert.deepEqual(named("APP_SERVER_TOKEN"), [], "the provider never receives the raw token");
-  // Nothing is observed before the provider's Pod is Ready.
-  assert.equal((await prepare()).pendingReason, undefined);
+  // Compute waits for the Pod before asking the Sandbox provider for Harness startup status.
+  assert.equal((await prepare()).pendingReason, "PROVIDER_HARNESS_POD_PENDING");
   assert.deepEqual(observations, []);
   state.providerPod = {
     apiVersion: "v1",
@@ -2396,7 +2396,7 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   // token the worker's verifier hashes.
   const nodePending = await prepare();
   assert.equal(nodePending.ready, false);
-  assert.equal(nodePending.pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal(nodePending.pendingReason, "PROVIDER_WORKSPACE_NODE_PENDING");
   assert.equal(nodePending.runtimeFailure, undefined);
   assert.equal(observations.length, 1);
   assert.equal(observations[0].revision, revision);
@@ -2660,7 +2660,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
   };
   const nodePending = await prepare();
   assert.equal(nodePending.ready, false);
-  assert.equal(nodePending.pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal(nodePending.pendingReason, "PROVIDER_WORKSPACE_NODE_PENDING");
   assert.equal(observations.length, 1);
   assert.equal(observations[0].workspaceNodeEnrolled, false);
   // The redeploy's held failure fails it with its code instead of waiting for the deadline.
@@ -2713,7 +2713,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
     },
     status: { conditions: [{ type: "Ready", status: "True" }] },
   };
-  assert.equal((await upgraded.prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal((await upgraded.prepare()).pendingReason, "PROVIDER_WORKSPACE_NODE_PENDING");
   assert.deepEqual(observations, []);
   upgraded.state.connected = true;
   assert.equal((await upgraded.prepare()).ready, true);
@@ -3560,7 +3560,7 @@ test("activation waits for the first repository Git credential install and the n
     metadata: { name: "native-harness", namespace, labels: provisions[0].requirements.labels },
     status: { conditions: [{ type: "Ready", status: "True" }] },
   };
-  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal((await prepare()).pendingReason, "PROVIDER_WORKSPACE_NODE_PENDING");
   state.connected = true;
   // A verified route still waiting for its first material is ready to activate (finding 2139).
   const observation = await prepare();
