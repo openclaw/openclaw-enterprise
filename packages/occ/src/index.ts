@@ -7715,12 +7715,16 @@ export class OpenClawController {
     }
     const values = frozenValues(input.values);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
+      const target = {
         kind: "configuration",
         id: input.configurationId,
         namespaceId: input.namespaceId,
-      });
+      } as const;
+      await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // IAM withdrawals share this lock. Reject authority withdrawn while the update waited,
+      // before changing the Configuration or deleting any generated Agent credential grant.
+      await this.authorize(principalId, "update", target);
       const driver = this.configurationDriver();
       const metadata = await state.configurations.lockConfiguration(
         namespace.id,

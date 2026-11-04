@@ -1682,6 +1682,155 @@ for (const authMethod of ["api_key", "codex_pat"]) {
       assert.equal(removal[0].actorId, await fixture.administratorPrincipalId());
       assert.equal(removal[0].details.agentId, handoff.agentId);
       assert.ok(removal[0].iamDriverId);
+
+      // A stopped Agent has no live revision retaining its Slack binding. A Configuration
+      // updater may remove that reference, but only while its exact update grant is current.
+      const stopped = await fixture.request("POST", `${agentPath}/stop`);
+      assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+      await waitFor("Stop to clear the active revision", async () => {
+        const current = await fixture.request("GET", agentPath);
+        assert.equal(current.status, 200, JSON.stringify(current.body));
+        return current.data.activeRevisionId === undefined ? true : undefined;
+      });
+      await fixture.stopWorker();
+      const slackGrantId = `binding_${handoff.agentId}_${secrets.slackBotToken.id}_operate`;
+      assert.equal(await grantExists(slackGrantId), true);
+      const independentSlack = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/iam/access-bindings`,
+        {
+          body: {
+            subjectKind: "identity",
+            subjectId: agent.servicePrincipalId,
+            roleId: `role_${namespace.id}_agent_secret_operate`,
+            resourceKind: "secret",
+            resourceId: secrets.slackBotToken.id,
+          },
+        },
+      );
+      assert.equal(independentSlack.status, 201, JSON.stringify(independentSlack.body));
+      const credentials = {
+        email: `configuration-updater-${randomUUID()}@example.test`,
+        password: `generated-password-${randomUUID()}`,
+      };
+      const account = await fixture.request("POST", "/api/auth/accounts", {
+        body: { ...credentials, name: "Configuration updater" },
+      });
+      assert.equal(account.status, 201, JSON.stringify(account.body));
+      const updater = await signInToControllerApp(fixture.app, credentials);
+      const updaterRole = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
+        body: {
+          permissions: [
+            { action: "read", resourceKind: "namespace" },
+            { action: "read", resourceKind: "configuration" },
+            { action: "update", resourceKind: "configuration" },
+            { action: "operate", resourceKind: "secret" },
+          ],
+        },
+      });
+      assert.equal(updaterRole.status, 201, JSON.stringify(updaterRole.body));
+      let updateBinding;
+      for (const [resourceKind, resourceId] of [
+        ["namespace", namespace.id],
+        ["configuration", handoff.configurationId],
+        ...[secrets.modelKey, secrets.slackBotToken, secrets.slackSigningSecret].map(({ id }) => [
+          "secret",
+          id,
+        ]),
+      ]) {
+        const bound = await fixture.request(
+          "POST",
+          `/namespaces/${namespace.id}/iam/access-bindings`,
+          {
+            body: {
+              subjectKind: "identity",
+              subjectId: account.data.principalId,
+              roleId: updaterRole.data.id,
+              resourceKind,
+              resourceId,
+            },
+          },
+        );
+        assert.equal(bound.status, 201, JSON.stringify(bound.body));
+        if (resourceKind === "configuration") {
+          updateBinding = bound.data.id;
+        }
+      }
+      assert.ok(updateBinding);
+      const allowed = await fixture.request("PATCH", configurationPath, {
+        session: updater,
+        body: { values: body.configuration.values, secretBindings: draftBindings },
+      });
+      assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
+      const beforeConfiguration = (await fixture.request("GET", configurationPath)).data;
+      const successAudits = async () =>
+        (await fixture.state.transact((unit) => unit.audit.list())).filter(
+          (event) =>
+            event.action === "openclaw.configurations.update" &&
+            event.resource.id === handoff.configurationId &&
+            event.outcome === "success",
+        );
+      const beforeAudits = await successAudits();
+      const withoutSlack = { ...draftBindings };
+      delete withoutSlack.SLACK_BOT_TOKEN;
+      const edit = {
+        values: { agents: body.configuration.values.agents },
+        secretBindings: withoutSlack,
+      };
+
+      // Queue the real IAM withdrawal before PATCH. PostgreSQL's wait chain proves PATCH
+      // passed its initial check while the old grant was committed, then waited behind revoke.
+      const blocker = await fixture.pool.connect();
+      let withdrawal;
+      let update;
+      try {
+        await blocker.query("BEGIN");
+        const { rows } = await blocker.query(
+          "SELECT pg_backend_pid() AS pid FROM occ.namespaces WHERE id = $1 FOR UPDATE",
+          [namespace.id],
+        );
+        assert.equal(rows.length, 1);
+        withdrawal = fixture.request(
+          "DELETE",
+          `/namespaces/${namespace.id}/iam/access-bindings/${updateBinding}`,
+        );
+        const withdrawalPid = await waitForLockWaiter(
+          fixture.pool,
+          rows[0].pid,
+          "IAM withdrawal to wait on Namespace",
+        );
+        update = fixture.request("PATCH", configurationPath, { session: updater, body: edit });
+        await waitForLockWaiter(
+          fixture.pool,
+          withdrawalPid,
+          "Configuration edit to wait behind IAM withdrawal",
+        );
+      } finally {
+        try {
+          await blocker.query("ROLLBACK");
+        } finally {
+          blocker.release();
+          await Promise.allSettled([withdrawal, update]);
+        }
+      }
+      assert.equal((await withdrawal).status, 204);
+      const raced = await update;
+      assert.equal(
+        raced.status,
+        403,
+        `revoked Configuration update must not delete its generated grant; grant present: ${await grantExists(slackGrantId)}`,
+      );
+      assert.deepEqual((await fixture.request("GET", configurationPath)).data, beforeConfiguration);
+      assert.equal(await grantExists(slackGrantId), true);
+      assert.equal(await grantExists(independentSlack.data.id), true);
+      assert.deepEqual(await successAudits(), beforeAudits);
+
+      // The administrator remains authorized to make the same edit and remove only the
+      // generated binding. The independent grant survives both the denial and real cleanup.
+      const authorized = await fixture.request("PATCH", configurationPath, { body: edit });
+      assert.equal(authorized.status, 200, JSON.stringify(authorized.body));
+      assert.equal(await grantExists(slackGrantId), false);
+      assert.equal(await grantExists(independentSlack.data.id), true);
     },
   );
 }

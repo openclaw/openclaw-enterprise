@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
 updated: 2026-11-04
-last_updated_session: "authoring-run/c8796acb-decf-43ea-bd64-ec100c7c2069"
+last_updated_session: "authoring-run/5e22c930-9153-4b59-9935-f003db1bb2e6"
 ---
 
 # Namespace IAM Policy Flow
@@ -156,10 +156,12 @@ indexes each snapshot once (identities by id, issuer and subject; bindings by
 subject; Restrictions by action and kind). Nothing outlives the
 unit: the next request reads the policy again.
 
-`packages/occ/src/index.ts:OpenClawController.updateAgent` checks Agent `update`
-again after locking the Namespace. Namespace IAM writes take the same lock.
-If a binding withdrawal commits first and the caller has no other applicable
-`update` grant, the Agent save returns `403` and leaves the draft unchanged.
+`packages/occ/src/index.ts:OpenClawController.updateAgent` and
+`packages/occ/src/index.ts:OpenClawController.updateConfiguration` recheck exact
+resource `update` after locking the Namespace. Namespace IAM writes take the
+same lock. If a binding withdrawal commits first and the caller has no other
+applicable grant, the save returns `403` before changing the draft, deleting
+generated credential bindings, or appending a success audit.
 
 ### 5. Platform state commits policy and audit together
 
@@ -246,6 +248,9 @@ owns the supported lifetime and revocation limits.
   grant removal, retention while predecessor retirement waits, and preservation
   of an administrator binding. Compute and Secret
   delivery use test Drivers; this is not live model or Kubernetes proof.
+  The withdrawal race queues a real IAM deletion ahead of a Configuration PATCH
+  and checks `403`, unchanged Configuration and credential bindings, and no new
+  success audit. An administrator can still perform the same cleanup afterward.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.mjs`
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
@@ -276,6 +281,7 @@ owns the supported lifetime and revocation limits.
 
 ## Changelog
 
+- 2026-11-04 18:31: Recheck Configuration update authority under the Namespace lock before generated-grant cleanup. (authoring-run/5e22c930-9153-4b59-9935-f003db1bb2e6 - 775613fb00824bcadcac8781368cf03831bb9bbf)
 - 2026-11-04 17:36: Share generated credential-grant retention and cleanup across draft mutations and worker completion; accompanying local changes. (authoring-run/c8796acb-decf-43ea-bd64-ec100c7c2069 - e109c87191cf950096002751af2a7a2bef4d7f38)
 - 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
