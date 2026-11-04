@@ -1,12 +1,89 @@
+import type { PluginFieldsOptions } from "/console/agents/plugin-fields.mjs";
 import { scenarios } from "./scenarios.mjs";
 import { installFixture } from "./fixtures.mjs";
 
+interface StoryAction {
+  text?: string | undefined;
+  selector?: string | undefined;
+  click?: string | boolean | undefined;
+  focus?: boolean | undefined;
+  value?: string | undefined;
+  matches?: string | undefined;
+  key?: string | undefined;
+}
+
+interface FrameScenarioBase {
+  name: string;
+  buildRevision?: string | undefined;
+  path?: string | undefined;
+  clipboard?: string | undefined;
+  actions?: readonly StoryAction[] | undefined;
+  scrollToTabs?: boolean | undefined;
+}
+
+type FrameScenario = FrameScenarioBase &
+  (
+    | { component?: undefined }
+    | {
+        component: "plugins";
+        pluginSelections?: string | undefined;
+        pluginCatalog?: PluginFieldsOptions["catalog"];
+        pluginCapabilities?: PluginFieldsOptions["capabilities"];
+        disabled?: boolean | undefined;
+      }
+  );
+
+type RequestEvidence = { method: string; path: string };
+
+interface FrameEvidence {
+  id: string;
+  requests: RequestEvidence[];
+  directoryResponses: {
+    kind: "users" | "channels";
+    query: string;
+    cursor: string | null;
+    ids: string[] | null;
+  }[];
+  unhandled: RequestEvidence[];
+  ready: boolean;
+  error: string | null;
+}
+
+function actionTarget({ text, selector, click }: StoryAction) {
+  if (text) {
+    return Array.from(document.querySelectorAll("body *")).find(
+      (item) => item.childElementCount === 0 && item.textContent?.includes(text),
+    );
+  }
+  if (selector) {
+    return document.querySelector(selector);
+  }
+  return Array.from(document.querySelectorAll("button")).find(
+    (item) => item.textContent?.trim() === click,
+  );
+}
+
+function hasValue(
+  node: Element,
+): node is HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement {
+  return (
+    node instanceof HTMLInputElement ||
+    node instanceof HTMLSelectElement ||
+    node instanceof HTMLTextAreaElement
+  );
+}
+
+function isDisabled(node: Element) {
+  return "disabled" in node && Boolean(node.disabled);
+}
+
+const catalog: Readonly<Record<string, FrameScenario>> = scenarios;
 const id = new URL(location.href).searchParams.get("story");
-const scenario = scenarios[id];
-if (!scenario) {
+const scenario = id !== null && Object.hasOwn(catalog, id) ? catalog[id] : undefined;
+if (id === null || scenario === undefined) {
   throw new Error(`Unknown console story: ${id}`);
 }
-const evidence = {
+const evidence: FrameEvidence = {
   id,
   requests: [],
   directoryResponses: [],
@@ -14,7 +91,7 @@ const evidence = {
   ready: false,
   error: null,
 };
-window.__consoleStory = evidence;
+Object.assign(window, { __consoleStory: evidence });
 installFixture(scenario, evidence);
 // Simulated build metadata; deployed images bake this meta tag into their HTML.
 const buildRevision = document.createElement("meta");
@@ -49,7 +126,11 @@ if (scenario.component === "plugins") {
   const panel = document.createElement("section");
   panel.className = "agent-card agent-form";
   panel.append(fields.section);
-  document.querySelector("#app").replaceChildren(panel);
+  const root = document.querySelector("#app");
+  if (!root) {
+    throw new Error("Story preview requires an #app element");
+  }
+  root.replaceChildren(panel);
   fields.setDisabled(scenario.disabled ?? false);
 } else {
   await import("/console/console.mjs");
@@ -59,48 +140,48 @@ if (scenario.component === "plugins") {
 try {
   for (const action of scenario.actions ?? []) {
     const deadline = Date.now() + 10000;
-    let node;
+    let node: Element | null | undefined;
     while (Date.now() < deadline) {
-      if (action.text) {
-        node = [...document.querySelectorAll("body *")].find(
-          (item) => item.childElementCount === 0 && item.textContent.includes(action.text),
-        );
-      } else if (action.selector) {
-        node = document.querySelector(action.selector);
-      } else {
-        node = [...document.querySelectorAll("button")].find(
-          (item) => item.textContent.trim() === action.click,
-        );
-      }
+      node = actionTarget(action);
       if (
         node &&
-        !node.disabled &&
+        !isDisabled(node) &&
         !node.closest("[hidden]") &&
-        (action.matches === undefined || node.value === action.matches)
+        (action.matches === undefined || ("value" in node && node.value === action.matches))
       ) {
         break;
       }
       node = undefined;
       await new Promise((resolve) => setTimeout(resolve, 30));
     }
-    if (!node || node.disabled || node.closest("[hidden]")) {
+    if (!node || isDisabled(node) || node.closest("[hidden]")) {
       throw new Error(`Story action unavailable: ${JSON.stringify(action)}`);
     }
     if (action.focus) {
+      if (!(node instanceof HTMLElement || node instanceof SVGElement)) {
+        throw new Error(`Story action cannot focus its target: ${JSON.stringify(action)}`);
+      }
       node.focus();
     }
     if (action.click) {
+      if (!(node instanceof HTMLElement)) {
+        throw new Error(`Story action cannot click its target: ${JSON.stringify(action)}`);
+      }
       node.click();
     }
     if (action.value !== undefined) {
+      if (!hasValue(node)) {
+        throw new Error(`Story action target has no editable value: ${JSON.stringify(action)}`);
+      }
       if (node.getAttribute("role") === "combobox" && !node.closest(".slack-directory-field")) {
         node.focus();
         node.value = action.value === "__openclaw_create_secret__" ? "" : action.value;
         node.dispatchEvent(new Event("input", { bubbles: true }));
-        let option;
+        let option: Element | undefined;
         while (Date.now() < deadline) {
-          const menu = document.getElementById(node.getAttribute("aria-controls"));
-          option = [...(menu?.querySelectorAll('[role="option"]') ?? [])].find((item) =>
+          const controls = node.getAttribute("aria-controls");
+          const menu = controls === null ? null : document.getElementById(controls);
+          option = Array.from(menu?.querySelectorAll('[role="option"]') ?? []).find((item) =>
             action.value === "__openclaw_create_secret__"
               ? item.classList.contains("secret-typeahead-create")
               : !item.classList.contains("secret-typeahead-create"),
@@ -110,7 +191,7 @@ try {
           }
           await new Promise((resolve) => setTimeout(resolve, 30));
         }
-        if (!option) {
+        if (!(option instanceof HTMLElement)) {
           throw new Error(`Story Secret option unavailable: ${JSON.stringify(action)}`);
         }
         option.click();
@@ -119,11 +200,11 @@ try {
       if (node instanceof HTMLSelectElement) {
         while (
           Date.now() < deadline &&
-          ![...node.options].some((option) => option.value === action.value)
+          !Array.from(node.options).some((option) => option.value === action.value)
         ) {
           await new Promise((resolve) => setTimeout(resolve, 30));
         }
-        if (![...node.options].some((option) => option.value === action.value)) {
+        if (!Array.from(node.options).some((option) => option.value === action.value)) {
           throw new Error(`Story select option unavailable: ${JSON.stringify(action)}`);
         }
       }
@@ -143,10 +224,11 @@ try {
   }
   evidence.ready = true;
 } catch (error) {
-  evidence.error = error.message;
+  const message = error instanceof Error ? error.message : String(error);
+  evidence.error = message;
   const notice = document.createElement("p");
   notice.setAttribute("role", "alert");
-  notice.textContent = `Story setup failed: ${error.message}`;
+  notice.textContent = `Story setup failed: ${message}`;
   document.body.prepend(notice);
   throw error;
 }

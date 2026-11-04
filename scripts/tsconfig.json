@@ -12,7 +12,11 @@
     "erasableSyntaxOnly": true,
     "tsBuildInfoFile": "../.build/scripts/tsconfig.tsbuildinfo",
     "paths": {
-      "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"]
+      "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"],
+      "/console/agents/plugin-fields.mjs": [
+        "../apps/controller/src/console/agents/plugin-fields.mts"
+      ],
+      "/console/console.mjs": ["../apps/controller/src/console/console.mts"]
     }
   },
   "include": [
