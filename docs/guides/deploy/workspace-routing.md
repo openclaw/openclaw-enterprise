@@ -44,9 +44,11 @@ See [routing ownership, credentials and TLS](../../reference/gateway-routing.md)
 Provide Kubernetes enforcing NetworkPolicies,
 [Envoy Gateway](https://gateway.envoyproxy.io/docs/tasks/quickstart/) (tested v1.6.7),
 Gateway API and Envoy Gateway CRDs, [cert-manager](https://cert-manager.io/docs/installation/)
-and its CRDs, and an Envoy GatewayClass. Before installing OCE, confirm the CRDs
+and its CRDs, and an Envoy GatewayClass. Before installing, confirm the CRDs
 are Established, both controllers are ready, and the GatewayClass is Accepted.
-Operate these controllers separately. The chart defaults create
+Operate them separately. On OpenShift, see
+[this procedure](kubernetes.md#install-envoy-gateway-on-openshift).
+Chart defaults create
 a namespaced SelfSigned Issuer, root CA Certificate, CA Issuer, shared Gateway,
 ClusterIP EnvoyProxy and API-key SecurityPolicy; cert-manager generates certificates.
 There is no public listener. Chart operators need infrastructure permissions;
