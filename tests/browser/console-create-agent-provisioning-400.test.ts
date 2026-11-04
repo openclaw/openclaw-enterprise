@@ -65,9 +65,8 @@ import {
   nativeSandboxDriver,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
-  routeProvisioningJob,
-  provisioningJob,
 } from "./console-agents-test-support.mjs";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
@@ -2457,7 +2456,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     job("running", handedOff),
     failed(handedOff),
   ];
-  const served = await routeProvisioningJob(page, work, reads);
+  const served = await routeProvisioningJob(page, fixture, work, reads);
   // The first deployment read names the quota; every later one is denied.
   let deploymentReads = 0;
   await page.route(
