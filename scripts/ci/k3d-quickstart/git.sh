@@ -84,7 +84,13 @@ guide_step 'verify_push()'
 git_audit "$write_revision" > "$RUN_DIR/git-write-uses.json"
 jq -e 'any(.uses[]; .operation=="receive-pack")' "$RUN_DIR/git-write-uses.json" >/dev/null
 tree=$(gh api "repos/$repo/git/commits/$base_sha" --jq .tree.sha)
+retired_probe() {
+  kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
+    node --input-type=module -e "$(cat "$dir/git-retired.mjs")" "$1" "$namespace" "$agent" "$write_revision"
+}
+retired_probe capture </dev/null > "$RUN_DIR/git-write-use-input.json"
 stop_and_retire "$write_revision"
+retired_probe denied < "$RUN_DIR/git-write-use-input.json" > "$RUN_DIR/git-retired-denial.json"
 touch "$RUN_DIR/git-write-retired"
 select_registry "$READ_REGISTRY" read
 rm -f -- "$RUN_DIR/requested-revision"
@@ -181,6 +187,6 @@ push_run=$(run_id "$RUN_DIR/first-result")
 read_run=$(run_id "$RUN_DIR/git-read-result")
 jq -n --arg agent "$agent" --arg w "$write_revision" --arg r "$read_revision" --arg repo "$repo" \
   --arg b "$branch" --arg c "$first_sha" --arg p "$base_sha" --arg t "$tree" \
-  --arg pushRun "$push_run" --arg readRun "$read_run" --argjson recovery "$read_recovery" \
-  '{agentId:$agent,writeRevision:$w,readRevision:$r,repository:$repo,branch:$b,commit:$c,parent:$p,tree:$t,pushRun:$pushRun,readRun:$readRun,pushAuthorized:true,writeRetired:true,readVerified:true} + (if $recovery==null then {} else {readRecovery:$recovery} end)' \
+  --slurpfile denial "$RUN_DIR/git-retired-denial.json" --arg pushRun "$push_run" --arg readRun "$read_run" --argjson recovery "$read_recovery" \
+  '{agentId:$agent,writeRevision:$w,readRevision:$r,repository:$repo,branch:$b,commit:$c,parent:$p,tree:$t,pushRun:$pushRun,readRun:$readRun,pushAuthorized:true,retiredDenial:$denial[0],writeRetired:true,readVerified:true} + (if $recovery==null then {} else {readRecovery:$recovery} end)' \
   > "$RUN_DIR/git-receipt.json"
