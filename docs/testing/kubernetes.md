@@ -81,7 +81,8 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
 ```
 
 No database or model credential is required. The suite checks rendered chart and
-quickstart NetworkPolicies with reachable allowed/denied controls. It does not prove
+quickstart NetworkPolicies against live listeners. It checks that deleting one tenant’s supervisor
+grant preserves the others and that removing namespace ownership closes tenant management access. It does not prove
 controller startup, database authentication, provider behavior, or a production Helm
 installation. Other releases remain outside the selectors.
 

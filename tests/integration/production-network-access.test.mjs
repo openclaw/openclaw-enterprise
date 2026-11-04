@@ -136,6 +136,25 @@ test(
           deny: ["management"],
           controlSource: "management",
         });
+
+        // Withdrawing one supervisor policy must preserve both the other tenant and
+        // the independent per-Agent gateway grant.
+        await access.withdrawSupervisorGrant(1);
+        await access.verify({
+          source: "supervisor1",
+          deny: ["management"],
+          controlSource: "management",
+        });
+        for (const source of ["supervisor0", "gateway1"]) {
+          await access.verify({ source, ...ports });
+        }
+
+        // A namespace that loses its tenant label must lose access even while its
+        // named policies and Pods still exist and source egress still permits 8080.
+        await access.removeTenantOwnership(0);
+        for (const source of ["supervisor0", "gateway0"]) {
+          await access.verify({ source, deny: ["management"], controlSource: "management" });
+        }
       },
     );
   },

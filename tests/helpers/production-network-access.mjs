@@ -414,6 +414,24 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       );
       await apply(JSON.parse(stdout).items);
     },
+    async withdrawSupervisorGrant(index) {
+      const tenant = managementTenants[index];
+      await kubectl(
+        "delete",
+        "networkpolicy",
+        "-n",
+        "oce-system",
+        "oce-management-from-supervisors-" + kubernetesHash(tenant.id),
+      );
+    },
+    async removeTenantOwnership(index) {
+      await kubectl(
+        "label",
+        "namespace",
+        managementTenants[index].namespace,
+        "openclaw.dev/namespace-",
+      );
+    },
     async installPublicReaderRevisions() {
       const address = "10.43.0.19";
       const peer = { namespace: destinations, podLabels: { app: "public-reader" }, address };
