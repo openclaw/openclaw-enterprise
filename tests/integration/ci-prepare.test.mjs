@@ -13,7 +13,7 @@ import { describe, test } from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
 import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
-import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
+import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
@@ -48,6 +48,59 @@ async function writeState(path, state) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   await chmod(path, 0o600);
 }
+
+test("focused first-Agent preparation leaves installation to Local Setup and refuses another file", async (t) => {
+  const root = await fixture(t);
+  const saved = {
+    CODEX_ACCESS_TOKEN: process.env.CODEX_ACCESS_TOKEN,
+    OCC_HELM_BIN: process.env.OCC_HELM_BIN,
+    OCC_TEST_OPENAI_MODEL: process.env.OCC_TEST_OPENAI_MODEL,
+  };
+  // Fail before side effects if generic stack preparation is accidentally restored.
+  process.env.OCC_HELM_BIN = join(root, "unavailable-helm");
+  process.env.CODEX_ACCESS_TOKEN = "synthetic-model-credential";
+  process.env.OCC_TEST_OPENAI_MODEL = "synthetic-model";
+  t.after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+  for (const file of [
+    "tests/integration/local-first-agent-openshell-real.test.mjs",
+    "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+  ]) {
+    const statePath = join(root, `${file.split("/").at(-1)}.json`);
+    const lane = await prepareLane({ lane: "openshell", statePath, file });
+    const prepared = await prepareFile({ lane: "openshell", statePath, file });
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    assert.deepEqual(state.resources, []);
+    assert.equal(prepared.env.OCC_TEST_DATABASE_URL, undefined);
+    assert.equal(prepared.env.OCC_TEST_KUBERNETES_CONTEXT, undefined);
+    assert.equal(prepared.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL, "1");
+    await assert.rejects(
+      prepareFile({
+        lane: "openshell",
+        statePath,
+        file: "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      }),
+      /Selected file must match/,
+    );
+    await prepared.cleanup();
+    await lane.cleanup();
+  }
+  await assert.rejects(
+    prepareLane({
+      lane: "openshell",
+      statePath: join(root, "invalid.json"),
+      file: "tests/integration/not-a-lane-file.test.ts",
+    }),
+    /Selected file must belong/,
+  );
+});
 
 // A ready Compose PostgreSQL server, owned by its own preparation prefix, published on port
 // (a fake server's, when the case runs SQL).

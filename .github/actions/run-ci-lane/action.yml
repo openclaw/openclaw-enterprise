@@ -223,7 +223,13 @@ runs:
         OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
-      run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
+        CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
+      run: |
+        selection=()
+        if [[ -n "$CI_SELECTED_TEST_FILE" ]]; then
+          selection=(--selected-file "$CI_SELECTED_TEST_FILE")
+        fi
+        node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV" "${selection[@]}"
     - name: Record skipped Logging Collector image preparation
       if: always() && inputs.lane == 'logging-collector' && steps.prepare-lane.outcome == 'skipped'
       continue-on-error: true
