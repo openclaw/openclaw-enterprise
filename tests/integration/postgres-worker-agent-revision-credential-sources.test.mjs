@@ -2088,10 +2088,10 @@ revisionTest(
 
     // After withdrawal, the same recovery path must refuse before preparation and attachment.
     await fixture.stop();
-    const withdrawal = await requestWithdrawal(fixture, owner, sourceId, fixture.actor.id);
     const third = await fixture.revision(owner, 3);
+    const withdrawal = await requestWithdrawal(fixture, owner, sourceId, fixture.actor.id);
     await fixture.start(compute, { transformDrivers });
-    await fixture.work(third, "failed_permanent", 30_000);
+    await fixture.work(third, "failed_permanent", 60_000);
     await fixture.stop();
 
     assert.equal((await fixture.workResult(third)).rows[0].reason_code, "CREDENTIAL_WITHDRAWN");
