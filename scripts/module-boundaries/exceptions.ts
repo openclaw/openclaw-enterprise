@@ -128,11 +128,13 @@ function copyBaseline(value: Baseline): CopiedDiagnostic {
   return copyDiagnostic(value);
 }
 function compare(a: Diagnostic, b: Diagnostic): number {
-  if (a.from === undefined) {
+  const from = a.from;
+  if (from === undefined) {
     throw new TypeError("Cannot read properties of undefined (reading 'localeCompare')");
   }
+  const right = b.from;
   return (
-    a.from.localeCompare(b.from ?? "undefined") ||
+    from.localeCompare(right === undefined ? "undefined" : right) ||
     a.line - b.line ||
     a.rule.localeCompare(b.rule) ||
     diagnosticIdentity(a).localeCompare(diagnosticIdentity(b))

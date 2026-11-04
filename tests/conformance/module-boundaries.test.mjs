@@ -257,6 +257,45 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.equal(reads, 1);
     assert.equal(copied.violations[0].message, 1);
   });
+  test("sorts exception diagnostics without rereading an accessor", () => {
+    for (const changing of [false, true]) {
+      let reads = 0;
+      const row = {
+        rule: "r",
+        line: 1,
+        get from() {
+          reads++;
+          return changing && reads === 3 ? undefined : "b";
+        },
+      };
+      const report = applyExceptions([{ rule: "r", line: 1, from: "a" }, row], {
+        version: 1,
+        exceptions: [],
+      });
+      assert.equal(reads, 3);
+      assert.equal(report.violations[1].from, changing ? undefined : "b");
+    }
+    const rows = [
+      { rule: "r", line: 1, from: null },
+      { rule: "r", line: 1, from: "n" },
+    ];
+    assert.deepEqual(
+      applyExceptions(rows, { version: 1, exceptions: [] }).violations.map((item) => item.from),
+      ["n", null],
+    );
+  });
+  test("CLI usage names the TypeScript entrypoint", async () => {
+    let stdout = "";
+    let stderr = "";
+    const streams = {
+      stdout: { write: (text) => (stdout += text) },
+      stderr: { write: (text) => (stderr += text) },
+    };
+    assert.equal(await runModuleBoundaryCli(["--help"], streams), 0);
+    assert.match(stdout, /scripts\/verify-module-boundaries\.ts/);
+    assert.equal(await runModuleBoundaryCli([], streams), 2);
+    assert.match(stderr, /scripts\/verify-module-boundaries\.ts/);
+  });
   test("keeps native package error diagnostics independent of the workspace path", async (t) => {
     const { root, write, cli: verify, link } = await workspace(t);
     await link();

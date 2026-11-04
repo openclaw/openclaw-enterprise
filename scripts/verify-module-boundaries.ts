@@ -77,7 +77,7 @@ export async function verifyModuleBoundaries({
 }
 
 const usage =
-  "Usage: node scripts/verify-module-boundaries.mjs --policy file [--root directory] [--exceptions file] [--json]";
+  "Usage: node scripts/verify-module-boundaries.ts --policy file [--root directory] [--exceptions file] [--json]";
 type Writer = { write(text: string): unknown };
 async function main(args: readonly string[], stdout: Writer, stderr: Writer) {
   const options: { root?: string; policy?: string; exceptions?: string; json?: boolean } = {};
