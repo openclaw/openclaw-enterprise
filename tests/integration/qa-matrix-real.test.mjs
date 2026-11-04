@@ -144,6 +144,15 @@ test(
                     };
                     await f.saveInstallation(f.configuration);
                   }
+                  if (selectedCell.scenarios.includes("custom-responses")) {
+                    // Dedicated Codex routes through the Installation model provider, so the
+                    // custom destination must be the Installation destination for admission.
+                    f.configuration.drivers.compute.configuration.runtime.modelProvider = {
+                      protocol: "openai-responses",
+                      baseUrl: process.env.OCC_TEST_QA_RESPONSES_BASE_URL,
+                    };
+                    await f.saveInstallation(f.configuration);
+                  }
                   return true;
                 });
                 async function runScenario(parent, name, work) {

@@ -6245,6 +6245,16 @@ export class OpenClawController {
     if (!secret) {
       throw new ScopeViolationError("Prepared credential issuer material is unavailable.");
     }
+    // A prepared source signs a token for the issuer origin. Metadata on the issuer Secret must
+    // cover that origin, or enrollment would send derived material to another destination.
+    if (
+      secret.authorizedEndpoint !== undefined &&
+      new URL(secret.authorizedEndpoint).origin !== origin
+    ) {
+      throw new SecretBindingValidationError(
+        "The prepared issuer Secret does not authorize this issuer origin. Supply an origin-specific key.",
+      );
+    }
     await control.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
     return {
       source: immutableCopy({
