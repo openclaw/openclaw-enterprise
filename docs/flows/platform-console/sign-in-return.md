@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-10-26
-last_updated_session: fix-2643
+updated: 2026-11-04
+last_updated_session: authoring-run/e5be3034-9c43-4cba-9ba7-e7e2f487f042
 ---
 
 # Console sign-in and destination recovery
@@ -14,8 +14,8 @@ only after session admission and ends at ordinary Agent detail.
 
 ## Entry Points
 
-- `apps/controller/src/console/console.mjs:loadPage` checks the browser session.
-- `apps/controller/src/console/console.mjs:showLogin` offers available sign-in methods.
+- `apps/controller/src/console/console.mts:loadPage` checks the browser session.
+- `apps/controller/src/console/console.mts:showLogin` offers available sign-in methods.
 - `apps/controller/src/console/navigation.mts:createNavigation` validates page intents.
 
 ## Flow
@@ -23,28 +23,35 @@ only after session admission and ends at ordinary Agent detail.
 ```mermaid
 graph TD
   A["Open console route or recovery link"] --> B["Check session"]
-  B -->|missing| C["Sign in"]
-  C --> D["Confirm session"]
-  B -->|present| D
-  D -->|page intent| E["Open console page"]
+  B -->|Null result| C["Sign in"]
+  C --> B
+  B -->|Malformed reply| R["Show Session unavailable"]
+  R -->|Retry| B
+  B -->|Valid account and binding| D["Confirm session"]
+  D -->|page intent| E["Authorize page reads"]
   D -->|Agent key| F["Resolve authorized Agent"]
   F -->|allowed| E
-  F -->|unavailable| G["Open Agents"]
-  E --> H["Authorize page reads"]
+  F -->|unavailable| G["Select Agents"]
+  G --> E
+  E --> H["Render allowed page"]
 ```
 
 ## Execution Trace
 
 ### 1. Discover sign-in and bind the session
 
-`apps/controller/src/console/console.mjs:showLogin`, `loadPage`
+`apps/controller/src/console/console.mts:loadPage`, `readSession`, `showLogin`
 
 On a cold visit, the shell's static “Loading OpenClaw Enterprise…” status paints
 before any script runs; CSS shows it only after 400 ms, so a fast load never
 flashes it. `loadPage` takes that status over in place while checking the session
 and announces “Checking session…” only if still pending after 400 ms.
-The result can render immediately: sign-in for a missing session, the console
-for a confirmed session, or a retry if the check failed.
+
+`readSession` reads `GET /api/auth/session`. Of successful replies, only
+`null` confirms that the browser is signed out. A non-null reply must include
+`authenticated: true`, a nonblank `sessionKey`, and nonblank account ID, email,
+and name. If the reply is malformed, the console shows **Session unavailable**
+and withholds private content and reads. **Retry** repeats the session check.
 
 `showLogin` reads `GET /api/auth/providers`; true `github`/`google` flags add their **Continue
 with** buttons, and discovery failure keeps password login. A true `oidc` flag adds a button
@@ -73,7 +80,7 @@ tab `sessionStorage` with the one-use attempt ID and a ten-minute limit. The
 console consumes it only after confirming that attempt and its session, and
 clears it on failure or logout. `showExpiredLogin` captures the validated current
 route before clearing private state on an API `401` or foreground session
-recheck. A missing session in `loadPage` also retains the requested route,
+recheck. A null session result in `loadPage` also retains the requested route,
 including after a failed check. It says the session expired only when this tab
 had one: a mark in tab `sessionStorage`, set when a session resolves and cleared
 by logout, tells a reload after expiry from a first visit. Sign-in reauthorizes
@@ -102,9 +109,11 @@ CLI requests remain supported. The browser stores no credentials.
 
 ### 2. Authorize the destination
 
-`apps/controller/src/console/console.mjs:loadPage` checks the session and loads
-readable Namespaces before rendering the requested page. The Agent and Namespace
-reads use their usual authorization; an inaccessible resource remains unavailable.
+`apps/controller/src/console/console.mts:loadPage` confirms the account and
+session binding before loading readable Namespaces or opening the requested
+page. Agent and Namespace reads then follow their usual authorization rules.
+An inaccessible resource remains unavailable. A foreground recheck of an open
+Agent also confirms the session before refreshing private reads.
 When the Namespace read fails after the session resolved, the page offers **Sign
 out** beside **Retry**, so an account refused with `403` is not stranded.
 A session or Namespace read that does not reach the API (the browser is offline,
@@ -120,6 +129,11 @@ against controller sessions and resource reads. Their external provider exchange
 and recovery endpoint are modeled; they do not establish a deployed OAuth or
 native-gateway integration.
 
+The registered case “a session reply missing its binding blocks private reads
+until Retry” in `tests/browser/console-refocus-focus.test.ts` checks that a
+successful reply without a binding hides private content and sends no private
+reads. After **Retry**, Namespace and Agent reads carry the confirmed binding.
+
 ## Related docs
 
 - [Parent console flow](../platform-console.md)
@@ -130,6 +144,8 @@ native-gateway integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 12:29: Document recovery from a malformed Console session reply. (authoring-run/e5be3034-9c43-4cba-9ba7-e7e2f487f042 - 9f1dcbeb2361006e7bea52d0cee595d9616ed16a)
 
 - 2026-10-26 18:00: A Secrets page link's Secret ID survives sign-in. (2645)
 
