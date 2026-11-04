@@ -4,6 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
@@ -127,6 +128,20 @@
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    {
+      "path": "tests/integration/staging-upgrade-return.test.ts",
+      "expectedTests": [
+        "return rehearsal rejects different manifest references that contain the same controller",
+        "return rehearsal refuses image selection in the credentialed TUI lane",
+        "return readback rejects a stale restore and a recreated Agent with the same name",
+        "return readback requires both serving Pods to use the restored database",
+        "release checkout admission rejects hidden edits and ignored execution inputs before Docker",
+        "rehearsal TLS requests reject malformed and interrupted responses without exposing bytes",
+        "timed-out fixture commands reject success and terminate their subprocesses without exposing output",
+        "interrupted rehearsal runners stop concurrent command groups before exiting",
+        "interrupted commands close local pipes without killing a separate-session holder"
+      ]
+    },
     {
       "path": "tests/integration/controlled-tls-origin.test.ts"
     },
