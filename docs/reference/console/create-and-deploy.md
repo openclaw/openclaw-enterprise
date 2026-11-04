@@ -177,12 +177,12 @@ If the Console cannot confirm a ChatGPT OAuth sign-in started, it blocks another
 start in that form. Without the session reference it cannot poll or cancel the
 attempt. Follow [interrupted sign-in recovery](../../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
-After a lost admission response, **Retry provisioning request** resubmits the same
-request ID and saved Secret references. Retry acknowledged jobs through their URL;
-if refused after an unknown outcome, **Create Agent** resends
-the same request. If the result changes or omits a previously observed first deployment
-version, the Console keeps the outcome unknown and offers Retry. A refused retry of a failed job shows the API's reason when it names
-one, such as a deleted Secret; **Create Agent** then submits a new request. Saved
+**Retry provisioning request** targets the accepted job, or resends the same
+request ID and Secret references if admission was unconfirmed. An invalid Agent
+or version ID, or a changed or missing known version, leaves **Outcome unknown**
+without a recovery link. If retry is refused during recovery, **Create Agent**
+resends the original request. A refused retry of a confirmed failure names the
+reason when available; **Create Agent** then starts a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
 **Check credential registration** recovers an uncertain source. If absent,
@@ -190,9 +190,11 @@ existing Namespace Secrets before starting again.
 `registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
 registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-A failed or stopped first deployment keeps the Agent and its name. Follow the failed
-version's recovery guidance. After a Stop, including a Stop before deployment
-(`PROVISIONING_CANCELLED`), open the Agent and deploy when ready.
+If the first deployment fails with valid Agent and version IDs, follow the linked
+version's recovery guidance even without an error message. A stopped or superseded
+deployment follows the separate guidance above.
+After a Stop, including `PROVISIONING_CANCELLED` before deployment, open the
+Agent and deploy when ready.
 
 If Agent creation is rejected after Configuration saves, correct the ordinary
 zero-binding Agent's editable fields and retry. The retry reuses Configuration
