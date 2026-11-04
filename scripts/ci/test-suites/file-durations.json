@@ -16,7 +16,7 @@
     "tests/browser/console-agent-repositories.test.ts": 22800,
     "tests/browser/console-agent-save-refusals.test.ts": 27300,
     "tests/browser/console-agent-saves.test.ts": 54400,
-    "tests/browser/console-agent-state.test.mjs": 68300,
+    "tests/browser/console-agent-state.test.ts": 68300,
     "tests/browser/console-agents-2.test.ts": 44000,
     "tests/browser/console-agents-list-return.test.mjs": 29700,
     "tests/browser/console-agents.test.ts": 53800,

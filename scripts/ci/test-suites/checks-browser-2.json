@@ -14,7 +14,7 @@
     "tests/browser/console-form-fields.test.ts",
     "tests/browser/console-form-fields-2.test.ts",
     "tests/browser/console-agents-2.test.ts",
-    "tests/browser/console-agent-state.test.mjs",
+    "tests/browser/console-agent-state.test.ts",
     "tests/browser/console-agent-saves.test.ts",
     "tests/browser/console-runtime-credentials.test.ts",
     "tests/browser/console-codex-oauth.test.ts",
@@ -57,7 +57,7 @@
       "path": "tests/browser/console-policy-denials.test.ts"
     },
     {
-      "path": "tests/browser/console-agent-state.test.mjs"
+      "path": "tests/browser/console-agent-state.test.ts"
     },
     {
       "path": "tests/browser/console-agent-presets.test.ts"
