@@ -3,9 +3,31 @@ import { createRequire, isBuiltin } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript-compiler-api";
-import { selectPackageExport } from "./package-exports.mjs";
+import { selectPackageExport } from "./package-exports.ts";
 import { slash } from "./source-path.ts";
-import { sourceExtension } from "./workspace.mjs";
+import { sourceExtension } from "./workspace.ts";
+import type { SourceReference } from "./source-imports.ts";
+
+type Snapshot = Awaited<ReturnType<typeof import("./workspace.ts").readWorkspace>>;
+type Mode = "import" | "require";
+type Targets = { to?: string; runtimeTarget?: string | null; typeTarget?: string | null };
+export type Resolution = Readonly<
+  { reference: SourceReference; to: string; named: boolean } & (
+    | { status: "local"; runtimeTarget: string | null; typeTarget: string | null }
+    | { status: "external"; reason?: string }
+    | {
+        status: "unresolved";
+        code: string;
+        reason: string;
+        runtimeTarget?: string | null;
+        typeTarget?: string | null;
+      }
+  )
+>;
+
+function errorField(error: unknown, field: string): unknown {
+  return error == null ? undefined : Reflect.get(Object(error), field);
+}
 
 const declaration = /\.d\.[cm]?ts$/;
 const emittedExtension = /\.[cm]?js$/;
@@ -13,17 +35,21 @@ const emittedExtension = /\.[cm]?js$/;
 // Node selects the nearest package scope for self references before looking in
 // node_modules. Check that the package visible to the importer is the one the
 // policy registered; an absent installation still permits source-only scans.
-function visiblePackage(anchor, name, mode) {
+function visiblePackage(anchor: string, name: string, mode: Mode) {
   let directory = anchor.endsWith("/") ? resolve(anchor) : dirname(anchor);
   for (;;) {
     try {
-      const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
-      if (manifest.name === name && manifest.exports != null) {
+      const manifest: unknown = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+      if (manifest === null) {
+        throw new TypeError("Cannot read properties of null (reading 'name')");
+      }
+      const manifestName: unknown = Reflect.get(Object(manifest), "name");
+      if (manifestName === name && errorField(manifest, "exports") != null) {
         return realpathSync(directory);
       }
       break;
     } catch (error) {
-      if (!["ENOENT", "ENOTDIR"].includes(error.code)) {
+      if (errorField(error, "code") !== "ENOENT" && errorField(error, "code") !== "ENOTDIR") {
         throw error;
       }
     }
@@ -64,7 +90,11 @@ function visiblePackage(anchor, name, mode) {
 }
 
 /** Resolve graph references without importing or executing application modules. */
-export function resolveImports(snapshot, references, policy = {}) {
+export function resolveImports(
+  snapshot: Snapshot,
+  references: readonly SourceReference[],
+  policy: { workspaceNamespaces?: readonly string[] } = {},
+): readonly Resolution[] {
   const { root, packages } = snapshot;
   const files = new Map(snapshot.files.map((file) => [resolve(file.absolutePath), file]));
   const manifests = new Map(
@@ -72,9 +102,9 @@ export function resolveImports(snapshot, references, policy = {}) {
   );
   const host = {
     ...ts.sys,
-    fileExists: (path) =>
+    fileExists: (path: string) =>
       files.has(resolve(path)) || manifests.has(resolve(path)) || ts.sys.fileExists(path),
-    readFile: (path) =>
+    readFile: (path: string) =>
       files.get(resolve(path))?.text ?? manifests.get(resolve(path)) ?? ts.sys.readFile(path),
   };
   const options = {
@@ -83,13 +113,13 @@ export function resolveImports(snapshot, references, policy = {}) {
     allowJs: true,
     resolveJsonModule: true,
   };
-  function compilerTarget(specifier, anchor, mode, runtime = false) {
+  function compilerTarget(specifier: string, anchor: string, mode: Mode, runtime = false) {
     // The public compiler API owns extension substitution. Hide declarations only
     // for the runtime-source lookup so a declaration cannot impersonate code.
     const resolutionHost = runtime
       ? {
           ...host,
-          fileExists: (path) => !declaration.test(path) && host.fileExists(path),
+          fileExists: (path: string) => !declaration.test(path) && host.fileExists(path),
         }
       : host;
     return ts.resolveModuleName(
@@ -102,14 +132,14 @@ export function resolveImports(snapshot, references, policy = {}) {
       mode === "require" ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext,
     ).resolvedModule?.resolvedFileName;
   }
-  const graphPath = (path) => {
+  const graphPath = (path: string | undefined) => {
     if (!path) {
       return null;
     }
     try {
       return files.get(realpathSync(path))?.path ?? null;
     } catch (error) {
-      if (!["ENOENT", "ENOTDIR"].includes(error.code)) {
+      if (errorField(error, "code") !== "ENOENT" && errorField(error, "code") !== "ENOTDIR") {
         throw error;
       }
       return null;
@@ -118,10 +148,22 @@ export function resolveImports(snapshot, references, policy = {}) {
   return Object.freeze(
     references.map((reference) => {
       let named = false;
-      const result = (status, extra = {}) =>
-        Object.freeze({ reference, status, to: "", named, ...extra });
-      const unresolved = (code, reason, extra = {}) =>
-        result("unresolved", { code, reason, ...extra });
+      const external = (reason?: string): Resolution =>
+        Object.freeze({
+          reference,
+          status: "external",
+          to: "",
+          named,
+          ...(reason === undefined ? {} : { reason }),
+        });
+      const local = (
+        to: string,
+        runtimeTarget: string | null,
+        typeTarget: string | null,
+      ): Resolution =>
+        Object.freeze({ reference, status: "local", to, named, runtimeTarget, typeTarget });
+      const unresolved = (code: string, reason: string, extra: Targets = {}): Resolution =>
+        Object.freeze({ reference, status: "unresolved", to: "", named, code, reason, ...extra });
       if (reference.value?.status !== "known" || typeof reference.value.value !== "string") {
         return unresolved(
           "unresolved-dynamic-import",
@@ -132,7 +174,7 @@ export function resolveImports(snapshot, references, policy = {}) {
       // Node built-ins win over same-named packages for both loader modes.
       // Keep the reference external so caller specifier rules still apply.
       if (isBuiltin(specifier)) {
-        return result("external");
+        return external();
       }
       const mode = reference.mode ?? (reference.kind === "require" ? "require" : "import");
       const importer = resolve(root, reference.from);
@@ -152,9 +194,9 @@ export function resolveImports(snapshot, references, policy = {}) {
         (item) => specifier === item.name || specifier.startsWith(`${item.name}/`),
       );
       named = Boolean(pkg);
-      let target;
-      let typeCandidate;
-      let nativeTarget;
+      let target: string | undefined;
+      let typeCandidate: string | undefined;
+      let nativeTarget: string | undefined;
       try {
         if (pkg) {
           const packageAnchor = resolve(root, pkg.path, "package.json");
@@ -177,14 +219,15 @@ export function resolveImports(snapshot, references, policy = {}) {
                 );
               }
             } catch (error) {
-              if (error.code !== "MODULE_NOT_FOUND") {
+              if (errorField(error, "code") !== "MODULE_NOT_FOUND") {
                 throw error;
               }
             }
           }
           typeCandidate = compilerTarget(specifier, packageAnchor, mode);
           const subpath = specifier === pkg.name ? "." : `.${specifier.slice(pkg.name.length)}`;
-          if (pkg.manifest.exports === undefined) {
+          const exports: unknown = Reflect.get(Object(pkg.manifest), "exports");
+          if (exports === undefined) {
             if (mode !== "require") {
               return unresolved(
                 "unsupported-package-export",
@@ -196,7 +239,7 @@ export function resolveImports(snapshot, references, policy = {}) {
             nativeTarget = createRequire(packageAnchor).resolve(target);
           } else {
             const selected = selectPackageExport(
-              pkg.manifest.exports,
+              exports,
               subpath,
               new Set(["node", "node-addons", "module-sync", mode]),
             );
@@ -212,11 +255,7 @@ export function resolveImports(snapshot, references, policy = {}) {
               );
             }
             if (reference.typeOnly && !typeCandidate) {
-              const types = selectPackageExport(
-                pkg.manifest.exports,
-                subpath,
-                new Set(["types", "node", mode]),
-              );
+              const types = selectPackageExport(exports, subpath, new Set(["types", "node", mode]));
               if (typeof types === "string") {
                 typeCandidate = compilerTarget(
                   fileURLToPath(new URL(types, pathToFileURL(`${resolve(root, pkg.path)}/`))),
@@ -229,9 +268,9 @@ export function resolveImports(snapshot, references, policy = {}) {
               try {
                 nativeTarget = createRequire(packageAnchor).resolve(specifier);
               } catch (error) {
-                if (error.code !== "MODULE_NOT_FOUND") {
+                if (errorField(error, "code") !== "MODULE_NOT_FOUND") {
                   throw new Error(
-                    `Node could not resolve package export (${error.code ?? error.name}).`,
+                    `Node could not resolve package export (${errorField(error, "code") ?? errorField(error, "name")}).`,
                     { cause: error },
                   );
                 }
@@ -257,11 +296,12 @@ export function resolveImports(snapshot, references, policy = {}) {
             "Workspace package is not registered in the boundary policy.",
           );
         } else {
-          return result("external");
+          return external();
         }
       } catch (error) {
         if (!reference.typeOnly || !graphPath(typeCandidate)) {
-          const nativeCode = error.code ?? error.cause?.code;
+          const nativeCode =
+            errorField(error, "code") ?? errorField(errorField(error, "cause"), "code");
           const detail =
             typeof nativeCode === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(nativeCode)
               ? ` (${nativeCode})`
@@ -281,15 +321,11 @@ export function resolveImports(snapshot, references, policy = {}) {
         const directory =
           specifier.endsWith("/") && statSync(target, { throwIfNoEntry: false })?.isDirectory();
         if (directory || manifests.has(target)) {
-          return result("local", {
-            to: slash(relative(root, target)),
-            runtimeTarget: null,
-            typeTarget: null,
-          });
+          return local(slash(relative(root, target)), null, null);
         }
       }
       if (target && reference.kind === "path" && !sourceExtension.test(target)) {
-        return result("external", { reason: "Non-source asset URL." });
+        return external("Non-source asset URL.");
       }
 
       if (target && !pkg && mode === "require" && reference.kind !== "dependency-anchor") {
@@ -298,10 +334,10 @@ export function resolveImports(snapshot, references, policy = {}) {
             /^file:/i.test(specifier) ? target : specifier,
           );
         } catch (error) {
-          if (error.code !== "MODULE_NOT_FOUND") {
+          if (errorField(error, "code") !== "MODULE_NOT_FOUND") {
             return unresolved(
               "unresolved-local-import",
-              `Node could not resolve the local module (${error.code ?? error.name}).`,
+              `Node could not resolve the local module (${errorField(error, "code") ?? errorField(error, "name")}).`,
             );
           }
         }
@@ -335,7 +371,7 @@ export function resolveImports(snapshot, references, policy = {}) {
           },
         );
       }
-      return result("local", { to, runtimeTarget, typeTarget });
+      return local(to, runtimeTarget, typeTarget);
     }),
   );
 }

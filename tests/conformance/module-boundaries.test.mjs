@@ -11,14 +11,19 @@ import ts from "typescript-compiler-api";
 import {
   runModuleBoundaryCli,
   verifyModuleBoundaries,
-} from "../../scripts/verify-module-boundaries.mjs";
+} from "../../scripts/verify-module-boundaries.ts";
+import {
+  applyExceptions,
+  diagnosticIdentity,
+  validateExceptions,
+} from "../../scripts/module-boundaries/exceptions.ts";
 import { settled as settle } from "../helpers/child-processes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = new URL("../fixtures/module-boundaries/", import.meta.url);
 const execute = promisify(execFile);
-const cli = join(repository, "scripts/verify-module-boundaries.mjs");
+const cli = join(repository, "scripts/verify-module-boundaries.ts");
 const policy = JSON.parse(await readFile(new URL("policy.json", fixture), "utf8"));
 
 // Child processes (CLI runs and native Node oracles) are most of this file's
@@ -189,6 +194,108 @@ async function workspace(t, overrides = {}) {
 }
 
 describe("module boundaries", { concurrency: true }, () => {
+  test("preserves exception coercion, sparse bindings and detached frozen reports", () => {
+    const hash = `loader:sha256:${"a".repeat(64)}`;
+    const bindings = Array(2);
+    bindings[1] = "name";
+    const entry = {
+      rule: "",
+      from: "",
+      to: "",
+      specifier: "",
+      kind: "",
+      typeOnly: false,
+      bindings,
+      owner: "owner",
+      removeWhen: "remove",
+      reason: "reason",
+      loaderIdentity: [hash],
+      extra: { nested: [1] },
+    };
+    const input = { version: 1, exceptions: [entry] };
+    validateExceptions(input);
+    assert.throws(
+      () => validateExceptions({ version: 1, exceptions: [entry, { ...entry, owner: "other" }] }),
+      /Duplicate module-boundary exception/,
+    );
+    assert.throws(
+      () =>
+        validateExceptions({ version: 1, exceptions: [{ ...entry, loaderIdentity: Symbol() }] }),
+      TypeError,
+    );
+    assert.throws(
+      () => validateExceptions({ version: 1, exceptions: [{ ...entry, loaderIdentity: null }] }),
+      /Exceptions require/,
+    );
+    assert.equal(diagnosticIdentity({ from: "x" }), '[null,"x",null,null,null,null,null,null]');
+    const result = applyExceptions([], input);
+    assert.equal(result.violations[0].rule, "stale-exception");
+    assert.deepEqual(result.violations[0].extra, entry.extra);
+    assert.notEqual(result.violations[0].extra, entry.extra);
+    assert.equal(Object.isFrozen(result.violations[0].extra.nested), true);
+    assert.equal(Object.isFrozen(entry.extra), false);
+    assert.equal(Object.isFrozen(entry.bindings), false);
+    const inherited = Object.create({ from: "src", rule: "r", bindings: [] });
+    const hidden = Object.defineProperty({ from: "src", bindings: [] }, "rule", {
+      value: "hidden",
+      enumerable: false,
+    });
+    assert.deepEqual(applyExceptions([inherited], { version: 1, exceptions: [] }).violations, [{}]);
+    assert.deepEqual(applyExceptions([hidden], { version: 1, exceptions: [] }).violations, [
+      { from: "src", bindings: [] },
+    ]);
+    let reads = 0;
+    const getter = {
+      from: "src",
+      bindings: [],
+      get message() {
+        reads++;
+        return reads;
+      },
+    };
+    const copied = applyExceptions([getter], { version: 1, exceptions: [] });
+    assert.equal(reads, 1);
+    assert.equal(copied.violations[0].message, 1);
+  });
+  test("sorts exception diagnostics without rereading an accessor", () => {
+    for (const changing of [false, true]) {
+      let reads = 0;
+      const row = {
+        rule: "r",
+        line: 1,
+        get from() {
+          reads++;
+          return changing && reads === 3 ? undefined : "b";
+        },
+      };
+      const report = applyExceptions([{ rule: "r", line: 1, from: "a" }, row], {
+        version: 1,
+        exceptions: [],
+      });
+      assert.equal(reads, 3);
+      assert.equal(report.violations[1].from, changing ? undefined : "b");
+    }
+    const rows = [
+      { rule: "r", line: 1, from: null },
+      { rule: "r", line: 1, from: "o" },
+    ];
+    assert.deepEqual(
+      applyExceptions(rows, { version: 1, exceptions: [] }).violations.map((item) => item.from),
+      [null, "o"],
+    );
+  });
+  test("CLI usage names the TypeScript entrypoint", async () => {
+    let stdout = "";
+    let stderr = "";
+    const streams = {
+      stdout: { write: (text) => (stdout += text) },
+      stderr: { write: (text) => (stderr += text) },
+    };
+    assert.equal(await runModuleBoundaryCli(["--help"], streams), 0);
+    assert.match(stdout, /scripts\/verify-module-boundaries\.ts/);
+    assert.equal(await runModuleBoundaryCli([], streams), 2);
+    assert.match(stderr, /scripts\/verify-module-boundaries\.ts/);
+  });
   test("keeps native package error diagnostics independent of the workspace path", async (t) => {
     const { root, write, cli: verify, link } = await workspace(t);
     await link();
