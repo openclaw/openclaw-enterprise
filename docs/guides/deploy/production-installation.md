@@ -494,7 +494,13 @@ READER_DIRECTORY="$(mktemp -d /secure/occ/bootstrap-reader.XXXXXXXX)" && export 
 
 Stop if directory creation fails. The retry reads both files from the same PVC
 without overwriting the earlier copies or rerunning bootstrap. After it succeeds,
-use the new directory for the credentials below. The files use the default names;
+select the newly retrieved key, replacing any earlier path in this shell:
+
+```bash
+export OCC_BOOTSTRAP_KEY_FILE="${READER_DIRECTORY:?}/initial-admin-service-key.json"
+```
+
+Use the new directory for the credentials below. The files use the default names;
 `bootstrap.password.fileName` and `bootstrap.serviceKey.fileName` override them. Sign in to the Console with
 `bootstrap.adminEmail` and `initial-admin-password`. The service key file
 authenticates the CLI and REST calls below. This example works on a session copy:
