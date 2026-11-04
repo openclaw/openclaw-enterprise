@@ -81,6 +81,7 @@ import {
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type NamespaceFixture = Awaited<ReturnType<ConsoleFixture["createNamespace"]>>;
@@ -1050,10 +1051,7 @@ test("Only an administrator's Backends page reads Backends", async (t) => {
   const { page: admin } = await newPage(t, fixture);
   await trackSettledFetches(admin);
   const adminRequests = apiRequests(admin, fixture.origin);
-  const adminRead = admin.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/backends` && response.request().method() === "GET",
-  );
+  const adminRead = responseTo(admin, "GET", `${fixture.origin}/backends`);
   await login(admin, fixture, backendsPage);
   assert.equal((await adminRead).status(), 200);
   await waitForIdleFetches(admin);
@@ -1076,11 +1074,7 @@ test("A Restriction on Agent create leaves an administrator's Installation pages
   restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
-  const backendsRead = () =>
-    page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}/backends` && response.request().method() === "GET",
-    );
+  const backendsRead = () => responseTo(page, "GET", `${fixture.origin}/backends`);
   const observability = page.getByRole("link", { name: "Observability", exact: true });
 
   let read = backendsRead();
@@ -1156,10 +1150,7 @@ test("Refresh and reload on the Backends refusal check Installation administrati
     assert.equal(reads("/observability"), probes, label);
 
     grantInstallationAdministration(fixture, account.principal);
-    const read = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}/backends` && response.request().method() === "GET",
-    );
+    const read = responseTo(page, "GET", `${fixture.origin}/backends`);
     if (recheck === "refresh") {
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
     } else {
@@ -1200,35 +1191,26 @@ test("A Backends refusal after administration is revoked is read and audited onc
   const permissionsPath = `/namespaces/${namespace.id}/permissions`;
   const observability = page.getByRole("link", { name: "Observability", exact: true });
   const refresh = () => page.getByRole("button", { name: "Refresh", exact: true }).click();
-  const backendsAnswer = (status: number) =>
-    page
-      .waitForResponse(
-        (response) =>
-          response.url() === `${fixture.origin}/backends` && response.request().method() === "GET",
-      )
-      .then((response) => {
-        assert.equal(response.status(), status);
-        return response;
-      });
+  const backendsAnswer = () => responseTo(page, "GET", `${fixture.origin}/backends`);
 
-  let read = backendsAnswer(200);
+  let read = backendsAnswer();
   await login(page, fixture, `/console/backends?namespace=${namespace.id}`, account.credentials);
-  await read;
+  assert.equal((await read).status(), 200);
   for (const [index, recheck] of ["reload", "refresh"].entries()) {
     if (index > 0) {
       revoke = grantInstallationAdministration(fixture, account.principal);
-      read = backendsAnswer(200);
+      read = backendsAnswer();
       await refresh();
-      await read;
+      assert.equal((await read).status(), 200);
     }
     await waitForIdleFetches(page);
     assert.equal(await observability.getAttribute("href"), url, recheck);
 
     revoke();
     // The first Refresh after the revoke cannot know it: it reads Backends, which the API refuses.
-    read = backendsAnswer(403);
+    read = backendsAnswer();
     await refresh();
-    await read;
+    assert.equal((await read).status(), 403);
     await page.locator(".state-panel").getByText(BACKENDS_DENIED, { exact: true }).waitFor();
     await waitForIdleFetches(page);
     assert.equal(await observability.count(), 0, recheck);
@@ -2223,10 +2205,10 @@ test("A failed permission answer after a Restriction refusal keeps an administra
       failedAnswers.push(response.url());
     }
   });
-  const refusal = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets/${secret.id}` &&
-      response.request().method() === "GET",
+  const refusal = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/secrets/${secret.id}`,
   );
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration")));
   assert.equal((await refusal).status(), 403);
@@ -3049,9 +3031,7 @@ test("An older permission reread that answers after a newer one failed applies t
     (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
     { times: 1 },
   );
-  const failed = page.waitForResponse(
-    (response) => response.url() === permissionsUrl && response.request().method() === "GET",
-  );
+  const failed = responseTo(page, "GET", permissionsUrl);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
   assert.equal((await failed).status(), 503);
@@ -3180,10 +3160,10 @@ test("A Restriction refusal after confirmed administration keeps an administrato
   await login(page, fixture, String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
   await page.getByText("Current policy loaded.", { exact: true }).waitFor();
   await waitForIdleFetches(page);
-  const refusal = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets/${secret.id}` &&
-      response.request().method() === "GET",
+  const refusal = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/secrets/${secret.id}`,
   );
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   assert.equal((await refusal).status(), 403);
@@ -3216,10 +3196,7 @@ test("A Backends failure other than a refusal keeps an administrator's answer", 
     route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
   );
 
-  const read = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/backends` && response.request().method() === "GET",
-  );
+  const read = responseTo(page, "GET", `${fixture.origin}/backends`);
   await login(page, fixture, `/console/backends?namespace=${namespace.id}`);
   assert.equal((await read).status(), 503);
   await waitForIdleFetches(page);
