@@ -2111,6 +2111,15 @@ revisionTest(
       },
       30_000,
     );
+    console.log(
+      "EVIDENCE recovered-worker-model-source " +
+        JSON.stringify({
+          attached,
+          prepared,
+          refusedDeployment: (await fixture.deploymentStatus(owner, third)).error.code,
+          withdrawalState: (await withdrawal.read(fixture.actor.id)).state,
+        }),
+    );
     await fixture.stop();
   },
 );
