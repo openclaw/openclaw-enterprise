@@ -89,13 +89,13 @@ Do not make those unfinished proposals prerequisites for unrelated local fixes.
 
 ## Verification
 
-| Required outcome                                                    | Check                                                                                                                                    | Status                                                              |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| A completed upgrade cannot repeat cluster operations through resume | Existing production-image-upgrade integration scenarios; compare command and evidence records before and after the rejected resume       | Pending final results                                               |
-| An interrupted upgrade retains its recovery path                    | Existing upgrade recovery scenarios, including restored dispatch evidence                                                                | Pending final results                                               |
-| Chart and Compute routing conflicts fail before rollout             | Actual rendered installation-check hook with matching and mismatching configuration                                                      | Pending final results                                               |
-| Installation guides lead to the correct caller                      | Source-backed command review, Markdown checks, and existing anchors                                                                      | Pending final results                                               |
-| A release serves its users                                          | Authorized populated installation: human sign-in, selected Agent readiness, real model reply, and required repository/channel operations | Not run by this cleanup; source and fixture checks are insufficient |
+| Required outcome                                                    | Check                                                                                                                                    | Status                                                                                              |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| A completed upgrade cannot repeat cluster operations through resume | Existing production-image-upgrade integration scenarios; compare command and evidence records before and after the rejected resume       | Passed in the existing script fixture; no live cluster proof                                        |
+| An interrupted upgrade retains its recovery path                    | Existing upgrade recovery scenarios, including restored dispatch evidence                                                                | Pending: restored-dispatch fixture needs workspace dependencies                                     |
+| Chart and Compute routing conflicts fail before rollout             | Actual rendered installation-check hook with matching and mismatching configuration                                                      | Four Helm render cases pass; production-loader regression needs dependencies                        |
+| Installation guides lead to the correct caller                      | Source-backed command review, Markdown checks, and existing anchors                                                                      | Source review, formatting, flow structure and 277 local targets pass; canonical docs checks pending |
+| A release serves its users                                          | Authorized populated installation: human sign-in, selected Agent readiness, real model reply, and required repository/channel operations | Not run by this cleanup; source and fixture checks are insufficient                                 |
 
 Do not replace missing cluster or credential prerequisites with simulated proof.
 Record the tested source and exact limits of local checks. Keep screenshots,
@@ -103,8 +103,22 @@ private operation records, and provider credentials outside the repository.
 
 ## Delivery record
 
-The initial change covers milestone 1. Milestones 2 and 3 remain separate work;
-this plan is not a claim that deployment tooling is fully qualified or released.
+The initial change implements milestone 1. Candidate
+`21c5eab207c48bc76f182094a2b24ff4b7d45640` includes the fixes and documentation.
+Independent Astra/high review found no actionable P0–P2 findings in implementation
+commit `57049c6f231dfaa24f79ca63e9f31ed8f0c325e3`; the follow-up only trims prose.
+
+The upgrade script file has 20 passing cases across two runs (17 initially; the
+three child-process failures passed after correcting Node on `PATH`), with no
+skips. The new completed-run refusal passed in the full run. Local checks used
+Node 24.16.0, below the manifest's supported minimum. A matching
+workspace dependency graph was unavailable; none was installed for verification.
+The production-loader and restored-dispatch tests, typecheck, lint, workspace
+boundary, and canonical docs checks remain required. Passing Helm renders and
+script fixtures do not replace those checks or live acceptance.
+
+Milestones 2 and 3 remain separate work. This candidate is not fully qualified,
+published, or installed.
 
 ## Manual Notes
 
