@@ -1,4 +1,5 @@
 import networkPolicySchema from "./network-policy-schema.mts";
+import { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
@@ -1478,28 +1479,10 @@ export function installFixture(scenario, evidence) {
         return selectedPreset ? response(selectedPreset) : error(404);
       }
       if (resource === "agents/plugins" && method === "POST" && scenario.pluginDiscovery) {
-        const query = body.q?.trim().toLowerCase();
-        if (query) {
-          const matches = Object.values(scenario.pluginDiscovery.pages)
-            .flatMap((page) => page.plugins)
-            .filter((entry) =>
-              [entry.name, entry.id, entry.description ?? ""].some((value) =>
-                value.toLowerCase().includes(query),
-              ),
-            );
-          const offset = body.cursor ? Number(body.cursor.slice("search-".length)) : 0;
-          return response({
-            plugins: matches.slice(offset, offset + 20),
-            nextCursor: offset + 20 < matches.length ? `search-${offset + 20}` : null,
-            setup: scenario.pluginDiscovery.pages.initial.setup,
-          });
-        }
-        const page = scenario.pluginDiscovery.pages[body.cursor ?? "initial"];
-        return page ? response(page) : error(400, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
+        return servePluginDiscovery(scenario.pluginDiscovery, "catalog", body, response, error);
       }
       if (resource === "agents/plugins/details" && method === "POST" && scenario.pluginDiscovery) {
-        const entry = scenario.pluginDiscovery.details[body.pluginId];
-        return entry ? response(entry) : error(503, "PLUGIN_DISCOVERY_UNAVAILABLE");
+        return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
       }
       if (resource === "channel-directory/lookup" && method === "POST") {
         if (!secrets.has(body.secretId) || !["users", "channels"].includes(body.kind)) {
@@ -2233,12 +2216,10 @@ export function installFixture(scenario, evidence) {
           });
         }
         if (suffix === "/plugins" && method === "POST" && scenario.pluginDiscovery) {
-          const page = scenario.pluginDiscovery.pages[body.cursor ?? "initial"];
-          return page ? response(page) : error(400, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
+          return servePluginDiscovery(scenario.pluginDiscovery, "catalog", body, response, error);
         }
         if (suffix === "/plugins/details" && method === "POST" && scenario.pluginDiscovery) {
-          const entry = scenario.pluginDiscovery.details[body.pluginId];
-          return entry ? response(entry) : error(503, "PLUGIN_DISCOVERY_UNAVAILABLE");
+          return servePluginDiscovery(scenario.pluginDiscovery, "details", body, response, error);
         }
         if (suffix === "") {
           if (method === "GET") {
