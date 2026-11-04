@@ -77,6 +77,12 @@
       "expectedTests": [
         "native stdio plugin preparation survives WebSocket replacement and drains failed installation"
       ]
+    },
+    {
+      "path": "tests/integration/qa-compose-reload-real.test.mjs",
+      "expectedTests": [
+        "QA Compose recreation consumes mounted state and retains strict client peers"
+      ]
     }
   ]
 }

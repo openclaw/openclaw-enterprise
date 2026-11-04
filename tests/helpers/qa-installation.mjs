@@ -340,6 +340,115 @@ export async function requestQaApi(f, method, path, body) {
   return text ? JSON.parse(text).data : undefined;
 }
 
+// An initial supported Compose input, before dev-up renders its saved snapshot.
+// Podman may reallocate dynamic addresses even when restarting the same container.
+export function qaComposePeerNetwork(subnet) {
+  assert.match(
+    subnet,
+    /^172\.(?:2[0-9]|3[01])\.(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-4])\.0\/24$/,
+  );
+  const prefix = subnet.slice(0, -4);
+  return {
+    services: Object.fromEntries(
+      ["controller", "worker-kubernetes"].map((service, index) => [
+        service,
+        {
+          networks: { development: { ipv4_address: `${prefix}${250 + index}` } },
+        },
+      ]),
+    ),
+  };
+}
+
+async function verifyQaComposePeers(f) {
+  const definition = JSON.parse(await f.compose("config", "--format", "json"));
+  for (const [service, expected] of Object.entries(f.composePeerNetwork.services)) {
+    const address = expected.networks.development.ipv4_address;
+    assert.equal(
+      definition.services?.[service]?.networks?.development?.ipv4_address,
+      address,
+      "saved Compose input must retain the initial fixed QA client address",
+    );
+    const id = (await f.compose("ps", "-q", service)).trim();
+    assert.ok(id, "fixed QA Compose client must be running");
+    const [container] = JSON.parse(await f.run("docker", ["inspect", id]));
+    assert.ok(
+      Object.values(container.NetworkSettings.Networks).some(
+        (network) => network.IPAddress === address,
+      ),
+      "running QA Compose client must retain its initial fixed peer address",
+    );
+  }
+}
+
+// TCP only: this neither sends credentials nor replaces TLS, enrollment or
+// actual Agent readiness. It bounds a broken test front door before Agent work.
+async function preflightQaComposeRoute(f) {
+  const route = f.configuration.drivers.compute.configuration.gatewayRouting;
+  if (!route) {
+    return;
+  }
+  const port = route.endpointPort ?? 443;
+  assert.ok(
+    typeof route.hostname === "string" &&
+      route.hostname.length > 0 &&
+      Number.isInteger(port) &&
+      port > 0 &&
+      port <= 65535,
+    "QA Gateway front door configuration is invalid.",
+  );
+  const script = `const net=require('node:net');const socket=net.connect({host:process.argv[1],port:Number(process.argv[2])});let done=false;function finish(code){if(done)return;done=true;socket.destroy();console.log(JSON.stringify({code}))}socket.setTimeout(3000);socket.once('connect',()=>finish('CONNECTED'));socket.once('timeout',()=>finish('TIMEOUT'));socket.once('error',e=>finish(['ECONNREFUSED','ECONNRESET','EHOSTUNREACH','ENETUNREACH','ENOTFOUND','EAI_AGAIN','ETIMEDOUT'].includes(e.code)?e.code:'UNAVAILABLE'));`;
+  for (const service of ["controller", "worker-kubernetes"]) {
+    let code = "EXEC_FAILED";
+    try {
+      const id = (await f.compose("ps", "-q", service)).trim();
+      const result = JSON.parse(
+        await f.run("docker", ["exec", id, "node", "-e", script, route.hostname, String(port)], {
+          timeout: 10_000,
+          maxBuffer: 4096,
+          privateFailureOutput: true,
+        }),
+      );
+      if (
+        [
+          "CONNECTED",
+          "TIMEOUT",
+          "ECONNREFUSED",
+          "ECONNRESET",
+          "EHOSTUNREACH",
+          "ENETUNREACH",
+          "ENOTFOUND",
+          "EAI_AGAIN",
+          "ETIMEDOUT",
+          "UNAVAILABLE",
+        ].includes(result.code)
+      ) {
+        code = result.code;
+      }
+    } catch {
+      // Only a fixed diagnostic class may leave the private command owner.
+    }
+    assert.equal(code, "CONNECTED", `QA Gateway front door unavailable from ${service} (${code}).`);
+  }
+}
+
+// The same mounted startup-file/recreation owner used by regular QA saves.
+export async function saveQaComposeInstallation(f, configuration) {
+  if (f.composePeerNetwork) {
+    await verifyQaComposePeers(f);
+    await preflightQaComposeRoute(f);
+  }
+  await writeFile(join(f.stateDirectory, "installation.yaml"), dumpYaml(configuration), {
+    mode: 0o600,
+  });
+  f.configuration = configuration;
+  await recreateQaComposeServices(f);
+  if (f.composePeerNetwork) {
+    await verifyQaComposePeers(f);
+    await preflightQaComposeRoute(f);
+  }
+}
+
 // Preserve the exited services' bounded logs before the installation scope tears
 // them down. Diagnostics are redacted private files; they never replace the
 // original health/startup failure or become uploaded QA evidence.
@@ -607,7 +716,12 @@ export async function createQaInstallation(
   context,
   controlPlane,
   artifacts,
-  { repositoryInputs = true, sandboxDriver = "none", sandboxNetworkPolicyFile = undefined } = {},
+  {
+    repositoryInputs = true,
+    sandboxDriver = "none",
+    sandboxNetworkPolicyFile = undefined,
+    stableComposePeers = false,
+  } = {},
 ) {
   assert.ok(["compose", "kubernetes"].includes(controlPlane));
   assert.ok(["none", "openshell"].includes(sandboxDriver));
@@ -666,6 +780,7 @@ export async function createQaInstallation(
       env.OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY = repositoryInput;
     }
   }
+  assert.ok(!stableComposePeers || controlPlane === "compose", "fixed QA peers require Compose");
   const f = {
     controlPlane,
     directory,
@@ -739,13 +854,13 @@ export async function createQaInstallation(
       ]);
     },
     async saveInstallation(configuration) {
-      await writeFile(join(stateDirectory, "installation.yaml"), dumpYaml(configuration), {
-        mode: 0o600,
-      });
-      f.configuration = configuration;
       if (controlPlane === "compose") {
-        await recreateQaComposeServices(f);
+        await saveQaComposeInstallation(f, configuration);
       } else {
+        await writeFile(join(stateDirectory, "installation.yaml"), dumpYaml(configuration), {
+          mode: 0o600,
+        });
+        f.configuration = configuration;
         await f.apply({
           apiVersion: "v1",
           kind: "Secret",
@@ -959,12 +1074,23 @@ export async function createQaInstallation(
     assert.ok(subnet, "no unused private Compose subnet available");
     env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = subnet;
     await f.record("compose-network", { subnet });
+    if (stableComposePeers) {
+      f.composePeerNetwork = qaComposePeerNetwork(subnet);
+      f.composePeerInput = await f.write(
+        "compose-fixed-peers.yaml",
+        dumpYaml(f.composePeerNetwork),
+      );
+    }
   }
-  const started = await f.run(
-    join(repository, "scripts/dev-up"),
-    sandboxNetworkPolicyFile ? ["--sandbox-network-policy-file", sandboxNetworkPolicyFile] : [],
-    { timeout: 1_100_000, captureStartupTimings: true },
-  );
+  const launchArgs = sandboxNetworkPolicyFile
+    ? ["--sandbox-network-policy-file", sandboxNetworkPolicyFile]
+    : [];
+  if (f.composePeerInput) {
+    launchArgs.push("--", "-f", f.composePeerInput);
+  }
+  const started = await f.run(join(repository, "scripts/dev-up"), launchArgs, {
+    timeout: 1_100_000, captureStartupTimings: true,
+  });
   assert.match(
     started,
     controlPlane === "compose" ? /Control plane: Compose/ : /Deployment: Kubernetes only/,
@@ -996,6 +1122,11 @@ export async function createQaInstallation(
     ]);
   }
   f.configuration = loadYaml(await readFile(join(stateDirectory, "installation.yaml"), "utf8"));
+  // dev-up folds ordered initial -f inputs into this one saved snapshot. All
+  // later config/recreation/cleanup operations consume that same snapshot.
+  if (f.composePeerNetwork) {
+    await verifyQaComposePeers(f);
+  }
   f.namespace = f.defaultNamespace;
   if (controlPlane === "compose") {
     await prepareHybridInstallation(f);

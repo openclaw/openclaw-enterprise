@@ -264,6 +264,7 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
   const f = await createQaInstallation(context, "compose", artifacts, {
     repositoryInputs: false,
     sandboxDriver: "openshell",
+    stableComposePeers: true,
   });
   try {
     await verifyReaderSource(f);
