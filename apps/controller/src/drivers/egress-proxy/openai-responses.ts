@@ -141,6 +141,31 @@ const namespaceTool = object(
   { description: text },
 );
 const tools = array((value) => localTool(value) || namespaceTool(value), 128);
+// Response echoes may contain documented null defaults for local-tool metadata.
+// Keep these separate from request admission and retain the same bounded schemas.
+const responseFunctionTool = object(
+  { type: oneOf("function"), name, parameters: (value) => jsonSchema(value, 0, true) },
+  { description: nullable(text), strict: nullable(bool), defer_loading: nullable(bool) },
+);
+const responseCustomTool = object(
+  { type: oneOf("custom"), name },
+  {
+    description: nullable(text),
+    defer_loading: nullable(bool),
+    format: nullable((value) => plainTextFormat(value) || grammarFormat(value)),
+  },
+);
+const responseLocalTool: Validator = (value) =>
+  responseFunctionTool(value) || responseCustomTool(value);
+const responseNamespaceTool = object(
+  { type: oneOf("namespace"), name, tools: array(responseLocalTool, 128) },
+  { description: text },
+);
+const responseTools = array(
+  (value) => responseLocalTool(value) || responseNamespaceTool(value),
+  128,
+);
+
 const toolChoice = oneOf("auto", "none", "required");
 
 const textPart = object({ type: oneOf("input_text", "output_text"), text });
@@ -399,7 +424,7 @@ const response = object(
       }),
     ),
     instructions: nullable(text),
-    tools,
+    tools: responseTools,
     tool_choice: toolChoice,
     parallel_tool_calls: bool,
     reasoning: nullable(

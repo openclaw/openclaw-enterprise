@@ -99,6 +99,12 @@ before credential access. Public Codex source defines the
 [string-parameter annotation](https://github.com/openai/codex/blob/db3c44414c2cd4ae33adaf4fa33382cb3dde6bd5/codex-rs/tools/src/json_schema/types.rs#L50), and
 [reasoning metadata](https://github.com/openai/codex/blob/db3c44414c2cd4ae33adaf4fa33382cb3dde6bd5/codex-rs/core/src/turn_metadata.rs#L86).
 
+The live-envelope case verifies nullable local-tool metadata against public
+[function](https://github.com/openai/openai-python/blob/0f73f1d519f8719b226e9084d78c8bdb4a60e48f/src/openai/types/responses/function_tool.py),
+[custom](https://github.com/openai/openai-python/blob/0f73f1d519f8719b226e9084d78c8bdb4a60e48f/src/openai/types/responses/custom_tool.py) and
+[namespace](https://github.com/openai/openai-python/blob/0f73f1d519f8719b226e9084d78c8bdb4a60e48f/src/openai/types/responses/namespace_tool.py)
+types, including rejection of invalid types, formats and hosted tools.
+
 These fixtures exercise selected client wire shapes against a synthetic provider.
 They do not establish byte identity with a runtime image, generated Harness execution,
 a real model response or installed OpenShell enforcement. A separate interrupted

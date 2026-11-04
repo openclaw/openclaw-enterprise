@@ -1257,6 +1257,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
     { ...wire.request, tools: [...wire.request.tools, ...wire.refusedTools] },
     { ...wire.request, tools: [{ type: "mcp", server_url: "https://remote.example.test" }] },
     { ...wire.request, tools: [{ type: "namespace", name: "remote", tools: wire.refusedTools }] },
+    { ...wire.request, tools: [{ ...wire.request.tools[0], strict: null }] },
     { ...wire.request, previous_response_id: "unadmitted-state" },
     {
       ...wire.request,
@@ -1471,6 +1472,54 @@ test("live-shaped Responses envelopes pass while undeclared or credential-bearin
     { ...completed, sequence_number: base.length + 1 },
   ];
   await check.events(live, false, "documented envelope fields on every envelope event");
+  // The admitted local declarations omit optional fields. Responses may echo their
+  // documented null defaults; they must not turn an otherwise valid turn into a 502.
+  const functionTool = {
+    type: "function",
+    name: "fixture_local",
+    parameters: { type: "object", properties: {} },
+  };
+  const customTool = { type: "custom", name: "fixture_custom" };
+  const localTools = [
+    functionTool,
+    customTool,
+    { type: "namespace", name: "fixture_namespace", tools: [functionTool, customTool] },
+  ];
+  const localRequest = { ...wire.request, tools: localTools };
+  const responseFunction = {
+    ...functionTool,
+    description: null,
+    strict: null,
+    defer_loading: null,
+  };
+  const responseCustom = { ...customTool, description: null, defer_loading: null, format: null };
+  const echoedTools = [
+    responseFunction,
+    responseCustom,
+    { ...localTools[2], tools: [responseFunction, responseCustom] },
+  ];
+  const withTools = (tools) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, tools } } : event,
+    );
+  await check.events(
+    withTools(echoedTools),
+    false,
+    "nullable local-tool response defaults",
+    true,
+    localRequest,
+  );
+  for (const [label, tools] of [
+    ["wrong strict type", [{ ...responseFunction, strict: "false" }]],
+    ["wrong description type", [{ ...responseCustom, description: {} }]],
+    ["wrong defer_loading type", [{ ...responseFunction, defer_loading: 0 }]],
+    ["unknown custom format", [{ ...responseCustom, format: { type: "remote" } }]],
+    ["unknown function field", [{ ...responseFunction, remote_execution: true }]],
+    ["hosted tool", [{ type: "web_search" }]],
+    ["nested hosted tool", [{ ...localTools[2], tools: [{ type: "web_search" }] }]],
+  ]) {
+    await check.events(withTools(tools), true, label, true, localRequest);
+  }
   // Documented fields that the admitted request cannot ask for still have to be absent,
   // and documented optional structures are typed, not free-form.
   const nullableStructures = structuredClone(live);
