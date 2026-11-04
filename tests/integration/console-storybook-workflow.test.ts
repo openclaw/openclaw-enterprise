@@ -5,6 +5,9 @@ import test from "node:test";
 import { SandboxNetworkPolicyConfiguration } from "../../packages/contracts/src/sandbox-policy.ts";
 import networkPolicySchema from "../../scripts/console-storybook/public/network-policy-schema.mts";
 
+import * as settingsStories from "../../scripts/console-storybook/pages-settings.stories.ts";
+import { settingsScenarios } from "../../scripts/console-storybook/public/scenario-groups/settings.mts";
+
 const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = controller("@kubernetes/client-node");
 const workflowFile = new URL("../../.github/workflows/console-storybook.yml", import.meta.url);
@@ -112,4 +115,36 @@ test("the Storybook network policy schema matches the production JSON wire schem
     JSON.stringify(SandboxNetworkPolicyConfiguration.configurationSchema),
   );
   assert.deepEqual(networkPolicySchema, wireSchema);
+});
+
+test("Settings stories distinguish read-only access from an endpoint refusal", () => {
+  const readOnly = settingsScenarios.settingsDriverConfigurationsDenied;
+  const refused = settingsScenarios.settingsDriverConfigurationsEndpointRefused;
+
+  // Read-only permissions prevent discovery; a configured refusal here would be dormant.
+  assert.equal(readOnly.readOnlyPermissionSummary, true);
+  assert.equal("rules" in readOnly, false);
+  assert.equal(readOnly.path, "/console/settings");
+
+  // Default allowing permissions reach the first GET, with no skip or earlier rule.
+  assert.equal("readOnlyPermissionSummary" in refused, false);
+  assert.equal(refused.path, "/console/settings");
+  assert.deepEqual(refused.rules, [
+    { path: "/installation/driver-configurations", status: 403, code: "FORBIDDEN" },
+  ]);
+
+  // Import real CSF exports so removing a registration or selecting the wrong scenario fails.
+  assert.equal(settingsStories.default.title, "Pages/Settings");
+  assert.equal(
+    settingsStories.DriverConfigurationDenied.name,
+    "Read-only account: no Driver query",
+  );
+  assert.equal(settingsStories.DriverConfigurationDenied.name, readOnly.name);
+  assert.equal(typeof settingsStories.DriverConfigurationDenied.render, "function");
+  assert.equal(
+    settingsStories.DriverConfigurationEndpointRefused.name,
+    "Driver configuration endpoint refused",
+  );
+  assert.equal(settingsStories.DriverConfigurationEndpointRefused.name, refused.name);
+  assert.equal(typeof settingsStories.DriverConfigurationEndpointRefused.render, "function");
 });

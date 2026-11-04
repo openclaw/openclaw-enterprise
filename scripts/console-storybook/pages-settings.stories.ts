@@ -27,7 +27,11 @@ export const DriverConfigurationFailure = {
 };
 export const DriverConfigurationDenied = {
   ...story("settingsDriverConfigurationsDenied"),
-  name: "Driver configuration denied",
+  name: "Read-only account: no Driver query",
+};
+export const DriverConfigurationEndpointRefused = {
+  ...story("settingsDriverConfigurationsEndpointRefused"),
+  name: "Driver configuration endpoint refused",
 };
 
 export const NestedDriverValues = {

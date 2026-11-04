@@ -99,12 +99,19 @@ export const settingsScenarios = {
   },
   settingsDriverConfigurationsDenied: {
     group: "Pages/Settings",
-    name: "Driver configuration denied",
+    name: "Read-only account: no Driver query",
     path: "/console/settings",
     readOnlyPermissionSummary: true,
+    description:
+      "A read-only account keeps the Account and Session cards. Permissions return 200 with installation.administer false, so Settings sends no Driver configuration query and omits the Driver section.",
+  },
+  settingsDriverConfigurationsEndpointRefused: {
+    group: "Pages/Settings",
+    name: "Driver configuration endpoint refused",
+    path: "/console/settings",
     rules: [{ path: "/installation/driver-configurations", status: 403, code: "FORBIDDEN" }],
     description:
-      "An account without Installation administration can still use Settings. The protected Driver section is absent after the refusal.",
+      "The Driver configuration request returns 403 FORBIDDEN. A permissions recheck confirms that the account can still administer the Installation, so the Driver section stays visible with a refusal alert and no values. The Account and Session cards also remain visible.",
   },
   settingsNameIsEmail: {
     group: "Pages/Settings",
