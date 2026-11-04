@@ -212,6 +212,7 @@ export async function startHttpsIngress({
 export function fileConsoleApp(options = {}) {
   const cleanups = [];
   let startPolicy;
+  /** @type {ReturnType<typeof createConsoleAppFixture> | undefined} */
   let created;
   after(async () => {
     await created?.catch(() => {});

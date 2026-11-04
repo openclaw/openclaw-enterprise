@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Page } from "playwright";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture as legacyConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   DEPLOYED_VERSION_UNREADABLE,
   deployAcceptedVersionUnreadable,
@@ -29,12 +30,120 @@ import {
   routeFailedDeployment,
   routeOneVersionPerPage,
   shortId,
-  stopAgentButton,
   trackSettledFetches,
   waitForIdleFetches,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture as legacyRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+
+const stopAgentButton = (page: Page) =>
+  page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button", { name: "Stop Agent", exact: true });
+
+// Narrow the legacy fixture's JSON results at this suite's boundary.
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function identified(value: unknown): Record<string, unknown> & { id: string } {
+  const item = record(value);
+  assert.ok(typeof item.id === "string");
+  return { ...item, id: item.id };
+}
+
+function agentRecord(value: unknown) {
+  const item = identified(value);
+  assert.ok(typeof item.name === "string");
+  assert.ok(typeof item.configurationId === "string");
+  return {
+    ...item,
+    name: item.name,
+    configurationId: item.configurationId,
+    harnessAuth: item.harnessAuth,
+  };
+}
+
+function secretRecord(value: unknown) {
+  const item = identified(value);
+  const ref = record(item.ref);
+  assert.ok(ref.kind === "secret");
+  assert.ok(typeof ref.id === "string" && typeof ref.namespaceId === "string");
+  return { ...item, ref: { kind: ref.kind, id: ref.id, namespaceId: ref.namespaceId } };
+}
+
+function revisionRecord(value: unknown) {
+  const item = identified(value);
+  assert.ok(typeof item.agentId === "string" && typeof item.namespaceId === "string");
+  assert.ok(typeof item.createdAt === "string");
+  return {
+    ...item,
+    agentId: item.agentId,
+    namespaceId: item.namespaceId,
+    createdAt: item.createdAt,
+  };
+}
+
+function typedFixture(fixture: Awaited<ReturnType<typeof legacyConsoleAppFixture>>) {
+  return {
+    ...fixture,
+    async createAgent(namespaceId: string, name: string, values: object = {}, options = {}) {
+      return agentRecord(await fixture.createAgent(namespaceId, name, values, options));
+    },
+    async updateAgent(namespaceId: string, agentId: string, body: unknown) {
+      return agentRecord(await fixture.updateAgent(namespaceId, agentId, body));
+    },
+    async createNamespace(name: string, options = {}) {
+      return identified(await fixture.createNamespace(name, options));
+    },
+    async createSecret(namespaceId: string, name: string, value: string) {
+      return secretRecord(await fixture.createSecret(namespaceId, name, value));
+    },
+    async deployAgent(namespaceId: string, agentId: string) {
+      return revisionRecord(await fixture.deployAgent(namespaceId, agentId));
+    },
+    async seedActiveAgentRevision(
+      namespaceId: string,
+      agentId: string,
+      expectedRevisionId?: string,
+    ) {
+      const result = await fixture.seedActiveAgentRevision(
+        namespaceId,
+        agentId,
+        expectedRevisionId,
+      );
+      return { agent: agentRecord(result.agent), revision: revisionRecord(result.revision) };
+    },
+    async request(
+      method: string,
+      path: string,
+      options: Parameters<typeof fixture.request>[2] = {},
+    ) {
+      const result = await fixture.request(method, path, options);
+      const data: unknown = result.data;
+      const body: unknown = result.body;
+      return { ...result, data, body };
+    },
+  };
+}
+
+async function createConsoleAppFixture(t: TestContext) {
+  return typedFixture(await legacyConsoleAppFixture(t));
+}
+
+async function createRuntimeAuthFixture(t: TestContext, name: string, options = {}) {
+  const result = await legacyRuntimeAuthFixture(t, name, options);
+  return {
+    ...result,
+    fixture: typedFixture(result.fixture),
+    namespace: identified(result.namespace),
+  };
+}
 
 // A next step the reader cannot take is a dead end (finding D750). Each page below names what
 // the reader can do: ask an Installation administrator, or accept that a version may not exist.
@@ -168,7 +277,7 @@ test("a rejected model credential tells a member without Agent update which gran
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   // The Agent's credential is a Secret, so the text names both grants that fix it: Secret update
   // replaces the value in place, which the permission answer does not cover.
-  assert.equal(agent.harnessAuth.source.kind, "secret");
+  assert.equal(record(record(agent.harnessAuth).source).kind, "secret");
   const access = { secretBacked: true, gap: "update", deploy: true };
   await recovery.getByText(modelCredentialRejectedAsk(access)).waitFor();
   await page.getByText(modelCredentialRejectedReadOnly(access), { exact: true }).waitFor();
@@ -184,7 +293,9 @@ test("a rejected model credential tells a member without Agent update which gran
       exact: true,
     })
     .waitFor({ state: "attached" });
-  assert.doesNotMatch(await activity.textContent(), /update or replace/);
+  const activityText = await activity.textContent();
+  assert.ok(activityText !== null);
+  assert.doesNotMatch(activityText, /update or replace/);
   await page.goto(new URL(`/console/agents?namespace=${namespace.id}`, page.url()).href);
   const row = page.getByRole("row").filter({ hasText: "Rejected Agent" });
   await row.getByText(modelCredentialRejectedAsk(access), { exact: true }).waitFor();
@@ -201,10 +312,15 @@ test("a rejected credential names the grant a member lacks and what deploying ne
   const namespace = await fixture.createNamespace("Rejected grants", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Rejected grants", nativeValues("grants"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  assert.equal(agent.harnessAuth.source.kind, "secret");
+  assert.equal(record(record(agent.harnessAuth).source).kind, "secret");
   // The fixture names the Agent's model credential Secret "Auth <Agent name>".
-  const hidden = ["Auth Rejected grants", agent.harnessAuth.source.id].filter(Boolean);
-  const members = {
+  const secretId = record(record(agent.harnessAuth).source).id;
+  assert.ok(typeof secretId === "string");
+  const hidden = ["Auth Rejected grants", secretId].filter(Boolean);
+  const members: Record<
+    string,
+    Parameters<ReturnType<typeof typedFixture>["createNamespaceMember"]>[2]
+  > = {
     // Agent update, and Secret update in place, but no Secret operate on the bound Secret.
     editor: [
       ...AGENT_READ,
@@ -262,6 +378,7 @@ test("a rejected credential names the grant a member lacks and what deploying ne
       assert.equal((await saved).status(), 200);
       continue;
     }
+    assert.ok(label === "editor" || label === "updater" || label === "deployer");
     await recovery.getByText(modelCredentialRejectedAsk(expected[label])).waitFor();
     await page
       .getByRole("region", { name: "Deployment activity" })
@@ -347,7 +464,7 @@ test("a rejected credential's record stops alerting once the Agent binds another
 
   // Another tab restores the rejected binding. Refresh deployment rereads the Agent without
   // remounting the page; the recorded failure must become actionable again.
-  async function refreshDeploymentWithBinding(expected) {
+  async function refreshDeploymentWithBinding(expected: unknown) {
     const reread = page.waitForResponse(
       (response) =>
         response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
@@ -356,7 +473,7 @@ test("a rejected credential's record stops alerting once the Agent binds another
     await activity.getByRole("button", { name: "Refresh deployment", exact: true }).click();
     const response = await reread;
     assert.equal(response.status(), 200);
-    assert.deepEqual((await response.json()).data.harnessAuth, expected);
+    assert.deepEqual(record(record(await response.json()).data).harnessAuth, expected);
   }
 
   await fixture.updateAgent(namespace.id, agent.id, {
@@ -403,7 +520,7 @@ test("a rejected credential's record stops alerting once the Agent binds another
 // A member who may deploy but holds AgentRevision read per version. The Deploy answer creates a
 // version her read does not cover: the policy denies it before the console reads it, as when an
 // administrator grants read on each version after it exists (docs/guides/topics/iam.md).
-async function deployWithoutVersionRead(t, name) {
+async function deployWithoutVersionRead(t: TestContext, name: string) {
   const auditSink = new InMemoryAuditSink();
   const { fixture, namespace } = await createRuntimeAuthFixture(t, name, { auditSink });
   const agent = await fixture.createAgent(namespace.id, name, nativeValues("accepted"), {
@@ -415,20 +532,22 @@ async function deployWithoutVersionRead(t, name) {
     ["operate", "agent"],
   ]);
   const { page } = await newPage(t, fixture);
-  const deployed = [];
+  const deployed: string[] = [];
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
     async (route) => {
       const response = await route.fetch();
-      const body = await response.json();
-      const id = body.data?.id ?? body.id;
+      const body = record(await response.json());
+      const id = (body.data == null ? undefined : record(body.data).id) ?? body.id;
+      assert.ok(typeof id === "string");
       deployed.push(id);
       denyRevisionRead(fixture, namespace, { id });
       await route.fulfill({ response });
     },
   );
   // Each refused version read is audited as a denial the member never attempted (finding D758).
-  const versionReadDenials = () => authorizationDenials(auditSink, "openclaw.agent_revisions.read");
+  const versionReadDenials = (): unknown =>
+    authorizationDenials(auditSink, "openclaw.agent_revisions.read");
   return { fixture, namespace, agent, deployer, page, deployed, versionReadDenials };
 }
 
@@ -450,6 +569,7 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
   const [id] = deployed;
+  assert.ok(id);
   await page
     .locator(".agent-status-line")
     .getByText(deployAcceptedVersionUnreadable(shortId(id)), { exact: true })
@@ -475,6 +595,7 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
   // The page Refresh checks the version list again, which still leaves the version out. The
   // rebuilt page replaces the panel.
   const shownPanel = await panel.elementHandle();
+  assert.ok(shownPanel);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await shownPanel.waitForElementState("hidden");
   await panel.getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true }).waitFor();
@@ -499,7 +620,7 @@ test("a member's own deploy of a version she cannot read is accepted, not possib
 // After a failed first deployment the member deploys again. The failure is the newest version she
 // can read, but the version she just deployed is newer: the page leads with the accepted
 // deployment instead of the old failure, and keeps Stop for it (findings D751, D691).
-async function redeployUnreadable(t, name, { paged = false } = {}) {
+async function redeployUnreadable(t: TestContext, name: string, { paged = false } = {}) {
   const { fixture, namespace, agent, deployer, page, deployed } = await deployWithoutVersionRead(
     t,
     name,
@@ -549,7 +670,7 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
     0,
   );
   assert.equal(
-    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
+    record((await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data)
       .desiredRuntimeState,
     "running",
   );
@@ -558,6 +679,7 @@ async function redeployUnreadable(t, name, { paged = false } = {}) {
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
   const [id] = deployed;
+  assert.ok(id);
   assert.notEqual(id, first.id);
   await page
     .locator(".agent-status-line")
