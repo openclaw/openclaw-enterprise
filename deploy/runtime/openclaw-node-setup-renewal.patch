@@ -6166,7 +6166,7 @@
  it("lets explicit gateway flags override --pair values", async () => {
    const code = encodePairingSetupCode(pairingPayload);
    await run(
-@@ -163,3 +190,45 @@
+@@ -163,3 +190,46 @@
      ...(!changed ? { gatewayHost: "10.0.0.2", gatewayPort: 19001 } : {}),
    });
  });
@@ -6198,9 +6198,10 @@
 +  },
 +);
 +
-+it("forwards required device authentication", async () => {
-+  await run("run --require-device-auth");
-+  expectHost({ requireDeviceAuth: true });
++it("forwards required device authentication and literal restart identity values", async () => {
++  // The real CLI parses the launcher's equals-form arguments; the host is only a dispatch capture.
++  await run("run --require-device-auth", "--display-name=--help", "--node-id=--version");
++  expectHost({ requireDeviceAuth: true, displayName: "--help", nodeId: "--version" });
 +});
 +
 +it.each(["--pair", "--pair-if-needed", "--pair-or-reconnect", "--auth-from-env"])(
@@ -7948,7 +7949,7 @@
        const gateway = companion
          ? {
              host: "2001:db8::10",
-@@ -153,7 +175,9 @@
+@@ -153,11 +175,13 @@
          ? `--tls --share-installed-apps --context-path /openclaw-gw --tls-fingerprint ${"ab".repeat(32)} --commands fixture.list,fixture.read --session-host --desktop-sharing --auth-from-env --parent-stdin`.split(
              " ",
            )
@@ -7958,7 +7959,13 @@
 +          );
        const effectiveConfig = {
          version: 1 as const,
-         nodeId: "persisted-node-id",
+-        nodeId: "persisted-node-id",
+-        displayName: "Persisted Node",
++        nodeId: "--version",
++        displayName: "--help",
+         gateway,
+         installedAppsSharing: companion,
+         commands,
 @@ -167,7 +191,13 @@
  
        await withRunningNodeHost(
@@ -7984,6 +7991,19 @@
                argv: [
                  "node",
                  "run",
+@@ -189,10 +223,8 @@
+                 gateway.host,
+                 "--port",
+                 String(gateway.port),
+-                "--node-id",
+-                "persisted-node-id",
+-                "--display-name",
+-                "Persisted Node",
++                "--node-id=--version",
++                "--display-name=--help",
+                 ...optionArgs,
+               ],
+             },
 --- a/src/node-host/runner.shutdown.test.ts
 +++ b/src/node-host/runner.shutdown.test.ts
 @@ -26,7 +26,7 @@
@@ -9132,7 +9152,7 @@
        }))
      ) {
        throw new Error("Pairing setup code has expired.");
-@@ -225,360 +391,499 @@
+@@ -225,360 +391,497 @@
      gatewayBootstrapToken = undefined;
      reuseDeviceTokenOnly = true;
    }
@@ -9586,10 +9606,8 @@
 +        endpoint.hostname.replace(/^\[|\]$/g, ""),
 +        "--port",
 +        endpoint.port || (endpoint.protocol === "wss:" ? "443" : "80"),
-+        "--node-id",
-+        nodeId,
-+        "--display-name",
-+        displayName,
++        `--node-id=${nodeId}`,
++        `--display-name=${displayName}`,
 +        endpoint.protocol === "wss:" ? "--tls" : "--no-tls",
 +        config.installedAppsSharing ? "--share-installed-apps" : "--no-share-installed-apps",
 +      ];
@@ -12012,11 +12030,28 @@
    it("restarts with paired arguments and revokes managed state when the healthy candidate disconnects", async () => {
      const f = await fixture(`
 -await setNodeHostLauncherRestartArguments(['node', 'run', '--display-name', 'paired']);
-+await setNodeHostLauncherRestartArguments(['node', 'run', '--display-name', 'paired'], {CF_ACCESS_CLIENT_ID: null, CF_ACCESS_CLIENT_SECRET: null});
++await setNodeHostLauncherRestartArguments(['node', 'run', '--display-name=--help', '--node-id=--version'], {CF_ACCESS_CLIENT_ID: null, CF_ACCESS_CLIENT_SECRET: null});
  ${requestUpdate}
  `);
      const candidate = await f.release(`
-@@ -347,6 +364,147 @@
+@@ -338,7 +355,15 @@
+     const lines = jsonLines(result.stdout);
+     expect(lines[0]).toMatchObject({ ok: true });
+     expect(lines[1]).toMatchObject({
+-      argv: ["--profile", "work", "--no-color", "node", "run", "--display-name", "paired"],
++      argv: [
++        "--profile",
++        "work",
++        "--no-color",
++        "node",
++        "run",
++        "--display-name=--help",
++        "--node-id=--version",
++      ],
+       cwd: f.base,
+       state: f.state,
+       disconnectedState: null,
+@@ -347,6 +372,147 @@
      expect(lines[1].first).toBe(lines[1].second);
      await expectSelection(f.current, candidate.prefix);
      await expectMissing(f.lock);
@@ -12164,7 +12199,7 @@
    });
  
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
-@@ -432,7 +590,7 @@
+@@ -432,7 +598,7 @@
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -12173,7 +12208,7 @@
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -450,6 +608,7 @@
+@@ -450,6 +616,7 @@
          version,
          state: f.state,
          argv: ["node", "run"],
