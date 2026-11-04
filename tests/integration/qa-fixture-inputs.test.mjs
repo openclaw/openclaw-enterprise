@@ -515,6 +515,14 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     /OPENAI_KEY_FILE is required/,
   );
   const full = selectQaMatrix({});
+  const replacement = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "openshell-provider-replacement",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+    OCC_TEST_QA_PRESET: "Codex",
+  });
+  assert.equal(replacement.providerReplacement, true);
+  assert.ok(replacement.cells.every((cell) => cell.scenarios.length === 0));
+  assert.throws(() => validateQaInputs(replacement, {}), /REPLACEMENT_INPUT_FILE/);
   assert.equal(full.scope, "full");
   // An equally sized selection still omits default coverage if it substitutes a manual scenario.
   assert.equal(

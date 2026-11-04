@@ -75,7 +75,8 @@ checks and image, command, environment, labels and annotations updates.
 The local RPC definitions match [OpenShell commit `42671c2`](https://github.com/NVIDIA/OpenShell/blob/42671c2dd2c02b744850e0bda72b99d5509969c1/proto/openshell.proto#L863).
 Enable sandbox updates in the OpenShell gateway and select a compute driver
 that supports the requested changes. The prototype also uses `StopSandbox`,
-`StartSandbox` and `ExposeService`. The default OCE development and CI images
+`StartSandbox`, `ExposeService`, `AttachSandboxProvider` and `DetachSandboxProvider`.
+The default OCE development and CI images
 remain pinned to OpenShell v0.1.5; updating the RPC definitions does not update
 those images or establish live compatibility.
 
@@ -93,6 +94,13 @@ replaces runtime material while stopped, updates the workload with its observed
 resource version, reads back the complete specification, then starts it. An
 older server that ignores new update fields fails verification before start.
 Final Agent deletion deletes the Sandbox and runtime Provider through OpenShell.
+
+With unchanged policy, replacement can add, remove or switch Credential Source
+Providers. OCE detaches obsolete Providers before attaching replacements, verifies
+each change while stopped, and compares membership independently of list order.
+An interrupted attempt leaves the Sandbox stopped; retry reconciles its stored
+attachments. Detachment preserves the shared Provider and other Agents' access.
+Provider profile and policy conflicts fail the replacement before start.
 
 Provider config updates preserve unchanged empty fields, including an absent
 node CA. Before a native OpenClaw replacement starts, OCE restores and verifies
@@ -125,9 +133,10 @@ See the [provisioning flow](../../flows/openshell-managed-workload.md).
   are refused. Bootstrap requires writable `/sandbox`; read-only policy paths
   within that root are refused. The inherited `sandboxDataMount` fields describe a logical
   workspace path; no mount using them is submitted to OpenShell.
-- Changing the Harness type, provider set, policy, resource requests or runtime
-  class through workload replacement is refused. OpenShell needs further update
-  support for those changes. Runtime Provider configuration keys cannot be removed.
+- Changing the Harness type, policy, resource requests or runtime class through
+  workload replacement is refused. Git replacement remains unsupported: its
+  revision-specific Provider, middleware binding and authorization lifecycle must
+  be reconciled together. Runtime Provider configuration keys cannot be removed.
 - Replacement relies on one OCE worker and OpenShell's serialized lifecycle
   operations. See [stop and replacement ordering](../../flows/openshell-managed-workload.md#stop-and-replacement-ordering)
   for the cancellation argument. Provider credential mutations and exposure

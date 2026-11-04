@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-03"
-last_updated_session: authoring-run/6b5d1338-b410-4347-b988-154d7c2d9bce
+updated: "2026-11-04"
+last_updated_session: authoring-run/fd07e061-6581-4e80-9946-e13b37bfb63b
 ---
 
 # Managed OpenShell workload flow
@@ -115,9 +115,23 @@ The config write patches only changed fields. Unchanged empty values, including
 deletion and the Gateway client refuses it.
 
 `reconcileHarness` verifies Namespace and Agent ownership, then requires stopped
-state before changing the revision. It rejects unsupported immutable differences,
-sends `SandboxUpdates.UpdateSandbox` with the observed resource version and reads
-back the complete specification. Only a matching result can start. The client
+state before changing the revision. It rejects unsupported policy, resource and
+runtime-class differences. `reconcileProviders` compares Provider membership,
+independent of list order. Before replacement, it also reads the current policy
+revision: a live policy edit absent from the creation specification must not be
+overlooked. Policy changes remain unsupported in this replacement path.
+
+The Driver detaches obsolete Providers before attaching missing ones, because
+replacement sources can supply the same credential environment variable. Each
+mutation uses the observed Sandbox resource version. Readback must confirm the
+expected membership, unchanged workload and ownership, and the same stopped
+Sandbox identity. Detachment does not delete a shared Credential Source Provider.
+A failed or uncertain mutation ends the attempt before start; a retry reads the
+stored membership and performs the remaining changes. Git replacement still
+requires separate route and policy lifecycle work.
+
+The Driver then sends `SandboxUpdates.UpdateSandbox` with the latest observed
+resource version and reads back the complete specification. Only a matching result can start. The client
 uses the separate service path in `openshell-gateway-client.ts:updateSandbox`.
 
 Before restarting a native OpenClaw Sandbox whose new revision has not enrolled,
@@ -207,6 +221,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-04 19:01: Reconcile Provider attachments while stopped and verify membership before restart in the accompanying implementation. (authoring-run/fd07e061-6581-4e80-9946-e13b37bfb63b - c1a56da513af5bbd098cb06499796f365f6b3d28)
 
 - 2026-11-03 19:03: Keep Node's startup compile cache outside the managed runtime selector in the accompanying fix. (authoring-run/6b5d1338-b410-4347-b988-154d7c2d9bce - 095680880b1cce7ee9cd45747561e4e569285826)
 
