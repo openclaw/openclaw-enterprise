@@ -1,0 +1,154 @@
+name: k3d quickstart end to end
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev/kevinlin/k3d-quickstart-actions]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k3d-quickstart-e2e
+  cancel-in-progress: false
+
+jobs:
+  quickstart:
+    # A maintainer sets the repository variable to the reviewed commit before pushing.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected) ||
+      (github.event_name == 'push' && github.repository == 'openclaw/openclaw-enterprise' &&
+       github.ref == 'refs/heads/dev/kevinlin/k3d-quickstart-actions' &&
+       github.actor == 'kevinlin-openai' && github.sha == vars.OCE_QUICKSTART_REVIEWED_SHA)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      CI: "1"
+      # Use the runner image's packaged Chrome and its Ubuntu sandbox profile.
+      OCC_TEST_BROWSER_EXECUTABLE: /opt/google/chrome/chrome
+      MODEL: ${{ vars.OCE_QUICKSTART_MODEL }}
+      OCC_TEST_LINEAR_TEAM_ID: ${{ vars.OCC_TEST_LINEAR_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prepare hosted disk for source images
+        env:
+          OPENCLAW_CI_HEADROOM_LANE: k3d-quickstart
+        run: node scripts/ci/repository-platform-headroom.mjs
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+          package-manager-cache: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/setup-pnpm-store-cache
+      - name: Configure Docker mirror before starting containers
+        run: bash scripts/ci/docker-hub-mirror.sh setup
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+      - name: Install the quickstart prerequisites
+        run: |
+          set -euo pipefail
+          bash scripts/ci/setup-tools.sh k3d
+          pnpm install --frozen-lockfile
+          sudo apt-get install --no-install-recommends -y libnss3-tools
+          test -x "$OCC_TEST_BROWSER_EXECUTABLE"
+          # Check the same sandboxed browser launch before provisioning or reading secrets.
+          node --input-type=module <<'JS'
+          import { mkdtemp } from "node:fs/promises";
+          import { join } from "node:path";
+          import { chromium } from "playwright";
+          import { launchTrustingBrowser } from "./tests/helpers/dev-up-keycloak.mjs";
+          const root = await mkdtemp(join(process.env.RUNNER_TEMP, "chrome-preflight-"));
+          const browser = await launchTrustingBrowser(chromium, root, { caFiles: [], hosts: [] });
+          await browser.close();
+          JS
+          if [[ ! -e /proc/sys/net/bridge/bridge-nf-call-iptables ]]; then
+            sudo modprobe br_netfilter
+          fi
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+      - name: Stage run-private inputs
+        id: inputs
+        env:
+          CODEX_PAT: ${{ secrets.OCE_QUICKSTART_CODEX_PAT }}
+          APP_PRIVATE_KEY: ${{ secrets.OCE_TEST_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          : "${MODEL:?}" "${OCC_TEST_LINEAR_TEAM_ID:?}" "${CODEX_PAT:?}" "${APP_PRIVATE_KEY:?}"
+          mkdir "$RUNNER_TEMP/oce-credentials"
+          printf '%s' "$CODEX_PAT" > "$RUNNER_TEMP/oce-credentials/codex-pat"
+          printf '%s\n' "$APP_PRIVATE_KEY" > "$RUNNER_TEMP/oce-credentials/app.pem"
+          openssl pkey -in "$RUNNER_TEMP/oce-credentials/app.pem" -check -noout >/dev/null
+          {
+            echo "RUN_DIR=$RUNNER_TEMP/oce-quickstart"
+            echo "CODEX_TOKEN_FILE=$RUNNER_TEMP/oce-credentials/codex-pat"
+            echo "GITHUB_APP_KEY_FILE=$RUNNER_TEMP/oce-credentials/app.pem"
+          } >> "$GITHUB_ENV"
+      - name: Create the installation and onboard the Agent through the Control UI
+        id: setup
+        timeout-minutes: 105
+        run: bash scripts/ci/k3d-quickstart/private-step.sh setup
+      - name: Add the Linear plugin and read the configured team
+        id: linear
+        timeout-minutes: 35
+        run: bash scripts/ci/k3d-quickstart/private-step.sh linear
+      - name: Push one empty commit to the fixture and restore read-only access
+        id: git
+        timeout-minutes: 45
+        run: bash scripts/ci/k3d-quickstart/private-step.sh git
+      - name: Reopen the original Control UI conversation after redeployment
+        id: recall
+        timeout-minutes: 12
+        run: bash scripts/ci/k3d-quickstart/private-step.sh browser-recall
+      - name: Record running container image digests
+        id: images
+        run: |
+          set -euo pipefail
+          source "$RUN_DIR/session.sh"
+          kube get pods --all-namespaces -o json | jq -e '
+            [.items[] | .metadata.namespace as $namespace |
+              .status.containerStatuses[]? | .name as $container |
+              .imageID | scan("sha256:[0-9a-f]{64}") |
+              {namespace:$namespace, container:$container, digest:.}] | unique | select(length > 0)
+          ' > "$RUN_DIR/images.json"
+      - name: Retire Git credentials and remove the test branch
+        id: git_cleanup
+        if: always() && steps.git.outcome != 'skipped' && steps.inputs.outcome == 'success'
+        timeout-minutes: 25
+        run: bash scripts/ci/k3d-quickstart/private-step.sh git-cleanup
+      - name: Delete the Agent and the local installation
+        id: teardown
+        if: always() && steps.inputs.outcome == 'success' && (steps.git.outcome == 'skipped' || steps.git_cleanup.outcome == 'success')
+        timeout-minutes: 18
+        run: bash scripts/ci/k3d-quickstart/private-step.sh teardown
+      - name: Remove private input files
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/oce-credentials/app.pem" "$RUNNER_TEMP/oce-credentials/codex-pat"
+      - name: Collect sanitized receipts
+        if: always()
+        env:
+          SETUP: ${{ steps.setup.outcome }}
+          GIT: ${{ steps.git.outcome }}
+          LINEAR: ${{ steps.linear.outcome }}
+          RECALL: ${{ steps.recall.outcome }}
+          IMAGES: ${{ steps.images.outcome }}
+          GIT_CLEANUP: ${{ steps.git_cleanup.outcome }}
+          TEARDOWN: ${{ steps.teardown.outcome }}
+        run: bash scripts/ci/k3d-quickstart/receipts.sh
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: k3d-quickstart-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oce-receipts/
+          if-no-files-found: error
+          retention-days: 7

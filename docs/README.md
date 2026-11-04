@@ -15,7 +15,7 @@ Choose where to install:
 - [Kubernetes](guides/deploy/kubernetes-setup.md)
 - [Amazon EKS](guides/deploy/eks-openshell-setup.md)
 
-Each path finishes with the same running OpenShell Codex Agent, browser onboarding, and saved operator session. Then use the shared [Add Git](guides/repository-credentials/openshell-git-push.md), [Add Plugin](guides/integrations/codex-plugins.md), and [Delete Agent](guides/deploy/quickstart-delete-agent.md) instructions. Installation cleanup is separate for each platform.
+After installation, [deploy your first Agent](guides/deploy/deploy-first-agent.md), complete browser onboarding, and save the operator session. Use the shared [Add Git](guides/repository-credentials/openshell-git-push.md), [Add Plugin](guides/integrations/codex-plugins.md), and [Delete Agent](guides/deploy/quickstart-delete-agent.md) instructions. Installation cleanup is separate for each platform.
 
 If you are still learning the product, start with [Concepts](guides/concepts.md).
 

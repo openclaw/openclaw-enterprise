@@ -15,7 +15,7 @@ its environment variable; `--namespace=` does so for Installation-scoped
 | `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Required for resource commands. Path to the complete bootstrap or issued service-key JSON response.                                        |
 | `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `preset`, `credential-source`, `iam`, and `agent` commands. Supply the Namespace ID, not its name. |
 | `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.                          |
-| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an HTTP request. Default: `30`.                                                                                 |
+| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an OCC request or installation handoff check. Default: `30`.                                                    |
 | `--output`, `-o`     | —                      | Command-specific formats and defaults appear in `--help`. Unsupported explicit values fail before requests.                                |
 | `--help`, `-h`       | —                      | Prints help for the command.                                                                                                               |
 | `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev`; published binaries report their OCE release version.                                   |
@@ -133,6 +133,18 @@ eligible for coordinated deployment. It fails instead of silently omitting an
 unauthorized resource. JSON and YAML output include each Agent's desired runtime
 state, execution mode, selected version, and whether deployment work is queued or
 claimed.
+
+## Installation handoff
+
+`occ installation doctor` and `plan` inspect one chart initialization Job through
+`kubectl`; they do not use the OCC API or change cluster resources. Both require
+`--kubeconfig`, `--context`, `--kube-namespace`, and `--release`. Optional
+`--expect-job-uid` binds the observation to the originally recorded Job.
+
+Use the CLI matching the chart's source revision. Output is text only. Exit `0`
+means the recognized Job reports consistent completion; other states exit `1`.
+Neither result proves current release or workload readiness.
+[Resume with the original Job UID](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
 
 ## Runtime status and logs
 

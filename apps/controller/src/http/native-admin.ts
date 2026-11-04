@@ -236,15 +236,40 @@ function escapeHtml(value: string): string {
   });
 }
 
+// A top-level browser page load of the native root or a copied chat link. Link unfurlers and API
+// clients send no Fetch Metadata, so they never qualify. Sec-Fetch-User is checked separately:
+// Safari never sends it, and other browsers omit it on navigations without user activation.
 function browserDocumentNavigation(request: FastifyRequest, pathname: string): boolean {
   return (
     request.method === "GET" &&
-    /^\/(?:chat\/main(?:\/[0-9a-f]{32})?)?$/.test(pathname) &&
+    /^\/(?:chat\/main(?:\/[0-9a-f]{32})?\/?)?$/.test(pathname) &&
     request.headers["sec-fetch-mode"] === "navigate" &&
     request.headers["sec-fetch-dest"] === "document" &&
-    request.headers["sec-fetch-user"] === "?1" &&
     acceptsHtml(request.headers.accept)
   );
+}
+
+function userActivated(request: FastifyRequest): boolean {
+  return request.headers["sec-fetch-user"] === "?1";
+}
+
+function sendNativeAdminHtmlRefusal(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  title: string,
+  body: string,
+): void {
+  reply
+    .header("cache-control", "no-store")
+    .header("content-type", "text/html; charset=utf-8")
+    .header("x-content-type-options", "nosniff")
+    .header("referrer-policy", "no-referrer")
+    .header("x-request-id", request.id)
+    .code(403)
+    .type("text/html; charset=utf-8")
+    .send(
+      `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`,
+    );
 }
 
 function acceptsHtml(accept: string | string[] | undefined): boolean {
@@ -1115,11 +1140,21 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       ) {
         const consoleUrl = new URL("/console/", publicOrigin);
         consoleUrl.hash = `native-agent=${agentKey}`;
-        reply
-          .header("cache-control", "no-store")
-          .header("referrer-policy", "no-referrer")
-          .header("x-request-id", request.id)
-          .redirect(consoleUrl.href, 302);
+        if (userActivated(request)) {
+          reply
+            .header("cache-control", "no-store")
+            .header("referrer-policy", "no-referrer")
+            .header("x-request-id", request.id)
+            .redirect(consoleUrl.href, 302);
+          return true;
+        }
+        // Without user activation, stay 403 and leave sign-in to the person: no automatic redirect.
+        sendNativeAdminHtmlRefusal(
+          request,
+          reply,
+          "Sign in",
+          `<p><a href="${escapeHtml(consoleUrl.href)}">Sign in</a></p>`,
+        );
         return true;
       }
       // A signed-in person who cannot open this Agent (for example after Back switches
@@ -1131,17 +1166,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         documentNavigation
       ) {
         const agentsUrl = escapeHtml(new URL("/console/agents", publicOrigin).href);
-        reply
-          .header("cache-control", "no-store")
-          .header("content-type", "text/html; charset=utf-8")
-          .header("x-content-type-options", "nosniff")
-          .header("referrer-policy", "no-referrer")
-          .header("x-request-id", request.id)
-          .code(403)
-          .type("text/html; charset=utf-8")
-          .send(
-            `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Access denied</title></head><body><p>You do not have access to this gateway.</p><p><a href="${agentsUrl}">Go to your Agents</a></p></body></html>`,
-          );
+        sendNativeAdminHtmlRefusal(
+          request,
+          reply,
+          "Access denied",
+          `<p>You do not have access to this gateway.</p><p><a href="${agentsUrl}">Go to your Agents</a></p>`,
+        );
         return true;
       }
       // A denial names the grant but not the Agent: the Agent was resolved from the host, not

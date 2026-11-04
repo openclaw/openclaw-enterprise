@@ -9,8 +9,8 @@ Plan any traffic handoff separately from this in-place upgrade.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline and take the backups required by the [upgrade checklist](upgrade-checklist.md).
-2. [Rehearse](#rehearse-before-the-maintenance-window) the chosen upgrade command
-   with `--preflight-only` and a separate evidence directory.
+2. [Preflight the target](#rehearse-before-the-maintenance-window).
+   [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
 3. Freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
    [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
 4. [Verify the release](#verify-the-release) with a real workload.
@@ -23,8 +23,9 @@ runtime image and redeploys every running Agent concurrently. Each upgrade
 stops the API and worker during migration and rollout. Allow capacity for old
 and replacement versions to overlap.
 
-The helper upgrades the `openclaw-enterprise` chart. Prepare images, backups,
-and infrastructure before running it.
+The helper checks chart paths and bytes against the selected commit before
+contacting the cluster. Keep evidence and baselines outside the chart. Keep the
+checkout unchanged and under your exclusive control.
 
 For settings changes, [prepare reviewed candidate files](#include-reviewed-settings).
 For the experimental two-cluster profile, first
@@ -38,11 +39,11 @@ location.
 
 Prepare:
 
-- each selected image as an immutable lowercase `@sha256:` digest with passing
-  checks and a reviewed source commit;
+- images pinned by lowercase `@sha256:` digest, with passing checks and a full
+  reviewed commit. Use [published digests](../../release/containers.md#prepare-and-publish)
+  or build your own;
 - a clean release checkout at `RELEASE_SOURCE_SHA`. Run the helper from its
-  root. The helper uses its Helm chart and compares the live Collector
-  configuration with its files;
+  root to check the chart and live Collector configuration;
 - the matching OCC CLI at `--occ` (`/secure/occ/bin/occ` below). Use the
   [release binary](../cli.md#connect-to-your-installation) or build it with
   `go build -trimpath -o bin/occ ./cmd/occ` in the release checkout. The helper
@@ -207,17 +208,19 @@ bootstrap record disagree.
 
 ## Rehearse before the maintenance window
 
-Rehearse the intended command with `--preflight-only`, exact reviewed inputs and
-a new private evidence directory. The helper checks the baseline, renders the
-chart, runs a Helm server dry run and one-shot API/worker startup checks, and
-checks repository-enabled image pairs.
+`--preflight-only` checks target inputs and applicable repository image pairs,
+runs a Helm server dry run, and checks startup in temporary API and worker Pods.
+Writers stay active. Preflight prepares no deployment to resume. After
+[cleanup](production-upgrade-recovery.md#clean-up-preflight-resources), deploy
+without the flag. Reuse reviewed inputs. Use fresh private evidence each run.
+Live checks repeat. Keep writer and draft freezes through recovery.
 
-Serving writers continue without a production freeze. Do not use `--resume`:
-rehearsal creates no prepared deployment. Success does not prove readiness or
-grant approval. Follow [safe cleanup](production-upgrade-recovery.md#clean-up-preflight-resources)
-before deploying. For deployment, omit `--preflight-only`, use fresh
-`UPGRADE_EVIDENCE` with the same reviewed inputs, and apply the writer/draft
-freezes through recovery. Checks repeat because live state may have changed.
+Time upgrade and recovery interruptions on an isolated, populated installation.
+Use the same command, separate endpoints, a [protected baseline](upgrade-baseline.md),
+and fresh evidence.
+[Preserve candidate writes](upgrade-baseline.md#restore-the-retained-candidate-database).
+Return to software compatible with retained state and schema. Read back an
+acknowledged candidate write from the returned service.
 
 ## Upgrade the control plane
 

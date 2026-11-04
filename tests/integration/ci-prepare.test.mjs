@@ -18,7 +18,7 @@ import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
+import { nodeTestSummary } from "../helpers/node-test-summary.ts";
 import {
   assertStderrMatch,
   fixture,

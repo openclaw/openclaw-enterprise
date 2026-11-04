@@ -190,7 +190,10 @@ export function registerDispatchRestoreTests(
         }
         await writeFile(statePath, JSON.stringify(normalState));
 
-        await f.run("--resume");
+        // Keep the upgrade unfinished so the next resume exercises an older
+        // receipt after the journal has already selected the newer revision.
+        await f.failNext("doctor-error");
+        await assert.rejects(f.run("--resume"), /OpenClaw Doctor failed/);
         assert.equal(await projectedRevision(), revisionC);
         assert.deepEqual(await lastEntry(), [
           "replace",
@@ -212,61 +215,47 @@ export function registerDispatchRestoreTests(
     });
   }
 
-  for (const replacement of [false, true]) {
-    const restored = replacement
-      ? "a replacement with the original inode"
-      : "the original directory";
-    test(`a stale backup restored into ${restored} cannot replay an Agent dispatch`, async (t) => {
-      const f = await fixture(t, { agent: true });
-      await f.failNext("fail-rollout-worker");
-      await assert.rejects(f.run(), injectedFault);
-      const backup = join(f.directory, "pre-dispatch-backup");
-      await cp(f.evidence, backup, { recursive: true });
+  test("a stale backup restored into the original directory cannot replay an Agent dispatch", async (t) => {
+    const f = await fixture(t, { agent: true });
+    await f.failNext("fail-rollout-worker");
+    await assert.rejects(f.run(), injectedFault);
+    const backup = join(f.directory, "pre-dispatch-backup");
+    await cp(f.evidence, backup, { recursive: true });
 
-      await f.failNext("lost-agent-response");
-      await assert.rejects(f.run("--resume"), /deployment outcome is unknown/);
-      const accepted = await f.state();
-      assert.equal(accepted.dispatches, 1);
-      // Simulate an Agent read that still shows the old active revision.
-      await writeFile(
-        join(f.directory, "state.json"),
-        JSON.stringify({
-          ...accepted,
-          activeRevision: "rev_old",
-        }),
-      );
+    await f.failNext("lost-agent-response");
+    await assert.rejects(f.run("--resume"), /deployment outcome is unknown/);
+    const accepted = await f.state();
+    assert.equal(accepted.dispatches, 1);
+    // Simulate an Agent read that still shows the old active revision.
+    await writeFile(
+      join(f.directory, "state.json"),
+      JSON.stringify({
+        ...accepted,
+        activeRevision: "rev_old",
+      }),
+    );
 
-      const original = await stat(f.evidence);
-      await quarantineContents(f.evidence, join(f.directory, "quarantine"));
-      if (replacement) {
-        let reused = false;
-        for (let attempt = 0; attempt < 128 && !reused; attempt++) {
-          await rmdir(f.evidence);
-          await mkdir(f.evidence, { mode: 0o700 });
-          reused = (await stat(f.evidence)).ino === original.ino;
-        }
-        if (!reused) {
-          t.skip("this filesystem did not reuse the inode");
-          return;
-        }
-      }
-      await cp(backup, f.evidence, { recursive: true });
-      const stale = await stat(f.evidence);
-      assert.deepEqual([stale.dev, stale.ino], [original.dev, original.ino]);
+    // Restore stale bytes under the same canonical path, device and inode.
+    // Resume observes the same directory identity as inode reuse would produce,
+    // without relying on the filesystem allocator to recycle a deleted inode.
+    const original = await stat(f.evidence);
+    await quarantineContents(f.evidence, join(f.directory, "quarantine"));
+    await cp(backup, f.evidence, { recursive: true });
+    const stale = await stat(f.evidence);
+    assert.deepEqual([stale.dev, stale.ino], [original.dev, original.ino]);
 
-      const calls = f.commands.length;
-      const error: unknown = await f.run("--resume").then(
-        () => undefined,
-        (e: unknown) => e,
-      );
-      assert.equal((await f.state()).dispatches, 1, "restoring a stale backup must not send again");
-      assert.match(
-        (error as { stderr?: string } | undefined)?.stderr ?? "",
-        /unknown deployment outcome/,
-      );
-      assert.equal(f.commands.length, calls, "resume must stop before any external command");
-    });
-  }
+    const calls = f.commands.length;
+    const error: unknown = await f.run("--resume").then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    assert.equal((await f.state()).dispatches, 1, "restoring a stale backup must not send again");
+    assert.match(
+      (error as { stderr?: string } | undefined)?.stderr ?? "",
+      /unknown deployment outcome/,
+    );
+    assert.equal(f.commands.length, calls, "resume must stop before any external command");
+  });
 
   test("a stale fleet backup retries only the Agent with a definite refusal", async (t) => {
     const agent = (id: string) => ({

@@ -63,6 +63,11 @@ function configurationValues(scenario) {
     },
     channels: {},
   };
+  if (scenario.harnessId === "openclaw") {
+    const model = "openai/gpt-5.1";
+    values.agents.defaults.model = model;
+    values.agents.defaults.models = { [model]: { agentRuntime: { id: "openclaw" } } };
+  }
   if (scenario.gatewayPassword) {
     values.gateway.auth = {
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
@@ -1075,6 +1080,46 @@ export function installFixture(scenario, evidence) {
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response({
         configurations: [
+          ...(scenario.installationModelProvider
+            ? [
+                {
+                  capability: "compute",
+                  driverId: "kubernetes-compute",
+                  implementation: "kubernetes",
+                  scope: "installation",
+                  key: "startup",
+                  binding: "installation-startup",
+                  configurationSchema: {
+                    type: "object",
+                    properties: {
+                      runtime: {
+                        type: "object",
+                        properties: {
+                          modelProvider: {
+                            type: "object",
+                            properties: {
+                              protocol: { type: "string" },
+                              baseUrl: { type: "string" },
+                              supportsStandaloneWebSearch: { type: "boolean" },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                  startupConfiguration: {
+                    runtime: {
+                      modelProvider: {
+                        protocol: "openai-responses",
+                        baseUrl: "https://models.example.com/v1",
+                        supportsStandaloneWebSearch: false,
+                      },
+                    },
+                  },
+                  actions: {},
+                },
+              ]
+            : []),
           ...(scenario.installationNestedValues
             ? [
                 {
@@ -1516,6 +1561,17 @@ export function installFixture(scenario, evidence) {
           return response([...credentialSources.values()]);
         }
         if (method === "POST") {
+          if (
+            scenario.credentialRegistrationOutcome === "invalid-config" &&
+            !credentialRegistrationFailed
+          ) {
+            credentialRegistrationFailed = true;
+            return error(
+              400,
+              "INVALID_REQUEST",
+              "Credential destination authorization must match the Installation model provider.",
+            );
+          }
           const uncertain = scenario.credentialRegistrationOutcome && !credentialRegistrationFailed;
           const id = nextId("csr");
           const saved = {
@@ -2166,7 +2222,7 @@ export function installFixture(scenario, evidence) {
                     })),
                   ],
             cursor: "simulated-policy-cursor",
-            withheld: 0,
+            withheld: scenario.policyWithheld ?? 0,
             truncated: false,
           });
         }

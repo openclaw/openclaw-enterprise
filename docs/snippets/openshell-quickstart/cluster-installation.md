@@ -73,7 +73,7 @@ done
 
 Expect the target database, login and `t` for each connection.
 
-Provision the other rendered Secret references: distinct OCE authentication/private-routing keys and OpenShell client TLS. The routing key is named `occ`. Prepare the bootstrap PVC once with UID/GID 1000 and mode 0700. Follow [system Secret and bootstrap preparation](production-installation.md#provision-system-secrets-and-install) using namespace `oce-system` and your selected storage class.
+Provision distinct OCE authentication and [private-routing credentials](workspace-routing.md#configure-private-routing), plus OpenShell client TLS. Create `occ-private-gateway-key` with key `occ` in `oce-system` before installing OCC. Prepare the bootstrap PVC once with UID/GID 1000 and mode 0700. Follow [system Secret and bootstrap preparation](production-installation.md#provision-system-secrets-and-install) using namespace `oce-system` and your selected storage class.
 
 ```bash
 # Allow the initialization hook to reach the DNS Service VIP.
@@ -148,6 +148,10 @@ helm upgrade oce "$OCE_CHART" -n "$PLATFORM_NS" -f "$RUN_DIR/worker.json" --wait
 cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
 cp "$RUN_DIR/worker.json" "$VALUES_FILE"
 ```
+
+Agent deployment pairs these egress rules with management ingress for the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Keep both directions. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Supervisor grants apply per tenant and Gateway grants per Agent. To verify ownership-based withdrawal, inspect every grant for that namespace. For a live Agent in its verified namespace, stage the current platform helper and renderer and run `deployment_network` in its saved session to replace a name-only grant.
+
+If namespace ownership has changed or the Agent’s Gateway Service is gone, withdraw the obsolete grant directly. Inspect its source namespace, Agent or supervisor Pod selector, and destination management selector with `kube -n "$PLATFORM_NS" get networkpolicy "$policy" -o yaml`. Match them to the recorded owner. Confirm a separate restrictive ingress policy still selects the management Pods so deleting the grant keeps them isolated. Then run `kube -n "$PLATFORM_NS" delete networkpolicy "$policy"` with the verified policy name. Preserve grants for other tenants and callers.
 
 Wait for Compute to create the backing namespace, then apply these [tenant bindings](production-agents.md#prepare-each-namespace). Verify restricted Pod Security; grant the ordinary worker role last.
 

@@ -56,6 +56,7 @@
     "tests/integration/common-logging.test.mjs",
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.mjs",
+    "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
     "tests/conformance/temporary-directory.test.mjs",
@@ -397,6 +398,9 @@
       "path": "tests/integration/production-image-upgrade.test.mjs"
     },
     {
+      "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
+    },
+    {
       "path": "tests/integration/secret-api.test.mjs"
     },
     {
@@ -560,6 +564,7 @@
       "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
       "expectedTests": [
         "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
+        "held Git startup observes a denial inside its provider endpoint without credential access",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
         "protected Git replies to this online decision before its authority deadline",
         "shipped gh metadata stays within selected-repository authority",

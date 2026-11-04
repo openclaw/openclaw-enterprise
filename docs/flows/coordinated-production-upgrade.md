@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-03"
-last_updated_session: "authoring-run/a4cf6a1b-e333-44d4-8e78-138caa5c190a"
+updated: "2026-11-04"
+last_updated_session: "authoring-run/47f197fd-9f98-4dfb-8162-36589ab6194e"
 ---
 
 # Production image upgrade flow
@@ -15,11 +15,10 @@ read-only Doctor lint.
 
 ## Entry Points
 
-- Trigger: an operator runs `scripts/upgrade-production-images` with selected
-  images and cluster, release, source, and protected-file inputs.
-- Required state: a healthy production Helm release and matching OCC and
-  Kubernetes Installation identity. Runtime releases additionally require a
-  complete authorized fleet inventory with no deployment in progress.
+- Trigger: run `scripts/upgrade-production-images` with selected images, target,
+  release, source revision and protected files.
+- Required: a healthy production Helm release and matching OCC and Kubernetes
+  Installation IDs. Runtime upgrades require complete authorized inventory and no deployment in progress.
 - Source: `scripts/upgrade-production-images`,
   `packages/occ/src/index.ts:OpenClawController.getInstallationDeploymentInventory`,
   and `packages/occ/src/index.ts:OpenClawController.deployAgent`.
@@ -63,39 +62,39 @@ graph TD
 
 `scripts/upgrade-production-images:prepare_upgrade`
 
-Before protected-file reads, evidence writes or cluster access, repository
-`HEAD` must match `--source-revision`.
-Local edits and image provenance remain unverified.
+Before protected reads, evidence writes or cluster access, the helper matches
+`HEAD` to `--source-revision`. It rejects changed, extra or missing stock chart files, symlinks,
+and baseline/evidence paths or aliases inside the chart. Keep the checkout
+unchanged; other local edits and image provenance remain unchecked.
 
-Resume checks the evidence directory's canonical path, device and inode before
-live access. Aliases to the original directory share its lock. Runtime upgrades
-also lock a private sibling dispatch journal bound to the run and frozen fleet.
-The journal survives restoration of the evidence alone.
+Resume binds the evidence directory's canonical path, device and inode; aliases
+share its lock. Any `completed` entry refuses resume before Kubernetes/OCC calls
+or evidence changes. Runtime upgrades also lock the private sibling dispatch
+journal for the frozen fleet. Restoring evidence leaves that journal intact.
 
-It checks protected files, cluster, deployed Helm release and matching OCC/Secret
-Installation IDs. Reviewed candidates must match the [configuration baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
-as ordered YAML mappings, including images; non-mappings stop preparation before
-rendering. Only the Slack directory proxy and curated Codex PluginDriver selection
-may change before image flags apply. Broker checks compare references, not
-ConfigMap or Secret contents.
+Candidates match the [baseline](../guides/deploy/upgrade-baseline.md#record-the-release-and-its-configuration)
+as ordered YAML mappings, including images. Validate both candidates before
+protected-setting projections. `scripts/upgrade-production-images:matches_yaml`
+compares checked conversions and exits on unusable inputs or unwritable
+evidence with `Cannot compare upgrade YAML`. Only the Slack directory proxy and
+curated Codex PluginDriver selection may change before image selection. Broker
+checks compare references, not ConfigMap or Secret contents.
 
-Runtime upgrades require complete authorized inventory of running Agents' baseline versions. Nonterminal
-deployments, missing selected versions or unready Namespaces stop preparation.
-Stopped/deleting Agents are excluded; pending repository cleanup does not block.
+Runtime upgrades require a complete authorized inventory and baseline versions.
+Nonterminal deployments, missing versions or unready Namespaces stop preparation.
+Stopped or deleting Agents are excluded; pending repository cleanup does not block.
 
-Repository-enabled releases require explicit immutable controller and broker
-images. The helper inventories all nodes matching the control plane selector,
-including unready and cordoned nodes; they must have one native architecture.
-`scripts/upgrade-image-identity.py:read_platform` reads Docker's native OCI export
-and verifies the selected configuration's platform, with hash checks and 2 MiB
-per-blob and 32 MiB total metadata limits.
-`scripts/upgrade-repository-image-probe.mjs` runs both images with synthetic
-inputs and a private receipt listener. It checks recovery and refused reservation
-through the actual Driver and broker, recording the selected digest, platform
-manifest, configuration, requests, and responses. This proves wire compatibility,
-not Kubernetes image availability, receipt durability, or disposal. The helper
-preserves the live broker hostname; broker restart recovery remains an operator
-task in the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
+Repository-enabled releases require explicit immutable controller and broker images.
+All nodes matching the control plane selector, even unready or cordoned nodes,
+must share one architecture. `scripts/upgrade-image-identity.py:read_platform`
+verifies the selected platform and blob hashes in Docker's OCI export
+(2 MiB per blob, 32 MiB total metadata).
+`scripts/upgrade-repository-image-probe.mjs` tests recovery and refused reservations
+through both images using synthetic inputs and a private receipt listener. It
+records the digest, platform manifest, configuration, requests and responses.
+This verifies the Driver and broker protocol; Kubernetes image availability,
+receipt durability and disposal remain unverified. The live broker hostname
+stays fixed. For restart recovery, follow the [broker procedure](../guides/repository-credentials/installation.md#install-and-verify).
 
 After rendering and a server-side Helm dry run,
 [`scripts/upgrade-startup-preflight.mjs`](../../scripts/upgrade-startup-preflight.mjs)
@@ -269,35 +268,32 @@ resume checks the replacement.
 
 Completion proves the selected Helm rollout and OCC access; runtime upgrades
 also verify recorded deployments, ready Pods, and Doctor without errors.
+After the final evidence capture, `scripts/upgrade-production-images` creates a
+private `completed` marker. A new upgrade requires a new evidence directory.
+If writing the marker fails, reconcile the retained evidence and live state:
+an absent marker does not prove that the operation is unfinished.
 Operators then verify model responses, providers, channels, credentials,
 workspace continuity, native access, and required restore behavior.
 
 ### Read-only export after a split-layout refusal
 
-The [split-layout export fallback](../guides/deploy/split-layout-upgrade.md#export-and-re-create)
-begins with the read-only `scripts/split-layout-tenants.mjs export --out FILE`.
-Its `createOccApi.expect` requires a data envelope for each successful resource
-response before `exportTenants` assembles the bundle. Malformed JSON, an empty
-body, or a missing data envelope causes export to exit nonzero before `main`
-writes the bundle; an actual empty collection remains valid. Empty 204 deletes
-and explicitly accepted 404 responses retain their meaning.
+The [split-layout fallback](../guides/deploy/split-layout-upgrade.md#export-and-re-create)
+uses `scripts/split-layout-tenants.mjs`. Its `createOccApi.expect` rejects
+malformed JSON, empty bodies and missing data envelopes before export writes a
+bundle. Empty collections, 204 deletes and explicitly accepted 404s remain valid.
 
-On re-creation, `importTenants` requires distinct target names for selected
-Namespaces. Saved destination IDs stay reserved even for skipped sources; skipped
-sources without saved destinations reserve nothing. The importer resolves selected
-unsaved targets by live name and rejects shared destinations before any mutation or ID-map
-save. Choose distinct `--rename` targets, skip a source, or correct the saved map
-before retrying. Saved mappings resume after validation. Previously merged
-resources stay merged.
-
-`--rename` keys are literal: `constructor` and `__proto__` remain unchanged unless
-renamed. Without a saved mapping, exact-name reuse requires a Namespace without
-Agents or Secrets.
+`importTenants` resolves unsaved targets by live name and rejects shared
+destinations before mutation or ID-map writes. Saved destination IDs remain
+reserved for skipped sources; unsaved skipped sources reserve nothing. Use
+distinct `--rename` targets, skip a source or correct the map before retrying.
+Validated saved mappings resume; previously merged resources stay merged.
+Rename keys, including `constructor` and `__proto__`, are literal. Without a
+saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 
 ## Debugging and Verification
 
-- For chart or admission failures before mutation, inspect `server-dry-run.txt`;
-  for rejected candidates, inspect `preflight-<api|worker>.log` and `-status.json`.
+- Read stderr for chart, output path or Helm dry-run errors. `server-dry-run.txt`
+  contains Helm's standard output. For rejected candidates, inspect `preflight-<api|worker>.log` and `-status.json`.
 - For native scale, Helm upgrade, or rollout status failures, inspect
   `native-command-failures.tsv`; see [upgrade recovery](../guides/deploy/production-upgrade-recovery.md).
 - Before retrying runtime failures, inspect `dispatch/*.error`, `dispatch/*.rejected`,
@@ -325,6 +321,14 @@ Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 07:14: Validate YAML comparisons. (authoring-run/47f197fd-9f98-4dfb-8162-36589ab6194e - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
+
+- 2026-11-04 06:40: Diagnose unusable YAML. (authoring-run/1320ca1e-663f-449a-aab9-29102e0c482f - f150505ae48988083ddeebdaffd45978be48d588)
+
+- 2026-11-04 00:26: Record completion after final evidence capture and refuse resuming completed upgrades. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
+
+- 2026-11-03 10:46: Document stock chart verification. (authoring-run/1308615d-068b-473e-8062-2baec5b66ab0 - 11099b579a5c197e0ec5c342bffb78036c321a32)
 
 - 2026-11-03 02:34: Preserve journaled replacements when evidence is restored. (authoring-run/a4cf6a1b-e333-44d4-8e78-138caa5c190a - 19f63529413d4a530ac4eb65204980720d6d8ce9)
 
