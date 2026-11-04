@@ -257,8 +257,8 @@ candidates stay until a later successful deployment, stop, deletion or
 [repository cleanup](../repository-credentials.md#deletion-and-restart).
 After runtime failures such as `RUNTIME_MODEL_PROBE_FAILED` or
 `CONVERGENCE_DEADLINE_EXCEEDED`, existing workloads remain for diagnosis until
-redeployment, stop, deletion or repository cleanup removes them. Logs require
-existing Pods. Repository cleanup clears a stopped revision's pointer only if
+redeployment, stop, deletion or repository cleanup removes them. Container logs
+require Pods. Repository cleanup clears a stopped revision's pointer only if
 it remains selected; credential disposal may remain pending.
 Kubernetes embedded replacement reports ready while the predecessor still
 serves, so the worker sets the pointer first. Activation then replaces the
