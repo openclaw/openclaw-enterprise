@@ -481,10 +481,19 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const retainedAgent = jsonObject((await fixture.request("GET", agentPath)).data);
   assert.deepEqual(retainedAgent.harnessAuth, replaced);
   assert.deepEqual(retainedAgent.credentialSources, replacedAgent.credentialSources);
+  const legacyCredentialPattern = new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`);
   const serializedRequests = JSON.stringify(requests);
-  assert.doesNotMatch(serializedRequests, new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`));
+  assert.equal(
+    legacyCredentialPattern.test(serializedRequests),
+    false,
+    "browser API requests must not contain a credential marker",
+  );
   const bodyText = await page.locator("body").innerText();
-  assert.doesNotMatch(bodyText, new RegExp(`${DEVICE_ACCESS_TOKEN}|private-device`));
+  assert.equal(
+    legacyCredentialPattern.test(bodyText),
+    false,
+    "visible body text must not contain a credential marker",
+  );
   assert.ok(privateStates.length > 0, "the Refresh fixture must produce a private handle");
   for (const privateState of privateStates) {
     assert.equal(
