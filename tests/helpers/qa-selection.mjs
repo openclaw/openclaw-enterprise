@@ -5,6 +5,7 @@ const scenarioPresets = {
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
+  "openshell-provider-replacement": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
   "harness-overrides": ["OpenClaw", "Codex"],
@@ -34,6 +35,7 @@ export function selectQaMatrix(env = process.env) {
               "sandbox-policy",
               "plugin-install",
               "openshell-linear-read",
+              "openshell-provider-replacement",
               "codex-search-config",
               "harness-overrides",
               "oidc-agent-chat",
@@ -76,6 +78,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-linear-read",
             "harness-overrides",
             "oidc-agent-chat",
+            "openshell-provider-replacement",
           ].includes(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
@@ -86,6 +89,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-linear-read",
             "harness-overrides",
             "oidc-agent-chat",
+            "openshell-provider-replacement",
           ].includes(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
@@ -98,6 +102,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-linear-read",
             "harness-overrides",
             "oidc-agent-chat",
+            "openshell-provider-replacement",
           ].includes(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
@@ -158,6 +163,15 @@ export function selectQaMatrix(env = process.env) {
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const providerReplacement = scenarios.includes("openshell-provider-replacement");
+  if (providerReplacement) {
+    assert.notEqual(installation, "compose", "Provider replacement requires Kubernetes setup");
+    requiredEnv.push(
+      "OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE",
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+    );
+  }
   const harnessOverrides = scenarios.includes("harness-overrides");
   if (harnessOverrides) {
     assert.notEqual(
@@ -179,7 +193,8 @@ export function selectQaMatrix(env = process.env) {
       sandboxPolicy ||
       pluginInstall ||
       linearRead ||
-      harnessOverrides,
+      harnessOverrides ||
+      providerReplacement,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {
@@ -229,6 +244,7 @@ export function selectQaMatrix(env = process.env) {
     linearRead,
     harnessOverrides,
     presets,
+    providerReplacement,
     cells,
     scenarios,
     requiredEnv,

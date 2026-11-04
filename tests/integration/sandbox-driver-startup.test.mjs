@@ -186,6 +186,10 @@ function workspaceGatewayClient(seed = [], events = []) {
     providers,
     sandboxes,
     workspaces,
+    async getPolicyStatus({ workspace, sandbox }) {
+      const current = await this.getSandbox({ workspace, name: sandbox });
+      return { policy: current.spec.policy };
+    },
     async health() {
       calls.push(["health"]);
       events.push(["gateway", "health"]);
@@ -1011,6 +1015,99 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     client.calls.filter(([operation]) => operation === "updateProviderConfig").length,
     1,
   );
+  await t.test("Provider replacement resumes after lost detach and attach responses", async () => {
+    let version = 8;
+    const mutations = [];
+    const sourceA = requirements.credentialAttachments[0].ref;
+    const sourceB = openShellProviderName("source-b");
+    client.getSandbox = async () =>
+      storedSandbox(request, {
+        id: "retained-sandbox-id",
+        phase,
+        resourceVersion: String(version),
+      });
+    client.getPolicyStatus = async () => ({ policy: request.spec.policy });
+    let loseResponse;
+    const mutate = (operation) => async (_workspace, name, provider, _signal, conditional) => {
+      assert.equal(name, request.name);
+      assert.equal(phase, "SANDBOX_PHASE_STOPPED");
+      assert.equal(conditional.expectedResourceVersion, String(version));
+      mutations.push([operation, provider]);
+      request.spec.providers =
+        operation === "detach"
+          ? request.spec.providers.filter((value) => value !== provider)
+          : [...request.spec.providers, provider];
+      version += 1;
+      if (loseResponse === operation) {
+        loseResponse = undefined;
+        throw new Error("lost mutation response");
+      }
+    };
+    client.detachSandboxProvider = mutate("detach");
+    client.attachSandboxProvider = mutate("attach");
+    // UpdateSandbox cannot reorder or replace Providers. Preserve the gateway's
+    // actual attachment list so full-spec readback cannot hide a missed mutation.
+    client.updateSandbox = async (value) => {
+      assert.equal(value.expectedResourceVersion, String(version));
+      request = { ...value, spec: { ...value.spec, providers: request.spec.providers } };
+      version += 1;
+    };
+    const provision = (id, source) =>
+      driver.provisionHarness({
+        ...context,
+        revision: { ...revision, id },
+        requirements: {
+          ...requirements,
+          credentialAttachments: [{ sourceId: source, ref: source }],
+        },
+      });
+    phase = "SANDBOX_PHASE_STOPPED";
+    await provision("rev_00000000-0000-4000-8000-000000000005", sourceA);
+    assert.equal(phase, "SANDBOX_PHASE_READY");
+    phase = "SANDBOX_PHASE_STOPPED";
+    loseResponse = "detach";
+    const next = "rev_00000000-0000-4000-8000-000000000006";
+    await assert.rejects(provision(next, sourceB), /lost mutation response/);
+    assert.equal(phase, "SANDBOX_PHASE_STOPPED");
+    assert.equal(request.spec.providers.includes(sourceA), false);
+    loseResponse = "attach";
+    await assert.rejects(provision(next, sourceB), /lost mutation response/);
+    assert.equal(phase, "SANDBOX_PHASE_STOPPED");
+    // A retry with already-correct attachments must still check current policy;
+    // membership alone cannot authorize starting the desired workload.
+    client.getPolicyStatus = async () => ({ policy: { network_policies: {} } });
+    await assert.rejects(provision(next, sourceB), /current Sandbox policy to remain unchanged/);
+    assert.equal(phase, "SANDBOX_PHASE_STOPPED");
+    client.getPolicyStatus = async () => ({ policy: request.spec.policy });
+    await provision(next, sourceB);
+    assert.equal(phase, "SANDBOX_PHASE_READY");
+    assert.deepEqual(mutations, [
+      ["detach", sourceA],
+      ["attach", sourceB],
+    ]);
+    assert.equal(request.spec.providers.includes(sourceB), true);
+    assert.equal(
+      client.calls.some(([operation]) => operation === "deleteProvider"),
+      false,
+    );
+
+    // A policy changed through the live API is not reflected in spec.policy.
+    // Attachment reconciliation must refuse it before removing a credential.
+    phase = "SANDBOX_PHASE_STOPPED";
+    client.getPolicyStatus = async () => ({ policy: { network_policies: {} } });
+    await assert.rejects(
+      provision("rev_00000000-0000-4000-8000-000000000007", sourceA),
+      /current Sandbox policy to remain unchanged/,
+    );
+    assert.equal(mutations.length, 2);
+    client.getPolicyStatus = async () => ({ policy: request.spec.policy });
+    client.detachSandboxProvider = async () => ({});
+    await assert.rejects(
+      provision("rev_00000000-0000-4000-8000-000000000007", sourceA),
+      /attachment readback differs/,
+    );
+    assert.equal(phase, "SANDBOX_PHASE_STOPPED");
+  });
 });
 
 test("managed native replacement restores its startup exposure and withdraws it after enrollment", async (t) => {

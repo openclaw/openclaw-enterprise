@@ -589,6 +589,14 @@ export interface OpenShellGatewayClient
     credentialKey: string,
     signal: AbortSignal,
   ): Promise<{ readonly value: string; readonly expirationTime?: string }>;
+  /** Adds an existing Provider; the caller reads back membership before starting the Sandbox. */
+  attachSandboxProvider(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+    conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
+  ): Promise<void>;
   /** Undefined when the Sandbox no longer exists, so nothing remains to revoke. */
   detachSandboxProvider(
     workspace: string,
@@ -662,6 +670,7 @@ type OpenShellMethod =
   | "GetSandboxProviderStatus"
   | "CreateProvider"
   | "UpdateProvider"
+  | "AttachSandboxProvider"
   | "DetachSandboxProvider"
   | "GetProvider"
   | "ListProviders"
@@ -2487,6 +2496,31 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       throw new OpenShellGatewayFailure("The OpenShell credential has expired.");
     }
     return Object.freeze({ value, ...(expirationTime === null ? {} : { expirationTime }) });
+  }
+
+  async attachSandboxProvider(
+    workspace: string,
+    sandbox: string,
+    provider: string,
+    signal: AbortSignal,
+    conditional: { readonly expectedResourceVersion: string; readonly requestId: string },
+  ): Promise<void> {
+    if (!/^[1-9]\d*$/.test(conditional.expectedResourceVersion) || !conditional.requestId) {
+      throw new OpenShellGatewayFailure(
+        "A conditional attach requires a resource version and request ID.",
+      );
+    }
+    await this.unary(
+      "AttachSandboxProvider",
+      {
+        sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
+        provider: nonempty(provider, "OpenShell provider name"),
+        workspace_scope: { workspace },
+        expected_resource_version: conditional.expectedResourceVersion,
+        request_id: conditional.requestId,
+      },
+      signal,
+    );
   }
 
   async detachSandboxProvider(

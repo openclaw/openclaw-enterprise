@@ -69,6 +69,17 @@ test(
         "oidc-agent-chat",
       );
     }
+    if (selection.providerReplacement) {
+      const { verifyOpenShellProviderReplacement } =
+        await import("../helpers/openshell-provider-replacement.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "managed Provider replacement",
+        () => verifyOpenShellProviderReplacement(context),
+        "openshell-provider-replacement",
+      );
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(

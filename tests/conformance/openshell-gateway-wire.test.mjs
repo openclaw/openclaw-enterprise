@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { getEventListeners, once } from "node:events";
 import { createServer } from "node:http";
@@ -3177,6 +3178,14 @@ test("OpenShell managed workload RPCs use the separate update service and preser
   server.addService(wire.OpenShell.service, {
     StopSandbox: reply("stop"),
     StartSandbox: reply("start"),
+    AttachSandboxProvider(call, callback) {
+      received.push({ operation: "attach", request: call.request });
+      if (call.request.expected_resource_version !== "9007199254740994") {
+        callback({ code: grpc.status.ABORTED, message: "stale resource version" });
+        return;
+      }
+      callback(null, { attached: true });
+    },
     ExposeService(call, callback) {
       received.push({ operation: "expose", request: call.request });
       callback(null, {});
@@ -3246,4 +3255,38 @@ test("OpenShell managed workload RPCs use the separate update service and preser
   assert.equal(exposure.request.name, "");
   assert.equal(exposure.request.target_port, 8080);
   assert.equal(exposure.request.authorization_mode, 2);
+  // Provider replacement uses the same lossless CAS field and exact Workspace
+  // scope as workload updates. A server conflict must reach reconciliation.
+  const conditional = {
+    expectedResourceVersion: "9007199254740994",
+    requestId: randomUUID(),
+  };
+  await client.attachSandboxProvider(
+    selector.workspace,
+    selector.name,
+    "model-b",
+    signal,
+    conditional,
+  );
+  assert.deepEqual(received.at(-1), {
+    operation: "attach",
+    request: {
+      sandbox: selector.name,
+      provider: "model-b",
+      expected_resource_version: conditional.expectedResourceVersion,
+      workspace_scope: { workspace: selector.workspace },
+      request_id: conditional.requestId,
+    },
+  });
+  await assert.rejects(
+    client.attachSandboxProvider(selector.workspace, selector.name, "model-b", signal, {
+      ...conditional,
+      expectedResourceVersion: "1",
+      requestId: randomUUID(),
+    }),
+    (error) => {
+      assert.equal(error.grpcStatus, grpc.status.ABORTED);
+      return true;
+    },
+  );
 });

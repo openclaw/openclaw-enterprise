@@ -27,6 +27,7 @@
     "production-tui": "./test-suites/production-tui.json",
     "slack": "./test-suites/slack.json",
     "openshell": "./test-suites/openshell.json",
+    "openshell-provider-replacement": "./test-suites/openshell-provider-replacement.json",
     "openshell-linear": "./test-suites/openshell-linear.json",
     "openshell-oauth": "./test-suites/openshell-oauth.json",
     "helper-timeout": "./test-suites/helper-timeout.json",

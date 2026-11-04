@@ -371,7 +371,8 @@ requires rebuilt Harness images and the upstream OpenShell workload-update API
 specified in that reference. Its independent wire fixture records the upstream
 commit used for the lifecycle, workload-update and service-exposure messages.
 The user deferred image builds and live cluster proof for this local spike.
-No QA matrix scenario currently qualifies this path.
+The opt-in Provider replacement scenario below covers Credential Source changes;
+it does not qualify the complete managed lifecycle.
 
 Local checks cover launch inputs through Compute preparation, Kubernetes mounts,
 OpenShell rendering and real filesystem bootstrap. The launch refactor removed
@@ -393,6 +394,58 @@ replacement; confirm deletion only at final Agent removal. Exercise both Harness
 rejected peers, failed bootstrap, unsupported updates and lost acknowledgments.
 Test delayed stop and credential-withdrawal requests explicitly: current OpenShell
 APIs cannot fence them by launch generation.
+
+### Provider replacement
+
+Use a disposable loopback k3d installation with this branch's API and worker,
+OpenShell 0.1.7, managed Workspaces, one worker and rebuilt Codex runtime images.
+Select its kubeconfig and context explicitly. Prepare a ready OCE Namespace, a
+dedicated Codex Configuration and an authorized static model Credential Source.
+The test creates two Agents and two sources that reference the existing model
+Secret. Its service key needs permission to manage those resources and IAM grants.
+
+Set `OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE` to a private JSON file:
+
+```json
+{
+  "disposable": true,
+  "apiUrl": "http://127.0.0.1:4000",
+  "serviceKeyFile": "/tmp/oce-test/service-key.txt",
+  "namespaceId": "ns_REPLACE",
+  "gatewayNamespace": "REPLACE_TENANT_KUBERNETES_NAMESPACE",
+  "configurationId": "cfg_REPLACE",
+  "modelSourceId": "cs_REPLACE",
+  "model": "REPLACE_AUTHORIZED_MODEL",
+  "gatewayClient": {
+    "endpoint": "https://127.0.0.1:8080",
+    "rootCertificatePath": "/tmp/oce-test/ca.crt",
+    "auth": {
+      "mode": "mtls",
+      "certificatePath": "/tmp/oce-test/tls.crt",
+      "privateKeyPath": "/tmp/oce-test/tls.key"
+    }
+  }
+}
+```
+
+The service-key file contains the raw key. The OpenShell endpoint must reach the
+same gateway used by OCE. No model credential value belongs in this input file.
+
+```sh
+export OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-test/kubeconfig
+export OCC_TEST_KUBERNETES_CONTEXT=k3d-oce-test
+export OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE=/tmp/oce-test/replacement.json
+node --test tests/integration/openshell-provider-replacement-real.test.ts
+```
+
+The test switches one Agent's model source and confirms stable Sandbox identity,
+successful model turns, and continued access for the second Agent using the old
+source. It also redeploys without further changes. Cleanup deletes test-created
+Agents, grants and sources; it retains the prepared Namespace, Configuration and
+source. Missing input skips the standalone test. A selected QA run requires it:
+use `OCC_TEST_QA_SCENARIOS=openshell-provider-replacement` with the Kubernetes Codex
+preset. Lost-response recovery is covered separately by the local reconciliation
+tests; this scenario does not inject gateway or worker failures.
 
 ## Troubleshooting
 

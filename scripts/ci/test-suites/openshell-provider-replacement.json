@@ -1,0 +1,14 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE",
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/openshell-provider-replacement-real.test.ts",
+      "expectedTests": ["OpenShell managed Provider replacement preserves shared sources"]
+    }
+  ]
+}

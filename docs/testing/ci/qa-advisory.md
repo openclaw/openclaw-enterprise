@@ -73,6 +73,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                                 |
 | `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                        |
 | `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                      |
+| `openshell-provider-replacement` | No | Codex | [Prepared managed OpenShell installation](../openshell.md#provider-replacement): source switch, unchanged redeploy, model turns and shared-source isolation. |
 
 The [QA matrix test](../../../tests/integration/qa-matrix-real.test.mjs) implements
 these selections; [scenario selection](../../../tests/helpers/qa-selection.mjs)

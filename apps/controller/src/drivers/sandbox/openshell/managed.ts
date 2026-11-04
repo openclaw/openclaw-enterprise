@@ -32,6 +32,7 @@ import {
 } from "../openshell-gateway-client.ts";
 import type { openShellManagedMcpPolicies } from "../openshell-managed-mcp-policy.ts";
 import type { openShellPluginPolicy } from "../openshell-plugin-policy.ts";
+import { sameOpenShellPolicy } from "../openshell-policy.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../compute/kubernetes/runtime-entrypoints.ts";
 
 const DATA = "/sandbox/oce";
@@ -387,7 +388,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     }
     this.verifyOwner(existing, context.namespace.id, context.revision.agentId);
     const matches = (value: OpenShellSandboxResponse) =>
-      isDeepStrictEqual(canonicalSandboxSpec(value.spec), canonicalSandboxSpec(create.spec)) &&
+      isDeepStrictEqual(comparableWorkload(value.spec), comparableWorkload(create.spec)) &&
       value.workspace === create.workspace &&
       isDeepStrictEqual(userMetadata(value.labels), create.labels) &&
       isDeepStrictEqual(userMetadata(value.annotations), create.annotations);
@@ -397,13 +398,18 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       }
       if (!isDeepStrictEqual(immutableWorkload(existing.spec), immutableWorkload(create.spec))) {
         throw new Error(
-          "OpenShell workload update cannot change providers, policy, resources or runtime class; this prototype refuses that revision.",
+          "OpenShell workload update cannot change policy, resources or runtime class; this prototype refuses that revision.",
         );
       }
       if (client.updateSandbox === undefined || existing.resourceVersion === undefined) {
         throw new Error(
           "Managed Compute requires SandboxUpdates.UpdateSandbox and a resource version.",
         );
+      }
+      existing = await this.reconcileProviders(client, context, existing, create.spec);
+      const sandboxId = existing.id;
+      if (existing.resourceVersion === undefined) {
+        throw new Error("Managed workload update requires a Sandbox resource version.");
       }
       await client.updateSandbox(
         { ...create, requestId: randomUUID(), expectedResourceVersion: existing.resourceVersion },
@@ -412,7 +418,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       existing = await client.getSandbox(selector, context.signal);
       // Older protobuf servers may silently ignore added fields. Never start an
       // image-only update with the previous revision's command or environment.
-      if (existing === undefined || !matches(existing)) {
+      if (existing === undefined || existing.id !== sandboxId || !matches(existing)) {
         throw new Error(
           "OpenShell did not store the exact requested workload update; the Sandbox remains stopped.",
         );
@@ -470,6 +476,97 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       await client.startSandbox(selector, context.signal);
     }
     return sandbox;
+  }
+
+  private async reconcileProviders(
+    client: OpenShellGatewayClient,
+    context: SandboxHarnessContext,
+    existing: OpenShellSandboxResponse,
+    desired: OpenShellSandboxCreateRequest["spec"],
+  ): Promise<OpenShellSandboxResponse> {
+    const current = providerNames(existing.spec);
+    const wanted = providerNames(desired);
+    const workspace = workspaceName(context.namespace);
+    if (client.getPolicyStatus === undefined) {
+      throw new Error("Managed replacement requires current Sandbox policy observation.");
+    }
+    // TODO(OpenShell policy reconciliation): reconcile live policy edits stored
+    // separately from spec.policy. Until then, refuse differences before attachment changes.
+    const policy = await client.getPolicyStatus(
+      { workspace, sandbox: existing.name },
+      context.signal,
+    );
+    if (!sameOpenShellPolicy(policy.policy, desired.policy)) {
+      throw new Error(
+        "Provider replacement requires the current Sandbox policy to remain unchanged.",
+      );
+    }
+    if (isDeepStrictEqual(current, wanted)) {
+      return existing;
+    }
+    if (!existing.id || existing.workspace !== workspace) {
+      throw new Error("Provider replacement requires the exact Sandbox identity and Workspace.");
+    }
+    const removals = current.filter((name) => !wanted.includes(name));
+    const additions = wanted.filter((name) => !current.includes(name));
+    let observed = existing;
+    // Remove first: replacement credential sources can supply the same environment key.
+    for (const [operation, names] of [
+      ["detach", removals],
+      ["attach", additions],
+    ] as const) {
+      for (const name of names) {
+        if (!observed.resourceVersion) {
+          throw new Error("Provider replacement requires a Sandbox resource version.");
+        }
+        const conditional = {
+          expectedResourceVersion: observed.resourceVersion,
+          requestId: randomUUID(),
+        };
+        const before = providerNames(observed.spec);
+        const expected =
+          operation === "detach"
+            ? before.filter((value) => value !== name)
+            : [...before, name].sort();
+        if (operation === "detach") {
+          await client.detachSandboxProvider(
+            workspace,
+            existing.name,
+            name,
+            context.signal,
+            conditional,
+          );
+        } else {
+          await client.attachSandboxProvider(
+            workspace,
+            existing.name,
+            name,
+            context.signal,
+            conditional,
+          );
+        }
+        const next = await client.getSandbox({ workspace, name: existing.name }, context.signal);
+        if (
+          next === undefined ||
+          next.resourceVersion === undefined ||
+          next.id !== existing.id ||
+          next.workspace !== workspace ||
+          !stopped(next) ||
+          !isDeepStrictEqual(next.annotations, existing.annotations) ||
+          !isDeepStrictEqual(next.labels, existing.labels) ||
+          !isDeepStrictEqual(
+            comparableWorkload(next.spec),
+            comparableWorkload({ ...existing.spec, providers: expected }),
+          )
+        ) {
+          throw new Error(
+            "OpenShell Provider attachment readback differs; the Sandbox will not start.",
+          );
+        }
+        observed = next;
+      }
+    }
+    return observed;
   }
 
   override async workspaceNodePeerLabels(
@@ -606,9 +703,30 @@ function immutableWorkload(spec: OpenShellSandboxResponse["spec"]) {
   if (value === undefined) {
     return undefined;
   }
-  const { command: _command, environment: _environment, template, ...rest } = value;
+  const {
+    command: _command,
+    environment: _environment,
+    providers: _providers,
+    template,
+    ...rest
+  } = value;
   const { image: _image, labels: _labels, ...immutableTemplate } = asRecord(template) ?? {};
   return { ...rest, template: immutableTemplate };
+}
+
+function providerNames(spec: OpenShellSandboxResponse["spec"]): string[] {
+  const names = spec?.providers;
+  if (!Array.isArray(names) || names.some((name) => typeof name !== "string" || !name)) {
+    throw new Error("Managed Sandbox has an invalid Provider list.");
+  }
+  if (new Set(names).size !== names.length) {
+    throw new Error("Managed Sandbox has duplicate Provider attachments.");
+  }
+  return [...names].sort();
+}
+
+function comparableWorkload(spec: OpenShellSandboxResponse["spec"]) {
+  return canonicalSandboxSpec({ ...spec, providers: providerNames(spec) });
 }
 
 function userMetadata(values: Readonly<Record<string, string>>) {
