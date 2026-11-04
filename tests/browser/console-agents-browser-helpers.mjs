@@ -1014,6 +1014,17 @@ export const consoleViewports = Object.freeze([
 // The getAgentDeployment response for an admitted revision when the fixture has no worker. A
 // running record with `nextAttemptAt` is a started deploy whose work waits for its next attempt:
 // it stays running between attempts (finding 2456).
+/**
+ * @param {{ id: string, namespaceId: string, agentId: string, createdAt?: string }} revision
+ * @param {{
+ *   status: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusWire["status"],
+ *   error?: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusWire["error"] | undefined,
+ *   attempt?: Parameters<typeof deploymentProgressForWork>[1],
+ *   nextAttemptAt?: string | undefined,
+ *   warnings?: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusWire["warnings"] | undefined,
+ * }} options
+ * @returns {{ json: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusResponse }}
+ */
 export function deploymentStatusResponse(
   { id: deploymentId, namespaceId, agentId, createdAt },
   { status, error = null, attempt, nextAttemptAt, warnings = [] },
@@ -1091,12 +1102,21 @@ export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRea
 }
 
 // The Agent page's "Viewing version" chooser in `scope`, a page or a locator.
+/**
+ * @param {import("playwright").Page | import("playwright").Locator} scope
+ * @returns {import("playwright").Locator}
+ */
 export const versionChooser = (scope) => scope.getByLabel("Viewing version", { exact: true });
 
 // Version `n`'s chooser label: "vN" alone or "vN · <outcome>".
 const versionName = (n) => new RegExp(`^v${n}(?: ·|$)`);
 
 // Version `n`'s option in the chooser.
+/**
+ * @param {import("playwright").Page | import("playwright").Locator} scope
+ * @param {number} n
+ * @returns {import("playwright").Locator}
+ */
 export const versionOption = (scope, n) =>
   versionChooser(scope).getByRole("option", { name: versionName(n) });
 
@@ -1388,6 +1408,10 @@ export async function storeRefusedConfiguration(
   await configurationDriver.update({ ...stored, values });
 }
 
+/**
+ * @param {import("playwright").Page} page
+ * @returns {import("playwright").Locator}
+ */
 export const draftActions = (page) => page.locator(".agent-draft-actions");
 export const draftDeployButton = (card) =>
   card.getByRole("button", { name: "Deploy new version", exact: true });
