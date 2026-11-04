@@ -8,12 +8,14 @@ service OpenShell {
   rpc RotateProviderCredential(RotateProviderCredentialRequest) returns (RotateProviderCredentialResponse);
   rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest) returns (GetProviderRefreshStatusResponse);
   rpc GetProviderCredentials(GetProviderCredentialsRequest) returns (GetProviderCredentialsResponse);
+  rpc UpdateProvider(UpdateProviderRequest) returns (ProviderResponse);
   rpc GetProvider(GetProviderRequest) returns (ProviderResponse);
 }
 message WorkspaceSelector { string workspace = 1; }
 message GetProviderRequest { string name = 1; WorkspaceSelector workspace_scope = 2; }
+message UpdateProviderRequest { Provider provider = 1; WorkspaceSelector workspace_scope = 3; }
 message ProviderResponse { Provider provider = 1; }
-message Provider { ObjectMeta metadata = 1; string type = 2; map<string, string> config = 4; }
+message Provider { ObjectMeta metadata = 1; string type = 2; map<string, string> credentials = 3; map<string, string> config = 4; }
 message ObjectMeta { string name = 2; map<string, string> labels = 4; uint64 resource_version = 5; }
 message ConfigureProviderRefreshRequest {
   // Workspace scope. Only a named workspace selection is accepted.

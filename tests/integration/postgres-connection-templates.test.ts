@@ -148,7 +148,7 @@ test(
     assert.ok(databaseUrl);
     const proxy = await commitAckProxy(databaseUrl);
     t.after(() => proxy.close());
-    const { controller, inject } = await createPostgresAgentApp(t, {
+    const { controller, inject, pool } = await createPostgresAgentApp(t, {
       ...options,
       transportDatabaseUrl: proxy.url,
     });
@@ -174,6 +174,17 @@ test(
     });
     assert.equal(response.statusCode, 503, response.body);
     assert.ok(proxy.observedCommit);
+    const audit = await pool.query(
+      `SELECT attempted.actor_id AS requester, completed.actor_id AS writer
+       FROM occ.audit_events attempted JOIN occ.audit_events completed
+         ON attempted.details->'__occAuditMetadata'->>'requestId'=completed.details->'__occAuditMetadata'->>'requestId'
+       WHERE attempted.details->>'oauthClientId'=$1 AND attempted.details->>'phase'='requested'
+         AND completed.details->>'oauthClientId'=$1 AND completed.details->>'phase' IS NULL AND completed.outcome='success'`,
+      [client.id],
+    );
+    assert.equal(audit.rowCount, 1);
+    assert.equal(audit.rows[0].requester, audit.rows[0].writer);
+
     // An unknown audit commit cannot switch references or retire material still used by the client.
     assert.deepEqual([...providers.keys()], providerNames);
     await controller.cleanupOAuthClients();
@@ -184,6 +195,25 @@ test(
       (await inject("DELETE", `/oauth-clients/${client.id}`, undefined)).statusCode,
       204,
     );
+    // A failed private deletion leaves a hidden client that the worker can still identify and retry.
+    t.mock.method(
+      refresh,
+      "removeClient",
+      async () => {
+        throw new Error("Private store unavailable");
+      },
+      { times: 1 },
+    );
+    await controller.cleanupOAuthClients();
+    assert.equal(providers.size, 1);
+    const hidden = await inject("GET", "/oauth-clients");
+    assert.equal(hidden.statusCode, 200, hidden.body);
+    assert.ok(!hidden.json().data.some((row: { id: string }) => row.id === client.id));
+    const due = await pool.query(
+      "UPDATE occ.oauth_clients SET cleanup_after=now() WHERE id=$1 AND cleanup_after IS NOT NULL",
+      [client.id],
+    );
+    assert.equal(due.rowCount, 1);
     await controller.cleanupOAuthClients();
     assert.equal(providers.size, 0);
   },

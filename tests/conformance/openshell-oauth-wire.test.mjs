@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   createOpenShellBackend,
@@ -53,6 +54,105 @@ async function wireCertificates(t) {
     bearerPath: join(directory, "bearer"),
   };
 }
+
+test(
+  "a delayed OAuth client rotation cannot overwrite the acknowledged rotation",
+  { timeout: 10_000 },
+  async (t) => {
+    const proto = await loader.load(
+      join(import.meta.dirname, "../fixtures/openshell-oauth-poc-wire.proto"),
+      { keepCase: true, longs: String, defaults: false },
+    );
+    const service = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+    const server = new grpc.Server();
+    t.after(() => server.forceShutdown());
+    const workspace = "oauth-clients";
+    const registrationId = randomUUID();
+    const labels = {
+      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+      "openclaw.dev/client-registration-id": registrationId,
+    };
+    const started = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const late = Promise.withResolvers();
+    const first = randomUUID();
+    const second = randomUUID();
+    let current = randomUUID();
+    let version = 1;
+    let name;
+    const provider = () => ({
+      metadata: { name, resource_version: String(version), labels },
+      type: name,
+    });
+    server.addService(service.service, {
+      GetProvider(call, reply) {
+        name = call.request.name;
+        reply(null, { provider: provider() });
+      },
+      async UpdateProvider(call, reply) {
+        const incoming = call.request.provider;
+        const value = incoming.credentials.OCE_CLIENT_SECRET;
+        // Hold dispatched work past caller cancellation so the second rotation can commit first.
+        if (value === first) {
+          started.resolve();
+          await release.promise;
+        }
+        const expected = incoming.metadata.resource_version;
+        if (expected && expected !== String(version)) {
+          late.resolve("conflict");
+          reply({ code: grpc.status.ABORTED, details: "resource version conflict" });
+          return;
+        }
+        current = value;
+        version++;
+        if (value === first) {
+          late.resolve("overwritten");
+        }
+        reply(null, { provider: provider() });
+      },
+      GetProviderCredentials(call, reply) {
+        assert.equal(call.request.name, name);
+        assert.equal(call.request.workspace_scope.workspace, workspace);
+        reply(null, { credentials: { OCE_CLIENT_SECRET: { value: current } } });
+      },
+    });
+    const port = await new Promise((resolve, reject) =>
+      server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
+        error ? reject(error) : resolve(value),
+      ),
+    );
+    const configuration = { endpoint: `http://127.0.0.1:${port}` };
+    const client = new GrpcOpenShellGatewayClient(configuration);
+    t.after(() => client.close());
+    const backend = createOpenShellBackend(
+      {
+        id: "openshell-test",
+        type: "openshell",
+        configuration,
+        drivers: { credential_refresh: "openshell-refresh" },
+      },
+      { gatewayClient: client },
+    );
+    const driver = new OpenShellCredentialRefreshDriver(
+      { clientWorkspace: workspace },
+      { id: "openshell-refresh", backend },
+    );
+    const signal = t.signal;
+    const context = { registrationId, issuer: "https://issuer.example", clientId: "app", signal };
+    const abort = new AbortController();
+    const interrupted = driver.rotateClientSecret({ ...context, signal: abort.signal }, first);
+    await started.promise;
+    abort.abort();
+    await assert.rejects(interrupted, { name: "AbortError" });
+    await driver.rotateClientSecret(context, second);
+    release.resolve();
+    assert.equal(await late.promise, "conflict");
+    assert.equal(
+      (await client.getProviderCredential(workspace, name, "OCE_CLIENT_SECRET", signal)).value,
+      second,
+    );
+  },
+);
 
 test(
   "OpenShell OAuth RPCs preserve workspace/key scope and isolate operator credential reads",
