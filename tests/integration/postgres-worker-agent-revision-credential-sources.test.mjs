@@ -63,6 +63,10 @@ function withCredentialGateway(drivers) {
     capability: "credential_gateway",
     implementation: "credential-gateway-worker-fixture",
     validateSourceConfig() {},
+    describeSourceDestinations: () => ({
+      api_key: { endpoint: "https://api.openai.com/v1", isDefault: true },
+      access_token: { endpoint: "https://chatgpt.com/backend-api", isDefault: true },
+    }),
     async listSourceTypes() {
       return [];
     },

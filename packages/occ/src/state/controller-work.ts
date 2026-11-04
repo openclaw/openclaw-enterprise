@@ -806,6 +806,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Harness credential source was withdrawn from this revision, so the revision cannot start. Bind a replacement source or another authentication method, then deploy again.";
     case "CREDENTIAL_GATEWAY_MISMATCH":
       return "The Installation no longer selects the Credential Gateway this revision was admitted with. Bind sources registered through the selected gateway, or remove them and change harnessAuth, then deploy again.";
+    case "HARNESS_AUTH_ENDPOINT_MISMATCH":
+      return "The model Secret no longer authorizes this revision’s endpoint. Bind an endpoint-authorized Secret or Credential Source, then deploy again.";
     case "HARNESS_AUTH_SOURCE_UNAVAILABLE":
       return "The Harness authentication source this revision was admitted with is missing, being deleted, or changed since admission. Bind an available source, then deploy again.";
     case "EGRESS_PROVIDER_UNAVAILABLE":

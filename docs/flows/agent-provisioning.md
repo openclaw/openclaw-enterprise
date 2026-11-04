@@ -63,9 +63,20 @@ policy through `apps/controller/src/console/agents/harness-auth.mjs:configuredHa
 
 The Slack modal immediately saves new tokens through `POST /namespaces/:namespaceId/secrets`, before an Agent exists, then clears entered values. Apply stages references and environment bindings; Cancel discards selections but retains created Secrets. Model discovery uses an API key or service account token without saving it. Create Agent runs its preflight, then saves it as a Namespace Secret, clears the input, and reuses the reference on retries. Bound Presets retain their credential/provider. A lost Secret-save response requires recovery, not automatic repetition.
 
-A selected Credential Gateway's catalog directs Console to register the model
-Secret before source-backed provisioning. [Console recovery](../reference/console/create-and-deploy.md)
-reuses confirmed sources and safely retries uncertain registration.
+The Agent API-key binding carries the Secret's normalized `authorizedEndpoint`.
+`packages/occ/src/index.ts:authorizeHarnessAuthSource` compares the binding with
+immutable Secret metadata. Source registration asks
+`CredentialGatewayDriver.describeSourceDestinations` before reading any key.
+The worker repeats the comparison in
+`apps/controller/src/worker.ts:resolveRevisionSecretContext` and
+`resolveRevisionCredentialSource`, before Compute receives delivery references.
+Kubernetes Compute validates the provider endpoint during admission and preparation.
+
+The Console flow that collects the endpoint and endpoint-specific credential is
+documented with the UI follow-up (#4544). A selected Credential Gateway's catalog directs
+Console to register the model Secret before source-backed provisioning.
+[Console recovery](../reference/console/create-and-deploy.md) reuses confirmed sources and
+safely retries uncertain registration.
 Installation discovery preserves catalog metadata.
 
 Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
@@ -214,6 +225,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - 2026-11-04 16:38: Explain how Create Agent handles malformed provisioning IDs and error messages. (authoring-run/03df9caf-3a28-496d-bb70-f5b0d838a028 - fe3f13a48d54e3ad3a0dc872f6e5313c783c1ed0)
 
 - 2026-11-03 20:51: Document the selected repository policy during queued provisioning and the ordering of Configuration writes. (authoring-run/e4018630-07e7-4296-a60f-d51180ca700d - 43485a276ad6891f42ba7e0016ba8d0b3f574ae4)
+
+- 2026-11-03 15:26: Trace custom endpoint authorization in the accompanying implementation. (authoring-run/84f241a8-57a6-4718-b5a4-1d673374440c - b73f9939afe1da527a6ffd89ae048924b71e3ea8)
 
 - 2026-10-30 07:41: Omit admission-only Gateway catalog lookup from source-backed provisioning status; retain ownership and grant checks. (authoring-run/6e73ff4f-8905-4066-a81d-d629e40296e7 - 429951edfc002c1c6ef98970696e655e03ba3ec7)
 

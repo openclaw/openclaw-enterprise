@@ -105,6 +105,13 @@ const CONSOLE_ASSETS = new Map([
     }),
   ),
   [
+    "/console/openai-endpoint.mjs",
+    {
+      path: new URL("./drivers/openai-endpoint.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  [
     "/console/workspace-defaults.mjs",
     {
       path: new URL("../../../packages/contracts/src/workspace-defaults.mjs", import.meta.url),

@@ -529,6 +529,14 @@
       "tag": "0066_agent_deploy_intent",
       "breakpoints": true,
       "sha256": "c9f8b1618efb5d9f576266fb3dd49e2d6641d0934aebf49a9b286fa7cca22c7b"
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1793719940489,
+      "tag": "0067_secret_authorized_endpoint",
+      "breakpoints": true,
+      "sha256": "ed0f1844e1f98047a845354d9f64c486fa7f5df61e6a3064af33368b01e89f74"
     }
   ],
   "initialSchemaStates": {
@@ -542,8 +550,18 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        ["occ_migrator", "occ_migrator", "CREATE", false],
-        ["occ_migrator", "occ_migrator", "USAGE", false]
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "CREATE",
+          false
+        ],
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "USAGE",
+          false
+        ]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -568,6 +586,11 @@
     "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998": [
       "e4f1ce2a27d8561664fd107679c962b7c67060c658869bf3faa3fc47ce384a0b",
       "048eb30e1c7db94dde5c3ab7731b940b9acbfbed0b41dd20cfc705aebf2850ae"
+    ],
+    "484351189ac1f6d7ee513332f07c656b51c0863ca022d4e2ff9770ca0395d3f4": [
+      "81708284ac19b809c50b142685709f00b4b22cd7b4b3cf29839b82c1f7565dbe",
+      "12381c253eb54fe7b0f560cca66c7d6ac104921a68dcd40b0e1097b214d35813",
+      "6f0ec25c75c0ee632cf8b79e1d3ada9d7fae0de0119e12ff30e97a2cdf01f322"
     ]
   },
   "catalogs": {
@@ -576,7 +599,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998",
+    "completed": "484351189ac1f6d7ee513332f07c656b51c0863ca022d4e2ff9770ca0395d3f4",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -612,7 +635,8 @@
     "prePreparedAttemptSettlement": "df4fafcfd49395d0522b53a3b1a6abe828b53e91843a6d24d8cd0e9490aa84cc",
     "preGatewayManagedMode": "ead0bf1743197edac2cd369f4822fec0d9686d4c215b8f6dcc16745c9addf155",
     "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
-    "preAgentDeployIntent": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40"
+    "preAgentDeployIntent": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40",
+    "preEndpointAuthorization": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

@@ -110,6 +110,7 @@ test(
         const gateway = app.controller.selectedDriver("credential_gateway");
         const listTypes = gateway.listSourceTypes.bind(gateway);
         const validate = gateway.validateSourceConfig.bind(gateway);
+        const describe = gateway.describeSourceDestinations.bind(gateway);
         t.mock.method(gateway, "listSourceTypes", async (...args: Parameters<typeof listTypes>) => [
           ...(await listTypes(...args)),
           auxiliaryType,
@@ -118,6 +119,15 @@ test(
           input.type === auxiliaryType.type
             ? auxiliary.normalizeConfig(input.config)
             : validate(input),
+        );
+        // The catalogue adapter must also describe the destination of every type it offers.
+        t.mock.method(
+          gateway,
+          "describeSourceDestinations",
+          (input: Parameters<typeof describe>[0]) =>
+            input.type === auxiliaryType.type
+              ? { api_key: { endpoint: `${auxiliaryOrigin}/v1` } }
+              : describe(input),
         );
         const sandbox = new Proxy(app.controller.selectedDriver("sandbox"), {
           get(target, key) {

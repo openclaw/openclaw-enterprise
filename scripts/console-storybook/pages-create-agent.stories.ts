@@ -383,6 +383,13 @@ export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOA
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
 
+export const CustomResponses = story("createCustomResponses");
+export const CustomResponsesEmpty = story("createCustomResponsesEmpty");
+export const CustomResponsesInvalid = story("createCustomResponsesInvalid");
+export const CustomResponsesSource = story("createCustomResponsesSource");
+export const CustomResponsesSourcesEmpty = story("createCustomResponsesSourcesEmpty");
+export const CustomResponsesSourcesDenied = story("createCustomResponsesSourcesDenied");
+
 export const SharedModelDestination = {
   ...story("createSharedModelProviderSource"),
   name: "Authorize shared model destination",

@@ -31,6 +31,11 @@ on:
         options:
           - default
           - isolated
+      qa_scenarios:
+        description: QA matrix scenario selection; custom-responses requires an exclusive run.
+        required: true
+        default: all
+        type: string
 
 permissions:
   contents: read
@@ -670,9 +675,11 @@ jobs:
       OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
       OCC_TEST_QA_INSTALLATION: all
       OCC_TEST_QA_PRESET: all
-      OCC_TEST_QA_SCENARIOS: all
+      OCC_TEST_QA_SCENARIOS: ${{ inputs.qa_scenarios }}
       OCC_TEST_QA_OPENAI_MODEL: ${{ vars.OCC_TEST_QA_OPENAI_MODEL }}
       OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
+      OCC_TEST_QA_RESPONSES_BASE_URL: ${{ vars.OCC_TEST_QA_RESPONSES_BASE_URL }}
+      OCC_TEST_QA_RESPONSES_MODEL: ${{ vars.OCC_TEST_QA_RESPONSES_MODEL }}
       OCC_TEST_QA_SLACK_CHANNEL_ID: ${{ vars.OCC_TEST_QA_SLACK_CHANNEL_ID }}
       OCC_TEST_CODEX_CALENDAR_TOOL_NAME: ${{ vars.OCC_TEST_CODEX_CALENDAR_TOOL_NAME }}
       OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: ${{ vars.OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT }}
@@ -689,6 +696,7 @@ jobs:
       - name: Materialize approved QA credentials
         if: inputs.qa_repository_fixture == 'default'
         env:
+          CUSTOM_RESPONSES_API_KEY: ${{ secrets.CUSTOM_RESPONSES_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
           SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
@@ -702,6 +710,7 @@ jobs:
       - name: Materialize isolated QA repository credentials
         if: inputs.qa_repository_fixture == 'isolated'
         env:
+          CUSTOM_RESPONSES_API_KEY: ${{ secrets.CUSTOM_RESPONSES_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
           SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}

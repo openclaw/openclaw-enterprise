@@ -1040,6 +1040,7 @@ function dedicatedFirstDeployFixture({
   statusProxy = true,
   clock,
   modelEndpoint,
+  harnessAuthorizedEndpoint,
   modelProtocol = "openai-responses",
   standaloneWebSearch,
   sandboxDriver,
@@ -1175,6 +1176,19 @@ function dedicatedFirstDeployFixture({
     },
     ...revisionOverrides,
   });
+  if (harnessAuthorizedEndpoint !== undefined && revision.harnessAuth.method === "api_key") {
+    const endpoint = new URL(harnessAuthorizedEndpoint);
+    revision.harnessAuth = {
+      ...revision.harnessAuth,
+      authorizedEndpoint: endpoint.origin + endpoint.pathname.replace(/\/$/u, ""),
+    };
+  } else if (modelEndpoint !== undefined && revision.harnessAuth.method === "api_key") {
+    const endpoint = new URL(modelEndpoint);
+    revision.harnessAuth = {
+      ...revision.harnessAuth,
+      authorizedEndpoint: endpoint.origin + endpoint.pathname.replace(/\/$/u, ""),
+    };
+  }
   const operatorSuppliedConfiguration = {
     ...revision.configuration,
     gateway: {
@@ -1549,7 +1563,6 @@ test("embedded subagent model rows cannot override the shared provider destinati
     baseUrl: "https://other.example.test/v1",
   });
   const fixture = dedicatedFirstDeployFixture({
-    modelEndpoint: "https://models.example.test/v1",
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
       configuration,
@@ -1575,7 +1588,10 @@ test("shared OpenAI provider leaves a roster-selected Anthropic provider unchang
     models: [{ id: "claude-fixture", name: "Fixture" }],
   };
   const fixture = dedicatedFirstDeployFixture({
+    // The roster selects Anthropic, so the credential authorizes the Anthropic destination;
+    // the Installation keeps its own provider and the shared OpenAI row stays as rendered.
     modelEndpoint: "https://models.example.test/v1",
+    harnessAuthorizedEndpoint: "https://api.anthropic.com",
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
       configuration,
@@ -7369,6 +7385,11 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
       undefined,
       computeOptions,
     );
+    if (modelEndpoint !== undefined) {
+      // A valid custom-endpoint revision carries the same authorization in its delivery context.
+      revision.harnessAuth = { ...revision.harnessAuth, authorizedEndpoint: modelEndpoint };
+      context.harnessAuth = { ...context.harnessAuth, authorizedEndpoint: modelEndpoint };
+    }
     if (computeOptions.executionCluster !== undefined) {
       // One stand-in API serves both clusters.
       driver.executionApiClients = driver.apiClients;
@@ -13582,6 +13603,132 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
   );
 });
 
+test("Anthropic endpoint authorization preserves the canonical Messages endpoint", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const configuration = {
+    agents: { defaults: { model: "anthropic/claude-sonnet-4-5" } },
+    models: {
+      providers: {
+        anthropic: {
+          baseUrl: "https://api.anthropic.com",
+          api: "anthropic-messages",
+          apiKey: "${ANTHROPIC_API_KEY}",
+          models: [{ id: "claude-sonnet-4-5", name: "Claude Sonnet" }],
+        },
+      },
+    },
+  };
+
+  assert.doesNotThrow(() =>
+    driver.validateHarnessAuth(
+      { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      { ...apiKeyAuth, authorizedEndpoint: "https://api.anthropic.com" },
+      configuration,
+      {},
+    ),
+  );
+});
+
+test("endpoint authorization checks every effective embedded model destination", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const configuration = {
+    agents: { defaults: { model: "router/provider-model" } },
+    models: {
+      providers: {
+        router: {
+          baseUrl: "https://allowed.example.test/v1",
+          api: "openai-responses",
+          apiKey: "${OCE_MODEL_API_KEY}",
+          models: [{ id: "provider-model", baseUrl: "https://other.example.test/v1" }],
+        },
+      },
+    },
+  };
+
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        { ...apiKeyAuth, authorizedEndpoint: "https://allowed.example.test/v1" },
+        configuration,
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting harnessAuth.authorizedEndpoint must match every effective model destination.",
+    },
+  );
+});
+
+test("Installation-equal authorization still checks configured alias model rows", () => {
+  const installation = "https://allowed.example.test/v1";
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        modelProvider: { protocol: "openai-responses", baseUrl: installation },
+      },
+    }),
+  );
+  const configuration = {
+    agents: { defaults: { model: "router/provider-model" } },
+    models: {
+      providers: {
+        router: {
+          baseUrl: installation,
+          api: "openai-responses",
+          apiKey: "${OCE_MODEL_API_KEY}",
+          models: [{ id: "provider-model", baseUrl: "https://other.example.test/v1" }],
+        },
+      },
+    },
+  };
+
+  // Matching the Installation endpoint must not exempt a configured alias row from the check.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "embedded" },
+        { ...apiKeyAuth, authorizedEndpoint: installation },
+        configuration,
+        {},
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting harnessAuth.authorizedEndpoint must match every effective model destination.",
+    },
+  );
+});
+
+test("endpoint authorization uses the configured Messages adapter", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const configuration = {
+    agents: { defaults: { model: "router/claude-sonnet-4-5" } },
+    models: {
+      providers: {
+        router: {
+          baseUrl: "https://api.anthropic.com",
+          api: "anthropic-messages",
+          apiKey: "${OCE_MODEL_API_KEY}",
+          models: [{ id: "claude-sonnet-4-5" }],
+        },
+      },
+    },
+  };
+
+  assert.doesNotThrow(() =>
+    driver.validateHarnessAuth(
+      { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      { ...apiKeyAuth, authorizedEndpoint: "https://api.anthropic.com" },
+      configuration,
+      {},
+    ),
+  );
+});
+
 test("a Preset header name that waits on a variable is checked once filled", () => {
   const driver = createKubernetesComputeDriver(options());
   const binding = "model credentials come from the Agent's Harness authentication binding";
@@ -16046,6 +16193,19 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       apiKeyAuth,
       dedicatedNativeConfiguration,
     ),
+  );
+  assert.throws(
+    () =>
+      production.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        { ...apiKeyAuth, authorizedEndpoint: "https://models.example.test/v1" },
+        dedicatedNativeConfiguration,
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Agent setting harnessAuth.authorizedEndpoint must match the Dedicated OpenClaw model endpoint.",
+    },
   );
   assert.throws(
     () =>
@@ -24011,4 +24171,45 @@ test("an active embedded revision whose stored Gateway tool policy predates the 
     "a new deployment",
   );
   assert.throws(() => driver.validateConfiguration(revision.configuration), refused, "save");
+});
+
+test("custom Codex endpoint authorization must match the Installation routing", async () => {
+  const fallback = "https://installation.example.test/v1";
+  const missing = dedicatedFirstDeployFixture({ modelEndpoint: fallback });
+  delete missing.revision.harnessAuth.authorizedEndpoint;
+  await assert.rejects(
+    missing.prepare,
+    /must authorize the Installation's custom API-key endpoint/,
+  );
+  assert.equal(missing.state.setupCalls, 0);
+
+  // An authorization for another endpoint is refused before any credential is projected.
+  const mismatch = dedicatedFirstDeployFixture({
+    modelEndpoint: fallback,
+    standaloneWebSearch: true,
+  });
+  mismatch.revision.harnessAuth = {
+    ...mismatch.revision.harnessAuth,
+    authorizedEndpoint: "https://agent.example.test/v1",
+  };
+  await assert.rejects(mismatch.prepare, /must match the Dedicated Codex model endpoint/);
+  assert.equal(mismatch.state.setupCalls, 0);
+
+  const matching = dedicatedFirstDeployFixture({
+    modelEndpoint: fallback,
+    standaloneWebSearch: true,
+  });
+  matching.revision.harnessAuth = {
+    ...matching.revision.harnessAuth,
+    authorizedEndpoint: fallback,
+  };
+  await matching.prepare();
+  const runtime = [...matching.objects.values()].find(
+    (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
+  );
+  assert.deepEqual(JSON.parse(runtime.data["runtime.json"]).modelEndpoint, {
+    baseUrl: fallback,
+    modelProvider: "openai-compatible",
+    supportsStandaloneWebSearch: true,
+  });
 });

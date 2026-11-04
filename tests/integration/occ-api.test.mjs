@@ -3120,6 +3120,11 @@ test("Agent reads return the bound credentialSources; revision reads return only
     capability: "credential_gateway",
     implementation: "test-recording-gateway",
     validateSourceConfig() {},
+    describeSourceDestinations: () => ({
+      api_key: { endpoint: "https://api.openai.com/v1", isDefault: true },
+      access_token: { endpoint: "https://chatgpt.com/backend-api", isDefault: true },
+      refresh_token: { endpoint: "https://issuer.example.test/token", isDefault: true },
+    }),
     async listSourceTypes() {
       return [
         {
@@ -3264,6 +3269,11 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
     capability: "credential_gateway",
     implementation: "test-recording-gateway",
     validateSourceConfig() {},
+    describeSourceDestinations: () => ({
+      api_key: { endpoint: "https://api.openai.com/v1", isDefault: true },
+      access_token: { endpoint: "https://chatgpt.com/backend-api", isDefault: true },
+      refresh_token: { endpoint: "https://issuer.example.test/token", isDefault: true },
+    }),
     async listSourceTypes() {
       return [
         {
@@ -11330,6 +11340,10 @@ test("deploying Slack freezes the Agent's discovered tool selection and keeps it
     capability: "credential_gateway",
     implementation: "openshell",
     validateSourceConfig() {},
+    // The credential gateway reports each field's destination before OCC reads a value.
+    describeSourceDestinations({ type }) {
+      return type === "bearer-token" ? { token: { endpoint: "https://mcp.slack.com" } } : {};
+    },
     async listSourceTypes() {
       return [
         {

@@ -325,7 +325,10 @@ const InstallationCapabilitiesSchema = Type.Object(
     ),
     agentProvisioning: Type.Optional(
       Type.Object(
-        { executionModes: Type.Array(HarnessExecutionModeSchema, { minItems: 1, maxItems: 2 }) },
+        {
+          executionModes: Type.Array(HarnessExecutionModeSchema, { minItems: 1, maxItems: 2 }),
+          codexApiKeyBaseUrl: Type.Optional(Type.String({ format: "uri" })),
+        },
         { additionalProperties: false },
       ),
     ),
@@ -546,6 +549,7 @@ export const ConfigurationSchema = Type.Object(
 
 export const SecretSchema = Type.Object(
   {
+    authorizedEndpoint: Type.Optional(Type.String({ format: "uri", maxLength: 2048 })),
     id: SecretId,
     namespaceId: NamespaceId,
     name: Name,

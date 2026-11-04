@@ -1152,7 +1152,12 @@ function clientInstallation(
     ...(agentProvisioning === undefined
       ? {}
       : {
-          agentProvisioning: { executionModes: [...agentProvisioning.executionModes] },
+          agentProvisioning: {
+            executionModes: [...agentProvisioning.executionModes],
+            ...(agentProvisioning.codexApiKeyBaseUrl === undefined
+              ? {}
+              : { codexApiKeyBaseUrl: agentProvisioning.codexApiKeyBaseUrl }),
+          },
         }),
   };
   return {

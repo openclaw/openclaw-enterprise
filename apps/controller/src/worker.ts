@@ -5454,6 +5454,35 @@ export class ControllerWorker {
         revisionId,
         sourceId,
       );
+      if (
+        withdrawal === undefined &&
+        source?.state === "ready" &&
+        credentialSourceMatchesSnapshot(source, snapshot) &&
+        source.ownerCapability === "credential_gateway" &&
+        this.credentialGateway !== undefined
+      ) {
+        const destinations = this.credentialGateway.describeSourceDestinations({
+          type: source.type,
+          config: source.config,
+        });
+        for (const [field, reference] of Object.entries(source.secrets)) {
+          const secret = await view.secrets.findSecret(namespaceId, reference.id);
+          const destination = destinations[field];
+          // Registration and admission authorize a Secret without endpoint metadata through the
+          // source's own immutable destination; delivery must use the same rule. With metadata,
+          // every enabled destination must match, not merely one of them.
+          if (
+            secret === undefined ||
+            destination === undefined ||
+            (secret.authorizedEndpoint !== undefined &&
+              [destination.endpoint, ...(destination.additionalEndpoints ?? [])].some(
+                (endpoint) => endpoint !== secret.authorizedEndpoint,
+              ))
+          ) {
+            return { source: undefined, withdrawal };
+          }
+        }
+      }
       return {
         source:
           withdrawal === undefined &&
@@ -5539,6 +5568,12 @@ export class ControllerWorker {
         secret.backendRef.uid.trim().length === 0
       ) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
+      }
+      // A codex_pat direct binding carries no endpoint authorization, so a Secret with
+      // metadata cannot satisfy it: the metadata must match the binding exactly.
+      const authorizedEndpoint = auth.method === "api_key" ? auth.authorizedEndpoint : undefined;
+      if (authorizedEndpoint !== secret.authorizedEndpoint) {
+        return { result: { outcome: "permanent", code: "HARNESS_AUTH_ENDPOINT_MISMATCH" } };
       }
       // Admission verifies the physical source. Workers project authoritative
       // OCC metadata without requiring permission to read backend Secret values.

@@ -49,6 +49,13 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     observabilityUrl?: string;
     repositoryOptions?: readonly RepositoryOption[];
     credentialRegistrationOutcome?: string;
+    existingModelSources?: readonly {
+      id: string;
+      name: string;
+      type: string;
+      config: Readonly<Record<string, string>>;
+      secrets: Readonly<Record<string, { kind: string; namespaceId: string; id: string }>>;
+    }[];
     pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
     pluginCapabilities?: Omit<
       NonNullable<Parameters<typeof installationFixture>[0]["pluginCapabilities"]>,
@@ -214,9 +221,34 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const credentialSources = new Map<string, StoredCredentialSource>();
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map<string, DeviceLogin>();
-  const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
+  const secrets = new Map<string, SecretMetadata>();
   const roles: StoredIdentity[] = [];
   const bindings: StoredIdentity[] = [];
+  // Serve scenario-provided model sources as ready so the Create Agent picker can resolve the
+  // endpoint authorization the Console reads from authorized_base_url.
+  for (const source of scenario.existingModelSources ?? []) {
+    const stored = {
+      ...source,
+      namespaceId,
+      driverId: "credential-gateway-storybook",
+      state: "ready" as const,
+      ref: { kind: "credential_source" as const, namespaceId, id: source.id },
+      createdAt,
+    };
+    credentialSources.set(source.id, stored);
+    for (const sourceSecret of Object.values(source.secrets ?? {})) {
+      const ref = secretRef(sourceSecret.id);
+      secrets.set(ref.id, {
+        id: ref.id,
+        namespaceId,
+        name: `${source.name} key`,
+        ref,
+        ...(source.config.authorized_base_url === undefined
+          ? {}
+          : { authorizedEndpoint: source.config.authorized_base_url }),
+      });
+    }
+  }
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",

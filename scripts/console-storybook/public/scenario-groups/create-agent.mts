@@ -41,6 +41,13 @@ type CreateAgentScenario = {
   credentialSourceTypes?: readonly CredentialSourceType[];
   credentialRegistrationOutcome?: "invalid-config" | "ready" | "different-source" | "deleting";
   extraSecrets?: readonly { id: string; name: string }[];
+  existingModelSources?: readonly {
+    id: string;
+    name: string;
+    type: string;
+    config: Readonly<Record<string, string>>;
+    secrets: Readonly<Record<string, { kind: string; namespaceId: string; id: string }>>;
+  }[];
   namespaceStatus?: NamespaceStatus;
   namespaceRechecks?: readonly (NamespaceStatus | "missing" | number)[];
   nativeWorkerSupport?: false | "custom-image";
@@ -323,6 +330,101 @@ export const createAgentFormScenarios = {
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
       "Open Runtime details and Tab to Execution mode. With Codex it takes focus and looks unavailable, described by its hint; keys and clicks do not change it. OpenClaw makes it selectable (finding 2945).",
     ],
+  },
+  createCustomResponses: {
+    group: "Pages/Create Agent",
+    name: "Custom Responses endpoint and manual model",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#model-provider", value: "custom" },
+      { selector: "#provider-endpoint", value: "https://models.example.test/v1" },
+      { selector: "#agent-model-manual", value: "provider-model" },
+    ],
+    description:
+      "Simulated UI proof: a custom Responses endpoint requires a separately authorized API key and manual model ID. No provider requests or runtime deployment are performed.",
+    steps: [
+      "Enter a dummy Provider API key. Change the endpoint and confirm the key and model are cleared.",
+      "Select OpenClaw for Embedded execution. Inspect Configuration JSON: custom/provider-model, openai-responses, and OCE_MODEL_API_KEY, without OpenAI model limits.",
+    ],
+  },
+  createCustomResponsesEmpty: {
+    group: "Pages/Create Agent",
+    name: "Custom Responses required inputs",
+    path: create,
+    actions: [...form, { selector: "#model-provider", value: "custom" }, click("Create Agent")],
+    description: "The empty endpoint and manual model are required. Simulated UI proof only.",
+  },
+  createCustomResponsesInvalid: {
+    group: "Pages/Create Agent",
+    name: "Custom Responses invalid endpoint",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#model-provider", value: "custom" },
+      { selector: "#provider-endpoint", value: "http://models.example.test/v1" },
+      click("Create Agent"),
+    ],
+    description:
+      "URL refusal appears beside the endpoint before any write. Simulated UI proof only.",
+  },
+  createCustomResponsesSource: {
+    group: "Pages/Create Agent",
+    name: "Custom native OpenClaw source-owned endpoint",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    existingModelSources: [
+      {
+        id: "cs_00000000-0000-4000-8000-000000000020",
+        name: "Authorized model endpoint",
+        type: "openai",
+        config: { authorized_base_url: "https://models.example.test/v1" },
+        secrets: {
+          api_key: {
+            kind: "secret",
+            namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+            id: "sec_00000000-0000-4000-8000-000000000021",
+          },
+        },
+      },
+    ],
+    actions: [
+      ...form,
+      { selector: "#model-provider", value: "custom" },
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+      { selector: "#execution-mode", value: "dedicated" },
+      { selector: "#custom-credential-mode", value: "source" },
+      { selector: "#custom-credential-source", value: "cs_00000000-0000-4000-8000-000000000020" },
+    ],
+    description:
+      "Simulated source selection makes the immutable endpoint read-only. The creator must supply native model limits and costs. This does not prove credential delivery or native inference.",
+  },
+  createCustomResponsesSourcesEmpty: {
+    group: "Pages/Create Agent",
+    name: "No existing custom model sources",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: [
+      ...form,
+      { selector: "#model-provider", value: "custom" },
+      { selector: "#custom-credential-mode", value: "source" },
+    ],
+    description: "No readable, ready API-key sources are available. Simulated UI proof only.",
+  },
+  createCustomResponsesSourcesDenied: {
+    group: "Pages/Create Agent",
+    name: "Custom model source read refused",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    rules: [{ suffix: "/credential-sources", method: "GET", status: 403, code: "FORBIDDEN" }],
+    actions: [
+      ...form,
+      { selector: "#model-provider", value: "custom" },
+      { selector: "#custom-credential-mode", value: "source" },
+    ],
+    description:
+      "Source read permission failure is shown beside the picker. Simulated UI proof only.",
   },
   createNativeAdmin: {
     group: "Pages/Create Agent",

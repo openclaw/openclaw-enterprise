@@ -1,5 +1,3 @@
-import { isIP } from "node:net";
-
 /**
  * Why a written endpoint is refused before it is parsed, or `undefined`. The URL parser drops
  * tabs and newlines, trims spaces and controls, treats the `//` after the scheme as optional,
@@ -96,7 +94,7 @@ export function openAiBaseUrlRewritesIpv4(value: string): boolean {
   } catch {
     return false;
   }
-  if (isIP(endpoint.hostname) !== 4) {
+  if (!/^\d+\.\d+\.\d+\.\d+$/u.test(endpoint.hostname)) {
     return false;
   }
   // A backslash is a slash to the URL parser, including the two separators after the scheme.

@@ -1,3 +1,4 @@
+import { normalizeOpenAiBaseUrl, openAiBaseUrlRewritesIpv4 } from "../openai-endpoint.mjs";
 import type {
   Agent,
   AgentCredentialSourceBinding,
@@ -92,10 +93,9 @@ type CreateRequest = (
 ) => Promise<unknown>;
 type CredentialReference = SecretReference | CredentialSourceReference;
 type Repositories = ReturnType<typeof createRepositoryFields>;
-type CredentialRegistration = Pick<
-  CredentialSourceMetadata,
-  "name" | "secrets" | "type" | "config"
->;
+type CredentialRegistration = Pick<CredentialSourceMetadata, "name" | "secrets" | "type"> & {
+  config?: Readonly<Record<string, string>>;
+};
 type RegisteredCredential = Pick<CredentialSourceMetadata, "id" | "state">;
 type SavedAgent = Pick<Agent, "id" | "name" | "configurationId">;
 type SavedConfiguration = Pick<Configuration, "id" | "secretBindings">;
@@ -248,22 +248,41 @@ function field(label: string, input: HTMLElement, hint?: string, error?: HTMLEle
   return node;
 }
 
-function configurationTemplate(harnessId: string, nativeProvider: string, providerModel: string) {
-  const providerId = harnessId === "codex" ? "codex" : nativeProvider;
+function configurationTemplate(
+  harnessId: string,
+  nativeProvider: string,
+  providerModel: string,
+  customEndpoint?: string,
+  nativeCustom = false,
+  modelMetadata: Record<string, number | Record<string, number>> = {},
+) {
+  let providerId = nativeProvider;
+  if (nativeCustom) {
+    providerId = "openai";
+  }
+  if (harnessId === "codex") {
+    providerId = "codex";
+  }
   const modelReference = `${providerId}/${providerModel}`;
   let baseUrl =
-    nativeProvider === "anthropic" ? "https://api.anthropic.com" : "https://api.openai.com/v1";
+    nativeProvider === "anthropic"
+      ? "https://api.anthropic.com"
+      : customEndpoint || "https://api.openai.com/v1";
   if (harnessId === "codex") {
     baseUrl = "http://127.0.0.1:9";
   }
   const provider = {
     [providerId]: {
       baseUrl,
+      ...(nativeProvider === "custom" && harnessId === "openclaw" && !nativeCustom
+        ? { apiKey: "${OCE_MODEL_API_KEY}" }
+        : {}),
       api: nativeProvider === "anthropic" ? "anthropic-messages" : "openai-responses",
       models: [
         {
           id: providerModel,
           name: providerModel,
+          ...modelMetadata,
           ...(harnessId === "openclaw" && nativeProvider === "openai"
             ? {
                 contextWindow: 128000,
@@ -320,15 +339,16 @@ function runtimeBindingRefusal(refusal: string): string {
 function selectedHarnessAuth(
   method: string,
   source: CredentialReference | null | undefined,
+  authorizedEndpoint?: string,
 ): HarnessAuthBinding {
-  if (method === "credential_source" && source?.kind === "credential_source") {
-    return { method, sourceId: source.id };
+  if (source?.kind === "credential_source") {
+    return { method: "credential_source", sourceId: source.id };
   }
   if (method === "codex_pat" && source?.kind === "secret") {
     return { method, source };
   }
   if (method === "api_key" && source?.kind === "secret") {
-    return { method, source };
+    return { method, source, ...(authorizedEndpoint === undefined ? {} : { authorizedEndpoint }) };
   }
   throw new Error("Choose a model credential for the selected authentication method.");
 }
@@ -346,12 +366,13 @@ function credentialRegistrationResult(
   }
   const { id, state } = source;
   const config = responseFields(source.config);
+  const expectedConfig = expected.config ?? {};
   const configMatches =
     source.config !== null &&
     typeof source.config === "object" &&
     !Array.isArray(source.config) &&
-    Object.keys(config).length === Object.keys(expected.config).length &&
-    Object.entries(expected.config).every(([name, value]) => {
+    Object.keys(config).length === Object.keys(expectedConfig).length &&
+    Object.entries(expectedConfig).every(([name, value]) => {
       const actual = config[name];
       if (actual === value) {
         return true;
@@ -1034,10 +1055,187 @@ function renderAgentForm(
     { id: "model-provider" },
     element("option", { value: "openai" }, "OpenAI"),
     element("option", { value: "anthropic" }, "Anthropic"),
+    element("option", { value: "custom" }, "Custom (Responses API)"),
   );
   nativeProvider.value = initialModel?.startsWith("anthropic/") ? "anthropic" : "openai";
-  const modelChoices = (provider = nativeProvider.value) =>
-    provider === "anthropic" ? MODEL_CHOICES.anthropic : MODEL_CHOICES.openai;
+  const customEndpoint = element("input", {
+    id: "provider-endpoint",
+    type: "url",
+    autocomplete: "off",
+  });
+  const endpointField = field(
+    "Responses API endpoint",
+    customEndpoint,
+    "Use an HTTPS endpoint ending in /v1. This endpoint receives the API key. Direct key delivery does not restrict the key to this hostname.",
+  );
+  const endpointError = fieldError(customEndpoint);
+  customEndpoint.after(endpointError.node);
+  endpointField.hidden = true;
+  let codexApiKeyBaseUrl: string | undefined;
+  const authorizedEndpoint = () => {
+    if (nativeProvider.value === "custom") {
+      return normalizeOpenAiBaseUrl(customEndpoint.value);
+    }
+    // Routing is Installation-owned: Codex and Embedded OpenClaw both deliver an OpenAI API
+    // key to runtime.modelProvider.baseUrl, so both need that endpoint's authorization.
+    if (
+      nativeProvider.value === "openai" &&
+      authMethod.value === "api_key" &&
+      codexApiKeyBaseUrl !== undefined &&
+      codexApiKeyBaseUrl !== "https://api.openai.com/v1"
+    ) {
+      return codexApiKeyBaseUrl;
+    }
+    return undefined;
+  };
+  const checkEndpoint = () =>
+    customEndpoint.setCustomValidity(
+      nativeProvider.value !== "custom" ||
+        (authorizedEndpoint() !== undefined && !openAiBaseUrlRewritesIpv4(customEndpoint.value))
+        ? ""
+        : "Enter an HTTPS /v1 endpoint without credentials, query, fragment, wildcard, port zero, or rewritten IPv4 address.",
+    );
+  const credentialMode = element(
+    "select",
+    { id: "custom-credential-mode" },
+    element("option", { value: "new" }, "Supply endpoint-specific key"),
+    element("option", { value: "secret" }, "Existing endpoint-authorized Secret"),
+    element("option", { value: "source" }, "Existing Credential Source"),
+  );
+  const credentialModeField = field("Custom credential", credentialMode);
+  credentialModeField.hidden = true;
+  const sourcePicker = element(
+    "select",
+    { id: "custom-credential-source" },
+    element("option", { value: "" }, "Choose a Credential Source"),
+  );
+  const sourceField = field(
+    "Credential Source",
+    sourcePicker,
+    "The existing source owns its immutable endpoint. Your access must include credential source operate.",
+  );
+  sourceField.hidden = true;
+  const sourceStatus = element("p", { className: "hint", role: "status" });
+  sourceField.append(sourceStatus);
+  let availableSources: CredentialSourceMetadata[] = [];
+  let sourcesLoading = false;
+  const nativeCustom = () =>
+    nativeProvider.value === "custom" && harness.value === "openclaw" && mode.value === "dedicated";
+  const selectedProvider = () => {
+    if (harness.value === "codex") {
+      return "codex";
+    }
+    return nativeCustom() ? "openai" : nativeProvider.value;
+  };
+  const metadataFields = Object.fromEntries(
+    ["contextWindow", "maxTokens", "input", "output", "cacheRead", "cacheWrite"].map((key) => [
+      key,
+      element("input", {
+        id: `custom-model-${key}`,
+        type: "number",
+        min: key === "contextWindow" || key === "maxTokens" ? "1" : "0",
+        step: key === "contextWindow" || key === "maxTokens" ? "1" : "any",
+      }),
+    ]),
+  );
+  const metadataSection = element(
+    "fieldset",
+    {},
+    element("legend", {}, "Native model metadata"),
+    ...Object.entries(metadataFields).map(([key, input]) =>
+      field(
+        (
+          {
+            contextWindow: "Context window (tokens)",
+            maxTokens: "Maximum output (tokens)",
+            input: "Input cost",
+            output: "Output cost",
+            cacheRead: "Cache read cost",
+            cacheWrite: "Cache write cost",
+          } as Record<string, string>
+        )[key]!,
+        input,
+      ),
+    ),
+  );
+  metadataSection.hidden = true;
+  const modelMetadata = () =>
+    nativeCustom()
+      ? {
+          ...(metadataFields.contextWindow!.value
+            ? { contextWindow: Number(metadataFields.contextWindow!.value) }
+            : {}),
+          ...(metadataFields.maxTokens!.value
+            ? { maxTokens: Number(metadataFields.maxTokens!.value) }
+            : {}),
+          cost: Object.fromEntries(
+            ["input", "output", "cacheRead", "cacheWrite"]
+              .filter((key) => metadataFields[key]!.value !== "")
+              .map((key) => [key, Number(metadataFields[key]!.value)]),
+          ),
+        }
+      : {};
+  const templateValues = () =>
+    configurationTemplate(
+      harness.value,
+      nativeProvider.value,
+      model.value.trim(),
+      authorizedEndpoint(),
+      nativeCustom(),
+      modelMetadata(),
+    );
+  async function loadCredentialSources() {
+    if (sourcesLoading) {
+      return;
+    }
+    sourcesLoading = true;
+    sourceStatus.textContent = "Loading Credential Sources…";
+    try {
+      const result = await request(`${namespacePath(namespaceId)}/credential-sources`, {
+        readOnly: true,
+      });
+      if (!context.isCurrent()) {
+        return;
+      }
+      const data = result;
+      availableSources = (Array.isArray(data) ? data : []).filter(
+        (source): source is CredentialSourceMetadata => {
+          const value = responseFields(source);
+          const type = credentialSourceTypes?.find((entry) => entry.type === value.type);
+          return (
+            value.namespaceId === namespaceId &&
+            value.state === "ready" &&
+            typeof responseFields(value.config).authorized_base_url === "string" &&
+            type?.harnessAuth?.loginMode === "api_key" &&
+            type.harnessAuth.modelProvider === "openai" &&
+            type.config.some((entry) => entry.name === "authorized_base_url")
+          );
+        },
+      );
+      sourcePicker.replaceChildren(
+        element("option", { value: "" }, "Choose a Credential Source"),
+        ...availableSources.map((source) => element("option", { value: source.id }, source.name)),
+      );
+      sourceStatus.textContent = availableSources.length
+        ? ""
+        : "No readable, ready API-key Credential Sources are available.";
+    } catch (cause) {
+      sourceStatus.textContent = describeFailure(cause, {
+        next: "Check Credential Source read access, then select this credential mode again.",
+      });
+    } finally {
+      sourcesLoading = false;
+      if (context.isCurrent()) {
+        updateControls();
+      }
+    }
+  }
+  const modelChoices = (provider = nativeProvider.value) => {
+    if (provider === "custom") {
+      return [];
+    }
+    return provider === "anthropic" ? MODEL_CHOICES.anthropic : MODEL_CHOICES.openai;
+  };
   const useModelChoices = !binding && typeof initialModel !== "string";
   const model = element("input", {
     id: useModelChoices ? "agent-model-manual" : "agent-model",
@@ -1084,7 +1282,7 @@ function renderAgentForm(
   let renderedSourceType: CredentialSourceType | null | undefined;
 
   apiKey.setAttribute("aria-describedby", credentialHelp.id);
-  let manualModel = !useModelChoices;
+  let manualModel = nativeProvider.value === "custom" || !useModelChoices;
   let pendingModelSettings = draft.pendingModelSettings;
   let pendingPrimaryModel = draft.pendingPrimaryModel;
   let pendingModelSelections = draft.pendingModelSelections;
@@ -1138,7 +1336,7 @@ function renderAgentForm(
     modelField,
   );
   function resetModelChoices(resetTransport = false, selectedModel = "") {
-    manualModel = !useModelChoices;
+    manualModel = nativeProvider.value === "custom" || !useModelChoices;
     model.value = modelChoices().includes(selectedModel) ? selectedModel : "";
     modelChoice.replaceChildren(
       element("option", { value: "" }, "Choose a model"),
@@ -1171,6 +1369,8 @@ function renderAgentForm(
       const agentName = name.value.trim();
       return `${agentName || "Agent"} model credential`;
     },
+    createAuthorizedEndpoint: () =>
+      credentialSourceTypes === undefined ? authorizedEndpoint() : modelSourceEndpoint(),
     createDialogTitle: "Create model credential Secret",
     metadataLabel: "View model credential Secret metadata",
     noSecretLabel: "Choose a model credential Secret",
@@ -1280,6 +1480,10 @@ function renderAgentForm(
     { className: "harness-auth-fields" },
     element("legend", {}, "Model provider"),
     field("Provider", nativeProvider),
+    endpointField,
+    credentialModeField,
+    sourceField,
+    metadataSection,
     field("Harness", harness),
     harnessHint,
     nativeHarnessWarning,
@@ -1326,12 +1530,7 @@ function renderAgentForm(
   if (harness.value === "codex") {
     mode.value = "dedicated";
   }
-  const currentTemplate = () =>
-    JSON.stringify(
-      configurationTemplate(harness.value, nativeProvider.value, model.value.trim()),
-      null,
-      2,
-    );
+  const currentTemplate = () => JSON.stringify(templateValues(), null, 2);
   configuration.value =
     rendered.configuration?.values === undefined
       ? currentTemplate()
@@ -1356,7 +1555,7 @@ function renderAgentForm(
       return;
     }
     retainPendingModel(values);
-    const next = configurationTemplate(harness.value, nativeProvider.value, model.value.trim());
+    const next = templateValues();
     const previous = values.agents?.defaults?.model;
     const previousModel = modelPrimary(configuredModelSelection(values)) ?? pendingPrimaryModel;
     const modelSettings = { ...values.agents?.defaults?.models };
@@ -1484,9 +1683,10 @@ function renderAgentForm(
       delete providers.openai;
       delete providers.anthropic;
       delete providers.codex;
+      delete providers.custom;
       Object.assign(providers, next.models?.providers);
     } else if (selectedModel) {
-      const providerId = harness.value === "codex" ? "codex" : nativeProvider.value;
+      const providerId = selectedProvider();
       const templateProvider = next.models?.providers[providerId];
       const existingProvider = providers[providerId] ?? templateProvider;
       const existingModels: ProviderModel[] = existingProvider?.models ?? [];
@@ -1520,6 +1720,14 @@ function renderAgentForm(
           ),
         };
       }
+    }
+    if (nativeCustom() && selectedModel && providers.openai) {
+      providers.openai = {
+        ...providers.openai,
+        models: (providers.openai.models ?? []).map((entry) =>
+          entry.id === model.value.trim() ? { ...entry, ...modelMetadata() } : entry,
+        ),
+      };
     }
     values.models = { ...values.models, providers };
     if (next.plugins) {
@@ -1564,12 +1772,59 @@ function renderAgentForm(
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     clearModelCredential();
+    customEndpoint.value = "";
+    customEndpoint.readOnly = false;
+    credentialMode.value = "new";
+    sourcePicker.value = "";
+    if (nativeProvider.value === "custom" && !binding) {
+      passwordAuth = true;
+      authSection.append(transientCredentialField);
+    } else if (!binding) {
+      passwordAuth = Object.hasOwn(auth, "secret");
+      if (!passwordAuth) {
+        pluginDiscoveryTokenDetails.append(transientCredentialField);
+      }
+    }
+    checkEndpoint();
     if (!binding) {
       authMethod.value = "api_key";
       resetModelChoices(true);
     } else {
       updateModelConfiguration(true);
     }
+  });
+  credentialMode.addEventListener("change", () => {
+    clearModelCredential();
+    passwordAuth = credentialMode.value === "new";
+    sourcePicker.value = "";
+    customEndpoint.readOnly = credentialMode.value === "source";
+    if (credentialMode.value === "source") {
+      customEndpoint.value = "";
+      void loadCredentialSources();
+    }
+    resetModelChoices(true);
+  });
+  sourcePicker.addEventListener("change", () => {
+    clearModelCredential();
+    const source = availableSources.find(({ id }) => id === sourcePicker.value);
+    customEndpoint.value = source?.config.authorized_base_url ?? "";
+    modelCredentialSource =
+      source === undefined ? null : { kind: "credential_source", namespaceId, id: source.id };
+    passwordAuth = false;
+    checkEndpoint();
+    resetModelChoices(true);
+  });
+  for (const input of Object.values(metadataFields)) {
+    input.addEventListener("input", () => updateModelConfiguration());
+  }
+  customEndpoint.addEventListener("input", () => {
+    endpointError.clear();
+    checkEndpoint();
+    clearModelCredential();
+    model.value = "";
+    modelChoice.value = "";
+    updateModelConfiguration(true);
+    updateControls();
   });
   authMethod.addEventListener("change", () => {
     clearModelCredential();
@@ -1603,7 +1858,7 @@ function renderAgentForm(
       harness.value = "openclaw";
     }
     // Topology alone does not change the model policy or provider transport.
-    if (harness.value !== previousHarness) {
+    if (harness.value !== previousHarness || nativeProvider.value === "custom") {
       updateModelConfiguration(true);
     } else {
       renderChannelEditor();
@@ -1630,14 +1885,20 @@ function renderAgentForm(
         mode.value = "dedicated";
       }
     }
-    if (typeof ref === "string" && /^(openai|anthropic|codex)\//.test(ref)) {
+    if (typeof ref === "string" && /^(openai|anthropic|codex|custom)\//.test(ref)) {
       if (
         !savedSecret &&
         !savedCredentialSource &&
         !credentialRegistration &&
         !hasBoundModelCredential
       ) {
-        const selectedProvider = ref.startsWith("anthropic/") ? "anthropic" : "openai";
+        let selectedProvider = ref.startsWith("anthropic/") ? "anthropic" : "openai";
+        if (
+          ref.startsWith("custom/") ||
+          (nativeProvider.value === "custom" && (ref.startsWith("codex/") || nativeCustom()))
+        ) {
+          selectedProvider = "custom";
+        }
         if (
           !binding &&
           (selectedProvider !== nativeProvider.value ||
@@ -1855,6 +2116,13 @@ function renderAgentForm(
   const embeddedRequired = () =>
     nativeProvider.value === "anthropic" || binding?.method === "runtime";
   let credentialSourceTypes: readonly CredentialSourceType[] | undefined;
+  const modelSourceEndpoint = () =>
+    authorizedEndpoint() ??
+    (nativeProvider.value === "openai" &&
+    harness.value === "codex" &&
+    authMethod.value === "api_key"
+      ? codexApiKeyBaseUrl
+      : undefined);
   // A draft kept after a refused Create resumes the resources that attempt saved (finding 1934).
   let savedCredentialSource = draft.savedCredentialSource;
   let credentialRegistration: CredentialRegistration | null = null;
@@ -2276,6 +2544,12 @@ function renderAgentForm(
     mode,
     harness,
     nativeProvider,
+    customEndpoint,
+    credentialMode,
+    sourcePicker,
+    ...Object.fromEntries(
+      Object.entries(metadataFields).map(([key, input]) => [`metadata-${key}`, input]),
+    ),
     authMethod,
     model,
     modelChoice,
@@ -2297,7 +2571,20 @@ function renderAgentForm(
       input.value = value;
     }
   }
+  if (modelCredentialSource?.kind === "credential_source") {
+    sourcePicker.append(
+      element("option", { value: modelCredentialSource.id }, modelCredentialSource.id),
+    );
+    sourcePicker.value = modelCredentialSource.id;
+  }
   manualModel = draft.manualModel ?? manualModel;
+  if (nativeProvider.value === "custom") {
+    passwordAuth = credentialMode.value === "new";
+    if (passwordAuth) {
+      authSection.append(transientCredentialField);
+    }
+    checkEndpoint();
+  }
   // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
   // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.
   let touched = Boolean(draft.touched);
@@ -2541,7 +2828,8 @@ function renderAgentForm(
   function modelSourceType() {
     const candidates = (credentialSourceTypes ?? []).filter(
       (type) =>
-        type.harnessAuth?.modelProvider === nativeProvider.value &&
+        type.harnessAuth?.modelProvider ===
+          (nativeProvider.value === "custom" ? "openai" : nativeProvider.value) &&
         type.harnessAuth.loginMode === (binding?.method ?? authMethod.value) &&
         !type.config.some((field) => field.required) &&
         type.secrets.length === 1 &&
@@ -2957,19 +3245,47 @@ function renderAgentForm(
         "This Preset's operator-managed credentials require the OpenClaw harness.";
     }
     nativeProvider.disabled ||= providerLocked;
+    const custom = nativeProvider.value === "custom";
+    endpointField.hidden = !custom;
+    credentialModeField.hidden = !custom;
+    credentialMode.disabled =
+      planLocked || Boolean(savedSecret || savedCredentialSource || savedConfiguration);
+    sourceField.hidden = !custom || credentialMode.value !== "source";
+    sourcePicker.disabled = planLocked || sourcesLoading;
+    sourcePicker.required = !sourceField.hidden;
+    const sourceOption = credentialMode.querySelector<HTMLOptionElement>('option[value="source"]')!;
+    sourceOption.disabled = credentialSourceTypes === undefined;
+    sourceOption.hidden = sourceOption.disabled;
+    metadataSection.hidden = !nativeCustom();
+    for (const input of Object.values(metadataFields)) {
+      input.required = nativeCustom();
+      input.disabled = !nativeCustom() || planLocked;
+    }
+    customEndpoint.readOnly = custom && credentialMode.value === "source";
+    customEndpoint.required = nativeProvider.value === "custom";
+    customEndpoint.disabled = planLocked || Boolean(savedSecret || savedConfiguration || binding);
+    toggleModel.hidden = nativeProvider.value === "custom";
     authMethod.disabled ||= Boolean(savedSecret || savedCredentialSource || credentialRegistration);
     apiKeyOption.textContent =
-      nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
-    patOption.hidden = harness.value !== "codex";
-    patOption.disabled = harness.value !== "codex";
-    oauthOption.hidden = harness.value !== "codex";
-    oauthOption.disabled = harness.value !== "codex";
+      nativeProvider.value === "custom"
+        ? "Provider API key"
+        : nativeProvider.value === "anthropic"
+          ? "Anthropic API key"
+          : "OpenAI API key";
+    patOption.hidden = harness.value !== "codex" || nativeProvider.value === "custom";
+    patOption.disabled = harness.value !== "codex" || nativeProvider.value === "custom";
+    oauthOption.hidden = harness.value !== "codex" || nativeProvider.value === "custom";
+    oauthOption.disabled = harness.value !== "codex" || nativeProvider.value === "custom";
     credentialLabel.textContent = passwordAuth
       ? usesPat
         ? "Service account token"
-        : "API key"
+        : nativeProvider.value === "custom"
+          ? "Provider API key"
+          : "API key"
       : "Token for plugin discovery";
-    modelCredentialField.hidden = Boolean(binding || passwordAuth || usesOAuth);
+    modelCredentialField.hidden = Boolean(
+      binding || passwordAuth || usesOAuth || (custom && credentialMode.value === "source"),
+    );
     transientCredentialField.hidden =
       usesOAuth || (!passwordAuth && transientCredentialField.parentElement === authSection);
     if (!ownsSecretRecovery()) {
@@ -2988,7 +3304,14 @@ function renderAgentForm(
     modelCredentialField.querySelector("label")!.textContent = usesPat
       ? "Service account token Secret"
       : "API key Secret";
-    modelCredentialPicker.setRequired(!binding && !passwordAuth && !usesOAuth);
+    modelCredentialPicker.setRequired(
+      !binding && !passwordAuth && !usesOAuth && !(custom && credentialMode.value === "source"),
+    );
+    if (nativeCustom() && credentialMode.value !== "source") {
+      sourceStatus.textContent =
+        "Dedicated native OpenClaw requires an existing API-key Credential Source.";
+      sourceField.hidden = false;
+    }
     modelCredentialPicker.setDisabled(
       planLocked ||
         Boolean(
@@ -3013,6 +3336,10 @@ function renderAgentForm(
         ),
         ", choose your workspace, open Service accounts, and create a token with Codex scope.",
       );
+    } else if (nativeProvider.value === "custom") {
+      apiKey.placeholder = "";
+      credentialHelp.textContent =
+        "Supply a separate key authorized for this endpoint. Permission to use a shared Secret does not authorize a new destination.";
     } else if (nativeProvider.value === "openai") {
       apiKey.placeholder = "sk-…";
       credentialHelp.replaceChildren(
@@ -3106,6 +3433,7 @@ function renderAgentForm(
       permissionsReading ||
       credentialGrantRefused ||
       selectedModeUnavailable() ||
+      (nativeCustom() && credentialMode.value !== "source") ||
       credentialSourceRefused() ||
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
@@ -3233,6 +3561,7 @@ function renderAgentForm(
       dedicatedSettingRefusal =
         typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
       credentialSourceTypes = installation.capabilities?.credentialSources?.types;
+      codexApiKeyBaseUrl = installation.capabilities?.agentProvisioning?.codexApiKeyBaseUrl;
       // Drivers that offer no device login refuse every start (finding 2991).
       oauthLogin.setOffered(deviceLoginOffered(installation.capabilities));
       provisionableExecutionModes.clear();
@@ -3545,7 +3874,10 @@ function renderAgentForm(
   // so it sends the source type's login mode, the method it selected, alone (finding 2406).
   function plannedHarnessAuth(
     usesOAuth: boolean,
-  ): HarnessAuthBinding | { method: "api_key" | "codex_pat" } | undefined {
+  ):
+    | HarnessAuthBinding
+    | { method: "api_key" | "codex_pat"; authorizedEndpoint?: string }
+    | undefined {
     if (usesOAuth) {
       return undefined;
     }
@@ -3553,25 +3885,37 @@ function renderAgentForm(
     if (binding?.method === "runtime") {
       return binding;
     }
+    if (modelCredentialSource?.kind === "credential_source") {
+      return { method: "credential_source", sourceId: modelCredentialSource.id };
+    }
     if (credentialSourceTypes !== undefined) {
       const method = binding?.method ?? authMethod.value;
-      return method === "api_key" || method === "codex_pat" ? { method } : undefined;
+      const endpoint = authorizedEndpoint();
+      return method === "api_key" || method === "codex_pat"
+        ? { method, ...(endpoint === undefined ? {} : { authorizedEndpoint: endpoint }) }
+        : undefined;
     }
     if (binding) {
       return binding;
     }
     const source = passwordAuth ? savedSecret?.ref : modelCredentialSource;
     if (source?.kind === "secret") {
-      return selectedHarnessAuth(authMethod.value, source);
+      return selectedHarnessAuth(authMethod.value, source, authorizedEndpoint());
     }
     return passwordAuth && (authMethod.value === "api_key" || authMethod.value === "codex_pat")
-      ? { method: authMethod.value }
+      ? {
+          method: authMethod.value,
+          ...(authorizedEndpoint() === undefined
+            ? {}
+            : { authorizedEndpoint: authorizedEndpoint()! }),
+        }
       : undefined;
   }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     // A restored draft sets the name and files without an input event.
     checkName();
+    checkEndpoint();
     if (ownsSecretRecovery() && !alternateSecretField.hidden) {
       alternateSecretName.setCustomValidity(namespaceNameProblem(alternateSecretName.value.trim()));
     }
@@ -3616,11 +3960,9 @@ function renderAgentForm(
     const selected = configuredModelSelection(values);
     const primaryModel = modelPrimary(selected);
     const fallbackPrefixes =
-      harness.value === "codex" ? ["openai/", "codex/"] : [`${nativeProvider.value}/`];
+      harness.value === "codex" ? ["openai/", "codex/"] : [`${selectedProvider()}/`];
     // Bound Codex Presets may use either supported provider prefix; OpenClaw keeps its provider.
-    const primaryPrefixes = hasBoundModelCredential
-      ? fallbackPrefixes
-      : [harness.value === "codex" ? "codex/" : `${nativeProvider.value}/`];
+    const primaryPrefixes = hasBoundModelCredential ? fallbackPrefixes : [`${selectedProvider()}/`];
     if (
       (!binding || hasBoundModelCredential) &&
       !primaryPrefixes.some((prefix) => primaryModel === `${prefix}${model.value.trim()}`)
@@ -3677,14 +4019,19 @@ function renderAgentForm(
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
+    // A selected endpoint-authorized Credential Source is a supported API-key binding even while
+    // the authentication method still reads api_key, as it does for the custom provider.
+    const usesCredentialSource = usesOAuth || modelCredentialSource?.kind === "credential_source";
     if (
       !binding &&
-      (!passwordAuth || usesOAuth) &&
-      modelCredentialSource?.kind !== (usesOAuth ? "credential_source" : "secret")
+      (!passwordAuth || usesCredentialSource) &&
+      modelCredentialSource?.kind !== (usesCredentialSource ? "credential_source" : "secret")
     ) {
       feedback.textContent = usesOAuth
         ? "Complete ChatGPT sign-in before creating the Agent."
-        : "Choose a model credential Secret before creating the Agent.";
+        : usesCredentialSource
+          ? "Choose an endpoint-authorized Credential Source before creating the Agent."
+          : "Choose a model credential Secret before creating the Agent.";
       return;
     }
     pending = true;
@@ -3800,7 +4147,19 @@ function renderAgentForm(
         const result = await request(`${namespacePath(namespaceId)}/secrets`, {
           method: "POST",
           expectedStatus: 201,
-          body: { name: requestedSecretName, value: apiKey.value },
+          body: {
+            name: requestedSecretName,
+            value: apiKey.value,
+            ...((credentialSourceTypes === undefined
+              ? authorizedEndpoint()
+              : modelSourceEndpoint()) === undefined
+              ? {}
+              : {
+                  authorizedEndpoint: (credentialSourceTypes === undefined
+                    ? authorizedEndpoint()
+                    : modelSourceEndpoint())!,
+                }),
+          },
         });
         apiKey.value = "";
         const secret = secretMetadata(result, namespaceId, requestedSecretName);
@@ -3817,8 +4176,14 @@ function renderAgentForm(
       }
       const selectedCredentialSource =
         passwordAuth && !usesOAuth ? savedSecret?.ref : modelCredentialSource;
-      let harnessAuth = binding ?? selectedHarnessAuth(authMethod.value, selectedCredentialSource);
-      if (credentialSourceTypes !== undefined && !usesOAuth) {
+      let harnessAuth =
+        binding ??
+        selectedHarnessAuth(authMethod.value, selectedCredentialSource, authorizedEndpoint());
+      if (
+        credentialSourceTypes !== undefined &&
+        !usesOAuth &&
+        harnessAuth.method !== "credential_source"
+      ) {
         if (!savedCredentialSource) {
           const type = modelSourceType();
           const secret = "source" in harnessAuth ? harnessAuth.source : undefined;
@@ -3831,11 +4196,18 @@ function renderAgentForm(
           credentialRegistration ??= {
             name: `${body.name.slice(0, 150)} model ${provisioningRequestId}`,
             type: type.type,
-            config: Object.fromEntries(
-              [...sourceConfigurationInputs]
-                .filter(([, input]) => input.value.trim() !== "")
-                .map(([name, input]) => [name, input.value]),
-            ),
+            config: {
+              ...Object.fromEntries(
+                [...sourceConfigurationInputs]
+                  .filter(([, input]) => input.value.trim() !== "")
+                  .map(([name, input]) => [name, input.value]),
+              ),
+              // The custom endpoint the creator typed is the authorization for this key; a
+              // separate destination input cannot disagree with the Secret it just created.
+              ...(modelSourceEndpoint() === undefined
+                ? {}
+                : { authorized_base_url: modelSourceEndpoint()! }),
+            },
             secrets: { [field]: secret },
           };
           mutationStarted = true;
@@ -4069,6 +4441,13 @@ function renderAgentForm(
           error.requestId,
         );
         secretConflictRecovery.hidden = false;
+      }
+      if (
+        nativeProvider.value === "custom" &&
+        error.status === 400 &&
+        /does not authorize|harnessAuth\.authorizedEndpoint/.test(error.serverMessage ?? "")
+      ) {
+        endpointError.show(error.serverMessage!);
       }
       const registrationProblem =
         error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";

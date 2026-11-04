@@ -6,6 +6,7 @@ const scenarioPresets = {
   "openshell-linear-read": ["Codex"],
   "model-ui": ["OpenClaw", "Codex"],
   "codex-search-config": ["Codex"],
+  "custom-responses": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
   "git-write": ["OpenClaw", "Codex"],
@@ -34,6 +35,7 @@ export function selectQaMatrix(env = process.env) {
               "plugin-install",
               "openshell-linear-read",
               "codex-search-config",
+              "custom-responses",
             ].includes(name),
         )
       : input.split(",").map((name) => name.trim());
@@ -42,6 +44,10 @@ export function selectQaMatrix(env = process.env) {
     "invalid QA scenario selection",
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
+  const customResponses = scenarios.includes("custom-responses");
+  if (customResponses) {
+    assert.equal(scenarios.length, 1, "custom-responses requires an exclusive QA selection");
+  }
   const codexSearchConfig = scenarios.includes("codex-search-config");
   if (codexSearchConfig) {
     assert.equal(scenarios.length, 1, "codex-search-config requires an exclusive QA selection");
@@ -82,11 +88,17 @@ export function selectQaMatrix(env = process.env) {
   );
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
-  const requiredEnv = activePresets.map((name) =>
-    name === "Codex" && !codexSearchConfig
-      ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
-      : "OCC_TEST_QA_OPENAI_KEY_FILE",
-  );
+  const requiredEnv = customResponses
+    ? [
+        "OCC_TEST_QA_RESPONSES_KEY_FILE",
+        "OCC_TEST_QA_RESPONSES_BASE_URL",
+        "OCC_TEST_QA_RESPONSES_MODEL",
+      ]
+    : activePresets.map((name) =>
+        name === "Codex" && !codexSearchConfig
+          ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
+          : "OCC_TEST_QA_OPENAI_KEY_FILE",
+      );
   if (codexSearchConfig) {
     if (env.OCC_TEST_QA_MODEL_API_KEY !== undefined) {
       requiredEnv.splice(
@@ -152,7 +164,7 @@ export function selectQaMatrix(env = process.env) {
     repository,
     browser: activeScenarios.some((name) => ["model-ui", "console-secrets"].includes(name)),
     scope:
-      installation === "all" && preset === "all" && scenarios.length === allScenarios.length - 4
+      installation === "all" && preset === "all" && scenarios.length === allScenarios.length - 5
         ? "full"
         : "partial:selected",
   };

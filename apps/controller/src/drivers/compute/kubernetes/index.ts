@@ -351,6 +351,11 @@ const callerSettingError = (setting: string, requirement: string) =>
 const preparationSettingError = (setting: string, requirement: string) =>
   new ConfigurationFailure(configurationSettingMessage(setting, requirement));
 
+// Harness authentication belongs to the Agent, so Agent save, provisioning and deployment name
+// it as an Agent setting even when the same rule runs while reading a Configuration document.
+const harnessAuthSettingError = (setting: string, requirement: string) =>
+  new ConfigurationHarnessError(`Agent setting ${setting} ${requirement}.`);
+
 // Initial workspace files land in the managed workspace; a dedicated Harness also mounts that
 // storage at its working directory.
 const kubernetesSetupWorkspaces = (mode: "embedded" | "dedicated"): readonly string[] =>
@@ -2741,6 +2746,102 @@ function harnessModelAuthentication(
   throw new ConfigurationFailure("Harness authentication requires a compatible model provider.");
 }
 
+function modelAdapter(providerId: string, provider: Record<string, unknown> | undefined): string {
+  return (
+    (typeof provider?.api === "string" ? provider.api : undefined) ??
+    (providerId === "anthropic" ? "anthropic-messages" : "openai-responses")
+  );
+}
+
+function normalizeModelEndpoint(
+  adapter: string,
+  value: string,
+  setting: string,
+  settingError: (setting: string, requirement: string) => Error,
+): string {
+  if (adapter === "anthropic-messages") {
+    let endpoint: URL | undefined;
+    try {
+      endpoint = new URL(value);
+    } catch {
+      endpoint = undefined;
+    }
+    if (
+      endpoint === undefined ||
+      endpoint.protocol !== "https:" ||
+      endpoint.hostname.length === 0 ||
+      endpoint.hostname.includes("*") ||
+      endpoint.port === "0" ||
+      endpoint.username !== "" ||
+      endpoint.password !== "" ||
+      endpoint.pathname.includes("*") ||
+      endpoint.search !== "" ||
+      endpoint.hash !== ""
+    ) {
+      throw settingError(setting, "must be a normalized HTTPS Anthropic Messages endpoint");
+    }
+    return endpoint.origin + endpoint.pathname.replace(/\/$/u, "");
+  }
+  const normalized = normalizeOpenAiBaseUrl(value);
+  if (normalized === undefined || openAiBaseUrlRewritesIpv4(value)) {
+    throw settingError(setting, "must be a normalized HTTPS /v1 endpoint");
+  }
+  return normalized;
+}
+
+function embeddedModelDestinations(
+  configuration: OpenClawConfigurationDocument,
+  providerId: string,
+  settingError: (setting: string, requirement: string) => Error,
+): readonly string[] {
+  const provider = asRecord(asRecord(asRecord(configuration.models)?.providers)?.[providerId]);
+  const providerAdapter = modelAdapter(providerId, provider);
+  const providerSetting = keyedSettingPath("models.providers", providerId);
+  const defaultEndpoint =
+    providerAdapter === "anthropic-messages"
+      ? "https://api.anthropic.com"
+      : providerId === "openai"
+        ? "https://api.openai.com/v1"
+        : undefined;
+  const providerEndpoint =
+    provider?.baseUrl === undefined
+      ? defaultEndpoint
+      : normalizeModelEndpoint(
+          providerAdapter,
+          provider.baseUrl as string,
+          `${providerSetting}.baseUrl`,
+          settingError,
+        );
+  const destinations = providerEndpoint === undefined ? [] : [providerEndpoint];
+  const models = Array.isArray(provider?.models) ? provider.models : [];
+  models.forEach((entry, index) => {
+    const model = asRecord(entry);
+    if (model === undefined) {
+      return;
+    }
+    const adapter = (typeof model.api === "string" ? model.api : undefined) ?? providerAdapter;
+    if (model.baseUrl === undefined) {
+      if (
+        model.api !== undefined &&
+        adapter !== providerAdapter &&
+        providerEndpoint !== undefined
+      ) {
+        destinations.push(providerEndpoint);
+      }
+      return;
+    }
+    destinations.push(
+      normalizeModelEndpoint(
+        adapter,
+        model.baseUrl as string,
+        `${providerSetting}.models.${index}.baseUrl`,
+        settingError,
+      ),
+    );
+  });
+  return destinations;
+}
+
 // Every provider is checked, selected or not: a bare model name or a `/model` switch can still
 // reach one (finding 1291), as the credential header rule assumes. Dedicated Codex makes no
 // model request from its Gateway, so it refuses every apiKey; OpenClaw accepts one only on the
@@ -3614,9 +3715,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly supportsGatewayManagedMode?: true;
   readonly supportsWorkspaceSetup = true as const;
   readonly requiresAgentRuntimeCredentials?: true;
-  readonly agentProvisioning = Object.freeze({
-    executionModes: Object.freeze(["dedicated"] as const),
-  });
+  readonly agentProvisioning: {
+    readonly executionModes: readonly ["dedicated"];
+    readonly codexApiKeyBaseUrl?: string;
+  };
   private readonly options: KubernetesComputeDriverOptions;
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
@@ -4175,6 +4277,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     // Keep the Driver-owned configuration isolated from its constructor caller.
     this.options = structuredClone(options);
+    const endpoint = options.runtime?.modelProvider?.baseUrl;
+    this.agentProvisioning = Object.freeze({
+      executionModes: Object.freeze(["dedicated"] as const),
+      ...(endpoint === undefined ? {} : { codexApiKeyBaseUrl: normalizeOpenAiBaseUrl(endpoint)! }),
+    });
     if (options.runtime !== undefined) {
       this.requiresAgentRuntimeCredentials = true;
       this.supportsGatewayManagedMode = true;
@@ -4748,6 +4855,91 @@ export class KubernetesComputeDriver implements ComputeDriver {
         callerSettingError,
         native ? auth.method : undefined,
       );
+    }
+    if (auth.method === "api_key") {
+      const endpoint = auth.authorizedEndpoint;
+      const provider = asRecord(
+        asRecord(asRecord(configuration.models)?.providers)?.[authentication.providerId],
+      );
+      const providerAdapter = modelAdapter(authentication.providerId, provider);
+      const requiresOpenAiEndpointShape = providerAdapter !== "anthropic-messages";
+      if (
+        endpoint !== undefined &&
+        requiresOpenAiEndpointShape &&
+        (normalizeOpenAiBaseUrl(endpoint) !== endpoint || openAiBaseUrlRewritesIpv4(endpoint))
+      ) {
+        throw callerSettingError(
+          "harnessAuth.authorizedEndpoint",
+          "must be a normalized HTTPS /v1 endpoint",
+        );
+      }
+      if (codex) {
+        // Installation-owned routing: the key reaches the Installation model provider (or the
+        // default OpenAI endpoint), so the Secret must authorize exactly that destination.
+        const effectiveCodexEndpoint = normalizeOpenAiBaseUrl(
+          this.options.runtime?.modelProvider?.baseUrl ?? "https://api.openai.com/v1",
+        );
+        if (endpoint !== undefined && endpoint !== effectiveCodexEndpoint) {
+          throw callerSettingError(
+            "harnessAuth.authorizedEndpoint",
+            "must match the Dedicated Codex model endpoint",
+          );
+        }
+        if (endpoint === undefined && effectiveCodexEndpoint !== "https://api.openai.com/v1") {
+          throw callerSettingError(
+            "harnessAuth.authorizedEndpoint",
+            "must authorize the Installation's custom API-key endpoint",
+          );
+        }
+      }
+      if (native && endpoint !== undefined && endpoint !== "https://api.openai.com/v1") {
+        throw harnessAuthSettingError(
+          "harnessAuth.authorizedEndpoint",
+          "must match the Dedicated OpenClaw model endpoint",
+        );
+      }
+      if (embedded) {
+        const custom = !["openai", "anthropic"].includes(authentication.providerId);
+        if (
+          custom &&
+          (endpoint === undefined ||
+            provider?.baseUrl !== endpoint ||
+            (authentication.providerId === "custom" && provider?.api !== "openai-responses"))
+        ) {
+          throw callerSettingError(
+            "harnessAuth.authorizedEndpoint",
+            "must match the custom Responses provider endpoint",
+          );
+        }
+        // Shared OpenAI and Anthropic providers are routed by the Installation model provider, so
+        // their effective destination is the Installation endpoint. Configured aliases are not
+        // translated, so their provider and model-row destinations stay effective and are checked.
+        const installationEndpoint = modelProviderBaseUrl(this.options.runtime?.modelProvider);
+        // Only the openai provider is translated to the Installation model provider; the primary
+        // model decides, as modelProviderConfiguration does for Embedded OpenClaw.
+        const translatedOpenAi =
+          authentication.providerId === "openai" && installationEndpoint !== undefined;
+        const destinations = translatedOpenAi
+          ? [installationEndpoint]
+          : embeddedModelDestinations(configuration, authentication.providerId, callerSettingError);
+        const defaultDestination =
+          providerAdapter === "anthropic-messages"
+            ? "https://api.anthropic.com"
+            : authentication.providerId === "openai"
+              ? "https://api.openai.com/v1"
+              : undefined;
+        if (
+          destinations.length === 0 ||
+          destinations.some((destination) =>
+            endpoint === undefined ? destination !== defaultDestination : destination !== endpoint,
+          )
+        ) {
+          throw callerSettingError(
+            "harnessAuth.authorizedEndpoint",
+            "must match every effective model destination",
+          );
+        }
+      }
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
@@ -14383,6 +14575,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         revision.harnessAuth.loginMode === "api_key")
     ) {
       openaiBaseUrl = modelProviderBaseUrl(provider);
+    }
+    if (
+      openaiBaseUrl === undefined &&
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      revision.harnessAuth?.method === "api_key"
+    ) {
+      // Installation-owned routing: Agent endpoint metadata authorizes the credential but does
+      // not redirect the runtime away from the Installation's model provider.
+      openaiBaseUrl = this.options.runtime?.modelProvider?.baseUrl;
     }
     const standaloneWebSearch =
       revision.harness.id === "codex" &&

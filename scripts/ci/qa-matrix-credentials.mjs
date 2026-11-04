@@ -60,6 +60,7 @@ validateRepositoryFixture();
 const directory = join(process.env.RUNNER_TEMP, "qa-matrix-credentials");
 await mkdir(directory, { mode: 0o700 });
 const mapping = {
+  CUSTOM_RESPONSES_API_KEY: ["custom-responses", "OCC_TEST_QA_RESPONSES_KEY_FILE"],
   OPENAI_API_KEY: ["openai", "OCC_TEST_QA_OPENAI_KEY_FILE"],
   CODEX_ACCESS_TOKEN: ["codex", "OCC_TEST_QA_CODEX_TOKEN_FILE"],
   SLACK_APP_TOKEN: ["slack-app", "OCC_TEST_QA_SLACK_APP_TOKEN_FILE"],

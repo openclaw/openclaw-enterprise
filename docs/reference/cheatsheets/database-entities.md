@@ -133,6 +133,7 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `namespace_id`
 - `name`
 - `driver_id`
+- `authorized_endpoint`: immutable optional credential destination
 - `backend_namespace_name`
 - `backend_name`
 - `backend_key`

@@ -34,9 +34,53 @@ for (const harness of ["codex", "openclaw"] as const) {
           },
         },
       };
-      const agent = await f.createAgent(namespace.id, "shared-provider-agent", configuration, {
-        executionMode: harness === "codex" ? "dedicated" : "embedded",
-      });
+      // A configured Installation routes Embedded OpenClaw through its own endpoint, so the
+      // Configuration names that endpoint rather than the native default.
+      const sharedConfiguration =
+        configured && harness === "openclaw"
+          ? {
+              ...configuration,
+              models: {
+                ...configuration.models,
+                providers: {
+                  ...configuration.models.providers,
+                  openai: {
+                    ...configuration.models.providers.openai,
+                    baseUrl: modelProvider.baseUrl,
+                  },
+                },
+              },
+            }
+          : configuration;
+      const agent = await f.createAgent(
+        namespace.id,
+        "shared-provider-agent",
+        sharedConfiguration,
+        {
+          executionMode: harness === "codex" ? "dedicated" : "embedded",
+          // A custom Installation endpoint requires the model Secret to authorize that exact
+          // destination, for Codex and Embedded OpenClaw alike.
+          ...(configured
+            ? {
+                harnessAuth: {
+                  method: "api_key" as const,
+                  source: (
+                    await f.createSecret(
+                      namespace.id,
+                      `shared-provider-${harness}`,
+                      "test-api-key",
+                      {
+                        authorizedEndpoint: modelProvider.baseUrl,
+                      },
+                    )
+                  ).ref,
+                  // The binding carries the same authorization as the Secret it names.
+                  authorizedEndpoint: modelProvider.baseUrl,
+                },
+              }
+            : {}),
+        },
+      );
       const deployed = await f.deployAgent(namespace.id, agent.id);
       const revision = await f.controller.transact((unit: PlatformUnitOfWork) =>
         unit.revisions.findRevision(namespace.id, agent.id, deployed.id),

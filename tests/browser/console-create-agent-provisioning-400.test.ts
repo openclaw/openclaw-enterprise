@@ -240,6 +240,10 @@ async function modelSourceFixture(
     capability: "credential_gateway",
     implementation: "test-model-source",
     validateSourceConfig() {},
+    describeSourceDestinations: (input) =>
+      input.type === "openai"
+        ? { api_key: { endpoint: "https://api.openai.com/v1", isDefault: true } }
+        : { access_token: { endpoint: "https://chatgpt.com/backend-api", isDefault: true } },
     async listSourceTypes() {
       return [
         {

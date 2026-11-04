@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-30
-last_updated_session: authoring-run/ea326acd-648d-4ca4-a2c6-afdd4cb4771e
+updated: 2026-11-03
+last_updated_session: authoring-run/84f241a8-57a6-4718-b5a4-1d673374440c
 ---
 
 # Harness Authentication Binding Flow
@@ -15,6 +15,17 @@ authenticates before guarded activation. SSH `runtime` binds operator credential
 
 Codex OAuth device login through an external credential source is **Experimental**;
 see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
+
+For a custom Responses API key, OCC saves the endpoint with the Secret reference.
+`packages/occ/src/index.ts:authorizeHarnessAuthSource` refuses a different Secret
+destination. `apps/controller/src/worker.ts:resolveRevisionSecretContext` repeats
+that check before returning the backend reference. Kubernetes Compute checks the
+custom provider endpoint against the snapshot during admission and preparation;
+Dedicated Codex routes through the Installation model provider, or the default OpenAI
+endpoint when the Installation configures none; the Agent's endpoint authorization must
+match that effective destination and does not redirect the request.
+Credential Source endpoint parsing remains in the Gateway Driver; OCC and the
+worker compare its destination description with the Secret metadata.
 
 ## Entry Points
 
@@ -302,6 +313,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 15:26: Trace custom endpoint authorization in the accompanying implementation. (authoring-run/84f241a8-57a6-4718-b5a4-1d673374440c - b73f9939afe1da527a6ffd89ae048924b71e3ea8)
 
 - 2026-10-30 07:41: Check the recorded Credential Gateway before catalog lookup in the accompanying Compute fix. (authoring-run/ea326acd-648d-4ca4-a2c6-afdd4cb4771e - 429951edfc002c1c6ef98970696e655e03ba3ec7)
 

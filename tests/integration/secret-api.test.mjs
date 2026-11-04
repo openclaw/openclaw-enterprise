@@ -16,7 +16,11 @@ import {
 } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import {
+  createTestKubernetesComputeDriver,
+  conformanceKubernetesOptions,
+} from "../helpers/kubernetes-compute.mjs";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole, restrict } from "../helpers/iam-grants.mjs";
@@ -798,6 +802,31 @@ test("Secret API denial and storage failures return value-free errors", async ()
   assert.equal(JSON.stringify(failingFixture.auditSink.events).includes(leakedBackendValue), false);
 });
 
+test("a direct codex_pat binding refuses an endpoint-authorized Secret", async () => {
+  const fixture = await createFixture();
+  const { namespace, configuration } = await bootstrapAgent(
+    fixture,
+    createHarnessConfiguration("codex", "gpt-5"),
+    "dedicated",
+  );
+  const endpoint = "https://models.example.test/v1";
+  const key = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "PAT key", value: "synthetic-pat-key", authorizedEndpoint: endpoint },
+  });
+  assert.equal(key.status, 201, JSON.stringify(key.body));
+  const created = await request(fixture.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "direct-pat-agent",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "codex_pat", source: key.data.ref },
+    },
+  });
+  // The PAT binding carries no endpoint authorization, so the Secret metadata cannot match it.
+  assert.equal(created.status, 400, JSON.stringify(created.body));
+  assert.match(created.body.error.message, /does not authorize this endpoint/);
+});
+
 // These tests exercise API validation, Native IAM, OCC admission, and state ownership.
 // Passive Secret storage does not establish provider login or model execution proof.
 for (const [model, method, executionMode] of [
@@ -1356,6 +1385,10 @@ function createRecordingCredentialGateway() {
     implementation: "test-recording-gateway",
     stored,
     validateSourceConfig() {},
+    describeSourceDestinations: () => ({
+      api_key: { endpoint: "https://api.openai.com/v1", isDefault: true },
+      access_token: { endpoint: "https://chatgpt.com/backend-api", isDefault: true },
+    }),
     async listSourceTypes() {
       return [
         {
@@ -1455,4 +1488,151 @@ test("credential source writes commit one value-free audit row each", async () =
   const audit = JSON.stringify(fixture.auditSink.events);
   assert.equal(audit.includes(value), false);
   assert.equal(audit.includes(rotated), false);
+});
+
+test("custom Responses Agent admission requires the Secret's immutable endpoint authorization", async () => {
+  // Platform admission and revision snapshots are real; the external Compute lifecycle is simulated.
+  const compute = createTestKubernetesComputeDriver("custom-endpoint-admission");
+  const fixture = await createFixture({
+    computeDriver: createReadyComputeDriver("custom-endpoint-lifecycle", {
+      validateHarnessAuth: compute.validateHarnessAuth.bind(compute),
+      validateConfiguration: compute.validateConfiguration.bind(compute),
+    }),
+  });
+  const namespace = await bootstrapNamespace(fixture);
+  const endpoint = "https://models.example.test/v1";
+  const values = createHarnessConfiguration("openclaw", "provider-model");
+  values.agents.defaults.model = "custom/provider-model";
+  values.agents.defaults.models = { "custom/provider-model": { agentRuntime: { id: "openclaw" } } };
+  values.models.providers = {
+    custom: {
+      baseUrl: endpoint,
+      api: "openai-responses",
+      apiKey: "${OCE_MODEL_API_KEY}",
+      models: [{ id: "provider-model", name: "provider-model" }],
+    },
+  };
+  const root = `/namespaces/${namespace.id}`;
+  const config = await request(fixture.app, "POST", `${root}/configurations`, {
+    body: { kind: "agent", values },
+  });
+  assert.equal(config.status, 201, JSON.stringify(config.body));
+  const shared = await request(fixture.app, "POST", `${root}/secrets`, {
+    body: { name: "shared", value: "synthetic-default-key" },
+  });
+  const specific = await request(fixture.app, "POST", `${root}/secrets`, {
+    body: { name: "specific", value: "synthetic-custom-key", authorizedEndpoint: endpoint },
+  });
+  assert.equal(specific.status, 201);
+  assert.equal(specific.data.authorizedEndpoint, endpoint);
+  const save = (name, source, authorizedEndpoint) =>
+    request(fixture.app, "POST", `${root}/agents`, {
+      body: {
+        name,
+        configurationId: config.data.id,
+        executionMode: "embedded",
+        harnessAuth: {
+          method: "api_key",
+          source,
+          ...(authorizedEndpoint === undefined ? {} : { authorizedEndpoint }),
+        },
+      },
+    });
+  // Access to a shared key does not authorize a new destination, even for the administrator.
+  const redirected = await save("redirected", shared.data.ref, endpoint);
+  assertApiError(redirected, 400, "INVALID_REQUEST");
+  assert.match(redirected.body.error.message, /does not authorize this endpoint/);
+  const missing = await save("missing", shared.data.ref);
+  assertApiError(missing, 400, "INVALID_REQUEST");
+  const wrong = await save("wrong", specific.data.ref, "https://other.example.test/v1");
+  assertApiError(wrong, 400, "INVALID_REQUEST");
+  const saved = await save("authorized", specific.data.ref, endpoint);
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.deepEqual(saved.data.harnessAuth, {
+    method: "api_key",
+    source: specific.data.ref,
+    authorizedEndpoint: endpoint,
+  });
+  assert.doesNotMatch(JSON.stringify(saved.body), /synthetic-custom-key/);
+  fixture.state.identities.push({
+    kind: "service_principal",
+    id: saved.data.servicePrincipalId,
+    namespaceId: namespace.id,
+  });
+  grantRole(fixture.state, saved.data.servicePrincipalId, {
+    id: "custom-key-delivery",
+    namespaceId: namespace.id,
+    permissions: { secret: ["operate"] },
+    resource: { kind: "secret", id: specific.data.id },
+  });
+  const admitted = await request(fixture.app, "POST", `${root}/agents/${saved.data.id}/deploy`);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const snapshot = await fixture
+    .controller()
+    .getRevision(fixture.principal.id, namespace.id, saved.data.id, admitted.data.id);
+  assert.equal(snapshot.harnessAuth.authorizedEndpoint, endpoint);
+  const cleared = await request(fixture.app, "PATCH", `${root}/agents/${saved.data.id}`, {
+    body: { configurationId: config.data.id, harnessAuth: null },
+  });
+  assert.equal(cleared.status, 200);
+  assert.equal(
+    (
+      await fixture
+        .controller()
+        .getRevision(fixture.principal.id, namespace.id, saved.data.id, admitted.data.id)
+    ).harnessAuth.authorizedEndpoint,
+    endpoint,
+  );
+});
+
+test("authorized Installation discovery returns the normalized Codex endpoint only when configured", async () => {
+  for (const endpoint of [undefined, "https://MODELS.example.test:443/v1/"]) {
+    const computeDriver = new KubernetesComputeDriver(
+      conformanceKubernetesOptions({
+        gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+        runtime: {
+          transportSecretPrefix: "transport",
+          gatewayStorageClassName: "local-path",
+          ...(endpoint === undefined
+            ? {}
+            : { modelProvider: { protocol: "openai-responses", baseUrl: endpoint } }),
+        },
+      }),
+    );
+    const fixture = await createFixture({ computeDriver });
+    const bootstrapped = await request(fixture.app, "POST", "/installation/bootstrap", {
+      body: { name: "Endpoint discovery" },
+    });
+    assert.equal(bootstrapped.status, 201, JSON.stringify(bootstrapped.body));
+    const response = await request(fixture.app, "GET", "/installation");
+    assert.equal(response.status, 200);
+    const capability = response.data.capabilities.agentProvisioning;
+    assert.equal(Object.hasOwn(capability, "codexApiKeyBaseUrl"), endpoint !== undefined);
+    if (endpoint !== undefined) {
+      assert.equal(capability.codexApiKeyBaseUrl, "https://models.example.test/v1");
+    }
+    const limited = await fixture.createPrincipal();
+    const refused = await request(limited.app, "GET", "/installation");
+    assertApiError(refused, 403, "FORBIDDEN");
+  }
+});
+
+test("Secret endpoint authorization rejects unsafe or ambiguous URL metadata before storage", async () => {
+  const fixture = await createFixture();
+  const namespace = await bootstrapNamespace(fixture);
+  for (const authorizedEndpoint of [
+    "http://models.example.test/v1",
+    "https://models.example.test/v1?query=1",
+    "https://models.example.test/v1#fragment",
+    "https://*.example.test/v1",
+    "https://models.example.test:0/v1",
+    "https://127.1/v1",
+  ]) {
+    const response = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+      body: { name: "refused-endpoint", value: "synthetic-key", authorizedEndpoint },
+    });
+    assertApiError(response, 400, "INVALID_REQUEST");
+  }
+  const listed = await request(fixture.app, "GET", `/namespaces/${namespace.id}/secrets`);
+  assert.deepEqual(listed.data, []);
 });

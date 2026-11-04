@@ -544,6 +544,9 @@ function configurationFromRow(row: PostgresRow): Readonly<ConfigurationOwnership
 
 function secretFromRow(row: PostgresRow): Readonly<Secret> {
   return immutableCopy({
+    ...(row.authorized_endpoint === null
+      ? {}
+      : { authorizedEndpoint: text(row, "authorized_endpoint") }),
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     name: text(row, "name"),
@@ -2339,7 +2342,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT s.id, s.namespace_id, s.name, s.driver_id,
-                    s.backend_namespace_name, s.backend_name, s.backend_key, s.backend_uid,
+                    s.authorized_endpoint, s.backend_namespace_name, s.backend_name, s.backend_key, s.backend_uid,
                     s.created_at
              FROM occ.secrets AS s
              JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
@@ -2357,7 +2360,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           (
             await client.query(
               `SELECT s.id, s.namespace_id, s.name, s.driver_id,
-                      s.backend_namespace_name, s.backend_name, s.backend_key, s.backend_uid,
+                      s.authorized_endpoint, s.backend_namespace_name, s.backend_name, s.backend_key, s.backend_uid,
                       s.created_at
                FROM occ.secrets AS s
                JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
@@ -2529,8 +2532,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         await client.query(
           `INSERT INTO occ.secrets
            (id, namespace_id, name, driver_id, backend_namespace_name, backend_name,
-            backend_key, backend_uid, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            backend_key, backend_uid, created_at, authorized_endpoint)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
           [
             secret.id,
             secret.namespaceId,
@@ -2541,6 +2544,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             secret.backendRef.key,
             secret.backendRef.uid,
             secret.createdAt,
+            secret.authorizedEndpoint ?? null,
           ],
         );
         return immutableCopy(secret);
