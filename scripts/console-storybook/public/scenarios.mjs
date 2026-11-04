@@ -9199,7 +9199,7 @@ export const scenarios = {
     ],
     actions: [
       click("Request deletion again"),
-      { selector: ".agent-delete-dialog button.danger", click: "Request deletion again" },
+      { selector: ".agent-delete-dialog button.danger", click: true },
     ],
     description:
       "An uncertain repeat request remains disabled until Refresh reads the already deleting Agent successfully. No write is automatically retried.",

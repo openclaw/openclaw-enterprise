@@ -1,16 +1,7 @@
 import type { PluginFieldsOptions } from "/console/agents/plugin-fields.mjs";
+import type { StoryAction } from "../story-action.mts";
 import { scenarios } from "./scenarios.mjs";
 import { installFixture } from "./fixtures.mjs";
-
-interface StoryAction {
-  text?: string | undefined;
-  selector?: string | undefined;
-  click?: string | boolean | undefined;
-  focus?: boolean | undefined;
-  value?: string | undefined;
-  matches?: string | undefined;
-  key?: string | undefined;
-}
 
 interface FrameScenarioBase {
   name: string;
