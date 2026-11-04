@@ -58,7 +58,7 @@ export function bindPlatformUnitOfWork(
       "findConnectionTemplate",
       "listConnectionTemplates",
       "countNamespaceConnectionTemplates",
-      "findConnectionTemplateVersion",
+      "findOAuthConnectionTemplateVersion",
       "listRetiredOAuthClientSecrets",
       "listOAuthClients",
       "countNamespaceOAuthClients",

@@ -109,7 +109,7 @@ const publicClient = Type.Object(
   { ...client, id: OAuthClientId, createdAt: Type.String() },
   strict,
 );
-const Version = Type.Object(
+export const OAuthConnectionTemplateVersionSchema = Type.Object(
   {
     templateId: ConnectionTemplateId,
     version: Type.Integer({ minimum: 1 }),
@@ -129,10 +129,15 @@ const Version = Type.Object(
     mcp: Type.Optional(Type.Object({ serverUrl: HttpsUrl, resource: HttpsUrl }, strict)),
     observed: Type.Optional(Observed),
   },
-  strict,
+  { $id: "OAuthConnectionTemplateVersion", title: "OAuth connection template version", ...strict },
 );
 export const ConnectionTemplateSchema = Type.Object(
-  { ...create, id: ConnectionTemplateId, current: Version, createdAt: Type.String() },
+  {
+    ...create,
+    id: ConnectionTemplateId,
+    current: Type.Ref("OAuthConnectionTemplateVersion"),
+    createdAt: Type.String(),
+  },
   { $id: "ConnectionTemplate", title: "OAuth connection template", ...strict },
 );
 const template = Type.Ref("ConnectionTemplate");

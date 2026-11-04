@@ -1756,7 +1756,7 @@ List all Installation-wide and Namespace-scoped connection templates
 | --- | --- | --- | --- |
 | `data` | `array<OAuth connection template>` | Yes | — |
 | `data[].createdAt` | `string` | Yes | — |
-| `data[].current` | `object` | Yes | — |
+| `data[].current` | `OAuth connection template version` | Yes | — |
 | `data[].current.authorizationParameters` | `object<string, string>` | Yes | — |
 | `data[].current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.createdAt` | `string` | Yes | — |
@@ -1908,7 +1908,7 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `OAuth connection template` | Yes | — |
 | `data.createdAt` | `string` | Yes | — |
-| `data.current` | `object` | Yes | — |
+| `data.current` | `OAuth connection template version` | Yes | — |
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
 | `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.createdAt` | `string` | Yes | — |
@@ -2150,7 +2150,7 @@ Get one connection template
 | --- | --- | --- | --- |
 | `data` | `OAuth connection template` | Yes | — |
 | `data.createdAt` | `string` | Yes | — |
-| `data.current` | `object` | Yes | — |
+| `data.current` | `OAuth connection template version` | Yes | — |
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
 | `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.createdAt` | `string` | Yes | — |
@@ -2281,7 +2281,7 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `OAuth connection template` | Yes | — |
 | `data.createdAt` | `string` | Yes | — |
-| `data.current` | `object` | Yes | — |
+| `data.current` | `OAuth connection template version` | Yes | — |
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
 | `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.createdAt` | `string` | Yes | — |
@@ -2379,9 +2379,6 @@ List registered OAuth clients
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -2557,8 +2554,6 @@ Delete an unused OAuth client
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -12298,6 +12293,7 @@ Reusable schema names are referenced by operation request and response tables.
 | `AgentRuntimeCredentialResponse` | `object` |
 | `SecretResponse` | `object` |
 | `CredentialSourceResponse` | `object` |
+| `OAuth connection template version` | `object` |
 | `OAuth connection template` | `object` |
 | `PluginApprovers` | `array<object>` |
 | `PluginToolPolicy` | `object` |

@@ -30,7 +30,7 @@ import {
 import type {
   OAuthClient,
   ConnectionTemplate,
-  ConnectionTemplateVersion,
+  OAuthConnectionTemplateVersion,
   AccessBinding,
   Agent,
   AgentRead,
@@ -362,10 +362,10 @@ export interface ConnectionTemplateReadRepository {
   findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
   countNamespaceConnectionTemplates(namespaceId: string): Promise<number>;
   listConnectionTemplates(): Promise<readonly Readonly<ConnectionTemplate>[]>;
-  findConnectionTemplateVersion(
+  findOAuthConnectionTemplateVersion(
     templateId: string,
     version: number,
-  ): Promise<Readonly<ConnectionTemplateVersion> | undefined>;
+  ): Promise<Readonly<OAuthConnectionTemplateVersion> | undefined>;
   listOAuthClients(): Promise<readonly Readonly<OAuthClient>[]>;
   countNamespaceOAuthClients(namespaceId: string): Promise<number>;
   findOAuthClient(registrationId: string): Promise<Readonly<OAuthClient> | undefined>;
@@ -390,7 +390,7 @@ export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepo
   /** Renames, or appends `version` as the next version and makes it current. */
   updateConnectionTemplate(
     templateId: string,
-    changes: { readonly displayName?: string; readonly version?: ConnectionTemplateVersion },
+    changes: { readonly displayName?: string; readonly version?: OAuthConnectionTemplateVersion },
   ): Promise<Readonly<ConnectionTemplate> | undefined>;
   deleteConnectionTemplate(templateId: string): Promise<boolean>;
 }
@@ -1164,7 +1164,7 @@ interface PlatformSnapshot {
     Readonly<OAuthClientSecretRef> & { retryAt?: number }
   >;
   readonly clientRegistrations: Map<string, Readonly<OAuthClient>>;
-  readonly connectionTemplateVersions: Map<string, Readonly<ConnectionTemplateVersion>>;
+  readonly oauthConnectionTemplateVersions: Map<string, Readonly<OAuthConnectionTemplateVersion>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
@@ -1289,7 +1289,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     connectionTemplates: new Map(snapshot.connectionTemplates),
     retiredOAuthClientSecrets: new Map(snapshot.retiredOAuthClientSecrets),
     clientRegistrations: new Map(snapshot.clientRegistrations),
-    connectionTemplateVersions: new Map(snapshot.connectionTemplateVersions),
+    oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
     egressRejected: new Set(snapshot.egressRejected),
@@ -1895,7 +1895,7 @@ function repositories(
   };
   const assertRegistrationScope = (
     template: ConnectionTemplate,
-    version: ConnectionTemplateVersion,
+    version: OAuthConnectionTemplateVersion,
   ) => {
     if (!version.oauthClientId) {
       return;
@@ -1928,8 +1928,8 @@ function repositories(
           .sort((a, b) => a.id.localeCompare(b.id))
           .map((template) => immutableCopy(template)),
       ),
-    findConnectionTemplateVersion: async (templateId, version) => {
-      const found = snapshot.connectionTemplateVersions.get(versionKey(templateId, version));
+    findOAuthConnectionTemplateVersion: async (templateId, version) => {
+      const found = snapshot.oauthConnectionTemplateVersions.get(versionKey(templateId, version));
       return found === undefined ? undefined : immutableCopy(found);
     },
     listOAuthClients: async () =>
@@ -2004,7 +2004,7 @@ function repositories(
     },
     deleteOAuthClient: async (registrationId) => {
       if (
-        Array.from(snapshot.connectionTemplateVersions.values()).some(
+        Array.from(snapshot.oauthConnectionTemplateVersions.values()).some(
           (version) => version.oauthClientId === registrationId,
         )
       ) {
@@ -2022,7 +2022,7 @@ function repositories(
       assertRegistrationScope(template, template.current);
       const saved = immutableCopy(template);
       snapshot.connectionTemplates.set(saved.id, saved);
-      snapshot.connectionTemplateVersions.set(
+      snapshot.oauthConnectionTemplateVersions.set(
         versionKey(saved.id, saved.current.version),
         saved.current,
       );
@@ -2039,7 +2039,7 @@ function repositories(
         if (changes.version.version !== current.current.version + 1) {
           throw new ResourceStateConflictError("Connection template versions advance by one.");
         }
-        snapshot.connectionTemplateVersions.set(
+        snapshot.oauthConnectionTemplateVersions.set(
           versionKey(templateId, changes.version.version),
           immutableCopy(changes.version),
         );
@@ -2057,9 +2057,9 @@ function repositories(
         return false;
       }
       snapshot.connectionTemplates.delete(templateId);
-      for (const key of Array.from(snapshot.connectionTemplateVersions.keys())) {
+      for (const key of Array.from(snapshot.oauthConnectionTemplateVersions.keys())) {
         if (key.startsWith(`${templateId}\u0000`)) {
-          snapshot.connectionTemplateVersions.delete(key);
+          snapshot.oauthConnectionTemplateVersions.delete(key);
         }
       }
       return true;
@@ -4105,7 +4105,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     connectionTemplates: new Map(),
     retiredOAuthClientSecrets: new Map(),
     clientRegistrations: new Map(),
-    connectionTemplateVersions: new Map(),
+    oauthConnectionTemplateVersions: new Map(),
     presets: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),

@@ -4,7 +4,7 @@ import type {
   Namespace,
   OAuthClient,
 } from "@openclaw-enterprise/contracts";
-import { requestFailure } from "./api-client.mjs";
+import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
@@ -97,6 +97,10 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       create.disabled = false;
     } catch (cause) {
       if (!context.isCurrent()) {
+        return;
+      }
+      if (refusedAsNonAdministrator(cause)) {
+        section.remove();
         return;
       }
       notice.textContent = failure(cause, "the connection template list");

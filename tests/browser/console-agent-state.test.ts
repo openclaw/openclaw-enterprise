@@ -1414,11 +1414,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   );
 });
 
-// Settings shows the Installation Driver configuration heading while its configuration read is still in
-// flight. An administrator's Settings page has settled once the values are listed; a revoke
-// before then reaches that read and the API refuses and audits it (finding 2654).
+// Settle all the Installation reads on Settings before revoking the administrator. A pending
+// template, OAuth client, or Driver configuration read would exercise a different race.
 async function waitForDriverConfigurations(page: Page) {
   await page.getByText(/^Inspect startup values accepted by the selected Drivers\./).waitFor();
+  await waitForIdleFetches(page);
 }
 
 // Finding D760. An administrator revoked while signed in keeps the tab's settled answer, so the
@@ -1453,7 +1453,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   const adminDenials = () =>
     authorizationDenials(
       fixture.auditSink,
-      /^openclaw\.(observability|backends|iam|secrets|installation)\./,
+      /^openclaw\.(observability|backends|iam|secrets|installation|connection_templates|oauth_clients)\./,
     );
   const settingsUrl = `${fixture.origin}/console/settings?namespace=${namespace.id}`;
   const agentUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -1476,6 +1476,7 @@ test("Installation-administration reads after a revoke are refused and audited o
       await page.getByRole("heading", { name: "Signed-in account" }).waitFor();
       await waitForIdleFetches(page);
       assert.equal(await driverSchemas.count(), 0);
+      assert.equal(await page.getByRole("heading", { name: "Connection templates" }).count(), 0);
       assert.equal(await page.getByRole("alert").count(), 0);
     },
     backends: async () => {

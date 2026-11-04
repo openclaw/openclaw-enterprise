@@ -525,7 +525,7 @@ export const occApiRoutes = [
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,
-      response: { 200: OAuthClientListResponse, ...createErrors },
+      response: { 200: OAuthClientListResponse, ...readErrors },
     },
   },
   {
@@ -574,7 +574,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: OAuthClientParams,
-      response: { 204: Type.Null(), ...createErrors },
+      response: { 204: Type.Null(), ...mutationErrors },
     },
   },
 

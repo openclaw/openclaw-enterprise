@@ -62,6 +62,11 @@ test(
     const template = draft.json().data;
     assert.equal(template.current.oauthClientId, undefined);
     const client = clientInput();
+    const unsigned = await inject("POST", "/oauth-clients", {
+      ...client,
+      tokenEndpointAuthMethod: "private_key_jwt",
+    });
+    assert.equal(unsigned.statusCode, 400, unsigned.body);
     const created = await inject("POST", "/oauth-clients", client);
     assert.equal(created.statusCode, 201, created.body);
     assert.equal(created.body.includes(client.clientSecret), false);
