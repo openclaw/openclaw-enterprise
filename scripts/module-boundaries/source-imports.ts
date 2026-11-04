@@ -13,7 +13,7 @@ import { assignedSymbols } from "./source-mutations.ts";
 import { parseDiagnostics } from "./parse-diagnostics.ts";
 import { freezeRecord } from "./freeze-record.ts";
 import { slash } from "./source-path.ts";
-import { sourceExtension } from "./workspace.mjs";
+import { sourceExtension } from "./workspace.ts";
 
 type Snapshot = {
   root: string;

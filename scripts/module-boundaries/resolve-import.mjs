@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript-compiler-api";
 import { selectPackageExport } from "./package-exports.ts";
 import { slash } from "./source-path.ts";
-import { sourceExtension } from "./workspace.mjs";
+import { sourceExtension } from "./workspace.ts";
 
 const declaration = /\.d\.[cm]?ts$/;
 const emittedExtension = /\.[cm]?js$/;

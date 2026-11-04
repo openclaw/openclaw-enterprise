@@ -6,7 +6,7 @@ import { slash } from "./source-path.ts";
 export const sourceExtension = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 
 // Do not expose JSON parser snippets, which can include source contents or paths.
-export function parseJSON(text, label) {
+export function parseJSON(text: string, label: string): unknown {
   try {
     return JSON.parse(text);
   } catch (error) {
@@ -17,7 +17,7 @@ export function parseJSON(text, label) {
   throw new Error(`Invalid JSON in ${label}.`);
 }
 
-async function walk(directory) {
+async function walk(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(
     entries.map(async (entry) => {
@@ -35,10 +35,10 @@ async function walk(directory) {
 }
 
 /** Read a fresh, deterministic source snapshot. Symlinked directories are not traversed. */
-export async function readWorkspace(root, policy) {
+export async function readWorkspace(root: string, policy: { sourceRoots: readonly string[]; packages: readonly string[] }) {
   root = await realpath(root);
-  const packageTypes = new Map();
-  function packageType(directory) {
+  const packageTypes = new Map<string, Promise<"module" | "commonjs">>();
+  function packageType(directory: string): Promise<"module" | "commonjs"> {
     if (!packageTypes.has(directory)) {
       packageTypes.set(
         directory,
@@ -48,9 +48,13 @@ export async function readWorkspace(root, policy) {
               await readFile(resolve(directory, "package.json"), "utf8"),
               "package manifest",
             );
-            return manifest.type === "module" ? "module" : "commonjs";
+            if (manifest === null) {
+              throw new TypeError("Cannot read properties of null (reading 'type')");
+            }
+            const type: unknown = Reflect.get(Object(manifest), "type");
+            return type === "module" ? "module" : "commonjs";
           } catch (error) {
-            if (error.code !== "ENOENT") {
+            if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
               throw error;
             }
             const parent = dirname(directory);
@@ -59,9 +63,13 @@ export async function readWorkspace(root, policy) {
         })(),
       );
     }
-    return packageTypes.get(directory);
+    const cached = packageTypes.get(directory);
+    if (!cached) {
+      throw new Error("Missing cached package type.");
+    }
+    return cached;
   }
-  async function sourceRoot(path) {
+  async function sourceRoot(path: string): Promise<string[]> {
     let current = root;
     for (const part of path.split("/")) {
       current = resolve(current, part);
@@ -91,10 +99,11 @@ export async function readWorkspace(root, policy) {
         await readFile(resolve(root, path, "package.json"), "utf8"),
         "package manifest",
       );
-      if (!manifest || typeof manifest.name !== "string" || !manifest.name.trim()) {
+      const name: unknown = manifest ? Reflect.get(Object(manifest), "name") : undefined;
+      if (typeof name !== "string" || !name.trim()) {
         throw new Error(`Missing package name: ${path}`);
       }
-      return Object.freeze({ path, name: manifest.name, manifest: freezeRecord(manifest) });
+      return Object.freeze({ path, name, manifest: freezeRecord(manifest) });
     }),
   );
   if (new Set(packages.map((pkg) => pkg.name)).size !== packages.length) {
