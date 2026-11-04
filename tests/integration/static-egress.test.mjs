@@ -375,7 +375,12 @@ test("protected admission requires the actual counterpart and exact loaded polic
   assert.ok(manifest.extension.required_capabilities.includes(capability));
   f.observed.available = false;
   const refused = await f.request("POST", f.path, {
-    body: { name: "unsupported-peer", type: "openai", secrets: { api_key: f.secret.ref } },
+    body: {
+      name: "unsupported-peer",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
   });
   assert.equal(refused.status, 503, JSON.stringify(refused.body));
   assert.equal(
@@ -489,7 +494,7 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   const { id, namespaceId } = f.legacySource;
   await f.controller.transact(async ({ credentialSources: sources }) => {
     const { egress } = await sources.findCredentialSource(namespaceId, id);
-    assert.equal(egress.key.provider.generation, 2);
+    assert.equal(egress.key.provider.generation, 3);
     const key = {
       ...egress.key,
       source: { id, generation: egress.key.source.generation + 1 },

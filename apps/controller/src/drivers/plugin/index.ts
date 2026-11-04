@@ -1,3 +1,4 @@
+import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
   CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
@@ -7,10 +8,9 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   managedCredentialBinding,
-  managedGoogleInstall,
   managedInstalls,
   managedPluginCredentials,
-  requireManagedCredentialRuntime,
+  managedMcpCredentialBinding,
 } from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
@@ -408,20 +408,16 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       );
     }
     const policy = selections[managed.id]!;
-    const supportsCredentials = managed === managedGoogleInstall;
     if (
       typeof policy.enabled !== "boolean" ||
-      Object.keys(policy).some(
-        (key) => key !== "enabled" && !(supportsCredentials && key === "driverPolicy"),
-      )
+      Object.keys(policy).some((key) => key !== "enabled" && key !== "driverPolicy")
     ) {
       throw new ConfigurationHarnessError(
-        supportsCredentials
-          ? "The Google Workspace package supports enablement and an optional credential slot."
-          : `${managed.entry.name} supports plugin enablement only.`,
+        `The ${managed.entry.name} package supports enablement and an optional credential slot.`,
       );
     }
     managedCredentialBinding(selections);
+    managedMcpCredentialBinding(selections);
     this.validate("openclaw", {}, defaultApprovers);
   }
 
@@ -464,7 +460,15 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   async getCatalogPlugin(input: { readonly pluginId: string }): Promise<PluginCatalogEntry> {
     const pkg = managedInstalls.find(({ id }) => id === input.pluginId);
     if (!pkg) {
-      throw new PluginDiscoveryError("invalid_response");
+      // An unknown ID is the caller's error (finding 2790); name the versioned package ID
+      // when the caller left out the version and exactly one package matches.
+      const versioned = managedInstalls.filter(({ id }) => id.startsWith(`${input.pluginId}@`));
+      throw new PluginPolicyValidationError(
+        "unknownPlugin",
+        this.id,
+        input.pluginId,
+        versioned.length === 1 ? versioned[0]!.id : undefined,
+      );
     }
     return this.catalog([pkg.entry])[0]!;
   }
@@ -617,9 +621,21 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
     if (this.catalogSource === "openai-curated") {
-      const entry = OPENAI_CURATED_CATALOG.find((plugin) => plugin.remoteId === input.pluginId);
+      // Details take an entry's remoteId; its listed id names the same entry (finding 3137).
+      const entry = OPENAI_CURATED_CATALOG.find(
+        (plugin) => plugin.remoteId === input.pluginId || plugin.id === input.pluginId,
+      );
       if (!entry) {
-        throw new PluginDiscoveryError("invalid_response");
+        // Name the listed id when the caller left out the marketplace and one entry matches.
+        const versioned = OPENAI_CURATED_CATALOG.filter(({ id }) =>
+          id.startsWith(`${input.pluginId}@`),
+        );
+        throw new PluginPolicyValidationError(
+          "unknownPlugin",
+          this.id,
+          input.pluginId,
+          versioned.length === 1 ? versioned[0]!.id : undefined,
+        );
       }
       return this.catalog([entry])[0]!;
     }

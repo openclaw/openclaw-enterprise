@@ -4,6 +4,12 @@ tags: [nolimit]
 
 # Install the production control plane
 
+Use this procedure for a custom Helm installation, then continue to
+[production Agent deployment](production-agents.md). For the OpenShell path,
+follow [Kubernetes setup](kubernetes-setup.md) or [EKS setup](eks-openshell-setup.md)
+and their first-Agent instructions instead. Those guides use different generated
+configuration, namespace names, and operator-session helpers.
+
 Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
 [prerequisites below](#before-you-start), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
@@ -328,6 +334,14 @@ Complete [Configure private routing](workspace-routing.md#configure-private-rout
 create `occ-private-gateway-key` and match the Helm and Installation routing
 settings. Validate and render changed inputs. Configure each
 Agent's authentication during [Agent deployment](production-agents.md#configure-the-agent-runtime).
+
+With chart-managed routing and Kubernetes Compute, startup checks the Installation's
+`drivers.compute.configuration.gatewayRouting` settings. Its `gatewayName`,
+`gatewayNamespace`, `envoyNamespace`, and effective `hostname` must match the
+chart's private Gateway. A mismatch reports
+`CHART_LISTENER_MISMATCH`. Correct the profile input and rerender, or align the
+manual Installation and Helm values, before retrying. Leave `hostname` unset in
+both files to use the generated Service DNS name.
 
 ## Provision system Secrets and install
 

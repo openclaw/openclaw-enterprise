@@ -220,6 +220,38 @@ install_browser_dependencies() {
     # Every test launches Chromium headless, which runs the headless shell, so
     # skip the full Chrome for Testing download (about 190 MB, 7 s).
     pnpm exec playwright install --with-deps --only-shell chromium
+    if [[ -n "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
+      if [[ ! -x "${OCC_TEST_BROWSER_EXECUTABLE}" ]]; then
+        echo "Selected CI browser executable is unavailable." >&2
+        return 1
+      fi
+      # Verify the selected host browser before building runtime images. Keep job
+      # credentials out of its environment and preserve Chromium's sandbox.
+      node --input-type=module <<'NODE'
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chromium } from "playwright";
+
+const directory = await mkdtemp(join(tmpdir(), "oce-ci-browser-"));
+let browser;
+try {
+  browser = await chromium.launch({
+    executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE,
+    headless: true,
+    chromiumSandbox: true,
+    env: { HOME: directory, PATH: process.env.PATH, TMPDIR: directory },
+  });
+  const page = await browser.newPage();
+  assert.equal(await page.evaluate(() => 1 + 1), 2);
+  console.log(`Sandboxed CI browser: ${browser.version()}`);
+} finally {
+  await browser?.close();
+  await rm(directory, { recursive: true, force: true });
+}
+NODE
+    fi
   else
     echo "Skipping local browser installation; browser setup is CI-only." >&2
   fi

@@ -30,10 +30,11 @@ Complete [local setup](../deploy/local-setup.md) before adding repository access
 The Kubernetes-only launcher enables Gateway TLS, mTLS and authentication before
 its first startup. It keeps Credential Gateway selected for model access.
 
-Leave `OCC_DEVELOPMENT_PROTECTED_EGRESS` unset or set to `0`. The value `1`
-selects the separate [static-inference profile](../deploy/local-openshell-images.md#select-the-protected-profile),
-which repository access does not require. No Gateway configuration repair or
-Pod deletion is needed for the default profile.
+Leave `OCC_DEVELOPMENT_PROTECTED_EGRESS` unset, empty or set to `0`. The value `1`
+is rejected because new local [static-inference launches are retired](../deploy/local-openshell-images.md#select-the-protected-profile).
+Remove `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` entirely; any presence is rejected.
+Repository access retains the ordinary authenticated Gateway defaults. No Gateway
+configuration repair or Pod deletion is needed for the default profile.
 
 ### Configure authorized repositories
 

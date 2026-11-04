@@ -269,9 +269,12 @@ api:
   # API-only HTTPS egress to explicit provider IPv4 /32 hosts for discovery and login.
   # Hosted codex-plugin needs auth.openai.com and chatgpt.com. Its installation
   # profile resolves these unless CIDRs are supplied; refresh on DNS changes.
-  # Manual installs maintain this list or provide an external egress policy.
   # Console model selection does not require discovery.
   modelDiscoveryCidrs: []
+  # Independent API-only HTTPS egress for managed MCP plugin discovery.
+  # List reviewed endpoint IPv4 /32 hosts; refresh on DNS changes.
+  # This grants TCP 443. Other ports require an external egress policy.
+  pluginDiscoveryCidrs: []
   # Trust client-address headers from a proxy in front of the API. Off by default:
   # the API then rejects forwarded headers and keys sign-in limits on the socket peer.
   # With a preset, requests whose socket peer is inside cidrs may carry forwarded

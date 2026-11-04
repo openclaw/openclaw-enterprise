@@ -11,6 +11,9 @@ Repository discovery is independent of model authentication. Small catalogs offe
 Suggestions favor repositories you recently saved in this browser and Namespace,
 then sort alphabetically.
 
+If there are no approved repositories or a search has no matches, ask your
+Namespace operator about missing repositories.
+
 **Default repository access** starts at **Contributor** for code pushes, PRs,
 and issue management. Choose **Read-only**, or customize Contributor to turn off
 issue management. Added repositories inherit the default; expand a repository card

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createMarkdownRenderer, renderMdxish } from "./vendor/mdx-ish.mjs";
-import { renderComputeMatrixBlocks } from "./compute-matrix.mjs";
+import { renderComputeMatrixBlocks } from "./compute-matrix.ts";
 import {
   parseDocsDocument,
   parseFrontmatter,

@@ -1722,6 +1722,8 @@ export class RuntimeLogsError extends Error {
 export class PluginPolicyValidationError extends Error {
   /** The rejected plugin selection key, so HTTP can point at `/plugins/<id>`. */
   readonly pluginId?: string;
+  /** For `unknownPlugin`, the offered ID the rejected one leaves the version out of. */
+  readonly offeredId?: string;
 
   constructor(
     field?:
@@ -1732,6 +1734,7 @@ export class PluginPolicyValidationError extends Error {
       | "unknownPlugin",
     driverId?: string,
     pluginId?: string,
+    offeredId?: string,
   ) {
     let message = "The supplied plugin policies are invalid.";
     if (field === "unknownPlugin") {
@@ -1741,9 +1744,11 @@ export class PluginPolicyValidationError extends Error {
       // the advice first.
       message = `A plugin selection names a plugin that the selected Plugin Driver${
         driverId === undefined ? "" : ` (${driverId})`
-      } does not offer${
-        pluginId === undefined ? "" : `: ${pluginId}`
-      }. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.`;
+      } does not offer${pluginId === undefined ? "" : `: ${pluginId}`}. ${
+        offeredId === undefined
+          ? "Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver."
+          : `Use ${offeredId}.`
+      }`;
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';
@@ -1761,6 +1766,9 @@ export class PluginPolicyValidationError extends Error {
     this.name = "PluginPolicyValidationError";
     if (field === "unknownPlugin" && pluginId !== undefined) {
       this.pluginId = pluginId;
+      if (offeredId !== undefined) {
+        this.offeredId = offeredId;
+      }
     }
   }
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-28
-last_updated_session: authoring-run/ebaa9b91-58b3-47dc-97d9-ad103250247d
+updated: 2026-11-03
+last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
 ---
 
 # Installation Profile Rendering Flow
@@ -202,7 +202,7 @@ storage class, node selectors, and transport Secret prefix. The Codex profile
 also consumes the reviewed `runtime.codexSeccompProfile` path. Preflight applies
 the Compute driver's localhost-profile rule and refuses an absolute path, a
 backslash, an empty, `.`, or `..` segment, or a segment named `unconfined`,
-before writing `installation.yaml`. Optional `runtime.codexModelBaseUrl` gets
+before writing `installation.yaml`. Optional `runtime.modelProvider.baseUrl` gets
 Compute's endpoint rule. When optional
 managed ServiceAccount inputs are supplied, it emits the ChatGPT Backend and a
 matching ServiceAccount Driver; otherwise Codex Agents use the existing
@@ -305,6 +305,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 
 - 2026-10-28 20:25: Refuse input/output file collisions before cleanup in the accompanying change. (authoring-run/ebaa9b91-58b3-47dc-97d9-ad103250247d - 420d76bcbd15dcd3644e474d413484c35ce22797)
 

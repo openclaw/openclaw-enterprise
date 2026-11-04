@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-30
-last_updated_session: authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f
+updated: 2026-11-03
+last_updated_session: authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -188,11 +188,10 @@ PAT bootstrap (`prepareHarnessAuth`;
 writes an opaque placeholder to private `auth.json`, clears the child override,
 and validates native login status. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
 admit bootstrap/model traffic; failure keeps versions inactive.
-API-key profiles bind immutable `config.base_url` plus `/**` (default OpenAI `/v1`),
-preserving prefixes including `/api/v1`. [Registration validation](credential-source-lifecycle.md#1-admit-the-registration-request)
-rejects invalid endpoints.
-`attachForRevision` requires native OpenClaw's selected model endpoints to match
-the source. For Codex,
+`requireModelSourceDestination` checks immutable `config.authorized_base_url`
+before API-key profiles bind the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
+URL plus `/**`, preserving `/api/v1` prefixes. `attachForRevision` translates native
+OpenClaw configuration and matches selected endpoints to this URL. For Codex,
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexConfigurationToml`
 selects a named provider and HTTPS Responses transport.
 
@@ -393,6 +392,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 18:15: Correct provider ownership. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
 
 - 2026-10-30 16:09: Preserve capability-based repository admission while integrating patched runtime provenance. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
 

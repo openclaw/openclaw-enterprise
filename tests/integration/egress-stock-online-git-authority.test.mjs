@@ -514,6 +514,9 @@ test("protected Git replies to this online decision before its authority deadlin
     lookupBinding: async () => binding,
     authorizeOnlineRequest: async (q, installed) => {
       const { deadlineAt, exchangeId, requestDigestSha256 } = q;
+      if (typeof answer === "object") {
+        return answer;
+      }
       if (answer === "permit") {
         return { kind: "permit", sendStartBy: deadlineAt };
       }
@@ -537,6 +540,20 @@ test("protected Git replies to this online decision before its authority deadlin
     answer = decision;
     const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
     assert.equal(result.decision, expected, decision);
+  }
+  // The trusted owner can return malformed runtime values despite its TypeScript contract.
+  // A structured denial must never enter the separate legacy boolean approval path.
+  for (const [reason, reasonCode] of [
+    ["draft_already_opened", "draft_already_opened"],
+    ["access_withdrawn", "access_withdrawn"],
+    ["unavailable", "route_not_ready"],
+    [true, "route_not_ready"],
+  ]) {
+    await t.test(`structured denial: ${String(reason)}`, async () => {
+      answer = { kind: "denied", reason };
+      const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
+      assert.deepEqual(result, { decision: 2, reason_code: reasonCode });
+    });
   }
 });
 

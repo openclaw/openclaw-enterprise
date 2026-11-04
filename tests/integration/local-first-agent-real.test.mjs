@@ -1493,13 +1493,13 @@ test(
           const nativeSource = await request("POST", `${base}/credential-sources`, {
             name: `first-agent-native-${suffix}`,
             type: "openai",
-            config: { base_url: configuration.models.providers.openai.baseUrl },
+            config: { authorized_base_url: configuration.models.providers.openai.baseUrl },
             secrets: { api_key: nativeSecret.ref },
           });
           assert.equal(nativeSource.type, "openai");
           assert.equal(nativeSource.state, "ready");
           assert.equal(
-            nativeSource.config.base_url,
+            nativeSource.config.authorized_base_url,
             new URL(configuration.models.providers.openai.baseUrl).href.replace(/\/$/u, ""),
           );
           assert.deepEqual(nativeSource.secrets.api_key, nativeSecret.ref);

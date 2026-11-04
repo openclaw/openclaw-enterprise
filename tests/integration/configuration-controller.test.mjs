@@ -47,6 +47,8 @@ import {
   KUBERNETES_ALLOW_USERS_REFUSAL,
   KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL,
   KUBERNETES_GATEWAY_PASSWORD_REFUSAL,
+  KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
+  kubernetesWorkspaceNodePasswordRefusal,
   keepRuntime,
   OPENCLAW_ONLY,
   pluginEntryKeyVariantRefusal,
@@ -335,8 +337,11 @@ const configurationRules = [
 
 // A Compute Driver that runs the named real Kubernetes Compute admission rules, as production
 // admission does.
-function kubernetesRules(id, ...rules) {
-  const kubernetes = createTestKubernetesComputeDriver(id);
+const kubernetesRules = (id, ...rules) => kubernetesRulesOn(id, {}, ...rules);
+
+// kubernetesRules on a Kubernetes Compute built with createTestKubernetesComputeDriver `options`.
+function kubernetesRulesOn(id, options, ...rules) {
+  const kubernetes = createTestKubernetesComputeDriver(id, options);
   return createReadyComputeDriver(id, {
     implementation: "integration-compute-substrate",
     ...Object.fromEntries(rules.map((rule) => [rule, (...args) => kubernetes[rule](...args)])),
@@ -3098,6 +3103,108 @@ test("Configuration save, Agent save and Kubernetes deployment refuse a plugin p
   });
   await updateSaved(context, agent.item, startable);
   await deployAccepted(context, agent.agentPath);
+});
+
+test("Configuration save and Kubernetes deployment refuse a Dedicated Codex Configuration without the gateway password its workspace node needs", async () => {
+  // Finding 3132. Where Kubernetes Compute reads Gateway private status, a Dedicated Codex Gateway
+  // applies its workspace node at runtime and confirms it through OpenClaw's own Gateway client,
+  // which signs in with the generated gateway password. Without gateway.auth.password the
+  // Configuration saved, passed Create Agent's preflight and deploy admission, and every
+  // activation then failed AGENT_GATEWAY_UNAUTHORIZED after the running revision had stopped.
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRulesOn(
+      "compute-workspace-node-password",
+      { gatewayRuntime: true, privateStatus: true },
+      ...configurationRules,
+    ),
+  });
+  const valid = createHarnessConfiguration("codex", "gpt-5");
+  const agent = await deployableAgent(context, context.namespace, {
+    values: valid,
+    name: "Workspace node password consumer",
+    secretName: "workspace-node-password-key",
+    executionMode: "dedicated",
+  });
+  // The generated password reference saves and deploys.
+  await deployAccepted(context, agent.agentPath, "generated password");
+  const storedRow = { ...agent, configurationDriver, valid };
+  const withoutPassword = (auth) => {
+    const { auth: _omitted, ...gateway } = valid.gateway;
+    return { ...valid, gateway: auth === undefined ? gateway : { ...gateway, auth } };
+  };
+  // The trusted-proxy shape the finding used, no gateway.auth at all, and an empty one. Each is
+  // refused on save naming the setting; a stored row still reads and deployment refuses it with
+  // the same 400 before any revision, so the running revision keeps serving.
+  const trustedProxyOnly = withoutPassword({
+    mode: "trusted-proxy",
+    trustedProxy: { userHeader: "x-occ-identity", allowUsers: ["occ-workspace-files"] },
+    identityScopes: { "occ-workspace-files": ["operator.admin"] },
+  });
+  for (const values of [trustedProxyOnly, withoutPassword(undefined), withoutPassword({})]) {
+    await refusedAtSaveAndDeploy(
+      context,
+      storedRow,
+      values,
+      KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
+    );
+  }
+  // The refusal offers the reference on the Configuration's default env alias.
+  await refusedAtSaveAndDeploy(
+    context,
+    storedRow,
+    { ...withoutPassword(undefined), secrets: { defaults: { env: "custom" } } },
+    kubernetesWorkspaceNodePasswordRefusal("custom"),
+  );
+  // Create Agent's preflight and a Preset save refuse it before anything is stored.
+  assertRefused(
+    await request(context.app, "POST", `/namespaces/${context.namespace.id}/agents/validate`, {
+      body: {
+        name: "Workspace node password preflight",
+        configuration: { kind: "agent", values: trustedProxyOnly },
+        executionMode: "dedicated",
+      },
+    }),
+    KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
+    { label: "preflight" },
+  );
+  assertRefused(
+    await savePreset(context, { configuration: { values: trustedProxyOnly } }),
+    KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
+    { label: "Preset" },
+  );
+  // Only the first, accepted deployment admitted a revision.
+  const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
+  assert.equal(revisions.body.data.length, 1, JSON.stringify(revisions.body));
+  // An OpenClaw Agent never hosts that runtime node check, so it saves and deploys without one.
+  const { auth: _openclawAuth, ...openclawGateway } = createHarnessConfiguration(
+    "openclaw",
+    "gpt-4.1",
+  ).gateway;
+  const openclaw = await deployableAgent(context, context.namespace, {
+    values: { ...createHarnessConfiguration("openclaw", "gpt-4.1"), gateway: openclawGateway },
+    name: "Workspace node password OpenClaw",
+    secretName: "workspace-node-password-openclaw-key",
+  });
+  await deployAccepted(context, openclaw.agentPath, "OpenClaw without a password");
+
+  // Without private status the node is in the Gateway's pod spec and nothing signs in, so the same
+  // Dedicated Codex Configuration saves and deploys there.
+  const podSpecContext = await fixture({
+    computeDriver: kubernetesRulesOn(
+      "compute-workspace-node-pod-spec",
+      { gatewayRuntime: true },
+      ...configurationRules,
+    ),
+  });
+  const podSpec = await deployableAgent(podSpecContext, podSpecContext.namespace, {
+    values: trustedProxyOnly,
+    name: "Workspace node pod spec consumer",
+    secretName: "workspace-node-pod-spec-key",
+    executionMode: "dedicated",
+  });
+  await deployAccepted(podSpecContext, podSpec.agentPath, "node in the pod spec");
 });
 
 test("Preset save refuses a Codex approval policy every Gateway refuses, as Configuration save does", async (t) => {
