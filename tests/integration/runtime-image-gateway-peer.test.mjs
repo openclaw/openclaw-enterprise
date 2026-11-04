@@ -22,15 +22,35 @@ import {
 
 // Only emit known diagnostic fields and values; fixture output and runtime logs are untrusted.
 const diagnosticPhases = new Set([
-  "initial-ready", "peer2-switch", "replacement-request", "third-request-entry",
-  "identity-check", "credential-check", "native-ready", "wrapper-ready", "peer3-switch",
-  "peer3-response", "deadline",
+  "initial-ready",
+  "peer2-switch",
+  "replacement-request",
+  "third-request-entry",
+  "identity-check",
+  "credential-check",
+  "native-ready",
+  "wrapper-ready",
+  "peer3-switch",
+  "peer3-response",
+  "deadline",
 ]);
 const startupPhases = new Set([
-  "codex-login", "egress-enrollment", "gateway-respawn", "model-probe", "native-spawn",
-  "node-setup", "peer-bridge-record", "peer-status-changed", "peer-status-restored",
-  "peer-verification-changed", "plugin-install", "runtime-assets", "supervisor-spawn",
-  "workspace-baseline", "workspace-node", "workspace-node-changed",
+  "codex-login",
+  "egress-enrollment",
+  "gateway-respawn",
+  "model-probe",
+  "native-spawn",
+  "node-setup",
+  "peer-bridge-record",
+  "peer-status-changed",
+  "peer-status-restored",
+  "peer-verification-changed",
+  "plugin-install",
+  "runtime-assets",
+  "supervisor-spawn",
+  "workspace-baseline",
+  "workspace-node",
+  "workspace-node-changed",
 ]);
 
 function emitPeerDiagnostics(t, fixtureOutput, containerOutput) {
@@ -38,7 +58,8 @@ function emitPeerDiagnostics(t, fixtureOutput, containerOutput) {
     if (entry?.event !== "stale-peer-diagnostic" || !diagnosticPhases.has(entry.phase)) continue;
     const record = { phase: entry.phase };
     if (Number.isSafeInteger(entry.ordinal) && entry.ordinal >= 0) record.ordinal = entry.ordinal;
-    if (diagnosticPhases.has(entry.lastPhase) || entry.lastPhase === "initial") record.lastPhase = entry.lastPhase;
+    if (diagnosticPhases.has(entry.lastPhase) || entry.lastPhase === "initial")
+      record.lastPhase = entry.lastPhase;
     for (const field of ["singleProcess", "sameIdentity", "sameCredential", "ready"]) {
       if (typeof entry[field] === "boolean") record[field] = entry[field];
     }
@@ -49,7 +70,8 @@ function emitPeerDiagnostics(t, fixtureOutput, containerOutput) {
     if (!["ok", "failed", "started"].includes(entry.outcome)) continue;
     const record = { phase: entry.phase, outcome: entry.outcome };
     if (Number.isFinite(entry.ms) && entry.ms >= 0) record.ms = entry.ms;
-    if (Number.isFinite(entry.sinceStartMs) && entry.sinceStartMs >= 0) record.sinceStartMs = entry.sinceStartMs;
+    if (Number.isFinite(entry.sinceStartMs) && entry.sinceStartMs >= 0)
+      record.sinceStartMs = entry.sinceStartMs;
     t.diagnostic(`wrapper phase: ${JSON.stringify(record)}`);
   }
 }

@@ -27,7 +27,22 @@ let replacementPeerReads = 0;
 let stalePhase = "initial";
 
 function breadcrumb(phase, value, extra) {
-  if (!["initial-ready", "peer2-switch", "replacement-request", "third-request-entry", "identity-check", "credential-check", "native-ready", "wrapper-ready", "peer3-switch", "peer3-response", "deadline"].includes(phase)) return;
+  if (
+    ![
+      "initial-ready",
+      "peer2-switch",
+      "replacement-request",
+      "third-request-entry",
+      "identity-check",
+      "credential-check",
+      "native-ready",
+      "wrapper-ready",
+      "peer3-switch",
+      "peer3-response",
+      "deadline",
+    ].includes(phase)
+  )
+    return;
   const record = { event: "stale-peer-diagnostic", phase };
   if (phase === "replacement-request" || phase === "deadline") record.ordinal = value;
   if (phase === "deadline") record.lastPhase = extra;
@@ -74,7 +89,13 @@ const server = createServer(async (request, response) => {
       breadcrumb("third-request-entry");
       // The verification read follows the replacement's native readiness.
       const processes = await gatewayProcess();
-      breadcrumb("identity-check", processes.length === 1, processes.length === 1 && processes[0].startTicks + processes[0].pid === initialGateway.startTicks + initialGateway.pid);
+      breadcrumb(
+        "identity-check",
+        processes.length === 1,
+        processes.length === 1 &&
+          processes[0].startTicks + processes[0].pid ===
+            initialGateway.startTicks + initialGateway.pid,
+      );
       assert.equal(processes.length, 1);
       assert.notEqual(
         processes[0].startTicks + processes[0].pid,
