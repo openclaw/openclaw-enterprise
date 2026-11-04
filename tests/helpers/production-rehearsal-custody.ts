@@ -64,8 +64,9 @@ function interruptCommands(signal: "SIGINT" | "SIGTERM") {
 
 function ownCommand(signal: (signal: NodeJS.Signals) => void) {
   if (activeCommands.size === 0 && !interruptionTimer) {
-    process.on("SIGINT", interruptHandlers.SIGINT);
-    process.on("SIGTERM", interruptHandlers.SIGTERM);
+    // Observe existing once-handlers before they remove themselves on delivery.
+    process.prependListener("SIGINT", interruptHandlers.SIGINT);
+    process.prependListener("SIGTERM", interruptHandlers.SIGTERM);
     // A runner's existing signal handler can exit before the grace period ends.
     process.on("exit", terminateActiveCommands);
   }

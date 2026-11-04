@@ -918,7 +918,7 @@ test(
       }
       await rm(directory, { recursive: true, force: true });
     });
-    for (const mode of ["test", "process"] as const) {
+    for (const mode of ["test", "process", "once"] as const) {
       for (const signal of ["SIGINT", "SIGTERM"] as const) {
         const fixture = join(directory, `${mode}-${signal}.test.mjs`);
         const markers = [0, 1].map((index) => join(directory, `${mode}-${signal}-${index}-late`));
@@ -937,6 +937,12 @@ test(
       setInterval(() => {}, 1000);
     `,
         );
+        const execution = {
+          test: 'test("concurrent real rehearsal commands", run);',
+          process: "await run();",
+          once: `process.once(${JSON.stringify(signal)}, () => { process.exitCode = 23; });
+            await run().catch(() => {});`,
+        }[mode];
         await writeFile(
           fixture,
           `
@@ -947,7 +953,7 @@ test(
       const run = () => Promise.all(${JSON.stringify(scripts)}.map((script, index) =>
         runFixtureCommand(process.execPath, ["-e", script], { timeout: 10000 })
           .then(() => writeFileSync(continued[index], "advanced after interruption"))));
-      ${mode === "test" ? 'test("concurrent real rehearsal commands", run);' : "await run();"}
+      ${execution}
     `,
         );
         const env = { ...process.env };
@@ -985,10 +991,12 @@ test(
         // exits zero and the other ignores it; neither may advance the rehearsal.
         process.kill(-runner.pid!, signal);
         const result = await closed;
-        assert.deepEqual(
-          result,
-          mode === "test" ? { code: 1, signal: null } : { code: null, signal },
-        );
+        const expectedExit = {
+          test: { code: 1, signal: null },
+          process: { code: null, signal },
+          once: { code: 23, signal: null },
+        }[mode];
+        assert.deepEqual(result, expectedExit);
         await new Promise((resolve) => setTimeout(resolve, 2200));
         for (const marker of [...markers, ...continued]) {
           await assert.rejects(stat(marker), { code: "ENOENT" });
