@@ -28,7 +28,10 @@ use.
 Stage a compatible pair of
 [verified controller publications](../guides/deploy/published-images.md#check-publication-and-source)
 in Docker and k3d. In a private environment file, set the values below. Run
-from a local shell without model or Git credentials.
+from a local shell without model or Git credentials. Release checkouts must
+contain only their committed files, with no ignored build artifacts, hidden
+index changes, or additional files. Keep them unchanged throughout the run;
+workspace dependencies belong in the separate test checkout.
 
 | Variable                                                                                                    | Value                                                                 |
 | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
@@ -49,8 +52,10 @@ Require the rehearsal to pass without a skip. The archive taken before the upgra
 must omit the candidate's acknowledged draft. The archive taken after the write
 must contain it. The previous controller must accept the restored migration
 history. After the return, both OCC components must use the restored database.
-OCC must return both drafts with the original service key and deny an anonymous
-read of the Installation.
+OCC must return both drafts and their acknowledged saved settings, including
+execution mode, with the original service key. Metadata-only responses with
+unreadable settings fail the rehearsal. OCC must also deny an anonymous read
+of the Installation.
 
 See `proof.json` for completed checks and timings and `return-progress.json` for
 the last phase started. Both are in the private evidence directory reported by

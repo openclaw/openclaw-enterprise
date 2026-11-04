@@ -42,10 +42,59 @@ export function runFixtureCommand(
         }
       }
     }
-    const child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: childEnv });
+    const processGroup = process.platform !== "win32";
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: childEnv,
+      detached: processGroup,
+    });
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeout);
+    let timedOut = false;
+    let closed = false;
+    let killed = false;
+    let cleanupFailed = false;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutError = () =>
+      new Error(
+        cleanupFailed
+          ? `${command} could not terminate a timed-out fixture operation`
+          : `${command} timed out${protectedInput ? " during a protected fixture operation" : ""}`,
+      );
+    const signal = (name: NodeJS.Signals) => {
+      try {
+        if (processGroup && child.pid) {
+          process.kill(-child.pid, name);
+        } else {
+          child.kill(name);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+          cleanupFailed = true;
+        }
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      signal("SIGTERM");
+      // A shell can exit before its subprocesses. Always finish terminating the
+      // owned process group before allowing the rehearsal to continue.
+      cleanupTimer = setTimeout(() => {
+        killed = true;
+        signal("SIGKILL");
+        if (closed) {
+          reject(timeoutError());
+          return;
+        }
+        cleanupTimer = setTimeout(() => {
+          child.stdin.destroy();
+          child.stdout.destroy();
+          child.stderr.destroy();
+          reject(timeoutError());
+        }, 1_000);
+      }, 1_000);
+    }, timeout);
     child.stdout.on("data", (data) => {
       stdout += data;
     });
@@ -55,13 +104,24 @@ export function runFixtureCommand(
       }
     });
     child.on("error", (error) => {
+      if (timedOut) {
+        return;
+      }
       clearTimeout(timer);
       reject(
         protectedInput ? new Error(`${command} could not start a protected operation`) : error,
       );
     });
     child.on("close", (code) => {
+      closed = true;
       clearTimeout(timer);
+      if (timedOut) {
+        if (killed) {
+          clearTimeout(cleanupTimer);
+          reject(timeoutError());
+        }
+        return;
+      }
       if (code === 0 || (allowFailure && code === 1)) {
         resolve(stdout);
       } else {

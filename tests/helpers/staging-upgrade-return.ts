@@ -1,3 +1,4 @@
+import type { Agent } from "@openclaw-enterprise/contracts";
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -63,6 +64,32 @@ export function assertReturnedAgents(
   }
 }
 
+// Capture settings acknowledged by OCC, not just the row identity that remains
+// readable when a previous controller cannot decode a saved configuration.
+export function returnedAgentSnapshot(value: unknown) {
+  const identity = agentIdentity(value);
+  const agent = value as Partial<Agent>;
+  assert.ok(!("configurationReadError" in agent), "OCC cannot read the saved Agent settings");
+  assert.ok(
+    agent.executionMode === "embedded" || agent.executionMode === "dedicated",
+    "OCC did not return the Agent execution mode",
+  );
+  assert.equal(typeof agent.gatewayManagedMode, "boolean", "OCC omitted the gateway mode");
+  assert.ok("backendId" in agent && "harnessAuth" in agent, "OCC omitted saved Agent settings");
+  return {
+    ...identity,
+    executionMode: agent.executionMode,
+    gatewayManagedMode: agent.gatewayManagedMode,
+    backendId: agent.backendId,
+    harnessAuth: agent.harnessAuth,
+    plugins: agent.plugins,
+    pluginApprovers: agent.pluginApprovers,
+    repositoryBindings: agent.repositoryBindings,
+    repositoryAccess: agent.repositoryAccess,
+    credentialSources: agent.credentialSources,
+  };
+}
+
 export function assertDistinctControllers(
   previous: Pick<ControllerImage, "reference" | "configDigest" | "revision">,
   candidate: Pick<ControllerImage, "reference" | "configDigest" | "revision">,
@@ -105,6 +132,62 @@ export function assertLocalRehearsalSelection(env: NodeJS.ProcessEnv) {
   );
 }
 
+// Git status alone trusts assume-unchanged/skip-worktree bits and excludes ignored
+// files. Release inputs must contain the committed bytes without build shadows.
+const verifyReleaseCheckout = String.raw`
+import hashlib, os, stat, subprocess, sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+revision = sys.argv[2]
+def fail():
+    sys.exit("release checkout must contain only unmodified committed files")
+def git(*args):
+    return subprocess.check_output([
+        "git", "--no-optional-locks", "--no-replace-objects",
+        "--git-dir=" + str(root / ".git"), "--work-tree=" + str(root), *args
+    ], cwd=root)
+
+if git("rev-parse", "HEAD").decode().strip() != revision:
+    fail()
+if any(record[:2] != b"H " for record in git("ls-files", "-v", "-z").split(b"\0") if record):
+    fail()
+expected = set()
+directories = set()
+for record in git("ls-tree", "-rz", revision).split(b"\0"):
+    if not record:
+        continue
+    metadata, raw_path = record.split(b"\t", 1)
+    mode, kind, oid = metadata.split()
+    relative = Path(os.fsdecode(raw_path))
+    if kind != b"blob" or mode not in (b"100644", b"100755"):
+        fail()
+    path = root / relative
+    for parent in relative.parents:
+        if parent != Path("."):
+            directories.add(parent)
+            if not stat.S_ISDIR((root / parent).lstat().st_mode):
+                fail()
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or bool(info.st_mode & 0o111) != (mode == b"100755"):
+        fail()
+    content = path.read_bytes()
+    actual = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+    if actual.encode() != oid:
+        fail()
+    expected.add(relative)
+for directory, names, files in os.walk(root, followlinks=False):
+    relative = Path(directory).relative_to(root)
+    if relative == Path("."):
+        names[:] = [name for name in names if name != ".git"]
+        files = [name for name in files if name != ".git"]
+    for name in names:
+        if relative / name not in directories or not stat.S_ISDIR((root / relative / name).lstat().st_mode):
+            fail()
+    if any(relative / name not in expected for name in files):
+        fail()
+`;
+
 export async function selectRehearsalControllers(run: FixtureRun, env: NodeJS.ProcessEnv) {
   assertLocalRehearsalSelection(env);
   const imageIdentity = fileURLToPath(
@@ -128,6 +211,7 @@ export async function selectRehearsalControllers(run: FixtureRun, env: NodeJS.Pr
       "",
       `the ${label} release checkout must be clean`,
     );
+    await run("python3", ["-c", verifyReleaseCheckout, checkout, revision]);
     return { reference, checkout, revision };
   };
   const previousSource = await select(
@@ -391,7 +475,7 @@ export async function rehearsePopulatedReturn({
   const namespacePath = `/namespaces/${encodeURIComponent(namespaceId)}`;
   const agentPath = `${namespacePath}/agents`;
   const readAgent = async (id: string) =>
-    agentIdentity(await api("GET", `${agentPath}/${encodeURIComponent(id)}`));
+    returnedAgentSnapshot(await api("GET", `${agentPath}/${encodeURIComponent(id)}`));
   const helmStatus = async () => JSON.parse(await helm("status", release, "-o", "json"));
   const phase = async <T>(name: string, action: () => Promise<T>) => {
     const startedAt = new Date().toISOString();
@@ -615,10 +699,11 @@ export async function rehearsePopulatedReturn({
   )) as { id: string };
   assert.ok(configurationId);
   const createAgent = async (name: string) => {
-    const agent = agentIdentity(
+    const agent = returnedAgentSnapshot(
       await api("POST", agentPath, { name, configurationId, executionMode: "embedded" }, 201),
     );
-    assert.deepEqual(agent, { id: agent.id, namespaceId, name, configurationId });
+    assert.deepEqual(agentIdentity(agent), { id: agent.id, namespaceId, name, configurationId });
+    assert.equal(agent.executionMode, "embedded", "OCC changed the submitted execution mode");
     return agent;
   };
   const baseline = await createAgent("before-upgrade");
@@ -729,14 +814,18 @@ export async function rehearsePopulatedReturn({
     await dump(candidateArchive);
     await restore(staleDatabase, staleArchive);
     const stale = await databaseAgents(staleDatabase);
-    assert.deepEqual(stale, [baseline]);
+    assert.deepEqual(stale, [agentIdentity(baseline)]);
     assert.throws(
-      () => assertReturnedAgents(baseline, accepted, stale),
+      () => assertReturnedAgents(agentIdentity(baseline), agentIdentity(accepted), stale),
       /missing or changed acknowledged Agent/u,
     );
     await restore(restoredDatabase, candidateArchive);
     assert.equal(await migrationReceipts(restoredDatabase), receipts);
-    assertReturnedAgents(baseline, accepted, await databaseAgents(restoredDatabase));
+    assertReturnedAgents(
+      agentIdentity(baseline),
+      agentIdentity(accepted),
+      await databaseAgents(restoredDatabase),
+    );
   });
 
   const probeName = "return-compatibility";
@@ -853,7 +942,11 @@ export async function rehearsePopulatedReturn({
         },
         30_000,
       );
-      assertReturnedAgents(baseline, accepted, await databaseAgents(originalDatabase));
+      assertReturnedAgents(
+        agentIdentity(baseline),
+        agentIdentity(accepted),
+        await databaseAgents(originalDatabase),
+      );
     },
   );
   await record("Populated controller upgrade and compatible return", {

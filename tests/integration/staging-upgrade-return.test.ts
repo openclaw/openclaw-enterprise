@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:https";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { inspect } from "node:util";
@@ -19,6 +23,7 @@ import {
   assertReturnedAgents,
   assertRunningController,
   returnedDatabaseConnections,
+  returnedAgentSnapshot,
   selectRehearsalControllers,
   verifyCompletedMigrationHistory,
 } from "../helpers/staging-upgrade-return.ts";
@@ -51,13 +56,44 @@ test("return rehearsal refuses image selection in the credentialed TUI lane", as
 });
 
 test("return readback rejects a stale restore and a recreated Agent with the same name", () => {
-  const baseline = {
+  const baseline = returnedAgentSnapshot({
+    executionMode: "embedded",
+    gatewayManagedMode: true,
+    backendId: null,
+    harnessAuth: null,
     id: "agt_before",
     namespaceId: "ns_original",
     name: "before-upgrade",
     configurationId: "cfg_original",
-  };
+  });
   const accepted = { ...baseline, id: "agt_accepted", name: "acknowledged-after-upgrade" };
+  // A real Agent read can preserve its identity while reporting unreadable settings.
+  const { harnessAuth: _harnessAuth, ...metadata } = accepted;
+  assert.throws(
+    () =>
+      returnedAgentSnapshot({
+        ...metadata,
+        configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
+      }),
+    /cannot read the saved Agent settings/u,
+  );
+  assert.equal(accepted.executionMode, "embedded");
+  assert.throws(
+    () =>
+      assertReturnedAgents(baseline, accepted, [
+        baseline,
+        returnedAgentSnapshot({ ...accepted, executionMode: "dedicated" }),
+      ]),
+    /missing or changed acknowledged Agent/u,
+  );
+  assert.throws(
+    () =>
+      assertReturnedAgents(baseline, accepted, [
+        baseline,
+        returnedAgentSnapshot({ ...accepted, plugins: { "occ-plugin:diffs": { enabled: true } } }),
+      ]),
+    /missing or changed acknowledged Agent/u,
+  );
   assert.doesNotThrow(() => assertReturnedAgents(baseline, accepted, [baseline, accepted]));
   assert.throws(
     () => assertReturnedAgents(baseline, accepted, [baseline]),
@@ -94,6 +130,72 @@ async function scratch(t: TestContext) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("release checkout admission rejects hidden edits and ignored execution inputs before Docker", async (t) => {
+  const directory = await scratch(t);
+  const candidate = join(directory, "candidate");
+  const previous = join(directory, "previous");
+  await mkdir(candidate);
+  const git = (args: string[]) => runFixtureCommand("git", args, { cwd: candidate });
+  await git(["init", "--quiet"]);
+  await writeFile(join(candidate, ".gitignore"), "dist/\n");
+  await mkdir(join(candidate, "templates"));
+  await writeFile(join(candidate, "templates", "base.yaml"), "apiVersion: v1\nkind: ConfigMap\n");
+  await writeFile(join(candidate, "upgrade-script"), "reviewed source\n");
+  await git(["add", "."]);
+  const commit = () =>
+    git([
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "--quiet",
+      "-m",
+      "fixture",
+    ]);
+  await commit();
+  await git(["clone", "--quiet", "--local", candidate, previous]);
+  await writeFile(join(candidate, "upgrade-script"), "reviewed candidate\n");
+  await git(["add", "."]);
+  await commit();
+  let dockerCalls = 0;
+  const run: FixtureRun = (command, args, options) => {
+    if (command === "docker") {
+      dockerCalls++;
+      return Promise.reject(new Error("reached image inspection"));
+    }
+    return runFixtureCommand(command, args, options);
+  };
+  const env = {
+    OCC_TEST_REHEARSAL_PREVIOUS_SOURCE: previous,
+    OCC_TEST_REHEARSAL_CANDIDATE_SOURCE: candidate,
+    OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: controller("1", "2", "3").reference,
+    OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE: controller("4", "5", "6").reference,
+  };
+  await assert.rejects(selectRehearsalControllers(run, env), /reached image inspection/u);
+  assert.equal(dockerCalls, 1);
+  dockerCalls = 0;
+  // These real Git index flags hide worktree edits from porcelain status.
+  for (const flag of ["assume-unchanged", "skip-worktree"]) {
+    await git(["update-index", `--${flag}`, "upgrade-script"]);
+    await writeFile(join(candidate, "upgrade-script"), "unreviewed execution input\n");
+    assert.equal((await git(["status", "--porcelain"])).trim(), "");
+    await assert.rejects(selectRehearsalControllers(run, env), /only unmodified committed files/u);
+    assert.equal(dockerCalls, 0);
+    await git(["update-index", `--no-${flag}`, "upgrade-script"]);
+    await git(["restore", "upgrade-script"]);
+  }
+  await mkdir(join(candidate, "templates", "dist"));
+  // Helm can render ignored templates, so clean porcelain status is insufficient.
+  await writeFile(
+    join(candidate, "templates", "dist", "injected.yaml"),
+    "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: unreviewed\n",
+  );
+  assert.equal((await git(["status", "--porcelain"])).trim(), "");
+  await assert.rejects(selectRehearsalControllers(run, env), /only unmodified committed files/u);
+  assert.equal(dockerCalls, 0);
+});
 
 test("migration check reports protected log failures without printing fixture credentials", async (t) => {
   const directory = await scratch(t);
@@ -645,3 +747,144 @@ test("a running controller must match the scheduled platform and the verified ch
     /selected platform image/u,
   );
 });
+
+test(
+  "rehearsal TLS requests reject malformed and interrupted responses without exposing bytes",
+  { timeout: 10_000 },
+  async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const secret = `fixture-service-key-${randomUUID()}`;
+    const privateBytes = `private-response-${randomUUID()}`;
+    const receivedKeys: (string | string[] | undefined)[] = [];
+    const server = createServer(tls, (incoming, response) => {
+      receivedKeys.push(incoming.headers["x-api-key"]);
+      switch (incoming.url) {
+        case "/ok":
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ data: { id: "installation-fixture" } }));
+          return;
+        case "/denied":
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: "unauthorized" }));
+          return;
+        case "/malformed":
+          response.writeHead(502, { "content-type": "text/plain" });
+          response.end(`upstream failed: ${privateBytes}`);
+          return;
+        case "/leaked":
+          response.end(JSON.stringify({ leaked: secret }));
+          return;
+        case "/interrupted":
+          response.writeHead(200, { "content-length": 10_000 });
+          response.write(privateBytes);
+          setImmediate(() => response.destroy());
+          return;
+        default:
+          incoming.socket.destroy();
+      }
+    });
+    const port = await listen(t, server);
+    const request = createProductionTuiRequest({
+      baseURL: `https://localhost:${port}`,
+      ca: tls.caBundle,
+      serviceKey: () => secret,
+      secrets: [secret],
+    });
+    // These responses prove transport and parsing only; real OCC proves authentication.
+    const accepted = await request("GET", "/ok");
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(accepted.body, { data: { id: "installation-fixture" } });
+    const denied = await request("GET", "/denied", undefined, { authenticated: false });
+    assert.equal(denied.status, 401);
+    assert.deepEqual(denied.body, { error: "unauthorized" });
+    assert.deepEqual(receivedKeys, [secret, undefined]);
+    // A proxy failure must settle the request rather than escape its Promise or hang it.
+    for (const [path, message] of [
+      ["/malformed", "API response was not valid JSON"],
+      ["/leaked", "API response leaked a protected credential"],
+      ["/interrupted", "API response was interrupted"],
+      ["/disconnected", "API request failed"],
+    ] as const) {
+      await assert.rejects(request("GET", path), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, message);
+        assert.ok(!inspect(error).includes(secret));
+        assert.ok(!inspect(error).includes(privateBytes));
+        return true;
+      });
+    }
+  },
+);
+
+test(
+  "timed-out fixture commands reject success and terminate their subprocesses without exposing output",
+  { timeout: 15_000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-timeout-control-"));
+    const marker = `protected-${randomUUID()}`;
+    const parentPID = join(directory, "parent-pid");
+    const descendantPID = join(directory, "descendant-pid");
+    const ready = join(directory, "ready");
+    const terminated = join(directory, "terminated");
+    const heartbeat = join(directory, "heartbeat");
+    const script = join(directory, "command.cjs");
+    const descendant = `
+    const fs = require("node:fs");
+    let beats = 0;
+    fs.writeFileSync(${JSON.stringify(heartbeat)}, String(beats));
+    process.on("SIGTERM", () => {});
+    process.send("ready");
+    setInterval(() => fs.writeFileSync(${JSON.stringify(heartbeat)}, String(++beats)), 100);
+  `;
+    await writeFile(
+      script,
+      `
+    const fs = require("node:fs");
+    const { spawn } = require("node:child_process");
+    fs.writeFileSync(${JSON.stringify(parentPID)}, String(process.pid));
+    const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], {
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    fs.writeFileSync(${JSON.stringify(descendantPID)}, String(child.pid));
+    child.on("message", () => fs.writeFileSync(${JSON.stringify(ready)}, "ready"));
+    process.stdout.write(${JSON.stringify(marker)});
+    process.stderr.write(${JSON.stringify(marker)});
+    process.on("SIGTERM", () => {
+      fs.writeFileSync(${JSON.stringify(terminated)}, "handled termination");
+      process.exit(0);
+    });
+  `,
+    );
+    // Always dispose the real descendant, including when running against the buggy helper.
+    t.after(async () => {
+      try {
+        for (const path of [parentPID, descendantPID]) {
+          try {
+            process.kill(Number(await readFile(path, "utf8")), "SIGKILL");
+          } catch (error) {
+            if (!["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+              throw error;
+            }
+          }
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+    await assert.rejects(
+      runFixtureCommand(process.execPath, [script], { timeout: 2_000, protectedInput: true }),
+      (error: Error) => {
+        assert.match(error.message, /timed out during a protected fixture operation/u);
+        assert.ok(!inspect(error).includes(marker), "timeout diagnostics exposed protected output");
+        return true;
+      },
+    );
+    assert.equal(await readFile(ready, "utf8"), "ready");
+    assert.equal(await readFile(terminated, "utf8"), "handled termination");
+    // The parent exits zero on SIGTERM, but its descendant ignores termination and
+    // would mutate fixture state unless the helper kills the entire owned group.
+    const finalHeartbeat = await readFile(heartbeat, "utf8");
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    assert.equal(await readFile(heartbeat, "utf8"), finalHeartbeat);
+  },
+);

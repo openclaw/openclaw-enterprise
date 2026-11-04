@@ -4,11 +4,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
-import https from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { availablePort } from "../helpers/available-port.mjs";
+import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { installProductionHelmControlPlane } from "../helpers/production-helm-real.mjs";
 import {
@@ -483,46 +483,12 @@ test(
       const ca = await readFile(join(directory, "tls.crt"));
       localServiceKeyFile = join(directory, "occ-service-key.json");
       let serviceKey;
-      const externalRequest = (method, path, body, { authenticated = true } = {}) =>
-        new Promise((resolve, reject) => {
-          const data = body === undefined ? undefined : JSON.stringify(body);
-          const req = https.request(
-            `${baseURL}${path}`,
-            {
-              method,
-              ca,
-              family: 4,
-              headers: {
-                ...(authenticated ? { "x-api-key": serviceKey } : {}),
-                ...(data
-                  ? {
-                      "content-type": "application/json",
-                      "content-length": Buffer.byteLength(data),
-                    }
-                  : {}),
-              },
-            },
-            (response) => {
-              let output = "";
-              response.on("data", (chunk) => {
-                output += chunk;
-              });
-              response.on("end", () => {
-                for (const value of secrets) {
-                  assert.ok(!output.includes(value), "API response leaked a protected credential");
-                }
-                resolve({
-                  status: response.statusCode,
-                  headers: response.headers,
-                  body: output ? JSON.parse(output) : null,
-                });
-              });
-            },
-          );
-          req.on("error", reject);
-          req.setTimeout(30_000, () => req.destroy(new Error("API request timeout")));
-          req.end(data);
-        });
+      const externalRequest = createProductionTuiRequest({
+        baseURL,
+        ca,
+        serviceKey: () => serviceKey,
+        secrets,
+      });
       const stagedServiceKey = JSON.parse(
         await kubectl(
           "-n",
