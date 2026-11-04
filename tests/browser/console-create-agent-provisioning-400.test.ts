@@ -2,6 +2,30 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import type { TestContext } from "node:test";
+import type { Page, Response as BrowserResponse } from "playwright";
+import { createRequire } from "node:module";
+import type { Namespace, PresetTemplate } from "../../packages/contracts/src/index.ts";
+import type {
+  CredentialGatewayDriver,
+  CredentialSourceContext,
+  CredentialSourceInput,
+  CredentialSourceStatus,
+} from "../../packages/contracts/src/drivers/credential-gateway/index.ts";
+import {
+  CreatePresetBody,
+  ErrorResponse,
+  JsonValue,
+} from "../../packages/contracts/src/api/common.ts";
+import type { SandboxDriver } from "../../packages/contracts/src/drivers/sandbox/index.ts";
+import {
+  CredentialSourceResponse,
+  InstallationSchema,
+  SecretSchema,
+  type InstallationWire,
+  type SecretWire,
+} from "../../packages/contracts/src/api/resources.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -42,8 +66,8 @@ import {
   routeProvisioningJob,
   provisioningJob,
 } from "./console-agents-test-support.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   AGENT_NAME_CONFLICT,
   CHANNEL_BINDING_FORM_REMEDY,
@@ -62,11 +86,99 @@ import {
   notIncluded,
 } from "../helpers/refusal-text.mjs";
 
+type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type ConsoleOptions = NonNullable<Parameters<typeof createConsoleAppFixture>[1]>;
+type ComputeOptions = NonNullable<Parameters<typeof createTestKubernetesComputeDriver>[1]>;
+type SourceCall = { sourceId: string; input: CredentialSourceInput };
+
+const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
+const typebox: unknown = require("typebox/value");
+const { Check } = object(typebox);
+
+function checked(schema: typeof ErrorResponse, value: unknown): ErrorResponse;
+function checked(schema: typeof SecretSchema, value: unknown): SecretWire;
+function checked(schema: typeof InstallationSchema, value: unknown): InstallationWire;
+function checked(schema: typeof CredentialSourceResponse, value: unknown): CredentialSourceResponse;
+function checked(
+  schema: typeof CreatePresetBody,
+  value: unknown,
+): { name: string; template: PresetTemplate };
+function checked(schema: unknown, value: unknown): unknown {
+  assert.ok(typeof Check === "function");
+  assert.equal(
+    Reflect.apply(Check, undefined, [{ SafeJsonValue: JsonValue }, schema, value]),
+    true,
+  );
+  return value;
+}
+
+function assertObject(value: unknown): asserts value is Record<string, unknown> {
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value));
+}
+
+function object(value: unknown): Record<string, unknown> {
+  assertObject(value);
+  return value;
+}
+
+function present<T>(value: T | null | undefined): T {
+  assert.ok(value !== null && value !== undefined);
+  return value;
+}
+
+function assertSandboxDriver(
+  driver: ReturnType<typeof nativeSandboxDriver>,
+): asserts driver is ReturnType<typeof nativeSandboxDriver> & SandboxDriver {
+  assert.equal(driver.capability, "sandbox");
+  assert.ok(
+    driver.facets.every(
+      (facet) => facet === "filesystem" || facet === "networking" || facet === "process",
+    ),
+  );
+}
+
+// Legacy fixture helpers return decoded JSON. Check the fields this suite consumes.
+function resourceId(value: unknown): string {
+  const { id } = object(value);
+  assert.ok(typeof id === "string" && id.length > 0, "Expected a resource ID");
+  return id;
+}
+
+async function readyNamespace(fixture: ConsoleFixture, name: string) {
+  return { id: resourceId(await fixture.createNamespace(name, { ready: true })) };
+}
+
+async function createReadyConsoleNamespace(t: TestContext, name: string, options: ConsoleOptions) {
+  const result = await rawReadyConsoleNamespace(t, name, options);
+  return { fixture: result.fixture, namespace: { id: resourceId(result.namespace) } };
+}
+
+async function createRuntimeAuthFixture(t: TestContext, name: string, options: ConsoleOptions) {
+  const result = await rawRuntimeAuthFixture(t, name, options);
+  return { fixture: result.fixture, namespace: { id: resourceId(result.namespace) } };
+}
+
+async function createSecret(
+  fixture: ConsoleFixture,
+  ...args: Parameters<ConsoleFixture["createSecret"]>
+) {
+  return checked(SecretSchema, await fixture.createSecret(...args));
+}
+
+function controllerOf(fixture: ConsoleFixture) {
+  const controller: unknown = fixture.controller;
+  assert.ok(controller instanceof OpenClawController);
+  return controller;
+}
+
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
 
-const defaultCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+const defaultCodexPreset = checked(
+  CreatePresetBody,
+  JSON.parse(
+    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+  ),
 );
 
 // The production Kubernetes Drivers, built without a cluster client. The Compute Driver
@@ -75,13 +187,13 @@ const defaultCodexPreset = JSON.parse(
 // Driver implements; its validation refuses inline model credentials. Admission refuses
 // this request before any cluster call or provisioning record. `compute` holds the Kubernetes
 // Compute fixture's options.
-function provisioningDrivers(compute = {}) {
+function provisioningDrivers(compute: ComputeOptions = {}) {
   const computeDriver = Object.assign(
     createTestKubernetesComputeDriver("console-provisioning", compute),
     {
       // createNamespace({ ready: true }) runs Namespace lifecycle; readiness is the cluster
       // boundary.
-      async ensureNamespace(namespace) {
+      async ensureNamespace(namespace: Namespace) {
         return { namespaceId: namespace.id, namespaceReady: true };
       },
     },
@@ -96,15 +208,34 @@ function provisioningDrivers(compute = {}) {
 // `compute` holds the Kubernetes Compute fixture's options; the rest are console app options.
 // Composition pairs Kubernetes Compute with the selected Sandbox Driver, which takes initial
 // workspace files as OpenShell's does, so Create Agent's preflight admits the form's files.
-async function modelSourceFixture(t, { compute, ...options } = {}, gatewayMethods = {}) {
+async function modelSourceFixture(
+  t: TestContext,
+  {
+    compute,
+    ...options
+  }: ConsoleOptions & {
+    compute?: ComputeOptions;
+    now?: () => Date;
+    configurationDriver?: KubernetesConfigurationDriver | undefined;
+    filesystemConfiguration?: boolean;
+  } = {},
+  gatewayMethods: {
+    registerSource?: (
+      context: CredentialSourceContext,
+      input: CredentialSourceInput,
+      attempt: number,
+    ) => CredentialSourceStatus | Promise<CredentialSourceStatus>;
+  } = {},
+) {
   const sandboxDriver = { ...nativeSandboxDriver(), validateWorkspaceSetup() {} };
+  assertSandboxDriver(sandboxDriver);
   const drivers = provisioningDrivers({ ...compute, sandboxDriver });
   drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
   const fixture = await createConsoleAppFixture(t, { ...drivers, sandboxDriver, ...options });
   await fixture.bootstrap();
-  const calls = [];
-  const removals = [];
-  const gateway = {
+  const calls: SourceCall[] = [];
+  const removals: string[] = [];
+  const gateway: CredentialGatewayDriver = {
     id: "console-credential-gateway",
     capability: "credential_gateway",
     implementation: "test-model-source",
@@ -163,19 +294,26 @@ async function modelSourceFixture(t, { compute, ...options } = {}, gatewayMethod
       removals.push(context.source.id);
     },
   };
-  fixture.controller.registerDriver(gateway);
-  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  const controller = controllerOf(fixture);
+  controller.registerDriver(gateway);
+  controller.selectDriver("credential_gateway", gateway.id);
   return { fixture, calls, removals };
 }
 
 // Codex with its "Service Accounts" sign-in, a new model Secret and a listed model.
-async function pickCodexCredential(page, secretValue = `model-secret-${randomUUID()}`) {
+async function pickCodexCredential(page: Page, secretValue = `model-secret-${randomUUID()}`) {
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, secretValue);
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
 }
 
-async function openModelSourceForm(t, fixture, namespace, harness = "codex", method = "api_key") {
+async function openModelSourceForm(
+  t: TestContext,
+  fixture: ConsoleFixture,
+  namespace: Pick<Namespace, "id">,
+  harness = "codex",
+  method = "api_key",
+) {
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -186,7 +324,10 @@ async function openModelSourceForm(t, fixture, namespace, harness = "codex", met
   }
   await page.getByLabel("Authentication method").selectOption(method);
   await page.getByLabel("Agent name").fill("Source-backed " + harness);
-  const secret = await createModelCredentialSecret(page, "synthetic-source-model-key-" + harness);
+  const secret = checked(
+    SecretSchema,
+    await createModelCredentialSecret(page, "synthetic-source-model-key-" + harness),
+  );
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
   await page.getByLabel("Model ID", { exact: true }).press("Tab");
@@ -196,7 +337,7 @@ async function openModelSourceForm(t, fixture, namespace, harness = "codex", met
 test("Dedicated Agent provisioning shows the API's 400 message for an inline model credential", async (t) => {
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision inline credential", { ready: true });
+  const namespace = await readyNamespace(fixture, "Provision inline credential");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -207,10 +348,11 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   // A pasted provider key is a value, not the Secret reference the field requires.
   const sentinel = `synthetic-inline-key-${randomUUID()}`;
   const configuration = page.getByLabel("Configuration JSON");
-  const edited = JSON.parse(await configuration.inputValue());
+  const edited = object(JSON.parse(await configuration.inputValue()));
+  const models = object(edited.models ?? {});
   edited.models = {
-    ...edited.models,
-    providers: { ...edited.models?.providers, openai: { apiKey: sentinel } },
+    ...models,
+    providers: { ...object(models.providers ?? {}), openai: { apiKey: sentinel } },
   };
   await configuration.fill(JSON.stringify(edited, null, 2));
   const rejected = page.waitForResponse(
@@ -223,7 +365,7 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   await page.getByRole("button", { name: "Create Agent" }).click();
   const response = await rejected;
   assert.equal(response.status(), 400);
-  const { error, meta } = await response.json();
+  const { error, meta } = checked(ErrorResponse, await response.json());
   // The API's own sentence names the field to fix; the console shows it unchanged. Provisioning
   // runs Agent save's Harness authentication check first (finding 2395), so it answers with
   // save's sentence for the dedicated Codex binding.
@@ -232,7 +374,7 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   await feedback.waitFor();
   assert.equal(await feedback.textContent(), `${error.message} Request ID: ${meta.requestId}`);
   // Only the editor holds the key; the explanation never repeats it.
-  assert.equal((await feedback.textContent()).includes(sentinel), false);
+  assert.equal(present(await feedback.textContent()).includes(sentinel), false);
   // The refusal came from provisioning admission: no draft-path writes, one request.
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
   assert.equal(
@@ -253,7 +395,7 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   });
   const fixture = await createConsoleAppFixture(t, { computeDriver, configurationDriver });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision taken name", { ready: true });
+  const namespace = await readyNamespace(fixture, "Provision taken name");
   await fixture.createAgent(namespace.id, "Taken provisioned");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
@@ -262,7 +404,7 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   await page.getByLabel("Agent name").fill("Taken provisioned");
   await pickCodexCredential(page);
   const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
-  const provisionPost = (response) =>
+  const provisionPost = (response: BrowserResponse) =>
     response.url() === provisionUrl && response.request().method() === "POST";
   // Only the API's taken-name sentence marks the field: another admission 409 does not.
   await page.route(
@@ -290,7 +432,7 @@ test("Dedicated Agent provisioning refuses a taken Agent name at admission and m
   // Admission answers Agent create's 409 instead of accepting a job that can only fail
   // (finding 2420); the console shows it and marks the name field.
   assert.equal(response.status(), 409);
-  const { error, meta } = await response.json();
+  const { error, meta } = checked(ErrorResponse, await response.json());
   assert.equal(error.code, "RESOURCE_CONFLICT");
   assert.equal(error.message, AGENT_NAME_CONFLICT);
   const feedback = page.getByRole("alert").filter({ hasText: meta.requestId });
@@ -313,8 +455,8 @@ test("A refused provisioning request reads the Secret answer again", async (t) =
     defaultPresets: [defaultCodexPreset],
   });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision revoked operate", { ready: true });
-  const secret = await fixture.createSecret(namespace.id, "Provision model key", "sk-provision");
+  const namespace = await readyNamespace(fixture, "Provision revoked operate");
+  const secret = await createSecret(fixture, namespace.id, "Provision model key", "sk-provision");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
@@ -350,7 +492,7 @@ test("A taken-name refusal after an unknown provisioning outcome unlocks the nam
   });
   const fixture = await createConsoleAppFixture(t, { computeDriver, configurationDriver });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision lost then taken", { ready: true });
+  const namespace = await readyNamespace(fixture, "Provision lost then taken");
   await fixture.createAgent(namespace.id, "Taken after loss");
   const { page } = await newPage(t, fixture, { browser });
   const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
@@ -392,7 +534,7 @@ test("A taken-name refusal after an unknown provisioning outcome unlocks the nam
   await page.getByRole("button", { name: "Create Agent" }).click();
   const accepted = await resent;
   assert.equal(accepted.status(), 503);
-  assert.equal((await accepted.json()).error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(checked(ErrorResponse, await accepted.json()).error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
 test("The pinned runtime lets the Console request dedicated OpenClaw provisioning", async (t) => {
@@ -401,7 +543,7 @@ test("The pinned runtime lets the Console request dedicated OpenClaw provisionin
     sandboxDriver: nativeSandboxDriver(),
   });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Pinned native deployment", { ready: true });
+  const namespace = await readyNamespace(fixture, "Pinned native deployment");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -422,10 +564,12 @@ test("The pinned runtime lets the Console request dedicated OpenClaw provisionin
   // This fixture has no transactional provisioning queue. The request reaches
   // the real provisioning route; admission and deployment have separate coverage.
   assert.equal(response.status(), 503);
-  assert.equal((await response.json()).error.code, "DEPENDENCY_UNAVAILABLE");
-  const payload = response.request().postDataJSON();
+  assert.equal(checked(ErrorResponse, await response.json()).error.code, "DEPENDENCY_UNAVAILABLE");
+  const payload = object(response.request().postDataJSON());
   assert.equal(payload.executionMode, "dedicated");
-  assert.equal(payload.configuration.values.agents.defaults.model, "openai/gpt-5");
+  const values = object(object(payload.configuration).values);
+  const defaults = object(object(values.agents).defaults);
+  assert.equal(defaults.model, "openai/gpt-5");
   // Packaged Kubernetes proof separately verifies queued work and deployment.
   // No draft writes or external provisioning effects occur in this fixture.
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
@@ -442,16 +586,17 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     sandboxDriver: nativeSandboxDriver(),
   });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision Slack forms", { ready: true });
-  const slackApp = await fixture.createSecret(namespace.id, "Forms Slack app", "xapp-forms");
-  const slackBot = await fixture.createSecret(namespace.id, "Forms Slack bot", "xoxb-forms");
+  const namespace = await readyNamespace(fixture, "Provision Slack forms");
+  const slackApp = await createSecret(fixture, namespace.id, "Forms Slack app", "xapp-forms");
+  const slackBot = await createSecret(fixture, namespace.id, "Forms Slack bot", "xoxb-forms");
   let slackCalls = 0;
   const channel = new SlackChannelDriver(async () => {
     slackCalls++;
     return new Response(JSON.stringify({ ok: true, bot_id: "B123", team_id: "T123" }));
   });
-  fixture.controller.registerDriver(channel);
-  fixture.controller.selectDriver("channel", channel.id);
+  const controller = controllerOf(fixture);
+  controller.registerDriver(channel);
+  controller.selectDriver("channel", channel.id);
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -477,15 +622,16 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   await slack.getByRole("button", { name: "Apply channel settings" }).click();
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON");
-  const values = JSON.parse(await configuration.inputValue());
+  const values = object(JSON.parse(await configuration.inputValue()));
+  const slackValues = object(object(values.channels).slack);
   const jsonError = page.locator("#configuration-json-error");
   // The Slack card names a token pasted as the value the way Configuration save does, and does
   // not show it (finding 2523).
-  values.channels.slack.botToken = "xoxb-pasted-card-token";
+  slackValues.botToken = "xoxb-pasted-card-token";
   await configuration.fill(JSON.stringify(values, null, 2));
   const inline = "holds a credential value inline, where a reference is required";
   const reference = "uses a credential reference this editor does not write";
-  const cardText = (form) =>
+  const cardText = (form: string) =>
     `Slack bot token ${form}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`;
   const card = page.locator(".channel-card", { hasText: "Slack bot token holds" });
   await card.getByText(cardText(inline), { exact: true }).waitFor();
@@ -504,14 +650,14 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   assert.doesNotMatch(await card.innerText(), /xoxb-pasted/);
   // The Slack editor's channel field looked names up; Create Agent must not call Slack again.
   const lookups = slackCalls;
-  const submitWith = async (botToken) => {
-    values.channels.slack.botToken = botToken;
+  const submitWith = async (botToken: string) => {
+    slackValues.botToken = botToken;
     await configuration.fill(JSON.stringify(values, null, 2));
     const response = await submitCreateAgent(page, fixture, namespace.id, {
       path: "agents/provision",
     });
     assert.equal(response.status(), 400, botToken);
-    return (await response.json()).error;
+    return checked(ErrorResponse, await response.json()).error;
   };
   for (const [botToken, message, form] of [
     [
@@ -527,7 +673,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
       unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN"),
       reference,
     ],
-  ]) {
+  ] satisfies [string, string, string][]) {
     const error = await submitWith(botToken);
     assert.equal(error.message, message, botToken);
     await page.locator(".channel-card").getByText(cardText(form), { exact: true }).waitFor();
@@ -567,9 +713,7 @@ test("Credential Gateway creation registers the same model source for both dedic
           },
         },
       );
-      const namespace = await fixture.createNamespace("Console model source " + harness, {
-        ready: true,
-      });
+      const namespace = await readyNamespace(fixture, "Console model source " + harness);
       const { page, secret } = await openModelSourceForm(t, fixture, namespace, harness);
       await page
         .locator("#model-source-authorized_base_url")
@@ -624,15 +768,15 @@ test("Credential Gateway creation registers the same model source for both dedic
         path: "agents/provision",
       });
       assert.equal(response.status(), 503); // This fixture has no durable provisioning queue.
-      const payload = response.request().postDataJSON();
+      const payload = object(response.request().postDataJSON());
       assert.deepEqual(payload.harnessAuth, {
         method: "credential_source",
-        sourceId: calls.at(-1).sourceId,
+        sourceId: present(calls.at(-1)).sourceId,
       });
       assert.equal(payload.executionMode, "dedicated");
       assert.equal(calls.length, harness === "openclaw" ? 2 : 1);
-      assert.deepEqual(calls.at(-1).input.secrets, { api_key: sentinel });
-      assert.deepEqual(calls.at(-1).input.config, {
+      assert.deepEqual(present(calls.at(-1)).input.secrets, { api_key: sentinel });
+      assert.deepEqual(present(calls.at(-1)).input.config, {
         authorized_base_url: "https://models.example.test/v1",
       });
       const registrations = pathRequests(
@@ -642,8 +786,8 @@ test("Credential Gateway creation registers the same model source for both dedic
       );
       assert.equal(registrations.length, calls.length);
       for (const registration of registrations) {
-        assert.deepEqual(registration.body, registrations[0].body);
-        assert.deepEqual(registration.body.secrets, { api_key: secret.ref });
+        assert.deepEqual(registration.body, present(registrations[0]).body);
+        assert.deepEqual(object(registration.body).secrets, { api_key: secret.ref });
       }
       assert.equal(JSON.stringify(payload).includes(sentinel), false);
       assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).length, 0);
@@ -653,7 +797,7 @@ test("Credential Gateway creation registers the same model source for both dedic
 
 test("source destination rejection allows correction only after confirming no registration exists", async (t) => {
   const { fixture, calls } = await modelSourceFixture(t);
-  const namespace = await fixture.createNamespace("Source destination correction", { ready: true });
+  const namespace = await readyNamespace(fixture, "Source destination correction");
   const { page } = await openModelSourceForm(t, fixture, namespace);
   const field = page.locator("#model-source-authorized_base_url");
   await field.fill("https://other.example.test/v1");
@@ -684,36 +828,37 @@ test("source destination rejection allows correction only after confirming no re
   const result = await submitCreateAgent(page, fixture, namespace.id, { path: "agents/provision" });
   assert.equal(result.status(), 503); // The fixture has no durable provisioning queue.
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].input.config, {
+  assert.deepEqual(present(calls[0]).input.config, {
     authorized_base_url: "https://models.example.test/v1",
   });
 });
 
 test("Create checks the requested credential registration instead of binding a different source", async (t) => {
   const { fixture, calls } = await modelSourceFixture(t);
-  const namespace = await fixture.createNamespace("Source response identity", { ready: true });
+  const namespace = await readyNamespace(fixture, "Source response identity");
   const root = `/namespaces/${namespace.id}`;
   const path = `${root}/credential-sources`;
-  const otherSecret = await fixture.createSecret(namespace.id, "Other key", "other-test-value");
+  const otherSecret = await createSecret(fixture, namespace.id, "Other key", "other-test-value");
   const other = await fixture.request("POST", path, {
     body: { name: "Other model source", type: "openai", secrets: { api_key: otherSecret.ref } },
   });
   assert.equal(other.status, 201);
+  const { data: otherSource } = checked(CredentialSourceResponse, other.body);
   const { page, secret } = await openModelSourceForm(t, fixture, namespace);
   const requests = apiRequests(page, fixture.origin);
-  let registered;
+  let registered: CredentialSourceResponse["data"] | undefined;
   await page.route(`**${path}`, async (route) => {
     if (route.request().method() !== "POST") {
       return route.fallback();
     }
     const response = await route.fetch();
     assert.equal(response.status(), 201);
-    const { data, meta } = await response.json();
+    const { data, meta } = checked(CredentialSourceResponse, await response.json());
     registered = data;
-    assert.equal(registered.secrets.api_key.id, secret.id);
-    assert.notEqual(registered.id, other.data.id);
+    assert.equal(present(registered.secrets.api_key).id, secret.id);
+    assert.notEqual(registered.id, otherSource.id);
     // Only the response is replaced. A subsequent list can distinguish both real registrations.
-    await route.fulfill({ status: 201, json: { data: other.data, meta } });
+    await route.fulfill({ status: 201, json: { data: otherSource, meta } });
   });
 
   const create = page.getByRole("button", { name: "Create Agent", exact: true });
@@ -732,7 +877,12 @@ test("Create checks the requested credential registration instead of binding a d
     "do not provision with the other credential source",
   );
   assert.equal(await create.isDisabled(), true);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page.locator("#create-agent-form").evaluate((form) => {
+    if (!(form instanceof HTMLFormElement)) {
+      throw new Error("Expected a form");
+    }
+    form.requestSubmit();
+  });
   assert.equal(pathRequests(requests, "POST", path).length, 1);
   assert.equal(pathRequests(requests, "POST", `${root}/iam/access-bindings`).length, 0);
   await check.click();
@@ -740,24 +890,24 @@ test("Create checks the requested credential registration instead of binding a d
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
   const sent = page.waitForRequest((request) => request.url().endsWith("/agents/provision"));
   await create.click();
-  assert.deepEqual((await sent).postDataJSON().harnessAuth, {
+  assert.deepEqual(object((await sent).postDataJSON()).harnessAuth, {
     method: "credential_source",
-    sourceId: registered.id,
+    sourceId: present(registered).id,
   });
   assert.deepEqual(
     calls.map(({ sourceId }) => sourceId),
-    [other.data.id, registered.id],
+    [otherSource.id, present(registered).id],
   );
 });
 
 test("Credential registration recovers a ready source after a same-name retry conflicts", async (t) => {
   const { fixture, calls } = await modelSourceFixture(t);
-  const namespace = await fixture.createNamespace("Delayed source registration", { ready: true });
+  const namespace = await readyNamespace(fixture, "Delayed source registration");
   const { page } = await openModelSourceForm(t, fixture, namespace);
   const requests = apiRequests(page, fixture.origin);
   const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
   const sourceUrl = fixture.origin + sourcePath;
-  let delayedRegistration;
+  let delayedRegistration: unknown;
   await page.route(sourceUrl, async (route) => {
     if (route.request().method() !== "POST" || delayedRegistration) {
       return route.fallback();
@@ -802,14 +952,14 @@ test("Credential registration recovers a ready source after a same-name retry co
     path: "agents/provision",
   });
   assert.equal(response.status(), 503); // The fixture has no durable provisioning queue.
-  assert.deepEqual(response.request().postDataJSON().harnessAuth, {
+  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, {
     method: "credential_source",
-    sourceId: registered.data.id,
+    sourceId: resourceId(registered.data),
   });
   assert.equal(calls.length, 1);
   const retries = pathRequests(requests, "POST", sourcePath);
   assert.equal(retries.length, 2);
-  assert.deepEqual(retries[0].body, retries[1].body);
+  assert.deepEqual(present(retries[0]).body, present(retries[1]).body);
 });
 
 test("Credential registration removal preserves the safety fence and retries the exact source", async (t) => {
@@ -826,7 +976,7 @@ test("Credential registration removal preserves the safety fence and retries the
       },
     },
   );
-  const namespace = await fixture.createNamespace("Source removal recovery", { ready: true });
+  const namespace = await readyNamespace(fixture, "Source removal recovery");
   const { page, secret } = await openModelSourceForm(t, fixture, namespace, "openclaw");
   const requests = apiRequests(page, fixture.origin);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -834,8 +984,8 @@ test("Credential registration removal preserves the safety fence and retries the
   const remove = page.getByRole("button", { name: "Remove failed credential registration" });
   await remove.waitFor();
   // Removal deletes the registration on the server: the destructive tone (finding 1967).
-  assert.match(await remove.getAttribute("class"), /\bbutton--danger\b/);
-  const sourceId = calls[0].sourceId;
+  assert.match(present(await remove.getAttribute("class")), /\bbutton--danger\b/);
+  const sourceId = present(calls[0]).sourceId;
   const sourcePath = `/namespaces/${namespace.id}/credential-sources/${sourceId}`;
   const deleted = () =>
     page.waitForResponse(
@@ -868,7 +1018,7 @@ test("Credential registration removal preserves the safety fence and retries the
   // fence late registration effects. The Console must retain the same cleanup handle.
   const fenced = await fixture.request("GET", sourcePath);
   assert.equal(fenced.status, 200, JSON.stringify(fenced.body));
-  assert.equal(fenced.data.state, "deleting");
+  assert.equal(object(fenced.data).state, "deleting");
   assert.equal(
     await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
     true,
@@ -888,19 +1038,21 @@ test("Credential registration removal preserves the safety fence and retries the
     path: "agents/provision",
   });
   assert.equal(response.status(), 503); // The fixture has no durable provisioning queue.
-  assert.deepEqual(response.request().postDataJSON().harnessAuth, {
+  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, {
     method: "credential_source",
-    sourceId: calls[1].sourceId,
+    sourceId: present(calls[1]).sourceId,
   });
   assert.equal(calls.length, 2);
-  assert.notEqual(calls[1].sourceId, sourceId);
-  assert.deepEqual(calls[0].input, calls[1].input);
+  assert.notEqual(present(calls[1]).sourceId, sourceId);
+  assert.deepEqual(present(calls[0]).input, present(calls[1]).input);
   assert.deepEqual(removals, [sourceId, sourceId, sourceId]); // Initial abandonment, then both DELETEs.
   // The refused DELETE (answered in the page), then the two that reached the API.
   assert.equal(pathRequests(requests, "DELETE", sourcePath).length, 3);
   assert.deepEqual(
-    pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`)[1].body
-      .secrets,
+    object(
+      present(pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`)[1])
+        .body,
+    ).secrets,
     { api_key: secret.ref },
   );
   assert.equal(
@@ -914,8 +1066,9 @@ test("Agent Credentials saves its existing model source without replacing the bi
     configurationDriver: undefined,
     filesystemConfiguration: true,
   });
-  const namespace = await fixture.createNamespace("Saved Source authentication", { ready: true });
-  const secret = await fixture.createSecret(
+  const namespace = await readyNamespace(fixture, "Saved Source authentication");
+  const secret = await createSecret(
+    fixture,
     namespace.id,
     "Source model key",
     "synthetic-retained-source-key",
@@ -924,27 +1077,31 @@ test("Agent Credentials saves its existing model source without replacing the bi
     body: { name: "Agent model source", type: "openai", secrets: { api_key: secret.ref } },
   });
   assert.equal(source.status, 201, JSON.stringify(source.body));
-  const configuration = await fixture.createConfiguration(
-    namespace.id,
-    createHarnessConfiguration("openclaw", "gpt-5"),
+  const configurationId = resourceId(
+    await fixture.createConfiguration(
+      namespace.id,
+      createHarnessConfiguration("openclaw", "gpt-5"),
+    ),
   );
-  const harnessAuth = { method: "credential_source", sourceId: source.data.id };
+  const sourceId = resourceId(source.data);
+  const harnessAuth = { method: "credential_source", sourceId };
   const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       name: "Retained model Source",
-      configurationId: configuration.id,
+      configurationId,
       executionMode: "dedicated",
       harnessAuth,
-      credentialSources: [{ sourceId: source.data.id }],
+      credentialSources: [{ sourceId }],
     },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
+  const agentId = resourceId(created.data);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agentId}`;
   const { page } = await newPage(t, fixture, { browser });
   await login(
     page,
     fixture,
-    `/console/agents/${created.data.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    `/console/agents/${agentId}?namespace=${namespace.id}&revision=draft&tab=credentials`,
   );
   const method = page.getByLabel("Authentication source", { exact: true });
   await method.waitFor();
@@ -956,10 +1113,10 @@ test("Agent Credentials saves its existing model source without replacing the bi
   await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
   const response = await saved;
   assert.equal(response.status(), 200);
-  assert.deepEqual(response.request().postDataJSON().harnessAuth, harnessAuth);
+  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, harnessAuth);
   const current = await fixture.request("GET", agentPath);
-  assert.deepEqual(current.data.harnessAuth, harnessAuth);
-  assert.deepEqual(current.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(object(current.data).harnessAuth, harnessAuth);
+  assert.deepEqual(object(current.data).credentialSources, [{ sourceId }]);
 });
 
 // A refused submit kept "Submitting provisioning request…" beside the API's refusal, and focus
@@ -968,7 +1125,7 @@ test("Agent Credentials saves its existing model source without replacing the bi
 test("A refused Create Agent submit clears its progress and focuses the refusal", async (t) => {
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision refusal focus", { ready: true });
+  const namespace = await readyNamespace(fixture, "Provision refusal focus");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -976,11 +1133,12 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
   await pickCodexCredential(page);
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON");
-  const edited = JSON.parse(await configuration.inputValue());
+  const edited = object(JSON.parse(await configuration.inputValue()));
+  const models = object(edited.models ?? {});
   edited.models = {
-    ...edited.models,
+    ...models,
     providers: {
-      ...edited.models?.providers,
+      ...object(models.providers ?? {}),
       openai: { apiKey: `synthetic-inline-key-${randomUUID()}` },
     },
   };
@@ -1031,7 +1189,7 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
 test("Dedicated Agent provisioning names a Namespace that is not ready", async (t) => {
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision not ready", { ready: true });
+  const namespace = await readyNamespace(fixture, "Provision not ready");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -1074,17 +1232,29 @@ const NO_OPENCLAW_MODE =
   "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an Installation administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
 
 // Saves a Preset whose template holds `agent` and the Configuration nativeValues(`marker`).
-async function savePreset(fixture, namespace, name, agent, marker) {
+async function savePreset(
+  fixture: ConsoleFixture,
+  namespace: Pick<Namespace, "id">,
+  name: string,
+  agent: PresetTemplate["agent"],
+  marker: string,
+) {
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: { name, template: { agent, configuration: { values: nativeValues(marker) } } },
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
-  return preset.data.id;
+  return resourceId(preset.data);
 }
 
 // Opens Create Agent on a saved Preset in a new page. `openclaw`, when given, is the routed
 // Installation's OpenClaw answer.
-async function openPreset(t, fixture, namespace, presetId, openclaw) {
+async function openPreset(
+  t: TestContext,
+  fixture: ConsoleFixture,
+  namespace: Pick<Namespace, "id">,
+  presetId: string,
+  openclaw?: unknown,
+) {
   const { page } = await newPage(t, fixture, { browser });
   if (openclaw !== undefined) {
     await routeInstallationWithoutProvisioning(page, fixture, { openclaw });
@@ -1095,7 +1265,11 @@ async function openPreset(t, fixture, namespace, presetId, openclaw) {
   return page;
 }
 
-async function startWithoutPreset(page, fixture, namespace) {
+async function startWithoutPreset(
+  page: Page,
+  fixture: ConsoleFixture,
+  namespace: Pick<Namespace, "id">,
+) {
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
 }
@@ -1110,11 +1284,16 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   // provision them, so it does not report native worker support (finding 1608).
   const installation = await fixture.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
-  assert.deepEqual(installation.data.capabilities?.agentProvisioning, {
+  assert.equal(
+    checked(InstallationSchema, installation.data).capabilities?.nativeWorkers,
+    undefined,
+  );
+  assert.deepEqual(checked(InstallationSchema, installation.data).capabilities?.agentProvisioning, {
     executionModes: ["dedicated"],
   });
-  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: ["embedded"] });
+  assert.deepEqual(checked(InstallationSchema, installation.data).capabilities?.openclaw, {
+    executionModes: ["embedded"],
+  });
   const { page } = await newPage(t, fixture, { browser });
   await startWithoutPreset(page, fixture, namespace);
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
@@ -1144,7 +1323,12 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   // The select is unavailable with Codex (aria-disabled, finding 2945); its option is not refused.
   assert.equal(
-    await mode.locator('option[value="dedicated"]').evaluate((node) => node.disabled),
+    await mode.locator('option[value="dedicated"]').evaluate((node) => {
+      if (!(node instanceof HTMLOptionElement)) {
+        throw new Error("Expected an option");
+      }
+      return node.disabled;
+    }),
     false,
   );
   assert.equal(
@@ -1154,7 +1338,7 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
 
   // A saved Dedicated OpenClaw Preset keeps its mode and is blocked. The Installation lists
   // Embedded, so it selects no Sandbox Driver, and the alert says exactly that (finding 2384).
-  const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "no-sandbox-key");
+  const secret = await createSecret(fixture, namespace.id, "OpenAI model key", "no-sandbox-key");
   const presetId = await savePreset(
     fixture,
     namespace,
@@ -1204,9 +1388,14 @@ test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, C
   });
   const installation = await fixture.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
-  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: [] });
-  const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "partial-key");
+  assert.equal(
+    checked(InstallationSchema, installation.data).capabilities?.nativeWorkers,
+    undefined,
+  );
+  assert.deepEqual(checked(InstallationSchema, installation.data).capabilities?.openclaw, {
+    executionModes: [],
+  });
+  const secret = await createSecret(fixture, namespace.id, "OpenAI model key", "partial-key");
   const presetId = await savePreset(
     fixture,
     namespace,
@@ -1253,7 +1442,7 @@ test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, C
 
 // The writes a Create Agent submit can make. The form also prefetches the plugin catalog with a
 // read-only POST .../agents/plugins, which is not one.
-function createWrites(requests, namespaceId) {
+function createWrites(requests: ReturnType<typeof apiRequests>, namespaceId: string) {
   return requests.filter(
     (request) =>
       request.method !== "GET" &&
@@ -1263,7 +1452,12 @@ function createWrites(requests, namespaceId) {
 
 // Start without a Preset and fill an OpenClaw draft through to Create: name, harness, a model
 // credential Secret and a model ID. The Secret is the picker's own write, before Create.
-async function fillOpenClawDraft(t, fixture, namespace, name) {
+async function fillOpenClawDraft(
+  t: TestContext,
+  fixture: ConsoleFixture,
+  namespace: Pick<Namespace, "id">,
+  name: string,
+) {
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await startWithoutPreset(page, fixture, namespace);
@@ -1279,7 +1473,7 @@ async function fillOpenClawDraft(t, fixture, namespace, name) {
 // Submits the form past its disabled Create Agent button, then fails on any POST whose path
 // matches `writePath` within 2 s. Without a refusal the first write goes out within
 // milliseconds.
-async function assertBypassedSubmitWritesNothing(page, writePath) {
+async function assertBypassedSubmitWritesNothing(page: Page, writePath: RegExp) {
   // Attach both outcomes when the timed wait starts, so a submit that outlasts the window on a
   // loaded runner cannot leave the timeout as an unhandled rejection (finding 1986).
   const wrote = page
@@ -1291,7 +1485,12 @@ async function assertBypassedSubmitWritesNothing(page, writePath) {
       (request) => assert.fail(`Create Agent wrote ${request.url()}`),
       () => {},
     );
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page.locator("#create-agent-form").evaluate((form) => {
+    if (!(form instanceof HTMLFormElement)) {
+      throw new Error("Expected a form");
+    }
+    form.requestSubmit();
+  });
   await wrote;
 }
 
@@ -1303,7 +1502,9 @@ test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent 
     sandboxDriver: nativeSandboxDriver(["networking", "filesystem"]),
   });
   const installation = await fixture.request("GET", "/installation");
-  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: [] });
+  assert.deepEqual(checked(InstallationSchema, installation.data).capabilities?.openclaw, {
+    executionModes: [],
+  });
   const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "No mode");
   const mode = page.getByLabel("Execution mode");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
@@ -1349,7 +1550,7 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
     sandboxDriver,
   });
   const installation = await fixture.request("GET", "/installation");
-  assert.deepEqual(installation.data.capabilities?.openclaw, {
+  assert.deepEqual(checked(InstallationSchema, installation.data).capabilities?.openclaw, {
     executionModes: [],
     settingRefusals: { dedicated: settingRefusal },
   });
@@ -1382,9 +1583,11 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
 
   // A Preset bound to a saved Anthropic Secret locks the provider too, so the refusal offers
   // only the operator.
-  const secret = await fixture.createSecret(namespace.id, "Anthropic model key", "anthropic-key");
+  const secret = await createSecret(fixture, namespace.id, "Anthropic model key", "anthropic-key");
   const primary = "anthropic/claude-bound-model";
-  const values = nativeValues("bound-anthropic");
+  const values: Omit<ReturnType<typeof nativeValues>, "models"> & {
+    models: Record<string, unknown>;
+  } = nativeValues("bound-anthropic");
   values.agents.defaults.model = primary;
   values.agents.defaults.models = { [primary]: { agentRuntime: { id: "openclaw" } } };
   values.models = {
@@ -1411,7 +1614,7 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
     },
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
-  const bound = await openPreset(t, fixture, namespace, preset.data.id);
+  const bound = await openPreset(t, fixture, namespace, resourceId(preset.data));
   const boundAlert = bound.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
   await boundAlert.waitFor();
   assert.equal(await bound.getByLabel("Provider", { exact: true }).isDisabled(), true);
@@ -1431,15 +1634,18 @@ test("When the Sandbox Driver's settings refuse Dedicated OpenClaw, Create Agent
 // fixture built with `options` whose Kubernetes Compute cannot place a Dedicated Agent, and
 // submits it. The binding fixes the harness to Codex, so the refusal's "select Embedded
 // OpenClaw" advice is one this form cannot follow.
-async function submitBoundCodexPreset(t, options, name) {
+async function submitBoundCodexPreset(t: TestContext, options: ConsoleOptions, name: string) {
   const fixture = await createConsoleAppFixture(t, options);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
-  const standard = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  const namespace = await readyNamespace(fixture, name);
+  const standard = checked(
+    CreatePresetBody,
+    JSON.parse(
+      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    ),
   );
-  const { modelSecret: _secretVariable, ...variables } = standard.template.variables;
-  const token = await fixture.createSecret(namespace.id, "Codex token", "synthetic-codex-token");
+  const { modelSecret: _secretVariable, ...variables } = present(standard.template.variables);
+  const token = await createSecret(fixture, namespace.id, "Codex token", "synthetic-codex-token");
   const harnessAuth = { method: "codex_pat", source: token.ref };
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: {
@@ -1470,9 +1676,9 @@ async function submitBoundCodexPreset(t, options, name) {
 }
 
 // The refusal the form shows: only the requirement, then the step a reader can take.
-async function assertPlacementRequirement(page, response) {
+async function assertPlacementRequirement(page: Page, response: BrowserResponse) {
   assert.equal(response.status(), 400);
-  const { error, meta } = await response.json();
+  const { error, meta } = checked(ErrorResponse, await response.json());
   assert.equal(error.message, CODEX_PLACEMENT_REFUSAL);
   const alert = page.getByRole("alert").filter({ hasText: meta.requestId });
   await alert.waitFor();
@@ -1509,6 +1715,12 @@ async function assertGatewayPreflightRefusal({
   namespace,
   calls,
   method = "api_key",
+}: {
+  page: Page;
+  origin: string;
+  namespace: Pick<Namespace, "id">;
+  calls: SourceCall[];
+  method?: string;
 }) {
   const requests = apiRequests(page, origin);
   const root = `${origin}/namespaces/${namespace.id}`;
@@ -1522,7 +1734,7 @@ async function assertGatewayPreflightRefusal({
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await first;
   assert.equal(response.url(), `${root}/agents/validate`);
-  assert.deepEqual(response.request().postDataJSON().harnessAuth, { method });
+  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, { method });
   await assertPlacementRequirement(page, response);
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
@@ -1538,9 +1750,15 @@ test("Create Agent refuses an unplaceable Dedicated Agent before a Credential Ga
   const unplaceable = { compute: { channelRuntime: true, routed: false } };
   await t.test("Preset model Secret", async (t) => {
     const { fixture, calls } = await modelSourceFixture(t, unplaceable);
-    const namespace = await fixture.createNamespace("Gateway Preset unplaceable", { ready: true });
-    const standard = JSON.parse(
-      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    const namespace = await readyNamespace(fixture, "Gateway Preset unplaceable");
+    const standard = checked(
+      CreatePresetBody,
+      JSON.parse(
+        await readFile(
+          new URL("../../deploy/presets/standard-codex.json", import.meta.url),
+          "utf8",
+        ),
+      ),
     );
     const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
       body: { name: "Gateway Codex", template: standard.template },
@@ -1557,7 +1775,7 @@ test("Create Agent refuses an unplaceable Dedicated Agent before a Credential Ga
   });
   await t.test("selected Secret", async (t) => {
     const { fixture, calls } = await modelSourceFixture(t, unplaceable);
-    const namespace = await fixture.createNamespace("Gateway Secret unplaceable", { ready: true });
+    const namespace = await readyNamespace(fixture, "Gateway Secret unplaceable");
     // The form's Secret dialog saved the model Secret; only the registration would follow.
     const { page } = await openModelSourceForm(t, fixture, namespace);
     await assertGatewayPreflightRefusal({ page, origin: fixture.origin, namespace, calls });
@@ -1566,7 +1784,7 @@ test("Create Agent refuses an unplaceable Dedicated Agent before a Credential Ga
   // preflight names that login mode.
   await t.test("selected service account token", async (t) => {
     const { fixture, calls } = await modelSourceFixture(t, unplaceable);
-    const namespace = await fixture.createNamespace("Gateway token unplaceable", { ready: true });
+    const namespace = await readyNamespace(fixture, "Gateway token unplaceable");
     const { page } = await openModelSourceForm(t, fixture, namespace, "codex", "codex_pat");
     await assertGatewayPreflightRefusal({
       page,
@@ -1591,7 +1809,7 @@ test("Create Agent's preflight refuses a Codex-bound Preset the Installation can
     "Unplaceable bound Codex draft",
   );
   assert.equal(new URL(response.url()).pathname, `/namespaces/${namespace.id}/agents/validate`);
-  assert.deepEqual(response.request().postDataJSON().harnessAuth, harnessAuth);
+  assert.deepEqual(object(response.request().postDataJSON()).harnessAuth, harnessAuth);
   await assertPlacementRequirement(page, response);
   assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
   assert.deepEqual(
@@ -1638,7 +1856,7 @@ test("During a Sandbox Driver outage, Create Agent says Agents are unavailable f
   // The registry no longer matches the selection, as after a Driver swap at runtime.
   sandboxDriver.implementation = `${sandboxDriver.implementation}-unavailable`;
   const installation = await fixture.request("GET", "/installation");
-  assert.deepEqual(installation.data.capabilities?.openclaw, {
+  assert.deepEqual(checked(InstallationSchema, installation.data).capabilities?.openclaw, {
     executionModes: [],
     sandboxDriverUnavailable: true,
   });
@@ -1685,7 +1903,9 @@ test("Without a Sandbox Driver, the same Create Agent steps save an Embedded Ope
     filesystemConfiguration: true,
   });
   const installation = await fixture.request("GET", "/installation");
-  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: ["embedded"] });
+  assert.deepEqual(checked(InstallationSchema, installation.data).capabilities?.openclaw, {
+    executionModes: ["embedded"],
+  });
   const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Embedded");
   const mode = page.getByLabel("Execution mode");
   assert.equal(await mode.inputValue(), "embedded");
@@ -1706,11 +1926,14 @@ test("Without a Sandbox Driver, the same Create Agent steps save an Embedded Ope
   const writes = writesSinceFill();
   assert.equal(configurationPostRequests(writes, namespace.id).length, 1);
   assert.equal(agentPostRequests(writes, namespace.id).length, 1);
-  assert.equal(agentPostRequests(writes, namespace.id)[0].body.executionMode, "embedded");
+  assert.equal(
+    object(present(agentPostRequests(writes, namespace.id)[0]).body).executionMode,
+    "embedded",
+  );
 
   // A Preset that selects OpenClaw but no execution mode opens on the usable mode, Embedded,
   // rather than the form's Dedicated default.
-  const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "control-key");
+  const secret = await createSecret(fixture, namespace.id, "OpenAI model key", "control-key");
   const presetId = await savePreset(
     fixture,
     namespace,
@@ -1814,8 +2037,12 @@ test("With a Sandbox Driver that provisions Dedicated OpenClaw, Create Agent pre
     sandboxDriver: nativeSandboxDriver(),
   });
   const installation = await fixture.request("GET", "/installation");
-  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: ["dedicated"] });
-  assert.deepEqual(installation.data.capabilities?.nativeWorkers, { support: "pinned-runtime" });
+  assert.deepEqual(checked(InstallationSchema, installation.data).capabilities?.openclaw, {
+    executionModes: ["dedicated"],
+  });
+  assert.deepEqual(checked(InstallationSchema, installation.data).capabilities?.nativeWorkers, {
+    support: "pinned-runtime",
+  });
   const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Dedicated");
   const mode = page.getByLabel("Execution mode");
   assert.equal(await mode.inputValue(), "dedicated");
@@ -1842,7 +2069,14 @@ test("With a Sandbox Driver that provisions Dedicated OpenClaw, Create Agent pre
   );
   // The user's choice of Embedded is refused here with the Sandbox Driver named as the reason.
   await mode.evaluate((select) => {
-    select.querySelector('[value="embedded"]').disabled = false;
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error("Expected a select");
+    }
+    const option = select.querySelector('[value="embedded"]');
+    if (!(option instanceof HTMLOptionElement)) {
+      throw new Error("Expected an option");
+    }
+    option.disabled = false;
     select.value = "embedded";
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
@@ -1974,7 +2208,7 @@ test("Create Agent switches only a mode it chose itself when the Installation an
   const cases = [
     {
       name: "a mode the reader picked is kept",
-      async before(page) {
+      async before(page: Page) {
         await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
         await page.locator(".launch-runtime:not([open]) > summary").click();
         await page.getByLabel("Execution mode").selectOption("dedicated");
@@ -1987,7 +2221,7 @@ test("Create Agent switches only a mode it chose itself when the Installation an
     {
       // Choosing the harness again hands the mode back to the form.
       name: "a picked mode followed by a harness change is the form's again",
-      async before(page) {
+      async before(page: Page) {
         await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
         await page.locator(".launch-runtime:not([open]) > summary").click();
         await page.getByLabel("Execution mode").selectOption("dedicated");
@@ -1998,7 +2232,7 @@ test("Create Agent switches only a mode it chose itself when the Installation an
     },
     {
       name: "Anthropic keeps Embedded",
-      async before(page) {
+      async before(page: Page) {
         await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
         await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
       },
@@ -2063,7 +2297,7 @@ test("Operator-managed Preset credentials without a mode keep Embedded when the 
 test("Create Agent shows a provisioning refusal's own reason and keeps catch-all answers generic", async (t) => {
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision refusal reasons", { ready: true });
+  const namespace = await readyNamespace(fixture, "Provision refusal reasons");
   const cases = [
     {
       name: "named outage",
@@ -2201,7 +2435,7 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
 test("Create Agent drops the Pod quota line when the deployment read is denied", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Pod quota denied", { ready: true });
+  const namespace = await readyNamespace(fixture, "Pod quota denied");
   const { page } = await newPage(t, fixture, { browser });
   await routeInstallationProvisioning(page, fixture);
   await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
@@ -2282,7 +2516,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     globalThis.provisioningWrites = [];
     new globalThis.MutationObserver((records) => {
       for (const record of records) {
-        if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
+        if (record.target instanceof Element && record.target.getAttribute("role") === "status") {
           const text = [...record.addedNodes].map((node) => node.textContent).join("");
           if (text.startsWith("Provisioning") || text.startsWith("The Namespace")) {
             globalThis.provisioningWrites.push(text);
@@ -2314,7 +2548,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
 test("Agent name counts characters, as the API does, not UTF-16 code units", async (t) => {
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Agent name length", { ready: true });
+  const namespace = await readyNamespace(fixture, "Agent name length");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -2337,22 +2571,43 @@ test("Agent name counts characters, as the API does, not UTF-16 code units", asy
   // Typed, not filled: maxlength=200 stopped typing at 100 emoji.
   await name.pressSequentially(longest);
   assert.equal(await name.inputValue(), longest);
-  assert.equal(await name.evaluate((input) => input.validity.valid), true);
+  assert.equal(
+    await name.evaluate((input) => {
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error("Expected an input");
+      }
+      return input.validity.valid;
+    }),
+    true,
+  );
 
   await name.fill(tooLong);
   assert.equal(
-    await name.evaluate((input) => input.validationMessage),
+    await name.evaluate((input) => {
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error("Expected an input");
+      }
+      return input.validationMessage;
+    }),
     "Use at most 200 characters.",
   );
   // A restored draft sets the name without an input event; submit checks it too.
   await name.evaluate((input, value) => {
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error("Expected an input");
+    }
     input.setCustomValidity("");
     input.value = value;
   }, tooLong);
   // Create Agent stays disabled until capabilities are read; the click then submits.
   await page.getByRole("button", { name: "Create Agent" }).click();
   assert.equal(
-    await name.evaluate((input) => input.validationMessage),
+    await name.evaluate((input) => {
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error("Expected an input");
+      }
+      return input.validationMessage;
+    }),
     "Use at most 200 characters.",
   );
   assert.equal(agentPosts().length, 0);
@@ -2365,5 +2620,5 @@ test("Agent name counts characters, as the API does, not UTF-16 code units", asy
       request.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision`,
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
-  assert.equal((await sent).postDataJSON().name, longest);
+  assert.equal(object((await sent).postDataJSON()).name, longest);
 });

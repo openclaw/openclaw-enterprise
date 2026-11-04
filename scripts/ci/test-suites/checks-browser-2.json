@@ -21,7 +21,7 @@
     "tests/browser/console-agent-save-refusals.test.ts",
     "tests/browser/console-repository-dedicated.test.ts",
     "tests/browser/console-repository-picker-network.test.ts",
-    "tests/browser/console-create-agent-provisioning-400.test.mjs",
+    "tests/browser/console-create-agent-provisioning-400.test.ts",
     "tests/browser/console-agent-deploy-focus.test.ts",
     "tests/browser/console-agents-list-return.test.mjs",
     "tests/browser/console-refocus-focus.test.ts",
@@ -69,7 +69,7 @@
       "path": "tests/browser/console-dialogs.test.ts"
     },
     {
-      "path": "tests/browser/console-create-agent-provisioning-400.test.mjs"
+      "path": "tests/browser/console-create-agent-provisioning-400.test.ts"
     },
     {
       "path": "tests/browser/console-repository-dedicated.test.ts"
