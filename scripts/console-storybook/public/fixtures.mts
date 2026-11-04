@@ -1,30 +1,191 @@
+import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
+import { createPresetFixtures } from "./preset-fixture.mts";
+import type {
+  AgentPluginCredentialSlot,
+  CredentialSourceMetadata,
+  CredentialSourceReference,
+  SecretMetadata,
+  AgentRuntimeContainerStatus,
+  AgentRuntimePodStatus,
+  AgentRuntimeEvent,
+  HarnessAuthBinding,
+  OpenClawConfigurationDocument,
+  RepositoryOption,
+  SecretReference,
+} from "@openclaw-enterprise/contracts";
+import type { StoredConfiguration } from "./configuration-store.mts";
 import { createConfigurationStore } from "./configuration-store.mts";
 import { candidateDeploymentError } from "./deployment-fixture.mts";
 import { createAgentLifecycle } from "./agent-lifecycle.mts";
 import { installationDriverConfigurations, installationFixture } from "./installation-fixture.mts";
 import { configurationValues } from "./configuration-fixture.mts";
 import { serveChannelDirectory } from "./channel-directory-fixture.mts";
-import networkPolicySchema from "./network-policy-schema.mts";
 import { servePluginDiscovery } from "./plugin-discovery-fixture.mts";
-import defaultCodexPreset from "/console/default-codex-preset.mjs";
-import standardCodexPreset from "/console/standard-codex-preset.mjs";
-import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
 import {
   createFixtureFetch,
   fixtureError as error,
   fixtureResponse as response,
 } from "./preview-rules.mts";
-import swePreset from "/console/swe-preset.mjs";
+
+type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
+  Parameters<typeof createAgentLifecycle>[0] &
+  Parameters<typeof configurationValues>[0] &
+  Parameters<typeof createPresetFixtures>[0] &
+  Parameters<typeof createNetworkPolicyFixture>[0] &
+  Omit<
+    Parameters<typeof installationFixture>[0],
+    "pluginCapabilities" | "pluginDiscoveryCredential"
+  > &
+  Parameters<typeof installationDriverConfigurations>[0] & {
+    namespaceRechecks?: readonly (string | number)[];
+    namespaceName?: string;
+    namespaceStatus?: string;
+    sessionUser?: unknown;
+    extraSecrets?: readonly { id: string; name: string }[];
+    slackBindings?: boolean | "app" | readonly string[];
+    slackGrantMissing?: string;
+    auth?: null | string;
+    namespaceDeleteOutcome?: string;
+    observabilityUrl?: string;
+    repositoryOptions?: readonly RepositoryOption[];
+    credentialRegistrationOutcome?: string;
+    pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
+    pluginCapabilities?: Omit<
+      NonNullable<Parameters<typeof installationFixture>[0]["pluginCapabilities"]>,
+      "policyScopeByPlugin" | "credentialSlots"
+    > & {
+      credentialSlots?: readonly (Omit<AgentPluginCredentialSlot, "toolDiscovery"> & {
+        toolDiscovery?: boolean;
+      })[];
+      policyScopeByPlugin?: Readonly<Record<string, string>>;
+    };
+    pluginDiscoveryCredential?: string;
+    agentPermissionSummary?: unknown;
+    nativeAdmin?: string;
+    nativeAdminUrl?: string;
+    harness?: unknown;
+    runtimeImages?: unknown;
+    runtimePod?: string;
+    diagnosticsState?: string;
+    secretOperateDenied?: readonly string[];
+    unreadableSecretId?: string;
+    secretCallerPermissions?: { update?: boolean; delete?: boolean };
+    secretConsumers?: {
+      agents: readonly string[];
+      configurations: readonly string[];
+      credentialSources: readonly string[];
+      provisioningRequests: readonly string[];
+      unreadable: number;
+      truncated: boolean;
+    };
+    rules?: Parameters<typeof createFixtureFetch>[0];
+    signedOut?: boolean;
+    pendingGithubAttempt?: boolean;
+    expiredSession?: boolean;
+    pendingGoogleAttempt?: boolean;
+    emptyNamespaces?: boolean;
+    emptyBackends?: boolean;
+    harnessGrantMissing?: boolean;
+    githubEnabled?: boolean;
+    googleEnabled?: boolean;
+    passwordRecoveryOnly?: boolean;
+    namespaceDeleteDenied?: boolean;
+    namespaceDeleteRestricted?: boolean;
+    observabilityDenied?: boolean;
+    oauthExpired?: boolean;
+    oauthPending?: boolean;
+    serviceAccountsEmpty?: boolean;
+    repositoryDescriptionsPending?: boolean;
+    repositoryNotConfigured?: boolean;
+    emptyPresets?: boolean;
+    readOnlyPermissionSummary?: boolean;
+    agentCreateRestricted?: boolean;
+    secretCreateNotPermitted?: boolean;
+    bootstrapRuntime?: boolean;
+    runtimeLogDownloadNoPod?: boolean;
+    denySecretCreate?: boolean;
+    emptySecrets?: boolean;
+  };
+
+type FixtureEvidence = Parameters<typeof serveChannelDirectory>[2] & {
+  ready: boolean;
+  requests: Parameters<typeof createFixtureFetch>[1];
+  unhandled: { method: string; path: string }[];
+};
+
+// Only the fields this fixture consumes have concrete types. POST bodies and
+// intentionally partial replies are not asserted to be complete API records.
+type StoredIdentity = { id: string; response: object };
+// Only identity and lifecycle fields are consumed. Extra request fields survive
+// in the response object without becoming a dynamic mutable storage contract.
+type StoredCredentialSource = Pick<
+  CredentialSourceMetadata,
+  "id" | "namespaceId" | "ref" | "state"
+> & {
+  config: unknown;
+  driverId: string;
+  createdAt: string;
+};
+type DeviceLogin = {
+  session: SecretReference;
+  status: "pending" | "ready";
+  verificationUrl: string;
+  userCode: string;
+  expiresAt: string;
+  intervalSeconds: number;
+  source?: CredentialSourceReference;
+};
+function storedIdentity<T extends { id: string }>(response: T): StoredIdentity {
+  return { id: response.id, response };
+}
+type FixturePod = Omit<AgentRuntimePodStatus, "events"> & {
+  events: readonly (Omit<AgentRuntimeEvent, "container"> & { container?: string })[];
+};
+
+// The remaining JavaScript catalog widens these literal strings. Check only
+// that boundary before passing its values to the typed Installation fixture.
+function installationCapabilities(
+  value: NonNullable<FixtureScenario["pluginCapabilities"]>,
+): value is NonNullable<Parameters<typeof installationFixture>[0]["pluginCapabilities"]> {
+  return (
+    (value.policyScopeByPlugin === undefined ||
+      Object.values(value.policyScopeByPlugin).every((scope) => scope === "enablement_only")) &&
+    (value.credentialSlots === undefined ||
+      value.credentialSlots.every(
+        (slot) => slot.toolDiscovery === undefined || slot.toolDiscovery === true,
+      ))
+  );
+}
+function installationScenario(
+  scenario: FixtureScenario,
+): Parameters<typeof installationFixture>[0] {
+  const { pluginCapabilities, pluginDiscoveryCredential, ...rest } = scenario;
+  if (
+    pluginDiscoveryCredential !== undefined &&
+    pluginDiscoveryCredential !== "required" &&
+    pluginDiscoveryCredential !== "none"
+  ) {
+    throw new TypeError("Invalid preview plugin discovery credential mode");
+  }
+  if (pluginCapabilities !== undefined && !installationCapabilities(pluginCapabilities)) {
+    throw new TypeError("Invalid preview plugin capabilities");
+  }
+  return {
+    ...rest,
+    ...(pluginDiscoveryCredential === undefined ? {} : { pluginDiscoveryCredential }),
+    ...(pluginCapabilities === undefined ? {} : { pluginCapabilities }),
+  };
+}
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
-const secretRef = (id) => ({ kind: "secret", namespaceId, id });
-const auth = { method: "api_key", source: secretRef("sec_demo_model") };
+const secretRef = (id: string): SecretReference => ({ kind: "secret", namespaceId, id });
+const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_demo_model") };
 
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
-export function installFixture(scenario, evidence) {
+export function installFixture(scenario: FixtureScenario, evidence: FixtureEvidence) {
   const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
@@ -45,17 +206,17 @@ export function installFixture(scenario, evidence) {
     sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43));
   }
   let serial = 100;
-  const nextId = (prefix) =>
+  const nextId = (prefix: string) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
   const configurationStore = createConfigurationStore(scenario, namespaceId, createdAt, nextId);
   const { configs } = configurationStore;
-  const credentials = new Map();
-  const credentialSources = new Map();
+  const credentials: Parameters<typeof createAgentLifecycle>[1]["credentials"] = new Map();
+  const credentialSources = new Map<string, StoredCredentialSource>();
   let credentialRegistrationFailed = false;
-  const deviceLogins = new Map();
-  const secrets = new Map();
-  const roles = [];
-  const bindings = [];
+  const deviceLogins = new Map<string, DeviceLogin>();
+  const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
+  const roles: StoredIdentity[] = [];
+  const bindings: StoredIdentity[] = [];
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
@@ -65,27 +226,33 @@ export function installFixture(scenario, evidence) {
       email: "operator@example.com",
     },
   };
-  const namespaces = scenario.emptyNamespaces
-    ? []
-    : [
-        {
-          id: namespaceId,
-          name: scenario.namespaceName ?? "Engineering",
-          status: scenario.namespaceStatus ?? "ready",
-          createdAt,
-        },
-        {
-          id: "ns_00000000-0000-4000-8000-000000000002",
-          name: "Research",
-          status: "provisioning",
-          createdAt,
-        },
-      ];
-  const namespaceDeletionReads = new Map();
+  const namespaces: { id: string; name: string; status: string; createdAt: string }[] =
+    scenario.emptyNamespaces
+      ? []
+      : [
+          {
+            id: namespaceId,
+            name: scenario.namespaceName ?? "Engineering",
+            status: scenario.namespaceStatus ?? "ready",
+            createdAt,
+          },
+          {
+            id: "ns_00000000-0000-4000-8000-000000000002",
+            name: "Research",
+            status: "provisioning",
+            createdAt,
+          },
+        ];
+  const namespaceDeletionReads = new Map<string, number>();
   const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
-  const secretMetadata = (id, name) => ({ id, namespaceId, name, ref: secretRef(id) });
+  const secretMetadata = (id: string, name: string): SecretMetadata => ({
+    id,
+    namespaceId,
+    name,
+    ref: secretRef(id),
+  });
   for (const secret of [
     secretMetadata("sec_demo_model", "Demo model API key (simulated)"),
     secretMetadata("sec_demo_service_account", "Demo Service Accounts token (simulated)"),
@@ -106,7 +273,10 @@ export function installFixture(scenario, evidence) {
       createdAt,
     },
   ];
-  const config = {
+  const config: StoredConfiguration & {
+    values: ReturnType<typeof configurationValues>;
+    secretBindings: Record<string, OpenClawConfigurationDocument>;
+  } = {
     id: "cfg_00000000-0000-4000-8000-000000000001",
     namespaceId,
     kind: "agent",
@@ -120,39 +290,44 @@ export function installFixture(scenario, evidence) {
     config.values.agents.defaults.model = "codex/gpt-5.1";
   }
   if (scenario.slack && scenario.slackBindings !== false) {
-    const keys = Array.isArray(scenario.slackBindings)
-      ? scenario.slackBindings
-      : scenario.slackBindings === "app"
-        ? ["SLACK_APP_TOKEN"]
-        : ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"];
+    const keys =
+      typeof scenario.slackBindings === "object"
+        ? scenario.slackBindings
+        : scenario.slackBindings === "app"
+          ? ["SLACK_APP_TOKEN"]
+          : ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"];
     for (const key of keys) {
       config.secretBindings[key] = {
-        source: secretRef(`sec_demo_${key.toLowerCase()}`),
+        source: { ...secretRef(`sec_demo_${key.toLowerCase()}`) },
         delivery: { type: "env" },
       };
     }
     // The demo Agent was granted the Slack Secrets it binds, unless the scenario left one out:
     // an administrator's console reads these grants (finding 1920).
-    roles.push({
-      id: "role_demo_secret_operate",
-      namespaceId,
-      name: "Agent Secret operate",
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    for (const key of keys.filter((name) => name !== scenario.slackGrantMissing)) {
-      bindings.push({
-        id: `binding_demo_${key.toLowerCase()}`,
+    roles.push(
+      storedIdentity({
+        id: "role_demo_secret_operate",
         namespaceId,
-        subjectKind: "identity",
-        subjectId: "identity_demo_agent",
-        roleId: "role_demo_secret_operate",
-        resourceKind: "secret",
-        resourceId: `sec_demo_${key.toLowerCase()}`,
-      });
+        name: "Agent Secret operate",
+        permissions: [{ action: "operate", resourceKind: "secret" }],
+      }),
+    );
+    for (const key of keys.filter((name) => name !== scenario.slackGrantMissing)) {
+      bindings.push(
+        storedIdentity({
+          id: `binding_demo_${key.toLowerCase()}`,
+          namespaceId,
+          subjectKind: "identity",
+          subjectId: "identity_demo_agent",
+          roleId: "role_demo_secret_operate",
+          resourceKind: "secret",
+          resourceId: `sec_demo_${key.toLowerCase()}`,
+        }),
+      );
     }
   }
   configs.set(config.id, config);
-  const selectedAuth =
+  const selectedAuth: HarnessAuthBinding | null =
     scenario.auth === null
       ? null
       : scenario.auth === "runtime"
@@ -169,31 +344,35 @@ export function installFixture(scenario, evidence) {
   const harnessCredential =
     selectedAuth?.method === "credential_source"
       ? { kind: "credential_source", id: selectedAuth.sourceId }
-      : selectedAuth?.source?.kind === "secret"
+      : selectedAuth && "source" in selectedAuth && selectedAuth.source.kind === "secret"
         ? { kind: "secret", id: selectedAuth.source.id }
         : null;
   if (harnessCredential && !scenario.harnessGrantMissing) {
     const roleId = `role_demo_${harnessCredential.kind}_operate`;
     if (!roles.some((role) => role.id === roleId)) {
-      roles.push({
-        id: roleId,
-        namespaceId,
-        name:
-          harnessCredential.kind === "secret"
-            ? "Agent Secret operate"
-            : "Agent Credential Source operate",
-        permissions: [{ action: "operate", resourceKind: harnessCredential.kind }],
-      });
+      roles.push(
+        storedIdentity({
+          id: roleId,
+          namespaceId,
+          name:
+            harnessCredential.kind === "secret"
+              ? "Agent Secret operate"
+              : "Agent Credential Source operate",
+          permissions: [{ action: "operate", resourceKind: harnessCredential.kind }],
+        }),
+      );
     }
-    bindings.push({
-      id: "binding_demo_harness_auth",
-      namespaceId,
-      subjectKind: "identity",
-      subjectId: "identity_demo_agent",
-      roleId,
-      resourceKind: harnessCredential.kind,
-      resourceId: harnessCredential.id,
-    });
+    bindings.push(
+      storedIdentity({
+        id: "binding_demo_harness_auth",
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: "identity_demo_agent",
+        roleId,
+        resourceKind: harnessCredential.kind,
+        resourceId: harnessCredential.id,
+      }),
+    );
   }
   const lifecycle = createAgentLifecycle(scenario, {
     namespaceId,
@@ -205,233 +384,14 @@ export function installFixture(scenario, evidence) {
     credentials,
     deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
   });
-  const preset = {
-    id: scenario.swePreset ? "pre_swe_codex" : "pre_00000000-0000-4000-8000-000000000001",
+  const presets = createPresetFixtures(scenario, namespaceId, auth);
+  const networkPolicy = createNetworkPolicyFixture(scenario, {
     namespaceId,
-    name: "Research assistant",
-    template: {
-      variables: {
-        name: { type: "string", description: "Name for this Agent." },
-        model: {
-          type: "string",
-          default: "codex/gpt-4.1",
-          description: "Model reference copied into the draft.",
-        },
-      },
-      agent: {
-        name: "{{ vars.name }}",
-        executionMode: "dedicated",
-        harnessAuth: { ...auth, method: scenario.presetAuth ?? auth.method },
-      },
-      configuration: {
-        values: { ...configurationValues({}), agents: { defaults: { model: "{{ vars.model }}" } } },
-      },
-    },
-  };
-  if (scenario.standardCodexPreset || scenario.standardOpenclawPreset || scenario.swePreset) {
-    Object.assign(
-      preset,
-      structuredClone(
-        scenario.swePreset
-          ? swePreset
-          : scenario.standardOpenclawPreset
-            ? standardOpenclawPreset
-            : standardCodexPreset,
-      ),
-    );
-  }
-  if (scenario.modelFallbackSelection) {
-    const ids = ["primary-model", "fallback-one", "fallback-two"];
-    preset.name = "Models with ordered fallbacks";
-    delete preset.template.variables;
-    preset.template.agent.executionMode = "embedded";
-    preset.template.agent.name = "Model selection example";
-    preset.template.configuration.values = {
-      agents: {
-        defaults: {
-          model: {
-            primary: `openai/${ids[0]}`,
-            fallbacks: ids.slice(1).map((id) => `openai/${id}`),
-          },
-          models: Object.fromEntries(
-            ids.map((id) => [
-              `openai/${id}`,
-              {
-                agentRuntime: { id: "openclaw" },
-                alias: `Saved ${id}`,
-                params: { temperature: 0.3 },
-              },
-            ]),
-          ),
-        },
-      },
-      models: {
-        providers: {
-          openai: {
-            baseUrl: "https://models.example.test/v1",
-            api: "openai-responses",
-            models: ids.map((id) => ({
-              id,
-              name: id,
-              contextWindow: 128000,
-              maxTokens: 8192,
-              reasoning: true,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            })),
-          },
-        },
-      },
-    };
-  }
-  if (scenario.modelRosterSelection) {
-    const values = preset.template.configuration.values;
-    const primary = values.agents.defaults.model.primary;
-    const policy = values.agents.defaults.models;
-    values.agents.ownership = "explicit";
-    values.agents.entries = {
-      main: { model: primary, models: { [primary]: { ...policy[primary], alias: "Main policy" } } },
-      assistant: {
-        model: structuredClone(values.agents.defaults.model),
-        models: structuredClone(policy),
-      },
-      inherited: {},
-    };
-    preset.name = "Roster with a shared primary";
-  }
-  if (scenario.presetAgent) {
-    Object.assign(preset.template.agent, structuredClone(scenario.presetAgent));
-  }
-  if (scenario.presetWorkspaceFiles) {
-    preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
-  }
-  if (scenario.presetVariables) {
-    Object.assign(preset.template.variables, structuredClone(scenario.presetVariables));
-  }
-  if (scenario.presetTrustedProxyVariable) {
-    // A trusted-proxy allowlist that a Preset variable fills (finding 3122).
-    preset.template.variables.human = {
-      type: "string",
-      description: "Identity of the person who runs this Agent",
-    };
-    const { values } = preset.template.configuration;
-    values.gateway = {
-      ...values.gateway,
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files", "{{ vars.human }}"],
-        },
-      },
-    };
-  }
-  if (scenario.presetModelKeyVariable) {
-    // A model policy keyed by a Preset variable; the API quotes a key that is not a plain ID.
-    preset.template.variables.fallback = { type: "string", description: "Another model ref" };
-    const { values } = preset.template.configuration;
-    values.agents.defaults.models = {
-      ...values.agents.defaults.models,
-      "{{ vars.fallback }}": { agentRuntime: { id: "codex" } },
-    };
-  }
-  const presets = [
-    preset,
-    ...(scenario.noDefaultPreset
-      ? []
-      : [
-          {
-            ...structuredClone(defaultCodexPreset),
-            id: "pre_default_codex",
-            namespaceId,
-          },
-        ]),
-  ];
-  if (scenario.swePreset) {
-    for (const [name, definition] of [
-      ["standard-codex", standardCodexPreset],
-      ["standard-openclaw", standardOpenclawPreset],
-    ]) {
-      presets.push({
-        ...structuredClone(definition),
-        id: `pre_${name.replaceAll("-", "_")}`,
-        namespaceId,
-      });
-    }
-  }
-  const policyGrant = {
-    id: scenario.policyState === "unicode" ? "unicode-tool" : "python-web",
-    binary:
-      scenario.policyState === "unicode"
-        ? "/" + Array(6).fill("\u{10400}".repeat(45)).join("/") + "/tool"
-        : "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
-  };
-  let policyEditing = scenario.policyState !== "disabled";
-  let policyPolls = 0;
-  let policyReads = 0;
-  let sandboxPolicy = {
-    id: "sbp_00000000-0000-4000-8000-000000000001",
-    namespaceId,
-    agentId: lifecycle.seedAgent().id,
-    version: 1,
-    additions:
-      scenario.policyState === "protected"
-        ? [policyGrant]
-        : Array.from({ length: scenario.policyRuleCount ?? 0 }, (_, index) => ({
-            ...structuredClone(policyGrant),
-            id: `explicit-${index + 1}`,
-            host: `allowed-${index + 1}.example.org`,
-          })),
-  };
-  if (scenario.policyRuleCount) {
-    sandboxPolicy.applied = {
-      revisionId: candidateRevisionId,
-      policyVersion: 1,
-      providerVersion: "4",
-      appliedAt: createdAt,
-    };
-  }
-  const policyCeiling = scenario.policyCeiling ?? [
-    policyGrant,
-    ...(scenario.policyDenialCount
-      ? [{ ...policyGrant, id: "observed-services-ceiling", host: "*.example.org" }]
-      : []),
-    ...sandboxPolicy.additions,
-    ...(scenario.policySuggestions ?? []).map((entry) => entry.grant),
-  ];
-  if (scenario.policyInitialOutcome) {
-    sandboxPolicy.version = 2;
-    if (scenario.policyInitialOutcome !== "saved") {
-      sandboxPolicy.application = {
-        id: "00000000-0000-4000-8000-000000000009",
-        revisionId: candidateRevisionId,
-        policyVersion: 2,
-        state: scenario.policyInitialOutcome,
-        requestedBy: "identity_demo",
-        requestedAt: createdAt,
-      };
-    }
-    if (scenario.policyInitialOutcome === "applied") {
-      sandboxPolicy.applied.policyVersion = 2;
-    }
-  }
-  let policyNewRead = false;
-  if (scenario.policyState === "failed" || scenario.policyState === "failedCeiling") {
-    sandboxPolicy.application = {
-      id: "00000000-0000-4000-8000-000000000009",
-      revisionId: candidateRevisionId,
-      policyVersion: 1,
-      state: "failed",
-      requestedBy: "identity_demo",
-      requestedAt: createdAt,
-      reason:
-        scenario.policyState === "failed"
-          ? "SANDBOX_POLICY_UNCONFIRMED"
-          : "SANDBOX_POLICY_CEILING_CHANGED",
-    };
-  }
-  const answer = async (url, method, body) => {
+    createdAt,
+    candidateRevisionId,
+    seedAgent: () => lifecycle.seedAgent(),
+  });
+  const answer = async (url: URL, method: string, body: unknown): Promise<Response> => {
     const path = url.pathname;
     if (path === "/api/auth/providers" && method === "GET") {
       return response({
@@ -471,13 +431,26 @@ export function installFixture(scenario, evidence) {
       return response(installationDriverConfigurations(scenario));
     }
     if (path === "/installation" && method === "GET") {
-      return response(installationFixture(scenario, createdAt));
+      return response(installationFixture(installationScenario(scenario), createdAt));
     }
     if (path === "/namespaces" && method === "POST") {
+      if (
+        body === null ||
+        typeof body !== "object" ||
+        !("name" in body) ||
+        typeof body.name !== "string"
+      ) {
+        return error(400, "INVALID_REQUEST", "The preview requires a string Namespace name.");
+      }
       if (namespaces.some((item) => item.name === body.name)) {
         return error(409, "RESOURCE_CONFLICT");
       }
-      const created = { id: nextId("ns"), name: body.name, status: "provisioning", createdAt };
+      const created = {
+        id: nextId("ns"),
+        name: body.name,
+        status: "provisioning",
+        createdAt,
+      };
       namespaces.push(created);
       return response(created, 201);
     }
@@ -494,7 +467,11 @@ export function installFixture(scenario, evidence) {
         if (next === "missing") {
           return response(namespaces.slice(1));
         }
-        namespaces[0].status = next;
+        const first = namespaces[0];
+        if (!first || next === undefined) {
+          throw new TypeError("Missing preview Namespace recheck");
+        }
+        first.status = next;
       }
       return response(namespaces);
     }
@@ -564,7 +541,7 @@ export function installFixture(scenario, evidence) {
     }
     const match = path.match(/^\/namespaces\/([^/]+)\/(.*)$/);
     if (match) {
-      const [, ns, resource] = match;
+      const [, ns, resource = ""] = match;
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
           return response({
@@ -587,7 +564,7 @@ export function installFixture(scenario, evidence) {
         const [, id, poll] = deviceLogin;
         if (!id && method === "POST") {
           const session = secretRef(nextId("sec"));
-          const login = {
+          const login: DeviceLogin = {
             session,
             status: "pending",
             verificationUrl: "https://auth.openai.com/codex/device",
@@ -598,7 +575,7 @@ export function installFixture(scenario, evidence) {
           deviceLogins.set(session.id, login);
           return response(login);
         }
-        const login = deviceLogins.get(id);
+        const login = deviceLogins.get(id ?? "");
         if (!login) {
           return error(404);
         }
@@ -610,8 +587,8 @@ export function installFixture(scenario, evidence) {
           return response(login);
         }
         if (!poll && method === "DELETE") {
-          deviceLogins.delete(id);
-          secrets.delete(id);
+          deviceLogins.delete(id ?? "");
+          secrets.delete(id ?? "");
           return new Response(null, { status: 204 });
         }
       }
@@ -700,12 +677,22 @@ export function installFixture(scenario, evidence) {
               "Credential destination authorization must match the Installation model provider.",
             );
           }
+          if (body === null || body === undefined) {
+            return error(
+              400,
+              "INVALID_REQUEST",
+              "The preview requires a Credential Source registration body.",
+            );
+          }
+          // Preserve the legacy opaque spread, including partial registrations.
+          // Only config's existing nullish default is interpreted here.
+          const input: object = Object(body);
           const uncertain = scenario.credentialRegistrationOutcome && !credentialRegistrationFailed;
           const id = nextId("csr");
-          const saved = {
-            ...body,
+          const saved: StoredCredentialSource = {
+            ...input,
             id,
-            config: body.config ?? {},
+            config: "config" in input ? (input.config ?? {}) : {},
             ref: { kind: "credential_source", namespaceId, id },
             namespaceId,
             driverId: "credential-gateway-storybook",
@@ -737,7 +724,7 @@ export function installFixture(scenario, evidence) {
         }
       }
       if (resource.startsWith("credential-sources/")) {
-        const id = resource.split("/")[1];
+        const id = resource.split("/")[1] ?? "";
         const source = credentialSources.get(id);
         if (!source) {
           return error(404, "NOT_FOUND");
@@ -786,314 +773,14 @@ export function installFixture(scenario, evidence) {
       }
       const agentMatch = resource.match(/^agents\/([^/]+)(.*)$/);
       if (agentMatch) {
-        const [, id, suffix] = agentMatch;
+        const [, id = "", suffix = ""] = agentMatch;
         const saved = lifecycle.lookupAgent(id);
         if (!saved) {
           return error(404);
         }
-        const policyPath = `/namespaces/${namespaceId}/agents/${id}/sandbox-policy/networking`;
-        const policyDescriptor = {
-          capability: "sandbox",
-          driverId: "sandbox-story",
-          implementation: "storybook-driver",
-          scope: "agent",
-          key: "sandbox-network-policy",
-          binding: "sandbox-policy",
-          configurationSchema: networkPolicySchema,
-          actions: {
-            read: { method: "GET", href: policyPath, available: true },
-            validate: { method: "POST", href: `${policyPath}/validate`, available: policyEditing },
-            save: { method: "PUT", href: policyPath, available: policyEditing },
-            apply: { method: "POST", href: `${policyPath}/apply`, available: policyEditing },
-          },
-        };
-        if (scenario.policyState === "alternate") {
-          policyDescriptor.implementation = "another-sandbox-driver";
-          policyDescriptor.configurationSchema = structuredClone(networkPolicySchema);
-          policyDescriptor.configurationSchema.properties.additions.items.properties.host.enum = [
-            "example.org",
-            "service.example.org",
-          ];
-        }
-        if (scenario.policyState === "json") {
-          policyDescriptor.configurationSchema = structuredClone(networkPolicySchema);
-          policyDescriptor.configurationSchema.properties.additions.items.properties.host = {
-            title: "Destination hostname",
-            anyOf: [{ const: "example.org" }, { const: "service.example.org" }],
-          };
-        }
-        if (suffix === "/driver-configurations" && method === "GET") {
-          return response({
-            configurations:
-              !scenario.policyState || ["unsupported", "ownerDenied"].includes(scenario.policyState)
-                ? []
-                : [policyDescriptor],
-          });
-        }
-        if (suffix === "/sandbox-policy/networking/validate" && method === "POST") {
-          if (scenario.policyState === "editDenied") {
-            return error(403, "FORBIDDEN");
-          }
-          if (scenario.policyState === "conflict") {
-            return error(409, "RESOURCE_CONFLICT", "The policy changed. Reload before editing.");
-          }
-          if (["ceilingDenied", "invalid"].includes(scenario.policyState)) {
-            return response({
-              success: false,
-              error: {
-                details: [
-                  {
-                    path: "/additions/0/host",
-                    code: "OUTSIDE_CEILING",
-                    message: "The grant exceeds the Installation delegation ceiling.",
-                  },
-                ],
-              },
-            });
-          }
-          return response({
-            success: true,
-            data: scenario.policyState === "incompletePreview" ? {} : { additions: body.additions },
-          });
-        }
-        if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "GET") {
-          if (scenario.policyState === "ownerDenied") {
-            return error(403, "FORBIDDEN");
-          }
-          const read = ++policyReads;
-          if (scenario.policyState === "refreshRace" && !sandboxPolicy.application && read <= 3) {
-            // Simulate another operator saving between reads; HTTP workflow coverage uses real saves.
-            sandboxPolicy.version = read;
-          }
-          if (
-            sandboxPolicy.application?.state === "pending" &&
-            !scenario.policyKeepPending &&
-            ++policyPolls > 1
-          ) {
-            sandboxPolicy.application.state = "applied";
-            sandboxPolicy.application.providerVersion = "5";
-            sandboxPolicy.applied = {
-              revisionId: candidateRevisionId,
-              policyVersion: sandboxPolicy.version,
-              providerVersion: "5",
-              appliedAt: createdAt,
-            };
-          }
-          const result = response({
-            policy: sandboxPolicy,
-            configuration: policyDescriptor,
-            editingEnabled: policyEditing,
-            protectedExecution: scenario.policyState === "protected",
-            ceiling: policyCeiling,
-            defaults:
-              scenario.policyState === "unsupported"
-                ? null
-                : {
-                    networkPolicies: [
-                      {
-                        name: "python-default",
-                        binaries: [{ path: policyGrant.binary }],
-                        endpoints: [{ host: "example.com", ports: [443], tls: "skip" }],
-                      },
-                    ],
-                  },
-            // The candidate version was deployed with policy v1; later saves need an application
-            // (D773).
-            ...(scenario.policyState === "unsupported" || scenario.policyState === "protected"
-              ? {}
-              : { defaultsRevisionId: candidateRevisionId, deployedPolicyVersion: 1 }),
-            capability:
-              scenario.policyState === "unsupported"
-                ? null
-                : { live: true, wildcards: true, portRanges: true },
-            // The API names why per-Agent network policy is unavailable (D774).
-            ...(scenario.policyState === "unsupported"
-              ? {
-                  unavailableReason: scenario.policyNoSandboxDriver
-                    ? "This Installation selects no Sandbox Driver, so Agents run without a Sandbox: there are no policy denials, suggestions or Agent network rules."
-                    : "The selected Sandbox Driver does not support per-Agent network policy.",
-                }
-              : {}),
-          });
-          if (scenario.policyState === "refreshRace" && (read === 2 || read === 3)) {
-            await new Promise((resolve) => setTimeout(resolve, read === 2 ? 300 : 1500));
-          }
-          return result;
-        }
-        if (
-          scenario.policyState &&
-          suffix === "/sandbox-policy/networking/editing" &&
-          method === "PATCH"
-        ) {
-          if (scenario.policyAdminDenied) {
-            return error(403, "AUTHORIZATION_DENIED");
-          }
-          policyEditing = body.enabled;
-          return response({ ...lifecycle.seedAgent(), sandboxPolicyEditing: policyEditing });
-        }
-        if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "PUT") {
-          if (scenario.policyState === "ceilingDenied") {
-            return error(
-              409,
-              "RESOURCE_CONFLICT",
-              "The requested network grant exceeds the Installation delegation ceiling.",
-            );
-          }
-          if (scenario.policyState === "editDenied") {
-            return error(403, "AUTHORIZATION_DENIED");
-          }
-          if (scenario.policyState === "protected" && body.additions.length > 0) {
-            return error(
-              409,
-              "SANDBOX_POLICY_PROTECTED_EXECUTION",
-              "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
-            );
-          }
-          if (body.expectedVersion !== sandboxPolicy.version) {
-            return error(409, "RESOURCE_STATE_CONFLICT");
-          }
-          sandboxPolicy = {
-            ...sandboxPolicy,
-            version: sandboxPolicy.version + 1,
-            additions: body.additions,
-          };
-          delete sandboxPolicy.application;
-          return response(
-            scenario.policyState === "unconfirmedSave"
-              ? { ...sandboxPolicy, additions: [] }
-              : sandboxPolicy,
-          );
-        }
-        if (
-          scenario.policyState &&
-          suffix === "/sandbox-policy/networking/apply" &&
-          method === "POST"
-        ) {
-          if (scenario.policyState === "applyRejected") {
-            return error(
-              409,
-              "RESOURCE_CONFLICT",
-              "The Agent, revision, editing setting, or policy changed. Reload before applying.",
-            );
-          }
-          sandboxPolicy.application = {
-            id: "00000000-0000-4000-8000-000000000009",
-            revisionId: body.revisionId,
-            policyVersion: sandboxPolicy.version,
-            state: "pending",
-            requestedBy: "identity_demo",
-            requestedAt: createdAt,
-          };
-          policyPolls = 0;
-          return response(sandboxPolicy, 202);
-        }
-        if (scenario.policyState && suffix.endsWith("/sandbox-policy/networking/recommendations")) {
-          if (scenario.policyState === "ownerDenied") {
-            return error(403, "FORBIDDEN");
-          }
-          if (scenario.policyState === "suggestionsUnavailable") {
-            return error(503, "DEPENDENCY_UNAVAILABLE");
-          }
-          return response({
-            recommendations:
-              scenario.policySuggestions ??
-              (scenario.policyState === "empty"
-                ? []
-                : [
-                    {
-                      id: "00000000-0000-4000-8000-000000000011",
-                      status: "pending",
-                      grant:
-                        scenario.policyState === "ceilingDenied"
-                          ? { ...policyGrant, host: "outside.example.org" }
-                          : policyGrant,
-                      observations: 4,
-                    },
-                  ]),
-            truncated: false,
-          });
-        }
-        if (scenario.policyState && suffix.endsWith("/runtime/logs")) {
-          const stream = { source: "sandbox", sandbox: "os-demo" };
-          const log = {
-            type: "line",
-            time: createdAt,
-            level: "warn",
-            kind: "sandbox",
-            contentClass: "activity",
-            stream,
-            message: "NET:OPEN DENIED python3.11 → example.org:443",
-            fields: { action: "DENIED", rule_name: "default" },
-            decision:
-              scenario.policyState === "missingMetadata"
-                ? undefined
-                : {
-                    decision: "denied",
-                    enforcement: "blocked",
-                    binary: policyGrant.binary,
-                    host: policyGrant.host,
-                    port: 443,
-                    rule: "default",
-                    engine: "OPA",
-                    reason: "Destination is not in the network policy",
-                  },
-          };
-          if (url.searchParams.has("cursor") && scenario.policyNewDenials && !policyNewRead) {
-            policyNewRead = true;
-            return response({
-              revisionId: candidateRevisionId,
-              source: "sandbox",
-              stream,
-              observedAt: createdAt,
-              records: Array.from({ length: scenario.policyNewDenials }, (_, index) => ({
-                ...log,
-                time: new Date(Date.parse(createdAt) + (index + 1) * 1000).toISOString(),
-              })),
-              cursor: "simulated-policy-new-cursor",
-              withheld: 0,
-              truncated: false,
-            });
-          }
-          return response({
-            revisionId: candidateRevisionId,
-            source: "sandbox",
-            stream,
-            observedAt: createdAt,
-            records:
-              scenario.policyState === "empty" || url.searchParams.has("cursor")
-                ? []
-                : [
-                    ...(scenario.policyState === "gap"
-                      ? [
-                          {
-                            type: "gap",
-                            time: createdAt,
-                            stream,
-                            reason: "buffer_lost",
-                            remedy: "Earlier records are unavailable. Start a fresh window.",
-                          },
-                        ]
-                      : []),
-                    ...Array.from({ length: scenario.policyDenialCount ?? 1 }, (_, index) => ({
-                      ...log,
-                      time: new Date(
-                        Date.parse(createdAt) -
-                          ((scenario.policyDenialCount ?? 1) - index - 1) * 17000,
-                      ).toISOString(),
-                      ...(scenario.policyDenialCount
-                        ? {
-                            decision: {
-                              ...log.decision,
-                              host: `service-${Math.floor(index / 2) + 1}.example.org`,
-                            },
-                          }
-                        : {}),
-                    })),
-                  ],
-            cursor: "simulated-policy-cursor",
-            withheld: scenario.policyWithheld ?? 0,
-            truncated: false,
-          });
+        const policyReply = networkPolicy.serve(id, suffix, method, body, url);
+        if (policyReply !== undefined) {
+          return policyReply;
         }
         if (suffix === "/plugins/capabilities" && method === "GET" && scenario.pluginCapabilities) {
           return response({
@@ -1161,13 +848,17 @@ export function installFixture(scenario, evidence) {
           }
         }
         if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime") && method === "GET") {
-          const revisionId = suffix.split("/")[2];
+          const revisionId = suffix.split("/")[2] ?? "";
           if (!lifecycle.hasAgentRevision(id, revisionId)) {
             return error(404, "NOT_FOUND", "The requested platform resource was not found.");
           }
           lifecycle.recordRuntimeStatusRead();
           if (scenario.bootstrapRuntime) {
-            const terminated = (name, reason, exitCode) => ({
+            const terminated = (
+              name: string,
+              reason: string,
+              exitCode: number,
+            ): AgentRuntimeContainerStatus => ({
               name,
               state: "terminated",
               reason,
@@ -1211,7 +902,7 @@ export function installFixture(scenario, evidence) {
             });
           }
           const startup = scenario.runtimePod === "startupWarnings";
-          const pod = {
+          const pod: FixturePod = {
             role: "gateway",
             cluster: "control",
             name: "gateway-7d9f8c-x2k4q",
@@ -1263,7 +954,7 @@ export function installFixture(scenario, evidence) {
             // A dedicated Agent: a Harness Pod beside the Gateway, both with the generated long
             // names and completed init containers a real install shows. This story is about the
             // Pod cards; its Agent (Harness) source reads the same simulated Gateway output.
-            const completed = (name) => ({
+            const completed = (name: string): AgentRuntimeContainerStatus => ({
               name,
               state: "terminated",
               reason: "Completed",
@@ -1276,7 +967,7 @@ export function installFixture(scenario, evidence) {
                 finishedAt: "2026-09-27T10:00:04.000Z",
               },
             });
-            const running = (name) => ({
+            const running = (name: string): AgentRuntimeContainerStatus => ({
               name,
               state: "running",
               reason: null,
@@ -1379,7 +1070,7 @@ export function installFixture(scenario, evidence) {
           method === "GET"
         ) {
           lifecycle.recordRuntimeLogRead();
-          const revisionId = suffix.split("/")[2];
+          const revisionId = suffix.split("/")[2] ?? "";
           if (url.searchParams.get("download") === "true") {
             // Downloads are a text/plain attachment, not a JSON envelope.
             if (scenario.runtimeLogDownloadNoPod) {
@@ -1455,7 +1146,13 @@ export function installFixture(scenario, evidence) {
           };
           const listeningMessage =
             scenario.runtimePod === "rollover" ? `${pod} ready for requests` : "gateway listening";
-          const line = (time, kind, level, message, extra = {}) => ({
+          const line = (
+            time: string,
+            kind: string,
+            level: string,
+            message: string,
+            extra: { fields?: Record<string, string | number>; subsystem?: string } = {},
+          ) => ({
             type: "line",
             time,
             stream,
@@ -1502,7 +1199,7 @@ export function installFixture(scenario, evidence) {
           suffix.endsWith("/diagnostics") &&
           method === "POST"
         ) {
-          const revisionId = suffix.split("/")[2];
+          const revisionId = suffix.split("/")[2] ?? "";
           if (!lifecycle.hasAgentRevision(id, revisionId)) {
             return error(404, "NOT_FOUND", "The requested platform resource was not found.");
           }
@@ -1580,21 +1277,23 @@ export function installFixture(scenario, evidence) {
       }
       if (resource === "iam/roles") {
         if (method === "GET") {
-          return response(roles);
+          return response(roles.map((role) => role.response));
         }
         if (method === "POST") {
-          const role = { ...body, id: `role_${serial++}`, namespaceId };
-          roles.push(role);
+          const input: object = Object(body);
+          const role = { ...input, id: `role_${serial++}`, namespaceId };
+          roles.push(storedIdentity(role));
           return response(role, 201);
         }
       }
       if (resource === "iam/access-bindings") {
         if (method === "GET") {
-          return response(bindings);
+          return response(bindings.map((binding) => binding.response));
         }
         if (method === "POST") {
-          const binding = { ...body, id: `binding_${serial++}`, namespaceId };
-          bindings.push(binding);
+          const input: object = Object(body);
+          const binding = { ...input, id: `binding_${serial++}`, namespaceId };
+          bindings.push(storedIdentity(binding));
           return response(binding, 201);
         }
       }
@@ -1621,17 +1320,26 @@ export function installFixture(scenario, evidence) {
           );
         }
         if (method === "POST") {
-          if ([...secrets.values()].some((secret) => secret.name === body.name?.trim())) {
+          if (
+            body === null ||
+            typeof body !== "object" ||
+            !("name" in body) ||
+            typeof body.name !== "string"
+          ) {
+            return error(400, "INVALID_REQUEST", "The preview requires a string Secret name.");
+          }
+          const name = body.name;
+          if ([...secrets.values()].some((secret) => secret.name === name.trim())) {
             return response(undefined, 409, "RESOURCE_CONFLICT");
           }
           const id = nextId("sec");
-          const secret = secretMetadata(id, body.name ?? "Demo Secret (simulated)");
+          const secret = secretMetadata(id, name);
           secrets.set(secret.id, secret);
           return response(structuredClone(secret), 201);
         }
       }
       if (resource.startsWith("secrets/")) {
-        const id = resource.split("/")[1];
+        const id = resource.split("/")[1] ?? "";
         const secret = secrets.get(id);
         if (!secret || id === scenario.unreadableSecretId) {
           return error(404);
@@ -1672,7 +1380,7 @@ export function installFixture(scenario, evidence) {
           ) {
             return response(undefined, 409, "RESOURCE_CONFLICT");
           }
-          secrets.delete(id);
+          secrets.delete(id ?? "");
           return new Response(null, { status: 204 });
         }
       }

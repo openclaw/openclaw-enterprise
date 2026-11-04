@@ -1,9 +1,7 @@
 import type { PluginFieldsOptions } from "/console/agents/plugin-fields.mjs";
 import type { StoryAction } from "../story-action.mts";
 import { scenarios } from "./scenarios.mjs";
-import { installFixture } from "./fixtures.mjs";
-import type { createConfigurationStore } from "./configuration-store.mts";
-import type { createAgentLifecycle } from "./agent-lifecycle.mts";
+import { installFixture } from "./fixtures.mts";
 
 interface FrameScenarioBase {
   name: string;
@@ -15,8 +13,7 @@ interface FrameScenarioBase {
 }
 
 type FrameScenario = FrameScenarioBase &
-  Parameters<typeof createConfigurationStore>[0] &
-  Parameters<typeof createAgentLifecycle>[0] &
+  Parameters<typeof installFixture>[0] &
   (
     | { component?: undefined }
     | {

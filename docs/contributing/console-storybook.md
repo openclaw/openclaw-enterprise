@@ -222,12 +222,20 @@ seven-day release-age policy, independently of root dependencies.
   Edit Plugins component and Agent detail approver variant previews in
   `public/scenario-groups/plugins.mts`; shared plugin data stays in
   `public/plugin-scenario-data.mts`.
-- `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured
+- `public/fixtures.mts` intercepts API calls inside the preview. Unconfigured
   requests report an error and return 501, never reaching a server. Preview CSP
   also blocks network connections. Authentication and authorization
   responses are examples, not a security implementation. Its typed
   `public/configuration-store.mts` owns Configuration persistence;
   `public/create-agent-routes.mts` owns Create and provisioning job routes.
+  `public/preset-fixture.mts` prepares Preset variants, and
+  `public/network-policy-fixture.mts` owns simulated policy saves and application polls.
+  The router emits as `/storybook-fixtures/fixtures.mjs`. It checks the names and
+  policy fields it consumes before changing fixture state and returns
+  `400 INVALID_REQUEST` for malformed writes or validation request envelopes.
+  Network validation returns HTTP 200 with `data.success: false` and field details
+  for malformed additions inside a valid envelope. Authored rules and scenario
+  refusals run first. IAM payloads and unused registration fields remain opaque.
 - `public/frame.mts` starts the production console and opens configured controls.
   The asset builder emits it as `/storybook-fixtures/frame.mjs` with an asset
   version in the URL.
