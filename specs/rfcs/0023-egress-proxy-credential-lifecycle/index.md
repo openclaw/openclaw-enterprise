@@ -25,6 +25,9 @@ OCE renews short-lived installation tokens so the team can keep working in the s
 The [proposed protected Codex artifact amendment](contracts.md#protected-codex-artifact-downloads)
 adds explicitly qualified credential-free download authority to the same frozen
 admission. Its deployment qualification remains pending.
+The [proposed protected network destination catalog](protected-network-catalog.md)
+lets an Agent select operator-approved, credential-free destinations through that
+same admission.
 
 ## Two deployment modes
 
