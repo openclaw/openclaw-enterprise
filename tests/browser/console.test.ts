@@ -286,6 +286,15 @@ async function openShellMenu(page: Page) {
   await page.locator(".account-toggle").click();
 }
 
+function mainIsInert(page: Page) {
+  return page.locator("main").evaluate((node) => {
+    if (!(node instanceof HTMLElement)) {
+      throw new Error("Expected HTML content");
+    }
+    return node.inert;
+  });
+}
+
 async function chooseNamespace(
   page: Page,
   name: string,
@@ -1270,15 +1279,7 @@ for (const focus of ["navigation link", "account menu"]) {
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
 
     assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
-    assert.equal(
-      await page.locator("main").evaluate((node) => {
-        if (!(node instanceof HTMLElement)) {
-          throw new Error("Expected HTML content");
-        }
-        return node.inert;
-      }),
-      true,
-    );
+    assert.equal(await mainIsInert(page), true);
     const kept = await focusState(focused);
     assert.equal(
       kept.held,
@@ -1289,15 +1290,7 @@ for (const focus of ["navigation link", "account menu"]) {
     const destination = focus === "account menu" ? "Settings" : "Agents";
     await page.getByRole("heading", { name: destination, exact: true }).waitFor();
     assert.equal(await toggle.getAttribute("aria-expanded"), "false", "Navigating closes it");
-    assert.equal(
-      await page.locator("main").evaluate((node) => {
-        if (!(node instanceof HTMLElement)) {
-          throw new Error("Expected HTML content");
-        }
-        return node.inert;
-      }),
-      false,
-    );
+    assert.equal(await mainIsInert(page), false);
   });
 }
 
@@ -1337,15 +1330,7 @@ test("an open mobile drawer keeps its navigation link focused when an address wi
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
 
   assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
-  assert.equal(
-    await page.locator("main").evaluate((node) => {
-      if (!(node instanceof HTMLElement)) {
-        throw new Error("Expected HTML content");
-      }
-      return node.inert;
-    }),
-    true,
-  );
+  assert.equal(await mainIsInert(page), true);
   assert.equal(await agents.getAttribute("href"), `/console/agents?namespace=${namespace.id}`);
   const kept = await focusState(agents);
   assert.equal(
@@ -1355,15 +1340,7 @@ test("an open mobile drawer keeps its navigation link focused when an address wi
   );
   await page.keyboard.press("Escape");
   assert.equal(await toggle.getAttribute("aria-expanded"), "false", "Escape closes it");
-  assert.equal(
-    await page.locator("main").evaluate((node) => {
-      if (!(node instanceof HTMLElement)) {
-        throw new Error("Expected HTML content");
-      }
-      return node.inert;
-    }),
-    false,
-  );
+  assert.equal(await mainIsInert(page), false);
 });
 
 test("an Agent tab chosen while the detail is still loading is the one Back restores", async (t) => {
@@ -1826,6 +1803,11 @@ for (const [lossPoint, afterHeaders] of [
     assert.equal(cookieIssued, true, "the accepted sign-in must issue a cookie");
     assert.equal(fixture.memoryDatabase.session.length, sessionsBefore + 1);
     const createdSession: unknown = fixture.memoryDatabase.session.at(-1);
+    const acceptedUserId = jsonObject(createdSession).userId;
+    assert.ok(
+      typeof acceptedUserId === "string" && acceptedUserId.length > 0,
+      "accepted fixture session must have a nonempty user ID",
+    );
     if (afterHeaders) {
       assert.ok("status" in result);
       assert.equal(result.status(), 200);
@@ -1854,8 +1836,9 @@ for (const [lossPoint, afterHeaders] of [
       const sessionData = session == null ? undefined : jsonObject(session);
       assert.equal(sessionData?.authenticated, true);
       assert.ok(sessionData);
-      assert.ok(
-        jsonObject(sessionData.user).id === jsonObject(createdSession).userId,
+      assert.equal(
+        jsonObject(sessionData.user).id,
+        acceptedUserId,
         "reload must find the accepted session",
       );
       await page.waitForURL(/\/console\/agents(?:[/?#]|$)/);
@@ -2970,15 +2953,7 @@ test("widening an open mobile drawer restores usable desktop content", async (t)
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByText("Resizable Agent", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
-  assert.equal(
-    await page.locator("main").evaluate((node) => {
-      if (!(node instanceof HTMLElement)) {
-        throw new Error("Expected HTML content");
-      }
-      return node.inert;
-    }),
-    true,
-  );
+  assert.equal(await mainIsInert(page), true);
 
   // Desktop hides drawer controls, so content must become usable without Escape.
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -2999,15 +2974,7 @@ test("widening an open mobile drawer restores usable desktop content", async (t)
   await toggle.click();
   await page.keyboard.press("Escape");
   assert.equal(await toggle.evaluate((node) => node === globalThis.document.activeElement), true);
-  assert.equal(
-    await page.locator("main").evaluate((node) => {
-      if (!(node instanceof HTMLElement)) {
-        throw new Error("Expected HTML content");
-      }
-      return node.inert;
-    }),
-    false,
-  );
+  assert.equal(await mainIsInert(page), false);
 });
 
 test("keyboard page navigation focuses the destination before its controls", async (t) => {
