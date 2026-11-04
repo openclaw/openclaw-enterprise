@@ -84,7 +84,7 @@ export async function createPreviewBuild(onState: (state: PreviewState) => void)
         [processChild.stdout, process.stdout],
         [processChild.stderr, process.stderr],
       ] as const) {
-        stream.on("data", (data) => {
+        stream.on("data", (data: Buffer | string) => {
           destination.write(data);
           diagnostic = (diagnostic + data.toString()).slice(-12000);
         });
