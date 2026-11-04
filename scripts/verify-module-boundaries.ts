@@ -159,7 +159,7 @@ export async function runModuleBoundaryCli(
   try {
     return await main(args, stdout, stderr);
   } catch (error) {
-    const details = error == null ? undefined : Object(error);
+    const details: object | undefined = error == null ? undefined : Object(error);
     const rawCode: unknown = details === undefined ? undefined : Reflect.get(details, "code");
     const message: unknown = details === undefined ? undefined : Reflect.get(details, "message");
     const code =
