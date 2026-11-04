@@ -89,13 +89,13 @@ Do not make those unfinished proposals prerequisites for unrelated local fixes.
 
 ## Verification
 
-| Required outcome                                                    | Check                                                                                                                                    | Status                                                                                              |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| A completed upgrade cannot repeat cluster operations through resume | Existing production-image-upgrade integration scenarios; compare command and evidence records before and after the rejected resume       | Passed in the existing script fixture; no live cluster proof                                        |
-| An interrupted upgrade retains its recovery path                    | Existing upgrade recovery scenarios, including restored dispatch evidence                                                                | Pending: restored-dispatch fixture needs workspace dependencies                                     |
-| Chart and Compute routing conflicts fail before rollout             | Actual rendered installation-check hook with matching and mismatching configuration                                                      | Four Helm render cases pass; production-loader regression needs dependencies                        |
-| Installation guides lead to the correct caller                      | Source-backed command review, Markdown checks, and existing anchors                                                                      | Source review, formatting, flow structure and 277 local targets pass; canonical docs checks pending |
-| A release serves its users                                          | Authorized populated installation: human sign-in, selected Agent readiness, real model reply, and required repository/channel operations | Not run by this cleanup; source and fixture checks are insufficient                                 |
+| Required outcome                                                    | Check                                                                                                                                    | Status                                                                              |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| A completed upgrade cannot repeat cluster operations through resume | Existing production-image-upgrade integration scenarios; compare command and evidence records before and after the rejected resume       | Passed: 20 upgrade-script cases; no live cluster proof                              |
+| An interrupted upgrade retains its recovery path                    | Existing upgrade recovery scenarios, including restored dispatch evidence                                                                | Covered by full run and focused reruns; original failures recorded below            |
+| Chart and Compute routing conflicts fail before rollout             | Actual rendered installation-check hook with matching and mismatching configuration                                                      | Passed: 8 production-loader hook cases, 4 Helm renders, and baseline-red regression |
+| Installation guides lead to the correct caller                      | Source-backed command review, Markdown checks, and existing anchors                                                                      | Passed: canonical docs checks, formatting, source review, and flow structure        |
+| A release serves its users                                          | Authorized populated installation: human sign-in, selected Agent readiness, real model reply, and required repository/channel operations | Not run by this cleanup; source and fixture checks are insufficient                 |
 
 Do not replace missing cluster or credential prerequisites with simulated proof.
 Record the tested source and exact limits of local checks. Keep screenshots,
@@ -103,22 +103,36 @@ private operation records, and provider credentials outside the repository.
 
 ## Delivery record
 
-The initial change implements milestone 1. Candidate
-`21c5eab207c48bc76f182094a2b24ff4b7d45640` includes the fixes and documentation.
-Independent Astra/high review found no actionable P0–P2 findings in implementation
-commit `57049c6f231dfaa24f79ca63e9f31ed8f0c325e3`; the follow-up only trims prose.
+The initial change implements milestone 1 in [PR #4547](https://github.com/openclaw/openclaw-enterprise/pull/4547).
+The supported-toolchain validation ran against
+`fdd80958d408a38dfe58ec3e796f81be5cd6b1a3`; the final follow-up only records
+these results. Independent Astra/high review found no actionable P0–P2 findings
+in implementation commit `57049c6f231dfaa24f79ca63e9f31ed8f0c325e3`.
 
-The upgrade script file has 20 passing cases across two runs (17 initially; the
-three child-process failures passed after correcting Node on `PATH`), with no
-skips. The new completed-run refusal passed in the full run. Local checks used
-Node 24.16.0, below the manifest's supported minimum. A matching
-workspace dependency graph was unavailable; none was installed for verification.
-The production-loader and restored-dispatch tests, typecheck, lint, workspace
-boundary, and canonical docs checks remain required. Passing Helm renders and
-script fixtures do not replace those checks or live acceptance.
+Local validation used Node 24.22.1, Bun 1.4.4, pnpm 11.15.1, and the exact frozen
+workspace and documentation dependencies. Formatting, lint, workspace isolation,
+canonical documentation checks, and canonical typecheck passed. The upgrade
+command suite passed all 20 cases, and the actual rendered production-loader hook
+suite passed all 8 cases without skips. The Gateway mismatch regression fails
+against the original implementation for the intended reason. The full recovery run reported 143 passes and 24 failures, with no skips.
+Twenty-two reported failures came from a fixture that retained the example
+Gateway namespace instead of the selected Helm release namespace. The corrected
+paired configuration passes all 25 affected real-chart cases; its independent
+Astra/high review found no P0–P3 findings. The two remaining Doctor timing cases
+passed unchanged in the six-case focused timeout group. One original failure
+explicitly timed out waiting for ready Pods before reaching Doctor; the other
+recorded no Doctor execution. Keep these original failures in the validation
+record rather than claiming a clean full-suite run.
 
-Milestones 2 and 3 remain separate work. This candidate is not fully qualified,
-published, or installed.
+Earlier environment failures came from missing dependencies, unsupported tool
+versions, and restricted generated-output writes. Repairing that environment
+required no manifest, lockfile, compiler-selection, or hook-bypass change.
+
+Milestones 2 and 3 remain separate work. This candidate has not been merged,
+released, or installed. Required CI remains a merge gate; the first Images and Packaging job stopped
+before testing when its kubectl download timed out. Local script and loader
+proof does not establish live deployment or model, repository, and channel
+acceptance.
 
 ## Manual Notes
 
@@ -126,4 +140,5 @@ published, or installed.
 
 ## Changelog
 
+- 2026-11-04 01:14: Record supported-toolchain verification, corrected recovery fixtures, and the remaining CI and live-acceptance limits. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f; source `fdd80958d408a38dfe58ec3e796f81be5cd6b1a3` plus reviewed fixture correction)
 - 2026-11-04 00:26: Record the existing owners, immediate corrections, and remaining qualification work. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f; source `c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573`)
