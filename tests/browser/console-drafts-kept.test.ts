@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import type { Page } from "playwright";
+import type {
+  Agent,
+  Namespace,
+  SecretMetadata,
+  SecretBinding,
+} from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
@@ -46,34 +54,99 @@ import {
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
+// Legacy resource fields enter the suite as unknown; the checks below narrow them.
+type NamespaceFixture = {
+  fixture: Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
+  namespace: unknown;
+};
+
+// Legacy fixtures return untyped JSON. Check only the fields these scenarios consume.
+function record(value: unknown): Record<string, unknown> {
+  const isRecord = (input: unknown): input is Record<string, unknown> =>
+    typeof input === "object" && input !== null && !Array.isArray(input);
+  assert.ok(isRecord(value));
+  return value;
+}
+
+function text(value: unknown): string {
+  assert.ok(typeof value === "string");
+  return value;
+}
+
+function items(value: unknown): unknown[] {
+  assert.ok(Array.isArray(value));
+  return value;
+}
+
+function resource(value: unknown): Pick<Namespace, "id"> {
+  const data = record(value);
+  return { id: text(data.id) };
+}
+
+function checkedController(value: unknown): OpenClawController {
+  assert.ok(value instanceof OpenClawController);
+  return value;
+}
+
+function agentFields(value: unknown): Pick<
+  Agent,
+  "id" | "name" | "namespaceId" | "configurationId" | "servicePrincipalId"
+> & {
+  harnessAuth: unknown;
+} {
+  const data = record(value);
+  return {
+    id: text(data.id),
+    name: text(data.name),
+    namespaceId: text(data.namespaceId),
+    configurationId: text(data.configurationId),
+    servicePrincipalId: text(data.servicePrincipalId),
+    harnessAuth: data.harnessAuth,
+  };
+}
+
+function secretFields(value: unknown): SecretMetadata {
+  const data = record(value);
+  const ref = record(data.ref);
+  assert.equal(ref.kind, "secret");
+  return {
+    id: text(data.id),
+    name: text(data.name),
+    namespaceId: text(data.namespaceId),
+    ref: { kind: "secret", id: text(ref.id), namespaceId: text(ref.namespaceId) },
+  };
+}
+
 // Unsaved drafts survive a refused Create and a failed Namespace read, and a pending save holds
 // every way off the page (findings 1934, 1935, 1937). The rules that keep untouched forms and
 // saved choices from asking before a reload are pinned too (finding 1938).
 
-const defaultCodexPreset = JSON.parse(
+const defaultCodexPreset: unknown = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
-const standardCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+const standardCodexPreset = record(
+  JSON.parse(
+    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  ),
 );
-const createConsoleAppFixture = (t) =>
+const createConsoleAppFixture = (t: TestContext) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
 
-const sidebarLink = (page, name) =>
+const sidebarLink = (page: Page, name: string) =>
   page
     .getByRole("navigation", { name: "Main navigation" })
     .getByRole("link", { name, exact: true });
-const heading = (page, name) => page.getByRole("heading", { name, exact: true });
+const heading = (page: Page, name: string) => page.getByRole("heading", { name, exact: true });
 // A page load renders the whole shell more than once (the held or pending page, then the page),
 // and each render replaces the sidebar. A click whose press and release straddle a render is
 // lost, so a step that clicks after a navigation waits for that load to settle (finding 2504).
-const settled = (page) => page.locator(settledView).waitFor();
+const settled = (page: Page) => page.locator(settledView).waitFor();
 // Refocusing the window rechecks the session and Namespace access.
-const refocus = (page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+const refocus = (page: Page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
 
 // Fails the next `/namespaces` read, as a dropped connection would.
-async function failNextNamespacesRead(page) {
-  const failed = Promise.withResolvers();
+async function failNextNamespacesRead(page: Page) {
+  const failed = Promise.withResolvers<void>();
   let armed = true;
   await page.route("**/namespaces", async (route) => {
     if (!armed || route.request().method() !== "GET") {
@@ -87,35 +160,48 @@ async function failNextNamespacesRead(page) {
   return failed.promise;
 }
 
-async function startDefaultPreset(page) {
+async function startDefaultPreset(page: Page) {
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).waitFor();
 }
 
-const envBinding = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
+const envBinding = (secret: SecretMetadata): SecretBinding => ({
+  source: secret.ref,
+  delivery: { type: "env" },
+});
 
-async function createSlackAgent(fixture, namespace, name) {
-  const app = await fixture.createSecret(namespace.id, `${name} app token`, "xapp-kept");
-  const bot = await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-kept");
-  const agent = await fixture.createAgent(
-    namespace.id,
-    name,
-    nativeValues("kept", {
-      harnessId: "codex",
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-          channels: {},
+async function createSlackAgent(
+  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
+  namespace: Pick<Namespace, "id">,
+  name: string,
+) {
+  const app = secretFields(
+    await fixture.createSecret(namespace.id, `${name} app token`, "xapp-kept"),
+  );
+  const bot = secretFields(
+    await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-kept"),
+  );
+  const agent = agentFields(
+    await fixture.createAgent(
+      namespace.id,
+      name,
+      nativeValues("kept", {
+        harnessId: "codex",
+        channels: {
+          slack: {
+            enabled: true,
+            mode: "socket",
+            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+            channels: {},
+          },
         },
+      }),
+      {
+        executionMode: "dedicated",
+        secretBindings: { SLACK_APP_TOKEN: envBinding(app), SLACK_BOT_TOKEN: envBinding(bot) },
       },
-    }),
-    {
-      executionMode: "dedicated",
-      secretBindings: { SLACK_APP_TOKEN: envBinding(app), SLACK_BOT_TOKEN: envBinding(bot) },
-    },
+    ),
   );
   return { agent, app, bot };
 }
@@ -123,7 +209,7 @@ async function createSlackAgent(fixture, namespace, name) {
 test("a refused Create stays a draft for a reload and a return, and the retry reuses what it saved", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Refused create", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Refused create", { ready: true }));
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: standardCodexPreset,
   });
@@ -132,7 +218,7 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Preset template").selectOption(text(record(preset.data).id));
   await page.getByLabel("Name", { exact: true }).fill("Existing Agent");
   await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-refused-key");
@@ -158,18 +244,20 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   // The kept form names, and reuses, the Secret and Configuration the refused attempt saved.
   const savedLine = page.getByText(/^Secret saved: \S+\. Configuration saved: \S+\. Retries reuse/);
   await savedLine.waitFor();
-  const [, secretId, configurationId] = /^Secret saved: (\S+)\. Configuration saved: (\S+)\./.exec(
-    await savedLine.textContent(),
+  const savedMatch = /^Secret saved: (\S+)\. Configuration saved: (\S+)\./.exec(
+    text(await savedLine.textContent()),
   );
+  assert.ok(savedMatch);
+  const [, secretId, configurationId] = savedMatch;
 
   // The retry uses the Secret the refused attempt saved; the restored form cannot pick another.
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).isDisabled(), true);
   await name.fill("Kept Agent");
-  const data = await createAgentThroughForm(page, fixture, namespace.id);
+  const data = agentFields(await createAgentThroughForm(page, fixture, namespace.id));
   await page.waitForURL((url) => url.pathname === `/console/agents/${data.id}`);
   assert.equal(data.name, "Kept Agent");
   assert.equal(data.configurationId, configurationId);
-  assert.equal(data.harnessAuth.source.id, secretId);
+  assert.equal(text(record(record(data.harnessAuth).source).id), secretId);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   // A created Agent leaves no draft behind.
@@ -179,7 +267,9 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
 test("a draft kept after a refusal between the Secret and the Configuration keeps that Secret", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Refused configuration", { ready: true });
+  const namespace = resource(
+    await fixture.createNamespace("Refused configuration", { ready: true }),
+  );
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: standardCodexPreset,
   });
@@ -199,7 +289,7 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
     await route.fulfill(proxyErrorResponse(429));
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Preset template").selectOption(text(record(preset.data).id));
   await page.getByLabel("Name", { exact: true }).fill("Refused configuration Agent");
   await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-refused-key");
@@ -209,7 +299,9 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const savedLine = page.getByText(/^Secret saved: \S+\. Retries reuse/);
   await savedLine.waitFor();
-  const [, secretId] = /^Secret saved: (\S+)\./.exec(await savedLine.textContent());
+  const savedMatch = /^Secret saved: (\S+)\./.exec(text(await savedLine.textContent()));
+  assert.ok(savedMatch);
+  const [, secretId] = savedMatch;
 
   await sidebarLink(page, "Agents").click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -221,14 +313,16 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
   await waitForInputValue(picker, "Refused configuration Agent");
   assert.equal(await picker.isDisabled(), true);
 
-  const data = await createAgentThroughForm(page, fixture, namespace.id);
+  const data = agentFields(await createAgentThroughForm(page, fixture, namespace.id));
   await page.waitForURL((url) => url.pathname === `/console/agents/${data.id}`);
-  assert.equal(data.harnessAuth.source.id, secretId);
+  assert.equal(text(record(record(data.harnessAuth).source).id), secretId);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
   const access = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
   assert.ok(
-    access.data.some(
-      (binding) => binding.subjectId === data.servicePrincipalId && binding.resourceId === secretId,
+    items(access.data).some(
+      (binding) =>
+        record(binding).subjectId === data.servicePrincipalId &&
+        record(binding).resourceId === secretId,
     ),
   );
 });
@@ -236,7 +330,7 @@ test("a draft kept after a refusal between the Secret and the Configuration keep
 test("an administrator's kept draft that a Restriction now refuses says why Create Agent waits", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Restricted later", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Restricted later", { ready: true }));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
@@ -269,8 +363,8 @@ test("an administrator's kept draft that a Restriction now refuses says why Crea
 test("a failed Namespace read keeps drafts; a read that no longer lists their Namespace drops them", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Kept drafts", { ready: true });
-  const other = await fixture.createNamespace("Other drafts", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Kept drafts", { ready: true }));
+  const other = resource(await fixture.createNamespace("Other drafts", { ready: true }));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await startDefaultPreset(page);
@@ -315,14 +409,17 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
   // The chooser of a ready Namespace adds no status line, and no stray "null" text.
   assert.equal(
-    await page
-      .locator('.content [aria-live="polite"]:not([inert])')
-      .evaluate((view) =>
-        [...view.childNodes].some(
-          (node) =>
-            node.nodeType === globalThis.Node.TEXT_NODE && node.textContent.includes("null"),
-        ),
-      ),
+    await page.locator('.content [aria-live="polite"]:not([inert])').evaluate((view) =>
+      [...view.childNodes].some((node) => {
+        if (node.nodeType !== globalThis.Node.TEXT_NODE) {
+          return false;
+        }
+        if (node.textContent === null) {
+          throw new Error("Expected text node content");
+        }
+        return node.textContent.includes("null");
+      }),
+    ),
     false,
   );
 });
@@ -330,8 +427,10 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
 test("a failed Namespace recheck keeps the Agent page's Configuration edit", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Kept editor", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Kept editor Agent", nativeValues("kept"));
+  const namespace = resource(await fixture.createNamespace("Kept editor", { ready: true }));
+  const agent = agentFields(
+    await fixture.createAgent(namespace.id, "Kept editor Agent", nativeValues("kept")),
+  );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByRole("button", { name: "Edit Configuration" }).click();
@@ -351,12 +450,12 @@ test("a failed Namespace recheck keeps the Agent page's Configuration edit", asy
 test("a pending save holds the sidebar links and Back on the Agent page", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Pending leave", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Pending leave", { ready: true }));
   const { agent } = await createSlackAgent(fixture, namespace, "Pending leave Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByRole("link", { name: "Pending leave Agent" }).click();
-  const openTab = async (name, id) => {
+  const openTab = async (name: string, id: string) => {
     await page.getByRole("tab", { name, exact: true }).click();
     await page.waitForURL((url) => url.searchParams.get("tab") === id);
   };
@@ -431,7 +530,7 @@ for (const pending of [
     reason: "This page stays open until the deploy request finishes.",
     beside: ".agent-draft-actions",
     hold: ({ namespace, agent }) => [`**/namespaces/${namespace.id}/agents/${agent.id}/deploy`],
-    start: (page) => page.getByRole("button", { name: "Deploy new version" }).click(),
+    start: (page: Page) => page.getByRole("button", { name: "Deploy new version" }).click(),
   },
   {
     kind: "an authentication save",
@@ -442,7 +541,7 @@ for (const pending of [
       `**/namespaces/${namespace.id}/agents/${agent.id}`,
       { method: "PATCH" },
     ],
-    start: (page) => page.getByRole("button", { name: "Save authentication source" }).click(),
+    start: (page: Page) => page.getByRole("button", { name: "Save authentication source" }).click(),
   },
   {
     kind: "a channel Secrets save",
@@ -475,18 +574,30 @@ for (const pending of [
       await page.getByRole("button", { name: "Save plugin selections" }).click();
     },
   },
-]) {
+] satisfies {
+  kind: string;
+  tab: string;
+  reason: string;
+  beside: string;
+  hold: (resources: {
+    namespace: Pick<Namespace, "id">;
+    agent: Pick<Agent, "id" | "configurationId">;
+  }) => [string, Parameters<typeof holdRequests>[3]?];
+  start: (page: Page, resources: { replacement: SecretMetadata }) => Promise<void>;
+}[]) {
   test(`${pending.kind} holds the sidebar, Back and ← Agents and says why`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     if (pending.tab === "plugins") {
       const driver = new CodexPluginDriver();
-      fixture.controller.registerDriver(driver);
-      fixture.controller.selectDriver("plugin", driver.id);
+      checkedController(fixture.controller).registerDriver(driver);
+      checkedController(fixture.controller).selectDriver("plugin", driver.id);
     }
-    const namespace = await fixture.createNamespace("Pending reason", { ready: true });
+    const namespace = resource(await fixture.createNamespace("Pending reason", { ready: true }));
     const { agent } = await createSlackAgent(fixture, namespace, "Pending reason Agent");
-    const replacement = await fixture.createSecret(namespace.id, "Replacement app", "xapp-new");
+    const replacement = secretFields(
+      await fixture.createSecret(namespace.id, "Replacement app", "xapp-new"),
+    );
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.getByRole("link", { name: "Pending reason Agent" }).click();
@@ -496,13 +607,14 @@ for (const pending of [
       await page.waitForURL((url) => url.searchParams.get("tab") === pending.tab);
     }
     await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
-    const held = await holdRequests(t, page, ...pending.hold({ namespace, agent }));
+    const [heldUrl, heldOptions] = pending.hold({ namespace, agent });
+    const held = await holdRequests(t, page, heldUrl, heldOptions);
     await pending.start(page, { replacement });
     await held.requested;
     const pageUrl = page.url();
     const reason = page.getByText(pending.reason, { exact: true });
     // Each refusal shows the note again; it is removed first so a silent one would fail.
-    const refusedWithReason = async (leave) => {
+    const refusedWithReason = async (leave: () => Promise<unknown>) => {
       await reason.evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
       await leave();
       await reason.waitFor();
@@ -528,13 +640,14 @@ for (const pending of [
       assert.equal(await reason.getAttribute("role"), "status");
       assert.equal(await reason.isVisible(), true);
       assert.equal(
-        await reason.evaluate(
-          (node, beside) =>
-            Boolean(
-              node.parentElement.closest(beside) || node.previousElementSibling?.matches(beside),
-            ),
-          pending.beside,
-        ),
+        await reason.evaluate((node, beside) => {
+          if (node.parentElement === null) {
+            throw new Error("Expected leave note parent");
+          }
+          return Boolean(
+            node.parentElement.closest(beside) || node.previousElementSibling?.matches(beside),
+          );
+        }, pending.beside),
         true,
         `the note sits beside ${pending.beside}`,
       );
@@ -542,17 +655,18 @@ for (const pending of [
       // first refusal's delayed write does not repeat it (finding 1976).
       await reason.evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
       await page.evaluate((text) => {
-        globalThis.leaveNoteWrites = 0;
-        globalThis.leaveNoteObserver = new globalThis.MutationObserver((records) => {
+        const observation: { writes: number; observer?: MutationObserver } = { writes: 0 };
+        observation.observer = new globalThis.MutationObserver((records) => {
           for (const record of records) {
             for (const node of record.addedNodes) {
               if (node.textContent === text) {
-                globalThis.leaveNoteWrites += 1;
+                observation.writes += 1;
               }
             }
           }
         });
-        globalThis.leaveNoteObserver.observe(globalThis.document.body, {
+        Object.assign(globalThis, { leaveNoteObservation: observation });
+        observation.observer.observe(globalThis.document.body, {
           childList: true,
           subtree: true,
         });
@@ -563,8 +677,23 @@ for (const pending of [
       await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 150)));
       assert.equal(
         await page.evaluate(() => {
-          globalThis.leaveNoteObserver.disconnect();
-          return globalThis.leaveNoteWrites;
+          const browserGlobal: object = globalThis;
+          if (!("leaveNoteObservation" in browserGlobal)) {
+            throw new Error("Missing leave-note observation");
+          }
+          const observation = browserGlobal.leaveNoteObservation;
+          if (
+            typeof observation !== "object" ||
+            observation === null ||
+            !("observer" in observation) ||
+            !(observation.observer instanceof MutationObserver) ||
+            !("writes" in observation) ||
+            typeof observation.writes !== "number"
+          ) {
+            throw new Error("Invalid leave-note observation");
+          }
+          observation.observer.disconnect();
+          return observation.writes;
         }),
         1,
       );
@@ -586,9 +715,9 @@ test("a pending plugin save blocks navigation to the deletion controls", async (
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const driver = new CodexPluginDriver();
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  const namespace = await fixture.createNamespace("Plugin save delete", { ready: true });
+  checkedController(fixture.controller).registerDriver(driver);
+  checkedController(fixture.controller).selectDriver("plugin", driver.id);
+  const namespace = resource(await fixture.createNamespace("Plugin save delete", { ready: true }));
   const { agent } = await createSlackAgent(fixture, namespace, "Plugin Delete Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
@@ -617,8 +746,10 @@ test("a pending plugin save blocks navigation to the deletion controls", async (
 test("Back during a Configuration save preserves the previous Agent tab", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Save and Back", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Draft history", nativeValues("before"));
+  const namespace = resource(await fixture.createNamespace("Save and Back", { ready: true }));
+  const agent = agentFields(
+    await fixture.createAgent(namespace.id, "Draft history", nativeValues("before")),
+  );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.getByRole("tab", { name: "Channels" }).click();
@@ -645,14 +776,22 @@ test("Back during a Configuration save preserves the previous Agent tab", async 
       })
       .waitFor();
     await page.waitForURL(configurationUrl);
-    assert.equal(await editor.evaluate((node) => node.readOnly), true);
+    assert.equal(
+      await editor.evaluate((node) => {
+        if (!(node instanceof HTMLTextAreaElement)) {
+          throw new Error("Expected Configuration textarea");
+        }
+        return node.readOnly;
+      }),
+      true,
+    );
   } finally {
     held.release();
   }
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
   const saved = await fixture.request("GET", path);
   assert.equal(saved.status, 200);
-  assert.deepEqual(saved.data.values, values);
+  assert.deepEqual(record(saved.data).values, values);
   await page.goBack();
   assert.equal(page.url(), channelsUrl, "one Back after the save should reach Channels");
   await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
@@ -665,18 +804,18 @@ test("Back during a Configuration save preserves the previous Agent tab", async 
 
 test("Back refused by unsaved repository changes preserves the previous Agent tab", async (t) => {
   const repository = "example/application";
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
-    {
-      repositoryRef: "application",
-      repositoryId: "1965",
-      repository,
-      namespaces: [{ namespaceId, profiles: ["git-read"] }],
-    },
-  ]);
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Repository history",
-    nativeValues("draft"),
+  const { fixture, namespace: rawNamespace }: NamespaceFixture =
+    await createRepositoryLaunchFixture(t, (namespaceId) => [
+      {
+        repositoryRef: "application",
+        repositoryId: "1965",
+        repository,
+        namespaces: [{ namespaceId, profiles: ["git-read"] }],
+      },
+    ]);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(
+    await fixture.createAgent(namespace.id, "Repository history", nativeValues("draft")),
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
@@ -712,8 +851,10 @@ test("Back refused by unsaved repository changes preserves the previous Agent ta
 test("an uncertain Configuration save holds ← Agents, but the sidebar may leave the kept draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Uncertain leave", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Uncertain leave Agent", nativeValues("u"));
+  const namespace = resource(await fixture.createNamespace("Uncertain leave", { ready: true }));
+  const agent = agentFields(
+    await fixture.createAgent(namespace.id, "Uncertain leave Agent", nativeValues("u")),
+  );
   const { page } = await newPage(t, fixture);
   await page.route(
     `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -753,10 +894,10 @@ test("an uncertain Configuration save holds ← Agents, but the sidebar may leav
 test("untouched forms, unchanged drawers and search text do not ask before a reload", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Nothing to lose", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Nothing to lose", { ready: true }));
   await createSlackAgent(fixture, namespace, "Nothing to lose Agent");
   const { page } = await newPage(t, fixture);
-  const dialogs = [];
+  const dialogs: string[] = [];
   page.on("dialog", async (dialog) => {
     dialogs.push(`${dialog.type()}: ${dialog.message()}`);
     await dialog.dismiss();
@@ -793,14 +934,14 @@ test("untouched forms, unchanged drawers and search text do not ask before a rel
 test("a changed Preset variable still asks before a reload after a return", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Touched Preset", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Touched Preset", { ready: true }));
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: standardCodexPreset,
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Preset template").selectOption(text(record(preset.data).id));
   const variable = page.getByLabel("Name", { exact: true });
   await variable.fill("Touched draft");
   assert.equal(await asksBeforeUnload(page), true);
@@ -819,21 +960,25 @@ test("a changed Preset variable still asks before a reload after a return", asyn
 test("Secret choices carried through Reload draft do not ask before a reload", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Carried choices", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Carried choices", { ready: true }));
   const { agent } = await createSlackAgent(fixture, namespace, "Carried choices Agent");
-  const secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2");
-  const otherApp = await fixture.createSecret(namespace.id, "Other app token", "xapp-other");
+  const secondBot = secretFields(
+    await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2"),
+  );
+  const otherApp = secretFields(
+    await fixture.createSecret(namespace.id, "Other app token", "xapp-other"),
+  );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByRole("heading", { name: "Carried choices Agent" }).waitFor();
   await selectSecret(page, "Slack bot token", secondBot);
   // Another browser rebinds the app token first.
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const current = (await fixture.request("GET", configurationPath)).data;
+  const current = record((await fixture.request("GET", configurationPath)).data);
   const changed = await fixture.request("PATCH", configurationPath, {
     body: {
       values: current.values,
-      secretBindings: { ...current.secretBindings, SLACK_APP_TOKEN: envBinding(otherApp) },
+      secretBindings: { ...record(current.secretBindings), SLACK_APP_TOKEN: envBinding(otherApp) },
     },
   });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
@@ -863,7 +1008,7 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
 // created its Agent and a repository policy refusal keep none (finding 1965).
 // The sidebar leaves the refused form and Create Agent returns to the chooser: no kept draft
 // reopens it or asks before a reload.
-async function expectNoKeptDraft(page) {
+async function expectNoKeptDraft(page: Page) {
   await sidebarLink(page, "Agents").click();
   await heading(page, "Agents").waitFor();
   assert.equal(await asksBeforeUnload(page), false);
@@ -874,7 +1019,12 @@ async function expectNoKeptDraft(page) {
 }
 
 // A dedicated Codex Agent with a new model Secret, which the Installation provisions.
-async function fillProvisionedAgent(page, fixture, namespace, name) {
+async function fillProvisionedAgent(
+  page: Page,
+  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
+  namespace: Pick<Namespace, "id">,
+  name: string,
+) {
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill(name);
@@ -886,7 +1036,7 @@ async function fillProvisionedAgent(page, fixture, namespace, name) {
 test("an uncertain Create outcome keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Uncertain create", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Uncertain create", { ready: true }));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
   await page.route(`**/namespaces/${namespace.id}/agents`, async (route, request) => {
@@ -910,7 +1060,7 @@ test("an uncertain Create outcome keeps no draft", async (t) => {
 test("a refused read of an admitted provisioning job keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Admitted create", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Admitted create", { ready: true }));
   const { page } = await newPage(t, fixture);
   await routeInstallationProvisioning(page, fixture);
   // The job is admitted, then its status read is refused: the request ID stays the job's.
@@ -928,7 +1078,7 @@ test("a refused read of an admitted provisioning job keeps no draft", async (t) 
 test("a failed provisioning job that names its Agent keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Failed job create", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Failed job create", { ready: true }));
   const { page } = await newPage(t, fixture);
   await routeInstallationProvisioning(page, fixture);
   // The job created its Agent and first version, then the deployment failed: no Retry, and a
@@ -954,7 +1104,7 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
 test("a refused credential registration keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Registration create", { ready: true });
+  const namespace = resource(await fixture.createNamespace("Registration create", { ready: true }));
   const { page } = await newPage(t, fixture);
   // The Installation provisions dedicated Agents through a Credential Gateway model source.
   await routeInstallationWithoutProvisioning(page, fixture, {
@@ -990,14 +1140,16 @@ test("a refused credential registration keeps no draft", async (t) => {
 });
 
 test("a repository-scoped Agent refusal keeps no draft", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
-    {
-      repositoryRef: "application",
-      repositoryId: "1965",
-      repository: "example/application",
-      namespaces: [{ namespaceId, profiles: ["git-read"] }],
-    },
-  ]);
+  const { fixture, namespace: rawNamespace }: NamespaceFixture =
+    await createRepositoryLaunchFixture(t, (namespaceId) => [
+      {
+        repositoryRef: "application",
+        repositoryId: "1965",
+        repository: "example/application",
+        namespaces: [{ namespaceId, profiles: ["git-read"] }],
+      },
+    ]);
+  const namespace = resource(rawNamespace);
   const { page } = await newPage(t, fixture);
   // Agent create is denied once the preflight passes, so the Configuration is saved first.
   let deny = true;
