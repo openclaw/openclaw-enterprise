@@ -203,7 +203,7 @@ RUN echo '47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo 'c970dd73f948e1b789920a73ff6e0b290e8abafee70af6a2fd6f6b80fc73240e  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '7925aec63b5f6fc2b9872e8c8e34ff453fe196181cea545ebbbccaa808ec1ac7  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Run the bridge tests alongside the build using the same patched source.
@@ -251,7 +251,8 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     src/commands/doctor-node-services.test.ts \
     src/node-host/codex-node-plugin.integration.test.ts \
     test/node-host-launcher.test.ts \
-    src/plugins/computer-use-contract.test.ts
+    src/plugins/computer-use-contract.test.ts \
+    src/daemon/program-args.test.ts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \

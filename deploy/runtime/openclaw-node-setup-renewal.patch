@@ -5357,10 +5357,36 @@
      expect(plan.environment?.OPENCLAW_GATEWAY_TOKEN).toBe("node-token");
      expect(plan.environment?.OPENCLAW_GATEWAY_PASSWORD).toBe("node-password");
      expect(plan.environmentValueSources).toEqual({
-@@ -321,6 +322,94 @@
+@@ -321,6 +322,129 @@
        CF_ACCESS_CLIENT_ID: "file",
        CF_ACCESS_CLIENT_SECRET: "file", // pragma: allowlist secret
      });
++  });
++
++  it("keeps a flag-like display name from enabling device authentication during reinstall", async () => {
++    await withEnvAsync({ OPENCLAW_GATEWAY_TOKEN: "shared-service-token" }, async () => {
++      await runNodeDaemonInstall({
++        force: true,
++        displayName: "--require-device-auth",
++        nodeId: "--version",
++      });
++      const initial = installedPlan();
++      expect(initial.programArguments).toContain("--display-name=--require-device-auth");
++      expect(initial.programArguments).toContain("--node-id=--version");
++      expect(initial.environment?.OPENCLAW_GATEWAY_TOKEN).toBe("shared-service-token");
++
++      // Reinstall the real generated command with no existing device identity.
++      // The display value is not a request to switch this service's authentication.
++      mocks.service.readCommand.mockResolvedValue({
++        programArguments: initial.programArguments,
++        environment: initial.environment,
++      });
++      mocks.service.install.mockClear();
++      await runNodeDaemonInstall({ force: true });
++      const reinstalled = installedPlan();
++      expect(reinstalled.programArguments).not.toContain("--require-device-auth");
++      expect(reinstalled.environment?.OPENCLAW_GATEWAY_TOKEN).toBe("shared-service-token");
++    });
 +  });
 +
 +  it.each([false, true])(
@@ -5381,6 +5407,7 @@
 +          TLS_FINGERPRINT,
 +          "--context-path",
 +          "/saved",
++          "--display-name=--require-device-auth",
 +          "--require-device-auth",
 +        ],
 +      });
@@ -5399,6 +5426,14 @@
 +  it.each([
 +    { label: "duplicate host", extra: ["--host", "other.example"] },
 +    { label: "unsupported flag", extra: ["--unexpected-option"] },
++    {
++      label: "display name repeated in equals and split forms",
++      extra: ["--display-name=first", "--display-name", "second"],
++    },
++    {
++      label: "node ID repeated in split and equals forms",
++      extra: ["--node-id", "first", "--node-id=second"],
++    },
 +  ])("rejects ambiguous or unsupported paired service options: $label", async ({ extra }) => {
 +    mocks.service.readCommand.mockResolvedValue({
 +      programArguments: [
@@ -5484,12 +5519,12 @@
    nodeId?: string;
    displayName?: string;
    shareInstalledApps?: boolean;
-@@ -121,6 +131,91 @@
+@@ -121,6 +131,103 @@
    );
  }
  
-+/** Read only the complete command shape emitted by resolveNodeProgramArguments. */
-+function readPairedServiceGateway(argv: string[]) {
++/** Classify option positions without interpreting freeform values as flags. */
++function readNodeServiceOptions(argv: string[]) {
 +  const start = argv.findIndex((arg, index) => arg === "node" && argv[index + 1] === "run");
 +  const valued = new Set([
 +    "--host",
@@ -5511,18 +5546,20 @@
 +  ]);
 +  const values = new Map<string, string | true>();
 +  if (start < 0) {
-+    throw new Error(
-+      "Paired node service has an unsupported command; reconnect with connect --service.",
-+    );
++    return undefined;
 +  }
 +  for (let index = start + 2; index < argv.length; index++) {
-+    const flag = argv[index]!;
++    const argument = argv[index]!;
++    const inlineValue = /^(--display-name|--node-id)=(.*)$/su.exec(argument);
++    const flag = inlineValue?.[1] ?? argument;
 +    if (values.has(flag) || (!valued.has(flag) && !boolean.has(flag))) {
 +      throw new Error(
 +        "Paired node service has ambiguous or unsupported options; reconnect with connect --service.",
 +      );
 +    }
-+    if (valued.has(flag)) {
++    if (inlineValue) {
++      values.set(flag, inlineValue[2]!);
++    } else if (valued.has(flag)) {
 +      const value = argv[++index];
 +      if (value === undefined) {
 +        throw new Error(
@@ -5533,6 +5570,16 @@
 +    } else {
 +      values.set(flag, true);
 +    }
++  }
++  return values;
++}
++
++/** Read only the complete command shape emitted by resolveNodeProgramArguments. */
++function readPairedServiceGateway(values: ReturnType<typeof readNodeServiceOptions>) {
++  if (!values) {
++    throw new Error(
++      "Paired node service has an unsupported command; reconnect with connect --service.",
++    );
 +  }
 +  const host = values.get("--host");
 +  const port = values.get("--port");
@@ -5576,7 +5623,7 @@
  export async function runNodeDaemonInstall(opts: NodeDaemonInstallOptions) {
    const { json, stdout, warnings, warn, emit, emitMessage, fail } =
      createDaemonInstallActionContext(opts.json);
-@@ -130,10 +225,112 @@
+@@ -130,10 +237,116 @@
      return;
    }
  
@@ -5595,13 +5642,17 @@
 +    OPENCLAW_WRAPPER:
 +      process.env.OPENCLAW_WRAPPER ?? existingManagedCommand?.environment?.OPENCLAW_WRAPPER,
 +  };
-+  const existingRequiresDeviceAuth =
-+    existingManagedCommand?.programArguments.includes("--require-device-auth") === true;
-+  let requireDeviceAuth =
-+    !opts.authFromEnv && Boolean(opts.connection || existingRequiresDeviceAuth);
++  let requireDeviceAuth = false;
    let gatewayOptions;
    try {
 -    gatewayOptions = resolveNodeGatewayOptions(opts, config);
++    const existingServiceOptions =
++      !opts.connection && existingManagedCommand
++        ? readNodeServiceOptions(existingManagedCommand.programArguments)
++        : undefined;
++    const existingRequiresDeviceAuth =
++      existingServiceOptions?.has("--require-device-auth") === true;
++    requireDeviceAuth = !opts.authFromEnv && Boolean(opts.connection || existingRequiresDeviceAuth);
 +    if (opts.connection) {
 +      gatewayOptions = opts.connection.gateway;
 +      // Join Access may authorize a different origin from the accepted Gateway.
@@ -5637,7 +5688,7 @@
 +        })),
 +      );
 +      if (existingManagedCommand && (existingRequiresDeviceAuth || hasSavedPairing)) {
-+        const installed = readPairedServiceGateway(existingManagedCommand.programArguments);
++        const installed = readPairedServiceGateway(existingServiceOptions);
 +        const sameBinding = (candidate: Parameters<typeof nodeHostGatewaysShareScope>[0]) =>
 +          nodeHostGatewaysShareScope(installed, candidate) &&
 +          normalizeSavedNodeHostTlsFingerprint(installed) ===
@@ -5691,7 +5742,7 @@
    } catch (error) {
      fail(error instanceof Error ? error.message : String(error));
      return;
-@@ -155,21 +352,6 @@
+@@ -155,21 +368,6 @@
      fail("Cloudflare Access credentials require --tls for the node Gateway connection");
      return;
    }
@@ -5713,7 +5764,7 @@
    let pinSnapshot;
    try {
      pinSnapshot = await withDaemonRuntimePinMigration(
-@@ -302,23 +484,10 @@
+@@ -302,23 +500,10 @@
      // runtime toolchain on PATH for sibling binaries when needed.
      extraPathDirs: resolveDaemonRuntimeBinDir(runtimePath),
    });
@@ -6413,6 +6464,42 @@
    const lowerPrecedenceEntries = Object.entries(options.lowerPrecedenceEnv ?? {});
    const lowerPrecedenceEnv = new Map(
      lowerPrecedenceEntries.map(([key, value]) => [envSnapshotKey(key), value]),
+--- a/src/daemon/program-args.test.ts
++++ b/src/daemon/program-args.test.ts
+@@ -338,6 +338,7 @@
+       host: "gateway.example",
+       port: 18789,
+       displayName: "Fixture Node",
++      nodeId: "--version",
+       installedAppsSharing: false,
+       runtime: "node" as const,
+     };
+@@ -358,8 +359,8 @@
+       expect(replaced?.programArguments).toEqual(
+         expect.arrayContaining([
+           "--all-commands",
+-          "--display-name",
+-          "Fixture Node",
++          "--display-name=Fixture Node",
++          "--node-id=--version",
+           "--no-share-installed-apps",
+         ]),
+       );
+--- a/src/daemon/program-args.ts
++++ b/src/daemon/program-args.ts
+@@ -306,10 +306,10 @@
+     args.push("--context-path", params.contextPath);
+   }
+   if (params.nodeId) {
+-    args.push("--node-id", params.nodeId);
++    args.push(`--node-id=${params.nodeId}`);
+   }
+   if (params.displayName) {
+-    args.push("--display-name", params.displayName);
++    args.push(`--display-name=${params.displayName}`);
+   }
+   if (params.installedAppsSharing !== undefined) {
+     args.push(params.installedAppsSharing ? "--share-installed-apps" : "--no-share-installed-apps");
 --- a/src/daemon/service-managed-env.ts
 +++ b/src/daemon/service-managed-env.ts
 @@ -2,6 +2,8 @@
@@ -12030,7 +12117,7 @@
  async function restartAndExit(failureLabel, successCode = 0, failureCode = 2) {
    try {
      await restart();
-@@ -273,7 +281,7 @@
+@@ -273,15 +281,18 @@
    it("runs the stored node service command through a live launcher parent", async () => {
      const f = await fixture(`
  await ready();
@@ -12039,12 +12126,33 @@
  process.exit(0);
  `);
      const legacyEntrypoint = path.join(f.base, "dist", "index.js");
-@@ -297,22 +305,71 @@
+     await fs.writeFile(legacyEntrypoint, "await import('./entry.js');\n");
++    // Option-looking identity values must not bypass supervision after service serialization.
+     const command = await resolveNodeProgramArguments({
+       cliEntrypoint: legacyEntrypoint,
+       host: "127.0.0.1",
+       port: 18789,
++      displayName: "--help",
++      nodeId: "--version",
+       runtime: "node",
+       runtimePath: process.execPath,
+     });
+@@ -297,22 +308,80 @@
      expect(child).toMatchObject({
        parentPid: service.child.pid,
        launcherChild: true,
+-      argv: ["node", "run", "--host", "127.0.0.1", "--port", "18789"],
 +      acceptedRestart: false,
-       argv: ["node", "run", "--host", "127.0.0.1", "--port", "18789"],
++      argv: [
++        "node",
++        "run",
++        "--host",
++        "127.0.0.1",
++        "--port",
++        "18789",
++        "--node-id=--version",
++        "--display-name=--help",
++      ],
      });
      expect(child.pid).not.toBe(service.child.pid);
    });
@@ -12119,7 +12227,7 @@
  ${requestUpdate}
  `);
      const candidate = await f.release(`
-@@ -338,7 +395,15 @@
+@@ -338,7 +407,15 @@
      const lines = jsonLines(result.stdout);
      expect(lines[0]).toMatchObject({ ok: true });
      expect(lines[1]).toMatchObject({
@@ -12136,7 +12244,7 @@
        cwd: f.base,
        state: f.state,
        disconnectedState: null,
-@@ -347,6 +412,147 @@
+@@ -347,6 +424,147 @@
      expect(lines[1].first).toBe(lines[1].second);
      await expectSelection(f.current, candidate.prefix);
      await expectMissing(f.lock);
@@ -12284,7 +12392,7 @@
    });
  
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
-@@ -432,7 +638,7 @@
+@@ -432,7 +650,7 @@
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -12293,7 +12401,7 @@
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -450,6 +656,7 @@
+@@ -450,6 +668,7 @@
          version,
          state: f.state,
          argv: ["node", "run"],
