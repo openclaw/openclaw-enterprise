@@ -1347,7 +1347,6 @@ async function fixture(
       secretName: "occ-installation-startup",
       key: "installation.yaml",
     };
-    values = JSON.stringify(chart.values ? chart.values(exampleValues) : exampleValues);
     const exampleInstallation = await example("installation.yaml");
     exampleInstallation.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = [
       "10.42.0.0/16",
@@ -1362,6 +1361,8 @@ async function fixture(
       executionCluster,
     );
     const compute = exampleInstallation.drivers.compute.configuration;
+    // The example's Gateway namespace must follow this fixture's Helm release.
+    compute.gatewayRouting.gatewayNamespace = "system";
     compute.authentication = {
       mode: "kubeconfig",
       kubeconfigPath: api.kubeconfig,
@@ -1371,6 +1372,7 @@ async function fixture(
       // The experimental two-cluster profile: the same kubeconfig selects the
       // execution stand-in, with documentation-range endpoint CIDRs.
       compute.gatewayRouting.hostname = "gateway.example.test";
+      exampleValues.gatewayRouting.hostname = compute.gatewayRouting.hostname;
       compute.executionCluster = {
         authentication: {
           mode: "kubeconfig",
@@ -1386,6 +1388,8 @@ async function fixture(
         },
       };
     }
+    // Apply case-specific changes after constructing a consistent release baseline.
+    values = JSON.stringify(chart.values ? chart.values(exampleValues) : exampleValues);
     installation = JSON.stringify(chart.installation(exampleInstallation));
   }
   const state = {
