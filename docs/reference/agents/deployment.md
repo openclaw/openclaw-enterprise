@@ -4,10 +4,8 @@ Use this reference to select an [Agent](../agents.md) execution mode and underst
 
 ## Agent service principal and workload credentials
 
-Every Agent owns exactly one stable, platform-owned service principal.
-Separate Agents receive separate service principals, even when they share a
-Namespace. The service principal is immutable, belongs to its exact Agent and
-Namespace, and remains the same across every version of that Agent.
+Each Agent has one immutable, platform-owned service principal for all its
+versions. Agents in the same Namespace have distinct service principals.
 
 Inheriting the creator's identity, permissions, session cookie, or provider
 credentials is not yet supported. An Agent service principal cannot assume
