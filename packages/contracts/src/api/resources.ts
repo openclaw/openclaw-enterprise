@@ -685,7 +685,11 @@ export const CredentialSourceSchema = Type.Object(
     name: Name,
     type: CredentialSourceType,
     ownerCapability: Type.Union(
-      [Type.Literal("credential_gateway"), Type.Literal("credential_proxy")],
+      [
+        Type.Literal("credential_gateway"),
+        Type.Literal("credential_proxy"),
+        Type.Literal("credential_refresh"),
+      ],
       {
         description:
           "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership.",

@@ -1,4 +1,5 @@
 import type { Secret } from "./index.ts";
+import type { CredentialRefreshStatus } from "./drivers/credential-refresh/index.ts";
 import type {
   CredentialReadLifetime,
   CredentialSourceControl,
@@ -86,5 +87,78 @@ export interface PreparedTokenIssuer {
 
 /** The installation chooses the lifecycle owner independently of the Sandbox and sender. */
 export interface PreparedTokenService {
+  readonly oauthConnections?: OAuthConnectionTokenService | undefined;
   issuer(provider: EgressRef): PreparedTokenIssuer | undefined;
+}
+
+/** The source owner keeps this private Secret reference outside the user-managed Secret inventory. */
+export interface OAuthConnectionCustody {
+  readonly sourceId: string;
+  readonly secret: Readonly<Secret>;
+}
+
+/** The client and provider destination pinned when the account was connected. */
+export interface OAuthConnectionRegistration {
+  readonly issuer: string;
+  readonly tokenUrl: string;
+  readonly oauthClientId: string;
+  readonly tokenEndpointAuthMethod: "none" | "client_secret_post" | "client_secret_basic";
+  readonly resource?: string;
+  readonly clientId: string;
+}
+
+/** Server-owned registration and its private credential reader, resolved for one account. */
+export interface OAuthConnectionClient {
+  readonly registration: OAuthConnectionRegistration;
+  readonly readSecret?: (signal: AbortSignal) => Promise<string>;
+}
+
+/** Trusted handoff from code exchange. The Token Service retains the reusable grant. */
+export interface OAuthConnectionGrant extends OAuthConnectionRegistration {
+  readonly requestedScopes: readonly string[];
+  /** Scopes the provider granted. An empty list means no scopes were reported or requested. */
+  readonly grantedScopes: readonly string[];
+  readonly accessToken: string;
+  readonly refreshToken: string;
+  readonly expiresAt: string;
+}
+
+/** The only credential the trusted delivery path may install, with a deadline for its use. */
+export interface OAuthConnectionAccessToken {
+  readonly grantedScopes: readonly string[];
+  readonly nextRefreshAt: string;
+  readonly accessToken: string;
+  readonly version: string;
+  readonly expiresAt: string;
+}
+
+export const PENDING_OAUTH_CONNECTION = "pending";
+
+export type OAuthConnectionStatus = CredentialRefreshStatus & {
+  readonly schedule?: {
+    readonly version: string;
+    readonly nextRefreshAt: string;
+    readonly grantedScopes: readonly string[];
+  };
+};
+
+export interface OAuthConnectionTokenService {
+  accept(
+    custody: OAuthConnectionCustody,
+    grant: OAuthConnectionGrant,
+    signal: AbortSignal,
+  ): Promise<void>;
+  warm(
+    custody: OAuthConnectionCustody,
+    signal: AbortSignal,
+  ): Promise<OAuthConnectionAccessToken | undefined>;
+  status(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<OAuthConnectionStatus>;
+  /** Renew when due, or early when custody still holds the previously scheduled version. */
+  renew(
+    custody: OAuthConnectionCustody,
+    signal: AbortSignal,
+    resolveClient: () => Promise<OAuthConnectionClient>,
+    scheduledVersion?: string,
+  ): Promise<OAuthConnectionStatus>;
+  retire(custody: OAuthConnectionCustody, signal: AbortSignal): Promise<void>;
 }

@@ -168,6 +168,50 @@ Identifies an independently managed OAuth client and its approved credential des
 - `token_url`, `revocation_url`, `token_endpoint_auth_method`
 - `secret_driver_id`, `cleanup_after`, `created_at`
 
+### `saved_connections`
+
+Records the Namespace, consenting principal, approved template version and revocation status of a saved account.
+
+- `namespace_id`
+- `credential_source_id`
+- `owner_principal_id`
+- `oauth_client_id`, `client_id`, `issuer`, `token_url`
+- `recipient`, `mcp_server_url`, `resource`
+- `requested_scopes`, `granted_scopes`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `revocation_requested_by`
+- `revoked_at`
+
+### `connection_sessions`
+
+Stores the private, single-use OAuth attempt for the initiating principal and browser session.
+
+- `state_hash`
+- `namespace_id`
+- `credential_source_id`
+- `private_state`
+- `selected_scopes`
+- `issuer_required`
+- `session_id`
+- `redirect_uri`
+- `actor_id`
+- `connection_template_id`
+- `connection_template_version`
+- `created_at`
+- `expires_at`
+
+### `connection_token_custody`
+
+Tracks the Token Service secret reference, the published access token version and the next refresh time.
+
+- `namespace_id`
+- `credential_source_id`
+- `secret_ref`
+- `scheduled_version`
+- `next_refresh_at`
+
 ### `credential_sources`
 
 Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.
@@ -178,7 +222,7 @@ Records which Credential Gateway or Credential Proxy admitted each source. The c
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway` or `credential_proxy`)
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `credential_refresh` for a saved account)
 - `driver_id`
 - `state`
 - `created_at`

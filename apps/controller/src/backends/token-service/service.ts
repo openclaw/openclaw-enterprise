@@ -22,6 +22,12 @@ type Preparation = {
  * input authority and custody. Capture, readiness and use never wake a maintenance pass.
  */
 export class TokenService implements PreparedTokenService {
+  readonly oauthConnections: PreparedTokenService["oauthConnections"];
+
+  constructor(oauthConnections?: PreparedTokenService["oauthConnections"]) {
+    this.oauthConnections = oauthConnections;
+  }
+
   private readonly issuers = new Map<string, PreparedTokenIssuer>();
 
   private readonly proofs = new Map<string, PostgresProof>();

@@ -64,8 +64,16 @@ export type {
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
+  OAuthConnectionAccessToken,
+  OAuthConnectionCustody,
+  OAuthConnectionGrant,
+  OAuthConnectionClient,
+  OAuthConnectionRegistration,
+  OAuthConnectionStatus,
+  OAuthConnectionTokenService,
   PreparedTokenService,
 } from "./prepared-token.ts";
+export { PENDING_OAUTH_CONNECTION } from "./prepared-token.ts";
 export {
   preparedGitHubType,
   preparedGitHubProviderRef,
@@ -148,6 +156,8 @@ export type {
   ConnectionTemplate,
   ConnectionTemplateValues,
   OAuthConnectionTemplateVersion,
+  ConnectionSession,
+  SavedConnection,
 } from "./connection-templates.ts";
 export {
   ConnectionTemplateValidationError,
@@ -532,7 +542,8 @@ export interface CredentialSourceType {
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
 /** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
-export type CredentialSourceOwnerCapability = "credential_gateway" | "credential_proxy";
+export type CredentialSourceOwnerCapability =
+  "credential_gateway" | "credential_proxy" | "credential_refresh";
 
 /** OCC source admission, including its owner and Secret references, never credential values. */
 export interface CredentialSource {
@@ -617,6 +628,9 @@ export function credentialSourceMatchesSnapshot(
     return false;
   }
   switch (source.ownerCapability) {
+    case "credential_refresh":
+      // A saved account has no runnable sender until a consumer receives its own binding.
+      return false;
     case "credential_gateway":
       return (
         snapshot.credentialProxyId === undefined && snapshot.credentialGatewayId === source.driverId
@@ -1411,6 +1425,9 @@ export type {
   CredentialSourceToken,
 } from "./drivers/credential-gateway/index.ts";
 export type {
+  CredentialBrowserAuthorizationRequest,
+  CredentialSourceBrowserAuthorization,
+  CredentialBrowserAuthorizationCallback,
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,

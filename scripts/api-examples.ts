@@ -227,6 +227,22 @@ const discovered = {
   tokenEndpointAuthMethods: ["client_secret_basic"],
 };
 
+const savedAccount = {
+  issuer: oauthClient.issuer,
+  tokenUrl: oauthClient.tokenUrl,
+  oauthClientId,
+  clientId: oauthClient.clientId,
+  destinations: connectionTemplateInput.destinations,
+  requestedScopes: connectionTemplateInput.scopes,
+  grantedScopes: connectionTemplateInput.scopes,
+  namespaceId,
+  credentialSourceId: source.id,
+  ownerPrincipalId: userId,
+  connectionTemplateId,
+  connectionTemplateVersion: 1,
+  createdAt: time,
+};
+
 export const parameterExamples = {
   oauthClientId,
   connectionTemplateId,
@@ -265,12 +281,14 @@ export const parameterExamples = {
   limit: "20",
   cursor: "opaque-cursor-from-the-previous-response",
   code: "example-provider-code",
+  iss: connectionTemplateInput.issuer,
   state: "example-browser-bound-state",
   error: "access_denied",
   error_description: "The user declined sign-in.",
 };
 
 export const requestExamples = {
+  startNamespaceConnection: { connectionTemplateId },
   createConnectionTemplate: {
     ...connectionTemplateInput,
     namespaceId,
@@ -387,6 +405,13 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  listUsableConnectionTemplates: [connectionTemplate],
+  listNamespaceConnections: [savedAccount],
+  startNamespaceConnection: {
+    credentialSourceId: source.id,
+    authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
+    expiresAt: time,
+  },
   listConnectionTemplates: [connectionTemplate],
   getConnectionTemplate: connectionTemplate,
   createConnectionTemplate: connectionTemplate,
