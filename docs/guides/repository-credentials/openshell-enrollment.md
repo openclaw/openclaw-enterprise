@@ -30,10 +30,11 @@ Complete [local setup](../deploy/local-setup.md) before adding repository access
 The Kubernetes-only launcher enables Gateway TLS, mTLS and authentication before
 its first startup. It keeps Credential Gateway selected for model access.
 
-Leave `OCC_DEVELOPMENT_PROTECTED_EGRESS` unset or set to `0`. The value `1`
-selects the separate [static-inference profile](../deploy/local-openshell-images.md#select-the-protected-profile),
-which repository access does not require. No Gateway configuration repair or
-Pod deletion is needed for the default profile.
+Leave `OCC_DEVELOPMENT_PROTECTED_EGRESS` unset, empty or set to `0`. The value `1`
+is rejected because new local [static-inference launches are retired](../deploy/local-openshell-images.md#select-the-protected-profile).
+Remove `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` entirely; any presence is rejected.
+Repository access retains the ordinary authenticated Gateway defaults. No Gateway
+configuration repair or Pod deletion is needed for the default profile.
 
 ### Configure authorized repositories
 
@@ -53,8 +54,10 @@ drivers:
 ```
 
 Keep `drivers.credential_gateway` and its Backend member for model authentication.
-The repository authority is configured by `repository.openShell`; do not carry
-the static-inference Proxy's authority configuration into this empty selection.
+`repository.openShell` configures the selected Credential Proxy's connection to
+OpenShell. To grant repository access, configure the Namespace registry and
+grant access to the Agent separately. Keep this Driver's `configuration: {}`
+empty; do not copy the static-inference Proxy configuration into it.
 Use the normal [production Installation and Helm procedure](../deploy/production-installation.md).
 The development launcher's native repository input is a separate path and does
 not accept this protected registry.
@@ -170,7 +173,7 @@ bodyless installation GET. It creates no admission and requests no token.
 
 Set `ISSUER_CA_PATH` to `repository.preparedGitHub.issuerCaPath`, or leave it
 empty if that setting is absent. The example uses the fragment's standard mount
-paths and GitHub.com. Set `NAMESPACE_ID` to the OCE Namespace ID approved in the
+paths and GitHub.com. Use `namespace` from the quickstart session for the OCE Namespace ID approved in the
 registry. Set `WORKER_POD` to the current worker Pod and `PLATFORM_NS`
 to its Kubernetes namespace, then run from the matching release checkout:
 
@@ -179,7 +182,7 @@ kubectl --context "$CONTEXT" -n "$PLATFORM_NS" get pod "$WORKER_POD" \
   -o jsonpath='{.metadata.uid}{"\n"}{.spec.containers[?(@.name=="worker")].image}{"\n"}{.status.containerStatuses[?(@.name=="worker")].imageID}{"\n"}'
 
 kubectl --context "$CONTEXT" -n "$PLATFORM_NS" exec -i "$WORKER_POD" -c worker -- \
-  node --input-type=module - "$NAMESPACE_ID" application "${ISSUER_CA_PATH:-}" \
+  node --input-type=module - "$namespace" "${ref:-application}" "${ISSUER_CA_PATH:-}" \
   < docs/assets/openshell-quickstart/verify-github-installation.mjs
 ```
 

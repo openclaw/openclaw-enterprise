@@ -472,6 +472,12 @@ export async function selectSecret(scope, label, secret, options = {}) {
 
 // Lists `secret` in the Secret field `label` and returns its option, which carries the reason in
 // its accessible name when the caller may read the Secret but not operate it (finding 2453).
+/**
+ * @param {import("playwright").Page | import("playwright").Locator} scope
+ * @param {string} label
+ * @param {{ name: string }} secret
+ * @returns {Promise<import("playwright").Locator>}
+ */
 export async function operateDeniedSecretOption(scope, label, secret) {
   await scope.getByLabel(label, { exact: true }).fill(secret.name);
   const option = scope.getByRole("option", {

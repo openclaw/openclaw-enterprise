@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-02
-last_updated_session: 01a19d8b-33a8-76c0-9817-521a7f10626d
+updated: 2026-11-04
+last_updated_session: authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9
 ---
 
 # Compose development flow
@@ -49,7 +49,9 @@ owns the operator procedure and destructive cleanup boundary.
 
 ```mermaid
 graph TD
-  A["./bin/occ dev up"] --> Profile{"Compute profile"}
+  A["./bin/occ dev up"] --> Guard{"Development settings valid?"}
+  Guard -->|No| Refuse["Refuse before startup"]
+  Guard -->|Yes| Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
   Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
   KPre --> KControl{"Control-plane profile"}
@@ -60,12 +62,9 @@ graph TD
   KCodex -->|failure| KRollback
   KDriver -->|OpenShell| KOpenFirst["Prepare OpenShell assets,<br/>install routing, then import runtime"]
   KRoutingFirst --> KOnly["Install selected control-plane profile<br/>and retain all readiness gates"]
-  KOpenFirst --> KProtection{"Static inference enabled?"}
-  KProtection -->|Off| KGateway["Install authenticated Gateway<br/>and wait for readiness"]
+  KOpenFirst --> KGateway["Install authenticated Gateway<br/>and wait for readiness"]
   KGateway --> KOnly
-  KProtection -->|On| KAuthority["Prepare authority TLS and registry<br/>Install Gateway without readiness wait"]
-  KAuthority --> KOnly
-  KOnly --> KWait["Complete readiness gates<br/>including protected Gateway rollout"]
+  KOnly --> KWait["Complete control-plane readiness gates"]
   KWait --> KWorkspace
   KControl -->|Compose| KConfig["Validate Compose and claim<br/>private state with snapshot"]
   KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
@@ -212,7 +211,9 @@ before creating the corresponding Gateway Workspace. Startup waits until the
 OCC Namespace becomes ready. See the
 [OpenShell flow](openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
 
-### 6. Start protected OpenShell transport
+<a id="6-start-protected-openshell-transport"></a>
+
+### 6. Start authenticated OpenShell transport
 
 `internal/occdev/egress_k3d.go:protectedEgressSelection`,
 `internal/occdev/openshell_k3d.go:installDevelopmentPlatform`,
@@ -225,27 +226,24 @@ TLS, mTLS and authentication for every Kubernetes-only OpenShell installation.
 The default profile registers no static-inference middleware and waits for the
 Gateway before installing OCE. It needs no corrective Gateway upgrade or Pod deletion.
 
-The explicit `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` profile additionally enables
-static-inference enforcement. It requires Kubernetes Compute, Kubernetes control
-plane and OpenShell Sandbox with compatible images/charts. It prepares authority server TLS and its public CA,
-then installs OpenShell with native PKI and a TLS middleware registration.
-OpenShell owns the complete Gateway server/client certificate and extension-JWT
-key set. The launcher reads only its public key ID and writes the paired Backend,
-egress Driver and authority listener settings into the Installation.
+New protected static-inference launches are retired.
+`CheckDevelopmentProfile` rejects `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` before
+Compute dispatch, including the former Kubernetes/OpenShell selection. Direct
+Kubernetes startup also checks `protectedEgressSelection` before provisioning.
+Any presence of `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including an empty
+value, is rejected. Unset, empty and `0` protected-egress selections retain ordinary
+startup; malformed values still fail validation. Refusal does not select a fallback.
 
-Gateway startup contacts the registry, so `installDevelopmentPlatform` defers
-its readiness wait until after the OCE release's normal readiness gates. API
-composition starts the authority; Backend validation is declarative, and worker
-startup/preflight and health do not require a Gateway call. The final Gateway
-rollout gate still precedes Namespace readiness. Any failure returns to the
-existing owned-cluster rollback path; no empty registry response substitutes for
-negotiation.
+For an existing installation, keep the recorded state and ownership evidence
+for cleanup. Legacy protected fields remain readable in cleanup receipts but
+do not configure startup.
 
 The chart projects the administrative client certificate into API and worker
 only. The Backend supplies it to verified gRPC TLS for DNS or exact-IP server
-identities. Service traffic keeps its separate scoped bearer identity. The API
-alone receives authority TLS and the issuer public key; selected Gateway and
-supervisor Pods can reach that listener through narrow NetworkPolicies. See the
+identities. Service traffic keeps its separate scoped bearer identity. For
+separately prepared production installations with an authority, the API alone
+receives authority TLS and the issuer public key; selected Gateway and supervisor
+Pods can reach that listener through narrow NetworkPolicies. See the
 [Backend authentication boundary](../reference/backends.md#openshell-gateway).
 
 `selectedDevelopmentDatabase` validates an optional disposable database name
@@ -253,9 +251,8 @@ before effects. `installKubernetesControlPlane` uses that name in creation, read
 migrator and application URLs. Bootstrap, API and worker share the limited
 application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
 Helm waits for both. Unselected profiles retain the existing database and
-transport defaults. The [launch guide](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
-owns inputs; [packaging verification](../testing/static-egress.md#protected-launch-packaging)
-distinguishes local proof from pending connected runtime qualification.
+transport defaults. The [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
+describes accepted selectors.
 
 ## Debugging and Verification
 
@@ -313,6 +310,8 @@ distinguishes local proof from pending connected runtime qualification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 08:53: Remove retired local authority provisioning and retain authenticated Gateway readiness and recorded-state cleanup. (authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9 - d0421ca03868db643faa8ba2d13e784fc637cc2e)
 
 - 2026-11-02 13:31: Separate default authenticated Gateway bootstrap from opt-in static inference; accompanying launcher changes. (01a19d8b-33a8-76c0-9817-521a7f10626d - f5bef23f5796c2c3421189c79e6508079257cfd5)
 

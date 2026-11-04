@@ -112,6 +112,10 @@ foreign, malformed, or duplicated key returns `401`, and such a sign-out neither
 revokes nor clears the cookie. Without the header, requests are unchanged. Console
 pins each tab's key this way.
 
+Password-only sign-out confirms session deletion before clearing its cookie. A
+storage failure returns `503 DEPENDENCY_UNAVAILABLE` without clearing the cookie;
+retry sign-out after storage recovers.
+
 Password-only sessions expire seven days after sign-in; use does not extend
 them. With GitHub, Google or OIDC sign-in enabled, every session expires after
 eight hours ([session controls](authentication/external-sign-in.md#session-and-recovery-controls)).

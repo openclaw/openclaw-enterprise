@@ -55,9 +55,10 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```
 
-This profile uses the pinned K3s image, installs PostgreSQL and OCE (not
-OpenShell) in `oce-system`, and writes a generated administrator password and
-service key to the private state directory.
+The launcher installs PostgreSQL and OCE, without OpenShell, on pinned K3s in
+`oce-system` and writes the administrator password and service key to private state.
+It prepares [routing prerequisites](workspace-routing.md#requirements)
+and matching Helm/Installation settings before bootstrap.
 
 Before bootstrapping, startup checks the Codex `0.164.0` sandbox with
 its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the

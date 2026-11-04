@@ -195,10 +195,8 @@ export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION = `This cancels a deployment i
 // The Agent is already requested to stop: Request Stop again only repeats the request (D815).
 export const STOP_REPEAT_CONFIRMATION = `This Agent is already requested to stop. This sends the stop request again; use it if an earlier stop did not finish. ${STOP_KEEPS}`;
 // The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
-export const STOP_CANCELS_FIRST_DEPLOYMENT =
-  "Cancels the deployment in progress. The Agent stays and can be deployed again.";
-export const STOP_RUNNING_VERSION =
-  "Stops the running version. The Agent stays and can be deployed again.";
+export const STOP_CANCELS_FIRST_DEPLOYMENT = "Cancels this deployment without deleting Agent data.";
+export const STOP_RUNNING_VERSION = "Stops the running version without deleting Agent data.";
 // Each version has its own AgentRevision read grant, so a reader who deploys still needs read on
 // each new version, granted after it exists.
 export const NEW_VERSIONS_READ =
@@ -389,6 +387,12 @@ export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
   `must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates`;
 export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT = kubernetesGatewayPasswordRequirement();
 export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gateway.auth.password ${KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT}.`;
+// A Dedicated Codex Configuration without gateway.auth.password, where the Installation applies the
+// workspace node at runtime: every activation failed AGENT_GATEWAY_UNAUTHORIZED (finding 3132), so
+// save, preflight, provisioning and deploy admission refuse it.
+export const kubernetesWorkspaceNodePasswordRefusal = (alias = "default") =>
+  `Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.`;
+export const KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL = kubernetesWorkspaceNodePasswordRefusal();
 // Kubernetes Configuration save, provisioning and deploy admission refuse a trusted-proxy allowlist
 // and a device auto-approval the Gateway would refuse, naming no submitted identity (finding 3032).
 // The allowlist text says which identities match case-insensitively, so a case duplicate reads as
@@ -567,11 +571,11 @@ export const WORKSPACE_API_UNREACHABLE =
   "The request did not reach the API. Check your connection, then reload this file.";
 // A Stop that the API accepted for an Agent with a running version.
 export const STOP_REQUESTED =
-  "Stop requested. This Agent will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down.";
+  "Stop requested. Deploy a new version to restart. Runtime shutdown is not verified here.";
 // A Stop that the API accepted while a first deployment was queued or in progress.
 export const STOP_REQUESTED_FIRST_DEPLOYMENT =
-  "Stop requested. The deployment in progress is cancelled, and this Agent will not start until you deploy a new version.";
-// The Stop panel with no version selected and no first deployment it cancelled.
+  "Deployment cancellation requested. Deploy a new version to restart.";
+// The Stop panel with no version selected and no first-deployment Stop requested here.
 export const STOPPED_NO_VERSION =
   "No version is selected. Deploy a new version to start this Agent.";
 // A Stop status read that failed: the prefix, then why (agents/stop.mts).

@@ -1,4 +1,4 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -910,8 +910,10 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
   if (process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
-    configuration.drivers.compute.configuration.runtime.codexModelBaseUrl =
-      process.env.OCC_TEST_CODEX_OPENAI_BASE_URL;
+    configuration.drivers.compute.configuration.runtime.modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: process.env.OCC_TEST_CODEX_OPENAI_BASE_URL,
+    };
   }
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
   // The real Gateway loads its plugins during the first model request.
@@ -2615,10 +2617,64 @@ async function inspectWorkloadEnvironment(namespace, pod) {
 }
 
 async function inspectEnvironmentValue(namespace, pod, name, expected) {
-  const script = `const name=${JSON.stringify(name)};const expected=${JSON.stringify(expected)};process.stdout.write(JSON.stringify({present:Object.hasOwn(process.env,name),matches:process.env[name]===expected}))`;
-  return JSON.parse(
-    await kubectl("exec", pod, "--namespace", namespace, "--", "node", "-e", script),
-  );
+  // Expected values can be provider credentials; keep them out of exec arguments and diagnostics.
+  const script = String.raw`
+    try {
+      const { name, expected } = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+      process.stdout.write(JSON.stringify({
+        present: Object.hasOwn(process.env, name),
+        matches: process.env[name] === expected,
+      }));
+    } catch {
+      process.stderr.write("Workload environment comparison failed.");
+      process.exitCode = 1;
+    }
+  `;
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "kubectl",
+      kubectlArguments([
+        "exec",
+        "--stdin",
+        pod,
+        "--namespace",
+        namespace,
+        "--",
+        "node",
+        "-e",
+        script,
+      ]),
+      { stdio: ["pipe", "pipe", "ignore"], timeout: 30_000, killSignal: "SIGKILL" },
+    );
+    let stdout = "";
+    const fail = () => {
+      child.kill("SIGKILL");
+      reject(new Error("Workload environment inspection failed."));
+    };
+    child.once("error", fail);
+    child.stdin.once("error", fail);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 1024) {
+        fail();
+      }
+    });
+    child.once("close", (code) => {
+      if (code !== 0) {
+        return fail();
+      }
+      try {
+        const result = JSON.parse(stdout);
+        if (typeof result.present !== "boolean" || typeof result.matches !== "boolean") {
+          return fail();
+        }
+        resolve({ present: result.present, matches: result.matches });
+      } catch {
+        fail();
+      }
+    });
+    child.stdin.end(JSON.stringify({ name, expected }));
+  });
 }
 
 async function inspectProjectedIdentity(namespace, pod) {
@@ -3124,9 +3180,20 @@ async function assertStartupFailureDeploymentStatusDurable(context, topology, op
   });
   assert.deepEqual(
     Object.keys(failed).sort(),
-    ["agentId", "deploymentId", "error", "namespaceId", "progress", "status", "warnings"],
+    [
+      "agentId",
+      "cleanup",
+      "deploymentId",
+      "error",
+      "namespaceId",
+      "progress",
+      "status",
+      "warnings",
+    ],
     "deployment status must use the approved durable status shape",
   );
+  // No earlier revision retired, so no repository cleanup exists for this deployment (#1994).
+  assert.equal(failed.cleanup, null);
   assert.equal(failed.deploymentId, failure.revision.id);
   assert.equal(failed.namespaceId, topology.agent.namespaceId);
   assert.equal(failed.agentId, topology.agent.id);
@@ -3224,15 +3291,29 @@ function sharedVolumeSubPaths(pod) {
     .sort();
 }
 
-function assertPrivateStateInitContainer(pod) {
+function assertPrivateStateInitContainer(pod, { embeddedGatewayOwner = false } = {}) {
   const main = pod.spec.containers[0];
-  const [init] = pod.spec.initContainers ?? [];
+  const [init, owner] = pod.spec.initContainers ?? [];
   const { runAsUser, runAsGroup, fsGroup } = pod.spec.securityContext;
+  // An embedded gateway with no Secret environment also records its owner key (#2633), in a
+  // second init that mounts only its two in-memory volumes and no Agent-controlled state.
   assert.deepEqual(
     pod.spec.initContainers?.map(({ name }) => name),
-    ["prepare-private-state"],
+    ["prepare-private-state", ...(embeddedGatewayOwner ? ["prepare-embedded-gateway-owner"] : [])],
     "runtime gateway and Codex Pods must prepare private /home/node state exactly once",
   );
+  if (embeddedGatewayOwner) {
+    assert.equal(owner.image, main.image);
+    assert.deepEqual(owner.volumeMounts, [
+      { name: "gateway-owner-key", mountPath: "/run/oce-gateway-owner-key" },
+      { name: "gateway-owner-start", mountPath: "/run/oce-gateway-owner-start" },
+    ]);
+    assert.deepEqual(owner.securityContext, {
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ["ALL"] },
+    });
+  }
   assert.equal(init.image, main.image, "private-state init must use the main workload image");
   assert.deepEqual(
     [
@@ -3312,6 +3393,8 @@ const continuityImage =
   "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR4nGPQqLhEU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULAPHFyEwoyF0pAAAAAElFTkSuQmCC";
 const gatewayPrivatePaths = [
   ["state", "/home/node/.openclaw/state"],
+  // Client migration receipts refer to the retained Gateway database (#3041).
+  ["client", "/home/node/.openclaw/client"],
   ["agent", "/home/node/.openclaw/agents/main/agent"],
   ["media", "/home/node/.openclaw/media"],
   ["worktrees", "/home/node/.openclaw/worktrees"],
@@ -4699,10 +4782,14 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     topology.secretApi.assignmentPrincipalId,
     crossSecret.id,
   );
+  const agentPath = `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`;
+  const before = await topology.request("GET", agentPath);
+  assert.equal(before.status, 200, JSON.stringify(before.error));
+  assert.deepEqual(before.data.harnessAuth, topology.agent.harnessAuth);
   const denied = await expectApiFailureWithoutSecret(
     topology.request,
     "PATCH",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
+    agentPath,
     {
       configurationId: topology.agent.configurationId,
       harnessAuth: { method: "api_key", source: crossSecret.ref },
@@ -4710,17 +4797,20 @@ async function assertCrossNamespaceSecretBindingDenied(context, topology) {
     secretApiProtectedValues(topology, [crossValue]),
     "cross-Namespace Secret binding",
   );
-  assert.equal(denied.status, 404, `unexpected cross-Namespace denial ${denied.status}`);
-  const observed = await topology.request(
-    "GET",
-    `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}`,
-  );
+  assert.equal(denied.status, 400, "an explicit foreign Namespace is an invalid binding");
+  assert.deepEqual(denied.error, {
+    code: "INVALID_REQUEST",
+    message: "Secret references cannot cross Namespaces.",
+  });
+  assert.equal(denied.data, undefined);
+  const observed = await topology.request("GET", agentPath);
   assert.equal(observed.status, 200, JSON.stringify(observed.error));
   assert.deepEqual(
     observed.data.harnessAuth,
-    topology.agent.harnessAuth,
+    before.data.harnessAuth,
     "cross-Namespace denial must preserve the valid same-Namespace bindings",
   );
+  assert.equal(observed.data.activeRevisionId, before.data.activeRevisionId);
   context.diagnostic(`secret-api cross-namespace: denied with HTTP ${denied.status}`);
 }
 

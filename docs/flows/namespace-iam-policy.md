@@ -161,6 +161,11 @@ indexes each snapshot once (identities by id, issuer and subject; bindings by
 subject; Restrictions by action and kind). Nothing outlives the
 unit: the next request reads the policy again.
 
+`packages/occ/src/index.ts:OpenClawController.updateAgent` checks Agent `update`
+again after locking the Namespace. Namespace IAM writes take the same lock.
+If a binding withdrawal commits first and the caller has no other applicable
+`update` grant, the Agent save returns `403` and leaves the draft unchanged.
+
 ### 5. Platform state commits policy and audit together
 
 `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
@@ -205,7 +210,7 @@ selected account, session, and policy writers join the same protocol.
 `packages/occ/src/index.ts:OpenClawController.bindCreator`
 
 [Default users](../reference/authorization/default-users.md) defines the
-behavior; this phase traces the writes.
+behavior.
 
 - **Configured policy.** The compositions call `applyIAMConfiguration` at
   startup, and the bootstrap route after bootstrap. It takes the IAM
@@ -213,45 +218,42 @@ behavior; this phase traces the writes.
   configuration into `role_config_`, `group_config_`, and `binding_config_` rows.
   The Driver's `applyConfiguredPolicy` compares them with
   `listConfiguredPolicy`, writes missing rows, updates changed Roles, and
-  deletes unlisted rows; `deleteConfiguredRole` refuses a Role that another
-  binding uses. `createNamespace` calls it with the new `namespaceId`, which
-  writes only what that Namespace lacks. `auditConfiguredPolicy` records each
-  change.
+  deletes unlisted rows, but refuses to delete a Role that a binding uses.
+  `createNamespace` passes its `namespaceId` to write only what it lacks.
+  `auditConfiguredPolicy` records each change.
 - **Membership.** The `createAuthAccount` route adds
   `controller.defaultUserGroupIds` to the account seed and its audit event as
   `groupIds`. `insertNativeIAMPrincipal` takes the IAM configuration lock shared
   and inserts each membership with the account.
 - **Authority fence.** `performFenced` runs each session request inside
   `controller.withAuthorityFence`. The create paths below and
-  `deployAgentWithAuthorization` call `holdAuthority` first: it holds the
-  session through COMMIT and takes the IAM configuration lock shared before
-  the authorization. Each create in a Namespace and the deploy authorize again
-  after `lockNamespace`, which AccessBinding deletes also take.
+  `deployAgentWithAuthorization` call `holdAuthority` first, which holds the
+  session through COMMIT and takes the IAM configuration lock shared. Each
+  create in a Namespace and the deploy authorize again after `lockNamespace`,
+  which AccessBinding deletes also take.
   `fenceAgentProvisioning` takes the IAM configuration lock before
   `authorizeProvisioningRecord`.
 - **Owner bindings.** Each create path calls `bindCreator` after it inserts the
   resource row, in the same unit: `createNamespace`, `createAgent`,
   `createConfiguration`, `createSecret`, `createCredentialSource`,
   `createPreset`, `ensureNamespaceDefaultPresets`, `createServiceAccount`, and
-  `processAgentProvisioningConfiguration` for the provisioning requester.
-  `bindCreator` skips the write without `ownerRole`, when the selected Driver has
-  no `createOwnerBinding`, or when the controller was built with the `authorize`
-  option. Otherwise the Driver writes `binding_owner_<resource-id>` through
-  `createOCCBinding`, and `auditBinding` appends the event with
-  `reason: "creator"`. A Namespace's Owner binding comes before its default
+  `processAgentProvisioningConfiguration` for the requester.
+  `bindCreator` skips the write without `ownerRole` or the Driver's
+  `createOwnerBinding`, or with the `authorize` option. Otherwise the Driver
+  writes `binding_owner_<resource-id>` through `createOCCBinding`, and
+  `auditBinding` appends the event with `reason: "creator"`. A Namespace's Owner binding comes before its default
   Presets, so the creator's own grant creates them.
 - **Parent checks.** `authorizationDecision` passes `parentAgentId` with each
   `agent_revision` and `sandbox_policy` check. Revision reads name the Agent
-  they loaded, or the route's Agent in `getRevision`, whose later lookups accept
-  only that Agent's revision. A sandbox policy's parent derives from its ID,
-  which migration 0058 ties to the Agent ID. The native Driver's `sameResource`
-  then matches an exact binding on that Agent.
+  they loaded, or the route's Agent in `getRevision`. A sandbox policy's parent
+  derives from its ID, which migration 0058 ties to the Agent ID. The native
+  Driver's `sameResource` then matches an exact binding on that Agent.
 - **Deployment.** `deployAgentWithAuthorization` calls
   `grantDeployedAgentSources`, which collects the Agent's Secret and credential
   source references. For each reference that the caller can `operate` and the
   Agent ServicePrincipal cannot, `ensureAgentOperateGrants` writes the exact
-  binding. OCC appends one event for each with `reason: "agent_deploy"`. A later
-  deploy failure rolls back the grants.
+  binding, audited with `reason: "agent_deploy"`. A failed deploy rolls back
+  the grants.
 
 ## Debugging and Verification
 
@@ -298,6 +300,7 @@ behavior; this phase traces the writes.
 ## Changelog
 
 - 2026-11-04 12:00: Replace the built-in Roles, Group, and membership routes with the configured policy and membership at account creation; deploy grants for any Role. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
+- 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)
 - 2026-11-02 10:00: Trace Owner bindings for every create, the default Namespace binding, and the Namespace Creator setting; drop the Namespace limit. (claude/session_01HzmRt1DGB79VEnEWHt7PRy - aba993606)
 - 2026-11-02 16:00: Trace parent checks that apply an exact Agent binding to the Agent's revisions and sandbox policy. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-11-02 21:00: Trace the second authorization under the Namespace lock for creates and deploy, and the provisioning authority lock. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)

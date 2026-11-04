@@ -67,9 +67,8 @@ embedded replacement's model check rejected its key after it replaced the
 previous version; see
 [the selected version after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment).
 That selection cannot tell you whether the model still accepts
-the credential or can answer. Use [Deploy your first Agent](../first-agent.md)
-to verify your local setup or ask an operator to
-[verify a production workload](../deploy/production-agents.md#verify-production-workloads).
+the credential or can answer. [Verify the Agent’s model response](../operate/model-verification.md)
+or ask an operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
 Check for an actual answer from the configured model, not just a selected
 version or successful file read.
 

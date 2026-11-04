@@ -1,3 +1,8 @@
+import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
+import { secretsScenarios } from "./scenario-groups/secrets.mts";
+import { settingsScenarios } from "./scenario-groups/settings.mts";
+import { signInScenarios } from "./scenario-groups/sign-in.mts";
+
 const draft =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=draft";
 const revision =
@@ -14,12 +19,8 @@ const soulVersion = (version) =>
     (_, index) => `Line ${index + 1}: keep answers short and cite the files you used.\n`,
   ).join("");
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
+/** @param {string} text */
 const click = (text) => ({ click: text });
-const submitPassword = [
-  { selector: "#username", value: "operator@example.com" },
-  { selector: "#password", value: "demo-only" },
-  click("Sign in"),
-];
 const runtimeLogsPage = {
   group: "Pages/Agent detail",
   path: `${candidateVersion}&tab=logs`,
@@ -71,7 +72,14 @@ const readyForm = [
 const modelCredentialSourceTypes = [
   {
     type: "openai",
-    config: [],
+    config: [
+      {
+        name: "authorized_base_url",
+        required: false,
+        description:
+          "Immutable destination authorization. Must match the Installation model provider; omission authorizes only the default OpenAI endpoint.",
+      },
+    ],
     secrets: [{ name: "api_key", required: true }],
     rotation: "none",
     harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
@@ -156,12 +164,33 @@ const presetQuotedSettingRefused = [
   click("Create Agent"),
 ];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
+const repositorySearchOptions = [
+  "alpha/application-api",
+  "beta/my-application",
+  "omega/application",
+  "zeta/application",
+  "tools/cli",
+  "docs/handbook",
+  "ops/infrastructure",
+].map((displayName, index) => ({
+  repositoryRef: `catalog-${index}`,
+  displayName,
+  allowedProfiles: ["git-read", "git-write", "git-full"],
+}));
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
   'Configuration setting agents.entries.research_assistant.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
 // The same refusal from Create Agent's preflight, worded as the OpenClaw Plugin Driver words it.
 const pluginPreflightRefusal =
   "Configuration setting tools.deny blocks every tool of plugin codex-plugin:calendar@openai-curated-remote; remove the matching deny entry or deselect the plugin.";
+/** @type {"plugins"} */
+const pluginsComponent = "plugins";
+
+/** @typedef {import("/console/agents/plugin-fields.mjs").PluginFieldsOptions} PluginFieldsOptions */
+/** @typedef {PluginFieldsOptions["catalog"]} PluginFieldCatalog */
+/** @typedef {PluginFieldsOptions["capabilities"]} PluginFieldCapabilities */
+
+/** @satisfies {PluginFieldCapabilities} */
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
   approvers: { agent: true, plugin: false, tools: false },
@@ -183,16 +212,29 @@ const pluginCapabilities = {
     additionalProperties: false,
   },
 };
+const slackPluginId = "occ-plugin:slack@1.0.0";
+const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
+const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
+const slackTool = {
+  id: "slack_search_public",
+  name: "slack_search_public",
+  ownerId: slackPluginId,
+};
+const manageWorkspacePlugins = {
+  label: "Manage workspace plugins",
+  url: "https://chatgpt.com/admin/plugins?catalog=GLOBAL",
+};
+const ocePluginSetup = {
+  label: "OCE plugin setup",
+  url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
+};
 const pluginSetup = {
   message:
     "App connection status is not verified. Catalog availability does not confirm linked credentials. In ChatGPT admin, select the same workspace as this credential and enable plugin and app access for its user or service account. For service-account plugin credentials, open Service accounts, choose the account, and configure its app connections. Workspace administrator access is required. OCE policies do not grant access or configure credentials. Reload plugins after changes.",
   links: [
-    { label: "Manage workspace plugins", url: "https://chatgpt.com/admin/plugins?catalog=GLOBAL" },
+    manageWorkspacePlugins,
     { label: "Service account credentials", url: "https://admin.openai.com/" },
-    {
-      label: "OCE plugin setup",
-      url: "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
-    },
+    ocePluginSetup,
   ],
 };
 const unavailablePlugins = [
@@ -203,7 +245,7 @@ const unavailablePlugins = [
     available: false,
     unavailableReason:
       "This plugin requires local components or skills that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.",
-    unavailableHelp: pluginSetup.links[2],
+    unavailableHelp: ocePluginSetup,
     tools: null,
   },
   {
@@ -213,7 +255,7 @@ const unavailablePlugins = [
     available: false,
     unavailableReason:
       "Disabled by a ChatGPT workspace administrator. Ask one to enable access for the user or service account behind this token.",
-    unavailableHelp: pluginSetup.links[0],
+    unavailableHelp: manageWorkspacePlugins,
     tools: null,
   },
   {
@@ -223,7 +265,7 @@ const unavailablePlugins = [
     available: false,
     unavailableReason:
       "This workspace's plan is not eligible for this plugin. Ask a ChatGPT workspace administrator to review plan availability.",
-    unavailableHelp: pluginSetup.links[0],
+    unavailableHelp: manageWorkspacePlugins,
     tools: null,
   },
 ];
@@ -283,41 +325,50 @@ const devdayCuratedEntries = codexPluginSuggestions.map((suggestion) => {
         : [],
   };
 });
+const calendarPlugin = {
+  id: "codex-plugin:calendar@openai-curated-remote",
+  remoteId: "plugin_demo_calendar",
+  name: "Calendar",
+  logoUrl: "/storybook-fixtures/plugin-logos/calendar.svg",
+  websiteUrl: "https://example.com/calendar",
+  privacyPolicyUrl: "https://example.com/calendar/privacy",
+  termsOfServiceUrl: "https://example.com/calendar/terms",
+  description: "Find events and manage a team calendar.",
+  available: true,
+  tools: [
+    {
+      id: "app_calendar/list_events",
+      name: "List events",
+      ownerId: "app_calendar",
+      description: "Find events in a calendar and date range.",
+    },
+    {
+      id: "app_calendar/create_event",
+      name: "Create event",
+      ownerId: "app_calendar",
+      description: "Create a calendar event with a title, time, and attendees.",
+    },
+    {
+      id: "app_calendar/delete_event",
+      name: "Delete event",
+      ownerId: "app_calendar",
+      description: "Remove an existing calendar event.",
+    },
+  ],
+};
+const projectTrackerPlugin = {
+  id: "codex-plugin:project-tracker@openai-curated-remote",
+  remoteId: "plugin_demo_project_tracker",
+  name: "Project tracker",
+  logoUrl: "/storybook-fixtures/plugin-logos/missing.svg",
+  tools: null,
+};
+/** @satisfies {PluginFieldCatalog} */
 const pluginCatalog = {
   status: "ready",
   setup: pluginSetup,
   entries: [
-    {
-      id: "codex-plugin:calendar@openai-curated-remote",
-      remoteId: "plugin_demo_calendar",
-      name: "Calendar",
-      logoUrl: "/storybook-fixtures/plugin-logos/calendar.svg",
-      websiteUrl: "https://example.com/calendar",
-      privacyPolicyUrl: "https://example.com/calendar/privacy",
-      termsOfServiceUrl: "https://example.com/calendar/terms",
-      description: "Find events and manage a team calendar.",
-      available: true,
-      tools: [
-        {
-          id: "app_calendar/list_events",
-          name: "List events",
-          ownerId: "app_calendar",
-          description: "Find events in a calendar and date range.",
-        },
-        {
-          id: "app_calendar/create_event",
-          name: "Create event",
-          ownerId: "app_calendar",
-          description: "Create a calendar event with a title, time, and attendees.",
-        },
-        {
-          id: "app_calendar/delete_event",
-          name: "Delete event",
-          ownerId: "app_calendar",
-          description: "Remove an existing calendar event.",
-        },
-      ],
-    },
+    calendarPlugin,
     {
       id: "codex-plugin:documents@openai-curated-remote",
       remoteId: "plugin_demo_documents",
@@ -338,13 +389,7 @@ const pluginCatalog = {
         },
       ],
     },
-    {
-      id: "codex-plugin:project-tracker@openai-curated-remote",
-      remoteId: "plugin_demo_project_tracker",
-      name: "Project tracker",
-      logoUrl: "/storybook-fixtures/plugin-logos/missing.svg",
-      tools: null,
-    },
+    projectTrackerPlugin,
     ...unavailablePlugins,
   ],
 };
@@ -386,7 +431,7 @@ const pluginPreviewGap =
 const pluginDiscovery = {
   pages: {
     initial: {
-      plugins: [...unavailablePlugins, { ...pluginCatalog.entries[0], tools: null }],
+      plugins: [...unavailablePlugins, { ...calendarPlugin, tools: null }],
       nextCursor: "demo-page-2",
       setup: pluginSetup,
     },
@@ -398,10 +443,11 @@ const pluginDiscovery = {
   },
   details: Object.fromEntries(pluginCatalog.entries.map((entry) => [entry.remoteId, entry])),
 };
+/** @satisfies {PluginFieldCatalog} */
 const devdayPluginCatalog = {
   status: "ready",
   setup: pluginSetup,
-  entries: [...devdayCuratedEntries, pluginCatalog.entries[0]],
+  entries: [...devdayCuratedEntries, calendarPlugin],
 };
 const devdayPluginDiscovery = {
   pages: {
@@ -485,6 +531,8 @@ const devdayCreateCheckpoint = [
   { selector: "#slack-secret-slack-bot-token", value: "sec_devday_slack_bot_token" },
   click("Apply channel settings"),
   click("Create Agent"),
+  { text: "devday claw" },
+  { selector: '.agent-tabs button[role="tab"][aria-controls$="-deployment-panel"]', click: true },
   { selector: ".deployment-status" },
 ];
 const devdayAdminCheckpoint = [
@@ -500,260 +548,7 @@ const shareExistingPerson = [
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
 export const scenarios = {
-  secrets: {
-    group: "Pages/Secrets",
-    name: "Populated",
-    path: "/console/secrets",
-    description:
-      "The library shows names and IDs. The privacy notice explains why stored values are never returned. Simulated UI proof.",
-    steps: [
-      "Search by name or ID. Tab to a result and press Enter; its dialog names the Namespace and lists consumers.",
-      "Create a Secret with a dummy value, replace it, then delete it. Switch Namespace to inspect isolation in navigation.",
-    ],
-  },
-  secretsMobile: {
-    group: "Pages/Secrets",
-    name: "Mobile",
-    path: "/console/secrets",
-    mobile: true,
-    actions: [{ selector: "#secret-search", value: "sec_demo_model" }],
-    description:
-      "Compare the same 390 × 844 page with one search result, then with a list that scrolls.",
-    steps: [
-      "Open the one Secret, then Replace value. The top bar, dimmed page and sheet reach the right edge, with no empty strip. Press Escape without entering a value.",
-      "Clear Search Secrets, scroll to the last Secret and open it. The sheet reaches the available edge: beside a classic scrollbar, or under an overlay scrollbar. Escape returns focus to that Secret.",
-    ],
-  },
-  secretsSearch: {
-    group: "Pages/Secrets",
-    name: "No search matches",
-    path: "/console/secrets",
-    actions: [{ selector: '[aria-label="Search Secrets"]', value: "no-such-secret" }],
-    description: "Clear the search to see the Secrets in this Namespace again.",
-  },
-  secretsEmpty: {
-    group: "Pages/Secrets",
-    name: "Empty",
-    path: "/console/secrets",
-    emptySecrets: true,
-    description: "An authorized list without Secrets offers creation.",
-  },
-  secretsLoading: {
-    group: "Pages/Secrets",
-    name: "Loading",
-    path: "/console/secrets",
-    rules: [{ path: presetSecretsPath, hold: true }],
-    description: "Namespace admission succeeds while the Secret list is still loading.",
-  },
-  secretsUnavailable: {
-    group: "Pages/Secrets",
-    name: "Read unavailable",
-    path: "/console/secrets",
-    rules: [{ path: presetSecretsPath, status: 503 }],
-    description: "A failed Secret collection read shows recovery, with no stale rows.",
-  },
-  secretsNoNamespace: {
-    group: "Pages/Secrets",
-    name: "No readable Namespace",
-    path: "/console/secrets",
-    emptyNamespaces: true,
-    description: "Secret requests require an admitted Namespace selection.",
-  },
-  secretsNamespaceNotReady: {
-    group: "Pages/Secrets",
-    name: "Namespace provisioning",
-    path: "/console/secrets",
-    namespaceStatus: "provisioning",
-    description: "Metadata stays readable; creation and replacement wait for Namespace readiness.",
-  },
-  secretsCreate: {
-    group: "Pages/Secrets",
-    name: "Create",
-    path: "/console/secrets",
-    actions: [click("Create Secret")],
-    description:
-      "The header identifies the Namespace. The form preserves whitespace and explains that you can replace a saved value but cannot retrieve it.",
-    steps: [
-      "Enter a name and a dummy value. Use Show value beside the Value label, then hide it again.",
-      "Press Enter from Secret name to submit. After the save, Close is the only dialog action.",
-    ],
-  },
-  secretsMissingValue: {
-    group: "Pages/Secrets",
-    name: "Missing value",
-    path: "/console/secrets",
-    actions: [
-      click("Create Secret"),
-      { selector: "#secret-name", value: "Team API key" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description: "Required-value errors remain beside their field; no request is sent.",
-  },
-  secretsCreateNotPermitted: {
-    group: "Pages/Secrets",
-    name: "Create not permitted",
-    path: "/console/secrets",
-    secretCreateNotPermitted: true,
-    description:
-      "The caller's access does not include Secret creation. Create Secret is disabled and the note under the toolbar names the reason.",
-    steps: [
-      "Tab to Create Secret. It takes focus and looks unavailable, a screen reader names the note as its description, and Enter, Space or a click opens nothing.",
-    ],
-  },
-  secretsCreateDenied: {
-    group: "Pages/Secrets",
-    name: "Create denied",
-    path: "/console/secrets",
-    denySecretCreate: true,
-    actions: [
-      click("Create Secret"),
-      { selector: "#secret-name", value: "Team API key" },
-      { selector: "#secret-value", value: "synthetic-story-value" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
-    steps: [
-      "Tab to Secret name, Show value, Value and Create Secret. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing and the value stays masked (finding 2935).",
-      "Close the dialog. The page's Create Secret looks unavailable, described by the note under the toolbar that asks to select Refresh after access changes.",
-    ],
-  },
-  secretsUnknownSave: {
-    group: "Pages/Secrets",
-    name: "Unknown save outcome",
-    path: "/console/secrets",
-    rules: [{ path: presetSecretsPath, method: "POST", bodyError: true }],
-    actions: [
-      click("Create Secret"),
-      { selector: "#secret-name", value: "Team API key" },
-      { selector: "#secret-value", value: "synthetic-story-value" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "An unreadable reply leaves an amber warning that the outcome is unknown. The value is erased and this dialog cannot resubmit.",
-  },
-  secretsConsumers: {
-    group: "Pages/Secrets",
-    name: "Consumers and restricted references",
-    path: "/console/secrets",
-    secretConsumers: {
-      agents: [
-        "agt_00000000-0000-4000-8000-000000000001",
-        "agt_00000000-0000-4000-8000-000000000099",
-      ],
-      configurations: ["cfg_00000000-0000-4000-8000-000000000001"],
-      credentialSources: [],
-      provisioningRequests: [],
-      unreadable: 2,
-      truncated: true,
-    },
-    actions: [click("Demo model API key (simulated)")],
-    description:
-      "The readable Agent keeps its link. A previously listed Agent shows no identity or link and asks you to reopen the Secret to check again. Hidden count, incomplete-list warning and disabled deletion remain. Simulated UI proof.",
-  },
-  secretsReadOnly: {
-    group: "Pages/Secrets",
-    name: "Read only for this caller",
-    path: "/console/secrets",
-    secretCallerPermissions: { update: false, delete: false },
-    secretConsumers: {
-      agents: ["agt_00000000-0000-4000-8000-000000000001"],
-      configurations: [],
-      credentialSources: [],
-      provisioningRequests: [],
-      unreadable: 0,
-      truncated: false,
-    },
-    actions: [click("Demo model API key (simulated)")],
-    description:
-      "The Secret read says this caller may neither replace nor delete the Secret. Both buttons are disabled before any typing, and each names its reason. Consumers name the Agent, with its ID beside it. Simulated UI proof.",
-    steps: [
-      "Tab to Replace value and Delete Secret. Each takes focus and looks unavailable. Replace value is described by its note; Delete Secret by the blocked-deletion sentence and its note. Enter, Space or a click opens nothing.",
-    ],
-    gap: "The answer is advisory. The controller still authorizes each write.",
-  },
-  secretsLinkUnlisted: {
-    group: "Pages/Secrets",
-    name: "Link to an unlisted Secret",
-    path: "/console/secrets?secret=sec_not_listed",
-    description:
-      "A link to a Secret the readable list leaves out opens no dialog. For a member, a note says it may not exist or the caller may not read it, and who grants read. This simulated caller administers the Installation, so the note says only that no such Secret is in the readable list. Nothing reads the Secret.",
-  },
-  secretsReplace: {
-    group: "Pages/Secrets",
-    name: "Replace value",
-    path: "/console/secrets",
-    actions: [click("Demo model API key (simulated)"), click("Replace value")],
-    description:
-      "Replacement preserves the reference and explains deployment and CredentialSource handoff. Existing values are never loaded.",
-  },
-  secretsReplaceDenied: {
-    group: "Pages/Secrets",
-    name: "Replace denied",
-    path: "/console/secrets",
-    rules: [{ suffix: "/secrets/sec_demo_model", method: "PATCH", status: 403, code: "FORBIDDEN" }],
-    actions: [
-      click("Demo model API key (simulated)"),
-      click("Replace value"),
-      { selector: "#secret-value", value: "synthetic-story-value" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description: "A denied replacement clears the value, disables editing, and focuses Close.",
-  },
-  secretsDelete: {
-    group: "Pages/Secrets",
-    name: "Delete confirmation",
-    path: "/console/secrets",
-    actions: [click("Demo model API key (simulated)"), click("Delete Secret")],
-    description:
-      "Permanent storage deletion requires confirmation and explains upstream revocation and previously delivered values.",
-  },
-  secretsDeleteConflict: {
-    group: "Pages/Secrets",
-    name: "Concurrent reference conflict",
-    path: "/console/secrets",
-    rules: [
-      {
-        suffix: "/secrets/sec_demo_model",
-        method: "DELETE",
-        status: 409,
-        code: "RESOURCE_CONFLICT",
-        message:
-          "The Secret is still referenced by Agent agt_00000000-0000-4000-8000-000000000001. Remove those references first.",
-      },
-    ],
-    actions: [
-      click("Demo model API key (simulated)"),
-      click("Delete Secret"),
-      click("Permanently delete Secret"),
-    ],
-    description:
-      "A newly added reference can refuse deletion after the detail read. Reopen the detail to inspect current consumers.",
-    steps: [
-      "Tab to Permanently delete Secret. It takes focus and looks unavailable, described by the refusal; Enter, Space or a click sends nothing (finding 2935).",
-    ],
-  },
-  secretsDeletionUnconfirmed: {
-    group: "Pages/Secrets",
-    name: "Deletion could not be confirmed",
-    path: "/console/secrets",
-    rules: [
-      { suffix: "/secrets/sec_demo_model", method: "DELETE", bodyError: true },
-      {
-        suffix: "/secrets/sec_demo_model",
-        skip: 1,
-        data: { id: "sec_different", name: "Different Secret (simulated)" },
-      },
-    ],
-    actions: [
-      click("Demo model API key (simulated)"),
-      click("Delete Secret"),
-      click("Permanently delete Secret"),
-      click("Check deletion status"),
-    ],
-    description:
-      "The delete response was lost, then the status check returned a different Secret. The dialog leaves the outcome unknown and offers no second Delete.",
-  },
+  ...secretsScenarios({ presetSecretsPath, click }),
 
   runtimeImages: {
     group: "Pages/Navigation",
@@ -803,250 +598,7 @@ export const scenarios = {
       "Browse pages, component states, and guided Agent workflows. Every preview mounts the production console modules and styles in its own frame. Reset story discards all local changes.",
     gap: "Stop Agent requests the stopped desired state; deployment resumes an Agent. Namespace provisioning, Preset management, and experimental Backend setup require an API, CLI, or operator workflow. Serving health and model responses require separate runtime verification.",
   },
-  login: {
-    group: "Pages/Sign in",
-    name: "Signed out",
-    path: "/console/login",
-    signedOut: true,
-    buildRevision: "1234567890abcdef1234567890abcdef12345678",
-    description:
-      "The email and password form, and a footer naming the build. Any nonempty demo email/password signs into this fixture.",
-  },
-  githubLogin: {
-    group: "Pages/Sign in",
-    name: "GitHub enabled",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    description:
-      "Provider discovery adds Continue with GitHub beside the password form. Clicking it demonstrates an unavailable provider; this fixture never navigates to GitHub.",
-    steps: [
-      "Check the GitHub icon and label, then select the button to see the unavailable message.",
-    ],
-    gap: "An administrator must attach the numeric GitHub identity to an existing account through the API. Enrollment, account creation, and recovery administration have no console controls. OAuth navigation and session issuance require backend verification.",
-  },
-  githubUnavailable: {
-    group: "Pages/Sign in",
-    name: "GitHub unavailable",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    actions: [click("Continue with GitHub")],
-    description: "A failed GitHub start leaves password sign-in and a deliberate retry available.",
-  },
-  githubRateLimited: {
-    group: "Pages/Sign in",
-    name: "GitHub rate limited",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    rules: [{ path: "/api/auth/providers/github/start", method: "POST", status: 429 }],
-    actions: [click("Continue with GitHub")],
-    description: "Admission refusal asks the user to wait without automatically retrying.",
-  },
-  recoveryOnlyLogin: {
-    group: "Pages/Sign in",
-    name: "Recovery-only password",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    googleEnabled: true,
-    passwordRecoveryOnly: true,
-    description:
-      "With OCC_AUTH_PASSWORD_SIGN_IN=recovery-only, ordinary accounts continue with GitHub or Google. The password form stays behind Recovery sign-in for the recovery account.",
-  },
-  recoveryOnlyForm: {
-    group: "Pages/Sign in",
-    name: "Recovery sign-in form",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    passwordRecoveryOnly: true,
-    rules: [{ path: "/api/auth/sign-in/email", method: "POST", status: 401 }],
-    actions: [
-      click("Recovery sign-in"),
-      { selector: "#username", value: "member@example.com" },
-      { selector: "#password", value: "demo-only" },
-      click("Sign in"),
-    ],
-    description:
-      "Recovery sign-in reveals the password form. A refused password explains that only the recovery account can use one.",
-  },
-  recoveryOnlyCallbackRejected: {
-    group: "Pages/Sign in",
-    name: "Recovery-only GitHub callback rejected",
-    path: "/console/?authError=github",
-    signedOut: true,
-    githubEnabled: true,
-    passwordRecoveryOnly: true,
-    description:
-      "Without a password to fall back on, a rejected callback points the user to an administrator.",
-  },
-  githubCallbackRejected: {
-    group: "Pages/Sign in",
-    name: "GitHub callback rejected",
-    path: "/console/?authError=github",
-    signedOut: true,
-    githubEnabled: true,
-    description:
-      "A rejected callback shows the generic sign-in error and keeps password recovery available.",
-  },
-  githubResultRejected: {
-    group: "Pages/Sign in",
-    name: "GitHub result not confirmed",
-    path: "/console/",
-    pendingGithubAttempt: true,
-    githubEnabled: true,
-    rules: [{ path: "/api/auth/providers/github/result", method: "POST", status: 401 }],
-    description:
-      "The tab that started GitHub sign-in could not confirm that the current session is the one its attempt created, so it shows the sign-in error instead of adopting that session.",
-  },
-  googleLogin: {
-    group: "Pages/Sign in",
-    name: "Google enabled",
-    path: "/console/login",
-    signedOut: true,
-    githubEnabled: true,
-    googleEnabled: true,
-    description:
-      "Provider discovery adds Continue with Google beside the password form and any other configured provider. Clicking it demonstrates an unavailable provider; this fixture never navigates to Google.",
-    steps: [
-      "Check the Google and GitHub icons and labels, then select either button to see the unavailable message.",
-    ],
-    gap: "An administrator must attach the Google subject identifier to an existing account through the API. Email addresses never match an account. OAuth navigation and session issuance require backend verification.",
-  },
-  googleUnavailable: {
-    group: "Pages/Sign in",
-    name: "Google unavailable",
-    path: "/console/login",
-    signedOut: true,
-    googleEnabled: true,
-    actions: [click("Continue with Google")],
-    description: "A failed Google start leaves password sign-in and a deliberate retry available.",
-  },
-  googleCallbackRejected: {
-    group: "Pages/Sign in",
-    name: "Google callback rejected",
-    path: "/console/?authError=google",
-    signedOut: true,
-    googleEnabled: true,
-    description:
-      "A rejected Google callback shows the generic sign-in error and keeps password recovery available.",
-  },
-  googleAccountDisabled: {
-    group: "Pages/Sign in",
-    name: "Google account disabled",
-    path: "/console/?authError=google&authReason=account-disabled",
-    signedOut: true,
-    googleEnabled: true,
-    description:
-      "Google authenticated an identity attached to a disabled account, so the page says the account is disabled and names an administrator, not a retry, password or identity attach.",
-  },
-  recoveryOnlyAccountDisabled: {
-    group: "Pages/Sign in",
-    name: "Recovery-only account disabled",
-    path: "/console/?authError=github&authReason=account-disabled",
-    signedOut: true,
-    githubEnabled: true,
-    passwordRecoveryOnly: true,
-    description:
-      "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
-  },
-  recoveryOnlyProviderUnavailable: {
-    group: "Pages/Sign in",
-    name: "Recovery-only provider outage",
-    path: "/console/?authError=github&authReason=provider-unavailable",
-    signedOut: true,
-    githubEnabled: true,
-    passwordRecoveryOnly: true,
-    description:
-      "The provider could not answer or refused the client, so the page says sign-in is unavailable right now and points administrators to Recovery sign-in, not to an identity attach.",
-  },
-  googleResultRejected: {
-    group: "Pages/Sign in",
-    name: "Google result not confirmed",
-    path: "/console/",
-    pendingGoogleAttempt: true,
-    googleEnabled: true,
-    rules: [{ path: "/api/auth/providers/google/result", method: "POST", status: 401 }],
-    description:
-      "The tab that started Google sign-in could not confirm that the current session is the one its attempt created, so it shows the sign-in error instead of adopting that session.",
-  },
-  providerDiscoveryUnavailable: {
-    group: "Pages/Sign in",
-    name: "Provider discovery unavailable",
-    path: "/console/login",
-    signedOut: true,
-    rules: [{ path: "/api/auth/providers", status: 503 }],
-    description:
-      "Failed provider discovery leaves the password form usable without provider buttons.",
-  },
-  loginError: {
-    group: "Pages/Sign in",
-    name: "Invalid credentials",
-    path: "/console/login",
-    signedOut: true,
-    rules: [{ path: "/api/auth/sign-in/email", method: "POST", status: 401 }],
-    actions: submitPassword,
-    description: "A rejected sign-in leaves the form available for retry.",
-  },
-  passwordSignInUnconfirmed: {
-    group: "Pages/Sign in",
-    name: "Password sign-in unconfirmed",
-    path: "/console/login",
-    signedOut: true,
-    rules: [{ path: "/api/auth/sign-in/email", method: "POST", bodyError: true }],
-    actions: submitPassword,
-    description:
-      "An interrupted password response leaves the result unknown. Reload to check the session before entering the password again.",
-  },
-  expired: {
-    group: "Pages/Sign in",
-    name: "Session expired",
-    path: draft,
-    signedOut: true,
-    expiredSession: true,
-    description:
-      "A protected deep link in a tab whose session expired says so, redirects to sign-in and retains the return destination.",
-    steps: [
-      "Sign in with the fixture credentials and confirm the Agent draft page returns.",
-      "Confirm no draft is saved or deployment started by signing in.",
-    ],
-  },
-  firstVisit: {
-    group: "Pages/Sign in",
-    name: "Deep link, first visit",
-    path: draft,
-    signedOut: true,
-    description:
-      "A first visit to a protected deep link asks to sign in without saying a session expired, and retains the return destination.",
-    steps: ["Sign in with the fixture credentials and confirm the Agent draft page returns."],
-  },
-  sessionUnavailable: {
-    group: "Pages/Sign in",
-    name: "Session unavailable",
-    rules: [{ path: "/api/auth/session", status: 503 }],
-    description: "The console cannot verify the session. Private data stays hidden.",
-  },
-  loading: {
-    group: "Pages/Sign in",
-    name: "Checking session",
-    rules: [{ path: "/api/auth/session", hold: true }],
-    description:
-      "Reload with the entry script throttled: “Loading OpenClaw Enterprise…” appears before it runs, then becomes “Checking session…” in the same place.",
-    steps: [
-      "Check that neither console navigation nor a sign-in form appears while the session is unknown.",
-      "Wait for Session unavailable, then choose Retry to repeat the check.",
-    ],
-  },
-  logoutFailure: {
-    group: "Pages/Sign in",
-    name: "Sign-out unconfirmed",
-    rules: [{ path: "/api/auth/sign-out", method: "POST", status: 503 }],
-    actions: [...account, click("Sign out")],
-    description:
-      "Failed sign-out with a still-active session hides private content until revocation can be confirmed.",
-  },
+  ...signInScenarios({ draft, click, account }),
   agents: {
     group: "Pages/Agents",
     name: "Populated",
@@ -1652,417 +1204,8 @@ export const scenarios = {
     description:
       "A caller without Installation access is told Backends apply to the whole Installation. The Namespace selector is hidden, since another Namespace would not change the answer.",
   },
-  namespaces: {
-    group: "Pages/Namespaces",
-    name: "Ready and provisioning",
-    path: "/console/namespaces",
-    description:
-      "Installation-wide Namespace cards and Create Namespace, without a Namespace selector. Each card opens that Namespace's Agents; status badges read Ready or Provisioning.",
-    steps: [
-      "Select Create Namespace, enter a unique name, and submit. The success dialog explains provisioning; Open Agents selects the created Namespace.",
-      "Reset, then cancel a new form with Escape. No Namespace is created and focus returns to Create Namespace.",
-    ],
-  },
-  namespaceDelete: {
-    group: "Pages/Namespaces",
-    name: "Delete Namespace",
-    path: "/console/namespaces",
-    emptyAgents: true,
-    namespaceDeleteOutcome: "complete",
-    description:
-      "Use the same trash icon as the Agents table, confirm the exact Namespace, and watch simulated cleanup finish.",
-    steps: [
-      "Select Engineering's trash icon, then Delete Namespace. The row stays Deleting until the next status reads confirm removal.",
-    ],
-  },
-  namespaceDeleteConfirmation: {
-    group: "Pages/Namespaces",
-    name: "Delete confirmation",
-    path: "/console/namespaces",
-    namespaceDeleteOutcome: "complete",
-    actions: [{ selector: '[aria-label="Delete Engineering"]', click: true }],
-    description:
-      "The confirmation identifies the Namespace and explains reserved names, asynchronous cleanup, and default Presets. Cancel restores focus to the trash icon.",
-  },
-  namespaceDeleteMobile: {
-    group: "Pages/Namespaces",
-    name: "Delete confirmation mobile",
-    path: "/console/namespaces",
-    mobile: true,
-    namespaceDeleteOutcome: "complete",
-    actions: [{ selector: '[aria-label="Delete Engineering"]', click: true }],
-    description: "The same confirmation becomes a bottom sheet at phone width.",
-  },
-  namespaceDeleteBlocked: {
-    group: "Pages/Namespaces",
-    name: "Delete blocked by resources",
-    path: "/console/namespaces",
-    namespaceDeleteOutcome: "blocked",
-    actions: [
-      { selector: '[aria-label="Delete Engineering"]', click: true },
-      { click: "Delete Namespace" },
-    ],
-    description:
-      "A simulated NAMESPACE_NOT_EMPTY response names remaining resources the caller can read and counts the rest. Open Agents or Secrets, or inspect Configuration cleanup commands.",
-  },
-  namespaceDeleteDenied: {
-    group: "Pages/Namespaces",
-    name: "Delete permission denied",
-    path: "/console/namespaces",
-    namespaceDeleteDenied: true,
-    description:
-      "A member's advisory permission answer refuses deletion. The trash icon looks disabled and its reason says only an Installation administrator can delete a Namespace.",
-  },
-  namespaceDeleteRestricted: {
-    group: "Pages/Namespaces",
-    name: "Delete blocked by a Restriction",
-    path: "/console/namespaces",
-    namespaceDeleteRestricted: true,
-    description:
-      "An Installation administrator whom a deny Restriction keeps from deleting the Namespace. The reason names the Restriction and who can lift it, not an administrator to ask.",
-    gap: "The permission answer is advisory. The controller still authorizes each delete.",
-  },
-  namespaceDeleteRefused: {
-    group: "Pages/Namespaces",
-    name: "Delete permission changed",
-    path: "/console/namespaces",
-    namespaceDeleteOutcome: "forbidden",
-    actions: [
-      { selector: '[aria-label="Delete Engineering"]', click: true },
-      { click: "Delete Namespace" },
-    ],
-    description:
-      "A write can still be refused after the advisory read. The row shows the reason and request ID.",
-  },
-  namespaceDeletePending: {
-    group: "Pages/Namespaces",
-    name: "Delete request pending",
-    path: "/console/namespaces",
-    namespaceDeleteOutcome: "pending",
-    actions: [
-      { selector: '[aria-label="Delete Engineering"]', click: true },
-      { click: "Delete Namespace" },
-    ],
-    description:
-      "The pending write blocks dismissal and navigation. Its timeout requires a status read before another attempt.",
-  },
-  namespaceDeleteUnknown: {
-    group: "Pages/Namespaces",
-    name: "Delete outcome unknown",
-    path: "/console/namespaces",
-    namespaceDeleteOutcome: "unknown",
-    actions: [
-      { selector: '[aria-label="Delete Engineering"]', click: true },
-      { click: "Delete Namespace" },
-    ],
-    description:
-      "An unconfirmed write requires Refresh status. The Console does not replay deletion or assume it started.",
-  },
-  namespaceDeleteRetry: {
-    group: "Pages/Namespaces",
-    name: "Delete cleanup recovery",
-    path: "/console/namespaces",
-    namespaceStatus: "deleting",
-    namespaceDeleteOutcome: "stalled",
-    description:
-      "An existing deleting Namespace keeps status and deliberate retry controls. Only the backend decides whether retry is allowed.",
-  },
-  namespacesUnavailable: {
-    group: "Pages/Namespaces",
-    name: "Unavailable selection",
-    path: "/console/namespaces?namespace=ns_00000000-0000-4000-8000-000000000099",
-    description:
-      "Recover from a stale Namespace URL using the selector inside the message, which says the Namespace is missing or not readable.",
-    steps: [
-      "Choose Engineering under Choose a valid Namespace; the URL changes and the warning disappears without leaving Namespaces.",
-      "Use browser Back to return to the unavailable selection and recover again.",
-    ],
-  },
-  namespacesUnavailableMobile: {
-    group: "Pages/Namespaces",
-    name: "Unavailable selection mobile",
-    path: "/console/namespaces?namespace=ns_00000000-0000-4000-8000-000000000099",
-    mobile: true,
-    description: "Recover inline at 390px without opening navigation.",
-  },
-  namespacesUnavailableEmpty: {
-    group: "Pages/Namespaces",
-    name: "Unavailable selection without access",
-    path: "/console/namespaces?namespace=ns_00000000-0000-4000-8000-000000000099",
-    emptyNamespaces: true,
-    description: "No readable alternatives: show access guidance instead of a selection action.",
-  },
-  namespacesEmpty: {
-    group: "Pages/Namespaces",
-    name: "Empty",
-    path: "/console/namespaces",
-    emptyNamespaces: true,
-    description:
-      "No readable Namespaces. Create Namespace remains available; the API decides whether creation is permitted.",
-  },
-  namespacesEmptyMember: {
-    group: "Pages/Namespaces",
-    name: "Empty for a member",
-    path: "/console/namespaces",
-    emptyNamespaces: true,
-    observabilityDenied: true,
-    description:
-      "A person who does not administer the Installation gets Create Namespace as a secondary action and is told to ask an administrator. A Namespace create grant still works from it.",
-  },
-  namespaceCreateRefused: {
-    group: "Pages/Namespaces",
-    name: "Create refused, then closed",
-    path: "/console/namespaces",
-    emptyNamespaces: true,
-    observabilityDenied: true,
-    rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
-    actions: [
-      { click: "Create Namespace", focus: true },
-      { selector: "#namespace-name", value: "Support" },
-      { selector: 'dialog button[type="submit"]', click: true },
-      { click: "Cancel" },
-    ],
-    description:
-      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. Refresh or a browser reload offers creation again.",
-    steps: [
-      "Tab to Create Namespace. It takes focus and looks unavailable, described by the refusal; Enter, Space or a click opens nothing.",
-    ],
-  },
-  namespaceCreate: {
-    group: "Pages/Namespaces",
-    name: "Create Namespace",
-    path: "/console/namespaces",
-    actions: [{ click: "Create Namespace", focus: true }],
-    description:
-      "A name-only dialog uses the shared field and modal patterns. No credentials or infrastructure configuration are required in this form.",
-    steps: [
-      "Enter a unique name and create. Inspect the provisioning explanation, then select Done to see the new Namespace or Open Agents to use it.",
-    ],
-  },
-  namespaceCreateMobile: {
-    group: "Pages/Namespaces",
-    name: "Create Namespace on mobile",
-    path: "/console/namespaces",
-    mobile: true,
-    emptyNamespaces: true,
-    actions: [{ click: "Create Namespace", focus: true }],
-    description:
-      "The empty list offers creation. On a phone the form becomes a bottom sheet with reachable actions.",
-  },
-  namespaceCreateRequired: {
-    group: "Pages/Namespaces",
-    name: "Create name required",
-    path: "/console/namespaces",
-    actions: [
-      { click: "Create Namespace", focus: true },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "Submitting an empty name shows a persistent inline error and focuses the field without sending a request.",
-  },
-  namespaceCreateInvalidName: {
-    group: "Pages/Namespaces",
-    name: "Create invalid name",
-    path: "/console/namespaces",
-    actions: [
-      { click: "Create Namespace", focus: true },
-      { selector: "#namespace-name", value: "Support\tteam" },
-    ],
-    description:
-      "A pasted tab is refused at the field as it arrives, by the API's own Name rule, before any request. More than 200 characters is refused the same way instead of being cut.",
-  },
-  namespaceCreateConflict: {
-    group: "Pages/Namespaces",
-    name: "Create name conflict",
-    path: "/console/namespaces",
-    actions: [
-      { click: "Create Namespace", focus: true },
-      { selector: "#namespace-name", value: "Engineering" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "An existing name is refused. The entered name remains editable; choose another name and submit again.",
-  },
-  namespaceCreateDenied: {
-    group: "Pages/Namespaces",
-    name: "Create permission denied",
-    path: "/console/namespaces",
-    emptyNamespaces: true,
-    rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
-    actions: [
-      { click: "Create Namespace", focus: true },
-      { selector: "#namespace-name", value: "Support" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "A creation denial explains the missing Installation permission and disables resubmission. Cancel returns to the empty list.",
-    steps: [
-      "Tab to Namespace name and Create Namespace. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing (finding 2935).",
-    ],
-  },
-  namespaceCreatePending: {
-    group: "Pages/Namespaces",
-    name: "Create pending",
-    path: "/console/namespaces",
-    rules: [{ path: "/namespaces", method: "POST", hold: true }],
-    actions: [
-      { click: "Create Namespace", focus: true },
-      { selector: "#namespace-name", value: "Support" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "While creation waits, the field and actions are disabled and Escape cannot dismiss the form. After the client timeout, inspect the unknown-outcome recovery.",
-  },
-  namespaceCreateUnknown: {
-    group: "Pages/Namespaces",
-    name: "Create outcome unknown",
-    path: "/console/namespaces",
-    rules: [{ path: "/namespaces", method: "POST", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
-    actions: [
-      { click: "Create Namespace", focus: true },
-      { selector: "#namespace-name", value: "Support" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "An unconfirmed write blocks resubmission. Check Namespaces rereads the list before a deliberate new attempt; this fixture does not establish whether the write committed.",
-    steps: [
-      "Tab to Namespace name and Create Namespace. Each takes focus and looks unavailable, described by the Outcome unknown warning; Enter, Space or a click sends nothing (finding 2935).",
-    ],
-  },
-  namespaceCreateSuccess: {
-    group: "Pages/Namespaces",
-    name: "Namespace created",
-    path: "/console/namespaces",
-    actions: [
-      { click: "Create Namespace", focus: true },
-      { selector: "#namespace-name", value: "Support" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "Creation succeeded in the simulated fixture. The dialog distinguishes provisioning from readiness and offers the new Namespace's Agents.",
-  },
-  namespaceCreateUnreadable: {
-    group: "Pages/Namespaces",
-    name: "Created without read access",
-    path: "/console/namespaces",
-    emptyNamespaces: true,
-    // A create-only role: the authorized list never includes the new Namespace.
-    rules: [{ path: "/namespaces", data: [] }],
-    actions: [
-      { click: "Create Namespace", focus: true },
-      { selector: "#namespace-name", value: "Support" },
-      { selector: 'dialog button[type="submit"]', click: true },
-    ],
-    description:
-      "The caller may create Namespaces but not read them. The dialog says the Namespace was created and that their access does not include viewing it, and offers only Done.",
-  },
-  namespacesDenied: {
-    group: "Pages/Namespaces",
-    name: "Access denied",
-    path: "/console/namespaces",
-    rules: [{ path: "/namespaces", status: 403 }],
-    description:
-      "Namespace discovery is denied, as for an account whose access was removed. Private data stays hidden, and the panel offers Sign out beside Retry.",
-    steps: ["Choose Sign out and confirm the sign-in page replaces the panel."],
-  },
-  settings: {
-    group: "Pages/Settings",
-    name: "Account",
-    path: "/console/settings",
-    description:
-      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty object. There are no editable settings in this release.",
-    steps: [
-      "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
-      "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM has no visible fields. Switch Fields / JSON and confirm the expanded groups stay open.",
-      "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
-      "On a long page, scroll to the bottom and check that the sidebar background and operator profile reach it. At phone width, values fit and the existing navigation drawer still opens.",
-    ],
-  },
-  settingsDriverNestedValues: {
-    group: "Pages/Settings",
-    name: "Nested Driver values",
-    path: "/console/settings",
-    installationNestedValues: true,
-    description:
-      "A simulated package Driver has nested records, arrays, empty values and a writeOnly field. The API fixture returns its redaction marker, and the production renderer handles the safe JSON without a bundled schema-specific form. The expanded page exercises the shared sidebar beyond one viewport.",
-    steps: [
-      "Expand Configuration. Inspect groups, nested records, false, zero, null, empty arrays and objects, literal markup text, and the hidden value.",
-      "Switch to JSON and back to Fields. The values and expanded state remain unchanged.",
-      "Scroll to the bottom: the navigation background and profile reach the page bottom. At phone width, open and close the navigation drawer and check that fields fit the viewport.",
-    ],
-  },
-  settingsDriverValuesUnavailable: {
-    group: "Pages/Settings",
-    name: "Driver values unavailable",
-    path: "/console/settings",
-    installationValuesUnavailable: true,
-    description:
-      "These simulated Driver schemas mark the whole startup object writeOnly, so the API omits its values. Each expanded group explains that values are unavailable; schemas are not substituted.",
-    steps: ["Expand a Driver and check the unavailable message. No JSON Schema is shown."],
-  },
-  settingsDriverConfigurationsEmpty: {
-    group: "Pages/Settings",
-    name: "No Driver configurations",
-    path: "/console/settings",
-    rules: [{ path: "/installation/driver-configurations", data: { configurations: [] } }],
-    description: "Installation discovery succeeds without any selected Driver configurations.",
-    steps: ["Check the empty message beneath the Installation Driver configuration heading."],
-  },
-  settingsDriverConfigurationsLoading: {
-    group: "Pages/Settings",
-    name: "Driver configuration loading",
-    path: "/console/settings",
-    rules: [{ path: "/installation/driver-configurations", hold: true }],
-    description:
-      "Installation discovery is pending. The section shows a loading message until the normal client timeout reports the failed read.",
-  },
-  settingsDriverConfigurationsFailure: {
-    group: "Pages/Settings",
-    name: "Driver configuration unavailable",
-    path: "/console/settings",
-    rules: [{ path: "/installation/driver-configurations", status: 503 }],
-    description:
-      "Installation discovery fails. The section reports the read failure without exposing values or showing a schema fallback.",
-  },
-  settingsDriverConfigurationsDenied: {
-    group: "Pages/Settings",
-    name: "Driver configuration denied",
-    path: "/console/settings",
-    readOnlyPermissionSummary: true,
-    rules: [{ path: "/installation/driver-configurations", status: 403, code: "FORBIDDEN" }],
-    description:
-      "An account without Installation administration can still use Settings. The protected Driver section is absent after the refusal.",
-  },
-  settingsNameIsEmail: {
-    group: "Pages/Settings",
-    name: "Account without a display name",
-    path: "/console/settings",
-    // Sign-in providers that have no display name record the email as the name.
-    sessionUser: {
-      id: "storybook-operator",
-      name: "operator@example.com",
-      email: "operator@example.com",
-    },
-    description:
-      "An account whose recorded name is its email address. The account card names it once, by email.",
-    steps: [
-      "Check that the account card shows the initial O and operator@example.com under Email, with no Name row repeating the address.",
-      "Compare Account: a distinct display name still shows under Name.",
-    ],
-  },
-  settingsSignOutFailure: {
-    group: "Pages/Settings",
-    name: "Sign-out unconfirmed",
-    path: "/console/settings",
-    rules: [{ path: "/api/auth/sign-out", method: "POST", status: 503 }],
-    // The account menu's hidden Sign out comes first in the page, so name the card's button.
-    actions: [{ selector: ".settings-sign-out", click: true }],
-    description:
-      "Sign out from the Session card fails with the session still active: private content stays hidden until revocation can be confirmed.",
-    steps: [
-      "Choose Retry: it repeats the sign-out and keeps private content hidden until it succeeds.",
-    ],
-  },
+  ...namespacesScenarios,
+  ...settingsScenarios,
   notFound: {
     group: "Pages/Navigation",
     name: "Page not found",
@@ -2356,6 +1499,7 @@ export const scenarios = {
       "Expand Access and credential setup for the full Driver guidance and external help links, then collapse it. The credential/access reminder stays visible; catalog availability does not verify connections.",
       "Open the information button beside each unavailable plugin to compare its administrator, plan, or unsupported-runtime reason and help link. Escape or a click outside dismisses the popover. Choose the plugin row to see the same guidance in detail; Add stays disabled.",
       "At 390px width and both 844px and 640px height, scroll the plugin list and use Next page and Previous page. Search and pagination remain reachable while the list and details scroll within the dialog.",
+      "At 1440×480, keep setup collapsed, then expand it. Scroll the catalog browser: plugin names remain readable, Calendar opens its details, and pagination stays reachable. Compare the Short window plugin picker story.",
       "Choose Calendar to load its tools and inspect their IDs beneath the titles, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
       "Type create into Filter tools: only Create event remains, and the caret stays after the text. Clear it to restore the other tools. Search plugins for Documents before visiting its catalog page, then clear the query.",
       "Click Done and expand Plugin selections JSON: one heading labels a bounded monospace editor. Replacing the dummy token or authentication method clears discovery results and preserves selections.",
@@ -2624,7 +1768,7 @@ export const scenarios = {
   pluginsAvailable: {
     group: "Components/Plugins",
     name: "Available catalog",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCatalog,
     pluginCapabilities,
@@ -2646,7 +1790,7 @@ export const scenarios = {
   pluginsUnavailableReasonPopover: {
     group: "Components/Plugins",
     name: "Unavailable reason popover",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCatalog,
     pluginCapabilities,
     actions: [
@@ -2666,7 +1810,7 @@ export const scenarios = {
   pluginsSelected: {
     group: "Components/Plugins",
     name: "Write approval and tool overrides",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCatalog,
     pluginCapabilities,
     pluginSelections,
@@ -2689,7 +1833,7 @@ export const scenarios = {
   pluginsUnsupportedToolReviewer: {
     group: "Components/Plugins",
     name: "Unsupported saved tool reviewer",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCatalog,
     pluginCapabilities,
     pluginSelections: JSON.stringify(
@@ -2718,9 +1862,12 @@ export const scenarios = {
   pluginsUnknownTools: {
     group: "Components/Plugins",
     name: "Tool catalog unavailable",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCapabilities,
-    pluginCatalog: { status: "ready", entries: [pluginCatalog.entries[2]] },
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
+      status: "ready",
+      entries: [projectTrackerPlugin],
+    }),
     actions: [
       click("Configure plugins"),
       { selector: 'button[aria-label="Project tracker"]', click: true },
@@ -2732,10 +1879,10 @@ export const scenarios = {
   pluginsEmpty: {
     group: "Components/Plugins",
     name: "Empty catalog",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCapabilities,
-    pluginCatalog: { status: "ready", entries: [] },
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({ status: "ready", entries: [] }),
     description:
       "An empty catalog has an explicit empty state and keeps the JSON editor available.",
     gap: pluginPreviewGap,
@@ -2743,27 +1890,27 @@ export const scenarios = {
   pluginsLoading: {
     group: "Components/Plugins",
     name: "Catalog loading",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCapabilities,
-    pluginCatalog: { status: "loading" },
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({ status: "loading" }),
     description: "A pending catalog is distinct from a successful empty catalog.",
     gap: pluginPreviewGap,
   },
   pluginsDenied: {
     group: "Components/Plugins",
     name: "Catalog access denied",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [
       click("Configure plugins"),
       { selector: 'button[aria-label="Available plugins"]', click: true },
     ],
     pluginCapabilities,
-    pluginCatalog: {
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
       status: "error",
       canLoad: true,
       message: "This credential does not have access to the plugin catalog.",
-    },
+    }),
     description:
       "A simulated catalog permission error stays visible while existing configuration remains editable.",
     pluginSelections,
@@ -2772,21 +1919,21 @@ export const scenarios = {
   pluginsError: {
     group: "Components/Plugins",
     name: "Catalog unavailable",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCapabilities,
-    pluginCatalog: {
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
       status: "error",
       canLoad: true,
       message: "The plugin catalog could not be loaded. Try again after restoring connectivity.",
-    },
+    }),
     description: "A simulated catalog failure is shown as an error, not a successful empty result.",
     gap: pluginPreviewGap,
   },
   pluginsUnavailable: {
     group: "Components/Plugins",
     name: "Discovery credential required",
-    component: "plugins",
+    component: pluginsComponent,
     actions: [click("Configure plugins")],
     pluginCapabilities,
     description:
@@ -2795,7 +1942,7 @@ export const scenarios = {
   pluginsCapabilitiesUnavailable: {
     group: "Components/Plugins",
     name: "Policy capabilities unavailable",
-    component: "plugins",
+    component: pluginsComponent,
     pluginCatalog,
     pluginSelections,
     actions: [
@@ -2809,13 +1956,13 @@ export const scenarios = {
   managedGoogleInstall: {
     group: "Components/Plugins",
     name: "Install Google Workspace",
-    component: "plugins",
-    pluginCapabilities: {
+    component: pluginsComponent,
+    pluginCapabilities: /** @satisfies {PluginFieldCapabilities} */ ({
       ...pluginCapabilities,
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
       policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
-    },
-    pluginCatalog: {
+    }),
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
       status: "ready",
       entries: [
         {
@@ -2827,7 +1974,7 @@ export const scenarios = {
           tools: [],
         },
       ],
-    },
+    }),
     actions: [
       click("Configure plugins"),
       { selector: 'button[aria-label="Google Workspace"]', click: true },
@@ -2839,17 +1986,17 @@ export const scenarios = {
   pluginsNativeLimited: {
     group: "Components/Plugins",
     name: "Native Driver with unsupported saved policy",
-    component: "plugins",
-    pluginCatalog: {
+    component: pluginsComponent,
+    pluginCatalog: /** @satisfies {PluginFieldCatalog} */ ({
       status: "ready",
       entries: [{ id: "occ-plugin:diffs", name: "Diffs", tools: null }],
-    },
-    pluginCapabilities: {
+    }),
+    pluginCapabilities: /** @satisfies {PluginFieldCapabilities} */ ({
       driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
       toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
       tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
       driverPolicySchema: { type: "object", properties: {}, additionalProperties: false },
-    },
+    }),
     pluginSelections: JSON.stringify(
       {
         "occ-plugin:diffs": {
@@ -3272,6 +2419,34 @@ export const scenarios = {
       "Create the Agent and follow simulated provisioning to Agent details. Open Configuration and confirm the snapshot shows Dedicated execution and the OpenClaw Harness.",
     ],
   },
+  createSharedModelProviderSource: {
+    group: "Pages/Create Agent",
+    name: "Authorize shared model destination",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: readyForm,
+    description:
+      "Enter destination authorization for the selected key. This does not change the Installation endpoint. The simulated API records the source and starts provisioning.",
+    steps: [
+      "Enter https://models.example.com/v1 under Authorized base url.",
+      "Create the Agent and inspect the source request: config.authorized_base_url is present; config.base_url is absent.",
+    ],
+  },
+  createSharedModelProviderRefusal: {
+    group: "Pages/Create Agent",
+    name: "Destination authorization refusal",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "invalid-config",
+    actions: readyForm,
+    description:
+      "The first source request receives a simulated destination mismatch. Check registration to confirm absence, then correct authorization and retry. Uncertain writes remain locked until checked.",
+    steps: [
+      "Select the simulated model Secret and enter https://other.example.com/v1.",
+      "Create the Agent, then choose Check credential registration.",
+      "Correct the authorization to https://models.example.com/v1 and retry.",
+    ],
+  },
   createDedicatedCodexCredentialSource: {
     group: "Pages/Create Agent",
     name: "Codex with model Credential Source",
@@ -3613,21 +2788,18 @@ export const scenarios = {
     name: "Exact repository names before prefix matches",
     path: create,
     actions: [...repositoryForm, { selector: "#repository-search", value: "application" }],
-    repositoryOptions: [
-      "alpha/application-api",
-      "beta/my-application",
-      "omega/application",
-      "zeta/application",
-      "tools/cli",
-      "docs/handbook",
-      "ops/infrastructure",
-    ].map((displayName, index) => ({
-      repositoryRef: `catalog-${index}`,
-      displayName,
-      allowedProfiles: ["git-read", "git-write", "git-full"],
-    })),
+    repositoryOptions: repositorySearchOptions,
     description:
       "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
+  },
+  createRepositoriesNoMatches: {
+    group: "Pages/Create Agent",
+    name: "Repository search with no matches",
+    path: create,
+    actions: [...repositoryForm, { selector: "#repository-search", value: "unknown/repository" }],
+    repositoryOptions: repositorySearchOptions,
+    description:
+      "An approved catalog search with no matches directs users to their Namespace operator. Search for application to return to matching repositories.",
   },
   createRepositoriesLocaleSearch: {
     group: "Pages/Create Agent",
@@ -3691,7 +2863,8 @@ export const scenarios = {
     path: create,
     actions: repositoryForm,
     repositoryOptions: [],
-    description: "Successful empty discovery permits an ordinary Agent without repository access.",
+    description:
+      "An empty approved catalog directs users to their Namespace operator and permits a draft without repositories.",
   },
   createRepositoriesLoading: {
     group: "Pages/Create Agent",
@@ -5659,6 +4832,57 @@ export const scenarios = {
     ],
     gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
   },
+  slackMcpTools: {
+    group: "Pages/Agent detail",
+    name: "Choose tools for a connected Slack account",
+    path: `${draft}&tab=plugins`,
+    harnessId: "openclaw",
+    deployed: true,
+    agentPlugins: { [slackPluginId]: { enabled: true } },
+    credentialSources: [{ sourceId: slackSourceId }],
+    pluginDiscoveryCredential: "none",
+    pluginCapabilities: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      approvers: { agent: false, plugin: false, tools: false },
+      toolDefaults: { enabled: false },
+      tools: { enabled: false },
+      driverPolicySchema: { type: "object", properties: {} },
+      policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
+      credentialSlots: [
+        {
+          pluginId: slackPluginId,
+          releaseSha256: "a".repeat(64),
+          id: "account",
+          label: "Slack account",
+          toolDiscovery: true,
+          sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+        },
+      ],
+    },
+    pluginDiscovery: {
+      pages: { initial: { plugins: [slackEntry], nextCursor: null } },
+      details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
+    },
+    rules: [
+      {
+        suffix: "/plugins/details",
+        method: "POST",
+        delayMs: 650,
+        once: true,
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Configure plugins")],
+    description:
+      "The Tools picker loads available tools from the selected Slack account. Select the tools the next deployment may call.",
+    steps: [
+      "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
+      "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
+      "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+    ],
+    gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
+  },
   pluginsDraft: {
     group: "Pages/Agent detail",
     name: "Edit plugins in new version",
@@ -6117,6 +5341,30 @@ export const scenarios = {
       'After the next poll and its delayed overview reread, the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
       "Reset. Open Deployment and hover Refresh deployment before the next poll. Keep the pointer still: completion and the delayed overview reread preserve the hover fill without marking the button busy.",
       "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
+    ],
+  },
+  deploymentCompletionFocus: {
+    group: "Pages/Agent detail",
+    name: "Diagnostics focus when deployment completes",
+    path: `${candidateVersion}&tab=deployment`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // Give the reader time to position the focused button before the terminal poll answers.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        delayMs: 12000,
+      },
+    ],
+    description:
+      "The automatic poll records a simulated completion and opens Deployment details. The focused diagnostics button stays in view if it was visible before the update.",
+    steps: [
+      "Collapse Deployment details, then Tab to Run diagnostics for this version. Scroll up just enough to put the entire focused button near the bottom edge of the viewport.",
+      "Wait for the recorded status to read Completed. The details open and the same button stays focused and fully in view. Repeat at desktop and phone widths.",
+      "At phone width, reload the preview and repeat, this time scrolling all the way to the top without changing focus. The details open on completion and the reader stays at the top with the focused button still offscreen.",
     ],
   },
   deploymentCompletesRereadFails: {
@@ -7880,6 +7128,19 @@ export const scenarios = {
     steps: [
       "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
       "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",
+    ],
+  },
+  navigationDrawerScroll: {
+    group: "Components/Navigation",
+    name: "Compact drawer scroll position",
+    path: "/console/secrets?namespace=ns_00000000-0000-4000-8000-000000000001",
+    mobile: true,
+    description:
+      "The compact drawer keeps the document in place while its own contents scroll. API responses are simulated.",
+    steps: [
+      "At 390×480, open navigation and press Page Down on the focused link. Wheel over the overlay: the Secrets page behind it stays in place.",
+      "Choose Namespaces, then use Back. The Secrets heading and search return in view.",
+      "Open navigation and press Escape. Scroll Secrets normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
     ],
   },
   slack: {
@@ -9660,7 +8921,8 @@ export const scenarios = {
       { suffix: "/runtime", status: 403 },
       {
         suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
-        skip: 1,
+        // Keep the initial read and first Logs recheck denied.
+        skip: 2,
         once: true,
         data: { update: true, deploy: true, operate: true, delete: true },
       },
@@ -10108,7 +9370,7 @@ export const scenarios = {
     swePreset: true,
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
-    fixturePluginCatalog: true,
+    fixturePluginCatalog: /** @type {const} */ (true),
     fixturePluginCatalogMessage:
       "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
@@ -10154,7 +9416,7 @@ export const scenarios = {
   },
   devdayCreateCheckpoint: {
     group: "Flows",
-    name: "DevDay segment 1 checkpoint: deployed devday claw",
+    name: "DevDay segment 1 checkpoint: first deployment queued",
     path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
     agentName: "oceclaw",
     deployed: true,
@@ -10165,7 +9427,7 @@ export const scenarios = {
     swePreset: true,
     pluginDiscovery: devdayPluginDiscovery,
     pluginCapabilities,
-    fixturePluginCatalog: true,
+    fixturePluginCatalog: /** @type {const} */ (true),
     fixturePluginCatalogMessage:
       "Storybook is showing a simulated curated plugin catalog for DevDay rehearsal. Real deployments still require plugin access for the selected service account.",
     repositoryOptions: [
@@ -10354,7 +9616,7 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested. The Stop row replaces its action description with the result and restart guidance; shutdown completion is not verified here.",
   },
   stopReadDiscoversDeletion: {
     group: "Components/Stop Agent",
@@ -10395,7 +9657,7 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row.",
+      "A failed readable deployment leaves the Agent requested to run with no selected version. Stop stays available because a newer queued deployment may be unreadable.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopFirstDeploymentQueued: {
@@ -10406,7 +9668,7 @@ export const scenarios = {
     firstDeploymentQueued: true,
     actions: [click("Stop Agent")],
     description:
-      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway.",
+      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway. Confirming reports cancellation requested, not completed; later lifecycle reads retire that local result.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopNeverDeployed: {
@@ -10552,6 +9814,12 @@ for (const [id, state, name] of [
     "Policy logs unavailable without runtime credentials",
   ],
   ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
+  ["policyDenialsWithheldOne", "withheldOne", "One policy record withheld since the last refresh"],
+  [
+    "policyDenialsWithheldMany",
+    "withheldMany",
+    "Multiple policy records withheld since the last refresh",
+  ],
 ]) {
   scenarios[id] = {
     group: "Pages/Agent detail",
@@ -10563,6 +9831,8 @@ for (const [id, state, name] of [
     ...(["many", "populated"].includes(state)
       ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
       : {}),
+    ...(state === "withheldOne" ? { policyWithheld: 1 } : {}),
+    ...(state === "withheldMany" ? { policyWithheld: 2 } : {}),
     ...(state === "discoveryLoading"
       ? { rules: [{ suffix: "/driver-configurations", hold: true }] }
       : {}),
@@ -10687,6 +9957,23 @@ for (const [id, state, name] of [
     ...(state === "loading" ? { rules: [{ suffix: "/runtime/logs", hold: true }] } : {}),
     ...(state === "noCredential"
       ? { rules: [{ suffix: "/runtime/logs", status: 503, code: "DEPENDENCY_UNAVAILABLE" }] }
+      : {}),
+    ...(state === "withheldOne"
+      ? {
+          description:
+            'The Denials tab shows a warning banner when sandbox records are withheld. One withheld record uses the singular "record".',
+          steps: [
+            'Check the warning banner above the denial list. It reads "1 record withheld since the last refresh." Confirm the singular form.',
+          ],
+        }
+      : {}),
+    ...(state === "withheldMany"
+      ? {
+          description: 'Two withheld records: the warning banner uses the plural "records".',
+          steps: [
+            'Check the warning banner above the denial list. It reads "2 records withheld since the last refresh." Confirm the plural form.',
+          ],
+        }
       : {}),
   };
 }

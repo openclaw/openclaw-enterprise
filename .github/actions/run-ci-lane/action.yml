@@ -62,8 +62,23 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
         cache-mode: read-write
-    - uses: ./.github/actions/setup-test-docker
+    - name: Start Logging Collector Docker setup timer
+      id: logging-docker-start
+      if: inputs.lane == 'logging-collector'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/logging-setup-timing.ts start
+    - id: test-docker
+      uses: ./.github/actions/setup-test-docker
       if: inputs.lane == 'docker-model' || inputs.lane == 'logging-collector'
+    - name: Record Logging Collector Docker setup time
+      if: always() && inputs.lane == 'logging-collector'
+      continue-on-error: true
+      shell: bash
+      env:
+        LOGGING_SETUP_STARTED_NS: ${{ steps.logging-docker-start.outputs.started-ns }}
+        LOGGING_SETUP_OUTCOME: ${{ steps.test-docker.outcome }}
+      run: node scripts/ci/logging-setup-timing.ts finish docker-setup
     - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       if: >-
         (inputs.profile == 'full' || inputs.profile == 'images' || inputs.profile == 'k3d') &&
@@ -92,9 +107,24 @@ runs:
           sudo modprobe br_netfilter
         fi
         sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+    - name: Start Logging Collector dependency install timer
+      id: logging-pnpm-start
+      if: inputs.lane == 'logging-collector'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/logging-setup-timing.ts start
     - name: Install dependencies
+      id: install-dependencies
       shell: bash
       run: pnpm install --frozen-lockfile
+    - name: Record Logging Collector dependency install time
+      if: always() && inputs.lane == 'logging-collector'
+      continue-on-error: true
+      shell: bash
+      env:
+        LOGGING_SETUP_STARTED_NS: ${{ steps.logging-pnpm-start.outputs.started-ns }}
+        LOGGING_SETUP_OUTCOME: ${{ steps.install-dependencies.outcome }}
+      run: node scripts/ci/logging-setup-timing.ts finish pnpm-install
     - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       if: success() && steps.pnpm-store.outputs.store-cache-hit != 'true'
       with:
@@ -105,7 +135,7 @@ runs:
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell' || inputs.lane == 'k3d-fixture-configuration'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -185,6 +215,7 @@ runs:
           core.setOutput('token', token);
           core.setOutput('url', url);
     - name: Prepare lane
+      id: prepare-lane
       shell: bash
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
@@ -193,6 +224,13 @@ runs:
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
+    - name: Record skipped Logging Collector image preparation
+      if: always() && inputs.lane == 'logging-collector' && steps.prepare-lane.outcome == 'skipped'
+      continue-on-error: true
+      shell: bash
+      env:
+        LOGGING_SETUP_OUTCOME: skipped
+      run: node scripts/ci/logging-setup-timing.ts finish image-pulls
     - name: Install trusted browser certificate tooling
       if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell'
       shell: bash

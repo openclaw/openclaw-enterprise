@@ -21,7 +21,7 @@ import {
   settlePageRequests,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
-import { responseTo } from "./console-action-helpers.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
 
 test("refreshing a Secret picker keeps staged choices and finds a Secret created in another tab", async (t) => {

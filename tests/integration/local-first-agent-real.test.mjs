@@ -1235,9 +1235,10 @@ test(
       const appServerUrl = gateway.spec.template.spec.containers[0].env.find(
         ({ name: variable }) => variable === "APP_SERVER_URL",
       )?.value;
+      const appServerScheme = recorded.deploymentMode === "k3d" ? "wss" : "ws";
       assert.match(
         appServerUrl ?? "",
-        /^ws:\/\/[a-z0-9-]+--[a-z0-9-]+\.openshell\.localhost:8080\/$/,
+        new RegExp(`^${appServerScheme}://[a-z0-9-]+--[a-z0-9-]+\\.openshell\\.localhost:8080/$`),
       );
       const openShellNamespace =
         recorded.deploymentMode === "k3d" ? recorded.platformNamespace : "openshell-system";
@@ -1492,13 +1493,13 @@ test(
           const nativeSource = await request("POST", `${base}/credential-sources`, {
             name: `first-agent-native-${suffix}`,
             type: "openai",
-            config: { base_url: configuration.models.providers.openai.baseUrl },
+            config: { authorized_base_url: configuration.models.providers.openai.baseUrl },
             secrets: { api_key: nativeSecret.ref },
           });
           assert.equal(nativeSource.type, "openai");
           assert.equal(nativeSource.state, "ready");
           assert.equal(
-            nativeSource.config.base_url,
+            nativeSource.config.authorized_base_url,
             new URL(configuration.models.providers.openai.baseUrl).href.replace(/\/$/u, ""),
           );
           assert.deepEqual(nativeSource.secrets.api_key, nativeSecret.ref);

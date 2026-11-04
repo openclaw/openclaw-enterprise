@@ -11,8 +11,8 @@ OCE runtime declares native Dedicated support. The paired
 each Agent revision's providers supply node enrollment and Codex files. These experimental APIs are
 unqualified for production.
 
-Embedded OpenClaw is unsupported. The Driver supplies native OpenClaw's three
-containment facets; see
+Embedded OpenClaw is unsupported. See native OpenClaw
+[containment facets](#openshell-containment-facets) and
 [qualification](#qualification-contract).
 
 ## Ownership model
@@ -31,7 +31,9 @@ routing, and the per-Agent Gateway. Sandbox owns:
   with a single main Agent (or an omitted roster). Compute retains runtime-storage
   and identity checks; the Sandbox privately initializes the same mount.
 - In `operator` mode, `ensureNamespace` applies configured labels, workspace
-  resources, and NetworkPolicies, then owns the exact active Workspace.
+  resources, and NetworkPolicies, then owns the exact active Workspace. A
+  [preprovisioned namespace](kubernetes-compute/preprovisioned-namespace.md)
+  only verifies them.
 - `provisionHarness` creates one Workspace Sandbox. Dedicated Codex exposes its
   app-server. A native OpenClaw worker connects outbound and can expose a
   temporary status endpoint until its workspace node enrolls. The Driver adds each
@@ -179,7 +181,8 @@ accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
 mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
 namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
 listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
-`app.kubernetes.io/managed-by`; it rejects other labels. An OpenShell Workspace
+`app.kubernetes.io/managed-by`; otherwise deployment fails with
+`SANDBOX_POD_LABELS_NOT_PERMITTED`. An OpenShell Workspace
 name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
 15-character digest, within the 19-character limit.
 
@@ -200,7 +203,8 @@ only in owned disposable development clusters, never production.
 RoleBinding, and NetworkPolicy manifests the workspace chart renders;
 `gateway.networkPolicyResources` takes namespaced provider networking
 manifests. In `operator` mode, `ensureNamespace` server-side applies both with
-the Compute-owned namespace and OCC ownership metadata. Startup rejects Secrets,
+the Compute-owned namespace and OCC ownership metadata, or only compares them
+with `preprovisionedNamespace`. Startup rejects Secrets,
 a NetworkPolicy ingress `_from` (write `from`), and fields the Kubernetes
 client would drop or change (a misspelled selector key, LimitRange `default`).
 Keep OpenShell credentials and cluster-scoped objects out of both lists.

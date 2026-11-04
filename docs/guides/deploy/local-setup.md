@@ -4,30 +4,29 @@ tags: [human_verified]
 
 # Set up OCE locally with OpenShell and Codex
 
-Install OpenClaw Enterprise (OCE) in a private k3d cluster and verify a Codex Agent conversation before [adding Git](../repository-credentials/openshell-git-push.md) or [plugins](../integrations/codex-plugins.md).
+Install OpenClaw Enterprise (OCE) in a private k3d cluster.
+
+After installation, [deploy your first Agent](deploy-first-agent.md).
 
 ## Before you start
 
 - Install the [local Kubernetes tools on Linux](local-kubernetes-tools.md). Use Bash, curl and jq.
-- [Create a ChatGPT workspace service account and generate its Codex access token](https://learn.chatgpt.com/docs/enterprise/service-accounts).
 - Use the generated OCE service key for REST and the [private Gateway routing key and CA](workspace-routing.md) for WebSocket access. Keep credential files outside the checkout with owner-only permissions.
 - The operator needs permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
 
-Set your token file and assigned model in Bash:
+Set the model ID your credential can use. Choose the credential when you deploy the Agent.
 
 ```bash
-# Use the file containing the raw token, not the token itself.
-export CODEX_TOKEN_FILE=/secure/oce/codex-token
 export MODEL=gpt-5.4
-test -r "$CODEX_TOKEN_FILE" && test -s "$CODEX_TOKEN_FILE"
 ```
 
 ## 1. Prepare the quickstart files and select a matching release
 
-Start in Bash at the root of the checkout containing this guide. Copy the files to a private directory before switching to the matching release checkout. The [WebSocket chat client](../../assets/openshell-quickstart/chat.mjs) sends the verification turn in step 7.
+Start in Bash at the root of the checkout containing this guide. Copy the files to a private directory before switching to the matching release checkout. The [WebSocket client](../../assets/openshell-quickstart/chat.mjs) supports capability verification after browser onboarding.
 
 ```bash
 set -euo pipefail
+set +x
 umask 077
 
 # Keep this run's files, credentials and kubeconfig separate from earlier installations.
@@ -40,10 +39,7 @@ printf 'Private session directory: %s\n' "$RUN_DIR"
 install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "$RUN_DIR/artifacts.yaml"
 install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
 
-# Stage the Agent configuration template and the client used to verify a turn.
-install -m 600 docs/snippets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
-install -m 600 docs/assets/openshell-quickstart/chat.mjs "$RUN_DIR/chat.mjs"
-install -m 600 docs/snippets/openshell-quickstart/inspect-linear-transcript.mjs "$RUN_DIR/inspect-linear-transcript.mjs"
+source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
 For published images, select a matching channel pair:
@@ -82,6 +78,8 @@ else
   unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 fi
 
+# If the configured pnpm store is read-only, first select a private writable store:
+# export pnpm_config_store_dir="$RUN_DIR/pnpm-store"
 # Build the CLI from the matching source and wait for k3d bootstrap.
 pnpm install --frozen-lockfile
 go build -trimpath -o bin/occ ./cmd/occ
@@ -99,9 +97,9 @@ Initialize the shell variables for this installation:
 ```bash
 state=$OCC_DEVELOPMENT_STATE_DIRECTORY
 export KUBECONFIG="$state/kubeconfig"
-context="k3d-$(jq -er .cluster "$state/state.json")"
-ns=$(jq -er .platformNamespace "$state/state.json")
-test "$(kubectl config current-context)" = "$context"
+CONTEXT="k3d-$(jq -er .cluster "$state/state.json")"
+PLATFORM_NS=$(jq -er .platformNamespace "$state/state.json")
+test "$(kubectl config current-context)" = "$CONTEXT"
 ```
 
 The configuration script selects the plugin catalog and package network policy, but does not enable a plugin on the Agent. Do that in Add Plugin.
@@ -121,235 +119,53 @@ Reload the edited file through Helm. Use a new Secret name for each change. Helm
 # Verify the generated kubeconfig targets this run before changing the release.
 state=$OCC_DEVELOPMENT_STATE_DIRECTORY
 export KUBECONFIG="$state/kubeconfig"
-context="k3d-$(jq -er .cluster "$state/state.json")"
-ns=$(jq -er .platformNamespace "$state/state.json")
-test "$(kubectl config current-context)" = "$context"
+CONTEXT="k3d-$(jq -er .cluster "$state/state.json")"
+PLATFORM_NS=$(jq -er .platformNamespace "$state/state.json")
+test "$(kubectl config current-context)" = "$CONTEXT"
 
 # Point Helm at a new, versioned Secret so that the API and worker reload the changes.
 secret="oce-openshell-codex-$(date +%s)"
-kubectl --context "$context" -n "$ns" create secret generic "$secret" \
+kubectl --context "$CONTEXT" -n "$PLATFORM_NS" create secret generic "$secret" \
   --from-file="installation.yaml=$state/installation.yaml"
-helm --kube-context "$context" upgrade openclaw-enterprise deploy/helm/openclaw-enterprise \
-  -n "$ns" -f "$state/helm-values.json" --set-string installation.secretName="$secret" --wait
+helm --kube-context "$CONTEXT" upgrade openclaw-enterprise deploy/helm/openclaw-enterprise \
+  -n "$PLATFORM_NS" -f "$state/helm-values.json" --set-string installation.secretName="$secret" --wait
 ```
 
 If your network intercepts HTTPS, [install its approved public CA in the OpenShell supervisor](local-openshell-images.md#trust-an-upstream-ca-on-local-k3d).
 
-## 4. Connect to the API and register the model credential
+## 4. Prepare the operator session
 
-The examples use `$api` for the REST origin and `$base` for `$api/namespaces/$namespace`.
-
-Run the setup blocks in the same Bash shell and keep the private `RUN_DIR` for the optional guides. Set `CODEX_TOKEN_FILE` to your private service-account PAT file and `MODEL` to its native model ID. Keep shell tracing off. If a mutation times out, read back its result before retrying.
+Set the common operator session inputs. REST paths are relative to the API root; the helper sends authenticated requests through the selected API Pod. It does not use the browser URL for API authentication.
 
 ```bash
-# Read the REST base URL and save the service key in a private curl header file.
-api="http://127.0.0.1:$(jq -er .apiPort "$state/state.json")"
-jq -er '"x-api-key: "+.data.key' "$(jq -er .keyPath "$state/state.json")" > "$RUN_DIR/headers"
-
-# request METHOD URL [curl options] authenticates REST calls. Bodyless POSTs omit Content-Type.
-request() {
-  local method=$1 url=$2
-  shift 2
-  local headers=(-H @"$RUN_DIR/headers")
-  if (( $# )); then headers+=(-H 'Content-Type: application/json'); fi
-  curl --silent --show-error --fail-with-body -X "$method" "${headers[@]}" "$url" "$@"
-}
-
-# GET /namespaces: select the ready default Namespace.
-namespace=$(request GET "$api/namespaces" | jq -er '.data[]|select(.name=="default" and .status=="ready")|.id')
-base="$api/namespaces/$namespace"
-printf 'Namespace API: %s\n' "$base"
+PLATFORM=local-k3d
+RELEASE=openclaw-enterprise
+OCE_CHART="$(pwd)/deploy/helm/openclaw-enterprise"
+INSTALLATION_FILE="$RUN_DIR/installation.yaml"
+install -m 600 "$state/installation.yaml" "$INSTALLATION_FILE"
+VALUES_FILE="$RUN_DIR/values.json"
+helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \
+  get values "$RELEASE" -o json > "$VALUES_FILE"
+OCC_SERVICE_KEY_FILE="$RUN_DIR/service-key.json"
+install -m 600 "$(jq -er .keyPath "$state/state.json")" "$OCC_SERVICE_KEY_FILE"
+CONSOLE_ORIGIN=$(jq -er .browserOrigin "$state/state.json")
+NATIVE_ADMIN_DOMAIN=$(jq -er .nativeAdminDomain "$state/state.json")
+# The local launcher supplies the cluster policies. No extra CNI service rules are needed.
+cat > "$RUN_DIR/platform.sh" <<'SH'
+deployment_preflight() { :; }
+deployment_network() { :; }
+repository_network() { :; }
+SH
+source "$RUN_DIR/operator-session.sh"
+source "$RUN_DIR/platform.sh"
+namespace=$(request GET /namespaces | jq -er '[.data[]|select(.name=="default" and .status=="ready")]|select(length==1)|first.id')
+base="/namespaces/$namespace"
+TENANT_NAMESPACE=$(kube get ns -l "openclaw.dev/namespace=$namespace" -o json |
+  jq -er '[.items[]]|select(length==1)|first.metadata.name')
 ```
 
-Use one model source for this Agent. If the connected service account already has a ready Credential Gateway source, select it by its registered name and continue to step 5:
+The [operator session reference](quickstart-session.md) defines these inputs and helpers. Keep tracing off. If a mutation times out, read back its state before retrying.
 
-```bash
-name="openshell-codex-$(date +%s)"
-modelSource=$(request GET "$base/credential-sources" |
-  jq -er --arg n "${MODEL_SOURCE_NAME:?Set the registered source name}" '[.data[]|select(.name==$n and .type=="codex-pat" and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
-```
+Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 
-For a new source, store the PAT in a Namespace Secret and register its reference before enabling the repository Credential Proxy.
-
-```bash
-# POST $base/secrets: stream the raw PAT from its private file.
-name="openshell-codex-$(date +%s)"
-jq -n --arg name "$name-model" --rawfile token "${CODEX_TOKEN_FILE:?}" \
-  '{name:$name,value:($token|rtrimstr("\n"))}' |
-  request POST "$base/secrets" --data-binary @- > "$RUN_DIR/model-secret"
-
-# POST $base/credential-sources: return the source ID only if registration reached ready.
-jq --arg name "$name-model" '{name:$name,type:"codex-pat",secrets:{access_token:.data.ref}}' \
-  "$RUN_DIR/model-secret" | request POST "$base/credential-sources" --data-binary @- > "$RUN_DIR/model-source"
-modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source")
-```
-
-## 5. Create the Configuration and Agent
-
-Register the model with a fail-closed loopback URL. The Gateway uses authenticated WebSocket transport to the dedicated Codex Harness, which runs inside OpenShell. Give the Agent's own principal `operate` on its exact model source.
-
-The [Codex configuration template](../../snippets/openshell-quickstart/codex-configuration.jq) takes the model ID from `MODEL`. The command below renders the template as JSON and posts it to OCE.
-
-<Snippet file="../../snippets/openshell-quickstart/codex-configuration.jq" lang="jq" />
-
-```bash
-# POST $base/configurations: save the model, sandbox and Gateway settings.
-jq -n --arg model "${MODEL:?Set the service account model ID}" -f "$RUN_DIR/codex-configuration.jq" |
-  request POST "$base/configurations" --data-binary @- > "$RUN_DIR/configuration"
-
-# POST $base/agents: bind the model source to one dedicated Agent.
-jq -n --arg name "$name" --arg cfg "$(jq -er .data.id "$RUN_DIR/configuration")" \
-  --arg m "$modelSource" '{
-    name:$name,configurationId:$cfg,executionMode:"dedicated",gatewayManagedMode:true,
-    harnessAuth:{method:"credential_source",sourceId:$m},credentialSources:[{sourceId:$m}]}' |
-  request POST "$base/agents" --data-binary @- > "$RUN_DIR/agent"
-agent=$(jq -er .data.id "$RUN_DIR/agent")
-principal=$(jq -er .data.servicePrincipalId "$RUN_DIR/agent")
-printf 'Agent: %s\nPrincipal: %s\n' "$agent" "$principal"
-```
-
-### Bind the origin before deployment
-
-After creating the dedicated Agent, bind its exact browser origin to its new Configuration. Run these commands from the matching repository root. The hostname uses the same function as OCC. This example updates a new Configuration owned by this quickstart. For a shared or previously edited Configuration, follow the [per-Agent edit procedure](native-admin.md#configure-each-agent).
-
-```bash
-installation=$(request GET "$api/installation" | jq -er .data.id)
-origin=$(node --input-type=module - "$state/state.json" "$RUN_DIR/agent" "$installation" <<'JS'
-import { readFileSync } from "node:fs";
-import { deriveNativeAdminHost } from "./apps/controller/src/gateway/native-admin-host.mjs";
-const [stateFile, agentFile, installation] = process.argv.slice(2);
-const state = JSON.parse(readFileSync(stateFile));
-const { data: agent } = JSON.parse(readFileSync(agentFile));
-const url = new URL(state.browserOrigin);
-url.hostname = deriveNativeAdminHost(installation, agent, state.nativeAdminDomain);
-console.log(url.origin);
-JS
-)
-cfg=$(jq -er .data.id "$RUN_DIR/configuration")
-request GET "$base/configurations/$cfg" |
-  jq -e --arg origin "$origin" '.data | select(.generation==1) | {expectedGeneration:.generation,values} |
-    .values.gateway += {publicOrigin:$origin,controlUi:{enabled:true,allowedOrigins:[$origin]}} |
-    .values.gateway.auth += {mode:"trusted-proxy",
-      trustedProxy:{userHeader:"x-occ-identity",allowUsers:["occ-workspace-files"],
-        deviceAutoApprove:{enabled:true,scopes:["operator.read","operator.write"]}},
-      identityScopes:{"occ-workspace-files":["operator.admin"]}}' |
-  request PATCH "$base/configurations/$cfg" --data-binary @- > "$RUN_DIR/browser-configuration"
-```
-
-## 6. Grant model access and deploy
-
-Create one role scoped to credential sources. Bind that role to this Agent's principal for the model source only.
-
-```bash
-# POST $base/iam/roles: allow the operate action on CredentialSources.
-role=$(jq -n --arg name "$name-sources" \
-  '{name:$name,permissions:[{action:"operate",resourceKind:"credential_source"}]}' |
-  request POST "$base/iam/roles" --data-binary @- | jq -er .data.id)
-
-# POST $base/iam/access-bindings: grant access to one exact source.
-jq -n --arg p "$principal" --arg r "$role" --arg s "$modelSource" \
-  '{subjectKind:"identity",subjectId:$p,roleId:$r,resourceKind:"credential_source",resourceId:$s}' |
-  request POST "$base/iam/access-bindings" --data-binary @- > "$RUN_DIR/model-binding"
-
-# Provision transport once, before the first revision.
-request POST "$base/agents/$agent/runtime-credentials" --data '{}' > "$RUN_DIR/transport"
-
-# POST $base/agents/$agent/deploy starts a revision. Poll GET $base/agents/$agent/deployments/$revision.
-deploy_and_wait() {
-  local revision result status attempt
-  revision=$(request POST "$base/agents/$agent/deploy" | jq -er .data.id)
-  for ((attempt=0; attempt<100; attempt++)); do
-    result=$(request GET "$base/agents/$agent/deployments/$revision")
-    status=$(jq -er .data.status <<<"$result")
-    case "$status" in
-      succeeded) break ;;
-      failed|cancelled)
-        printf '%s' "$result" > "$RUN_DIR/failed-deployment.json"
-        jq -c '.data|{status,code:(.error.code // "unavailable")}' <<<"$result"
-        return 1 ;;
-    esac
-    sleep 6
-  done
-  printf 'Deployment %s: %s\n' "$revision" "$status"
-  test "$status" = succeeded
-  test "$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)" = "$revision"
-}
-```
-
-<AccordionGroup>
-<Accordion title="Console">
-
-Open the printed HTTPS Console origin at `/console/` and sign in with the administrator email and password file printed by the launcher. Trust the public `browser-ca.crt`; keep its private key on the development host. If needed, [forward the HTTPS port](../operate/troubleshooting.md#open-the-console-from-another-machine).
-
-Use **Deploy an existing Agent’s saved draft** below for the Agent created in step 5. Do not create another Agent.
-
-<Snippet file="../../snippets/openshell-quickstart/console-deployment-actions.md" />
-
-</Accordion>
-<Accordion title="CLI">
-
-Use the API helper defined above:
-
-```bash
-deploy_and_wait
-```
-
-</Accordion>
-</AccordionGroup>
-
-Continue when the deployment reports `succeeded` and the Agent's `activeRevisionId` matches the new revision.
-
-## 7. Verify a turn through OpenClaw
-
-Define this helper for later Git and plugin steps:
-
-The client runs in the OCE API Pod using its private route, `x-api-key` routing key and trusted CA. It sends the turn to the Agent over `wss://<private-gateway-host>/namespaces/$namespace/agents/$agent`.
-
-```bash
-# Send one chat.send request, wait for its run ID, then read chat.history.
-turn() {
-  kubectl --kubeconfig "$state/kubeconfig" --context "$context" -n "$ns" exec -i deployment/openclaw-enterprise-api -c api -- \
-    env OCE_TEST_NAMESPACE_ID="$namespace" OCE_TEST_AGENT_ID="$agent" OCE_TEST_PROMPT="$(cat "$1")" \
-    node --input-type=module < "$RUN_DIR/chat.mjs"
-}
-
-```
-
-<AccordionGroup>
-<Accordion title="Console">
-
-Open the same Agent and select **Open Agent UI**. Complete onboarding: give the Agent its name and one preference to remember, and ask it to save them in its workspace. Send `Reply with OCE_READY.` and confirm that the reply contains `OCE_READY`. Close and reopen the Agent UI, select the existing conversation, and ask about the saved preference. Use the OCE **Workspace** tab to inspect the saved files.
-
-</Accordion>
-<Accordion title="CLI">
-
-The helper sends a WebSocket turn and reads its history. Each invocation creates a new conversation, so this check proves a model reply only.
-
-```bash
-# A successful response must include the requested text.
-printf '%s\n' 'Reply with OCE_READY.' > "$RUN_DIR/setup-prompt"
-turn "$RUN_DIR/setup-prompt" > "$RUN_DIR/setup-result"
-jq -e '.outcome.status=="ok" and (.outcome.terminalReply.text|contains("OCE_READY"))' "$RUN_DIR/setup-result"
-```
-
-To complete onboarding, open **Open Agent UI** and follow the Console steps above: save the Agent’s name and a preference, then reopen the same conversation and check recall. Repeating `turn` does not verify conversation continuity.
-
-</Accordion>
-</AccordionGroup>
-
-## Keep the session for the next stage
-
-Save resource IDs, paths and helpers for the add-on guides. Keep this directory owner-only; the REST key stays in the private header file.
-
-```bash
-{
-  printf '%s\n' 'set -euo pipefail' 'umask 077'
-  declare -p api RUN_DIR OCC_DEVELOPMENT_STATE_DIRECTORY KUBECONFIG state context ns namespace base name agent principal role modelSource
-  declare -f request deploy_and_wait turn
-} > "$RUN_DIR/session.sh"
-printf 'Operator session: %s/session.sh\n' "$RUN_DIR"
-```
-
-Keep this shell open or run `source /path/from/the/previous/command/session.sh` in Bash with the same tools on `PATH`. The file restores the full Namespace API URL (`$base`), the Agent ID and the authenticated REST and WebSocket helpers.
-
-Continue to [Add Git](../repository-credentials/openshell-git-push.md) with this same Agent. To stop here, [clean up the Installation](local-cleanup.md).
+To finish, [delete the Agent](quickstart-delete-agent.md), then [clean up this installation](local-cleanup.md).

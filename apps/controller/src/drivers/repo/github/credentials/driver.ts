@@ -14,8 +14,6 @@ import {
 import { createCredentialAuthentication } from "./driver/access.ts";
 import { createGitHubDriverState } from "./driver/state.ts";
 
-export { sameAuthority } from "./driver/state.ts";
-
 interface GitHubDriverOptions {
   readonly authority: AuthorityIdentity;
   readonly binding: RepositoryCredentialGrantIdentity;

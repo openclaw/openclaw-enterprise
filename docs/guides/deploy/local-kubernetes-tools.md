@@ -1,18 +1,18 @@
 # Install the local Kubernetes tools on Linux
 
-Use these commands in Bash on a Linux AMD64 or ARM64 host. Start from the OCE checkout with a working Docker Engine and enough disk space for the images. Keep this shell open through image selection and Agent deployment so the tools remain on `PATH`.
+Use these commands in Bash on a Linux AMD64 or ARM64 host. Start from the OCE checkout with a working Docker Engine, sudo access and enough disk space for the images. Install the tools globally so a fresh operator shell can resume the quickstart session.
 
 On Ubuntu, install the base utilities if they are missing. If Docker is missing, follow [Docker Engine for Ubuntu](https://docs.docker.com/engine/install/ubuntu/) and check access from your operator account. Authenticate the GitHub reader with your approved account for the independent repository check.
 
 ```bash
-# Install only the missing host utilities; the remaining downloads use a private tools directory.
+# Install the missing host utilities.
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl git gh jq openssl tar xz-utils
 docker version --format '{{.Server.Version}}'
 gh auth status
 ```
 
-Install the Node and Go versions pinned for this release into a new user-owned directory. The repository download helper checks each archive against its SHA-256 before extracting it.
+Download the Node and Go versions pinned for this release into a temporary directory. The repository download helper checks each archive against its SHA-256 before extraction. Install them under `/opt/oce-tools` and link their commands into `/usr/local/bin`. This replaces any existing commands with the same names in `/usr/local/bin`.
 
 ```bash
 set -euo pipefail
@@ -35,26 +35,46 @@ bash scripts/ci/download-pinned.sh "https://nodejs.org/dist/v24.22.1/$node_dir.t
   "$tools/node.tar.xz" "$node_sha"
 bash scripts/ci/download-pinned.sh "https://go.dev/dl/go1.27.3.linux-$go_arch.tar.gz" \
   "$tools/go.tar.gz" "$go_sha"
-tar -xf "$tools/node.tar.xz" -C "$tools"
-tar -xf "$tools/go.tar.gz" -C "$tools"
-mkdir "$tools/bin"
-export PATH="$tools/bin:$tools/$node_dir/bin:$tools/go/bin:$PATH"
-# Keep the package manager cache writable even when the default user cache is read-only.
-export COREPACK_HOME="$tools/corepack"
-corepack enable --install-directory "$tools/bin" pnpm
+install_root=/opt/oce-tools
+sudo install -d -m 755 "$install_root" "$install_root/go1.27.3" /usr/local/bin
+sudo tar --no-same-owner --same-permissions -xf "$tools/node.tar.xz" -C "$install_root"
+sudo tar --no-same-owner --same-permissions -xf "$tools/go.tar.gz" \
+  --strip-components=1 -C "$install_root/go1.27.3"
+for command in node npm npx corepack; do
+  sudo ln -sfn "$install_root/$node_dir/bin/$command" "/usr/local/bin/$command"
+done
+for command in go gofmt; do
+  sudo ln -sfn "$install_root/go1.27.3/bin/$command" "/usr/local/bin/$command"
+done
+export PATH="/usr/local/bin:$PATH"
+sudo env PATH="/usr/local/bin:/usr/bin:/bin" corepack enable --install-directory /usr/local/bin pnpm
 ```
 
-Use the repository's k3d tool installer. It checks the Docker daemon and installs checksum-verified kubectl, k3d, Helm and yq. Corepack reads the pnpm version and integrity hash from the checkout's `package.json`.
+Use the repository's k3d tool installer. It checks the Docker daemon and downloads checksum-verified kubectl, k3d, Helm and yq when the pinned versions are not already on `PATH`. Copy the selected binaries into `/usr/local/bin`. Corepack reads the pnpm version and integrity hash from the checkout's `package.json`; run pnpm as your operator account so its cache remains user-owned.
 
 ```bash
-# Install the pinned k3d tools and print the versions the next steps will use.
+# Stage the pinned tools, then install them globally.
 RUNNER_TEMP="$tools" bash scripts/ci/setup-tools.sh k3d
+for command in kubectl k3d helm yq; do
+  binary=$(PATH="$tools/bin:$PATH" command -v "$command")
+  if [[ $binary != "/usr/local/bin/$command" ]]; then
+    sudo install -m 755 "$binary" "/usr/local/bin/$command"
+  fi
+done
+rm -rf -- "$tools"
+
+# Verify without shell startup files or the temporary download directory.
+env PATH="/usr/local/bin:/usr/bin:/bin" bash --noprofile --norc <<'BASH'
+set -euo pipefail
+for command in node go pnpm kubectl k3d helm yq; do command -v "$command"; done
 node --version
 go version
 pnpm --version
 kubectl version --client
 k3d version
 helm version --short
+yq --version
+BASH
 ```
 
-Expect Node 24.22.1, Go 1.27.3, pnpm 11.15.1, kubectl 1.35.0, k3d 5.8.3 and Helm 3.19.2 for this release. When selecting another source checkout, compare its `mise.toml`, `go.mod` and `package.json` before continuing. Keep TLS verification enabled for all downloads.
+Expect Node 24.22.1, Go 1.27.3, pnpm 11.15.1, kubectl 1.35.0, k3d 5.8.3, Helm 3.19.2 and yq 4.48.1 for this release. When selecting another source checkout, compare its `mise.toml`, `go.mod` and `package.json` before continuing. Keep TLS verification enabled for all downloads. Retain `/opt/oce-tools` and the commands in `/usr/local/bin` when cleaning up an installation; saved operator sessions use these tools.

@@ -18,8 +18,8 @@ The configuration excludes `legacy/`; do not import archived implementations.
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
 `scripts/docs-site/` has its own package manifest, pnpm workspace, and lockfile;
 keep its dependency installation separate from the root workspace.
-API example metadata and export enrichment live in `scripts/api-examples.mjs`
-and `scripts/document-api-examples.mjs`; `scripts/docs-site/` owns the explorer
+API example metadata and export enrichment live in `scripts/api-examples.ts`
+and `scripts/document-api-examples.ts`; `scripts/docs-site/` owns the explorer
 and OpenAPI lint configuration. The controller route schemas remain the source
 of truth for HTTP behavior.
 
@@ -106,6 +106,8 @@ The common engine's `RepositoryBackend` protocol is separate from these interfac
 The worker Token Service owns GitHub App signing and provider-token custody.
 The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).
+
+The quickstart’s shared operator-session helpers, Agent onboarding, cluster installation fragments and executable examples live under `docs/snippets/openshell-quickstart/`. Platform setup and cleanup pages remain under `docs/guides/deploy/`; Add Git and Add Plugin each have one guide for all supported quickstart platforms.
 
 ## Deployment, tooling, and checks
 

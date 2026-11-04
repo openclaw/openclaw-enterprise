@@ -292,18 +292,9 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
-	// Docker's containerd image store cannot save a manifest-list reference
-	// as one complete image (see resolveDevelopmentImageSource), so point the
-	// staging tag at the platform child the list names for this host when there
-	// is one.
-	resolved, err := r.resolveDevelopmentImageSource(ctx, image, platform)
+	childStaged, err := r.stageDevelopmentPlatformChild(ctx, image, platform, selected)
 	if err != nil {
 		return "", err
-	}
-	if resolved != image {
-		if err := r.run(ctx, r.engine, "tag", resolved, selected); err != nil {
-			return "", err
-		}
 	}
 	// Images are imported concurrently, so each needs its own archive.
 	archive := filepath.Join(s.directory, developmentImportArchive(selected))
@@ -317,7 +308,7 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	// child, keep the platform filter: it still works where the engine can
 	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" && resolved == image {
+	if r.engine == "docker" && !childStaged {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, selected)
@@ -454,15 +445,6 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
 			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
 		}
-		if s.ProtectedEgress {
-			if s.egressKeyID == "" {
-				return fmt.Errorf("protected egress requires the generated OpenShell JWT key identifier")
-			}
-			config["drivers"].(map[string]any)["credential_proxy"] = developmentEgressConfiguration(s)
-			sandbox := config["drivers"].(map[string]any)["sandbox"].(map[string]any)["configuration"].(map[string]any)
-			gateway := sandbox["gateway"].(map[string]any)
-			gateway["networkPolicyResources"] = append(gateway["networkPolicyResources"].([]any), developmentAuthorityEgressPolicy(s))
-		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
 	data, err := yaml.Marshal(config)
@@ -491,9 +473,6 @@ func openShellCodexBinaries() []string {
 func openShellBackendConfiguration(s *developmentState) map[string]any {
 	if s.authenticatedOpenShell() {
 		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
-		if s.ProtectedEgress {
-			drivers["credential_proxy"] = developmentEgressDriver
-		}
 		return map[string]any{
 			"id": "openshell", "type": "openshell",
 			"configuration": map[string]any{
