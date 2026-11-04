@@ -51,12 +51,11 @@ as the reason Dedicated OpenClaw is disabled.
    **Choose a model from the list** returns. Switching modes retains that provider's listed models; returning with an unlisted custom ID
    requires another selection. Other settings remain.
    No model is preselected.
-4. Confirm Installation, credential, and runtime support for the model. Primary
-   and fallback models must share a supported provider and Harness. For custom settings,
-   open **Advanced settings**. Selection changes preserve unrelated JSON edits;
-   **Reset template** replaces them. If the form flags
-   `plugins.allow` during a Codex change, set it to an array of strings or remove it in
-   **Configuration JSON**, then retry.
+4. Check Installation, credential, and runtime model support. Primary and
+   fallback models must share a supported provider and Harness. In **Advanced
+   settings**, selections keep unrelated JSON edits; **Reset template** replaces
+   them. If `plugins.allow` blocks Codex, use an array of strings or remove
+   it in **Configuration JSON**, then retry.
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their [access levels](repository-access.md). Kubernetes supports Codex (Dedicated) and Embedded
    OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories

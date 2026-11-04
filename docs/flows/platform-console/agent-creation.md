@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-10-25
-last_updated_session: fix-2469
+updated: 2026-11-04
+last_updated_session: "authoring-run/386aa943-15cf-49cd-b53e-05831b4a7da0"
 ---
 
 # Console Agent creation
@@ -78,11 +78,11 @@ Returning preserves credentials and unrelated Configuration. Saved Configuration
 and pending requests lock the toggle.
 
 If a change needs to update `plugins.allow` for Codex and the field is malformed,
-the form keeps the JSON as typed and focuses **Configuration JSON**. It asks you
-to use an array of strings or remove the field. A refused model selection, provider change, or Harness change
-keeps the previous model, provider, Harness, and execution mode. The authentication
-method can still change: the form clears the prior credential and shows the new
-method's fields without changing the model or JSON.
+the form keeps the JSON as typed and focuses **Configuration JSON**. Use an
+array of strings or remove the field. A refused model selection, provider change,
+or Harness change keeps the last applied model, provider, Harness, and execution
+mode. The authentication method can still change: the form clears the prior
+credential and shows the new method's fields without changing the model or JSON.
 
 Submission still matches the primary Configuration model to `model.value` and
 uses the normal server validation.
@@ -184,6 +184,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-04 22:06: Explain which Create Agent settings stay in place when an invalid plugin list blocks a Codex change. (authoring-run/386aa943-15cf-49cd-b53e-05831b4a7da0 - e109eba64ea0e81c02513f81f9c892a832dc1b69)
 - 2026-10-25: The per-Secret `operate` remedy names an exact-Secret grant; the Agents list gives Create Agent's next step when Agent create is denied. (findings 2507, 2508)
 - 2026-10-25: Refuse a typed model key, and disable the Preset's **Create new Secret**, where `operate` is denied on a readable Secret. (fix-2492, finding 2492)
 - 2026-10-25: An inline Secret create rereads the `operate` answer before staging. (finding 2486)
