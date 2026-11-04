@@ -3959,54 +3959,57 @@ function checkWebSocket(token) {
     perMessageDeflate: false,
     maxPayload: 65536,
   });
-  let settled = false;
-  function finish(reason) {
-    if (settled) return;
-    settled = true;
-    if (reason !== undefined) {
-      socket.terminate();
-      readinessFail(reason);
-      return;
-    }
-    readinessWaitingFor = "the Codex app-server connection to close";
-    socket.once("close", () => {
-      clearTimeout(timeout);
-      process.exit(0);
-    });
-    socket.send(JSON.stringify({ method: "initialized", params: {} }));
-    socket.close();
+  let initialized = false;
+  let failed = false;
+  function fail(reason) {
+    if (failed) return;
+    failed = true;
+    socket.terminate();
+    readinessFail(reason);
   }
   socket.on("open", () => {
-    // Initialize only identifies this connection; it creates no thread or model turn.
+    // Codex exempts its probe identity from changing the process-wide originator.
     socket.send(JSON.stringify({
       id: 1,
       method: "initialize",
       params: {
-        clientInfo: { name: "openclaw-enterprise-readiness", version: "1.0.0" },
-        capabilities: { experimentalApi: true },
+        clientInfo: { name: "codex_app_server_daemon", version: "1.0.0" },
       },
     }));
   });
   socket.on("message", (data) => {
+    if (initialized || failed) return;
     let response;
     try {
       response = JSON.parse(data.toString("utf8"));
     } catch {
-      finish("Codex app-server initialize response is invalid");
+      fail("Codex app-server initialize response is invalid");
       return;
     }
     if (response?.id !== 1) return;
     if (response.error !== undefined) {
-      finish("Codex app-server initialize request failed");
+      fail("Codex app-server initialize request failed");
     } else if (typeof response.result?.userAgent !== "string" || !response.result.userAgent.trim()) {
-      finish("Codex app-server initialize response is invalid");
+      fail("Codex app-server initialize response is invalid");
     } else {
-      finish();
+      initialized = true;
+      readinessWaitingFor = "the Codex app-server connection to close";
+      // No subsequent RPC needs the initialized notification. Close without
+      // subscribing to events or producing a periodic initialized log entry.
+      socket.close(1000);
     }
   });
-  socket.on("close", () => finish("Codex app-server closed before initialization"));
+  socket.on("close", (code) => {
+    if (failed) return;
+    if (!initialized || code !== 1000) {
+      fail("Codex app-server closed before initialization completed");
+      return;
+    }
+    clearTimeout(timeout);
+    process.exit(0);
+  });
   socket.on("error", (error) =>
-    finish("Codex app-server WebSocket unavailable: " + readinessErrorCode(error)),
+    fail("Codex app-server WebSocket unavailable: " + readinessErrorCode(error)),
   );
 }
 if (

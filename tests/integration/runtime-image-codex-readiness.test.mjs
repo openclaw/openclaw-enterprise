@@ -20,10 +20,10 @@ const { once } = require("node:events");
 const { mkdirSync } = require("node:fs");
 const { connect } = require("node:net");
 const { promisify } = require("node:util");
-const { WebSocketServer } = require("ws");
+const { WebSocket, WebSocketServer } = require("ws");
 const execute = promisify(execFile);
 const token = randomBytes(32).toString("hex");
-const env = { PATH: process.env.PATH, HOME: "/tmp/readiness", CODEX_HOME: "/tmp/readiness/codex", RUST_LOG: "error" };
+const env = { PATH: process.env.PATH, HOME: "/tmp/readiness", CODEX_HOME: "/tmp/readiness/codex" };
 mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
 async function probe(port, auth = token) {
   try {
@@ -36,9 +36,34 @@ async function probe(port, auth = token) {
     return { code: error.code, output: error.stdout + error.stderr };
   }
 }
+async function identity(name) {
+  const socket = new WebSocket("ws://127.0.0.1:18991", {
+    headers: { Authorization: "Bearer " + token }, perMessageDeflate: false,
+  });
+  let userAgent;
+  const deadline = setTimeout(() => socket.terminate(), 2000);
+  socket.on("open", () => socket.send(JSON.stringify({
+    id: 1, method: "initialize", params: { clientInfo: { name, version: "1.0.0" } },
+  })));
+  socket.on("message", data => {
+    const response = JSON.parse(String(data));
+    if (response.id === 1) {
+      assert.equal(response.error, undefined);
+      userAgent = response.result.userAgent;
+      socket.close(1000);
+    }
+  });
+  const [code] = await once(socket, "close");
+  clearTimeout(deadline);
+  assert.equal(code, 1000);
+  assert.equal(typeof userAgent, "string");
+  return userAgent;
+}
+let serverLog = "";
 const server = spawn("codex", ["-c", 'otel.exporter="none"', "app-server", "--listen", "ws://127.0.0.1:18991",
   "--ws-auth", "capability-token", "--ws-token-sha256", createHash("sha256").update(token).digest("hex")],
-  { env, stdio: "ignore" });
+  { env, stdio: ["ignore", "ignore", "pipe"] });
+server.stderr.on("data", data => { serverLog += data; });
 const serverExit = once(server, "exit");
 try {
   const deadline = Date.now() + 10000;
@@ -53,11 +78,16 @@ try {
     assert.ok(Date.now() < deadline, "real Codex server must listen");
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  // Each probe opens its own connection; repeated readiness must not create a
-  // thread or depend on another client's initialization state.
+  // Probing before the first ordinary client must not claim its originator.
+  assert.deepEqual(await probe(18991), { code: 0, output: "" });
+  const ordinaryIdentity = await identity("ordinary-client");
+  assert.match(ordinaryIdentity, /^ordinary-client\//);
+  // Later polling must also preserve that client's process-wide user-agent suffix.
   for (let attempt = 0; attempt < 2; attempt++) {
     assert.deepEqual(await probe(18991), { code: 0, output: "" });
+    assert.equal(await identity("codex_app_server_daemon"), ordinaryIdentity);
   }
+  assert.doesNotMatch(serverLog, /notification[^\n]*initialized/, "default logging must not add an initialized event per poll");
   assert.equal((await probe(18991, "wrong-capability-token")).code, 1);
 } finally {
   server.kill("SIGTERM");
@@ -65,7 +95,7 @@ try {
   await serverExit;
   clearTimeout(kill);
 }
-const cases = ["silent", "wrong-id", "rejected", "invalid-json", "missing-identity", "closed"];
+const cases = ["silent", "wrong-id", "rejected", "invalid-json", "missing-identity", "closed", "abrupt-after-result"];
 for (const mode of cases) {
   const peer = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await once(peer, "listening");
@@ -79,6 +109,10 @@ for (const mode of cases) {
       if (mode === "invalid-json") socket.send("private-error-canary");
       if (mode === "missing-identity") socket.send(JSON.stringify({ id: request.id, result: {} }));
       if (mode === "closed") socket.close();
+      if (mode === "abrupt-after-result") socket.send(
+        JSON.stringify({ id: request.id, result: { userAgent: "codex/test" } }),
+        () => socket.terminate(),
+      );
     });
   });
   try {
@@ -132,6 +166,6 @@ test(
       ],
       { timeout: 40000, maxBuffer: 65536 },
     );
-    assert.deepEqual(JSON.parse(result.stdout), { repeatedInitialization: true, rejectedPeers: 6 });
+    assert.deepEqual(JSON.parse(result.stdout), { repeatedInitialization: true, rejectedPeers: 7 });
   },
 );

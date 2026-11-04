@@ -332,8 +332,10 @@ model turn.
   label. Dedicated Codex Harness containers clear the plugin readiness marker at
   process start, so a marker from a previous container attempt cannot make a
   restarted runtime ready. Readiness also requires a successful authenticated
-  loopback app-server `initialize` response within the two-second probe budget;
-  an open WebSocket alone is insufficient. This check creates no thread or model
+  loopback app-server `initialize` response;
+  an open WebSocket alone is insufficient. The program has a two-second internal
+  deadline; the unchanged Kubernetes exec probe uses kubelet’s one-second default
+  timeout, including process startup. This check creates no thread or model
   turn and does not verify the Gateway's network path to the Harness. Access-token login retries only native process
   timeouts, up to three 30-second attempts. Exhausted startup remains unready
   until an explicit restart; see the

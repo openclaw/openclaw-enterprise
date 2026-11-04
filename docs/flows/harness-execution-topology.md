@@ -148,7 +148,9 @@ Codex readiness uses the resident transport token to initialize a separate
 loopback app-server connection. It requires the matching RPC result with a
 nonempty `userAgent`, then closes that connection. WebSocket upgrade alone is
 insufficient. A rejected, malformed, closed or unanswered initialization stays
-unready within the existing two-second probe budget. This read-only handshake
+unready. The program retains its two-second internal deadline; Kubernetes
+retains the stricter one-second default exec-probe timeout, including process
+startup. This read-only handshake
 creates no thread or model turn and does not change liveness. It verifies local
 RPC service, not Gateway-to-Harness routing or model execution.
 
