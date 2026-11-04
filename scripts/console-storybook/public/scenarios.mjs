@@ -196,6 +196,14 @@ const pluginCapabilities = {
     additionalProperties: false,
   },
 };
+const slackPluginId = "occ-plugin:slack@1.0.0";
+const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
+const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
+const slackTool = {
+  id: "slack_search_public",
+  name: "slack_search_public",
+  ownerId: slackPluginId,
+};
 const pluginSetup = {
   message:
     "App connection status is not verified. Catalog availability does not confirm linked credentials. In ChatGPT admin, select the same workspace as this credential and enable plugin and app access for its user or service account. For service-account plugin credentials, open Service accounts, choose the account, and configure its app connections. Workspace administrator access is required. OCE policies do not grant access or configure credentials. Reload plugins after changes.",
@@ -5670,6 +5678,57 @@ export const scenarios = {
       "Close and reopen the picker. Calendar's saved policy is unchanged. Repeat from Reset story to inspect the skipped prefetch again.",
     ],
     gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
+  },
+  slackMcpTools: {
+    group: "Pages/Agent detail",
+    name: "Choose tools for a connected Slack account",
+    path: `${draft}&tab=plugins`,
+    harnessId: "openclaw",
+    deployed: true,
+    agentPlugins: { [slackPluginId]: { enabled: true } },
+    credentialSources: [{ sourceId: slackSourceId }],
+    pluginDiscoveryCredential: "none",
+    pluginCapabilities: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      approvers: { agent: false, plugin: false, tools: false },
+      toolDefaults: { enabled: false },
+      tools: { enabled: false },
+      driverPolicySchema: { type: "object", properties: {} },
+      policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
+      credentialSlots: [
+        {
+          pluginId: slackPluginId,
+          releaseSha256: "a".repeat(64),
+          id: "account",
+          label: "Slack account",
+          toolDiscovery: true,
+          sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+        },
+      ],
+    },
+    pluginDiscovery: {
+      pages: { initial: { plugins: [slackEntry], nextCursor: null } },
+      details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
+    },
+    rules: [
+      {
+        suffix: "/plugins/details",
+        method: "POST",
+        delayMs: 650,
+        once: true,
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Configure plugins")],
+    description:
+      "The Tools picker loads available tools from the selected Slack account. Select the tools the next deployment may call.",
+    steps: [
+      "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
+      "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
+      "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+    ],
+    gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
   },
   pluginsDraft: {
     group: "Pages/Agent detail",
