@@ -1877,6 +1877,32 @@ describe("module boundaries", { concurrency: true }, () => {
     assert.ok(violates(await check(), "apps/app/src/broken.ts", "source-syntax"));
   });
 
+  test("reports parse errors without adding JavaScript grammar diagnostics or losing imports", async (t) => {
+    const { write, check } = await workspace(t);
+    const tsPath = "apps/app/src/parse-errors.ts";
+    const jsPath = "apps/app/src/parse-errors.js";
+    const validJsPath = "apps/app/src/parse-valid.js";
+    await write(tsPath, 'import "./index.ts";\nconst a = ;\nconst b = ;\n');
+    await write(
+      jsPath,
+      'import "./index.ts";\nconst x: number = 1;\ninterface Foo {}\nconst y = ;\n',
+    );
+    await write(validJsPath, "const x: number = 1;\ninterface Foo {}\n");
+    const report = await check();
+    const syntax = (path) =>
+      report.violations
+        .filter((item) => item.from === path && item.rule === "source-syntax")
+        .map(({ line, message }) => ({ line, message }));
+    assert.deepEqual(syntax(tsPath), [
+      { line: 2, message: "Expression expected." },
+      { line: 3, message: "Expression expected." },
+    ]);
+    assert.deepEqual(syntax(jsPath), [{ line: 4, message: "Expression expected." }]);
+    assert.deepEqual(syntax(validJsPath), []);
+    assert.equal(reaches(report, tsPath, "apps/app/src/index.ts"), true);
+    assert.equal(reaches(report, jsPath, "apps/app/src/index.ts"), true);
+  });
+
   test("classifies runtime, erased type-only and mixed cycles using Node type-stripping semantics", async (t) => {
     const { write, check } = await workspace(t);
     await write(

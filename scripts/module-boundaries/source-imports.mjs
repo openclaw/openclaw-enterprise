@@ -9,6 +9,7 @@ import {
   unwrap,
 } from "./loader-provenance.mjs";
 import { assignedSymbols } from "./source-mutations.mjs";
+import { parseDiagnostics } from "./parse-diagnostics.ts";
 import { freezeRecord, slash, sourceExtension } from "./workspace.mjs";
 
 function normalizedSpecifier(root, value) {
@@ -213,7 +214,7 @@ export function collectSourceImports(snapshot) {
         .digest("hex")}`;
     }
     const line = (node) => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-    for (const error of source.parseDiagnostics) {
+    for (const error of parseDiagnostics(source)) {
       diagnostics.push(
         freezeRecord({
           category: "syntax",
