@@ -2918,13 +2918,14 @@ export async function renderAgentDetail(
               latestOverviewUnavailable = overviewUnavailable;
               latestDeploymentUnavailable = readFailed;
               latestDeploymentReadError = readError;
+              // An already viewed version can update the recovery banner synchronously.
+              latestDeploymentRecord = record;
               if (
                 record?.error?.code === "RUNTIME_AUTHENTICATION_FAILED" ||
                 modelUnavailable(record?.error)
               ) {
                 void readLatestRevisionDetail(mostRecent);
               }
-              latestDeploymentRecord = record;
               if (mostRecent.id === selected) {
                 // Share success and failure only with this same selected version.
                 if (record) {

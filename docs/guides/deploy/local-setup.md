@@ -68,9 +68,9 @@ unset OCC_DEVELOPMENT_PROTECTED_EGRESS
 # If the configured pnpm store is read-only, first select a private writable store:
 # export pnpm_config_store_dir="$RUN_DIR/pnpm-store"
 # Build the CLI from the matching source and wait for k3d bootstrap.
-pnpm install --frozen-lockfile &&
-  go build -trimpath -o bin/occ ./cmd/occ &&
-  ./bin/occ dev up --sandbox-network-policy-file "$RUN_DIR/artifacts.yaml"
+pnpm install --frozen-lockfile
+go build -trimpath -o bin/occ ./cmd/occ
+./bin/occ dev up --sandbox-network-policy-file "$RUN_DIR/artifacts.yaml"
 ```
 
 The launcher enables Gateway TLS, mTLS and authentication before startup. Wait for `OpenClaw Enterprise development stack is ready`. Record the printed API URL, Kubernetes context and cleanup command. With the example ports the REST base is `http://127.0.0.1:3012`. Open the printed Console origin at `/console/`; its Agents page is `/console/agents`. [Trust the local Console CA](../operate/troubleshooting.md#the-local-console-reports-a-certificate-error). If your browser runs on another machine, [forward the Console port](../operate/troubleshooting.md#open-the-console-from-another-machine).
