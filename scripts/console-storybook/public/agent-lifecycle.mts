@@ -213,7 +213,7 @@ export function createAgentLifecycle(
   const clearRevisionOnRead = new Set<string>();
   let runtimeStatusReads = 0;
   let runtimeLogReads = 0;
-  let selectedRevisionId = null;
+  let selectedRevisionId: string | null = null;
   if (scenario.candidateSuperseded) {
     // A newer v8 the viewer cannot read superseded v7 and is now selected.
     selectedRevisionId = hiddenRevisionId;
