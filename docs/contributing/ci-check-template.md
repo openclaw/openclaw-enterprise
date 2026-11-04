@@ -1,19 +1,19 @@
 # Document a CI check
 
-Use the `reference/ci` template for CI check detail pages under `docs/testing/ci/`. Each page explains one
+Use the `reference/ci` template for test workflow detail pages under `docs/testing/ci/`. Each page explains one
 check from the [CI overview](../testing/ci.md#checks-and-gates): what it verifies,
 when its result applies, how to run it, and how to interpret the evidence.
 
 ## What each section must answer
 
-| Section            | Reader's question                                       | Include                                                                                                                                |
-| ------------------ | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Overview           | What does this check prove?                             | Purpose, system under test, and whether dependencies are real, simulated, or mixed.                                                    |
-| Trigger            | Will my change run it, and does failure block anything? | Events, path filters, labels, skip conditions, and merge/publication consequences. Link exact workflow policy.                         |
-| Scenarios          | What action produces which observable result?           | Setup/action, expected outcome, and source link. Include meaningful failure and authorization cases; group similar cases.              |
-| Execution          | How do I reproduce this coverage?                       | One recommended command, prerequisites, credentials/environment links, selection rules, and required isolation.                        |
-| Results and limits | What counts as a pass, and what remains unproved?       | Job/artifact names, skip semantics, scope, cleanup/recovery, and limits such as simulated model responses.                             |
-| Files              | Where is the source of truth?                           | Workflow, exact manifest, test files, important helpers, and implementation entry points. State when no manifest or test suite exists. |
+| Section            | Reader's question                                       | Include                                                                                                                                 |
+| ------------------ | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Overview           | What does this check prove?                             | Purpose, system under test, and whether dependencies are real, simulated, or mixed.                                                     |
+| Trigger            | Will my change run it, and does failure block anything? | Events, path filters, labels, skip conditions, and merge/publication consequences. Link exact workflow policy.                          |
+| Scenarios          | What action produces which observable result?           | Setup/action, expected outcome, and source link. Include meaningful failure and authorization cases; group similar cases.               |
+| Execution          | How do I reproduce this coverage?                       | One recommended command, prerequisites, credentials/environment links, selection rules, and required isolation.                         |
+| Results and limits | What counts as a pass, and what remains unproved?       | Job/artifact names, skip semantics, scope, cleanup/recovery, and limits such as simulated model responses.                              |
+| Files              | Where is the source of truth?                           | Workflow, exact manifest, test files, important helpers, and implementation entry points. State when tests run without a lane manifest. |
 
 ## Copy the template
 
@@ -49,8 +49,9 @@ then starting it creates a new revision and chat succeeds” is verifiable.
 
 For large checks, group related cases and link exact manifests rather than
 copying hundreds of test names. Add columns for presets or automatic selection
-when they change coverage. For build/publication checks, describe validation
-stages explicitly; do not invent runtime tests to fill the table.
+when they change coverage. Publication-only workflows, preview builds, cache
+maintenance, and security scanning belong in their owning contributor or release
+guides, not in this template or the Testing & CI navigation.
 
 Keep the CI index to one-line purposes and links. Check pages own triggers,
 scenarios, and workflow-specific results; do not repeat those details in the index.

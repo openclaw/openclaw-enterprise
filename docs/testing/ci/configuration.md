@@ -7,11 +7,9 @@ Manual dispatch inputs are per-run values; use the owning check page for command
 
 ## Shared settings
 
-Public repositories need no `CODEQL_ENABLED` setting. For private repositories,
-set that repository variable to `true` only after approved, licensed Code Security
-advanced setup. Native image checks use the [release build settings](../../release/configuration.md#build-settings).
+Native image checks use the [release build settings](../../release/configuration.md#build-settings).
 
-Ordinary CI, First Agent Smoke, cache warming, Storybook, and Observability Demo
+Ordinary CI, First Agent Smoke, and Observability Demo
 need no provider secrets. Runner labels, tool pins, triggers, timeouts, and job
 permissions are set in the [workflow files](../../../.github/workflows);
 [test lane definitions](../../../scripts/ci/test-suites.json) list required inputs.

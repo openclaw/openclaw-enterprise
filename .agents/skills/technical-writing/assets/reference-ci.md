@@ -2,11 +2,11 @@
 kind: reference/ci
 ---
 
-# Check name
+# Test workflow name
 
 ## Overview
 
-Describe the reader's reason to use the check and the boundary it verifies.
+Describe the reader's reason to run these tests and the boundary they verify.
 Identify real and simulated dependencies.
 
 ## Trigger

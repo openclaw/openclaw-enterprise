@@ -907,10 +907,6 @@
                     "label": "Observability Demo"
                   },
                   {
-                    "page": "testing/ci/documentation-publication",
-                    "label": "Publish Documentation"
-                  },
-                  {
                     "page": "testing/ci/staging-qualification",
                     "label": "Staging Qualification"
                   },
@@ -1302,6 +1298,20 @@
         "set-the-production-browser-origins-before-installing-occ": "/guides/deploy/eks-openshell-setup/#set-the-production-browser-origins-before-installing-occ",
         "read-the-protected-initial-owner-files": "/guides/deploy/eks-openshell-setup/#read-the-protected-initial-owner-files",
         "install-the-loopback-tls-listener": "/guides/deploy/eks-openshell-setup/#install-the-loopback-tls-listener"
+      }
+    },
+    {
+      "from": "/testing/ci/documentation-publication/",
+      "to": "/contributing/documentation-hosting/#deploy-private-documentation",
+      "anchors": {
+        "overview": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "trigger": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "when-it-runs": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "scenarios": "/contributing/documentation-hosting/#build-and-deployment-stages",
+        "execution": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "run-it": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "results-and-limits": "/contributing/documentation-hosting/#verify-a-deployment",
+        "files": "/contributing/documentation-hosting/#publication-source-files"
       }
     }
   ]
