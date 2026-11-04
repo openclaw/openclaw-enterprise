@@ -34,6 +34,18 @@ Keep saved, selected, running, and ready states distinct. A selected Agent
 revision or a stored `activeRevisionId` does not prove that its workload is
 running or ready. State which source or observation supports each claim.
 
+## Name what the system saves
+
+- Use **Agent revision** for the resource. To explain what it preserves, name
+  the value. For example, “Editing the draft does not change the configuration
+  saved in an earlier Agent revision.”
+- Use **settings saved for a deployment** when describing the values a reader
+  can inspect. Name the relevant settings, such as the Harness or Backend ID.
+- Use **queued operation** for an item the API enqueues and the worker claims.
+  When persistence matters, name the store and transaction. For example,
+  “The API saves the Agent revision and queues the deployment in the same
+  PostgreSQL transaction.”
+
 ## State the constraint
 
 Replace “bounded,” “limited,” “safe,” or “small” when these words hide a

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { format, resolveConfig } from "prettier";
 
+import { documentApiExamples } from "./document-api-examples.mjs";
 import { createFastifyApp } from "../apps/controller/src/index.ts";
 import {
   generateApiReferenceOutputs,
@@ -44,7 +45,7 @@ async function generateDocument() {
   let document;
   try {
     await app.ready();
-    document = app.swagger();
+    document = documentApiExamples(app.swagger());
   } finally {
     await app.close();
   }

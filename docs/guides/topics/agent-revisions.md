@@ -74,23 +74,28 @@ The commands below also use `jq`.
 
 ## Inspect an earlier version
 
-In the console, open the Agent's **Versions** list. **Current version** marks
-the version selected by OCC; selecting a version shows its read-only details
-beside the list. **Create new version**, in the page header, and the list's
-**New version** entry open the current saved Configuration;
-**Deploy new version** uses those saved settings and Agent plugin selections.
-Viewing an older version does not select it for deployment. The
-[HTTP API](../../reference/api.md#agent-revisions)
-also lists and reads Agent revisions; `occ agent revisions "$AGENT_ID"` lists them.
-Lists hold summaries, newest first, 50 to a page (`limit` up to 100); pass
-`meta.nextCursor` as `cursor` (or `occ agent revisions --cursor`) for older ones.
-The console's **Show older versions** loads the next page. Read the Agent revision
-by ID to get its saved settings. OCC never prunes Agent revisions.
+In the console, use **Viewing version** on the Agent page. **Selected for service**
+marks the version selected by OCC. Choosing a version opens its read-only
+snapshot. **Open draft** in the header, or **Draft** in the picker, opens the
+current saved Configuration. **Deploy new version** uses those saved settings
+and Agent plugin selections. Browsing an older version does not deploy it.
 
-The **Plugins** tab shows the saved Agent selections in **Create new version** and the
-selections stored in a saved version. Change and save draft plugin policies
-before deploying; editing the reusable Configuration JSON does not update these
-Agent-owned selections.
+The **Deployment** tab contains the latest visible deployment activity, the
+viewed version's deployment record, and **Run diagnostics for this version**.
+Pending deployments, startup warnings, and incomplete cleanup also show a
+message above the tabs. **Logs** retains the viewed version's runtime output.
+**Workspace files** and **Access** apply to the whole Agent.
+
+The [HTTP API](../../reference/api.md#agent-revisions) also lists and reads
+Agent revisions; `occ agent revisions "$AGENT_ID"` lists them. Lists hold
+summaries, newest first, 50 to a page (`limit` up to 100). Pass `meta.nextCursor`
+as `cursor` (or `occ agent revisions --cursor`) for older ones. The console's
+**Load older versions** appends the next page to the picker. Read the Agent
+revision by ID to get its saved settings. OCC never prunes Agent revisions.
+
+The **Plugins** tab shows saved Agent selections in the draft and the selections
+stored in a saved version. Save draft plugin policies before deploying;
+editing Configuration JSON does not update these Agent-owned selections.
 
 The public API has no rollback operation. To return to an earlier configuration,
 restore the settings you need from your saved source file, using the older

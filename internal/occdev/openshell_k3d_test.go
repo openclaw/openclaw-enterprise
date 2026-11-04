@@ -114,7 +114,7 @@ func (transport *k3dOrderingTransport) RoundTrip(*http.Request) (*http.Response,
 }
 
 func TestK3dCodexPreflightOrdering(t *testing.T) {
-	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure", "network check failure"} {
+	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure", "network check failure", "keep on failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			state := filepath.Join(root, "state")
@@ -165,6 +165,11 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				"OCC_DEVELOPMENT_BROWSER_PORT":                      "8443",
 			} {
 				t.Setenv(key, value)
+			}
+			if scenario == "keep on failure" {
+				// The inspection override must keep the failed stack instead of
+				// rolling it back, and must tell the operator how to clean up.
+				t.Setenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE", "1")
 			}
 			transport := &k3dOrderingTransport{}
 			previousTransport := http.DefaultTransport
@@ -273,7 +278,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), wantError) {
 				t.Fatalf("want %q, got %v; commands: %v", wantError, err, calls)
 			}
-			if scenario == "refused" || scenario == "cleanup failure" {
+			if scenario == "refused" || scenario == "cleanup failure" || scenario == "keep on failure" {
 				var exitErr *exec.ExitError
 				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 42 || !strings.Contains(diagnostic.String(), "sandbox fixture refused") {
 					t.Fatalf("lost original refusal: %v; %s", err, &diagnostic)
@@ -325,7 +330,9 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 					t.Fatal("runtime work preceded its prerequisite")
 				}
 			}
-			stages = append(stages, "k3d cluster delete occ-dev-order")
+			if scenario != "keep on failure" {
+				stages = append(stages, "k3d cluster delete occ-dev-order")
+			}
 			for _, stage := range stages {
 				i := index(stage)
 				if i <= previous {
@@ -350,7 +357,17 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 					t.Fatalf("unexpected downstream work: %s", command)
 				}
 			}
-			if scenario == "cleanup failure" {
+			if scenario == "keep on failure" {
+				if index("k3d cluster delete occ-dev-order") >= 0 {
+					t.Fatal("keep-on-failure rolled the cluster back")
+				}
+				if _, err := os.Stat(state); err != nil {
+					t.Fatalf("keep-on-failure discarded state: %v", err)
+				}
+				if !strings.Contains(output.String(), "OCC_DEVELOPMENT_KEEP_ON_FAILURE is set") {
+					t.Fatalf("keep-on-failure hid the cleanup hint: %s", &output)
+				}
+			} else if scenario == "cleanup failure" {
 				if !strings.Contains(err.Error(), "rollback incomplete") || !strings.Contains(err.Error(), "exit status 43") {
 					t.Fatalf("lost cleanup failure: %v", err)
 				}

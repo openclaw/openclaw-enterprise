@@ -44,12 +44,15 @@ disposable test rig, not production packaging. If the Engine cannot run
 systemd, use an explicitly selected disposable Linux VM instead; do not
 substitute the conformance fixture and call it host proof.
 Make sure `oce-ssh-host` is not an existing container before starting the rig.
+In the same Bash shell, [resolve the OpenClaw build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
+before building the runtime image:
 
-```sh
+```bash
 SSH_RIG=$(mktemp -d)
 chmod 700 "$SSH_RIG"
 ssh-keygen -q -t ed25519 -N '' -f "$SSH_RIG/id_ed25519"
-docker build -f deploy/runtime/Dockerfile -t localhost/openclaw-runtime:local .
+docker build -f deploy/runtime/Dockerfile "${openclaw_build_args[@]}" \
+  -t localhost/openclaw-runtime:local .
 docker build --build-arg RUNTIME_IMAGE=localhost/openclaw-runtime:local \
   -t oce-ssh-host:local tests/fixtures/ssh-compute/host
 docker run -d --name oce-ssh-host --privileged --cgroupns=host \

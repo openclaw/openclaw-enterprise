@@ -26,7 +26,7 @@ then record the Helm outcome separately (`unknown` if the response was lost).
 The UID identifies the Job; it does not mean the installation succeeded.
 
 If you cannot establish those conditions or read the UID, write `Job UID: not
-recorded`. Helm can replace an older Job even when the release name is unused;
+recorded`. Another install or upgrade may replace the Job after the chart checks it;
 do not substitute a later UID or rerun the install. The next operator can still
 [inspect the current Job](#resume-an-installation-in-progress) without `--expect-job-uid`.
 
@@ -43,10 +43,11 @@ The CLI gets the Job by name. A single `kubectl` invocation resolves the cluster
 and credentials together, including when a gateway selects the cluster by URL
 path. It may read API discovery metadata and, if the Job is not found, check
 whether the Namespace exists. You do not need permission to read the Namespace
-or list Jobs or Pods. If the result is inconclusive, initialization is **unknown**.
+or list Jobs or Pods. Use the CLI from the same source revision as the chart; changed or older Job
+steps are not recognized. If the result is inconclusive, initialization is **unknown**.
 
 If a matching CLI release is not yet published, use a trusted checkout of the
-matching source with Go installed, and substitute `go run ./cmd/occ` for `occ` in
+matching source with its `go.mod` toolchain installed, and substitute `go run ./cmd/occ` for `occ` in
 both commands below. Run them from the checkout root.
 
 ```bash
@@ -69,8 +70,8 @@ the Job cannot identify that original. If the original UID was not recorded,
 omit `--expect-job-uid`: the commands can describe the current Job but cannot tie
 it to that earlier attempt. Interpret the result at this target:
 
-- **Completed.** Match the Job UID to the handoff. Helm replaces this Job before
-  its next install or upgrade. Exit zero means the returned Job has recognized
+- **Completed.** Match the Job UID to the handoff. A later upgrade can replace this
+  named Job; keep the recorded UID. Exit zero means the returned Job has recognized
   chart fields, no unsupported controller specified, and consistent terminal
   completion evidence. This is consistent with migration and bootstrap
   completing, including verification of an existing Installation. The Job read
@@ -253,6 +254,23 @@ workspace state. A saved version fixes the requested configuration and
 references. Referenced Secret values and resolved plugin releases can change. See
 [version snapshots](../../reference/agents/deployment.md#revisions-and-deployment)
 and [plugin lifecycle](../../reference/agent-plugins.md#lifecycle).
+
+### Check conversation continuity
+
+Before the upgrade, choose a test conversation on an existing Agent and note a
+harmless exchange. After recovery, reopen that conversation on the same Agent.
+Find the earlier exchange, then send a follow-up and check for a new reply.
+Repeat the check if you return to the old build. A new chat or a restored
+workspace file can work even when the original history is missing.
+
+For dedicated Codex, the Gateway claim holds the conversation and the
+[Harness claim](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+holds `codex-sessions`. To check native thread continuity, record the thread ID
+before the change and verify the follow-up used that same thread. Keep IDs and
+results private; omit message bodies and credentials.
+
+[Re-creating a split-layout tenant](split-layout-upgrade.md#export-and-re-create)
+assigns new Agent IDs; the separate archive keeps old conversations for reference.
 
 ## Complete the handoff
 

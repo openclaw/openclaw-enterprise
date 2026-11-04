@@ -12,9 +12,11 @@ Set environment variables and secrets under **Settings → Environments → cont
 
 | Repository variable         | Required/default                                                                | Purpose                                                                                                                                                                                        |
 | --------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CONTAINER_NODE_BASE_IMAGE` | Required for native container builds and image publication; no approved default | Full Node 24 `image@sha256:...` matching `scripts/ci/test-suites/images-packaging.json` and `deploy/runtime/Dockerfile`. Use repository or organization scope: preparation has no environment. |
+| `CONTAINER_NODE_BASE_IMAGE` | Required for publication and native checks invoked by `CI`; no approved default | Full Node 24 `image@sha256:...` matching `scripts/ci/test-suites/images-packaging.json` and `deploy/runtime/Dockerfile`. Use repository or organization scope: preparation has no environment. |
 | `CONTAINER_AMD64_RUNNER`    | Optional; `blacksmith-16vcpu-ubuntu-2404`                                       | Native AMD64 image checks.                                                                                                                                                                     |
 | `CONTAINER_ARM64_RUNNER`    | Optional; `blacksmith-8vcpu-ubuntu-2404-arm`                                    | Native ARM64 image checks.                                                                                                                                                                     |
+
+A standalone native image check uses the selected source's checked-in CI base.
 
 Runner overrides must select provisioned Linux runners with the matching
 architecture, at least four CPUs, 12 GiB RAM, and enough disk for the build.

@@ -1,5 +1,8 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { EventEmitter, once } from "node:events";
+import { createServer, request as httpRequest } from "node:http";
 import test from "node:test";
 
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -19,6 +22,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 const accessToken = "at-plugin-discovery-private-fixture";
 const pluginId = "codex-plugin:knowledge@openai-remote";
@@ -51,6 +55,7 @@ async function createFixture(
     supported = true,
     secretDriver = createTestSecretDriver(),
     logger,
+    onSend,
     credentialGatewayDriver,
     sandboxDriver,
   } = {},
@@ -62,6 +67,7 @@ async function createFixture(
     auditSink,
     secretDriver,
     logger,
+    onSend,
     credentialGatewayDriver,
     sandboxDriver,
   });
@@ -242,6 +248,130 @@ test("Plugin discovery requires exact Namespace Agent-create permission before D
   assert.equal(absent.status, 404);
   assert.deepEqual(fixture.calls, []);
 });
+
+test(
+  "Hosted plugin discovery honors client disconnects during IAM reads",
+  { timeout: 30_000 },
+  async (t) => {
+    const completions = new WeakMap();
+    const fixture = await createFixture(t, {
+      onSend: async (request) => {
+        completions.get(request.raw)?.();
+      },
+    });
+    const driver = new CodexPluginDriver();
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver("plugin", driver.id);
+    const saved = await createSavedAgent(fixture);
+    const headers = authenticatedHeaders(await fixture.signIn(), {
+      "content-type": "application/json",
+    });
+
+    const identity = "/api/accounts/v1/user-auth-credential/whoami";
+    const list = "/backend-api/ps/plugins/list";
+    const detail = `/backend-api/ps/plugins/${remoteId}`;
+    const payloads = {
+      [identity]: { chatgpt_account_id: "fixture", chatgpt_account_is_fedramp: false },
+      [list]: { plugins: [], pagination: { next_page_token: null } },
+      [detail]: {
+        id: remoteId,
+        name: "knowledge",
+        scope: "GLOBAL",
+        status: "ENABLED",
+        installation_policy: "AVAILABLE",
+        release: { app_ids: [], skills: [{ name: "knowledge" }], mcp_servers: [], interface: {} },
+      },
+    };
+    const received = [];
+    const port = await listen(
+      t,
+      createServer((request, response) => {
+        const { pathname } = new URL(request.url, "http://localhost");
+        received.push(pathname);
+        response.writeHead(Object.hasOwn(payloads, pathname) ? 200 : 404, {
+          "content-type": "application/json",
+        });
+        response.end(JSON.stringify(payloads[pathname] ?? {}));
+      }),
+    );
+    const fetch = globalThis.fetch;
+    // Redirect only provider transport. The bundled Driver still performs identity and catalog reads.
+    t.mock.method(globalThis, "fetch", (url, init) => {
+      const target = new URL(url);
+      assert.ok(["https://auth.openai.com", "https://chatgpt.com"].includes(target.origin));
+      return fetch(`http://127.0.0.1:${port}${target.pathname}${target.search}`, init);
+    });
+
+    for (const [scope, base, credential] of [
+      ["create", fixture.path, { accessToken }],
+      ["saved", saved.path, {}],
+    ]) {
+      for (const [operation, path, body, providerPath] of [
+        ["list", base, credential, list],
+        ["details", `${base}/details`, { ...credential, pluginId: remoteId }, detail],
+      ]) {
+        for (const [method, disconnect] of [
+          ["lookupIdentity", false],
+          ["lookupIdentity", true],
+          ["authorize", true],
+        ]) {
+          await t.test(
+            `${scope} ${operation} ${disconnect ? "disconnected" : "connected"} during ${method}`,
+            async (t) => {
+              const start = received.length;
+              const evaluated = Promise.withResolvers();
+              const resume = Promise.withResolvers();
+              const evaluate = fixture.iamDriver[method].bind(fixture.iamDriver);
+              // Hold a real IAM result in the pre-handler or inside OCC, after the POST is consumed.
+              t.mock.method(fixture.iamDriver, method, async (input) => {
+                const decision = await evaluate(input);
+                evaluated.resolve(decision);
+                await resume.promise;
+                return decision;
+              });
+              t.after(() => resume.resolve());
+              const incoming = once(fixture.app.server, "request");
+              const client = httpRequest(fixture.origin + path, {
+                method: "POST",
+                headers,
+                agent: false,
+              });
+              const result = once(client, disconnect ? "error" : "response");
+              client.end(JSON.stringify(body));
+              const [raw, response] = await incoming;
+              const completed = Promise.withResolvers();
+              completions.set(raw, completed.resolve);
+              const decision = await evaluated.promise;
+              if (method === "lookupIdentity") {
+                assert.equal(decision.id, fixture.policy.identities[0].id);
+              } else {
+                assert.equal(decision.allowed, true);
+              }
+              assert.equal(raw.readableEnded, true);
+              assert.equal(raw.complete, true);
+              if (disconnect) {
+                const closed = once(response, "close");
+                client.destroy();
+                await closed;
+                assert.equal(response.writableEnded, false);
+              }
+              resume.resolve();
+              // Wait for this route's send hook, so zero requests cannot be a slow provider call.
+              const [[reply]] = await Promise.all([result, completed.promise]);
+              if (disconnect) {
+                assert.equal(reply.code, "ECONNRESET");
+              } else {
+                assert.equal(reply.statusCode, 200);
+                reply.resume();
+              }
+              assert.deepEqual(received.slice(start), disconnect ? [] : [identity, providerPath]);
+            },
+          );
+        }
+      }
+    }
+  },
+);
 
 test("Plugin discovery validates bounded credential and identity input before Driver I/O", async (t) => {
   const logs = [];
@@ -492,6 +622,7 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
       id: "source-discovery-sandbox",
       capability: "sandbox",
       implementation: "test-admission-only",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: ["networking", "filesystem", "process"],
       async cleanup() {},
     },
@@ -589,6 +720,86 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
       fixture.policy.bindings.push(binding);
     }
   }
+  gateway.withSourceToken = withSourceToken;
+
+  await t.test(
+    "source token read is cancelled when the client disconnects",
+    { timeout: 10_000 },
+    async (t) => {
+      // The loops above restored both grants. Prove this same Agent still reaches
+      // the normal synthetic token producer and catalog before holding its next read.
+      const live = await fixture.request("POST", path, { session, body: {} });
+      assert.equal(live.status, 200, JSON.stringify(live.body));
+      assert.equal(tokenReads(), ++reads);
+      assert.equal(fixture.calls.length, 2);
+      assert.deepEqual(live.data, { plugins: [catalogEntry], nextCursor: "second-page" });
+
+      const producer = new EventEmitter();
+      const entered = once(producer, "entered", { signal: t.signal });
+      const finished = once(producer, "finished", { signal: t.signal });
+      // Cleanup can reach this wait after the test deadline has already expired.
+      entered.catch(() => {});
+      finished.catch(() => {});
+      const resume = Promise.withResolvers();
+      let started = false;
+      let cancelled = false;
+      let client;
+      t.mock.method(gateway, "withSourceToken", async (context, use) => {
+        started = true;
+        producer.emit("entered", context.signal);
+        try {
+          await resume.promise;
+          // Return a token despite cancellation to test OCC's late callback guard too.
+          cancelled = context.signal.aborted;
+          return await withSourceToken(context, use);
+        } finally {
+          producer.emit("finished");
+        }
+      });
+      try {
+        const incoming = once(fixture.app.server, "request", { signal: t.signal });
+        client = httpRequest(fixture.origin + path, {
+          method: "POST",
+          headers: authenticatedHeaders(session, { "content-type": "application/json" }),
+          agent: false,
+        });
+        const result = once(client, "error", { signal: t.signal });
+        result.catch(() => {});
+        client.on("response", (reply) => reply.resume());
+        client.end(JSON.stringify({}));
+        const [raw, response] = await incoming;
+        const [signal] = await entered;
+        assert.ok(signal instanceof AbortSignal);
+        assert.equal(signal.aborted, false);
+        assert.equal(raw.readableEnded, true);
+        assert.equal(raw.complete, true);
+        const closed = once(response, "close", { signal: t.signal });
+        client.destroy();
+        await closed;
+        assert.equal(response.writableEnded, false);
+        // The actual server close must abort the source read, before its own timeout.
+        assert.equal(
+          signal.aborted,
+          true,
+          "source token read signal must abort on HTTP disconnect",
+        );
+        assert.equal((await result)[0].code, "ECONNRESET");
+        resume.resolve();
+        await finished;
+        assert.equal(cancelled, true, "the held producer saw the real source-read signal abort");
+        assert.equal(tokenReads(), reads + 1, "the late callback did yield a fixture token");
+        assert.equal(fixture.calls.length, 2, "a late source token must not reach discovery");
+      } finally {
+        // Release the producer even on the decisive red assertion; all event waits
+        // share the native test deadline so cleanup cannot remain held indefinitely.
+        resume.resolve();
+        client?.destroy();
+        if (started) {
+          await finished;
+        }
+      }
+    },
+  );
 });
 
 test("Saved Agent plugin discovery rechecks Secret authority after the backend read", async (t) => {
@@ -861,6 +1072,23 @@ test("Saved Agent uses a credential-free curated catalog for an API-key Codex Ag
   });
   assert.equal(details.status, 200, JSON.stringify(details.body));
   assert.deepEqual(details.data, linear);
+  // The id the list just returned names the same entry; it is not a plugin the Driver lacks.
+  const byListedId = await fixture.request("POST", `${path}/details`, {
+    session,
+    body: { pluginId: linear.id },
+  });
+  assert.equal(byListedId.status, 200, JSON.stringify(byListedId.body));
+  assert.deepEqual(byListedId.data, linear);
+  // An id without its marketplace stays unknown, and the refusal names the listed id.
+  const unversioned = await fixture.request("POST", `${path}/details`, {
+    session,
+    body: { pluginId: "codex-plugin:linear" },
+  });
+  assertApiError(unversioned, 400, "INVALID_REQUEST");
+  assert.match(
+    unversioned.body.error.message,
+    /does not offer: codex-plugin:linear\. Use codex-plugin:linear@openai-curated-remote\.$/,
+  );
   assert.equal(secretReads(), 0);
 
   const embedded = await fixture.createAgent(
@@ -1488,10 +1716,14 @@ test("Curated discovery admits plugins with skills without provider I/O and save
   assert.ok(notion);
   assert.notEqual(notion.available, false);
   assert.equal(notion.selectableWithoutTools, true);
-  assert.equal(
-    (await fixture.request("POST", `${path}/details`, { body: { pluginId: "unknown" } })).status,
-    503,
-  );
+  // An unknown ID is the caller's error, named in the refusal (finding 2790); a cursor
+  // on the single-page catalog is still an invalid catalog response.
+  const unknown = await fixture.request("POST", `${path}/details`, {
+    body: { pluginId: "unknown" },
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error.code, "INVALID_REQUEST");
+  assert.match(unknown.body.error.message, /\(codex-plugin\) does not offer: unknown\./);
   assert.equal((await fixture.request("POST", path, { body: { cursor: "unknown" } })).status, 503);
 
   // The exact selected ID and policy enter the real Agent and immutable revision path.

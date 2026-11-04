@@ -19,3 +19,4 @@ export const Error = story("pluginsError");
 export const Unavailable = story("pluginsUnavailable");
 export const CapabilitiesUnavailable = story("pluginsCapabilitiesUnavailable");
 export const NativeLimited = story("pluginsNativeLimited");
+export const ManagedGoogleInstall = story("managedGoogleInstall");

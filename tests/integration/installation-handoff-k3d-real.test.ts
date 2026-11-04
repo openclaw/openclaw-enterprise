@@ -41,21 +41,23 @@ test(
     const name = "oce.prod-initialization";
     await kubectl("create", "namespace", namespace);
     t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
-    const admin = (...args: string[]) => kubectl("-n", namespace, ...args);
+    const admin = async (...args: string[]) => String(await kubectl("-n", namespace, ...args));
 
     // Start with a new service account and no binding. Build its kubeconfig
     // from public cluster connection details only; never copy the admin user.
     await admin("create", "serviceaccount", "reader");
     const token = (await admin("create", "token", "reader", "--duration=10m")).trim();
     const clusters: unknown = JSON.parse(
-      await kubectl(
-        "config",
-        "view",
-        "--minify",
-        "--flatten",
-        "--raw",
-        "-o",
-        "jsonpath-as-json={.clusters[*]}",
+      String(
+        await kubectl(
+          "config",
+          "view",
+          "--minify",
+          "--flatten",
+          "--raw",
+          "-o",
+          "jsonpath-as-json={.clusters[*]}",
+        ),
       ),
     );
     assert.ok(Array.isArray(clusters));
@@ -130,6 +132,16 @@ test(
       job.metadata.namespace = namespace;
       return { manifest: job, spec: job.spec };
     }
+
+    // Recognize the current rendered install without running migration or bootstrap.
+    // Suspension preserves the real chart steps while preventing Pod creation.
+    const installJob = await renderJob(false);
+    installJob.spec.suspend = true;
+    await applyManifest(JSON.stringify(installJob.manifest));
+    const installUID = (await admin("get", "job", name, "-o", "jsonpath={.metadata.uid}")).trim();
+    assert.ok(installUID);
+    handoff("doctor", 1, /completion not established/, "--expect-job-uid", installUID);
+    await admin("delete", "job", name);
 
     // A foreign controller can write completion without running the chart.
     // The CLI must refuse that evidence even when the recorded UID matches.

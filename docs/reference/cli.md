@@ -15,7 +15,7 @@ its environment variable; `--namespace=` does so for Installation-scoped
 | `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Required for resource commands. Path to the complete bootstrap or issued service-key JSON response.                                        |
 | `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `preset`, `credential-source`, `iam`, and `agent` commands. Supply the Namespace ID, not its name. |
 | `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.                          |
-| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an HTTP request. Default: `30`.                                                                                 |
+| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an OCC request or installation handoff check. Default: `30`.                                                    |
 | `--output`, `-o`     | —                      | Command-specific formats and defaults appear in `--help`. Unsupported explicit values fail before requests.                                |
 | `--help`, `-h`       | —                      | Prints help for the command.                                                                                                               |
 | `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev`; published binaries report their OCE release version.                                   |
@@ -84,7 +84,7 @@ input is not supported. The server validates document fields against the
 | `occ agent create --file FILE`                         | Creates an Agent draft.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ agent update ID --file FILE`                      | Updates editable Agent fields; the body must include `configurationId`.                                                                                                                                                                                                                                                                                                                           |
 | `occ agent deploy ID`                                  | Requests deployment and creates an immutable version.                                                                                                                                                                                                                                                                                                                                             |
-| `occ agent revisions ID`                               | Lists the Agent's immutable versions (deployment IDs), newest first, with configuration generation, deployment status, and `*` on the active one. Pages hold 50 (`--limit` up to 100); `--cursor` continues with older ones.                                                                                                                                                                      |
+| `occ agent revisions ID`                               | Lists the Agent's immutable versions (deployment IDs), newest first, with configuration generation, deployment status, and `*` on the active one. The table shows `superseded` or `stopped` for work a newer version or a Stop ended. Pages hold 50 (`--limit` up to 100); `--cursor` continues with older ones.                                                                                  |
 | `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest version you can read, and says on stderr how it relates to the selected version. The table shows the error as `CODE: message`; `--output json` keeps its data.                                                                                                       |
 | `occ agent runtime-credentials get ID`                 | Reads whether generated runtime credentials are configured for the Agent.                                                                                                                                                                                                                                                                                                                         |
 | `occ agent runtime-credentials provision ID`           | Creates the initial generated runtime credential bundle (empty request body).                                                                                                                                                                                                                                                                                                                     |
@@ -136,7 +136,14 @@ claimed.
 
 ## Installation handoff
 
-`occ installation doctor` and `plan` report the named Job, not release or workload readiness.
+`occ installation doctor` and `plan` inspect one chart initialization Job through
+`kubectl`; they do not use the OCC API or change cluster resources. Both require
+`--kubeconfig`, `--context`, `--kube-namespace`, and `--release`. Optional
+`--expect-job-uid` binds the observation to the originally recorded Job.
+
+Use the CLI matching the chart's source revision. Output is text only. Exit `0`
+means the recognized Job reports consistent completion; other states exit `1`.
+Neither result proves current release or workload readiness.
 [Resume with the original Job UID](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
 
 ## Runtime status and logs

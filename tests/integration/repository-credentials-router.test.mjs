@@ -4,6 +4,7 @@ import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises
 import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it as test } from "node:test";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import {
   cleanEnvironment,
@@ -12,6 +13,7 @@ import {
 } from "../fixtures/repository-credentials/process.mjs";
 import { settled as settle } from "../helpers/child-processes.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { parseGhInvocation } from "../../apps/controller/src/drivers/repo/github/credentials/client/commands.ts";
 import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/credentials/client/environment.ts";
 import {
@@ -62,15 +64,7 @@ const hash = (value) => createHash("sha256").update(JSON.stringify(value)).diges
 const opened = (sessionId, { repository = "example/project", pushRefAllowlist } = {}) => ({
   session: { sessionId, deadlineWallMs: Date.now() + 86400000 },
   bearer: `controlled_gateway_${sessionId}_${"0".repeat(32)}`,
-  client: {
-    gatewayOrigin: "https://credentials.example.test",
-    gitRemote: `https://credentials.example.test/${repository}.git`,
-    gitUsername: "gateway-session",
-    canonicalApiHost: "github.com",
-    apiHost: "credentials.example.test",
-    repository,
-    ...(pushRefAllowlist && { pushRefAllowlist }),
-  },
+  client: repositoryClientData({ repository, ...(pushRefAllowlist && { pushRefAllowlist }) }),
 });
 /** Native material from `[repositoryRef, opened]` pairs. */
 const nativeMaterial = (t, ...entries) =>
@@ -249,6 +243,13 @@ describe("repository credential router", { concurrency: true }, () => {
     const selected = material.manifest.bindings.find(
       ({ repositoryRef }) => repositoryRef === "permitted",
     );
+    const stalePin = {
+      OCE_REPOSITORY_SELECTION: JSON.stringify([
+        "0".repeat(64),
+        "permitted",
+        permitted.session.sessionId,
+      ]),
+    };
     const notAllowed = "repository-push-ref-not-allowed\n";
     // [environment, destination, input, exit code (undefined: any failure), stderr]
     const cases = [
@@ -280,18 +281,8 @@ describe("repository credential router", { concurrency: true }, () => {
       ],
       [{ OCE_REPOSITORY_SELECTION: pin(material, selected) }, undefined, "topic", 0],
       [ref("permitted"), other.client.gitRemote, "topic", undefined],
-      [
-        {
-          OCE_REPOSITORY_SELECTION: JSON.stringify([
-            "0".repeat(64),
-            "permitted",
-            permitted.session.sessionId,
-          ]),
-        },
-        undefined,
-        "topic",
-        undefined,
-      ],
+      [stalePin, undefined, "topic", undefined],
+      [stalePin, "https://unrelated.example.test/example/repository.git", "topic", 0],
       [ref("restricted"), "/unmanaged/local/repository", "topic", 0],
       [ref("permitted"), undefined, "relativeTopic", 0],
       [ref("permitted"), undefined, "relativeMain", 1, notAllowed],
@@ -375,7 +366,12 @@ describe("repository credential router", { concurrency: true }, () => {
       "https://credentials.example.test:443/example/project.git",
       "https://CREDENTIALS.example.test/example/project.git",
       "https://credentials%2Eexample%2Etest/example/project.git",
-      "https://user:secret@unrelated.example.test/x/y.git",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "secret",
+        host: "unrelated.example.test",
+        pathname: "/x/y.git",
+      }),
       "https://unrelated.example.test\\@credentials.example.test/example/project.git",
       "https://unrelated.example.test:443?@credentials.example.test/example/project.git",
       "https://a@b@credentials.example.test/example/project.git",

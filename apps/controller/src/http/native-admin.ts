@@ -101,7 +101,7 @@ interface NativeAdminProxyDenial {
 
 type NativeAdminProxyAdmission = NativeAdminProxyResolution | NativeAdminProxyDenial;
 const NATIVE_ADMIN_PROXY_ADMISSION_TIMEOUT_MS = 5_000;
-const NATIVE_ADMIN_CLOSE_AUDIT_DRAIN_MS = 5_000;
+const NATIVE_ADMIN_WORK_DRAIN_MS = 5_000;
 export const nativeAdminStatusOperation = {
   operationId: "getAgentNativeAdmin",
   method: "GET",
@@ -236,15 +236,40 @@ function escapeHtml(value: string): string {
   });
 }
 
+// A top-level browser page load of the native root or a copied chat link. Link unfurlers and API
+// clients send no Fetch Metadata, so they never qualify. Sec-Fetch-User is checked separately:
+// Safari never sends it, and other browsers omit it on navigations without user activation.
 function browserDocumentNavigation(request: FastifyRequest, pathname: string): boolean {
   return (
     request.method === "GET" &&
-    /^\/(?:chat\/main(?:\/[0-9a-f]{32})?)?$/.test(pathname) &&
+    /^\/(?:chat\/main(?:\/[0-9a-f]{32})?\/?)?$/.test(pathname) &&
     request.headers["sec-fetch-mode"] === "navigate" &&
     request.headers["sec-fetch-dest"] === "document" &&
-    request.headers["sec-fetch-user"] === "?1" &&
     acceptsHtml(request.headers.accept)
   );
+}
+
+function userActivated(request: FastifyRequest): boolean {
+  return request.headers["sec-fetch-user"] === "?1";
+}
+
+function sendNativeAdminHtmlRefusal(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  title: string,
+  body: string,
+): void {
+  reply
+    .header("cache-control", "no-store")
+    .header("content-type", "text/html; charset=utf-8")
+    .header("x-content-type-options", "nosniff")
+    .header("referrer-policy", "no-referrer")
+    .header("x-request-id", request.id)
+    .code(403)
+    .type("text/html; charset=utf-8")
+    .send(
+      `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`,
+    );
 }
 
 function acceptsHtml(accept: string | string[] | undefined): boolean {
@@ -309,7 +334,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   }
 
   const nativeAdminSockets = new Set<Socket>();
-  const nativeAdminCloseAudits = new Set<Promise<void>>();
+  const nativeAdminPendingWork = new Set<Promise<unknown>>();
   let nativeAdminShuttingDown = false;
   // Status polls, proxied requests and WebSocket lease renewals all re-check ownership, and a
   // Compute-owner mismatch lasts until a new deployment: warn once per revision and owner pair.
@@ -582,16 +607,46 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     }
   }
 
-  async function drainNativeAdminCloseAudits(): Promise<void> {
-    if (nativeAdminCloseAudits.size === 0) {
+  function startNativeAdminAdmission(
+    request: IncomingMessage,
+    hostname: string,
+    kind: "http" | "websocket",
+    expectedRevisionId?: string,
+  ) {
+    const result = nativeAdminProxyContext(request, hostname, expectedRevisionId);
+    // Own the result through its audit attempt, even after the caller stops waiting.
+    // Tracking one chain prevents shutdown from missing admission becoming an append.
+    const audit = result.then(
+      async (admission) => {
+        try {
+          await appendNativeAdminProxyDenialAudit(admission);
+          return true;
+        } catch {
+          if (kind === "http") {
+            app.log.warn({ event: "native_admin.http_denial_audit_failed" });
+          } else {
+            app.log.warn({ event: "native_admin.websocket_denial_audit_failed" });
+          }
+          return false;
+        }
+      },
+      () => true,
+    );
+    nativeAdminPendingWork.add(audit);
+    void audit.then(() => nativeAdminPendingWork.delete(audit));
+    return { result, audit };
+  }
+
+  async function drainNativeAdminWork(): Promise<void> {
+    if (nativeAdminPendingWork.size === 0) {
       return;
     }
     let timeout: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
-        Promise.allSettled([...nativeAdminCloseAudits]),
+        Promise.allSettled([...nativeAdminPendingWork]),
         new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, NATIVE_ADMIN_CLOSE_AUDIT_DRAIN_MS);
+          const timer = setTimeout(resolve, NATIVE_ADMIN_WORK_DRAIN_MS);
           timeout = timer;
           timer.unref();
         }),
@@ -600,6 +655,14 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       if (timeout !== undefined) {
         clearTimeout(timeout);
       }
+    }
+    if (nativeAdminPendingWork.size > 0) {
+      // This bounds shutdown waiting, not producer lifetime or durable delivery.
+      // Keep ownership until settlement so a late denial still gets its attempt.
+      app.log.warn({
+        event: "native_admin.pending_work_unresolved",
+        pending: nativeAdminPendingWork.size,
+      });
     }
   }
 
@@ -1051,13 +1114,14 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       canonicalFailure(reply, failure(403, "FORBIDDEN", GENERIC_DENIAL));
       return true;
     }
-    const admission = await boundedNativeAdminAdmission(
-      nativeAdminProxyContext(request.raw, hostname),
-    );
+    if (nativeAdminShuttingDown) {
+      canonicalFailure(reply, dependencyUnavailable());
+      return true;
+    }
+    const operation = startNativeAdminAdmission(request.raw, hostname, "http");
+    const admission = await boundedNativeAdminAdmission(operation.result);
     if (!isNativeAdminProxyResolution(admission)) {
-      try {
-        await appendNativeAdminProxyDenialAudit(admission);
-      } catch {
+      if (admission !== undefined && !(await operation.audit)) {
         canonicalFailure(reply, dependencyUnavailable());
         return true;
       }
@@ -1076,11 +1140,21 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       ) {
         const consoleUrl = new URL("/console/", publicOrigin);
         consoleUrl.hash = `native-agent=${agentKey}`;
-        reply
-          .header("cache-control", "no-store")
-          .header("referrer-policy", "no-referrer")
-          .header("x-request-id", request.id)
-          .redirect(consoleUrl.href, 302);
+        if (userActivated(request)) {
+          reply
+            .header("cache-control", "no-store")
+            .header("referrer-policy", "no-referrer")
+            .header("x-request-id", request.id)
+            .redirect(consoleUrl.href, 302);
+          return true;
+        }
+        // Without user activation, stay 403 and leave sign-in to the person: no automatic redirect.
+        sendNativeAdminHtmlRefusal(
+          request,
+          reply,
+          "Sign in",
+          `<p><a href="${escapeHtml(consoleUrl.href)}">Sign in</a></p>`,
+        );
         return true;
       }
       // A signed-in person who cannot open this Agent (for example after Back switches
@@ -1092,17 +1166,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         documentNavigation
       ) {
         const agentsUrl = escapeHtml(new URL("/console/agents", publicOrigin).href);
-        reply
-          .header("cache-control", "no-store")
-          .header("content-type", "text/html; charset=utf-8")
-          .header("x-content-type-options", "nosniff")
-          .header("referrer-policy", "no-referrer")
-          .header("x-request-id", request.id)
-          .code(403)
-          .type("text/html; charset=utf-8")
-          .send(
-            `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Access denied</title></head><body><p>You do not have access to this gateway.</p><p><a href="${agentsUrl}">Go to your Agents</a></p></body></html>`,
-          );
+        sendNativeAdminHtmlRefusal(
+          request,
+          reply,
+          "Access denied",
+          `<p>You do not have access to this gateway.</p><p><a href="${agentsUrl}">Go to your Agents</a></p>`,
+        );
         return true;
       }
       // A denial names the grant but not the Agent: the Agent was resolved from the host, not
@@ -1122,8 +1191,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       );
       return true;
     }
+    if (nativeAdminShuttingDown || request.raw.socket.destroyed) {
+      canonicalFailure(reply, dependencyUnavailable());
+      return true;
+    }
     const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
-    if (context === undefined) {
+    if (context === undefined || nativeAdminShuttingDown || request.raw.socket.destroyed) {
       canonicalFailure(reply, dependencyUnavailable());
       return true;
     }
@@ -1137,7 +1210,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     head: Buffer,
   ): Promise<void> {
     const hostname = nativeAdminHostname(request.headers.host);
-    if (!isNativeAdminAgentHost(hostname) || isNativeAdminReservedPrefix(request.url)) {
+    if (
+      nativeAdminShuttingDown ||
+      !isNativeAdminAgentHost(hostname) ||
+      isNativeAdminReservedPrefix(request.url)
+    ) {
       socket.destroy();
       return;
     }
@@ -1148,21 +1225,19 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     socket.on("error", () => {
       socket.destroy();
     });
-    const admission = await boundedNativeAdminAdmission(nativeAdminProxyContext(request, hostname));
+    const operation = startNativeAdminAdmission(request, hostname, "websocket");
+    const admission = await boundedNativeAdminAdmission(operation.result);
     if (!isNativeAdminProxyResolution(admission)) {
-      try {
-        await appendNativeAdminProxyDenialAudit(admission);
-      } catch {
-        app.log.warn({ event: "native_admin.websocket_denial_audit_failed" });
-      }
       socket.destroy();
       return;
     }
-    if (socket.destroyed) {
+    if (socket.destroyed || nativeAdminShuttingDown) {
+      socket.destroy();
       return;
     }
     const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
-    if (socket.destroyed) {
+    if (socket.destroyed || nativeAdminShuttingDown) {
+      socket.destroy();
       return;
     }
     if (context === undefined) {
@@ -1180,18 +1255,23 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         ? {}
         : { leaseIntervalMs: options.webSocketLeaseIntervalMs }),
       lease: async () => {
-        const renewed = await boundedNativeAdminAdmission(
-          nativeAdminProxyContext(request, hostname, admission.revisionId),
+        if (nativeAdminShuttingDown) {
+          return "shutdown";
+        }
+        if (socket.destroyed) {
+          return "client_disconnect";
+        }
+        const renewal = startNativeAdminAdmission(
+          request,
+          hostname,
+          "websocket",
+          admission.revisionId,
         );
+        const renewed = await boundedNativeAdminAdmission(renewal.result);
         if (renewed === undefined) {
           return "dependency_timeout";
         }
         if (!isNativeAdminProxyResolution(renewed)) {
-          try {
-            await appendNativeAdminProxyDenialAudit(renewed);
-          } catch {
-            return "dependency_failure";
-          }
           return renewed.reason;
         }
         return undefined;
@@ -1213,8 +1293,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
             revisionId: admission.revisionId,
           });
         });
-        nativeAdminCloseAudits.add(closeAudit);
-        closeAudit.finally(() => nativeAdminCloseAudits.delete(closeAudit));
+        nativeAdminPendingWork.add(closeAudit);
+        void closeAudit.then(() => nativeAdminPendingWork.delete(closeAudit));
       },
     });
   }
@@ -1235,7 +1315,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       ),
     );
     nativeAdminSockets.clear();
-    await drainNativeAdminCloseAudits();
+    await drainNativeAdminWork();
   });
   return {
     interceptHttp: interceptNativeAdminHttp,

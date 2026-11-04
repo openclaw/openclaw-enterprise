@@ -16,6 +16,7 @@ import {
   CredentialSourceReference,
   CredentialSourceSecrets,
   CredentialSourceType,
+  GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
   HarnessAuthBindingSchema,
   AgentCredentialSourcesSchema,
@@ -210,6 +211,7 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
+    policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
     approvers: Type.Optional(
       Type.Object(
         { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
@@ -248,6 +250,26 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
+        credentialSlots: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                pluginId: Type.String(),
+                releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+                id: Type.String(),
+                label: Type.String(),
+                toolDiscovery: Type.Optional(Type.Literal(true)),
+                sources: Type.Array(
+                  Type.Object(
+                    { id: CredentialSourceId, name: Type.String() },
+                    { additionalProperties: false },
+                  ),
+                ),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        ),
       },
       { additionalProperties: false },
     ),
@@ -294,6 +316,7 @@ const CredentialSourceCatalogSchema = Type.Object(
 
 const InstallationCapabilitiesSchema = Type.Object(
   {
+    nativeAdmin: Type.Optional(Type.Literal(true)),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },
@@ -391,6 +414,7 @@ export const AgentSchema = Type.Object(
     harnessAuth: Type.Union([HarnessAuthBindingSchema, Type.Null()]),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
+    gatewayManagedMode: GatewayManagedModeSchema,
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
     repositoryBindings: Type.Optional(RepositoryBindingSelectionsSchema),
@@ -826,6 +850,10 @@ export const NamespaceCallerPermissionsResponse = Type.Object(
   {
     data: Type.Object(
       {
+        delete: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion.",
+        }),
         agents: Type.Object(
           {
             create: Type.Boolean({
@@ -1308,6 +1336,10 @@ export const AgentRevisionSchema = Type.Object(
     configurationKind: ConfigurationKindSchema,
     configurationGeneration: ConfigurationGeneration,
     configuration: ConfigurationValues,
+    gatewayManagedMode: Type.Boolean({
+      description:
+        "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
+    }),
     harness: Type.Object(
       {
         id: Type.String({ minLength: 1 }),

@@ -25,8 +25,8 @@ const SLACK_SECRET_INPUTS: FieldKeys = [
 
 /**
  * The secret-input fields of the channels Kubernetes Compute supports, on the channel and on each
- * named account: `extensions/<channel>/src/secret-contract.ts` at the `OPENCLAW_COMMIT` in
- * `deploy/runtime/Dockerfile`. Update this list when that pin changes. The runtime reads a `$NAME`
+ * named account: `extensions/<channel>/src/secret-contract.ts` at the commit in
+ * `deploy/runtime/openclaw-source.json`. Update this list when that pin changes. The runtime reads a `$NAME`
  * value there as an environment SecretRef.
  */
 const CHANNEL_SECRET_INPUTS: Readonly<Record<string, SecretInputFields>> = {

@@ -7,10 +7,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { admittedConfiguration } from "./admitted-configuration.mjs";
 import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { jsonRequestInit } from "./inject-json.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
   createKubernetesInstallationConfiguration,
@@ -19,6 +20,7 @@ import {
 } from "../helpers/kubernetes-real.mjs";
 import { reservePort, reservedPortArgs } from "./available-port.mjs";
 import { stopProcess } from "./stop-process.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 import { jsonLines as parseJsonLines } from "./json-lines.mjs";
 import { waitFor } from "./wait-for.mjs";
 
@@ -401,6 +403,8 @@ async function createKubernetesHarnessAuth(api, namespaceId) {
 async function createKubernetesConfiguredAgent(pool, api, namespaceId, name, values, body = {}) {
   const harnessAuth = await createKubernetesHarnessAuth(api, namespaceId);
   const created = await createConfiguredAgent(api, namespaceId, name, values, {
+    // The fixture image does not contain an OC Gateway runtime.
+    gatewayManagedMode: false,
     ...body,
     harnessAuth,
   });
@@ -409,7 +413,7 @@ async function createKubernetesConfiguredAgent(pool, api, namespaceId, name, val
 }
 
 function admitted(values) {
-  return admitLoggingConfiguration(values, "info");
+  return admittedConfiguration(values);
 }
 
 async function startController(context, { kubernetesDrivers = false } = {}) {
@@ -418,10 +422,7 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
   context.after(reservation.release);
   const { port } = reservation;
   const driverEnvironment = await configuredDriverEnvironment(context, kubernetesDrivers);
-  const configurationRoot = await mkdtemp(join(tmpdir(), "openclaw-postgres-configurations-"));
-  context.after(async () => {
-    await rm(configurationRoot, { recursive: true, force: true });
-  });
+  const configurationRoot = await temporaryDirectory(context, "openclaw-postgres-configurations-");
   const occDatabaseUrl = contextDatabaseUrl(context);
   await ensureDevelopmentBootstrap(context, {
     databaseUrl: occDatabaseUrl,
@@ -554,14 +555,13 @@ async function pollUntil(description, operation, { worker, timeoutMs = 15_000 } 
 
 async function request(controller, method, path, body, options = {}) {
   const response = await fetch(`${controller.origin}${path}`, {
-    method,
-    headers: {
-      ...(options.authenticated === false
+    ...jsonRequestInit(
+      method,
+      body,
+      options.authenticated === false
         ? {}
-        : authenticatedHeaders(options.session ?? controller.session)),
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        : authenticatedHeaders(options.session ?? controller.session),
+    ),
     signal: AbortSignal.timeout(5_000),
   });
   const payload = await response.json();
@@ -573,7 +573,7 @@ async function createDurableController(pool) {
     { NativeIAMDriver },
     { OpenClawController },
     { PostgresPlatformState },
-    { createDevelopmentComputeDriver },
+    { createDevelopmentComputeDriver, registerAndSelectDrivers },
     { DEVELOPMENT_HARNESS_DESCRIPTOR, resolveApprovedHarness: resolveApprovedDevelopmentHarness },
   ] = await Promise.all([
     import("../../packages/iam/src/index.ts"),
@@ -592,10 +592,7 @@ async function createDurableController(pool) {
   });
   const compute = createDevelopmentComputeDriver();
   const controller = new OpenClawController(installation, { state, recordOperations: true });
-  for (const driver of [iam, compute]) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
-  }
+  registerAndSelectDrivers(controller, [iam, compute]);
 
   return {
     controller,

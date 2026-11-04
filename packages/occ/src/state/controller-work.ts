@@ -100,7 +100,7 @@ export function deploymentProgressForWork(
       // Fixed copy, like REPOSITORY_GIT_ROUTE_PENDING (finding 1045).
       code = attempt.code;
       message =
-        "Workloads are ready; waiting for the Sandbox to install this version's repository Git credential. If this persists, check the worker log for repository credential (PREPARED_GITHUB_RECOVERY_REQUIRED) or OpenShell gateway errors.";
+        "Workloads are ready; waiting for this version's repository Git credential: GitHub must issue its first token and, with a Sandbox, the Sandbox must install it. If this persists, check the worker log for repository credential (PREPARED_GITHUB_RECOVERY_REQUIRED) or OpenShell gateway errors.";
       break;
     case "WORKSPACE_NODE_RECONNECT_PENDING":
       code = attempt.code;
@@ -145,6 +145,13 @@ export function deploymentProgressForWork(
       code = attempt.code;
       message =
         "Waiting for the previous version's gateway to finish its active work before this version starts.";
+      break;
+    case "SUPERSEDED_STOP_YIELDED":
+      // A newer version superseded this one before it became current: its own stop waits for
+      // its gateway's drain before the deployment ends superseded (finding 3080).
+      code = attempt.code;
+      message =
+        "A newer version replaced this one; its gateway is finishing active work before this version stops.";
       break;
     case "AGENT_STOP_YIELDED":
       // The Agent stopped during this deployment: its stop waits for a gateway drain, and the
@@ -741,10 +748,14 @@ function deploymentErrorMessage(code: string): string {
       return "The Installation no longer selects the repository credential Driver admitted with this revision. Deploy again, choosing approved repository access if refused. If it selects none, remove repository access or ask an Installation administrator to select one.";
     case "REPOSITORY_GIT_ROUTE_BLOCKED":
       return "The controller closed this version's repository Git access: its Sandbox or supervisor was replaced, a credential write's outcome is unknown, or the access was withdrawn (worker log: OPENSHELL_GIT_RECONCILIATION_REQUIRED). Deploy a new version.";
+    case "REPOSITORY_GIT_TOKEN_QUARANTINED":
+      return "GitHub issued no repository Git token for this version: it rejected the App key or registry, or was unreachable. An Agent that ran before keeps this version running without Git. Ask an Installation administrator to fix it, then deploy a new version.";
+    case "REPOSITORY_GIT_TOKEN_PENDING":
+      return "GitHub issued no repository Git token for this version in time. The Agent keeps this version running without Git, which it gets if the token arrives. Ask an Installation administrator to check the GitHub App key, then deploy a new version.";
     case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
       return "This version's repository Git delivery needs the git-write profile, and no OpenShell release is qualified for it, so it cannot start. Remove the binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
     case "REPOSITORY_GIT_PROFILE_UNSUPPORTED":
-      return "This version's repository Git delivery has no profile and cannot start: a Credential Proxy delivers only one binding with the git-write or github-installation profile. Keep one such binding, remove them all, or use native prepared Git, then deploy again.";
+      return "This version's Git delivery has no supported profile, so it cannot start. A Credential Proxy delivers github-repository bindings, or one git-write or github-installation binding. Change the bindings or use native prepared Git, then deploy again.";
     case "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED":
       return "This revision's repository access deadline, fixed when the revision was admitted, has passed. Deploy again to admit a revision with a new deadline.";
     // Refusals the worker decides again on every pass (finding 1039). The status never names
@@ -787,6 +798,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Sandbox Driver does not support this revision's Harness settings, such as plugins, network policy additions or ServiceAccount credentials. Change them, or ask an Installation administrator for a Driver that supports them, then deploy again.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
       return "The Sandbox gateway refused the controller's identity, or the Workspace is gone, so cleanup is unconfirmed. Check the identity's token file and Workspace role and the gateway's signing-key refresh, then deploy, stop, delete or withdraw again.";
+    case "SANDBOX_POD_LABELS_NOT_PERMITTED":
+      return "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
       return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
     case "CREDENTIAL_WITHDRAWN":

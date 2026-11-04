@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
@@ -8,13 +8,18 @@ import { chromium, request as playwrightRequest } from "playwright";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
+import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
 import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
 } from "../../packages/occ/src/state/controller-work.ts";
+
+// Shared with the API tests, which drive the same fixture without a browser.
+export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
 
 // What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
 // persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read
@@ -61,20 +66,10 @@ export const AGENT_READ = [
   ["read", "configuration"],
 ];
 
-// The Role that fixture.createNamespaceMember made for `label`. Tests change it in place to
-// grant or revoke after sign-in: State reads the policy on each request.
-function memberRole(fixture, label) {
-  const role = fixture.policy.roles.find(({ id }) => id === `role-${label}`);
-  assert.ok(role, `member ${label} has a Role`);
-  return role;
-}
-
-/** Adds `grants`, as [action, resourceKind] pairs, to member `label`'s Role. */
-export function grantMember(fixture, label, grants) {
-  memberRole(fixture, label).permissions.push(
-    ...grants.map(([action, resourceKind]) => ({ action, resourceKind })),
-  );
-}
+// The Credentials tab's Channel Secrets save outcome (agents/credentials.mts saveOutcomeText). It
+// points to Deploy only once no grant read is still to come and every bound Secret is granted.
+export const CHANNEL_SECRETS_SAVED = "Channel Secret bindings saved.";
+export const CHANNEL_SECRETS_SAVED_DEPLOY = `${CHANNEL_SECRETS_SAVED} Deploy the new version to deliver them.`;
 
 /**
  * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
@@ -178,22 +173,30 @@ export function persistedDeploymentError(code, data) {
 // that read the answer before a revocation would, so the Configuration editor opens and what a
 // test sees is the API's refusal (finding 2421).
 export async function grantStaleConfigurationUpdate(page) {
-  await page.route(/\/agents\/[^/]+\/permissions$/, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...body,
-        data: {
-          ...body.data,
-          configurationUpdate: true,
-          configurationSecretsOperate: true,
-          configurationSecretsOperateDeniedBindings: [],
-        },
+  await page.route(/\/agents\/[^/]+\/permissions$/, (route) =>
+    fulfillPatchedJson(route, (body) => ({
+      ...body,
+      data: {
+        ...body.data,
+        configurationUpdate: true,
+        configurationSecretsOperate: true,
+        configurationSecretsOperateDeniedBindings: [],
       },
-    });
-  });
+    })),
+  );
+}
+
+// Answers a routed request with the real API's answer, its JSON body replaced by what `patch`
+// returns for it (`patch` may change the body it is given and return it). Status and headers
+// stay the server's.
+/**
+ * @param {import("playwright").Route} route
+ * @param {(body: any) => unknown} patch
+ */
+export async function fulfillPatchedJson(route, patch) {
+  const response = await route.fetch();
+  const body = await response.json();
+  await route.fulfill({ response, json: patch(body) });
 }
 
 export function apiRequests(page, origin) {
@@ -609,29 +612,34 @@ export async function settlePageRequests(page) {
 
 // Test-only page hook: counts, per URL path, the page's fetches that have settled, meaning the
 // fetch rejected or the page finished reading the response body. It also counts fetches still
-// in flight; for that count a response without a body ends its fetch at once. Install it before
-// the page loads. A count observed by waitForSettledFetches() or waitForIdleFetches() is read in
-// a later task, so the page's own continuation of that fetch (for example dropping a stale
-// response, or finishing the view's read bookkeeping) has already run.
+// in flight, in all and per path; for that count a response without a body ends its fetch at
+// once. Install it before the page loads. A count observed by waitForSettledFetches() or
+// waitForIdleFetches() is read in a later task, so the page's own continuation of that fetch
+// (for example dropping a stale response, or finishing the view's read bookkeeping) has
+// already run.
 export async function trackSettledFetches(page) {
   await page.addInitScript(() => {
     const settled = new Map();
+    const pending = new Map();
     let inFlight = 0;
+    const pathOf = (input) =>
+      new URL(input instanceof Request ? input.url : String(input), globalThis.location.href)
+        .pathname;
     const record = (input) => {
-      const path = new URL(
-        input instanceof Request ? input.url : String(input),
-        globalThis.location.href,
-      ).pathname;
+      const path = pathOf(input);
       settled.set(path, (settled.get(path) ?? 0) + 1);
     };
     const pageFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
+      const path = pathOf(input);
       inFlight += 1;
+      pending.set(path, (pending.get(path) ?? 0) + 1);
       let open = true;
       const finish = () => {
         if (open) {
           open = false;
           inFlight -= 1;
+          pending.set(path, pending.get(path) - 1);
         }
       };
       let response;
@@ -659,7 +667,9 @@ export async function trackSettledFetches(page) {
       return response;
     };
     globalThis.settledFetchCount = (path) => settled.get(path) ?? 0;
-    globalThis.inFlightFetchCount = () => inFlight;
+    // With `except`, fetches to that path (one a test holds, say) are not counted.
+    globalThis.inFlightFetchCount = (except) =>
+      inFlight - (except === undefined ? 0 : (pending.get(except) ?? 0));
   });
 }
 
@@ -678,9 +688,24 @@ export async function waitForSettledFetches(page, path, count) {
 // console retains a view, or an Agent tab, for a later return only if none of its reads were
 // still pending when the reader left it; otherwise the return rebuilds it. Call this before
 // leaving a view whose DOM a test later expects to be reused. It checks one moment: a read the
-// page starts later (after a timer) is not covered, so wait for the view's content first.
-export async function waitForIdleFetches(page) {
-  await page.waitForFunction(() => globalThis.inFlightFetchCount() === 0);
+// page starts later (after a timer) is not covered, so wait for the view's content first. With
+// `except`, fetches to that URL path (a read the test holds) do not count.
+export async function waitForIdleFetches(page, { except } = {}) {
+  await page.waitForFunction((path) => globalThis.inFlightFetchCount(path) === 0, except);
+}
+
+// Expires every session (expireSessions) once the page has no read in flight, so the test
+// decides which read discovers the expiry. A read the page started earlier that reaches the API
+// after the expiry gets a 401 and shows the expired sign-in by itself: it resets the view,
+// removes the controls the test acts on next and aborts reads the test holds (findings 2156,
+// 2793). `except` names the path of a read the test holds to discover the expiry. The page
+// must run trackSettledFetches(); waitForIdleFetches has the same one-moment limit. Plain
+// expireSessions stays right when the next step opens a private page with page.goto(): that
+// abandons every read in flight and finds the expiry wherever the page was. A reload is not
+// enough: after a late 401 the page is /console/login, and a reload of it is a plain sign-in.
+export async function expireSessionsWhenSettled(page, fixture, { except } = {}) {
+  await waitForIdleFetches(page, { except });
+  expireSessions(fixture);
 }
 
 // Polls `predicate` until it is truthy; on timeout, `message` alone is the failure.
@@ -696,6 +721,15 @@ export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
     }
     throw error;
   }
+}
+
+// A Preset the product ships in deploy/presets, by file name without ".json" ("default-codex",
+// "standard-codex"): for createConsoleAppFixture's defaultPresets or a Preset create. Each call
+// reads the file again, so callers never share one object.
+export async function shippedPreset(name) {
+  return JSON.parse(
+    await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8"),
+  );
 }
 
 export function nativeValues(marker, options = {}) {
@@ -1050,16 +1084,35 @@ export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRea
   );
 }
 
+// The Agent page's "Viewing version" chooser in `scope`, a page or a locator.
+export const versionChooser = (scope) => scope.getByLabel("Viewing version", { exact: true });
+
+// Version `n`'s chooser label: "vN" alone or "vN · <outcome>".
+const versionName = (n) => new RegExp(`^v${n}(?: ·|$)`);
+
+// Version `n`'s option in the chooser.
+export const versionOption = (scope, n) =>
+  versionChooser(scope).getByRole("option", { name: versionName(n) });
+
+// Waits until the chooser has a selected version, or until version `n` is the selected one.
+export function waitForChosenVersion(scope, n) {
+  const chosen =
+    n === undefined
+      ? versionChooser(scope).locator("option:checked")
+      : versionChooser(scope)
+          .getByRole("option", { selected: true })
+          .filter({ hasText: versionName(n) });
+  return chosen.waitFor({ state: "attached" });
+}
+
 // Denies AgentRevision read on one version, as an administrator's per-version restriction does.
-// State reads the policy on each request, so it applies from the next read on.
+// State reads the policy on each request, so it applies from the next read on. Its id is
+// `deny-read-<revision id>`: console-next-steps looks it up to deny only once.
 export function denyRevisionRead(fixture, namespace, revision) {
-  fixture.policy.restrictions.push({
+  restrict(fixture.policy, "read", "agent_revision", {
     id: `deny-read-${revision.id}`,
     namespaceId: namespace.id,
-    resourceKind: "agent_revision",
     resourceId: revision.id,
-    action: "read",
-    effect: "deny",
   });
 }
 
@@ -1068,16 +1121,6 @@ export const stopAgentButton = (page) =>
   page
     .getByRole("region", { name: "Stop Agent", exact: true })
     .getByRole("button", { name: "Stop Agent", exact: true });
-
-// The authorization denials an InMemoryAuditSink recorded for `action`: an exact action name, or
-// a RegExp for a family of actions.
-export function authorizationDenials(auditSink, action) {
-  const matches =
-    typeof action === "string" ? (name) => name === action : (name) => action.test(name);
-  return auditSink
-    .list()
-    .filter((event) => event.kind === "authorization_denial" && matches(event.action));
-}
 
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
 function contrastRatio(a, b) {
@@ -1207,6 +1250,100 @@ export function hasFocus(locator) {
   return locator.evaluate((node) => node === globalThis.document.activeElement);
 }
 
+// The ID of the element that holds focus in the page: "" for one without an ID, null when nothing
+// does.
+export function focusedId(page) {
+  return page.evaluate(() => globalThis.document.activeElement?.id ?? null);
+}
+
+// A natively disabled control is out of the Tab order, so a keyboard reader never reaches it or
+// its reason (findings 2878, 2899). An unavailable control with a reason is aria-disabled
+// instead: Tab reaches it, it is described by the reason, and Enter, Space, a click or (in a
+// select or text field) an arrow key or typing does nothing. Nothing runs: no handler changes its
+// reason or moves focus, no form submits, no checkbox flips, no select or field changes its value,
+// and nothing is written.
+export async function expectReachableReason(page, control, reason) {
+  await control.waitFor();
+  await page.evaluate(() => {
+    globalThis.document.activeElement?.blur();
+    globalThis.unavailableActivations = [];
+    for (const type of ["submit", "change", "input"]) {
+      globalThis.document.addEventListener(
+        type,
+        () => globalThis.unavailableActivations.push(type),
+        { capture: true },
+      );
+    }
+  });
+  let presses = 0;
+  while (!(await hasFocus(control))) {
+    assert.ok(++presses <= 200, `Tab reaches ${reason}`);
+    await page.keyboard.press("Tab");
+  }
+  const state = () =>
+    control.evaluate((node) => ({
+      focused: node === globalThis.document.activeElement,
+      disabled: node.disabled,
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      checked: node.type === "checkbox" ? node.checked : null,
+      value: node.value,
+    }));
+  const before = await state();
+  assert.deepEqual(before, { ...before, focused: true, disabled: false, ariaDisabled: "true" });
+  assert.equal(await accessibleDescription(control), reason);
+  const editable = await control.evaluate(
+    (node) => node.localName === "select" || (node.localName === "input" && node.type === "text"),
+  );
+  const writes = [];
+  const onRequest = (request) => {
+    if (!["GET", "HEAD"].includes(request.method())) {
+      writes.push(`${request.method()} ${request.url()}`);
+    }
+  };
+  page.on("request", onRequest);
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Space");
+  if (editable) {
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.type("x");
+    // Deleting is an edit too, and typing does not cover it.
+    await page.keyboard.press("Backspace");
+    await page.keyboard.press("Delete");
+  }
+  // A mouse press too: force skips Playwright's own wait for an enabled control.
+  await control.click({ force: true });
+  page.off("request", onRequest);
+  assert.deepEqual(await state(), before);
+  assert.equal(await accessibleDescription(control), reason);
+  assert.deepEqual(await page.evaluate(() => globalThis.unavailableActivations), []);
+  assert.deepEqual(writes, []);
+}
+
+// Clicks `close`, a control that closes its dialog, and focuses `elsewhere` in the same task. The
+// dialog's close event fires a task later, so this is the reader who has already moved on, for
+// example to a field they type in (finding 2862). Resolves after the dialog's own close handlers
+// ran, with whether `elsewhere` still holds focus.
+export async function focusKeptOverClose(close, elsewhere) {
+  const target = await elsewhere.elementHandle();
+  try {
+    return await close.evaluate(
+      (control, node) =>
+        new Promise((resolve) => {
+          control
+            .closest("dialog")
+            .addEventListener("close", () => resolve(globalThis.document.activeElement === node), {
+              once: true,
+            });
+          control.click();
+          node.focus();
+        }),
+      target,
+    );
+  } finally {
+    await target.dispose();
+  }
+}
+
 // Counts the browser's `invalid` events. Its own validation fires one per refused control
 // whenever it would show its bubble (a submit without novalidate, or reportValidity); the
 // console's check reads `validity` and fires none. Install it before the page loads; the
@@ -1221,4 +1358,76 @@ export async function countInvalidEvents(page) {
     );
   });
   return () => page.evaluate(() => globalThis.invalidEvents);
+}
+
+// A Configuration row as a release before a save rule stored it: save refuses `values` with
+// `reason`, and the row is then written through the Configuration Driver, as an older release
+// left it. `configurationDriver` is the fixture's test Configuration Driver.
+export async function storeRefusedConfiguration(
+  fixture,
+  configurationDriver,
+  agent,
+  values,
+  reason,
+) {
+  const configurationPath = `/namespaces/${agent.namespaceId}/configurations/${agent.configurationId}`;
+  const refusedSave = await fixture.request("PATCH", configurationPath, { body: { values } });
+  assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
+  assert.equal(refusedSave.body.error.message, reason);
+  const stored = configurationDriver.stored({
+    namespaceId: agent.namespaceId,
+    id: agent.configurationId,
+  });
+  assert.ok(stored);
+  await configurationDriver.update({ ...stored, values });
+}
+
+export const draftActions = (page) => page.locator(".agent-draft-actions");
+export const draftDeployButton = (card) =>
+  card.getByRole("button", { name: "Deploy new version", exact: true });
+export const draftFirstStep = (card) =>
+  card.getByRole("listitem").first().locator(".checklist-detail");
+
+// Agent detail holds Deploy for a stored draft deploy admission refuses: the draft card shows
+// deploy's exact refusal, Deploy is disabled, nothing says ready, and the first step opens with
+// `step` (the step text up to and including its " · " separator).
+export async function expectDeployHeld(card, reason, step, message) {
+  await card.getByText(reason, { exact: true }).waitFor();
+  assert.equal(await draftDeployButton(card).isDisabled(), true, message);
+  assert.equal(await card.getByText("Ready to deploy.").count(), 0, message);
+  assert.ok((await draftFirstStep(card).textContent()).startsWith(step), message);
+}
+
+// Deploy admission refuses the stored draft with the exact text the page shows, before any
+// revision.
+export async function expectDeployRefused(fixture, agent, reason) {
+  const refusedDeploy = await fixture.request(
+    "POST",
+    `/namespaces/${agent.namespaceId}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
+  assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+}
+
+// Following the held step in the Configuration editor: saving `values` makes the draft ready,
+// with Deploy enabled and the first step saved.
+export async function saveConfigurationUntilReady(page, card, values) {
+  const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
+  await edit.scrollIntoViewIfNeeded();
+  await edit.click();
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+  assert.equal(await draftDeployButton(card).isDisabled(), false);
+  assert.match(await draftFirstStep(card).textContent(), /^Saved · Configuration /);
+}
+
+// The page fits the viewport: no horizontal scroll.
+export async function expectNoHorizontalScroll(page) {
+  assert.equal(
+    await page.evaluate(
+      () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
+    ),
+    true,
+  );
 }

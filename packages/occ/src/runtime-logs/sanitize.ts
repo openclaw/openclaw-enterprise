@@ -800,6 +800,8 @@ const SANDBOX_FIELDS: ReadonlySet<string> = new Set([
   "action",
   "disposition",
   "dst_host",
+  // OpenShell's policy DNS placeholder address, kept apart from `dst_host` (D771).
+  "dst_placeholder_ip",
   "dst_port",
   "method",
   "path",

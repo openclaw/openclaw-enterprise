@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { PostgresCommitOutcomeUnknownError } from "../../packages/occ/src/index.ts";
@@ -11,13 +10,14 @@ import {
   expectDenied,
   expectProviderUnavailable,
   loginOrigin as origin,
+  providerInstanceId,
   redirectProviderFetch,
   startProviderServer,
   testOversizedProviderBodies,
   until,
 } from "../helpers/human-login-transport.mjs";
 
-const providerId = `github:${createHash("sha256").update("fixture-client").digest("hex")}`;
+const providerId = providerInstanceId("github", { clientId: "fixture-client" });
 // The production deadline is 10 s; the stalled-provider cases shorten it to keep the wait short.
 const providerDeadlineMs = 2_000;
 

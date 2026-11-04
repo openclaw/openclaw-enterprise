@@ -3,6 +3,7 @@ import { story } from "./story.ts";
 export default { title: "Components/Workspace" };
 
 export const Workspace = { ...story("workspace"), name: "Editable files" };
+export const Loading = story("workspaceLoading");
 export const WorkspaceUnavailable = {
   ...story("workspaceUnavailable"),
   name: "No deployed revision",

@@ -28,6 +28,7 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { withEnvironment } from "../helpers/environment.mjs";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { readJsonLines } from "../helpers/json-lines.mjs";
@@ -38,6 +39,7 @@ import {
   retryModelAtCapacity,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const execute = promisify(execFile);
 const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
@@ -894,7 +896,7 @@ test(
       logs.at(-1),
       /^teardown: exiting once the file's tests settle for 10 ms; abandoned cleanups registered at kubernetes-real-kubectl\.test\.mjs:\d+$/,
     );
-    await delay(100);
+    await waitUntil("the exit after the 10 ms grace", () => exits.length > 0, 2_000);
     assert.deepEqual(exits, ["exit"]);
     assert.equal(teardownStepLimitMs, 180_000, "longer than the 120 s Namespace delete waits");
     assert.equal(abandonedTeardownExitGraceMs, 2_000);
@@ -1031,7 +1033,13 @@ test(
         }),
       { message: stopsSetup },
     );
-    await delay(300);
+    // The drain ends with the oldest late cleanup, after the stalled one's 50 ms limit; each
+    // late cleanup fails the file once it ran.
+    await waitUntil(
+      "the five late cleanups' failures and the exit",
+      () => events.filter((event) => event === "fail").length >= 5 && events.includes("exit"),
+      2_000,
+    );
     // Registered in one turn, they run newest-first like the teardown, and a cleanup's own
     // registration runs next.
     assert.deepEqual(ran, [
@@ -1651,10 +1659,11 @@ test(
         return false;
       }
     };
-    while (pids.some(running)) {
-      assert.ok(Date.now() - begun < 10_000, "the stalled kubectl outlived its deadline");
-      await delay(20);
-    }
+    // Within 10 s of the diagnostic's start.
+    await waitUntil("the stalled kubectl to exit", () => !pids.some(running), {
+      timeoutMs: begun + 10_000 - Date.now(),
+      intervalMs: 20,
+    });
     // Outside a diagnostic nothing has passed a deadline.
     assert.equal(diagnosticDeadlinePassed(), false);
   },
@@ -1826,9 +1835,7 @@ test("the probe's own refused connection passes a deny check", async (t) => {
 
 test("a connected probe fails a deny check", async (context) => {
   const server = createServer((socket) => socket.end());
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  context.after(() => server.close());
+  await listen(context, server);
   await assert.rejects(
     assertProbeDenied(
       "open loopback traffic",

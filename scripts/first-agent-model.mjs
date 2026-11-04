@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+import { admitGatewaySecurityDefaults } from "../packages/occ/src/gateway-security-defaults.ts";
 
 export function selectFirstAgentModel(configuredModel, existing) {
   const model = configuredModel || existing?.model || defaultAgentModel;
@@ -75,13 +76,29 @@ export function firstAgentRevisionValuesMatch(
   revisionId,
   priorRevisionId,
 ) {
+  // Deployment admission fills the Gateway security defaults the Configuration leaves unset.
+  // A saved revision the helper identified may predate some of those fills, so fill it too
+  // there: a default it lacks matches, and an explicit different value is still drift.
+  const prior = priorRevisionId !== undefined && revisionId === priorRevisionId;
+  return snapshotValuesMatch(
+    prior ? admitGatewaySecurityDefaults(values) : values,
+    admitGatewaySecurityDefaults(configured),
+    record,
+    revisionId,
+    priorRevisionId,
+  );
+}
+
+function snapshotValuesMatch(values, configured, record, revisionId, priorRevisionId) {
+  // Reconstruct the expected snapshot; never change the revision or ignore other drift.
+  // Deployment names the helper's sole main Agent after the OCC Agent.
+  const expected = structuredClone(configured);
+  expected.agents = { ...expected.agents, entries: { main: { identity: { name: record.name } } } };
   if (record.sandboxDriver !== "openshell" || record.harness !== "codex") {
-    return isDeepStrictEqual(values, configured);
+    return isDeepStrictEqual(values, expected);
   }
 
-  // Reconstruct the expected snapshot; never change the revision or ignore other drift.
   const priorPatPolicy = firstAgentPriorPatPolicy(values, record, revisionId, priorRevisionId);
-  const expected = structuredClone(configured);
   const appServer = expected.plugins.entries.codex.config.appServer;
   appServer.sandbox = priorPatPolicy ? "workspace-write" : "danger-full-access";
   appServer.approvalsReviewer = "user";

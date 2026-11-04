@@ -83,8 +83,14 @@ export async function startServiceListeners(
   ]);
   const service = createCredentialService({ config, factory, clock, providerQueue });
   let listeners;
+  let closing = false;
+  // Registered first, so it runs last: teardown must have closed the listeners it started.
+  resources.after(() => assert.ok(listeners === undefined || closing, "listeners never closed"));
   // Separate hooks retain every cleanup failure and keep upstreams alive for revocation.
-  resources.after(() => listeners?.close());
+  resources.after(() => {
+    closing = true;
+    return listeners?.close();
+  });
   resources.after(() => shutdownService(service, clock));
   resources.after(() => listeners?.stopAdmission());
   listeners = await startListeners({
@@ -98,6 +104,48 @@ export async function startServiceListeners(
     ...(log === undefined ? {} : { log }),
   });
   return { service, listeners };
+}
+
+/**
+ * A development token factory in front of the fake GitHub, which accepts the static host
+ * `token` on git and REST without issuing it. Git goes to `gitOrigin` (default: GitHub).
+ */
+export async function createStaticTokenServiceFactory(
+  resources,
+  {
+    config,
+    clock,
+    tls,
+    github,
+    gitOrigin = github.origin,
+    token = `gho_${"t".repeat(36)}`,
+    configuration,
+  },
+) {
+  const tokenIndex = github.acceptStatic(token);
+  const factory = await createGitHubTokenServiceFactory(resources, {
+    config,
+    clock,
+    token,
+    configuration,
+    trustedEndpoints: { apiOrigin: github.origin, gitOrigin, ca: tls.ca },
+  });
+  return { token, tokenIndex, factory };
+}
+
+/**
+ * createStaticTokenServiceFactory, then startServiceListeners with the same options. The
+ * listeners trust the fake GitHub and `gitOrigin` unless the options name the origins.
+ */
+export async function startStaticTokenService(resources, options) {
+  const { github, gitOrigin = github.origin } = options;
+  const created = await createStaticTokenServiceFactory(resources, options);
+  const started = await startServiceListeners(resources, {
+    upstreamOrigins: [...new Set([github.origin, gitOrigin])],
+    ...options,
+    factory: created.factory,
+  });
+  return { ...created, ...started };
 }
 
 export async function writeSessionClientConfiguration(resources, { opened, ca }) {

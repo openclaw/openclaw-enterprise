@@ -2,9 +2,10 @@
 
 Select approved repositories, deploy an Agent, then use ordinary `git` and the `oce-github` draft helper.
 The worker Token Service owns GitHub App credentials. Choose an
-[access level](../reference/repository-credentials/access-levels.md) for the task;
-the [team runbook](repository-credentials/team-runbook.md) covers App registration,
-configuration, a first draft PR and cleanup.
+[access level](../reference/repository-credentials/access-levels.md) for the task.
+
+For a dedicated OpenShell Agent with managed GitHub App credentials, follow
+[Push a Git branch from an OpenShell Agent](repository-credentials/openshell-git-push.md).
 
 Keep the gateway private to approved clients, with enforced NetworkPolicies and
 HTTPS on port 443. A `.svc` hostname or ClusterIP alone does not establish isolation;
@@ -32,15 +33,17 @@ upstream ranges, certificates and tenant RBAC. Use one worker/service owner with
 `Recreate`; replicas cannot share in-memory sessions. Routing does not establish
 network isolation.
 
-Build the full Agent runtime from the checkout root and select its immutable
+From the checkout root, [resolve the OpenClaw build arguments](../../deploy/runtime/README.md#resolve-openclaw-build-arguments)
+and build the full Agent runtime in the same Bash shell. Select its immutable
 image reference in Compute configuration:
 
-```sh
+```bash
 docker build -f deploy/runtime/Dockerfile \
+  "${openclaw_build_args[@]}" \
   -t openclaw-enterprise-runtime:repository-credentials .
 ```
 
-The image includes Git, the client helper and pinned `gh` 2.100.0. Publish or
+The image includes Git, the client helper and pinned `gh` 2.103.2. Publish or
 import it, select its digest and configure model authentication.
 
 ## Keep Git access on the same running Agent
@@ -62,9 +65,11 @@ with a finite grant keeps its original deadline.
    and `expectedScopeFingerprint`. If the scope changed, review it again. Deploy the Agent once.
 3. To withdraw, read `GET …/agents/{agentId}/repository-approvals`, then send the approval's
    `expectedGeneration` to `POST …/agents/{agentId}/repository-approvals/{approvalId}/remove`.
-   New Git requests are denied even while cleanup is pending. On OpenShell, the worker removes
-   Git and continues supervising the same execution if its independent permissions still allow it.
-   Stopping the Agent ends that execution. Neither action recalls a request already authorized.
+   Fresh Git requests are denied even while cleanup is pending. A request with an issued one-use
+   permit can still start before its original send deadline, even after removal is acknowledged.
+   Do not replay a request whose outcome is unknown. See [prepared Git authorization](../reference/repository-credentials/prepared-native-git.md#what-a-request-authorizes).
+   On OpenShell, the worker removes Git and continues supervising the same execution if its
+   independent permissions still allow it. Stopping the Agent ends that execution.
 
 A refusal answers `409 RESOURCE_CONFLICT` and names the step: review the scope again, keep one
 binding, remove the approval before you change the binding, or ask an Installation administrator

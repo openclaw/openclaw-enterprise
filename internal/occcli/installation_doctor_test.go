@@ -18,61 +18,26 @@ import (
 	"testing"
 )
 
-func TestInstallationDoctorHistoricalUpgrade(t *testing.T) {
-	// Inert chart program from 8d6bcfee9bc4618e576e9abe5beb16d8ca77f724,
-	// blob a8f6411377ff37cb15fa947adb4bf87afb4e5cd7; never execute it.
-	script, err := os.ReadFile("testdata/installation-check-pre-console.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(script) != 1959 || script[len(script)-1] != '\n' {
-		t.Fatal("historical program must retain its original bytes and final LF")
-	}
-	const job = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"historical-upgrade-id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[{"name":"installation-check","command":["node"],"args":["--input-type=module","-e",%s]},{"name":"migration","args":["scripts/migrate-production.mjs"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
-	for _, tc := range []struct {
-		name, program, message string
-		state                  initializationState
-		original               bool
-	}{
-		{"authentic", string(script), "Initialization Job (upgrade hook): complete", initializationComplete, true},
-		{"final-lf-replaced", string(script[:len(script)-1]) + " ", "Initialization: unknown.", initializationUnresolved, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			arg, err := json.Marshal(tc.program)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := initializationEvidence([]byte(fmt.Sprintf(job, arg)), "operations", "demo-initialization", "demo", "historical-upgrade-id")
-			if got.state != tc.state || !strings.Contains(got.message, tc.message) {
-				t.Errorf("state=%v message=%q; want state=%v containing %q", got.state, got.message, tc.state, tc.message)
-			}
-			if tc.original {
-				if got.original == nil || *got.original != (initializationJobIdentity{namespace: "operations", uid: "historical-upgrade-id"}) {
-					t.Errorf("original=%+v; want recorded historical upgrade identity", got.original)
-				}
-			} else if got.original != nil || strings.Contains(got.message, "matches the recorded UID") {
-				t.Errorf("unrecognized program asserts original identity: %+v", got)
-			}
-		})
-	}
-}
-
 // Use real kubectl against a local API, including its actual NotFound rendering.
 // Assert the wire operation, not just the arguments given to a mock executable.
 func TestInstallationDoctor(t *testing.T) {
 	if _, err := exec.LookPath("kubectl"); err != nil {
 		t.Skip("requires kubectl")
 	}
-	const job = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
+	const job = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.mjs","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
 	const migration = `"scripts/migrate-production.mjs"`
 	failed := strings.Replace(strings.Replace(job, `"type":"Complete"`, `"type":"Failed"`, 1), `"succeeded":1`, `"failed":1`, 1)
 	wrongRelease := strings.Replace(job, `io/instance":"demo"`, `io/instance":"other"`, 1)
-	guarded := strings.Replace(job, migration, migration+`, "--expect-empty"`, 1)
+	unguarded := strings.Replace(job, migration+`,"--expect-empty"`, migration, 1)
 	checkScript, err := os.ReadFile("../../deploy/helm/openclaw-enterprise/files/check-installation.mjs")
 	if err != nil {
 		t.Fatal(err)
 	}
 	checkArg, err := json.Marshal(string(checkScript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alteredCheckArg, err := json.Marshal(string(checkScript) + " ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,13 +55,14 @@ func TestInstallationDoctor(t *testing.T) {
 		uid        string
 	}{
 		{"install", 200, job, "Initialization Job (install hook): complete", true, ""},
-		{"guarded-install", 200, guarded, "Initialization Job (install hook): complete", true, ""},
-		{"upgrade", 200, asUpgrade(job), "upgrade hook): complete", true, ""},
+		{"unguarded-install", 200, unguarded, "steps do not match", false, ""},
+		{"upgrade", 200, asUpgrade(unguarded), "upgrade hook): complete", true, ""},
 		{"sidecar-migration", 200, withSidecar(job), "runs an initialization step as a sidecar", false, "id"},
-		{"sidecar-upgrade-check", 200, withSidecar(asUpgrade(job)), "runs an initialization step as a sidecar", false, "id"},
-		{"wrong-upgrade-check", 200, strings.Replace(asUpgrade(job), string(checkArg), `"process.exit(0)"`, 1), "steps do not match", false, ""},
-		{"guarded-upgrade", 200, asUpgrade(guarded), "steps do not match", false, ""},
-		{"extra-install-arg", 200, strings.Replace(guarded, `"--expect-empty"`, `"--expect-empty","unexpected"`, 1), "steps do not match", false, ""},
+		{"sidecar-upgrade-check", 200, withSidecar(asUpgrade(unguarded)), "runs an initialization step as a sidecar", false, "id"},
+		{"wrong-upgrade-check", 200, strings.Replace(asUpgrade(unguarded), string(checkArg), `"process.exit(0)"`, 1), "steps do not match", false, ""},
+		{"altered-upgrade-check", 200, strings.Replace(asUpgrade(unguarded), string(checkArg), string(alteredCheckArg), 1), "steps do not match", false, ""},
+		{"guarded-upgrade", 200, asUpgrade(job), "steps do not match", false, ""},
+		{"extra-install-arg", 200, strings.Replace(job, `"--expect-empty"`, `"--expect-empty","unexpected"`, 1), "steps do not match", false, ""},
 		{"wrong-release", 200, wrongRelease, "did not identify", false, "id"},
 		{"deleting", 200, strings.Replace(job, `"uid":"id"`, `"uid":"id","deletionTimestamp":"now"`, 1), "did not identify", false, "id"},
 		{"external-controller", 200, strings.Replace(job, `"spec":{"template"`, `"spec":{"managedBy":"example.invalid/handoff-readback","template"`, 1), "unsupported Job controller", false, "id"},
@@ -169,7 +135,7 @@ func TestInstallationDoctor(t *testing.T) {
 				}
 				expected := []string{tc.want, "Do not replay", "removal unknown", "not qualified"}
 				if action == "plan" {
-					first := map[string]string{"login": "1. Confirm the cluster target", "denied": "1. Confirm the cluster target and intended reader", "missing": "first-install intent", "install": "1. Establish whether", "guarded-install": "1. Establish whether", "upgrade": "1. Establish whether", "pinned": "1. Continue from the completed migration and bootstrap for the recorded Job", "replaced": "1. Recover the original installation record", "replaced-wrong-release": "1. Recover the original installation record", "pinned-missing": "1. Recover the original installation record", "pinned-denied": "1. Confirm the cluster target and intended reader", "server-marker": "1. Confirm the cluster target"}[tc.name]
+					first := map[string]string{"login": "1. Confirm the cluster target", "denied": "1. Confirm the cluster target and intended reader", "missing": "first-install intent", "install": "1. Establish whether", "upgrade": "1. Establish whether", "pinned": "1. Continue from the completed migration and bootstrap for the recorded Job", "replaced": "1. Recover the original installation record", "replaced-wrong-release": "1. Recover the original installation record", "pinned-missing": "1. Recover the original installation record", "pinned-denied": "1. Confirm the cluster target and intended reader", "server-marker": "1. Confirm the cluster target"}[tc.name]
 					expected = []string{tc.want, first, "2. If an API operation was attempted", "3. Verify temporary access", "4. Qualify useful work"}
 					switch tc.status {
 					case 401:

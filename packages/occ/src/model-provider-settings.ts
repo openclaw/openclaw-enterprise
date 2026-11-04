@@ -12,11 +12,12 @@ import {
   ModelProviderSettingError,
   quotedSettingKey,
 } from "./errors.ts";
+import { providerKeyVariantProblem } from "./stored-configuration-rules.ts";
 
 /**
  * Model API adapter ids the pinned OpenClaw runtime accepts: `MODEL_DATA_APIS` in
- * openclaw/openclaw `packages/llm-core/src/model-data.ts` at the `OPENCLAW_COMMIT` in
- * `deploy/runtime/Dockerfile`. Update this list when that pin changes.
+ * openclaw/openclaw `packages/llm-core/src/model-data.ts` at the commit in
+ * `deploy/runtime/openclaw-source.json`. Update this list when that pin changes.
  */
 const RUNTIME_MODEL_APIS: readonly string[] = Object.freeze([
   "openai-completions",
@@ -380,6 +381,16 @@ function validateSettings(
     if (typeof api !== "string" || !RUNTIME_MODEL_APIS.includes(api)) {
       throw new ModelProviderSettingError(pointer(...path, "api"), "api");
     }
+  }
+}
+
+/** Refuses a models.providers key that providerKeyVariantProblem names. */
+export function refuseProviderKeyVariants(values: Readonly<OpenClawConfigurationDocument>): void {
+  const problem = providerKeyVariantProblem(values);
+  if (problem !== undefined) {
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(problem.setting, problem.requirement),
+    );
   }
 }
 

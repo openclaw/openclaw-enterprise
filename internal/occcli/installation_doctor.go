@@ -276,9 +276,10 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID s
 	is := func(cs []container, name string, args ...string) bool {
 		return len(cs) == 1 && cs[0].Name == name && len(cs[0].Command) == 0 && slices.Equal(cs[0].Args, args)
 	}
-	// First installs may carry the empty-database guard; upgrades and older installs do not.
+	// Match the current chart: first installs require the empty-database guard.
 	const migrate = "scripts/migrate-production.mjs"
-	migrationMatches := is(init, "migration", migrate) || (hook == "install" && is(init, "migration", migrate, "--expect-empty"))
+	migrationMatches := hook == "upgrade" && is(init, "migration", migrate) ||
+		hook == "install" && is(init, "migration", migrate, "--expect-empty")
 	if !migrationMatches || !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") {
 		return initializationResult{state: initializationUnresolved, message: "Initialization: unknown. Job steps do not match the supported chart."}
 	}
@@ -302,18 +303,10 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID s
 	return initializationResult{state: state, message: message, original: original}
 }
 
-// A retained upgrade Job may embed an earlier version of the chart program.
+// Recognize only this release's chart program. The real-chart CLI tests require
+// this digest to move with deploy/helm/openclaw-enterprise/files/check-installation.mjs.
 func supportedInstallationCheck(script string) bool {
-	switch fmt.Sprintf("%x", sha256.Sum256([]byte(script))) {
-	case "6cc45ae3561aa466170d10379ef39b68e2aba1cc417710f29bbbaa2d8b964890", // before Console themes
-		"86c4e7d2709d7260beb7315ffa2e9c60be1eb25be6de56503ff5bbcaa4bf6cc5", // Console themes
-		"6f17136aba76c16472dfd4259e3dfe2d837f15909c8dc33af70c00d3c1f685dd", // prepared Git issuer CA
-		"f4b6322b65e434193c773c95e4ca67d1e2abe7ed713826e8eb4c0469907f5888", // Installation listener
-		"973aebfcce22a6518dfcdfca56e3d0683c349f6b365e6dfbd46518f8c087f0ad": // authority file mounts
-		return true
-	default:
-		return false
-	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(script))) == "c7af073c69b22fb132011d0167e65725f8b29182588e519ef812f035fe15fdde"
 }
 
 func (status initializationJobStatus) state() initializationState {
