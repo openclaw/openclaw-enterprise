@@ -7,7 +7,6 @@ to deploy; while it provisions, drafts needing no new Secret or sign-in still sa
 [adopts](../namespaces.md#lifecycle) an existing namespace. Creating tokens requires Secret creation permission. Provisioning grants accepted
 Secret access; drafts also need Installation `administer` to grant Agent key access; members without it save drafts an administrator finishes. After deployment, [verify the same
 Agent and version](../../guides/deploy/production-agents.md#verify-production-workloads).
-The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
 
 ## Create an Agent
 
@@ -52,10 +51,11 @@ as the reason Dedicated OpenClaw is disabled.
    **Choose a model from the list** returns. Switching modes retains that provider's listed models; returning with an unlisted custom ID
    requires another selection. Other settings remain.
    No model is preselected.
-4. Confirm Installation, credential, and runtime support for the model. Primary
-   and fallback models must share a supported provider and Harness. For custom settings,
-   open **Advanced settings**. Selection changes preserve unrelated JSON edits;
-   **Reset template** replaces them.
+4. Check Installation, credential, and runtime model support. Primary and
+   fallback models must share a supported provider and Harness. In **Advanced
+   settings**, selections keep unrelated JSON edits; **Reset template** replaces
+   them. If `plugins.allow` blocks Codex, use an array of strings or remove
+   it in **Configuration JSON**, then retry.
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their [access levels](repository-access.md). Kubernetes supports Codex (Dedicated) and Embedded
    OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories
@@ -178,12 +178,12 @@ If the Console cannot confirm a ChatGPT OAuth sign-in started, it blocks another
 start in that form. Without the session reference it cannot poll or cancel the
 attempt. Follow [interrupted sign-in recovery](../../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
-After a lost admission response, **Retry provisioning request** resubmits the same
-request ID and saved Secret references. Retry acknowledged jobs through their URL;
-if refused after an unknown outcome, **Create Agent** resends
-the same request. If the result changes or omits a previously observed first deployment
-version, the Console keeps the outcome unknown and offers Retry. A refused retry of a failed job shows the API's reason when it names
-one, such as a deleted Secret; **Create Agent** then submits a new request. Saved
+**Retry provisioning request** targets the accepted job, or resends the same
+request ID and Secret references if admission was unconfirmed. An invalid Agent
+or version ID, or a changed or missing known version, leaves **Outcome unknown**
+without a recovery link. If retry is refused during recovery, **Create Agent**
+resends the original request. A refused retry of a confirmed failure names the
+reason when available; **Create Agent** then starts a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
 **Check credential registration** recovers an uncertain source. If absent,
@@ -191,9 +191,11 @@ existing Namespace Secrets before starting again.
 `registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
 registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-A failed or stopped first deployment keeps the Agent and its name. Follow the failed
-version's recovery guidance. After a Stop, including a Stop before deployment
-(`PROVISIONING_CANCELLED`), open the Agent and deploy when ready.
+If the first deployment fails with valid Agent and version IDs, follow the linked
+version's recovery guidance even without an error message. A stopped or superseded
+deployment follows the separate guidance above.
+After a Stop, including `PROVISIONING_CANCELLED` before deployment, open the
+Agent and deploy when ready.
 
 If Agent creation is rejected after Configuration saves, correct the ordinary
 zero-binding Agent's editable fields and retry. The retry reuses Configuration

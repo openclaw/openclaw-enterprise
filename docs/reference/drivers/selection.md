@@ -23,9 +23,8 @@ images; individual Agents cannot choose their own implementations.
    `NODE_ENV=development` or `NODE_ENV=production` explicitly. Run the API and
    worker with the same file and controller image. Follow the
    [deployment guide](../../guides/deploy.md) for the chosen environment.
-4. Verify the Agent on the selected Driver. On local Kubernetes,
-   [deploy your first Agent](../../guides/first-agent.md). On production
-   Kubernetes, [verify an existing Agent's model response](../../guides/operate/model-verification.md).
+4. Verify the Agent on the selected Driver. On Kubernetes,
+   [verify the Agent's model response](../../guides/operate/model-verification.md).
    On SSH, follow the [host-managed credential requirements](ssh-compute.md#credentials-and-supported-boundaries)
    and send a model request through the host's configured gateway or channel;
    the Kubernetes verification commands do not apply. OCC startup or gateway

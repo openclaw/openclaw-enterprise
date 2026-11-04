@@ -176,7 +176,12 @@ export function assertNoConnectedAssistantOutput(result) {
 }
 
 export function protectedSourceBody(name, secretRef, origin) {
-  return { name, type: "openai", config: { base_url: origin }, secrets: { api_key: secretRef } };
+  return {
+    name,
+    type: "openai",
+    config: { authorized_base_url: origin },
+    secrets: { api_key: secretRef },
+  };
 }
 
 export function protectedAgentBody(name, configurationId, sourceId) {

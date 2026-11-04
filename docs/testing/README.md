@@ -100,6 +100,7 @@ only resources created by the run.
 - [PostgreSQL](postgresql.md)
 - [Docker, images, and Helm](docker.md)
 - [Kubernetes, Keycloak, gateway routing, and production TUI](kubernetes.md)
+- [Populated controller return](populated-controller-return.md) checks that the previous controller can read a draft saved by the candidate after a database restore.
 - [OpenShell](openshell.md)
 - [Protected inference](static-egress.md): source checks, PostgreSQL proof, and prepared OpenShell qualification.
 - [Protected repository custody](protected-repository-custody.md): qualify dispatch and response handling on an installed controller and OpenShell pair.

@@ -208,8 +208,10 @@ process umask. It closes the temporary file before renaming and removes a
 failed temporary output without replacing the previous record.
 
 The tool provisions runtime credentials and requests deployment through
-OCC. The check requires the local OpenShell profile's Driver-owned
-workspace, `/sandbox/enterprise`, and frozen Codex policy:
+OCC. A rerun follows a newer revision from a later deploy, after the same
+drift check. If the Agent is stopped, it fails at once and prints the
+`occ agent deploy` command. The check requires the local OpenShell profile's
+Driver-owned workspace, `/sandbox/enterprise`, and frozen Codex policy:
 `sandbox: "danger-full-access"` with `approvalsReviewer: "user"` for either API-key
 or PAT sources. It can recognize a prior PAT Agent revision frozen with
 `workspace-write`; a new deployment uses the current policy. Other workspace or
@@ -219,7 +221,8 @@ tenant namespace through `openclaw.dev/namespace`. The supported local setup is
 single-cluster, so embedded and dedicated Gateways share that physical namespace
 with the provider-owned Harness. The verifier requires the exact Agent labels,
 Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends the
-prompt. Kubernetes Compute owns any experimental two-cluster placement; this
+prompt. It requires the OpenAI key in the Gateway container only for embedded
+OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
 The tool retains installation resources on exit.
 
@@ -333,7 +336,7 @@ credential at its issuer.
 - [SecretDriver implementation specification](../../specs/.archive/14-secret-driver.md)
 - [Secret access architecture](../design/safeguards.md#secret-access)
 - [Kubernetes deployment](../guides/deploy.md)
-- [Deploy your first Agent](../guides/first-agent.md)
+- [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md)
 - [Configuration](../reference/configuration.md)
 - [Kubernetes Secret Driver](../reference/drivers/kubernetes-secret.md)
 

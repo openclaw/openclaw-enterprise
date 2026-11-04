@@ -221,7 +221,7 @@ administrators [share Agents](agent-sharing.md) from the **Access** tab.
 
 ## Stop and resume
 
-**Stop Agent**, in the **Danger zone** card at the end of the page, opens a confirmation explaining that shutdown interrupts running
+**Stop Agent**, in the **Danger zone** card at the end of the **Configuration** tab, opens a confirmation explaining that shutdown interrupts running
 work but preserves version history, credentials, gateway state, and workspace
 files. A chat that was mid-reply can keep showing the reply as in progress;
 reload it after the Agent is deployed again. **Cancel** closes it without a
@@ -232,10 +232,11 @@ An accepted stop shows **Runtime: Stop requested** in the overview; it does not
 prove the runtime finished. **Refresh stop status** reads desired state and
 selected version. If another operator has started deletion, the page shows deletion recovery.
 An uncertain result blocks another stop until a refresh.
-With no selected version, there is no Stop row before a first deploy or after a
-failed first deployment. While a first deployment is queued or in progress,
-**Stop Agent** cancels it. If you cannot read the deploying version, Stop stays
-and its confirmation says it cancels the deployment or stops a started version. To resume,
+With no selected version, there is no Stop row before a first deploy. While a
+first deployment is queued or in progress, **Stop Agent** cancels it. After a
+failed first deployment, or if you cannot read the deploying version, Stop stays:
+a newer deployment that you cannot read can be queued. Its confirmation says it
+cancels the deployment or stops a started version. To resume,
 open **Open draft** and select **Deploy new version**, which creates a new
 version. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 
@@ -248,8 +249,8 @@ gives the commands that delete the Agent's Configuration and, if it has one, its
 model credential Secret: both are kept even when Create Agent made them.
 Secrets can also be inspected and deleted from the [Secrets page](secrets.md)
 once their references are cleared; Configuration cleanup uses the CLI. Exact Agent
-`delete` permission is required. Accepted deletion starts asynchronous cleanup;
-the page checks it every few seconds and returns to Agents once the Agent is gone.
+`delete` permission is required. After deletion starts, cleanup status replaces the tabs.
+The page checks it every few seconds and returns to Agents once the Agent is gone.
 **Refresh deletion status** checks it immediately. **Request deletion again**
 opens a new confirmation for an already deleting Agent. Use it after fixing a
 cleanup failure that exhausted its retries; cleanup still queued or running

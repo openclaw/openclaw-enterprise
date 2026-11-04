@@ -1,6 +1,7 @@
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -46,6 +47,28 @@ import {
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 
+// Reduce reader results before assertions: diagnostics must never retain credential material.
+function materialClass(value: unknown): string {
+  if (value === undefined) {
+    return "no-result";
+  }
+  if (value === null || typeof value !== "object") {
+    return "unexpected";
+  }
+  if ("value" in value) {
+    return "material";
+  }
+  if (
+    Reflect.ownKeys(value).length === 1 &&
+    Object.hasOwn(value, "absent") &&
+    "absent" in value &&
+    (value.absent === "withdrawn" || value.absent === "unprepared")
+  ) {
+    return value.absent;
+  }
+  return "unexpected";
+}
+
 // Release code owns the sessions, material, per-request authority, route, withdrawal and
 // continued supervision. Compute, the stock-protocol supervisor/sender and HTTPS origin are
 // controlled. The test crosses real deadlines and imports actual private-origin Git objects.
@@ -86,7 +109,7 @@ test(
     // CI exercises the model grant, attachment and withdrawal but cannot claim a model response.
     const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
     const conversation = codex && (await standingGitConversation(t, codex));
-    const modelConfig = conversation ? { base_url: conversation.baseUrl } : undefined;
+    const modelConfig = conversation ? { authorized_base_url: conversation.baseUrl } : undefined;
     let onlineOwner!: ReturnType<typeof protectedOpenShellGitOwner>;
     const protectedGit = protectedRepositoryGitRelease(
       () => standing(),
@@ -100,6 +123,9 @@ test(
       { binaries: ["/usr/bin/codex"] },
       {
         id: gatewayId,
+        ...(conversation && {
+          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
+        }),
         backend: {
           id: "fixture-gateway",
           drivers: { credential_gateway: gatewayId },
@@ -138,11 +164,51 @@ test(
           protectedDriver: protectedGit.owner,
           credentialGateway: gateway,
           ...(modelConfig && { modelConfig }),
+          ...(conversation && {
+            modelProvider: { protocol: "openai-responses" as const, baseUrl: conversation.baseUrl },
+          }),
         }),
         { sandbox: protectedGit.sandboxConfiguration },
       );
     const { prepared, registrationName, gh, send, input } = peer;
     const authority = prepared.protectedGit!;
+    // Each explicit probe owns its receipt; runtime reconciliation uses the normal owner.
+    const readInstallation = async (
+      route: NonNullable<Parameters<typeof onlineOwner.readOpenShellMaterial>[2]>,
+      signal: AbortSignal,
+    ) => {
+      const selected = authority.online.githubInstallation;
+      assert.ok(typeof selected?.readMaterial === "function", "selected reader exists");
+      let completions = 0;
+      let matched = false;
+      let selectedResult: unknown;
+      const probe = protectedOpenShellGitOwner({
+        ...authority,
+        online: {
+          ...authority.online,
+          githubInstallation: {
+            ...selected,
+            async readMaterial(receivedRoute, receivedSignal) {
+              const result = await selected.readMaterial(receivedRoute, receivedSignal);
+              completions++;
+              matched = receivedRoute === route && receivedSignal === signal;
+              selectedResult = result;
+              return result;
+            },
+          },
+        },
+      });
+      const result = await probe.readOpenShellMaterial(
+        route.revisionId,
+        signal,
+        route,
+        "github-installation",
+      );
+      assert.equal(completions, 1, "selected probe completed exactly once");
+      assert.ok(matched, "selected reader received the original route and signal");
+      assert.ok(Object.is(result, selectedResult), "adapter preserves selected response");
+      return result;
+    };
     await protectedGit.owner.requireRepositoryGitTransport()(authority);
     assert.ok(predecessor);
     const persisted = await f.state.read((view) =>
@@ -217,6 +283,9 @@ test(
       options({
         runtime: {
           transportSecretPrefix: "fixture-transport",
+          ...(conversation && {
+            modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
+          }),
           gatewayStorageClassName: "local-path",
         },
       }) as never,
@@ -297,12 +366,8 @@ test(
           assert.equal(login.credentialSource?.id, auth.sourceId);
           assert.equal(login.loginMode, "api_key");
           if (conversation) {
-            assert.equal(login.credentialSource?.config.base_url, conversation.baseUrl);
-            const manifest = pluginRuntimeSpecForRevision(
-              r,
-              undefined,
-              login.credentialSource!.config.base_url,
-            )!;
+            assert.equal(login.credentialSource?.config.authorized_base_url, conversation.baseUrl);
+            const manifest = pluginRuntimeSpecForRevision(r, undefined, conversation.baseUrl)!;
             modelEnvironment = {
               ...Object.fromEntries(
                 login.environment.map(({ name, value }: { name: string; value?: string }) => [
@@ -397,17 +462,52 @@ test(
             const {
               rows: [route],
             } = await f.observerPool.query(
-              "SELECT fence, desired->>'credentialState' AS credential_state, material_version, preparation_attempt_id FROM occ.credential_deliveries WHERE revision_id=$1",
-              [r.id],
+              "SELECT fence, desired->>'credentialState' AS credential_state, material_version, preparation_attempt_id, observed, revision_id, namespace_id, agent_id, target, binding_id FROM occ.credential_deliveries WHERE revision_id=$1 AND binding_id=$2",
+              [r.id, bindingId],
             );
-            assert.deepEqual(route, {
+            const {
+              observed: persistedObserved,
+              revision_id,
+              namespace_id,
+              agent_id,
+              target,
+              binding_id,
+              ...state
+            } = route;
+            assert.deepEqual(state, {
               fence: "1",
               credential_state: "bootstrap",
               material_version: null,
               preparation_attempt_id: null,
             });
-            const material = await prepared.readOpenShellMaterial(r.id, s);
-            assert.ok(!material || "absent" in material);
+            const entry = await runtime["entries"].get(r.id);
+            const fence = Number(state.fence);
+            assert.equal(
+              revision_id === r.id &&
+                namespace_id === r.namespaceId &&
+                agent_id === r.agentId &&
+                binding_id === bindingId &&
+                target?.workspace === workspace &&
+                target?.sandbox === sandbox &&
+                !!persistedObserved &&
+                !!entry?.supervisor &&
+                persistedObserved.sandboxId === sandboxId &&
+                persistedObserved.credentialState === "bootstrap" &&
+                Number.isSafeInteger(fence) &&
+                fence === entry.fence &&
+                isDeepStrictEqual(persistedObserved, entry.supervisor),
+              true,
+              "durable bootstrap matches the candidate recipient and reconciled fence",
+            );
+            const classification = materialClass(
+              await readInstallation({ revisionId: r.id, fence, observed: persistedObserved }, s),
+            );
+            // Cardinality is not pinned here; either explicit absence is permissible.
+            assert.equal(
+              classification === "withdrawn" || classification === "unprepared",
+              true,
+              "preactivation selected reader must explicitly refuse material",
+            );
             assert.equal(
               await runtime.lookup(
                 { bindingId, sandboxId, workspace, requestId: "before-active" },
@@ -599,6 +699,42 @@ test(
       const firstPack = await allow(true);
       assert.equal(git(["index-pack", "--strict", "--stdin"], firstPack.subarray(8)).status, 0);
       assert.equal(git(["cat-file", "-t", oid]).stdout.toString().trim(), "commit");
+      const route = (await routes.standing(revision))!.route;
+      const installation = {
+        revisionId: revision.id,
+        fence: route.fence,
+        observed: route.observed,
+      };
+      for (const other of [authority, authority.online, authority.githubInstallation!]) {
+        assert.equal(
+          materialClass(await other.readMaterial(installation, t.signal)) === "unprepared",
+          true,
+          "wrong mode or narrow reader cannot release installation material",
+        );
+      }
+      assert.equal(
+        materialClass(
+          await readInstallation({ ...installation, fence: route.fence + 1 }, t.signal),
+        ) === "unprepared",
+        true,
+        "a stale installer receives no committed material",
+      );
+      const healthy = await readInstallation(installation, t.signal);
+      assert.equal(
+        healthy !== null &&
+          typeof healthy === "object" &&
+          "value" in healthy &&
+          "scope" in healthy &&
+          healthy.scope === "github-installation" &&
+          typeof healthy.value === "string" &&
+          healthy.value.length > 0 &&
+          Date.parse(healthy.expiresAt) > Date.now() &&
+          !!route.material &&
+          healthy.preparationAttemptId === route.material.preparationAttemptId &&
+          healthy.materialVersion === route.material.materialVersion,
+        true,
+        "healthy selected reader returns current installation material before expiry",
+      );
       if (conversation) {
         assert.ok(modelEnvironment);
         askModel = await conversation.launch(
@@ -628,45 +764,6 @@ test(
           [first.admissionId, crypto.randomUUID()],
         ),
         /receipt requires a current durable admission/,
-      );
-      const route = (await routes.standing(revision))!.route;
-      assert.deepEqual(
-        await authority.readMaterial(
-          {
-            revisionId: revision.id,
-            fence: route.fence,
-            observed: route.observed,
-          },
-          t.signal,
-        ),
-        { absent: "unprepared" },
-        "exact-dispatch port cannot release online material",
-      );
-      const installation = {
-        revisionId: revision.id,
-        fence: route.fence,
-        observed: route.observed,
-      };
-      for (const other of [authority.online, authority.githubInstallation!]) {
-        assert.deepEqual(
-          await other.readMaterial(installation, t.signal),
-          { absent: "unprepared" },
-          "neither a narrow online reader nor an exact-dispatch installation reader receives this material",
-        );
-      }
-      assert.deepEqual(
-        await onlineOwner.readOpenShellMaterial(
-          revision.id,
-          t.signal,
-          {
-            revisionId: revision.id,
-            fence: route.fence + 1,
-            observed: route.observed,
-          },
-          "github-installation",
-        ),
-        { absent: "unprepared" },
-        "a stale installer receives no committed material",
       );
       oid = await peer.nextObject();
       assert.notEqual(oid, firstOid);

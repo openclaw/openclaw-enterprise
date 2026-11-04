@@ -57,8 +57,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if len(opts.ComposeArgs) != 0 {
 		return fmt.Errorf("the Kubernetes-only profile does not accept Compose options")
 	}
-	protectedEgress, err := r.protectedEgressSelection("kubernetes", sandboxDriver)
-	if err != nil {
+	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
 	databaseName, err := r.selectedDevelopmentDatabase("kubernetes")
@@ -117,9 +116,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		SandboxNetworkPolicies:      networkPolicies,
 		SandboxNetworkPolicyCeiling: ceiling,
 		Version:                     3,
-		ProtectedEgress:             protectedEgress,
 		DatabaseName:                databaseName,
-		OpenShellHostGatewayIP:      r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"],
 		Repository:                  opts.Repository,
 		ComputeDriver:               "kubernetes",
 		SandboxDriver:               sandboxDriver,
@@ -164,11 +161,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	for _, name := range required {
 		if _, err := exec.LookPath(name); err != nil {
 			return fmt.Errorf("%s is required on PATH", name)
-		}
-	}
-	if state.ProtectedEgress {
-		if err := r.checkProtectedOpenShellChart(ctx, state, openShellImages); err != nil {
-			return err
 		}
 	}
 	if err := r.selectImageEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
@@ -306,12 +298,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 
 	// Nothing below needs the controller, PostgreSQL or repository images until
 	// the network check, so import them while the Codex sandbox check and the
-	// routing controller rollouts wait on the cluster. The runtime image is
-	// imported outside this overlap, so no two image builds run at once. The
+	// routing controller rollouts wait on the cluster. OpenShell's runtime follows
+	// PostgreSQL/repository imports in the same sibling, so builds stay serial. The
 	// network check needs only the controller image and runs in this overlap
 	// too; the platform install below still waits for it.
 	var codexSeccompProfile, routingPodCIDR string
 	var controllerImage, postgresImage, repositoryImage string
+	var assets *openShellDevelopmentAssets
 	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
 		var err error
 		if sandboxDriver == "none" {
@@ -354,30 +347,29 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 					return fmt.Errorf("import the development repository service image: %w", err)
 				}
 			}
+			if sandboxDriver == "openshell" {
+				runtimeImage, err = r.importRuntime(ctx, state)
+				if err != nil {
+					return err
+				}
+				// Large image imports finish before the smaller OpenShell assets, so
+				// image GC cannot evict them. Prepare the controller/CRDs and images
+				// while probes finish; platform trust and credentials still wait below
+				// for successful network verification and every preparation branch.
+				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+				assets, err = r.prepareOpenShell(ctx, state, timeout)
+				if err != nil {
+					return err
+				}
+			}
 			return nil
 		})
 	})
 	if err != nil {
 		return err
 	}
-	if sandboxDriver == "openshell" {
-		runtimeImage, err = r.importRuntime(ctx, state)
-		if err != nil {
-			return err
-		}
-	}
 	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
 		return err
-	}
-	var assets *openShellDevelopmentAssets
-	if sandboxDriver == "openshell" {
-		// Import the larger platform images first so image garbage collection cannot
-		// evict idle OpenShell images before their workloads are installed.
-		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-		assets, err = r.prepareOpenShell(ctx, state, timeout)
-		if err != nil {
-			return err
-		}
 	}
 	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
 		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,
@@ -453,7 +445,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	return nil
 }
 
-// Install the interdependent platform releases before their final readiness gate.
+// Install the authenticated Gateway before the ordinary OCE release.
 // The caller owns cluster rollback, including a partially installed release.
 type developmentPlatformInputs struct {
 	openShell                                    *openShellDevelopmentAssets
@@ -465,11 +457,6 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
 		return err
 	}
-	if state.ProtectedEgress {
-		if err := r.prepareDevelopmentEgress(ctx, state); err != nil {
-			return err
-		}
-	}
 	if state.SandboxDriver == "openshell" {
 		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
 		if err := r.installOpenShellGateway(ctx, state, inputs.openShell, state.PlatformNamespace, timeout); err != nil {
@@ -477,11 +464,6 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 		}
 	} else {
 		fmt.Fprintf(r.opts.Out, "Installing OCE in Namespace %s...\n", state.PlatformNamespace)
-	}
-	if state.ProtectedEgress {
-		if err := r.readDevelopmentEgressKeyID(ctx, state); err != nil {
-			return err
-		}
 	}
 	statusProxySource, err := r.developmentStatusProxySource(ctx, state)
 	if err != nil {
@@ -561,6 +543,10 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if controller == "" {
 		return nil
 	}
+	return r.validateSelectedDevelopmentImageRevisions(ctx, controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"])
+}
+
+func (r *runner) validateSelectedDevelopmentImageRevisions(ctx context.Context, images ...string) error {
 	checkout, err := r.output(ctx, "git", "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve the checkout revision for selected images: %w", err)
@@ -569,7 +555,7 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if len(revision) != 40 || strings.Trim(revision, "0123456789abcdef") != "" {
 		return fmt.Errorf("the checkout must have a full Git commit revision")
 	}
-	for _, image := range []string{controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"]} {
+	for _, image := range images {
 		label, err := r.developmentImageRevision(ctx, image)
 		if err != nil {
 			return err
@@ -809,18 +795,18 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		return err
 	}
 	values := map[string]any{
-		"images":       map[string]string{"controller": controllerImage},
-		"installation": map[string]string{"name": "Kubernetes development"},
-		"auth":         map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
-		"bootstrap":    map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
-		"database":     map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
-		"cluster":      map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
-		"api":          map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
-		"resources":    resources,
+		"images":         map[string]string{"controller": controllerImage},
+		"installation":   map[string]string{"name": "Kubernetes development"},
+		"auth":           map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
+		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
+		"database":       map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
+		"cluster":        map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
+		"api":            map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
+		"resources":      resources,
+		"gatewayRouting": map[string]any{"enabled": routing},
 	}
-	if state.ProtectedEgress {
+	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
-		values["egressAuthority"] = developmentEgressChartValues(state)
 	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
@@ -864,26 +850,10 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := exclusiveWrite(valuesPath, valuesData, 0600); err != nil {
 		return err
 	}
-	// The protected Gateway needs the API's authority to become ready. Keep
-	// the worker from claiming bootstrap work until its access and Gateway are
-	// in place. Override only this release, not the saved steady-state values.
-	install := []string{"--install"}
-	if state.ProtectedEgress {
-		install = append(install, "--set", "worker.replicaCount=0")
-	}
-	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, install...); err != nil {
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, "--install"); err != nil {
 		return err
 	}
-	if err := r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout); err != nil {
-		return err
-	}
-	if !state.ProtectedEgress {
-		return nil
-	}
-	if err := r.waitProtectedOpenShell(ctx, state, timeout); err != nil {
-		return fmt.Errorf("wait for protected OpenShell Gateway rollout before starting worker: %w", err)
-	}
-	return r.helmUpgrade(ctx, state, valuesPath, timeout, "--set", "worker.replicaCount=1")
+	return r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout)
 }
 
 // helmUpgrade installs or upgrades the chart from one complete values file.

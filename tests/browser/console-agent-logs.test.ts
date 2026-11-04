@@ -29,6 +29,7 @@ import {
   RUNTIME_STATUS_DENIED,
   RUNTIME_STATUS_OPERATE_DENIED,
   RUNTIME_STATUS_VERSION_UNREADABLE,
+  STOP_REQUESTED_FIRST_DEPLOYMENT,
 } from "../helpers/refusal-text.mjs";
 import {
   createProviderSandboxDriver,
@@ -1997,7 +1998,6 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   const stop = stopRow.getByRole("button", { name: "Stop Agent", exact: true });
-  await stop.waitFor();
 
   // The next poll's Agent read takes the server's answer now, while the Agent still runs, and
   // is answered only after this page's Stop.
@@ -2021,13 +2021,14 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   await new Promise((resolve) => setTimeout(resolve, 500));
   await page.clock.runFor(10_000);
   await held;
-
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.click();
   await page
     .getByRole("dialog", { name: "Stop this Agent?" })
     .getByRole("button", { name: "Stop Agent", exact: true })
     .click();
-  const requested = stopRow.getByText(/^Stop requested\./);
+  // v2 is still queued and no version is selected, so this Stop cancels a first deployment.
+  const requested = stopRow.getByText(STOP_REQUESTED_FIRST_DEPLOYMENT, { exact: true });
   await requested.waitFor();
   assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "stopped");
 
@@ -2211,8 +2212,8 @@ test("a refocus shows a stop made elsewhere while a version the caller cannot re
 
 // Finding 3012 (dogfood r63, D825): the stop showed only in the page summary, which at 390 px wide
 // sits far above the Logs view, so nothing in view changed. The view now says so in place, as a
-// status announced once, in the summary's words. The summary and the Stop row grow as the stop
-// shows; the view stays where the reader has it. At 1440 the browser's scroll anchor was the
+// status announced once, in the summary's words. The view stays where the reader has it as
+// the summary grows. At 1440 the browser's scroll anchor was the
 // sidebar's account row, which pinned the page to its end and moved the view up by that growth.
 for (const viewport of [
   { width: 1440, height: 900 },
@@ -2705,6 +2706,261 @@ test("rate limits keep Follow and status automatic, but not a download made whil
   await waitForIdleFetches(page);
   assert.equal(counts.status, 2);
   assert.equal(counts.download, 1);
+});
+
+// Each journey gets a fresh Agent/member rate-limit bucket. Browser clock advances in
+// Follow tests do not replenish the real Controller's status/log read budget.
+async function malformedLogsJourney(t: TestContext, following: boolean) {
+  const logs = await logsFixture(t);
+  const { fixture, computeDriver, namespace, agent, revisionId } = logs;
+  const { account, role } = await logsMember(
+    fixture,
+    namespace,
+    following ? "malformed-follow" : "malformed-refresh",
+    ["read", "operate", "read_logs"],
+  );
+  const beforeText = "synthetic output already displayed";
+  computeDriver.state.lines = [line(1, beforeText)];
+  const { page } = await newPage(t, fixture);
+  if (following) {
+    await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  }
+  await trackSettledFetches(page);
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`;
+  await page.route(`${fixture.origin}${deploymentPath}`, (route) =>
+    route.fulfill(succeededDeployment(namespace, agent, revisionId)),
+  );
+  const originAndPath = (url: URL) =>
+    url.origin === fixture.origin &&
+    url.pathname === `${deploymentPath}/runtime/logs` &&
+    !url.searchParams.has("download");
+  const next = () =>
+    page.waitForResponse(
+      (response) => response.request().method() === "GET" && originAndPath(new URL(response.url())),
+    );
+  const first = next();
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"),
+    account.credentials,
+  );
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  const row = (text: string) => pane.getByText(text, { exact: true });
+  const error = page.locator(".log-error");
+  const refresh = page.getByRole("button", {
+    name: "Refresh logs",
+    exact: true,
+  });
+  const outputStatus = page.locator(".log-output-status");
+  function dataIn(body: unknown) {
+    assert.ok(body && typeof body === "object" && "data" in body);
+    assert.ok(body.data && typeof body.data === "object");
+    return body.data;
+  }
+  function validPage(body: unknown) {
+    const data = dataIn(body);
+    assert.ok("records" in data && Array.isArray(data.records));
+    assert.ok("cursor" in data && typeof data.cursor === "string" && data.cursor.length > 0);
+    assert.ok("revisionId" in data && data.revisionId === revisionId);
+    const records: readonly unknown[] = data.records;
+    return { ...data, records, cursor: data.cursor };
+  }
+  const baseline = await first;
+  assert.equal(baseline.status(), 200);
+  const baselineData = validPage(await baseline.json());
+  const exactURL = baseline.url();
+  await row(beforeText).waitFor();
+  await waitForIdleFetches(page);
+  const oldStatus = await outputStatus.textContent();
+  assert.match(oldStatus ?? "", /^Showing /);
+  async function refreshAndObserve(status: number) {
+    const answer = next();
+    await refresh.click();
+    const received = await answer;
+    assert.equal(received.url(), exactURL, "only a same-selection refresh is in scope");
+    assert.equal(received.status(), status);
+    await waitForIdleFetches(page);
+    return received;
+  }
+
+  async function corruptNextPage(
+    expectedURL: string,
+    change: (data: ReturnType<typeof validPage>) => object,
+  ) {
+    let altered = 0;
+    await page.route(
+      originAndPath,
+      async (route) => {
+        assert.equal(route.request().method(), "GET");
+        assert.equal(route.request().url(), expectedURL);
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        const original: unknown = await response.json();
+        const data = validPage(original);
+        assert.ok(original && typeof original === "object");
+        altered += 1;
+        await route.fulfill({
+          response,
+          json: { ...original, data: { ...data, ...change(data) } },
+        });
+      },
+      { times: 1 },
+    );
+    return () => altered;
+  }
+  return {
+    computeDriver,
+    role,
+    page,
+    beforeText,
+    pane,
+    row,
+    error,
+    outputStatus,
+    oldStatus,
+    baselineData,
+    exactURL,
+    next,
+    validPage,
+    refreshAndObserve,
+    corruptNextPage,
+  };
+}
+
+function malformedLaterRecord(data: { records: readonly unknown[] }) {
+  const first = data.records[0];
+  assert.equal(data.records.length, 2);
+  assert.ok(first && typeof first === "object" && "type" in first && first.type === "line");
+  assert.ok("message" in first && first.message === "replacement first row");
+  return { records: [first, null] };
+}
+
+test("same-selection logs refresh retains output on malformed pages and recovers", async (t) => {
+  const {
+    computeDriver,
+    role,
+    page,
+    beforeText,
+    pane,
+    row,
+    error,
+    outputStatus,
+    oldStatus,
+    exactURL,
+    validPage,
+    refreshAndObserve,
+    corruptNextPage,
+  } = await malformedLogsJourney(t, false);
+  const recoveryText = "synthetic output after retry";
+  computeDriver.state.readError = new Error("synthetic dependency unavailable");
+  await refreshAndObserve(503);
+  assert.match((await error.textContent()) ?? "", /Runtime status or logs are unavailable/);
+  assert.equal(await row(beforeText).isVisible(), true);
+  assert.equal(await pane.locator(".log-row").count(), 1);
+  assert.equal(await outputStatus.textContent(), oldStatus);
+
+  computeDriver.state.readError = undefined;
+  // Mutate only a checked real response. A valid first entry followed by a broken one
+  // must not replace the old output with a partially rendered page.
+  computeDriver.state.lines = [line(2, "replacement first row"), line(3, "replacement last row")];
+  const corruptions: {
+    name: string;
+    change(data: ReturnType<typeof validPage>): object;
+  }[] = [
+    { name: "null records", change: () => ({ records: null }) },
+    {
+      name: "malformed later record",
+      change: malformedLaterRecord,
+    },
+    { name: "object cursor", change: () => ({ cursor: {} }) },
+    { name: "missing stream", change: () => ({ stream: undefined }) },
+    {
+      name: "nonnumeric restart count",
+      change(data) {
+        assert.ok("stream" in data && data.stream && typeof data.stream === "object");
+        return { stream: { ...data.stream, restartCount: "one" } };
+      },
+    },
+  ];
+  for (const corruption of corruptions) {
+    const altered = await corruptNextPage(exactURL, corruption.change);
+    await refreshAndObserve(200);
+    assert.equal(altered(), 1, corruption.name);
+    assert.match((await error.textContent()) ?? "", /Runtime status or logs are unavailable/);
+    assert.equal(await pane.locator(".log-row").count(), 1, corruption.name);
+    assert.equal(await row(beforeText).isVisible(), true, corruption.name);
+    assert.equal(await outputStatus.textContent(), oldStatus, corruption.name);
+  }
+
+  computeDriver.state.lines = [line(4, recoveryText)];
+  const repaired = await refreshAndObserve(200);
+  validPage(await repaired.json());
+  await row(recoveryText).waitFor();
+  assert.equal(await error.textContent(), "");
+  assert.equal(await pane.locator(".log-row").count(), 1);
+  assert.equal(await row(beforeText).isVisible(), false);
+
+  changeGrant(role, "read_logs", false);
+  await refreshAndObserve(403);
+  await page.getByText(LOGS_CHANGED).waitFor();
+  assert.equal(await pane.locator(".log-row").count(), 0);
+  assert.equal(await row(recoveryText).isVisible(), false);
+});
+
+test("Follow retains output and cursor after a malformed later record and recovers", async (t) => {
+  const {
+    computeDriver,
+    page,
+    beforeText,
+    pane,
+    row,
+    error,
+    outputStatus,
+    oldStatus,
+    baselineData,
+    exactURL,
+    next,
+    validPage,
+    corruptNextPage,
+  } = await malformedLogsJourney(t, true);
+  computeDriver.state.lines = [line(2, "replacement first row"), line(3, "replacement last row")];
+  const followURL = new URL(exactURL);
+  followURL.searchParams.delete("tailLines");
+  followURL.searchParams.set("cursor", baselineData.cursor);
+  const altered = await corruptNextPage(followURL.href, (data) => ({
+    ...malformedLaterRecord(data),
+    cursor: "must-not-be-committed",
+  }));
+  const follow = page.getByRole("button", { name: "Follow", exact: true });
+  const answer = next();
+  await follow.click();
+  await page.clock.runFor(2_000);
+  assert.equal((await answer).status(), 200);
+  await waitForIdleFetches(page);
+  assert.equal(altered(), 1);
+  assert.match((await error.textContent()) ?? "", /Runtime status or logs are unavailable/);
+  assert.equal(await pane.locator(".log-row").count(), 1);
+  assert.equal(await row(beforeText).isVisible(), true);
+  assert.equal(await outputStatus.textContent(), oldStatus);
+
+  // The failed Follow page must not consume its cursor or append its valid first row.
+  const resumed = next();
+  await page.clock.runFor(10_000);
+  const resumedResponse = await resumed;
+  assert.equal(resumedResponse.status(), 200);
+  assert.equal(resumedResponse.url(), followURL.href);
+  assert.equal(new URL(resumedResponse.url()).searchParams.get("cursor"), baselineData.cursor);
+  validPage(await resumedResponse.json());
+  await row("replacement last row").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await pane.locator(".log-row").count(), 3);
+  assert.equal(await row("replacement first row").isVisible(), true);
+  assert.equal(await row(beforeText).isVisible(), true);
+  assert.equal(await error.textContent(), "");
+  await page.getByRole("button", { name: "Following", exact: true }).click();
+  assert.equal(await follow.isVisible(), true);
+  assert.equal(await follow.getAttribute("aria-pressed"), "false");
 });
 
 // A rate-limited Refresh logs emptied the pane before its read, so only the error remained, and

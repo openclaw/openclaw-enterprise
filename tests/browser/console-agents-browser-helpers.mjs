@@ -472,6 +472,12 @@ export async function selectSecret(scope, label, secret, options = {}) {
 
 // Lists `secret` in the Secret field `label` and returns its option, which carries the reason in
 // its accessible name when the caller may read the Secret but not operate it (finding 2453).
+/**
+ * @param {import("playwright").Page | import("playwright").Locator} scope
+ * @param {string} label
+ * @param {{ name: string }} secret
+ * @returns {Promise<import("playwright").Locator>}
+ */
 export async function operateDeniedSecretOption(scope, label, secret) {
   await scope.getByLabel(label, { exact: true }).fill(secret.name);
   const option = scope.getByRole("option", {
@@ -485,6 +491,12 @@ export async function operateDeniedSecretOption(scope, label, secret) {
 
 // Lists the Secret field `label`'s inline Create new Secret action and returns it, checking that
 // it is disabled with `reason` in its accessible name.
+/**
+ * @param {import("playwright").Page | import("playwright").Locator} scope
+ * @param {string} label
+ * @param {string} reason
+ * @returns {Promise<import("playwright").Locator>}
+ */
 export async function deniedCreateSecretOption(scope, label, reason) {
   await scope.getByLabel(label, { exact: true }).fill("no matching Secret");
   const option = scope.getByRole("option", {
@@ -673,8 +685,15 @@ export async function trackSettledFetches(page) {
   });
 }
 
+/**
+ * @param {import("playwright").Page} page
+ * @param {string} path
+ */
 export async function settledFetches(page, path) {
-  return page.evaluate((target) => globalThis.settledFetchCount(target), path);
+  /** @type {unknown} */
+  const count = await page.evaluate((target) => globalThis.settledFetchCount(target), path);
+  assert.ok(typeof count === "number", "Settled fetch instrumentation returns a numeric count");
+  return count;
 }
 
 export async function waitForSettledFetches(page, path, count) {
@@ -1008,6 +1027,17 @@ export const consoleViewports = Object.freeze([
 // The getAgentDeployment response for an admitted revision when the fixture has no worker. A
 // running record with `nextAttemptAt` is a started deploy whose work waits for its next attempt:
 // it stays running between attempts (finding 2456).
+/**
+ * @param {{ id: string, namespaceId: string, agentId: string, createdAt?: string }} revision
+ * @param {{
+ *   status: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusWire["status"],
+ *   error?: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusWire["error"] | undefined,
+ *   attempt?: Parameters<typeof deploymentProgressForWork>[1],
+ *   nextAttemptAt?: string | undefined,
+ *   warnings?: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusWire["warnings"] | undefined,
+ * }} options
+ * @returns {{ json: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusResponse }}
+ */
 export function deploymentStatusResponse(
   { id: deploymentId, namespaceId, agentId, createdAt },
   { status, error = null, attempt, nextAttemptAt, warnings = [] },
@@ -1085,12 +1115,21 @@ export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRea
 }
 
 // The Agent page's "Viewing version" chooser in `scope`, a page or a locator.
+/**
+ * @param {import("playwright").Page | import("playwright").Locator} scope
+ * @returns {import("playwright").Locator}
+ */
 export const versionChooser = (scope) => scope.getByLabel("Viewing version", { exact: true });
 
 // Version `n`'s chooser label: "vN" alone or "vN · <outcome>".
 const versionName = (n) => new RegExp(`^v${n}(?: ·|$)`);
 
 // Version `n`'s option in the chooser.
+/**
+ * @param {import("playwright").Page | import("playwright").Locator} scope
+ * @param {number} n
+ * @returns {import("playwright").Locator}
+ */
 export const versionOption = (scope, n) =>
   versionChooser(scope).getByRole("option", { name: versionName(n) });
 
@@ -1117,6 +1156,7 @@ export function denyRevisionRead(fixture, namespace, revision) {
 }
 
 // The Stop Agent button in its row on the Agent page.
+/** @param {import("playwright").Page} page */
 export const stopAgentButton = (page) =>
   page
     .getByRole("region", { name: "Stop Agent", exact: true })
@@ -1206,6 +1246,7 @@ export const shortId = (id) => `${id.slice(0, 12)}…${id.slice(-6)}`;
 
 // A control's accessible description from aria-describedby: the text of each element it names,
 // in order (finding D749). A referenced ID that renders nothing adds nothing.
+/** @param {import("playwright").Locator} locator */
 export function accessibleDescription(locator) {
   return locator.evaluate((node) =>
     (node.getAttribute("aria-describedby") ?? "")
@@ -1382,6 +1423,10 @@ export async function storeRefusedConfiguration(
   await configurationDriver.update({ ...stored, values });
 }
 
+/**
+ * @param {import("playwright").Page} page
+ * @returns {import("playwright").Locator}
+ */
 export const draftActions = (page) => page.locator(".agent-draft-actions");
 export const draftDeployButton = (card) =>
   card.getByRole("button", { name: "Deploy new version", exact: true });

@@ -108,7 +108,7 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
             const result = materials[candidate]!;
             return replaceAtWriter ? { ...result, sessionId: "different-session" } : result;
           },
-          authorizeOpenShellRequest: async () => assert.fail("installation is not a recorded use"),
+          authorizeOnlineRequest: async () => assert.fail("installation is not a recorded use"),
         };
         const prepare = () =>
           runtime.prepare(revision, client, workspace, sandbox, signal, [model]);
@@ -409,7 +409,12 @@ test(
         createGitHubRepositoryDeliveryResolver(registry),
       );
       value["routes"] = routes;
-      value["owner"] = peer.prepared;
+      value["owner"] = {
+        readOpenShellMaterial: async () =>
+          assert.fail("an unresolved reservation must not read prepared material"),
+        authorizeOnlineRequest: async () =>
+          assert.fail("reservation recovery is not a recorded use"),
+      };
       t.after(() => value.close());
       return value;
     };
@@ -446,8 +451,6 @@ test(
       reason: "write_unknown",
     });
     await peer.prepared.maintain();
-    const material = await peer.prepared.readOpenShellMaterial(revision.id, t.signal);
-    assert.ok(!material || "absent" in material);
     for (const value of [first, cold]) {
       assert.equal(
         await value.lookup(

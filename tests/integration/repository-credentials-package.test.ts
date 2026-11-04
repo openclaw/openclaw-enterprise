@@ -422,7 +422,7 @@ test(
     // A real protocol reply establishes completed startup before SIGTERM.
     const preparedRuntime = join(temporary, "prepared-runtime");
     await cp(runtime, preparedRuntime, { recursive: true });
-    for (const module of ["factory.js", "driver.js", "static-token.js"]) {
+    for (const module of ["config.js", "factory.js", "driver.js", "static-token.js"]) {
       await rm(join(preparedRuntime, "dist/drivers/repo/github/credentials", module));
     }
     const preparedService = spawn(
@@ -689,6 +689,23 @@ test(
       const deniedPush = await invokeHook("refs/heads/main");
       assert.equal(deniedPush.status, 1);
       assert.match(deniedPush.stderr, /repository-push-ref-not-allowed/);
+      // Relocated packages must resolve a linked wrapper from its installed location,
+      // even after the build tree and its dependency graph have been removed.
+      await symlink(
+        relative(
+          checkout,
+          join(client, "dist/drivers/repo/github/credentials/client/hooks/pre-push"),
+        ),
+        join(checkout, "managed-hook"),
+      );
+      await symlink("../../managed-hook", join(checkout, ".git/hooks/pre-push"));
+      const recursiveHook = await invokeHook("refs/heads/agent/allowed");
+      assert.equal(recursiveHook.status, 1);
+      assert.equal(recursiveHook.stdout, "");
+      assert.equal(
+        recursiveHook.stderr,
+        "repository-hook-failed: pre-push: recursive-repository-hook\n",
+      );
       // An unsupported command must reach the router's public error boundary;
       // a missing router or import cannot satisfy this detached-entrypoint check.
       const rejected = invoke("router.js", ["git", "status"]);

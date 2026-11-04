@@ -56,6 +56,7 @@
     "tests/integration/common-logging.test.mjs",
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.mjs",
+    "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
     "tests/conformance/temporary-directory.test.mjs",
@@ -90,12 +91,12 @@
     "tests/conformance/pr-status.test.mjs",
     "tests/conformance/codex-stderr-filter.test.mjs",
     "tests/docs/docs-server.test.mjs",
-    "tests/integration/console-build-metadata.test.mjs",
+    "tests/integration/console-build-metadata.test.ts",
     "tests/conformance/console-design-tokens.test.mjs",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
     "tests/conformance/utils.test.mjs",
-    "tests/conformance/console-api-client.test.mjs",
+    "tests/conformance/console-api-client.test.ts",
     "tests/conformance/console-carry.test.mjs",
     "tests/conformance/console-namespace-name.test.mjs",
     "tests/conformance/console-agent-name-runs.test.mjs",
@@ -152,7 +153,7 @@
       "path": "tests/conformance/console-agent-name-runs.test.mjs"
     },
     {
-      "path": "tests/conformance/console-api-client.test.mjs"
+      "path": "tests/conformance/console-api-client.test.ts"
     },
     {
       "path": "tests/conformance/console-carry.test.mjs"
@@ -362,7 +363,7 @@
       "path": "tests/integration/caller-denial-api.test.ts"
     },
     {
-      "path": "tests/integration/console-build-metadata.test.mjs"
+      "path": "tests/integration/console-build-metadata.test.ts"
     },
     {
       "path": "tests/integration/controller-lifecycle.test.mjs"
@@ -396,6 +397,9 @@
     },
     {
       "path": "tests/integration/production-image-upgrade.test.mjs"
+    },
+    {
+      "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
     },
     {
       "path": "tests/integration/secret-api.test.mjs"
@@ -513,6 +517,9 @@
     {
       "path": "tests/integration/credential-proxy-provider-pin.test.ts",
       "expectedTests": [
+        "fresh static source refuses duplicate provider identity in either catalog order",
+        "fresh static source keeps catalog order for distinct provider identities",
+        "fresh static source refuses a provider duplicate added during material resolution",
         "credential exchange refuses a conflicted eligible provider before route fallback",
         "credential exchange refuses duplicate and substituted providers before material access",
         "credential exchange refuses provider replacement during a pending Secret read",
@@ -558,6 +565,7 @@
       "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
       "expectedTests": [
         "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
+        "held Git startup observes a denial inside its provider endpoint without credential access",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
         "protected Git replies to this online decision before its authority deadline",
         "shipped gh metadata stays within selected-repository authority",
@@ -571,7 +579,8 @@
         "the Git route tombstone stays for a replaced execution, an unknown write and withdrawal",
         "the Git route reports bootstrap, material and binding states for Compute readiness",
         "an observed Git route (2) rotates only after its challenge in the original worker",
-        "an observed Git route (3) rotates only after its challenge in the original worker"
+        "an observed Git route (3) rotates only after its challenge in the original worker",
+        "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access"
       ]
     },
     {
@@ -610,7 +619,6 @@
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
         "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
-        "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
         "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
     },

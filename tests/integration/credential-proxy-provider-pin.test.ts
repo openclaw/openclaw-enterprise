@@ -20,6 +20,151 @@ import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-sta
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
 
+test("fresh static source refuses duplicate provider identity in either catalog order", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f && "createNamespaceMember" in f && "signIn" in f);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const injections = [0, 0];
+  const entries = injections.map((_, index): CredentialProviderDefinition => ({
+    ...original,
+    ref: { ...original.ref },
+    inject(value) {
+      injections[index]! += 1;
+      return Reflect.apply(original.inject, this, [value]);
+    },
+  }));
+  const sources = () =>
+    f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.listCredentialSources(f.namespace.id),
+    );
+  const body = {
+    name: "ambiguous-fresh",
+    type: "openai",
+    config: { authorized_base_url: f.modelProvider.baseUrl },
+    secrets: { api_key: f.secret.ref },
+  };
+  providers.splice(0, providers.length, ...entries);
+  assert.equal((await f.request("POST", f.path, { session: null, body })).status, 401);
+  assert.equal((await f.request("POST", f.path, { body: { ...body, name: "" } })).status, 400);
+  const denied = await f.createNamespaceMember("no-source-access", f.namespace.id, []);
+  const session = await f.signIn(denied.credentials);
+  assert.equal((await f.request("POST", f.path, { session, body })).status, 403);
+
+  const outcomes = [];
+  for (const [index, order] of [entries, [...entries].reverse()].entries()) {
+    providers.splice(0, providers.length, ...order);
+    injections.fill(0);
+    const count = (await sources()).length;
+    const reads = f.secretReads;
+    const result = await f.request("POST", f.path, {
+      body: { ...body, name: `ambiguous-${index}` },
+    });
+    outcomes.push({
+      status: result.status,
+      injections: [...injections],
+      secretReads: f.secretReads - reads,
+      sourceCountDelta: (await sources()).length - count,
+    });
+  }
+  const refused = { status: 409, injections: [0, 0], secretReads: 0, sourceCountDelta: 0 };
+  assert.deepEqual(outcomes, [refused, refused]);
+  assert.equal(f.providerRequests.length, 0);
+});
+
+test("fresh static source keeps catalog order for distinct provider identities", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  const injections: string[] = [];
+  const make = (id: string): CredentialProviderDefinition => ({
+    ...original,
+    ref: { ...original.ref, id },
+    inject(value) {
+      injections.push(id);
+      return Reflect.apply(original.inject, this, [value]);
+    },
+  });
+  const a = make("catalog-a");
+  const b = make("catalog-b");
+  for (const entries of [[a], [a, b], [b, a]]) {
+    providers.splice(0, providers.length, ...entries);
+    const reads: number = f.secretReads;
+    const result: { status: number; data: { id: string } } = await f.request("POST", f.path, {
+      body: {
+        name: `catalog-${injections.length}`,
+        type: "openai",
+        config: { authorized_base_url: f.modelProvider.baseUrl },
+        secrets: { api_key: f.secret.ref },
+      },
+    });
+    assert.equal(result.status, 201);
+    const source: Readonly<CredentialSource> | undefined = await f.controller.transact(
+      (unit: PlatformUnitOfWork) =>
+        unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
+    );
+    assert.deepEqual(source?.egress?.key.provider, entries[0]!.ref);
+    assert.equal(f.secretReads, reads + 1);
+  }
+  assert.deepEqual(injections, [a.ref.id, a.ref.id, b.ref.id]);
+  assert.equal(f.providerRequests.length, 0);
+});
+
+test("fresh static source refuses a provider duplicate added during material resolution", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  const providers = f.egress.sourceControl.providers as CredentialProviderDefinition[];
+  const saved = [...providers];
+  t.after(() => providers.splice(0, providers.length, ...saved));
+  const original = providers.find((entry) => entry.sourceType.type === "openai")!;
+  let injections = 0;
+  const provider: CredentialProviderDefinition = {
+    ...original,
+    inject(value) {
+      injections += 1;
+      return Reflect.apply(original.inject, this, [value]);
+    },
+  };
+  providers.splice(0, providers.length, provider);
+  const sources = () =>
+    f.controller.transact((unit: PlatformUnitOfWork) =>
+      unit.credentialSources.listCredentialSources(f.namespace.id),
+    );
+  const count = (await sources()).length;
+  const reads = f.secretReads;
+  const release = f.pauseSecretReads();
+  t.after(release);
+  const pending = f.request("POST", f.path, {
+    body: {
+      name: "pending-create",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
+  });
+  try {
+    const until = Date.now() + 5_000;
+    while (f.secretReads === reads && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(f.secretReads, reads + 1);
+    // The selected pointer and callbacks stay unchanged; only identity uniqueness changes.
+    providers.push({ ...provider, ref: { ...provider.ref } });
+  } finally {
+    release();
+  }
+  const result = await pending;
+  assert.equal(result.status, 409);
+  assert.equal(injections, 0);
+  assert.equal((await sources()).length, count);
+  assert.equal(f.providerRequests.length, 0);
+});
+
 test("credential exchange refuses a conflicted eligible provider before route fallback", async (t) => {
   const view: { installation?: (installation: EgressInstallation) => EgressInstallation } = {};
   const f = await staticEgressFixture(t, {
@@ -434,7 +579,12 @@ test("an unbound source update keeps its admitted provider when same-type provid
   const a = instrument("source-verifier-a");
   const b = instrument("source-verifier-b");
   providers.splice(0, providers.length, a, b);
-  const body = { name: "unbound", type: "openai", secrets: { api_key: f.secret.ref } };
+  const body = {
+    name: "unbound",
+    type: "openai",
+    config: { authorized_base_url: f.modelProvider.baseUrl },
+    secrets: { api_key: f.secret.ref },
+  };
   const created = await f.request("POST", f.path, { body });
   assert.equal(created.status, 201);
   const { id } = created.data;
@@ -525,7 +675,12 @@ test("a source update withholds resolved material after its provider or injector
     },
   };
   providers[index] = a;
-  const body = { name: "unbound", type: "openai", secrets: { api_key: f.secret.ref } };
+  const body = {
+    name: "unbound",
+    type: "openai",
+    config: { authorized_base_url: f.modelProvider.baseUrl },
+    secrets: { api_key: f.secret.ref },
+  };
   const created = await f.request("POST", f.path, { body });
   assert.equal(created.status, 201);
   const { id } = created.data;
@@ -667,14 +822,19 @@ test("live static registration does not require Compute placement", async (t) =>
   const registration = t.mock.method(gateway, "registerSource");
   const reads = f.secretReads;
   const result = await f.request("POST", f.path, {
-    body: { name: "static-no-placement", type: "openai", secrets: { api_key: f.secret.ref } },
+    body: {
+      name: "static-no-placement",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
   });
   assert.equal(result.status, 201);
   const stored = await f.controller.transact((unit: PlatformUnitOfWork) =>
     unit.credentialSources.findCredentialSource(f.namespace.id, result.data.id),
   );
   assert.equal(stored?.state, "ready");
-  assert.deepEqual(stored?.config, {});
+  assert.deepEqual(stored?.config, { authorized_base_url: f.modelProvider.baseUrl });
   assert.equal(stored?.ownerCapability, "credential_gateway");
   assert.equal(stored?.driverId, gateway.id);
   assert.equal(stored?.egress?.adoption, "live");
@@ -699,7 +859,10 @@ test("live static source validation does not consult backend Gateway placement",
     body: {
       name: "static-no-backend-placement",
       type: "openai",
-      config: { base_url: "https://MODELS.example.test:8443/api/v1/" },
+      config: {
+        authorized_base_url:
+          f.modelProvider.baseUrl.replace("provider.example.test", "PROVIDER.example.test") + "/",
+      },
       secrets: { api_key: f.secret.ref },
     },
   });
@@ -716,7 +879,7 @@ test("live static source validation does not consult backend Gateway placement",
   assert.equal(stored?.ownerCapability, "credential_gateway");
   assert.equal(stored?.driverId, gateway.id);
   assert.equal(stored?.egress?.adoption, "live");
-  assert.deepEqual(stored?.config, { base_url: "https://models.example.test:8443/api/v1" });
+  assert.deepEqual(stored?.config, { authorized_base_url: f.modelProvider.baseUrl });
   assert.equal(f.secretReads - reads, 1);
   const secretOperations = authorization.mock.calls
     .map((call) => call.arguments[0])
@@ -729,16 +892,19 @@ test("live static source validation does not consult backend Gateway placement",
       body: {
         name: "invalid-static-endpoint",
         type: "openai",
-        config: { base_url: `https://${host}/v1` },
+        config: { authorized_base_url: `https://${host}/v1` },
         secrets: { api_key: f.secret.ref },
       },
     });
     assert.equal(denied.status, 400);
     assert.equal(denied.body.error.code, "INVALID_REQUEST");
     assert.deepEqual(denied.body.error.details, [
-      { path: "/config/base_url", code: "INVALID_VALUE" },
+      { path: "/config/authorized_base_url", code: "INVALID_VALUE" },
     ]);
-    assert.equal(denied.body.error.message, "The openai base_url host must be an exact DNS name.");
+    assert.equal(
+      denied.body.error.message,
+      "The openai authorized_base_url host must be an exact DNS name.",
+    );
     assert.equal(f.secretReads - reads, 1);
     assert.equal(placement.mock.callCount(), 0);
   }
@@ -799,7 +965,12 @@ test("live static registration losing to DELETE preserves its deleting row witho
   const removal = t.mock.method(gateway, "removeSource", terminalRemoval);
   pauseRegistration = true;
   const post = f.request("POST", f.path, {
-    body: { name: "late-delete", type: "openai", secrets: { api_key: f.secret.ref } },
+    body: {
+      name: "late-delete",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
   });
   const source = await Promise.race([
     committed.promise,

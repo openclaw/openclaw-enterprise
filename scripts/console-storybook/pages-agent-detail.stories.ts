@@ -43,6 +43,10 @@ export const GatewaySafetyStrict = story("gatewaySafetyStrict");
 export const GatewaySafetyRejectSteering = story("gatewaySafetyRejectSteering");
 export const GatewaySafetyReader = story("gatewaySafetyReader");
 export const PluginsDraft = story("pluginsDraft");
+export const SlackMcpTools = {
+  ...story("slackMcpTools"),
+  name: "Choose tools for a connected Slack account",
+};
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const DraftReader = story("draftReader");
@@ -78,6 +82,10 @@ export const DeploymentDeferred = story("deploymentDeferred");
 export const DeploymentRetrying = story("deploymentRetrying");
 export const DeploymentRunning = story("deploymentRunning");
 export const DeploymentRunningActivates = story("deploymentRunningActivates");
+export const DeploymentCompletionFocus = {
+  ...story("deploymentCompletionFocus", { openInNewTab: true }),
+  name: "Diagnostics focus when deployment completes",
+};
 export const DeploymentCompletesRereadFails = story("deploymentCompletesRereadFails");
 export const DeploymentStatusReadRecovers = {
   ...story("deploymentStatusReadRecovers"),
@@ -125,6 +133,7 @@ export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsFast = story("diagnosticsFast");
 export const DiagnosticsNoSlack = story("diagnosticsNoSlack");
 export const DiagnosticsReader = story("diagnosticsReader");
+export const DangerZoneTabs = story("dangerZoneTabs");
 export const DangerZoneReader = story("dangerZoneReader");
 export const DiagnosticsRefused = story("diagnosticsRefused");
 export const DiagnosticsUnknown = story("diagnosticsUnknown");
@@ -262,6 +271,8 @@ export const PolicyDenialsReadDenied = story("policyDenialsReadDenied");
 export const PolicyDenialsLoading = story("policyDenialsLoading");
 export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");
 export const PolicyDenialsProtected = story("policyDenialsProtected");
+export const PolicyDenialsWithheldOne = story("policyDenialsWithheldOne");
+export const PolicyDenialsWithheldMany = story("policyDenialsWithheldMany");
 
 export const ConfigurationInvalid = story("policyConfigurationInvalid");
 export const ConfigurationConflict = story("policyConfigurationConflict");

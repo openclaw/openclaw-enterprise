@@ -19,10 +19,8 @@ import {
   readPublicCaBundle,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
-import {
-  bindRepositoryGitTransport,
-  repositoryGitAuthority,
-} from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import { repositoryGitAuthority } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
@@ -479,6 +477,7 @@ function externalGitJourney(
     const modelGateway = conversation
       ? new OpenShellCredentialGatewayDriver(modelGatewayConfiguration, {
           id: "external-journey-model",
+          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
           backend: {
             id: "external-journey-model",
             drivers: { credential_gateway: "external-journey-model" },
@@ -495,7 +494,7 @@ function externalGitJourney(
           namespaceId,
           name: "external-journey-model",
           type: "openai",
-          config: { base_url: conversation.baseUrl },
+          config: { authorized_base_url: conversation.baseUrl },
           secrets: {},
           ownerCapability: "credential_gateway",
           driverId: modelGateway.id,
@@ -592,9 +591,14 @@ function externalGitJourney(
     assert.deepEqual(apiOwner.ref, owner.ref);
     const kube = modelGateway
       ? new KubernetesComputeDriver(
-          apiDrivers.installation.drivers.compute.configuration as unknown as ConstructorParameters<
-            typeof KubernetesComputeDriver
-          >[0],
+          {
+            ...apiDrivers.installation.drivers.compute.configuration,
+            runtime: {
+              ...(apiDrivers.installation.drivers.compute.configuration
+                .runtime as ConstructorParameters<typeof KubernetesComputeDriver>[0]["runtime"]),
+              modelProvider: { protocol: "openai-responses", baseUrl: conversation!.baseUrl },
+            },
+          } as unknown as ConstructorParameters<typeof KubernetesComputeDriver>[0],
           {
             id: apiDrivers.computeDriver.id,
             implementation: apiDrivers.computeDriver.implementation,
@@ -655,6 +659,7 @@ function externalGitJourney(
     });
     const compute: ComputeDriver = {
       ...f.compute,
+      ...(conversation && { admitRevision: kube.admitRevision.bind(kube) }),
       capability: "compute",
       async stopRevision(stopped) {
         // The cases share one database, so this worker can also claim an earlier case's due
@@ -697,7 +702,7 @@ function externalGitJourney(
             name: kubernetesNamespaceName(namespaceId),
             plane: "execution",
           });
-          assert.equal(login.credentialSource?.config.base_url, conversation.baseUrl);
+          assert.equal(login.credentialSource?.config.authorized_base_url, conversation.baseUrl);
           const manifest = pluginRuntimeSpecForRevision(revision, undefined, conversation.baseUrl)!;
           modelEnvironment = {
             ...Object.fromEntries(

@@ -9,9 +9,17 @@ test("signed stock request observes an OCC credential-free grant and its withdra
   const f = await credentialFreeOnlineGrantFixture(t);
   assert.deepEqual(await f.evaluate(), { decision: 1 }, "only a current grant observation");
   const denied = { decision: 2, reason_code: "online_authorization_denied" };
-  for (const change of [{ host: "wrong.fixture.test" }, { path: "/repos/other/repository" }]) {
+  for (const change of [
+    { host: "wrong.fixture.test" },
+    { path: "/repos/other/repository" },
+    { port: 8443 },
+    { method: "POST" },
+    { query: "scope=other" },
+  ]) {
     assert.deepEqual(await f.evaluate(change), denied);
   }
+  assert.deepEqual(await f.evaluate({}, Buffer.from("payload")), denied);
+  assert.deepEqual(await f.evaluate({ query: "" }), { decision: 1 });
   await f.withdraw();
   assert.deepEqual(await f.evaluate(), denied, "the same unexpired signed identity lost the grant");
 });
