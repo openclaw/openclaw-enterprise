@@ -368,8 +368,8 @@ test(
       tokenUrl,
     );
     // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
-    const refused = await owner("POST", source + "/rotate");
-    assert.equal(refused.statusCode, 503);
+    const clientRefused = await owner("POST", source + "/rotate");
+    assert.equal(clientRefused.statusCode, 503);
     const repair = await owner("GET", source);
     assert.equal(repair.statusCode, 200, repair.body);
     const clientFailure = repair.json().data.status.refresh;
