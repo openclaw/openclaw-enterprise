@@ -7,7 +7,7 @@ import test from "node:test";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const cli = join(root, "scripts/docs-site/word-count.mjs");
+const cli = join(root, "scripts/docs-site/word-count.ts");
 
 async function fixture(t) {
   const directory = await temporaryDirectory(t, "enterprise-docs-length-");
@@ -119,6 +119,37 @@ title: ${words(2000)}
   assert.equal(json.rows[0].proseWords, 9);
   assert.equal(json.rows[0].codeWords, 0);
   assert.equal(json.rows[0].totalWords, 9);
+});
+
+test("word-count CLI characterizes comment delimiters in prose and fenced examples", async (t) => {
+  const directory = await fixture(t);
+  const cases = {
+    "adjacent.md": "a<!-- hidden -->b",
+    "fenced.md": "```html\n<!<!-- cut -->-- hidden -->visible\n```\n",
+    "nested-closed.md": "<!<!-- cut -->-- hidden -->visible",
+    "nested-multiple.md": "<!<!-- a -->-<!-- b -->- hidden words",
+    "nested-open.md": "<!<!-- cut -->-- hidden words",
+  };
+  for (const [file, content] of Object.entries(cases)) {
+    await writeFile(join(directory, file), content);
+  }
+
+  const json = readJson(runWordCount(directory, ["--json"]));
+  assert.deepEqual(
+    json.rows.map((row) => row.path),
+    Object.keys(cases),
+  );
+  for (const row of json.rows) {
+    for (const count of [row.proseWords, row.codeWords, row.totalWords]) {
+      assert.ok(Number.isInteger(count) && count >= 0);
+    }
+    await t.test(
+      `comment counts ${row.path}: prose=${row.proseWords} code=${row.codeWords} total=${row.totalWords}`,
+      () => {
+        assert.equal(row.totalWords, row.proseWords + row.codeWords);
+      },
+    );
+  }
 });
 
 test("word-count CLI includes table text and fenced examples", async (t) => {

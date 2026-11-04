@@ -37,7 +37,7 @@ folder indexes and links outside `docs/` point to the Enterprise GitHub source.
 Fragments on those links must match a GitHub heading slug or HTML anchor in the
 target (`github-anchors.mjs`). HTML examples in code and comments do not create
 fragment targets. Parsed HTML elements contribute `id` targets; only `<a>` elements
-contribute `name` targets. `scripts/check-specs.mjs` applies the same check to
+contribute `name` targets. `scripts/check-specs.ts` applies the same check to
 spec links.
 Markdown links in full-line comments under `deploy/examples/` (`.yaml` and
 `.yml`) use the same validation.
@@ -66,7 +66,7 @@ from published pages to it fail validation. A GitHub source link can cite the
 record. List every other Markdown page exactly once, visible or hidden. The local
 [navigation schema](./navigation.schema.json) describes the accepted format.
 
-`word-count.mjs` checks every tracked or nonignored Markdown file returned by
+`word-count.ts` checks every tracked or nonignored Markdown file returned by
 Git, including root documentation, specs, generated reference, and new author
 drafts. It reports pages above the 1,500-word review threshold and fails pages
 above the 2,500-word hard limit. The approved single-page API reference exception

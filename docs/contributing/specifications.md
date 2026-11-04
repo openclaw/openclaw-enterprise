@@ -197,7 +197,7 @@ for document-only changes, without running product tests.
 `pnpm docs:check` also checks non-archived specs for continuous RFC numbering from
 `0001`, required statuses and author logins,
 relative `rfc` references to RFC entry points, and local Markdown link targets.
-Run `node scripts/check-specs.mjs` for that check alone. It does not check remote
+Run `node scripts/check-specs.ts` for that check alone. It does not check remote
 URLs or the meaning of a recorded decision. Three preserved
 local artifact links in the historical architecture audit are reported as
 unverified; archived documents are not scanned.

@@ -3,16 +3,30 @@ import path from "node:path";
 import {
   createDocsMarkdown,
   parseDocsDocument,
-  parseFrontmatter,
   resolveDocsFragment,
 } from "./docs-site/vendor/docs-markdown.mjs";
 import { createGithubAnchorReader } from "./docs-site/github-anchors.mjs";
+import { array, frontmatter, isRecord, record, string } from "./docs-site/parser-boundary.ts";
 
 const root = process.cwd();
 const specs = path.join(root, "specs");
 const rfcs = path.join(specs, "rfcs");
-const md = createDocsMarkdown();
-const githubAnchors = createGithubAnchorReader(md);
+const md: unknown = createDocsMarkdown();
+const rawReader: unknown = createGithubAnchorReader(md);
+if (typeof rawReader !== "function") {
+  throw new TypeError("Unsupported docs parser contract: expected anchor reader");
+}
+function githubAnchors(file: string): Set<string> {
+  if (typeof rawReader !== "function") {
+    throw new TypeError("Unsupported docs parser contract: expected anchor reader");
+  }
+  const value: unknown = rawReader(file);
+  if (!(value instanceof Set)) {
+    throw new TypeError("Unsupported docs parser contract: expected anchor set");
+  }
+  const values: Set<unknown> = value;
+  return new Set([...values].map(string));
+}
 const statuses = new Set(["Proposed", "Accepted", "Rejected", "Superseded", "Unspecified"]);
 const implementationStatuses = new Set(["Not implemented", "Partially implemented", "Implemented"]);
 const errors = [];
@@ -27,7 +41,7 @@ const historicalArtifacts = new Set([
   "/private/tmp/enterprise-audit-a1hg863_/docker-token-retry-stdout.log",
 ]);
 
-function markdownFiles(directory) {
+function markdownFiles(directory: string): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const file = path.join(directory, entry.name);
     if (entry.isDirectory()) {
@@ -45,7 +59,7 @@ const rfcEntries = new Set(
     return entry.name.endsWith(".md") ? [path.join(rfcs, entry.name)] : [];
   }),
 );
-const rfcIds = new Set();
+const rfcIds = new Set<number>();
 for (const file of rfcEntries) {
   const name =
     path.basename(file) === "index.md"
@@ -77,8 +91,8 @@ for (const [index, id] of [...rfcIds].sort((a, b) => a - b).entries()) {
   }
 }
 
-function localTarget(file, href) {
-  const pathname = decodeURIComponent(href.split(/[?#]/, 1)[0]);
+function localTarget(file: string, href: string) {
+  const pathname = decodeURIComponent(href.split(/[?#]/, 1)[0] ?? "");
   const target = pathname
     ? path.resolve(
         pathname.startsWith("/") ? root : path.dirname(file),
@@ -100,11 +114,11 @@ for (const file of files) {
   const source = path.relative(root, file);
   try {
     const text = fs.readFileSync(file, "utf8");
-    const { data, content } = parseFrontmatter(text);
+    const { data, content } = frontmatter(text);
     if (/^---\s*\n/.test(text) && content === text) {
       throw new Error("unclosed YAML frontmatter");
     }
-    if (!data || typeof data !== "object" || Array.isArray(data)) {
+    if (!isRecord(data)) {
       throw new Error("frontmatter must be a YAML mapping");
     }
     if (rfcEntries.has(file)) {
@@ -116,10 +130,13 @@ for (const file of files) {
       ) {
         throw new Error("RFC requires an author GitHub login in frontmatter (without @)");
       }
-      if (!implementationStatuses.has(data.implementation_status)) {
+      if (
+        typeof data.implementation_status !== "string" ||
+        !implementationStatuses.has(data.implementation_status)
+      ) {
         throw new Error("RFC requires a valid implementation_status in frontmatter");
       }
-      if (!statuses.has(data.status)) {
+      if (typeof data.status !== "string" || !statuses.has(data.status)) {
         throw new Error("RFC requires a valid status in frontmatter");
       }
       if (
@@ -143,8 +160,9 @@ for (const file of files) {
         throw new Error(`rfc does not target an RFC entry point: ${data.rfc}`);
       }
     }
-    const parsed = parseDocsDocument(text, md, { sourceFile: file, root: specs });
-    for (const href of parsed.links) {
+    const parsed: unknown = parseDocsDocument(text, md, { sourceFile: file, root: specs });
+    for (const link of array(record(parsed).links)) {
+      const href = string(link);
       if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) {
         continue;
       }
@@ -157,13 +175,19 @@ for (const file of files) {
       }
       const target = localTarget(file, href);
       const hash = href.match(/#.*/)?.[0];
-      if (hash && target.endsWith(".md") && !resolveDocsFragment(hash, githubAnchors(target))) {
-        throw new Error(`missing heading in ${href}`);
+      if (hash && target.endsWith(".md")) {
+        const resolved: unknown = resolveDocsFragment(hash, githubAnchors(target));
+        if (resolved !== undefined && typeof resolved !== "string") {
+          throw new TypeError("Unsupported docs parser contract: expected fragment");
+        }
+        if (!resolved) {
+          throw new Error(`missing heading in ${href}`);
+        }
       }
       links++;
     }
   } catch (error) {
-    errors.push(`${source}: ${error.message}`);
+    errors.push(`${source}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
