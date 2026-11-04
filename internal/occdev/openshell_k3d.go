@@ -304,6 +304,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	// too; the platform install below still waits for it.
 	var codexSeccompProfile, routingPodCIDR string
 	var controllerImage, postgresImage, repositoryImage string
+	var assets *openShellDevelopmentAssets
 	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
 		var err error
 		if sandboxDriver == "none" {
@@ -351,6 +352,15 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 				if err != nil {
 					return err
 				}
+				// Large image imports finish before the smaller OpenShell assets, so
+				// image GC cannot evict them. Prepare the controller/CRDs and images
+				// while probes finish; platform trust and credentials still wait below
+				// for successful network verification and every preparation branch.
+				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+				assets, err = r.prepareOpenShell(ctx, state, timeout)
+				if err != nil {
+					return err
+				}
 			}
 			return nil
 		})
@@ -360,16 +370,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
 		return err
-	}
-	var assets *openShellDevelopmentAssets
-	if sandboxDriver == "openshell" {
-		// Import the larger platform images first so image garbage collection cannot
-		// evict idle OpenShell images before their workloads are installed.
-		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-		assets, err = r.prepareOpenShell(ctx, state, timeout)
-		if err != nil {
-			return err
-		}
 	}
 	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
 		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,

@@ -349,7 +349,11 @@ builder pushes cached layers directly to an owned loopback registry, without
 loading or recompressing the images in the host engine. Both profiles import the
 runtime from that registry. Compose warms its development target in the same
 builder with cache-only output; its controller is neither loaded during preparation
-nor published to the registry.
+nor published to the registry. With a selected runtime, Docker Compose overlaps
+database/bootstrap work with cluster setup after creating its owned network.
+Kubernetes prepares OpenShell assets after image imports while network probes
+finish. Both profiles join preparation before starting the control plane; cold
+image builds remain serial. See the [development flow](../flows/docker-compose-development.md#4-start-and-clean-up-kubernetes-development).
 Other files retain their lane preparation. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
