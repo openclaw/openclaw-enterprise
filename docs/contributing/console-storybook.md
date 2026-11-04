@@ -196,7 +196,8 @@ seven-day release-age policy, independently of root dependencies.
   edits so the development server serves the new assets.
 - `public/scenarios.mjs` assembles the story catalog. Edit sign-in scenarios in
   `public/scenario-groups/sign-in.mts` and Secrets scenarios in
-  `public/scenario-groups/secrets.mts`. The asset builder publishes typed
+  `public/scenario-groups/secrets.mts`. Edit Settings scenarios in
+  `public/scenario-groups/settings.mts`. The asset builder publishes typed
   scenario groups as versioned `.mjs` modules for the preview frames.
 - `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured
   requests report an error and return 501, never reaching a server. Preview CSP
