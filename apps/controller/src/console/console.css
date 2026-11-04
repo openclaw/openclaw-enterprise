@@ -1683,6 +1683,10 @@ p {
   :root {
     scrollbar-gutter: auto;
   }
+  /* Inert content still scrolls with keyboard or wheel. Keep the page in place under the drawer. */
+  :root:has(.shell.drawer-open) {
+    overflow: hidden;
+  }
   .shell {
     /* A flow root keeps the menu button's margin inside the shell; collapsing through body,
        it moved the whole page when the shell replaced the startup status (finding 1413). */
@@ -3924,7 +3928,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   display: grid;
   align-content: start;
   flex: 1;
-  min-height: 0;
+  /* Keep a catalog choice readable while short windows scroll the surrounding browser. */
+  min-height: 8rem;
   overflow: auto;
   gap: var(--space-2);
   padding: var(--space-1);

@@ -356,6 +356,8 @@ RUN --mount=type=secret,id=build-ca,required=false \
     mkdir -p /usr/local/lib/oce/plugins/google/bin; \
     node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
 
+COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
+
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.

@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { realpathSync } from "node:fs";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -18,6 +19,7 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createControllerApp, createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -545,6 +547,9 @@ async function createInjectedFixture(options = {}) {
         installationId,
       },
       auth: authFixture.auth,
+      ...(options.readManagedMcpToolNames === undefined
+        ? {}
+        : { readManagedMcpToolNames: options.readManagedMcpToolNames }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       ...(options.provisionAuthAccount === undefined
         ? {}
@@ -9292,7 +9297,474 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   assert.equal(deploy.body.error.message, noRoute);
 });
 
-test("saved-Agent discovery offers the Google package only where Agent save admits it", async () => {
+test("managed MCP discovery reads tool names using one pinned authenticated session", async () => {
+  const url = "https://tools.example/api/mcp/v1";
+  const token = "fixture-mcp-discovery-token";
+  const calls = [];
+  const result = await listManagedMcpToolNames(url, token, undefined, {
+    async resolveHost(host) {
+      assert.equal(host, "tools.example");
+      return [{ address: "8.8.8.8", family: 4 }];
+    },
+    async fetch(target, request) {
+      assert.equal(target.href, url);
+      assert.equal(request.credentials, "omit");
+      assert.equal(request.redirect, "error");
+      const headers = new Headers(request.headers);
+      assert.equal(headers.get("Authorization"), `Bearer ${token}`);
+      const body = request.body === undefined ? undefined : JSON.parse(request.body);
+      calls.push(body?.method ?? request.method);
+      if (body?.method === "initialize") {
+        return Response.json(
+          {
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "Document MCP fixture", version: "1" },
+            },
+          },
+          { headers: { "mcp-session-id": "fixture-session" } },
+        );
+      }
+      assert.equal(headers.get("mcp-session-id"), "fixture-session");
+      if (body?.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (request.method === "GET" || request.method === "DELETE") {
+        return new Response(null, { status: 405 });
+      }
+      assert.equal(body?.method, "tools/list");
+      const secondPage = body.params?.cursor === "next";
+      const payload = {
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          tools: [
+            {
+              name: secondPage ? "create_document" : "search_documents",
+              inputSchema: { type: "object" },
+            },
+          ],
+          ...(secondPage ? {} : { nextCursor: "next" }),
+        },
+      };
+      return new Response(`event: message\ndata: ${JSON.stringify(payload)}\n\n`, {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  });
+  assert.deepEqual([...result], ["search_documents", "create_document"]);
+  assert.deepEqual(
+    calls.filter((method) => method !== "GET"),
+    ["initialize", "notifications/initialized", "tools/list", "tools/list", "DELETE"],
+  );
+});
+
+test("managed MCP discovery refuses private DNS answers and redirects", async () => {
+  const url = "https://tools.example/api/mcp/v1";
+  const token = "fixture-mcp-discovery-token";
+  let attempted = false;
+  await assert.rejects(
+    listManagedMcpToolNames(url, token, undefined, {
+      resolveHost: async () => [{ address: "127.0.0.1", family: 4 }],
+      async fetch() {
+        attempted = true;
+        throw new Error("Unexpected request");
+      },
+    }),
+    { reason: "unavailable" },
+  );
+  assert.equal(attempted, false);
+  await assert.rejects(
+    listManagedMcpToolNames(url, token, undefined, {
+      resolveHost: async () => [{ address: "8.8.8.8", family: 4 }],
+      async fetch(target) {
+        assert.equal(target.href, url);
+        return Response.redirect("https://other.example/mcp");
+      },
+    }),
+    { reason: "invalid_response" },
+  );
+});
+
+test("deploying Slack freezes the Agent's discovered tool selection and keeps its credential attachment independent", async (t) => {
+  const sourceConfig = {
+    protocol: "mcp",
+    host: "mcp.slack.com",
+    port: "443",
+    path: "/mcp",
+    env_var: "SLACK_MCP_TOKEN",
+  };
+  // Exercise Agent admission and immutable revision storage. Provider registration and MCP
+  // enforcement are covered at the OpenShell boundary.
+  function unexpectedGatewayCall() {
+    assert.fail("the admission fixture must not access credential material");
+  }
+  const token = "fixture-slack-discovery-token";
+  const upstream = [];
+  let tokenReads = 0;
+  let beforeTokenUse = () => {};
+  let echoToken = false;
+  const peerErrors = [];
+  const peer = createServer(async (request, response) => {
+    try {
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
+      const method = body?.method ?? request.method;
+      const authenticated = request.headers.authorization === `Bearer ${token}`;
+      upstream.push({ method, authenticated });
+      assert.equal(request.url, "/mcp");
+      assert.equal(authenticated, true);
+      if (method === "GET" || method === "DELETE") {
+        response.writeHead(405).end();
+        return;
+      }
+      if (method !== "initialize") {
+        assert.equal(request.headers["mcp-session-id"], "fixture-session");
+      }
+      if (method === "notifications/initialized") {
+        response.writeHead(202).end();
+        return;
+      }
+      assert.ok(method === "initialize" || method === "tools/list");
+      const result =
+        method === "initialize"
+          ? {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "Managed MCP HTTP fixture", version: "1" },
+            }
+          : {
+              tools: [
+                "slack_search_public",
+                "slack_send_message",
+                ...(echoToken ? [token] : []),
+              ].map((name) => ({ name, inputSchema: { type: "object" } })),
+            };
+      response
+        .writeHead(200, {
+          "content-type": "application/json",
+          "mcp-session-id": "fixture-session",
+        })
+        .end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
+    } catch (error) {
+      peerErrors.push(error);
+      response.writeHead(500).end();
+    }
+  });
+  t.after(async () => {
+    peer.closeAllConnections();
+    await new Promise((resolve) => peer.close(resolve));
+    assert.deepEqual(peerErrors, []);
+  });
+  peer.listen(0, "127.0.0.1");
+  await once(peer, "listening");
+  const peerUrl = `http://127.0.0.1:${peer.address().port}/mcp`;
+  const secretDriver = createTestSecretDriver({ id: "secret-slack-admission" });
+  const readValue = secretDriver.withValue;
+  secretDriver.withValue = (secret, use) =>
+    readValue(secret, (value) => {
+      tokenReads += 1;
+      beforeTokenUse();
+      return use(value);
+    });
+  const gateway = {
+    id: "credential-gateway-slack-admission",
+    capability: "credential_gateway",
+    implementation: "openshell",
+    validateSourceConfig() {},
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+        {
+          type: "bearer-token",
+          config: Object.keys(sourceConfig).map((name) => ({ name, required: true })),
+          secrets: [{ name: "token", required: true }],
+          rotation: "none",
+        },
+      ];
+    },
+    async registerSource() {
+      return { state: "ready" };
+    },
+    updateSource: unexpectedGatewayCall,
+    rotateSource: unexpectedGatewayCall,
+    removeSource: unexpectedGatewayCall,
+    attachForRevision: unexpectedGatewayCall,
+    attachmentStatus: unexpectedGatewayCall,
+    withdraw: unexpectedGatewayCall,
+    async sourceStatus() {
+      return { state: "ready" };
+    },
+    withSourceToken: unexpectedGatewayCall,
+  };
+  const sandbox = {
+    id: "sandbox-slack-admission",
+    capability: "sandbox",
+    implementation: "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {},
+    async cleanup() {},
+  };
+  const compute = createTestKubernetesComputeDriver("compute-slack-admission", {
+    gatewayRuntime: true,
+    sandboxDriver: sandbox,
+    credentialGatewayDriver: gateway,
+  });
+  compute.resolveSandboxNamespace = async (namespace) => namespace;
+  compute.getAgentRuntimeCredentialStatus = async () => ({ transportConfigured: true });
+  const controller = await configuredController({
+    computeDriver: compute,
+    secretDriver,
+    readManagedMcpToolNames(endpoint, accessToken, signal) {
+      return listManagedMcpToolNames(endpoint, accessToken, signal, {
+        async resolveHost(host) {
+          assert.equal(host, "mcp.slack.com");
+          return [{ address: "8.8.8.8", family: 4 }];
+        },
+        fetch(target, request) {
+          assert.equal(target.href, "https://mcp.slack.com/mcp");
+          // The real reader and MCP SDK send HTTP to this counted peer. Only DNS/routing
+          // are controlled: this does not qualify public DNS, TLS, or live Slack access.
+          return fetch(peerUrl, { ...request, dispatcher: undefined });
+        },
+      });
+    },
+  });
+  await bootstrap(controller);
+  const pluginDriver = new OCCPluginDriver();
+  for (const driver of [sandbox, gateway, pluginDriver]) {
+    controller.fixture.controller.registerDriver(driver);
+    controller.fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const namespace = await createNamespace(controller, "slack-mcp-admission");
+  await controller.fixture.platformState.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const base = `/namespaces/${namespace.id}`;
+  const secret = await controller.request("POST", `${base}/secrets`, {
+    body: { name: "Slack access token", value: token },
+  });
+  assert.equal(secret.status, 201, JSON.stringify(secret.body));
+  const source = await controller.request("POST", `${base}/credential-sources`, {
+    body: {
+      name: "Slack account",
+      type: "bearer-token",
+      config: sourceConfig,
+      secrets: { token: { kind: "secret", id: secret.data.id, namespaceId: namespace.id } },
+    },
+  });
+  assert.equal(source.status, 201, JSON.stringify(source.body));
+  tokenReads = 0;
+  const model = await controller.request("POST", `${base}/credential-sources`, {
+    body: { name: "Model account", type: "openai" },
+  });
+  assert.equal(model.status, 201, JSON.stringify(model.body));
+  const configuration = await createConfiguration(
+    controller,
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5.1"),
+  );
+  const credentialSources = [{ sourceId: model.data.id }, { sourceId: source.data.id }];
+  const created = await controller.request("POST", `${base}/agents`, {
+    body: {
+      name: "Slack Agent",
+      executionMode: "dedicated",
+      configurationId: configuration.id,
+      harnessAuth: { method: "credential_source", sourceId: model.data.id },
+      credentialSources,
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { state } = controller.fixture;
+  const roleId = `slack-mcp-source-${created.data.id}`;
+  state.roles.push({
+    id: roleId,
+    namespaceId: namespace.id,
+    permissions: [{ action: "operate", resourceKind: "credential_source" }],
+  });
+  state.identities.push({
+    kind: "service_principal",
+    id: created.data.servicePrincipalId,
+    namespaceId: namespace.id,
+    agentId: created.data.id,
+  });
+  for (const { sourceId } of credentialSources) {
+    state.bindings.push({
+      id: `${roleId}-${sourceId}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: created.data.servicePrincipalId,
+      roleId,
+      resourceKind: "credential_source",
+      resourceId: sourceId,
+    });
+  }
+
+  const agentPath = `${base}/agents/${created.data.id}`;
+  const pluginId = "occ-plugin:slack@1.0.0";
+  const discovery = { pluginId, managedConnection: { slot: "account", sourceId: source.data.id } };
+  const discover = (body = discovery) =>
+    controller.request("POST", `${agentPath}/plugins/details`, { body });
+  const detail = await discover();
+  assert.equal(detail.status, 200, JSON.stringify(detail.body));
+  assert.equal(detail.headers.get("cache-control"), "no-store");
+  assert.deepEqual(detail.data.tools, [
+    { id: "slack_search_public", name: "slack_search_public", ownerId: pluginId },
+    { id: "slack_send_message", name: "slack_send_message", ownerId: pluginId },
+  ]);
+  assert.equal(JSON.stringify(detail.body).includes(token), false);
+  assert.deepEqual(
+    upstream.filter(({ method }) => method !== "GET"),
+    ["initialize", "notifications/initialized", "tools/list", "DELETE"].map((method) => ({
+      method,
+      authenticated: true,
+    })),
+  );
+  assert.equal(tokenReads, 1);
+  upstream.length = 0;
+  tokenReads = 0;
+
+  const editor = await controller.fixture.createAuthPrincipal("managed-mcp-editor");
+  state.identities.push(editor.principal);
+  state.roles.push({
+    id: "managed-mcp-editor",
+    namespaceId: namespace.id,
+    permissions: ["read", "update"].map((action) => ({ action, resourceKind: "agent" })),
+  });
+  state.bindings.push({
+    id: "managed-mcp-editor",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: editor.principal.id,
+    roleId: "managed-mcp-editor",
+    resourceKind: "agent",
+    resourceId: created.data.id,
+  });
+  const forbidden = await controller.request("POST", `${agentPath}/plugins/details`, {
+    body: discovery,
+    session: editor.session,
+  });
+  assertApiError(forbidden, 403, "FORBIDDEN");
+  assert.match(forbidden.body.error.message, /CredentialSource operate/);
+  assert.equal(tokenReads, 0);
+  assert.deepEqual(upstream, []);
+  state.bindings.pop();
+
+  const agentBinding = state.bindings.pop();
+  assert.equal(agentBinding.resourceId, source.data.id);
+  assertApiError(await discover(), 403, "FORBIDDEN");
+  assert.equal(tokenReads, 0);
+  assert.deepEqual(upstream, []);
+
+  state.bindings.push(agentBinding);
+  assertApiError(
+    await discover({
+      ...discovery,
+      managedConnection: { ...discovery.managedConnection, slot: "wrong" },
+    }),
+    409,
+    "RESOURCE_CONFLICT",
+  );
+  assertApiError(
+    await discover({
+      ...discovery,
+      credentialSource: {
+        kind: "credential_source",
+        id: source.data.id,
+        namespaceId: namespace.id,
+      },
+    }),
+    400,
+    "INVALID_REQUEST",
+  );
+  assert.equal(tokenReads, 0);
+
+  const detached = await controller.request("PATCH", agentPath, {
+    body: {
+      configurationId: configuration.id,
+      credentialSources: [{ sourceId: model.data.id }],
+    },
+  });
+  assert.equal(detached.status, 200, JSON.stringify(detached.body));
+  assertApiError(await discover(), 409, "RESOURCE_CONFLICT");
+  assert.equal(tokenReads, 0);
+  assert.deepEqual(upstream, []);
+  const restored = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, credentialSources },
+  });
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+
+  // An Agent's grant may change during the backend read. Recheck it before calling Slack.
+  beforeTokenUse = () => state.bindings.pop();
+  assertApiError(await discover(), 403, "FORBIDDEN");
+  assert.equal(tokenReads, 1);
+  assert.deepEqual(upstream, []);
+  beforeTokenUse = () => {};
+  state.bindings.push(agentBinding);
+
+  // A server that echoes the bearer in its inventory must not expose it through the picker.
+  echoToken = true;
+  const echoed = await discover();
+  assertApiError(echoed, 503, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
+  assert.equal(JSON.stringify(echoed.body).includes(token), false);
+  echoToken = false;
+  const capabilities = await controller.request("GET", `${agentPath}/plugins/capabilities`);
+  assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
+  const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
+  assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
+  assert.equal(slot.toolDiscovery, true);
+  const save = (toolNames) =>
+    controller.request("PATCH", agentPath, {
+      body: {
+        configurationId: configuration.id,
+        plugins: {
+          [pluginId]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: slot.releaseSha256,
+              credentials: { account: source.data.id },
+              toolNames,
+            },
+          },
+        },
+      },
+    });
+  const refused = await save(["slack_*"]);
+  assertApiError(refused, 400, "INVALID_REQUEST");
+  assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
+  // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
+  const saved = await save(["slack_send_message"]);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(saved.data.plugins[pluginId].driverPolicy.toolNames, ["slack_send_message"]);
+  const deployed = await controller.request("POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  assert.deepEqual(deployed.data.plugins.plugins, saved.data.plugins);
+  assert.deepEqual(deployed.data.credentialSources, credentialSources);
+
+  const cleared = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, plugins: {} },
+  });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.deepEqual(cleared.data.credentialSources, credentialSources);
+  const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
+  assert.equal(revision.status, 200, JSON.stringify(revision.body));
+  assert.deepEqual(revision.data.plugins.plugins, saved.data.plugins);
+});
+
+test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {
   // Finding 2787: the Plugin Driver's catalog takes no Agent, so OCC checks each entry against
   // the Agent's Harness and the Installation's Compute, as Agent save does.
   const sandbox = {
@@ -9318,7 +9790,7 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   const driver = new OCCPluginDriver();
   controller.fixture.controller.registerDriver(driver);
   controller.fixture.controller.selectDriver("plugin", driver.id);
-  const packageId = "occ-plugin:google@1.0.0";
+  const packageId = "occ-plugin:slack@1.0.0";
   const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       name: "Discovery Agent",
@@ -9343,10 +9815,35 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
 
   // A dedicated OpenClaw Agent on Kubernetes Compute is offered the package and may save it.
   const offered = await discoverAndSave();
-  assert.deepEqual(offered.ids, [packageId]);
+  assert.deepEqual(offered.ids, ["occ-plugin:google@1.0.0", packageId]);
   assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
   assert.equal(offered.details.data.id, packageId);
   assert.equal(offered.save.status, 200, JSON.stringify(offered.save.body));
+  // Finding 2790: an ID the catalog does not offer is the caller's error, not a catalog
+  // failure to retry. The unversioned package ID names its versioned one.
+  for (const [pluginId, advice] of [
+    ["occ-plugin:google", "Use occ-plugin:google@1.0.0."],
+    [
+      "occ-plugin:nope@1.0.0",
+      "Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
+    ],
+  ]) {
+    const unknown = await controller.request("POST", `${path}/plugins/details`, {
+      body: { pluginId },
+    });
+    assertApiError(unknown, 400, "INVALID_REQUEST");
+    assert.equal(
+      unknown.body.error.message,
+      `A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: ${pluginId}. ${advice}`,
+    );
+    assert.equal(unknown.body.error.details, undefined);
+  }
+  // Request text outside the plugin ID shape is never echoed into the refusal.
+  const unshaped = await controller.request("POST", `${path}/plugins/details`, {
+    body: { pluginId: "occ-plugin:google\u202e@1.0.0" },
+  });
+  assertApiError(unshaped, 400, "INVALID_REQUEST");
+  assert.match(unshaped.body.error.message, /\(occ-plugin\) does not offer\. Check each plugin ID/);
   const cleared = await controller.request("PATCH", path, {
     body: { configurationId: configuration.id, plugins: {} },
   });
@@ -9362,10 +9859,7 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   const codexOffer = await discoverAndSave();
   assert.deepEqual(codexOffer.ids, []);
   assertApiError(codexOffer.save, 400, "INVALID_REQUEST");
-  assert.match(
-    codexOffer.save.body.error.message,
-    /Google Workspace requires a dedicated OpenClaw/,
-  );
+  assert.match(codexOffer.save.body.error.message, /Slack requires a dedicated OpenClaw/);
   assertApiError(codexOffer.details, 400, "INVALID_REQUEST");
   assert.equal(codexOffer.details.body.error.message, codexOffer.save.body.error.message);
 
@@ -9387,10 +9881,7 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   const computeOffer = await discoverAndSave();
   assert.deepEqual(computeOffer.ids, []);
   assertApiError(computeOffer.save, 400, "INVALID_REQUEST");
-  assert.equal(
-    computeOffer.save.body.error.message,
-    "Google Workspace requires Kubernetes Compute.",
-  );
+  assert.equal(computeOffer.save.body.error.message, "Slack requires Kubernetes Compute.");
   assertApiError(computeOffer.details, 400, "INVALID_REQUEST");
   assert.equal(computeOffer.details.body.error.message, computeOffer.save.body.error.message);
 });

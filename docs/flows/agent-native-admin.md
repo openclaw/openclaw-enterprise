@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-02
-last_updated_session: authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9
+updated: 2026-11-03
+last_updated_session: fix/native-admin-signed-out-html-fallback
 ---
 
 # Agent Native Admin UI Flow
@@ -181,14 +181,13 @@ five-second admission wait, a client disconnect or the shutdown wait. A timely H
 denial waits for its append before returning `403`; a failed append or admission
 timeout returns `503`.
 
-Without a valid session, a user-activated, top-level HTML GET to `/`,
-`/chat/main`, or `/chat/main/<32 hex digits>` gets a `302` to the configured
-console. Its fragment carries only the opaque host key, which the console resolves
-after sign-in and exact-Agent authorization. OCC drops queries and session suffixes.
-API requests, writes, WebSockets and permission denials never redirect. Reload an
-open native tab after expiry.
+Without a session, a user-activated top-level HTML GET to `/`, `/chat/main` or
+`/chat/main/<32 hex>`, optionally with a trailing slash, gets a `302` to the
+console; its fragment carries only the opaque host key. Without
+`Sec-Fetch-User: ?1` (never sent by Safari) it gets a 403 **Sign in** link there.
+Link previews, APIs, writes and WebSockets keep their refusal.
 
-A signed-in `administer` denial on that navigation stays HTTP 403. The page does
+A signed-in `administer` denial on a top-level page load stays HTTP 403. The page does
 not name the Agent and links **Go to your Agents** to `/console/agents` on the
 configured public origin. A JSON refusal names the `administer` grant but not
 the Agent, the same for an unknown host; WebSocket refusals stay unchanged.
@@ -273,6 +272,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 12:55: Sign-in link for unactivated page loads. (fix/native-admin-signed-out-html-fallback)
 
 - 2026-11-02 09:55: Shorten provisioning prose and link shared status definitions after rebasing. (authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9 - 393b1585e4b10a3232abf10c60b766d8e55d85ce)
 

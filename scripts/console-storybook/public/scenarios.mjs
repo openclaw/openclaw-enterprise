@@ -71,7 +71,14 @@ const readyForm = [
 const modelCredentialSourceTypes = [
   {
     type: "openai",
-    config: [],
+    config: [
+      {
+        name: "authorized_base_url",
+        required: false,
+        description:
+          "Immutable destination authorization. Must match the Installation model provider; omission authorizes only the default OpenAI endpoint.",
+      },
+    ],
     secrets: [{ name: "api_key", required: true }],
     rotation: "none",
     harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
@@ -156,6 +163,19 @@ const presetQuotedSettingRefused = [
   click("Create Agent"),
 ];
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
+const repositorySearchOptions = [
+  "alpha/application-api",
+  "beta/my-application",
+  "omega/application",
+  "zeta/application",
+  "tools/cli",
+  "docs/handbook",
+  "ops/infrastructure",
+].map((displayName, index) => ({
+  repositoryRef: `catalog-${index}`,
+  displayName,
+  allowedProfiles: ["git-read", "git-write", "git-full"],
+}));
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
   'Configuration setting agents.entries.research_assistant.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
@@ -182,6 +202,14 @@ const pluginCapabilities = {
     },
     additionalProperties: false,
   },
+};
+const slackPluginId = "occ-plugin:slack@1.0.0";
+const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
+const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
+const slackTool = {
+  id: "slack_search_public",
+  name: "slack_search_public",
+  ownerId: slackPluginId,
 };
 const pluginSetup = {
   message:
@@ -1978,6 +2006,19 @@ export const scenarios = {
       "On a long page, scroll to the bottom and check that the sidebar background and operator profile reach it. At phone width, values fit and the existing navigation drawer still opens.",
     ],
   },
+  settingsModelProvider: {
+    group: "Pages/Settings",
+    name: "Shared model provider",
+    path: "/console/settings",
+    installationModelProvider: true,
+    description:
+      "Read the shared Compute provider as Fields and JSON. The same endpoint serves Codex and OpenClaw. These are simulated accepted Installation values; editing remains an operator configuration task.",
+    steps: [
+      "Expand Compute, then runtime and modelProvider.",
+      "Switch to JSON and confirm protocol and baseUrl.",
+      "No key or source routing field is present.",
+    ],
+  },
   settingsDriverNestedValues: {
     group: "Pages/Settings",
     name: "Nested Driver values",
@@ -2356,6 +2397,7 @@ export const scenarios = {
       "Expand Access and credential setup for the full Driver guidance and external help links, then collapse it. The credential/access reminder stays visible; catalog availability does not verify connections.",
       "Open the information button beside each unavailable plugin to compare its administrator, plan, or unsupported-runtime reason and help link. Escape or a click outside dismisses the popover. Choose the plugin row to see the same guidance in detail; Add stays disabled.",
       "At 390px width and both 844px and 640px height, scroll the plugin list and use Next page and Previous page. Search and pagination remain reachable while the list and details scroll within the dialog.",
+      "At 1440×480, keep setup collapsed, then expand it. Scroll the catalog browser: plugin names remain readable, Calendar opens its details, and pagination stays reachable. Compare the Short window plugin picker story.",
       "Choose Calendar to load its tools and inspect their IDs beneath the titles, then Add Calendar. Configure its plugin defaults and expand a tool to override them.",
       "Type create into Filter tools: only Create event remains, and the caret stays after the text. Clear it to restore the other tools. Search plugins for Documents before visiting its catalog page, then clear the query.",
       "Click Done and expand Plugin selections JSON: one heading labels a bounded monospace editor. Replacing the dummy token or authentication method clears discovery results and preserves selections.",
@@ -3272,6 +3314,34 @@ export const scenarios = {
       "Create the Agent and follow simulated provisioning to Agent details. Open Configuration and confirm the snapshot shows Dedicated execution and the OpenClaw Harness.",
     ],
   },
+  createSharedModelProviderSource: {
+    group: "Pages/Create Agent",
+    name: "Authorize shared model destination",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: readyForm,
+    description:
+      "Enter destination authorization for the selected key. This does not change the Installation endpoint. The simulated API records the source and starts provisioning.",
+    steps: [
+      "Enter https://models.example.com/v1 under Authorized base url.",
+      "Create the Agent and inspect the source request: config.authorized_base_url is present; config.base_url is absent.",
+    ],
+  },
+  createSharedModelProviderRefusal: {
+    group: "Pages/Create Agent",
+    name: "Destination authorization refusal",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "invalid-config",
+    actions: readyForm,
+    description:
+      "The first source request receives a simulated destination mismatch. Check registration to confirm absence, then correct authorization and retry. Uncertain writes remain locked until checked.",
+    steps: [
+      "Select the simulated model Secret and enter https://other.example.com/v1.",
+      "Create the Agent, then choose Check credential registration.",
+      "Correct the authorization to https://models.example.com/v1 and retry.",
+    ],
+  },
   createDedicatedCodexCredentialSource: {
     group: "Pages/Create Agent",
     name: "Codex with model Credential Source",
@@ -3613,21 +3683,18 @@ export const scenarios = {
     name: "Exact repository names before prefix matches",
     path: create,
     actions: [...repositoryForm, { selector: "#repository-search", value: "application" }],
-    repositoryOptions: [
-      "alpha/application-api",
-      "beta/my-application",
-      "omega/application",
-      "zeta/application",
-      "tools/cli",
-      "docs/handbook",
-      "ops/infrastructure",
-    ].map((displayName, index) => ({
-      repositoryRef: `catalog-${index}`,
-      displayName,
-      allowedProfiles: ["git-read", "git-write", "git-full"],
-    })),
+    repositoryOptions: repositorySearchOptions,
     description:
       "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
+  },
+  createRepositoriesNoMatches: {
+    group: "Pages/Create Agent",
+    name: "Repository search with no matches",
+    path: create,
+    actions: [...repositoryForm, { selector: "#repository-search", value: "unknown/repository" }],
+    repositoryOptions: repositorySearchOptions,
+    description:
+      "An approved catalog search with no matches directs users to their Namespace operator. Search for application to return to matching repositories.",
   },
   createRepositoriesLocaleSearch: {
     group: "Pages/Create Agent",
@@ -3691,7 +3758,8 @@ export const scenarios = {
     path: create,
     actions: repositoryForm,
     repositoryOptions: [],
-    description: "Successful empty discovery permits an ordinary Agent without repository access.",
+    description:
+      "An empty approved catalog directs users to their Namespace operator and permits a draft without repositories.",
   },
   createRepositoriesLoading: {
     group: "Pages/Create Agent",
@@ -5658,6 +5726,57 @@ export const scenarios = {
       "Close and reopen the picker. Calendar's saved policy is unchanged. Repeat from Reset story to inspect the skipped prefetch again.",
     ],
     gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
+  },
+  slackMcpTools: {
+    group: "Pages/Agent detail",
+    name: "Choose tools for a connected Slack account",
+    path: `${draft}&tab=plugins`,
+    harnessId: "openclaw",
+    deployed: true,
+    agentPlugins: { [slackPluginId]: { enabled: true } },
+    credentialSources: [{ sourceId: slackSourceId }],
+    pluginDiscoveryCredential: "none",
+    pluginCapabilities: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      approvers: { agent: false, plugin: false, tools: false },
+      toolDefaults: { enabled: false },
+      tools: { enabled: false },
+      driverPolicySchema: { type: "object", properties: {} },
+      policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
+      credentialSlots: [
+        {
+          pluginId: slackPluginId,
+          releaseSha256: "a".repeat(64),
+          id: "account",
+          label: "Slack account",
+          toolDiscovery: true,
+          sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+        },
+      ],
+    },
+    pluginDiscovery: {
+      pages: { initial: { plugins: [slackEntry], nextCursor: null } },
+      details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
+    },
+    rules: [
+      {
+        suffix: "/plugins/details",
+        method: "POST",
+        delayMs: 650,
+        once: true,
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Configure plugins")],
+    description:
+      "The Tools picker loads available tools from the selected Slack account. Select the tools the next deployment may call.",
+    steps: [
+      "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
+      "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
+      "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+    ],
+    gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
   },
   pluginsDraft: {
     group: "Pages/Agent detail",
@@ -7880,6 +7999,19 @@ export const scenarios = {
     steps: [
       "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
       "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",
+    ],
+  },
+  navigationDrawerScroll: {
+    group: "Components/Navigation",
+    name: "Compact drawer scroll position",
+    path: "/console/secrets?namespace=ns_00000000-0000-4000-8000-000000000001",
+    mobile: true,
+    description:
+      "The compact drawer keeps the document in place while its own contents scroll. API responses are simulated.",
+    steps: [
+      "At 390×480, open navigation and press Page Down on the focused link. Wheel over the overlay: the Secrets page behind it stays in place.",
+      "Choose Namespaces, then use Back. The Secrets heading and search return in view.",
+      "Open navigation and press Escape. Scroll Secrets normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
     ],
   },
   slack: {
@@ -10354,7 +10486,7 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested. The Stop row replaces its action description with the result and restart guidance; shutdown completion is not verified here.",
   },
   stopReadDiscoversDeletion: {
     group: "Components/Stop Agent",
@@ -10395,7 +10527,7 @@ export const scenarios = {
     deployed: true,
     firstDeploymentFailed: true,
     description:
-      "A failed first deployment leaves the Agent requested to run with no selected version, so the danger zone has no Stop row.",
+      "A failed readable deployment leaves the Agent requested to run with no selected version. Stop stays available because a newer queued deployment may be unreadable.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopFirstDeploymentQueued: {
@@ -10406,7 +10538,7 @@ export const scenarios = {
     firstDeploymentQueued: true,
     actions: [click("Stop Agent")],
     description:
-      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway.",
+      "A queued first deployment has no selected version yet. Stop stays, and its row and confirmation say it cancels the deployment in progress instead of interrupting a gateway. Confirming reports cancellation requested, not completed; later lifecycle reads retire that local result.",
     gap: "Simulated UI proof only; this preview does not run a deployment.",
   },
   stopNeverDeployed: {

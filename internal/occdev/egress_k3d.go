@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json/v2"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,12 +31,8 @@ func CheckDevelopmentProfile() error {
 	r := newRunner(Options{})
 	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
 	sandbox := r.setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
-	protected, err := r.protectedEgressSelection(controlPlane, sandbox)
-	if err != nil {
+	if _, err := r.protectedEgressSelection(controlPlane, sandbox); err != nil {
 		return err
-	}
-	if protected && r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "kubernetes" {
-		return fmt.Errorf("protected egress requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes")
 	}
 	if _, err := r.selectedDevelopmentDatabase(controlPlane); err != nil {
 		return err
@@ -53,20 +48,13 @@ func (r *runner) protectedEgressSelection(controlPlane, sandbox string) (bool, e
 	if value != "" && value != "0" && value != "1" {
 		return false, fmt.Errorf("OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1")
 	}
-	if address, selected := r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"]; selected {
-		ip, err := netip.ParseAddr(address)
-		if value != "1" || err != nil || !ip.Is4() || !ip.IsPrivate() || ip.String() != address {
-			return false, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP requires protected egress and a canonical private IPv4 address for the owned host")
-		}
+	if _, selected := r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"]; selected {
+		return false, fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP is retired; remove this setting")
 	}
-	if value != "1" {
-		return false, nil
+	if value == "1" {
+		return false, fmt.Errorf("OCC_DEVELOPMENT_PROTECTED_EGRESS=1 is retired; unset it or set it to 0 for ordinary development. This does not convert an existing installation; use occ dev down for cleanup.")
 	}
-	if controlPlane != "kubernetes" || sandbox != "openshell" {
-		return false, fmt.Errorf("protected egress requires Kubernetes control plane and OpenShell Sandbox")
-	}
-
-	return true, nil
+	return false, nil
 }
 
 func (r *runner) selectedDevelopmentDatabase(controlPlane string) (string, error) {

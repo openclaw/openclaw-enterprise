@@ -42,6 +42,7 @@ export const backendFixtures = Object.freeze([
 
 function computeDriver({
   repositoryCredentials = false,
+  modelProvider,
   channelRuntime = false,
   routed = true,
   discoverHarnessModels = async () => [],
@@ -54,6 +55,10 @@ function computeDriver({
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
     gatewayRuntime: true,
+    ...(modelProvider === undefined ? {} : { modelProvider }),
+    // As `occ dev up` installs it: the controller reads Gateway private status, so the save and
+    // deploy rules for a runtime workspace node apply (finding 3133).
+    privateStatus: true,
     repositoryCredentials,
     sandboxDriver,
     credentialGatewayDriver,
@@ -423,6 +428,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         routed: options.routed !== false,
         discoverHarnessModels: options.discoverHarnessModels,
         agentProvisioning: options.agentProvisioning,
+        modelProvider: options.modelProvider,
         sandboxDriver: options.sandboxDriver,
         credentialGatewayDriver: options.credentialGatewayDriver,
         implementation: options.computeImplementation,

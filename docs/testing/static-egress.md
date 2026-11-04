@@ -1,5 +1,14 @@
 # Verify protected static inference
 
+New local protected static-inference launches are retired. The launcher rejects
+`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
+`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including an empty value, before effects.
+Unset, empty or `0` protected-egress selections retain ordinary startup. There is
+no fallback. See the [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+
+Use these retained checks for existing installations. Keep recorded state and
+ownership evidence for withdrawal and cleanup.
+
 Bundled OpenShell cannot enforce this profile. Candidate Kubernetes Compute verifies
 the current installation before signing the workload release. Other Compute Drivers
 refuse protected admission. [Qualify the installed pair](#installed-runtime-and-provider-qualification)
@@ -82,8 +91,16 @@ It also rejects unknown fields/events, remote tools, duplicate JSON keys, incomp
 SSE, credential reflection split across distinct output-item IDs, and credentials
 escaped inside function-argument JSON or its accumulated streaming deltas.
 
-This capture proves the selected direct CLI wire shape against a synthetic provider.
-It does not establish byte identity with a runtime image, generated Harness execution,
+`tests/fixtures/static-egress/codex-inline-tools.json` reduces a sanitized packaged
+capture to two local tools and representative messages. The case authorizes its
+format header and rejects unsupported roles, hosted tools and invalid annotations
+before credential access. Public Codex source defines the
+[inline declarations and format header](https://github.com/openai/codex/blob/db3c44414c2cd4ae33adaf4fa33382cb3dde6bd5/codex-rs/core/src/client.rs#L995),
+[string-parameter annotation](https://github.com/openai/codex/blob/db3c44414c2cd4ae33adaf4fa33382cb3dde6bd5/codex-rs/tools/src/json_schema/types.rs#L50), and
+[reasoning metadata](https://github.com/openai/codex/blob/db3c44414c2cd4ae33adaf4fa33382cb3dde6bd5/codex-rs/core/src/turn_metadata.rs#L86).
+
+These fixtures exercise selected client wire shapes against a synthetic provider.
+They do not establish byte identity with a runtime image, generated Harness execution,
 a real model response or installed OpenShell enforcement. A separate interrupted
 response probe with request/stream retry counts set to zero observed one request
 and a failed CLI turn; it is not a provider-effect recovery test.
@@ -159,9 +176,8 @@ installed native model-turn evidence.
 
 ## Protected launch packaging
 
-The [explicit local profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
-generates normal Installation and Helm inputs. For a local packaging check,
-select the matching supplier chart through the test-only
+Historical protected-state fixtures still generate Installation and Helm inputs.
+For a retained packaging check, select the matching supplier chart through the test-only
 `OCC_TEST_OPENSHELL_CHART` and an installed Helm executable through `OCC_HELM_BIN`:
 
 ```sh
@@ -174,17 +190,12 @@ OCC_HELM_BIN=/absolute/bin/helm node --test --test-name-pattern='protected autho
   tests/integration/production-kubernetes-packaging.test.mjs
 ```
 
-The Go case runs the release coordinator with command-boundary fixtures, loads
-its output through real controller composition, checks the generated server
-certificate, and renders both charts with real Helm. The first release requests
-zero workers. A successful Gateway rollout leads to one worker, while a failed
-rollout ends the installation without ever requesting a worker. This checks
-configuration, credential projection, database selection and startup ordering.
-Cluster behavior, PostgreSQL execution and installed middleware negotiation
-require connected verification. The wire cases use
-generated CA/client certificates and actual loopback gRPC TLS, including DNS and
-IP server identity, foreign-client refusal and absence of client credentials on
-the separate service transport. They do not prove OpenShell's role mapping.
+The Go fixture checks controller configuration, credential projection, database
+selection, the generated certificate, and Helm rendering. It requests one worker
+only after successful Gateway rollout. The loopback gRPC cases check DNS and IP
+server identity, foreign-client refusal and absence of client credentials on the
+separate service transport. These checks do not establish cluster behavior,
+PostgreSQL execution, middleware negotiation or OpenShell role mapping.
 
 Connected qualification additionally requires reviewed, revision-matched images,
 normal Agent admission, a disposable `openclaw_k8s_` database, and verified public
@@ -192,24 +203,17 @@ Gateway server trust for the Agent's WSS client. The Backend's API/worker trust
 mount alone does not configure that client. Never project the administrator
 client Secret into an Agent to solve server trust.
 
-For a synthetic HTTPS provider, the supervisor reads its normal system CA bundle;
-`SSL_CERT_FILE` does not configure upstream TLS re-encryption. A fixture image may
-preserve the original bundle at `/etc/ssl/certs/ca-certificates.crt` and append the
-fixture's public CA. Preserve all normal binaries/components, record the base and
-derived image digests and CA fingerprint, and identify results as fixture-image
-proof. Keep the CA private key outside images and Pods. Do not change host trust
-or disable hostname checking.
+For upstream TLS, the supervisor uses its system CA bundle, regardless of
+`SSL_CERT_FILE`. A fixture image may append the fixture's public CA to
+`/etc/ssl/certs/ca-certificates.crt` while preserving existing contents and binaries.
+Record both image digests and the CA fingerprint. Keep the CA private key out of
+images and Pods. Leave host trust and hostname verification intact.
 
-The existing `server.hostGatewayIP` supplier value maps `host.openshell.internal`.
-The protected launcher passes the optional canonical private IPv4 selected by
-`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` to that value.
-Use it only after verifying the owned host address is reachable from the selected
-runtime and the fixture server certificate covers that exact hostname. A connected
-test must explicitly admit that owned origin; it must not accept arbitrary
-external hosts. Initial enrollment does not establish automatic recovery after
-a Harness process restart; qualify any required reconciliation/redeployment
+Recorded state may retain `server.hostGatewayIP` for `host.openshell.internal`.
+Verify reachability from the selected runtime, the exact certificate hostname,
+and admission of only the owned origin. Test recovery after Harness restart
 separately. Packaging and loopback tests do not establish a connected model turn,
-supervisor enforcement or no-bypass networking.
+supervisor enforcement or bypass prevention.
 
 ## Check connected request admission without a runtime
 
@@ -230,8 +234,8 @@ cluster or model runtime and supplies no installation receipt.
 
 Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
 with the `egress-connected` CLI lane. CI, GitHub dispatch and the generic `openshell`
-HTTP fixture do not run it. The lane requires a prepared, authenticated controller,
-worker and supplier gateway. Missing selected inputs fail; a discovery skip proves nothing.
+HTTP fixture do not run it. This retained lane is for existing qualified
+installations. It requires a prepared, authenticated controller, worker and supplier gateway. Missing selected inputs fail; a discovery skip proves nothing.
 
 Use a ready Namespace with one placement in disposable loopback k3d, enforcing
 NetworkPolicies and the [normal OpenShell launch prerequisites](openshell.md).

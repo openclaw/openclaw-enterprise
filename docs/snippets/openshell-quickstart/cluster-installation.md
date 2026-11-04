@@ -73,7 +73,7 @@ done
 
 Expect the target database, login and `t` for each connection.
 
-Provision the other rendered Secret references: distinct OCE authentication/private-routing keys and OpenShell client TLS. The routing key is named `occ`. Prepare the bootstrap PVC once with UID/GID 1000 and mode 0700. Follow [system Secret and bootstrap preparation](production-installation.md#provision-system-secrets-and-install) using namespace `oce-system` and your selected storage class.
+Provision distinct OCE authentication and [private-routing credentials](workspace-routing.md#configure-private-routing), plus OpenShell client TLS. Create `occ-private-gateway-key` with key `occ` in `oce-system` before installing OCC. Prepare the bootstrap PVC once with UID/GID 1000 and mode 0700. Follow [system Secret and bootstrap preparation](production-installation.md#provision-system-secrets-and-install) using namespace `oce-system` and your selected storage class.
 
 ```bash
 # Allow the initialization hook to reach the DNS Service VIP.

@@ -8,7 +8,6 @@ import type { TLSSocket } from "node:tls";
 import { Worker } from "node:worker_threads";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/credentials/receipt-client.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
 import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
@@ -26,16 +25,32 @@ import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-dat
 
 for (const first of ["removal", "use"] as const) {
   test(
-    `standing removal orders prepared material and request authorization (${first} first)`,
+    `standing removal orders native request authorization (${first} first)`,
     { ...requiresPostgres, timeout: 60_000 },
     async (t) => {
       const f = await fixture(t, { standingApproval: true });
       const approval = f.approval!;
       await prepare(f);
       const signal = new AbortController().signal;
-      const material = await f.owner.readOpenShellMaterial(f.revision.id, signal);
-      assert.ok(material && !("absent" in material));
-      const { preparationAttemptId, materialVersion } = material;
+      // Warm expectations from committed nonsecret metadata, without opening material
+      // or making an authorization decision before the race.
+      const prepared = await f.pool.query(
+        `SELECT a.id AS attempt_id, a.material_version, a.usable_until
+         FROM occ.prepared_github_attempts a
+         JOIN occ.prepared_github_families f USING (source_id)
+         WHERE a.source_id=$1 AND f.enabled AND a.state='committed'
+           AND a.custody='current' AND a.admission=f.admission`,
+        [f.familyId],
+      );
+      assert.equal(prepared.rowCount, 1);
+      const { attempt_id: preparationAttemptId, material_version: materialVersion } =
+        prepared.rows[0];
+      assert.ok(preparationAttemptId && materialVersion);
+      const usableUntil = Math.min(
+        new Date(prepared.rows[0].usable_until).getTime(),
+        f.deadlineWallMs,
+      );
+      assert.ok(Date.now() < usableUntil);
 
       const receipts = async () =>
         (
@@ -44,49 +59,35 @@ for (const first of ["removal", "use"] as const) {
             [f.admissionId],
           )
         ).rows.map((r) => r.exchange_id);
-      const operations = () => {
+      const operation = () => {
         const q = { ...f.request(), operation: "upload-pack" as const };
-        const result = Promise.all([
-          f.owner.readOpenShellMaterial(f.revision.id, signal).then((m) => {
-            if (!m || "absent" in m) {
-              return m?.absent;
+        const result = f.owner.use(q, signal).then(
+          (used) => {
+            assert.ok("value" in used, "native use must return material, not just a receipt");
+            assert.equal(used.exchangeId, q.exchangeId);
+            assert.equal(used.preparationAttemptId, preparationAttemptId);
+            assert.equal(used.materialVersion, materialVersion);
+            assert.ok(used.value.length > 0);
+            assert.ok(Date.parse(used.sendStartBy) <= usableUntil);
+            assert.ok(Date.parse(used.sendStartBy) <= Date.parse(q.deadlineAt));
+            assert.equal(f.gh.issuesOfTokens.length, 1, "native use must not mint again");
+            return used;
+          },
+          (error: unknown) => {
+            if (
+              error instanceof Error &&
+              error.message === "Prepared GitHub custody transaction did not complete (guard)."
+            ) {
+              return "native guard" as const;
             }
-            assert.ok(
-              m.preparationAttemptId === preparationAttemptId &&
-                m.materialVersion === materialVersion &&
-                m.sessionId === material.sessionId &&
-                m.value === material.value,
-              "expected the same bounded material",
-            );
-            return "same material";
-          }),
-          f.owner.use(q, signal).then(
-            (used) => {
-              assert.ok("value" in used, "native use must return material, not just a receipt");
-              assert.equal(used.exchangeId, q.exchangeId);
-              assert.equal(used.preparationAttemptId, preparationAttemptId);
-              assert.equal(used.materialVersion, materialVersion);
-              assert.equal(used.value, material.value);
-              assert.ok(new Date(used.sendStartBy).getTime() <= Date.parse(material.expiresAt));
-              assert.equal(f.gh.issuesOfTokens.length, 1, "native use must not mint again");
-              return "same material";
-            },
-            (error: unknown) => {
-              if (
-                error instanceof Error &&
-                error.message === "Prepared GitHub custody transaction did not complete (guard)."
-              ) {
-                return "native guard";
-              }
-              throw error;
-            },
-          ),
-        ]);
+            throw error;
+          },
+        );
         // Observe rejection while blocked; awaiting result after the barrier still rethrows it.
         void result.catch(() => {});
         return { result, exchangeId: q.exchangeId };
       };
-      const denied = ["withdrawn", "native guard"];
+      const denied = "native guard";
 
       // This pool has exactly one connection. Observe its actual lock waits and run the
       // removal owner's Namespace, Agent and generation-fenced State operations on it.
@@ -122,18 +123,28 @@ for (const first of ["removal", "use"] as const) {
         }
       }
 
+      // A different grant cannot use this live standing session or reach the provider.
+      const providerCalls = f.gh.trace.length;
+      await assert.rejects(f.owner.use(f.request({ grantId: randomUUID() }), signal), {
+        message: "Prepared GitHub custody transaction did not complete (guard).",
+      });
+      assert.equal(f.gh.trace.length, providerCalls);
       assert.deepEqual(await receipts(), []);
+      assert.equal(f.gh.issuesOfTokens.length, 1);
       let expectedReceipts: string[] = [];
       if (first === "removal") {
-        let pending: ReturnType<typeof operations>;
+        let pending: ReturnType<typeof operation>;
         await remove(async () => {
-          pending = operations();
-          await blocked([writer], 2);
+          pending = operation();
+          await blocked([writer], 1);
         });
-        assert.deepEqual(await pending!.result, denied, "both waiters must see committed removal");
+        assert.equal(await pending!.result, denied, "native waiter must see committed removal");
+        assert.equal(f.gh.trace.length, providerCalls);
+        assert.deepEqual(await receipts(), []);
       } else {
-        // Pause both decisions at the material row. Removal must wait for these actual
-        // readers; an already committed possible-use receipt must survive that removal.
+        // Pause the actual native owner at the family row, after lockLiveSession
+        // holds the shared Namespace, Agent and exact approval locks used by both
+        // native and selected Driver authorization. Removal must wait for that owner.
         const holder = await f.pool.connect();
         let failed = true;
         try {
@@ -143,14 +154,23 @@ for (const first of ["removal", "use"] as const) {
             [f.familyId],
           );
           assert.equal(locked.rowCount, 1);
-          const pending = operations();
-          const readers = await blocked([locked.rows[0].pid], 2);
+          const pending = operation();
+          const readers = await blocked([locked.rows[0].pid], 1);
           const removal = remove();
           await blocked(readers, 1, writer);
           await holder.query("ROLLBACK");
-          assert.deepEqual(await pending.result, ["same material", "same material"]);
+          const used = await pending.result;
+          assert.notEqual(used, denied);
+          assert.ok(typeof used !== "string");
           await removal;
           expectedReceipts = [pending.exchangeId];
+          assert.deepEqual(await receipts(), expectedReceipts);
+          assert.equal(f.gh.trace.length, providerCalls);
+          // Explicit test-only provider probe using the sole authorized native result.
+          // It is outside both authorization decisions and cannot mint or record use.
+          assert.equal(await f.providerStatus(used.value), 200);
+          assert.deepEqual(await receipts(), expectedReceipts);
+          assert.equal(f.gh.issuesOfTokens.length, 1);
           failed = false;
         } finally {
           holder.release(failed);
@@ -164,8 +184,10 @@ for (const first of ["removal", "use"] as const) {
       assert.deepEqual(await receipts(), expectedReceipts);
       // No cleanup or Git dispatch. The fixture token remains unexpired across this fresh
       // decision; any earlier possible use is left intact, never repeated as a control.
-      assert.deepEqual(await operations().result, denied);
-      assert.ok(Date.now() < Date.parse(material.expiresAt));
+      const callsBeforeDeniedUse = f.gh.trace.length;
+      assert.equal(await operation().result, denied);
+      assert.equal(f.gh.trace.length, callsBeforeDeniedUse, "denied use must not reach provider");
+      assert.ok(Date.now() < usableUntil);
       assert.deepEqual(await receipts(), expectedReceipts, "no post-removal possible use");
       assert.equal(f.gh.issuesOfTokens.length, 1);
       assert.deepEqual(f.gh.errors, []);
@@ -287,26 +309,6 @@ test(
     );
     const row = await f.state.read((v) => v.repositorySessions.findBrokerReceipt(admissionId));
     assert.ok(row?.state === "active" && row.sessionId === sessionId && row.generation);
-    const decision = new RepositoryReceiptClient(controlSocket, row.generation);
-    const authorize = () => decision.authorizeStanding(admissionId, sessionId, input);
-    await authorize();
-    const refusal = { message: "RECEIPT_UNAVAILABLE" };
-    await assert.rejects(decision.authorizeStanding(admissionId, randomUUID(), input), refusal);
-    await assert.rejects(
-      decision.authorizeStanding(admissionId, sessionId, {
-        ...input,
-        expectedBinding: { ...input.expectedBinding, grantId: randomUUID() },
-      }),
-      refusal,
-    );
-    await assert.rejects(
-      new RepositoryReceiptClient(controlSocket, randomUUID()).authorizeStanding(
-        admissionId,
-        sessionId,
-        input,
-      ),
-      refusal,
-    );
     const uses = async () =>
       (
         await f.pool.query(
@@ -371,7 +373,6 @@ test(
     assert.equal(withdrawalCommittedBeforeWrite, true);
     assert.deepEqual(await workerExit, [0]);
     assert.equal(pendingStatus, 200);
-    await assert.rejects(authorize(), refusal);
     assert.equal(originRequests, 2);
     const freshStatus = (await get()).status;
     assert.equal(freshStatus, 503);
