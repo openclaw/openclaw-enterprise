@@ -14,9 +14,11 @@ import {
   dismissOnBackdrop,
   element,
   field as formField,
+  isUnavailable,
   revealStatus,
   setFieldError,
   setStatusTone,
+  setUnavailable,
   statusBlock,
   validateFields,
 } from "../dom.mjs";
@@ -36,6 +38,7 @@ import {
   namespacePath,
 } from "./list.mjs";
 import { NAME_MAX_CHARACTERS, namespaceNameProblem } from "../namespaces.mjs";
+import { createRequestTurns, type RequestInTurn } from "../request-turns.mjs";
 import { secretValueControl } from "../secrets.mjs";
 
 // A preview can show an existing reference without a live Namespace or request function.
@@ -206,6 +209,30 @@ function readableSecretIds(context: SecretContext, request: SecretRequest, admin
   });
   return read;
 }
+// The view's administrator-path Secret reads. A page that confirmed Installation administration
+// sent these reads at once, so an administrator revoked before she opened a view with two bound
+// Secrets was refused, and audited, twice (finding 2938). The first read goes alone; a refusal
+// that settles "not an administrator" then refuses the later ones unsent (console.mjs
+// administrationRead), and they take the member path. Once a read succeeds, the rest go at once.
+// A read whose view is no longer current is not sent: its answer would show nowhere, and the
+// request would go out under the next page.
+const administratorReadTurns = new WeakMap<SecretRequest, RequestInTurn>();
+function administratorReadInTurn(
+  context: SecretContext,
+  request: SecretRequest,
+  read: () => Promise<unknown>,
+) {
+  let inTurn = administratorReadTurns.get(request);
+  if (!inTurn) {
+    inTurn = createRequestTurns();
+    administratorReadTurns.set(request, inTurn);
+  }
+  return inTurn(() =>
+    context.isCurrent && !context.isCurrent()
+      ? Promise.reject(new Error("The view is no longer shown."))
+      : read(),
+  );
+}
 function readSecretMetadata(
   context: SecretContext,
   request: SecretRequest,
@@ -233,7 +260,10 @@ function readSecretMetadata(
           : request(href, administrator ? ADMINISTRATOR_PATH : undefined),
     );
   const administrator = context.installationAdmin === true;
-  const read = attempt(administrator).catch((cause: unknown) =>
+  const first = administrator
+    ? administratorReadInTurn(context, request, () => attempt(true))
+    : attempt(false);
+  const read = first.catch((cause: unknown) =>
     administrator && refusedAsNonAdministrator(cause)
       ? attempt(false, cause)
       : Promise.reject(cause),
@@ -727,8 +757,13 @@ export function createSecretReferenceField({
   }
 
   function updateValidity() {
-    input.required = requiredWhenEnabled;
-    input.disabled = manuallyDisabled || bindingPending;
+    if (listedHint && !staged) {
+      status.textContent = listedStatus();
+    }
+    // A disabled field stays in the Tab order while its status says what is bound (finding 2899),
+    // and, as a natively disabled one, is not required.
+    setUnavailable(input, manuallyDisabled || bindingPending, manuallyDisabled ? status : null);
+    input.required = requiredWhenEnabled && !manuallyDisabled;
     const missing = `${labelNode.textContent.trim() || label} is required.`;
     input.setCustomValidity(
       requiredWhenEnabled && !manuallyDisabled && currentSecretId() === null ? missing : "",
@@ -742,9 +777,6 @@ export function createSecretReferenceField({
     }
     if (manuallyDisabled) {
       closeListbox({ restoreSelection: true });
-    }
-    if (listedHint && !staged) {
-      status.textContent = listedStatus();
     }
   }
 
@@ -844,7 +876,7 @@ export function createSecretReferenceField({
     | { kind: "secret"; secret: SecretMetadata };
 
   function selectOption(option: SecretOption) {
-    if (!isCurrent() || manuallyDisabled || bindingPending || input.disabled) {
+    if (!isCurrent() || manuallyDisabled || bindingPending || isUnavailable(input)) {
       return;
     }
     if (option.kind === "refresh") {
@@ -1091,7 +1123,7 @@ export function createSecretReferenceField({
       !context.request ||
       !isCurrent() ||
       loadingSecrets ||
-      (explicit && (manuallyDisabled || bindingPending || input.disabled))
+      (explicit && (manuallyDisabled || bindingPending || isUnavailable(input)))
     ) {
       return;
     }
@@ -1197,7 +1229,7 @@ export function createSecretReferenceField({
     node instanceof Node && listbox.contains(node);
   // Pressing the list's scrollbar can still focus it; hand focus back without closing the list.
   listbox.addEventListener("focus", () => {
-    if (input.disabled) {
+    if (isUnavailable(input)) {
       closeListbox({ restoreSelection: true });
     } else {
       input.focus();

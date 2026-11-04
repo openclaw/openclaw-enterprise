@@ -1,5 +1,6 @@
 import {
   ADMISSION_LIMIT_DETAILS,
+  POD_LABELS_NOT_PERMITTED_DETAILS,
   OpenShellAdmissionLimitError,
   OpenShellDeletionUnconfirmedError,
   OpenShellGatewayFailure,
@@ -15,7 +16,11 @@ import {
   statusCode,
 } from "./openshell-gateway-errors.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  SandboxRevisionUnsupportedError,
+  gatewayEndpointRewritesIpv4,
+} from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -148,8 +153,9 @@ export interface OpenShellProviderProfileEndpoint {
   readonly protocol: string;
   readonly path?: string;
   readonly access?: "NETWORK_ACCESS_PRESET_FULL" | "NETWORK_ACCESS_PRESET_READ_WRITE";
+  readonly mcp?: { readonly strict_tool_names: boolean; readonly versions: readonly string[] };
   readonly rules?: readonly {
-    readonly allow: { readonly method: string; readonly path: string };
+    readonly allow: { readonly method: string; readonly path?: string };
   }[];
 }
 
@@ -288,6 +294,8 @@ export interface OpenShellProviderReadinessObservation {
 export interface OpenShellSandboxProviderStatus {
   /** An already terminal receipt can be queried without creating or completing an operation. */
   readonly completedOperationId?: string;
+  /** Terminal auxiliary OBSERVE history, never proof of installation or UPDATE completion. */
+  readonly supersededObservationId?: string;
   readonly state: string;
   readonly reason?: string;
   readonly receipt?: {
@@ -2428,6 +2436,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       operation.operation_id === receipt?.receipt_id
         ? { completedOperationId: operation.operation_id }
         : {}),
+      ...(operation?.state === 5 &&
+      operation.outcome === 3 &&
+      timestampText(operation.completed_time) !== null &&
+      receipt?.kind === "PROVIDER_MUTATION_KIND_OBSERVE" &&
+      typeof operation.operation_id === "string" &&
+      operation.operation_id === receipt.receipt_id
+        ? { supersededObservationId: operation.operation_id }
+        : {}),
       ...(typeof status.reason === "string" ? { reason: status.reason } : {}),
       ...(receipt
         ? {
@@ -2653,6 +2669,20 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
                 details.startsWith(ADMISSION_LIMIT_DETAILS)
               ) {
                 reject(new OpenShellAdmissionLimitError(method, error));
+              } else if (
+                method === "CreateSandbox" &&
+                code === grpc.status.INVALID_ARGUMENT &&
+                typeof details === "string" &&
+                details.startsWith(POD_LABELS_NOT_PERMITTED_DETAILS)
+              ) {
+                // The gateway's configuration refuses these label keys on every create, so
+                // retrying cannot help; the operator must extend allowed_pod_labels.
+                reject(
+                  new SandboxRevisionUnsupportedError(
+                    "SANDBOX_POD_LABELS_NOT_PERMITTED",
+                    `OpenShell refused the Harness Pod labels ${details.slice(POD_LABELS_NOT_PERMITTED_DETAILS.length)}; add them to the gateway's Kubernetes driver allowed_pod_labels.`,
+                  ),
+                );
               } else if (
                 [
                   grpc.status.NOT_FOUND,

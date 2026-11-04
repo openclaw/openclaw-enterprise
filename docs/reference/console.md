@@ -11,6 +11,10 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
+If the Console says it could not load, click **Reload page** to try the same
+address again. If it stays on the loading screen without that button, use your
+browser's Reload command. The Console does not automatically reload the page.
+
 Enter your provisioned account email and password, then select **Sign in**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
 your administrator for an account or password reset. A wrong email or password
@@ -58,7 +62,8 @@ hidden. Namespace rows open their Agents.
 control, cleanup blockers, and deletion recovery.
 
 The Console uses light appearance and OCC-served fonts. Navigation focuses the
-destination heading; **Open navigation** opens the mobile drawer.
+destination heading; **Open navigation** opens the mobile drawer. The drawer
+scrolls independently and keeps the page behind it in place until it closes.
 
 Click an Agent name or an open area of its row to open its details. Version links
 and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
@@ -89,8 +94,8 @@ the failed attempt's message. No save is sent. After access is restored, use
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.
 
 The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
-ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
-updates the URL in place.
+ID shows **Namespace unavailable**: the Namespace is missing or your access does not
+include it. On Namespaces, **Choose a valid Namespace** updates the URL in place.
 
 During session and Namespace checks, the selector is disabled and hides its choices.
 Once the list is known, it names the destination's Namespace. On returns to the same page,
@@ -275,6 +280,8 @@ domain; native chat or other Agent-host activity does not extend that session.
 Supported pages are `/console/login`, `/console/agents`,
 `/console/agents/new`, `/console/agents/:agentId`, `/console/backends`,
 `/console/namespaces`, `/console/secrets`, and `/console/settings`. `/console/` resolves the session
-and opens Agents. Unknown console paths show a generic not-found page.
+and opens Agents. A page path with trailing slashes opens that page with status `200`, and the
+address bar then shows it without them; the query, tab and hash stay. Unknown console paths
+return `404` and show a generic not-found page.
 See the [request flow](../flows/platform-console.md) and
 [local testing](../testing/local.md) for implementation and verification.

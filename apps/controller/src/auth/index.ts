@@ -46,6 +46,7 @@ import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./goog
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { sessionAuthority } from "./session-authority.ts";
+import { passwordSignOut } from "./password-sign-out.ts";
 import { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
@@ -185,7 +186,7 @@ const SERVICE_KEY_NAME_MAX_UTF16_UNITS = SERVICE_KEY_NAME_MAX_LENGTH * 2;
 const SAFE_COOKIE_DOMAIN =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 type ControllerPlugins = (
-  ReturnType<typeof apiKey> | ReturnType<typeof createHumanLogin>["plugin"]
+  ReturnType<typeof apiKey> | ReturnType<typeof createHumanLogin>["plugin"] | typeof passwordSignOut
 )[];
 type ControllerBetterAuth = Auth<BetterAuthOptions & { plugins: ControllerPlugins }>;
 
@@ -1090,7 +1091,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           onAPIError: { throw: true },
         }),
     plugins: [
-      ...(humanLogin === undefined ? [] : [humanLogin.plugin]),
+      ...(humanLogin === undefined ? [passwordSignOut] : [humanLogin.plugin]),
       apiKey({
         configId: SERVICE_KEY_CONFIG,
         defaultPrefix: "occ_",

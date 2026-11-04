@@ -34,6 +34,7 @@ session cookie before forwarding to the native gateway.
 | `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                      |
 | `OCC_AUTH_BASE_URL`                        | HTTP(S) origin without path, query, fragment or user info; IPv4 as four decimal octets, no leading zeros.          | Defines the Better Auth base URL and cookie origin.                                                                          |
 | `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
+| `OCC_PREPROVISIONED_NAMESPACE`             | Optional JSON `{"namespaceId","uid"}` binding one operator-created namespace; set by Helm.                         | API and worker. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).                   |
 | `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.         |
 | `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.                   |
 | `OCC_API_HTTPS_EGRESS_OPEN`                | Optional `true` or `false`, default `false`; set by Helm.                                                          | API only; `true` (open sign-in egress) makes an unanswered Slack check a retryable `503`.                                    |
@@ -78,6 +79,15 @@ configuration and implementation-specific prerequisites.
 Agent workspace-file requests use the selected Compute Driver's private gateway
 endpoint; [private Agent gateway routes](../drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
 define the hostname contract and each setting's role.
+
+With chart-managed routing, Helm sets `OCC_CHART_GATEWAY_ROUTING` for the API,
+worker, and upgrade configuration check. It contains the chart's Gateway name,
+release namespace, Envoy namespace, and effective and automatic hostnames.
+When the bundled Kubernetes Compute Driver selects `gatewayRouting`, startup
+requires its resource identity and effective hostname to match; otherwise it
+reports `CHART_LISTENER_MISMATCH` before serving or replacing the API. This is
+a chart-owned consistency check, not an operator input. Correct the Installation
+and Helm values together; see [production installation](../../guides/deploy/production-installation.md).
 
 `OCC_GATEWAY_API_KEY_PATH` mounts a dedicated, high-entropy Envoy service key;
 never reuse the Better Auth signing secret or a model-provider credential.

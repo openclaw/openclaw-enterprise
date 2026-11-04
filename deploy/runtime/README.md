@@ -14,12 +14,10 @@ network requests still use the configured network policy.
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-The selected upstream source pins Codex `0.164.0`. A temporary
-`stock-codex-0.163.0-alpha.2-dependency-pin.patch` sets its managed version,
-package manifest, and frozen lockfile to the stock `0.163.0-alpha.2` npm release,
-the version OCE reviewed for the Codex sandbox seccomp profile. Both Codex
-entrypoints use that same installation; no Codex binary patch is applied. Remove
-the dependency patch when OCE qualifies the Codex release the source pins.
+The selected upstream source pins stock Codex `0.164.0`. Both Codex entrypoints
+use that same installation and frozen upstream lockfile; no dependency downgrade
+or Codex binary patch is applied. The seccomp profile retains its existing syscall
+rules; version admission does not replace native startup and sandbox verification.
 Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
@@ -44,7 +42,7 @@ profile revocation still stop dispatch. The OpenClaw build stage applies the
 checksum-verified `openclaw-required-worker-authority-regression.patch`
 and runs the real Gateway public-RPC cases without network access. The cases
 cover placement before and after acknowledgement, disconnect, and committed
-role, scope, and profile revocation. Test changes stay in the build stage.
+role, scope, and profile revocation.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
@@ -54,6 +52,9 @@ does the same.
 private Linux PID namespace stopped recover only Gateway records from that
 namespace. OC still compares its lock fingerprint before recovery. An
 unattributed owner requires operator confirmation.
+OpenClaw normalizes newly created owner-only Linux directories that inherit
+setgid and reports invalid plugin settings during startup. The build runs the
+upstream private-store regressions.
 The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
@@ -80,7 +81,9 @@ OCE does not write the retired `nodeHost.workerRuns.nativeInferenceConfig` field
 The selected source includes required placement activation, node-local
 model/workspace projection, and the Codex native-child relay. OCE advertises
 `pinned-runtime` native-worker support, so the Console offers Dedicated OpenClaw
-without a custom-image declaration. Deployment still requires a provisioning
+without a custom-image declaration. When the same node hosts an admitted MCP
+tool, the worker can call its MCP client locally. Tools that require Gateway
+policy hooks continue through the Gateway. Deployment still requires a provisioning
 SandboxDriver with networking, filesystem, and process containment.
 
 The images-runtime-startup lane runs the production Gateway and Harness
@@ -93,10 +96,10 @@ enrollment, containment, workspace access, or model execution.
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Build base                                            | `docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a` |
 | OpenClaw commit, archive SHA-256, and build timestamp | [Source manifest](openclaw-source.json)                                                                           |
-| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.163.0-alpha.2`                                                                                                 |
+| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The source's package version is `2026.10.8`; it does not identify this custom
+The source's package version is `2026.10.10`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
@@ -179,7 +182,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/513c12703ad9a9161cc123e0b8ed4ecb811aa6b3/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
@@ -188,7 +191,7 @@ The custom npm-distribution packer rejects that combination because it requires
 one shared dependency version. Alternate
 `NODE_BASE_IMAGE` values must provide Node.js 24.22.1 or newer within the 24 series.
 The Dedicated command and bundled plugin both resolve the same
-[Codex 0.163.0-alpha.2](https://github.com/openai/codex/releases/tag/rust-v0.163.0-alpha.2) installation.
+[Codex 0.164.0](https://github.com/openai/codex/releases/tag/rust-v0.164.0) installation.
 For multi-architecture builds, the frozen npm install selects the stock
 `@openai/codex-linux-x64` or `@openai/codex-linux-arm64` package for the target
 architecture. The image rebuilds `/opt/oce/runtime/contents.json` from
@@ -318,7 +321,7 @@ The smoke starts task-owned containers with the Docker Compute Driver gateway
 entrypoint, the Kubernetes Compute Driver gateway entrypoint, and the native
 Codex command execution path, UID `1000:1000`, a read-only root filesystem, and
 tmpfs-backed runtime directories. The private broker endpoint smoke requires the
-reviewed Codex 0.163.0-alpha.2 seccomp profile above so the nested bubblewrap sandbox can
+reviewed Codex 0.164.0 seccomp profile above so the nested bubblewrap sandbox can
 start without broadening to an unconfined Docker seccomp profile.
 Passing means an embedded OpenClaw gateway reaches `/readyz` from a fresh home,
 the bundled Codex and Slack plugins load without missing package dependencies,

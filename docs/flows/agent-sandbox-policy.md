@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-10-29"
-last_updated_session: "fix-2881"
+last_updated_session: "01a1891d-5b6b-7071-b482-793a9dd01044"
 ---
 
 # Agent sandbox policy flow
@@ -55,7 +55,8 @@ returns its result without a later table-format error.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
-inspection exposes startup schemas without values. Agent discovery and policy GET
+inspection exposes [Driver-projected startup values](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
+Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
@@ -80,7 +81,21 @@ admitted snapshot. While the active or next revision runs under protected
 execution (the Installation selects the Credential Proxy), additions are refused
 with `409 SANDBOX_POLICY_PROTECTED_EXECUTION`, as are live application to a
 protected revision and a protected deploy carrying them; protected
-revisions admit no policy snapshot. The policy view reports `protectedExecution`.
+revisions admit no ordinary Agent policy snapshot. Protected, dedicated Codex
+repository admission can carry the Sandbox Driver's explicitly acknowledged
+[artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+`checkedProtectedCodexArtifactPolicy` verifies its purpose, declared keys, Driver
+identity, version and empty additions before runtime credential provisioning.
+That immutable snapshot remains ineligible for live apply. The policy view reports
+`protectedExecution`.
+
+Protected Codex repository preparation compiles the revision's qualified artifact
+snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
+Both paired compilers validate the complete map. The Sandbox separately compares
+the final workspace enrollment rule with its validated Agent-owned setup binding,
+then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
+The proxy checks the complete artifact map and bounded auxiliary rule before
+comparing the complete loaded policy.
 For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an
@@ -242,6 +257,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-29 12:37: Link Installation inspection to its startup projection owner. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
 
 - 2026-10-29 18:30: An Agent update with repository bindings authorizes SandboxPolicy `read` before the overlap refusal that names a saved grant (finding 2881).
 

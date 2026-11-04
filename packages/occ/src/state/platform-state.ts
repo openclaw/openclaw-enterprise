@@ -38,6 +38,7 @@ import type {
   AgentDesiredRuntimeState,
   AgentStatus,
   AgentRevision,
+  FirstDeploymentReceipt,
   AuditEvent,
   CredentialSource,
   CredentialSourceSnapshot,
@@ -263,6 +264,11 @@ export interface AgentRepository extends AgentReadRepository {
 }
 
 export interface AgentRevisionReadRepository {
+  findFirstDeploymentReceipt(
+    namespaceId: string,
+    agentId: string,
+    digest: string,
+  ): Promise<Readonly<FirstDeploymentReceipt> | undefined>;
   findRevisionForBrowsing(
     namespaceId: string,
     agentId: string,
@@ -304,7 +310,10 @@ export interface AgentRevisionRepository extends AgentRevisionReadRepository {
    * clock, the one that stamps controller work, so the worker can order a revision against a
    * stop or deletion without controller clock skew (finding 1195); use the returned value.
    */
-  createRevision(revision: AgentRevision): Promise<Readonly<AgentRevision>>;
+  createRevision(
+    revision: AgentRevision,
+    firstDeploymentDigest?: string,
+  ): Promise<Readonly<AgentRevision>>;
 }
 
 export interface ConfigurationOwnership {
@@ -757,6 +766,65 @@ export async function assertHarnessAuthAvailable(
   }
 }
 
+/** Validate new snapshots against rows held by the insertion transaction, never archive reads. */
+export async function assertRevisionAuthAvailable(
+  state: Pick<PlatformReadView, "secrets" | "serviceAccounts" | "credentialSources">,
+  revision: AgentRevision,
+  loadSources: (
+    ids: readonly string[],
+  ) => Promise<
+    readonly Pick<
+      CredentialSource,
+      "id" | "namespaceId" | "type" | "state" | "ownerCapability" | "driverId"
+    >[]
+  >,
+): Promise<void> {
+  const snapshots: CredentialSourceSnapshot[] = [...(revision.credentialSources ?? [])];
+  if (revision.harnessAuth?.method === "credential_source") {
+    snapshots.push(revision.harnessAuth);
+  } else {
+    await assertHarnessAuthAvailable(
+      state,
+      revision.namespaceId,
+      harnessAuthBindingFromSnapshot(revision.harnessAuth),
+    );
+  }
+  if (snapshots.length === 0) {
+    return;
+  }
+  const sources = new Map(
+    (await loadSources([...new Set(snapshots.map(({ sourceId }) => sourceId))])).map((source) => [
+      source.id,
+      source,
+    ]),
+  );
+  // Deduplicate locks, not assertions: the Harness and list can disagree on the same ID.
+  for (const snapshot of snapshots) {
+    const source = sources.get(snapshot.sourceId);
+    if (
+      source === undefined ||
+      source.namespaceId !== revision.namespaceId ||
+      source.state !== "ready"
+    ) {
+      throw new ScopeViolationError(
+        "The AgentRevision references an unavailable credential source.",
+      );
+    }
+    const ownerMatches =
+      (source.ownerCapability === "credential_gateway" &&
+        snapshot.credentialProxyId === undefined &&
+        snapshot.credentialGatewayId === source.driverId) ||
+      (source.ownerCapability === "credential_proxy" &&
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === source.driverId);
+    if (source.type !== snapshot.sourceType || !ownerMatches) {
+      throw new ScopeViolationError(
+        "The AgentRevision credential source snapshot does not match its current owner or type.",
+      );
+    }
+  }
+}
+
 /** In-memory mirror of `agents_harness_credential_source_listed`. */
 export function assertHarnessCredentialSourceListed(
   harnessAuth: HarnessAuthBinding | null,
@@ -1054,6 +1122,7 @@ interface PlatformSnapshot {
   readonly sandboxPolicies: Map<string, Readonly<SandboxPolicy>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
   readonly revisions: Map<string, readonly Readonly<AgentRevision>[]>;
+  readonly firstDeploymentDigests: Map<string, string>;
   readonly roles: Map<string, Readonly<Role>>;
   readonly bindings: Map<string, Readonly<AccessBinding>>;
   readonly servicePrincipals: Map<string, Readonly<ServicePrincipal>>;
@@ -1192,6 +1261,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     // Revisions are copied on ingress/egress; appends replace frozen history arrays.
     // A separate Map isolates this snapshot's future appends without copying history.
     revisions: new Map(snapshot.revisions),
+    firstDeploymentDigests: new Map(snapshot.firstDeploymentDigests),
     roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, storedCopy(role)])),
     bindings: new Map(
       Array.from(snapshot.bindings, ([key, binding]) => [key, storedCopy(binding)]),
@@ -3053,6 +3123,24 @@ function repositories(
   };
 
   const revisions: AgentRevisionRepository = {
+    findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
+      if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+        return undefined;
+      }
+      const first = snapshot.revisions
+        .get(agentKey(namespaceId, agentId))
+        ?.find((revision) => revision.revision === 1);
+      return first !== undefined && snapshot.firstDeploymentDigests.get(first.id) === digest
+        ? immutableCopy({
+            revisionId: first.id,
+            namespaceId,
+            agentId,
+            configurationId: first.configurationId,
+            configurationGeneration: first.configurationGeneration,
+            createdAt: first.createdAt,
+          })
+        : undefined;
+    },
     findRevisionForBrowsing: async (namespaceId, agentId, revisionId) =>
       revisions.findRevision(namespaceId, agentId, revisionId),
     listRevisionsForBrowsing: async (namespaceId, agentId) =>
@@ -3133,7 +3221,8 @@ function repositories(
         ...(older.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
       });
     },
-    createRevision: async (revision) => {
+    createRevision: async (input, firstDeploymentDigest) => {
+      const revision = immutableCopy(input);
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
       const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
@@ -3147,10 +3236,15 @@ function repositories(
       ) {
         throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
       }
-      await assertHarnessAuthAvailable(
+      await assertRevisionAuthAvailable(
         { secrets, serviceAccounts, credentialSources },
-        revision.namespaceId,
-        harnessAuthBindingFromSnapshot(revision.harnessAuth),
+        revision,
+        async (ids) => {
+          const sources = await Promise.all(
+            ids.map((id) => findCredentialSource(revision.namespaceId, id)),
+          );
+          return sources.filter((source) => source !== undefined);
+        },
       );
       const secretBindings = normalizedSecretBindings(revision.secretBindings);
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
@@ -3170,6 +3264,16 @@ function repositories(
         ...(secretBindings === undefined ? {} : { secretBindings }),
         ...(plugins === undefined ? {} : { plugins }),
       });
+      if (firstDeploymentDigest !== undefined) {
+        if (
+          previous.length !== 0 ||
+          revision.revision !== 1 ||
+          !/^[a-f0-9]{64}$/.test(firstDeploymentDigest)
+        ) {
+          throw new ResourceConflictError("Invalid first-deployment admission.");
+        }
+        snapshot.firstDeploymentDigests.set(saved.id, firstDeploymentDigest);
+      }
       snapshot.revisions.set(key, Object.freeze([...previous, saved]));
       return saved;
     },
@@ -3715,6 +3819,9 @@ function finalizeAgentDeletion(
   // The setup cascades with its Agent. Credential withdrawals already end with their revision
   // here (liveWithdrawal), as the database cascade does.
   snapshot.workspaceSetups.delete(key);
+  for (const id of revisionIds) {
+    snapshot.firstDeploymentDigests.delete(id);
+  }
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
   snapshot.agents.delete(key);
@@ -3768,6 +3875,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     sandboxPolicies: new Map(),
     workspaceSetups: new Map(),
     revisions: new Map(),
+    firstDeploymentDigests: new Map(),
     roles: new Map(),
     bindings: new Map(),
     servicePrincipals: new Map(),

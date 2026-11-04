@@ -1,7 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { after } from "node:test";
+import { fileTemporaryDirectory } from "./temporary-directory.mjs";
 
 // CI lanes set NODE_COMPILE_CACHE so each Node process reuses compiled and type-stripped
 // modules. A child started with an allowlisted environment drops it and recompiles every
@@ -19,7 +16,5 @@ export async function fileCompileCache(prefix) {
   if (process.env.NODE_COMPILE_CACHE) {
     return process.env.NODE_COMPILE_CACHE;
   }
-  const directory = await mkdtemp(join(tmpdir(), `${prefix}-cache-`));
-  after(() => rm(directory, { recursive: true, force: true }));
-  return directory;
+  return fileTemporaryDirectory(`${prefix}-cache-`);
 }

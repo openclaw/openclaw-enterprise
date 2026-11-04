@@ -73,6 +73,8 @@ interface PluginEditorOptions {
   savedNotice?: string;
   /** Why the permission answer refuses a save (Agent update, or its source grants). */
   saveDenied?: Promise<string | undefined> | null;
+  /** Updates only the explanation while the save remains refused. */
+  followSaveReason?(apply: (reason: string | undefined) => void): void;
 }
 
 // A caller who may not update the Agent reads its plugin selections (finding 2436).
@@ -152,6 +154,7 @@ export function renderAgentPlugins(
     onReload,
     savedNotice = "",
     saveDenied = null,
+    followSaveReason,
   }: PluginEditorOptions,
 ) {
   if (!draft) {
@@ -568,6 +571,12 @@ export function renderAgentPlugins(
   // and is not sent a read that answers 403. An unknown answer still reads them (finding 2436).
   // A caller missing only the source grants a save checks is not sent it either: no save could
   // keep a policy edit (finding 2441).
+  const saveReason = element("p", { className: "muted", role: "status" });
+  followSaveReason?.((reason) => {
+    if (updateDenied && reason !== undefined) {
+      saveReason.textContent = reason;
+    }
+  });
   void Promise.resolve(saveDenied).then((reason) => {
     if (!context.isCurrent()) {
       return;
@@ -591,6 +600,7 @@ export function renderAgentPlugins(
     // an editor this caller is not (findings 2447, 2455). The approver field waits for the
     // capabilities read, which this caller is not sent, so the approvers show as text too.
     const selections = Object.keys(agent.plugins ?? {});
+    saveReason.textContent = reason;
     section.replaceChildren(
       element("h2", {}, "Plugin selections"),
       element("p", { className: "muted" }, PLUGINS_READ_ONLY),
@@ -606,7 +616,7 @@ export function renderAgentPlugins(
           listed: "The next deployment uses these Agent default approvers.",
         }),
       ),
-      element("p", { className: "muted", role: "status" }, reason),
+      saveReason,
     );
   });
   return section;

@@ -1,6 +1,6 @@
 ---
 created: 2026-08-31
-updated: 2026-10-27
+updated: 2026-11-01
 last_updated_session: Codex/01a16ff3-354f-7873-a064-92d0ff2bcf0f
 ---
 
@@ -87,7 +87,7 @@ metadata-only create audit. API strings are preserved; Console textareas use LF 
 `packages/occ/src/index.ts:updateAgent` keeps an omitted Configuration ID.
 Completed setup is rechecked when the resolved Configuration ID or execution
 mode changes. Saving Gateway managed mode alone keeps both. Pending setup is
-checked on each update; deployment checks completed setup too.
+checked on each update.
 
 ### 2. Deployment initializes storage before execution
 
@@ -136,7 +136,8 @@ later edits. Errors omit document contents.
 reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises
 `SandboxWorkspaceSetupRefusedError`. Kubernetes retries other failures
 (`WORKSPACE_SETUP_RETRYING`). OpenShell reports only RPC status or setup
-exit/timeout. `checkedAt` records termination/observation time.
+exit/timeout. Docker retries failed setup; preparation never stops a running one
+and stays unready meanwhile. `checkedAt` records termination/observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 
@@ -144,7 +145,7 @@ exit/timeout. `checkedAt` records termination/observation time.
 transaction only after checking the selected Agent revision ID and work claim.
 `workspaceSetups.complete` removes document bytes and retains identity and
 completion metadata. Drivers remove or replace private delivery bytes with
-metadata; subsequent startup verifies the durable workspace marker.
+metadata.
 
 Failed or never-deployed Agents retain pending inputs. Agent deletion removes
 the setup record through `packages/occ/src/index.ts:deleteAgent`; Driver
@@ -210,9 +211,9 @@ Other Harnesses are replaced, restarting their Gateway.
 - `addNodeEnrollmentState` mounts Agent-scoped identity at `/home/node/.openclaw-node`
   from the existing Harness PVC volume (`0700`, nonroot initializer), preserving it
   across versions until Agent deletion.
-- `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` before supervising
-  Codex and the node under `tini`. It passes admitted bootstrap options, preserves
-  existing edits, and holds on setup failure. Codex starts at once with the
+- `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` with admitted bootstrap
+  options, keeping edits, then supervises Codex and the node under `tini`. A setup
+  failure holds; a stop lets setup finish. Codex starts at once on the
   managed PATH; the node waits for a complete code. Neither gets OCC's key.
 - With the status proxy, a Codex Gateway hot-loads `file-transfer` from an
   Agent-owned ConfigMap (replacing the Codex plugin runtime); activation awaits

@@ -8,25 +8,56 @@
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": false,
     "erasableSyntaxOnly": true,
-    "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo"
+    "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo",
+    "paths": {
+      "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"],
+      "/console/agents/plugin-fields.mjs": [
+        "../apps/controller/src/console/agents/plugin-fields.mts"
+      ],
+      "/console/default-codex-preset.mjs": [
+        "../scripts/console-storybook/default-codex-preset.d.mts"
+      ],
+      "/console/standard-codex-preset.mjs": [
+        "../scripts/console-storybook/standard-codex-preset.d.mts"
+      ],
+      "/console/standard-openclaw-preset.mjs": [
+        "../scripts/console-storybook/standard-openclaw-preset.d.mts"
+      ],
+      "/console/swe-preset.mjs": ["../scripts/console-storybook/swe-preset.d.mts"]
+    },
+    "resolveJsonModule": true
   },
   "include": [
     "**/*.test.ts",
+    "browser/console-agent-detail-cases.mts",
+    "browser/console-agent-detail-deployment.ts",
+    "../scripts/verify-console-release.ts",
     "../deploy/runtime/google/install-gog.mts",
     "../scripts/console-storybook/*.stories.ts",
     "../scripts/console/record-walkthrough.ts",
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
+    "helpers/temporary-directory.ts",
+    "helpers/node-test-summary.ts",
+    "helpers/image-smoke-timeout.ts",
     "helpers/credential-source-owner-upgrade.ts",
+    "helpers/populated-upgrade-return.ts",
+    "helpers/deployed-repository-capability.ts",
+    "helpers/production-upgrade-dispatch-restore.ts",
+    "helpers/compute-credential-catalog.ts",
     "helpers/provisioning-repository-status.ts",
+    "helpers/provisioning-source-status.ts",
     "helpers/codex-preparation-caller.ts",
     "helpers/controlled-tls-origin.ts",
     "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/runtime-google-skill-policy.mts",
+    "fixtures/staging-qualification-seccomp-child.ts",
     "fixtures/codex-local-plugins/probe.ts",
     "fixtures/codex-local-plugins/enrollment.ts",
     "fixtures/repository-credentials/module-guard.ts",
-    "fixtures/repository-credentials/planning.ts"
+    "fixtures/repository-credentials/installation-module-guard.ts",
+    "fixtures/repository-credentials/planning.ts",
+    "helpers/protected-static-secret-read.ts"
   ],
   "references": [
     {

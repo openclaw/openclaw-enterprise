@@ -112,6 +112,21 @@ its optional migration URL. Do not share that database with another process.
 
 ## Canonical migration compatibility
 
+Fresh installation, populated canonical upgrades, and logical restore checks
+pass on PostgreSQL 18.6 and 17.11. This evidence covers these workflows on those
+releases, not every server version or a complete production deployment.
+
+The `postgres` lane also runs a disposable PostgreSQL 16.15 container to verify
+early refusal for fresh and populated databases, unchanged dumps after refusal,
+and redaction of real connection errors. Run that regression alone with Docker:
+
+```sh
+OCC_TEST_MIGRATION_SERVER=1 node --test tests/integration/postgres-migration-version.test.ts
+```
+
+It pulls its pinned PostgreSQL image and removes only its own container and volume.
+Without the selector the case skips. It does not use an existing database.
+
 The `postgres` lane runs migration compatibility against its owned fixture. To
 run the canonical cases against an existing disposable loopback PostgreSQL 18
 container with the local test roles, select its container, port, and a new
